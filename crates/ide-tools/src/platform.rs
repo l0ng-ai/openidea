@@ -171,6 +171,28 @@ mod tests {
     }
 
     #[test]
+    fn phoxite_assets() {
+        let names = [
+            "phoxite-lsp-aarch64-apple-darwin",
+            "phoxite-lsp-x86_64-apple-darwin",
+            "phoxite-lsp-aarch64-unknown-linux-gnu",
+            "phoxite-lsp-x86_64-unknown-linux-gnu",
+            "phoxite-lsp-x86_64-pc-windows-msvc.exe",
+            // Not for any platform here: the musl build, the checksums, the VS Code packages.
+            "phoxite-lsp-x86_64-unknown-linux-musl",
+            "phoxite-lsp-x86_64-unknown-linux-gnu.sha256",
+            "phoxite-lsp-x86_64-pc-windows-msvc.exe.sha256",
+            "phoxite-linux-x64-0.2.1.vsix",
+        ];
+        let rules = crate::registry::find("phoxite").unwrap().asset_rules();
+        assert_eq!(select_asset(&names, rules, MAC_ARM), Some(names[0]));
+        assert_eq!(select_asset(&names, rules, MAC_X64), Some(names[1]));
+        assert_eq!(select_asset(&names, rules, LINUX_ARM), Some(names[2]));
+        assert_eq!(select_asset(&names, rules, LINUX_X64), Some(names[3]));
+        assert_eq!(select_asset(&names, rules, WIN), Some(names[4]));
+    }
+
+    #[test]
     fn kmp_lsp_assets_include_the_native_jar_indexer() {
         let names = [
             "kmp-lsp-darwin-aarch64.gz",

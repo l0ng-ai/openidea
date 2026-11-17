@@ -14,7 +14,8 @@ pub fn inside_git_repo(dir: &Path) -> bool {
     dir.ancestors().any(|d| d.join(".git").exists() || d.join(".jj").exists())
 }
 
-/// IDEA's default list, plus `.jj` and the Windows shell files.
+/// IDEA's default list, plus `.jj`, rope's `.ropeproject` (pylsp-rope creates it in the
+/// project root) and the Windows shell files.
 pub const DEFAULT_IGNORED_NAMES: &[&str] = &[
     "*.pyc",
     "*.pyo",
@@ -25,6 +26,7 @@ pub const DEFAULT_IGNORED_NAMES: &[&str] = &[
     ".git",
     ".hg",
     ".jj",
+    ".ropeproject",
     ".svn",
     "CVS",
     "__pycache__",

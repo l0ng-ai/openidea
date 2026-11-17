@@ -66,7 +66,7 @@ WebAssembly 组件运行；主题、图标主题和语言无需编写代码。
 - [Discord](https://discord.gg/2Zy4yn7gP)：提问、反馈和版本发布消息。
 - 微信群，扫码加入：
 
-  <img src=".github/assets/wechat-group.png" alt="微信群二维码" width="200">
+  <img src=".github/assets/wechat-group-3.png" alt="微信群二维码" width="200">
 
 - 参与贡献：参见 [CONTRIBUTING.md](CONTRIBUTING.md) 和[贡献者文档](https://openidea.sh/zh/contribute/setup)。
 

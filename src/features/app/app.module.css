@@ -14,7 +14,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   line-height: 1.55;
 }
 .productName {
@@ -37,7 +37,7 @@
 }
 .fact {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .fact dt {
@@ -57,7 +57,7 @@
 .links {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 16px;
+  gap: var(--space-1) var(--space-4);
 }
 .link {
   padding: 0;
@@ -94,7 +94,7 @@
 .keymapBar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-popup);
 }
@@ -139,7 +139,7 @@
 .keymapRow {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   min-height: var(--h-row);
   padding: 0 4px;
   border-radius: var(--radius-row);
@@ -157,13 +157,13 @@
 .keymapKeys {
   flex: none;
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .invalidateBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 14px;
   color: var(--fg);
   font-size: var(--fs-ui);
@@ -185,13 +185,13 @@
 .importSummary {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .importList {
   margin: 0;
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 2px 16px;
+  gap: var(--space-0-5) var(--space-4);
 }
 .importList dt {
   color: var(--fg-muted);

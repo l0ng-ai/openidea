@@ -27,6 +27,9 @@ import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
 import { repositoryPath } from "./repositoryPaths";
+import { RepoPicker } from "./gitMenuDialogs";
+import { openRevisionFile } from "./revisionInput";
+import { ipcPath } from "@/platform/paths";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -437,15 +440,27 @@ export function showTagDialog() {
 }
 
 function TagDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
+  const [repo, setRepo] = useState(currentRepo);
   const [name, setName] = useState("");
   const [commit, setCommit] = useState("HEAD");
   const [message, setMessage] = useState("");
   const [force, setForce] = useState(false);
   const [existing, setExisting] = useState<string[]>([]);
   useEffect(() => {
-    void call(commands.vcsTags(repo)).then(setExisting, () => undefined);
-  }, []);
+    let live = true;
+    void call(commands.vcsTags(repo)).then(
+      (tags) => live && setExisting(tags),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [repo]);
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setExisting([]);
+  };
   const error = validateTagName(name, force ? [] : existing);
   const run = async () => {
     if (error) return;
@@ -470,6 +485,7 @@ function TagDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={chooseRepo} />
         <label className={styles.fieldLabel} htmlFor="openidea-tag-name">
           <T>Tag name:</T>
         </label>
@@ -504,8 +520,29 @@ function TagDialog({ onClose }: { onClose: () => void }) {
 }
 
 /** Compare with Local: files that differ between the commit and the working tree. */
-export function showCompareWithLocal(commit: Commit) {
+export function showCompareWithLocal(commit: Commit, historyTarget?: string | null) {
+  if (historyTarget) {
+    const repo = commitRepo(commit) ?? repoOf(historyTarget) ?? currentRepoRoot();
+    const historicalPath = commit.historyPath && repo ? repositoryPath(repo, commit.historyPath) : historyTarget;
+    void openVcsDiff({
+      path: historyTarget,
+      left: { type: "rev", rev: commit.id, path: historicalPath, label: short(commit.id) },
+      right: { type: "worktree" },
+    });
+    return;
+  }
   showDiffWithWorkingTree(commit.id, short(commit.id));
+}
+
+/** Opens the selected File History entry's file exactly as it exists in that commit. */
+export function showFileAtRevision(commit: Commit, target: string, external = false) {
+  const repo = commitRepo(commit) ?? repoOf(target) ?? currentRepoRoot();
+  if (!repo) return;
+  const root = ipcPath(repo).replace(/\/$/, "");
+  const file = ipcPath(target);
+  const relative = file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file;
+  const path = commit.historyPath ?? relative;
+  openRevisionFile(repo, commit.id, path, external);
 }
 
 /** Files that differ between `rev` (a commit or branch) and the working tree, in the Compare tool window. */
@@ -514,25 +551,36 @@ export function showDiffWithWorkingTree(rev: string, label = rev) {
 }
 
 /** IDEA's Compare Versions of two Git Log commits: files that differ between them, older first. */
-export function showCompareVersions(older: Commit, newer: Commit) {
+export function showCompareVersions(older: Commit, newer: Commit, historyTarget?: string | null) {
+  if (historyTarget) {
+    const repo = commitRepo(older) ?? commitRepo(newer) ?? repoOf(historyTarget) ?? currentRepoRoot();
+    const olderPath = older.historyPath && repo ? repositoryPath(repo, older.historyPath) : historyTarget;
+    const newerPath = newer.historyPath && repo ? repositoryPath(repo, newer.historyPath) : historyTarget;
+    void openVcsDiff({
+      path: historyTarget,
+      left: { type: "rev", rev: older.id, path: olderPath, label: short(older.id) },
+      right: { type: "rev", rev: newer.id, path: newerPath, label: short(newer.id) },
+    });
+    return;
+  }
   showComparison({ rev: older.id, label: short(older.id) }, { rev: newer.id, label: short(newer.id) });
 }
 
-/** Files that differ between two revisions (e.g. two branches from Compare with Current). */
-export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to) {
-  showComparison({ rev: from, label: fromLabel }, { rev: to, label: toLabel });
+/** Files that differ between two revisions (e.g. two branches from Compare with Current) of `repo`. */
+export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to, repo = currentRepo()) {
+  showComparison({ rev: from, label: fromLabel }, { rev: to, label: toLabel }, undefined, repo);
 }
 
 export function showPathComparison(paths: string[], rev: string, repositories: string[] | null) {
   showComparison({ rev, label: rev }, null, { paths, repositories });
 }
 
-function showComparison(from: Revision, to: Revision | null, scope?: ScopedComparison) {
+function showComparison(from: Revision, to: Revision | null, scope?: ScopedComparison, repo = currentRepo()) {
   if (!isTauri()) {
-    openDialog((close) => <ChangesBetweenDialog from={from} to={to} scope={scope} onClose={close} />);
+    openDialog((close) => <ChangesBetweenDialog from={from} to={to} scope={scope} repo={repo} onClose={close} />);
     return;
   }
-  const comparison = { from, to, scope: scope ?? null, repo: currentRepo() };
+  const comparison = { from, to, scope: scope ?? null, repo };
   void call(commands.windowOpenComparison(comparison, windowBackgroundHex())).catch((error) =>
     notifications().notify({ level: "error", title: "Could not open comparison", body: String(error) }),
   );
@@ -596,6 +644,7 @@ export function ChangesBetweenDialog({
   from,
   to,
   scope,
+  repo: givenRepo,
   onClose,
   native = false,
   onCaption,
@@ -607,6 +656,8 @@ export function ChangesBetweenDialog({
   from: Revision;
   to: Revision | null;
   scope?: ScopedComparison;
+  /** The repository compared (the selected one when omitted). */
+  repo?: string | null;
   onClose: () => void;
   /** Content of the comparison window rather than a dialog: its caption goes to `onCaption`. */
   native?: boolean;
@@ -619,8 +670,8 @@ export function ChangesBetweenDialog({
   /** Files only, each diff opening in the editor (the Compare tool window's narrow sidebar). */
   listOnly?: boolean;
 }) {
-  const [root] = useState(currentRepoRoot);
-  const [repo] = useState(currentRepo);
+  const [repo] = useState(() => (givenRepo === undefined ? currentRepo() : givenRepo));
+  const [root] = useState(() => repo ?? currentRepoRoot());
   const [files, setFiles] = useState<ComparisonFile[] | null>(null);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -6,7 +6,7 @@ import {
   removeAllBreakpoints,
   useBreakpoints,
 } from "../breakpoints/store";
-import { handleDebugEvent, startPreparedSession, startSession, useDebug } from "../state";
+import { handleDebugEvent, pinSession, rerunSession, startPreparedSession, startSession, useDebug } from "../state";
 import type { LaunchConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
@@ -217,4 +217,69 @@ it("releases a failed shared drain so a later start can retry", async () => {
   ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
   expect(await startSession(config("launch"))).toBe(42);
   expect(ipc.debugStart).toHaveBeenCalledOnce();
+});
+
+it("replaces finished tabs as soon as a prepared start begins", async () => {
+  await startSession(config("launch"));
+  handleDebugEvent(42, { kind: "terminated" });
+  expect(useDebug.getState().sessions[42]?.status).toBe("terminated");
+  let finishBuild!: () => void;
+  const build = new Promise<void>((resolve) => (finishBuild = resolve));
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 43 });
+  const started = startPreparedSession({ id: "java", name: "Java" } as never, async () => {
+    await build;
+    return config("launch");
+  });
+  const preparing = Object.values(useDebug.getState().sessions);
+  expect(preparing).toHaveLength(1);
+  expect(preparing[0]).toMatchObject({ name: "Java", status: "starting" });
+  finishBuild();
+  await expect(started).resolves.toBe(43);
+  expect(Object.keys(useDebug.getState().sessions)).toEqual(["43"]);
+});
+
+it("replaces only the finished tab of the same name; other finished tabs stay", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 }).mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "Server" });
+  await startSession({ ...config("launch"), name: "Client" });
+  handleDebugEvent(1, { kind: "terminated" });
+  handleDebugEvent(2, { kind: "terminated" });
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 3 });
+  await startSession({ ...config("launch"), name: "Server" });
+  expect(Object.values(useDebug.getState().sessions).map((s) => [s.name, s.status])).toEqual([
+    ["Client", "terminated"],
+    ["Server", "running"],
+  ]);
+
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 4 });
+  const started = startPreparedSession({ id: "other", name: "Other" } as never, async () => ({
+    ...config("launch"),
+    name: "Other",
+  }));
+  // No finished tab named "Other": the first finished one (Client) gives way.
+  expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
+  await started;
+  expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
+});
+
+it("keeps a pinned finished tab; Rerun on it takes its place and keeps it pinned", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 });
+  await startSession({ ...config("launch"), name: "Server" });
+  pinSession(1, true);
+  handleDebugEvent(1, { kind: "terminated" });
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "Server" });
+  const tabs = () => Object.values(useDebug.getState().sessions).map((s) => [s.id, s.status, !!s.pinned]);
+  expect(tabs()).toEqual([
+    [1, "terminated", true],
+    [2, "running", false],
+  ]);
+
+  handleDebugEvent(2, { kind: "terminated" });
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 3 });
+  await rerunSession(1);
+  expect(tabs()).toEqual([
+    [2, "terminated", false],
+    [3, "running", true],
+  ]);
 });

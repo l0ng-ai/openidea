@@ -8,5 +8,13 @@
       <command id="openidea.jvm.fields"/>
       <command id="openidea.jvm.referrers"/>
     </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.jvminspect.StreamCommand">
+      <command id="openidea.jvm.stream.arm"/>
+      <command id="openidea.jvm.stream.wait"/>
+      <command id="openidea.jvm.stream.stop"/>
+      <command id="openidea.jvm.stream.abort"/>
+      <command id="openidea.jvm.stream.collect"/>
+      <command id="openidea.jvm.stream.release"/>
+    </delegateCommandHandler>
   </extension>
 </plugin>

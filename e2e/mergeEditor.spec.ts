@@ -172,6 +172,20 @@ test("accepting a deleted version removes the file before staging", async ({ pag
   ]);
 });
 
+test("a long side shows only the lines it changed against the base", async ({ page }) => {
+  // Edits spread over a long file make the default diff give up and mark everything between them.
+  const base = Array.from({ length: 2000 }, (_, i) => `"node_modules/pkg-${i}": "1.0.${i}",`);
+  const bump = (at: number) => lines(...base.map((l, i) => (i % 100 === at ? l.replace('"1.0.', '"2.0.') : l)));
+  await mountMerge(page, [lines(...base), bump(3), bump(50)]);
+  for (const [name, line] of [
+    ["Your version", 3],
+    ["Their version", 50],
+  ] as const) {
+    const deleted = page.getByRole("region", { name }).locator(".cm-deletedChunk").first().locator(".cm-deletedLine");
+    await expect(deleted).toHaveText([base[line]!]);
+  }
+});
+
 test("the result starts as the base and every change waits for a decision", async ({ page }) => {
   await mountMerge(page);
   await expect(status(page)).toHaveText("3 changes left, 2 conflicts");

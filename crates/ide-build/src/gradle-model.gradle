@@ -30,7 +30,8 @@ def processedResources = { Project p, s ->
 def describe = { Project p ->
     def m = [path: identity(p), dir: canon(p.projectDir), buildDir: canon(p.layout.buildDirectory.get().asFile)]
     if (p.gradle.parent != null) m.build = identity(p.rootProject)
-    def sets = p.extensions.findByName('sourceSets')
+    // Gradle 4.x has it as a convention property, not an extension.
+    def sets = p.extensions.findByName('sourceSets') ?: p.findProperty('sourceSets')
     if (sets != null) {
         // Test source sets as IDEA classifies them: `test`, test fixtures, JVM test suites,
         // and sets whose folders the `idea` plugin lists as test sources.
@@ -51,9 +52,12 @@ def describe = { Project p ->
         }
     }
     try {
+        // `java` is Gradle 4.10+ (a convention before), its toolchain 6.7+.
         def java = p.extensions.findByName('java')
-        def lv = java?.toolchain?.languageVersion?.getOrNull()
-        m.java = lv != null ? lv.asInt() : (java?.targetCompatibility?.majorVersion as Integer)
+        def lv = null
+        try { lv = java?.toolchain?.languageVersion?.getOrNull() } catch (ignored) {}
+        def target = java != null ? java.targetCompatibility : p.findProperty('targetCompatibility')
+        m.java = lv != null ? lv.asInt() : (target?.majorVersion as Integer)
     } catch (ignored) {}
     println '@openidea-model\t' + JsonOutput.toJson(m)
 }

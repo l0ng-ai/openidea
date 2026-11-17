@@ -9,6 +9,7 @@ use hyper::header::{self, HeaderMap, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use serde_json::{Value, json};
 use std::convert::Infallible;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -40,6 +41,8 @@ type Body = Either<Full<Bytes>, EventStream>;
 struct Shared {
     registry: Arc<dyn ToolRegistry>,
     token: String,
+    /// The address listened on (`0.0.0.0` / `::`: every address).
+    address: IpAddr,
     port: u16,
     requests: protocol::Requests,
     cancel: CancellationToken,
@@ -48,6 +51,7 @@ struct Shared {
 /// The running server. Stopping it (or dropping it) closes the port and
 /// removes its discovery file.
 pub struct McpServer {
+    address: IpAddr,
     port: u16,
     /// Why the port asked for in [`ServerOptions::port`] was not used.
     port_unavailable: Option<String>,
@@ -60,7 +64,10 @@ pub struct McpServer {
 /// How [`McpServer::start_with`] listens.
 #[derive(Clone, Debug, Default)]
 pub struct ServerOptions {
-    /// Listen on `127.0.0.1:<port>`. When it can't be bound (in use, or reserved by the
+    /// The address to listen on; `None`: `127.0.0.1`, this computer only. Another address of
+    /// this computer, or `0.0.0.0` / `::` for every address, lets other computers connect.
+    pub address: Option<IpAddr>,
+    /// Listen on `<address>:<port>`. When it can't be bound (in use, or reserved by the
     /// system), a free port is taken instead and [`McpServer::port_unavailable`] says why.
     /// `None`: a free port.
     pub port: Option<u16>,
@@ -86,15 +93,20 @@ impl McpServer {
         runtime: &tokio::runtime::Handle,
         options: ServerOptions,
     ) -> std::io::Result<Self> {
+        let address = options.address.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let bind = |port: u16| {
+            std::net::TcpListener::bind(SocketAddr::new(address, port))
+                .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", SocketAddr::new(address, port))))
+        };
         let (listener, port_unavailable) = match options.port {
-            Some(port) => match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Some(port) => match bind(port) {
                 Ok(listener) => (listener, None),
                 Err(e) => {
                     tracing::warn!("MCP server: port {port} unavailable ({e}); taking a free one");
-                    (std::net::TcpListener::bind(("127.0.0.1", 0))?, Some(format!("port {port}: {e}")))
+                    (bind(0)?, Some(format!("port {port}: {e}")))
                 }
             },
-            None => (std::net::TcpListener::bind(("127.0.0.1", 0))?, None),
+            None => (bind(0)?, None),
         };
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
@@ -108,6 +120,7 @@ impl McpServer {
         };
         if let Some(path) = &discovery {
             let info = Discovery {
+                address: local_address(address),
                 port,
                 token: token.clone(),
                 pid: std::process::id(),
@@ -120,13 +133,19 @@ impl McpServer {
         let shared = Arc::new(Shared {
             registry,
             token: token.clone(),
+            address,
             port,
             requests: Default::default(),
             cancel: cancel.clone(),
         });
         runtime.spawn(accept(listener, shared, stopped));
-        tracing::info!("MCP server on 127.0.0.1:{port}");
-        Ok(Self { port, port_unavailable, token, discovery, shutdown, cancel })
+        tracing::info!("MCP server on {}", SocketAddr::new(address, port));
+        Ok(Self { address, port, port_unavailable, token, discovery, shutdown, cancel })
+    }
+
+    /// The address listened on (`0.0.0.0` / `::`: every address).
+    pub fn address(&self) -> IpAddr {
+        self.address
     }
 
     pub fn port(&self) -> u16 {
@@ -143,12 +162,22 @@ impl McpServer {
         &self.token
     }
 
-    /// The endpoint URL for `project`.
+    /// The endpoint URL for `project`, at the address a client on this computer connects to.
     pub fn url(&self, project: &Path) -> String {
-        crate::endpoint_url(self.port, project)
+        crate::endpoint_url_at(local_address(self.address), self.port, project)
     }
 
     pub fn stop(self) {}
+}
+
+/// The address a client on this computer connects to for a server listening on `address`:
+/// loopback for every address (`0.0.0.0` / `::`), else `address` itself.
+pub fn local_address(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V4(a) if a.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(a) if a.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        a => a,
+    }
 }
 
 impl Drop for McpServer {
@@ -212,7 +241,7 @@ async fn respond(req: Request<Incoming>, shared: &Arc<Shared>, scope: String) ->
     if req.uri().path() != "/mcp" {
         return plain(StatusCode::NOT_FOUND, "not found: the endpoint is /mcp");
     }
-    if !local_request(req.headers(), shared.port) {
+    if !local_request(req.headers(), shared.address, shared.port) {
         return plain(StatusCode::FORBIDDEN, "requests from web pages are refused");
     }
     if !authorized(req.headers(), &shared.token) {
@@ -343,11 +372,16 @@ impl hyper::body::Body for EventStream {
     }
 }
 
-/// No `Origin` other than this server's own, and a loopback `Host`: a web
-/// page (DNS rebinding) can't reach the tools even before the token check.
-fn local_request(headers: &HeaderMap, port: u16) -> bool {
+/// No `Origin` other than this server's own, and a `Host` naming this server by IP address
+/// (loopback, the address listened on, or any when listening on every address) or as
+/// `localhost`: never another host name, so a web page (DNS rebinding) can't reach the tools
+/// even before the token check.
+fn local_request(headers: &HeaderMap, address: IpAddr, port: u16) -> bool {
     let ours = |authority: &str| {
-        ["127.0.0.1", "localhost", "[::1]"].iter().any(|host| authority.eq_ignore_ascii_case(&format!("{host}:{port}")))
+        authority.eq_ignore_ascii_case(&format!("localhost:{port}"))
+            || authority.parse::<SocketAddr>().is_ok_and(|a| {
+                a.port() == port && (a.ip().is_loopback() || a.ip() == address || address.is_unspecified())
+            })
     };
     let host_ok = headers.get(header::HOST).is_none_or(|h| h.to_str().is_ok_and(ours));
     let origin_ok = headers.get(header::ORIGIN).is_none_or(|o| {
@@ -534,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn only_loopback_hosts_and_origins_of_this_server_pass() {
+    fn only_hosts_and_origins_of_this_server_pass() {
         let headers = |pairs: &[(header::HeaderName, &str)]| {
             let mut h = HeaderMap::new();
             for (k, v) in pairs {
@@ -542,16 +576,43 @@ mod tests {
             }
             h
         };
-        assert!(local_request(&headers(&[]), 80));
-        assert!(local_request(&headers(&[(header::HOST, "127.0.0.1:80")]), 80));
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let host = |h: &str, address: IpAddr| local_request(&headers(&[(header::HOST, h)]), address, 80);
+        assert!(local_request(&headers(&[]), loopback, 80));
+        assert!(host("127.0.0.1:80", loopback));
+        assert!(host("[::1]:80", loopback));
         assert!(local_request(
             &headers(&[(header::HOST, "localhost:80"), (header::ORIGIN, "http://localhost:80")]),
+            loopback,
             80
         ));
-        assert!(!local_request(&headers(&[(header::HOST, "evil.example:80")]), 80));
-        assert!(!local_request(&headers(&[(header::HOST, "127.0.0.1:81")]), 80));
-        assert!(!local_request(&headers(&[(header::ORIGIN, "https://evil.example")]), 80));
-        assert!(!local_request(&headers(&[(header::ORIGIN, "null")]), 80));
+        assert!(!host("evil.example:80", loopback));
+        assert!(!host("127.0.0.1:81", loopback));
+        assert!(!host("100.92.72.95:80", loopback), "another address of a loopback server");
+        assert!(!local_request(&headers(&[(header::ORIGIN, "https://evil.example")]), loopback, 80));
+        assert!(!local_request(&headers(&[(header::ORIGIN, "null")]), loopback, 80));
+
+        // Listening on one address: that address too, still never a host name.
+        let lan: IpAddr = "100.92.72.95".parse().unwrap();
+        assert!(host("100.92.72.95:80", lan) && host("127.0.0.1:80", lan));
+        assert!(!host("100.92.72.96:80", lan) && !host("evil.example:80", lan));
+        // Listening on every address: any IP address, still never a host name.
+        let every: IpAddr = "0.0.0.0".parse().unwrap();
+        assert!(host("192.168.1.7:80", every) && host("[fe80::1]:80", every));
+        assert!(!host("evil.example:80", every) && !host("192.168.1.7:81", every));
+        assert!(local_request(
+            &headers(&[(header::HOST, "192.168.1.7:80"), (header::ORIGIN, "http://192.168.1.7:80")]),
+            every,
+            80
+        ));
+    }
+
+    #[test]
+    fn clients_on_this_computer_connect_to_loopback_for_every_address() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert_eq!(local_address(ip("0.0.0.0")), ip("127.0.0.1"));
+        assert_eq!(local_address(ip("::")), ip("::1"));
+        assert_eq!(local_address(ip("100.92.72.95")), ip("100.92.72.95"));
     }
 
     #[test]

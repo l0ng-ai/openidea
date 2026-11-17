@@ -130,6 +130,11 @@ pub struct PluginRunDetection {
     pub(crate) project_pins: super::api::ProjectPins,
 }
 
+/// `RunConfig.extras.params` keys carrying an API 1.9 configuration's debugger.
+pub const DEBUG_LANGUAGE: &str = "debugLanguage";
+pub const DEBUG_ATTACH: &str = "debugAttach";
+pub const DEBUG_ATTACH_CONTAINS: &str = "debugAttachContains";
+
 pub(super) fn config_id(plugin: &str, detector: &str) -> String {
     format!("{EXTERNAL_PREFIX}{plugin}:{detector}")
 }
@@ -194,6 +199,19 @@ impl ExternalDetection for PluginRunDetection {
                 config.cwd = Some(c.cwd.as_ref().map(|p| root.join(p)).unwrap_or_else(|| root.to_path_buf()).into());
                 if let Some(framework) = &c.framework {
                     config.extras.params.insert("framework".into(), framework.clone());
+                }
+                config.env = c.env.iter().cloned().collect();
+                match &c.debugger {
+                    Some(ide_plugin::PluginDebugger::Launch { language }) => {
+                        config.extras.params.insert(DEBUG_LANGUAGE.into(), language.clone());
+                    }
+                    Some(ide_plugin::PluginDebugger::AttachChild { kind, command_contains }) => {
+                        config.extras.params.insert(DEBUG_ATTACH.into(), kind.clone());
+                        if let Some(text) = command_contains {
+                            config.extras.params.insert(DEBUG_ATTACH_CONTAINS.into(), text.clone());
+                        }
+                    }
+                    None => {}
                 }
                 configs.push(config);
             }

@@ -7,6 +7,8 @@ describe("remoteHosting", () => {
     ["https://github.example.com/o/r", "GitHub", "github"],
     ["https://gitee.com/o/r.git", "Gitee", "github"],
     ["git@bitbucket.org:o/r.git", "Bitbucket", "bitbucket"],
+    ["git@ssh.bitbucket.org:team/repo.git", "Bitbucket", "bitbucket"],
+    ["git@ssh.github.com:o/r.git", "GitHub", "github"],
     ["ssh://git@gitlab.example.com:2222/group/sub/r.git", "GitLab", "gitlab"],
     ["git@git.example.com:group/r.git", "git.example.com", "gitlab"],
   ])("%s → %s", (url, name, kind) => {
@@ -41,6 +43,37 @@ describe("fileWebUrl", () => {
   it("uses Bitbucket's /src/ routes", () => {
     expect(fileWebUrl("git@bitbucket.org:o/r.git", "main", "a.py", { line: 4 })).toBe(
       "https://bitbucket.org/o/r/src/main/a.py#lines-5",
+    );
+  });
+
+  it("opens a Bitbucket Cloud SSH clone on bitbucket.org, not the SSH front host (#3372)", () => {
+    expect(fileWebUrl("git@ssh.bitbucket.org:team/repo.git", "main", "a.py", { line: 4 })).toBe(
+      "https://bitbucket.org/team/repo/src/main/a.py#lines-5",
+    );
+  });
+
+  it("selects a range of lines in each hosting's syntax", () => {
+    const opts = { line: 9, endLine: 19 };
+    expect(fileWebUrl("git@github.com:o/r.git", "main", "a.ts", opts)).toBe(
+      "https://github.com/o/r/blob/main/a.ts#L10-L20",
+    );
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "a.ts", opts)).toBe(
+      "https://gitlab.com/g/r/-/blob/main/a.ts#L10-20",
+    );
+    expect(fileWebUrl("git@bitbucket.org:o/r.git", "main", "a.ts", opts)).toBe(
+      "https://bitbucket.org/o/r/src/main/a.ts#lines-10:20",
+    );
+  });
+
+  it("keeps a single line when the range ends on it or before, and none for directories", () => {
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "a.ts", { line: 4, endLine: 4 })).toBe(
+      "https://gitlab.com/g/r/-/blob/main/a.ts#L5",
+    );
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "a.ts", { line: 4, endLine: 2 })).toBe(
+      "https://gitlab.com/g/r/-/blob/main/a.ts#L5",
+    );
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "src", { dir: true, line: 4, endLine: 8 })).toBe(
+      "https://gitlab.com/g/r/-/tree/main/src",
     );
   });
 });

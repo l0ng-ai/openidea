@@ -1,4 +1,5 @@
 /** Opens file locations printed in run output (resolving relative and bare names). */
+import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -162,6 +163,17 @@ export async function openTarget(target: FileTarget, cwd: string, focus = true):
   }
   const selection = target.line ? { line: target.line - 1, col: Math.max(0, (target.col ?? 1) - 1) } : undefined;
   await editorService().openFile(path, { selection, focus });
+}
+
+/**
+ * ⌘⇧-click (Ctrl+Shift elsewhere) on a URL in console output debugs its page in a browser
+ * session instead of opening it, like IDEA's Ctrl+Shift+click on a URL in the Run tool window.
+ * Returns whether the click was taken.
+ */
+export function debugConsoleUrl(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, url: string): boolean {
+  if (!e.shiftKey || !(e.metaKey || e.ctrlKey) || !getAction("debug.debugInBrowser")) return false;
+  void executeAction("debug.debugInBrowser", url);
+  return true;
 }
 
 export async function openUrl(url: string): Promise<void> {

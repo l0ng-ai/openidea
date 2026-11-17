@@ -6,6 +6,8 @@
  * the files, this module interprets them.
  */
 import type { Diagnostic } from "@/bindings";
+import type { JsonValue } from "@/platform/losslessJson";
+import { formatJsonText, parseJsonText, stringifyJson, toJsonValue } from "@/platform/losslessJson";
 import { tx } from "@/platform/i18n";
 
 export const SCHEMA_EXTENSIONS = ["graphql", "graphqls", "gql"];
@@ -642,11 +644,7 @@ export function responseErrorCount(body: string | null): number {
 }
 
 /** An `.http` request posting `query` (and `variables`) to `endpoint`, for the HTTP client to execute. */
-export function httpRequestText(
-  endpoint: Endpoint,
-  query: string,
-  variables: Record<string, unknown> | null = null,
-): string {
+export function httpRequestText(endpoint: Endpoint, query: string, variables: JsonValue | null = null): string {
   const headers = { "Content-Type": "application/json", ...endpoint.headers };
   return [
     `POST ${endpoint.url}`,
@@ -658,32 +656,36 @@ export function httpRequestText(
 }
 
 /**
- * JSON the HTTP client sends as written: it expands `{{name}}`, which a GraphQL
- * selection (`{ a { b }}`) can contain, so braces inside strings are escaped.
+ * JSON the HTTP client sends as written, with numeric values kept exact (a BIGINT
+ * variable must not round on its way to the endpoint): it expands `{{name}}`, which a
+ * GraphQL selection (`{ a { b }}`) can contain, so braces inside strings are escaped.
  */
 export function jsonWithoutTemplates(value: unknown): string {
-  return JSON.stringify(value).replace(/"(?:[^"\\]|\\.)*"/g, (s) =>
+  return stringifyJson(toJsonValue(value)).replace(/"(?:[^"\\]|\\.)*"/g, (s) =>
     s.replace(/[{}]/g, (c) => (c === "{" ? "\\u007b" : "\\u007d")),
   );
 }
 
-/** The variables editor's text: empty, or a JSON object. */
-export function parseVariables(text: string): { variables: Record<string, unknown> | null } | { error: string } {
+/** The variables editor's text: empty, or a JSON object (numeric literals kept exact). */
+export function parseVariables(text: string): { variables: JsonValue | null } | { error: string } {
   if (!text.trim()) return { variables: null };
-  try {
-    const v: unknown = JSON.parse(text);
-    if (v && typeof v === "object" && !Array.isArray(v)) return { variables: v as Record<string, unknown> };
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
+  const v = parseJsonText(text);
+  if (v === null) {
+    try {
+      JSON.parse(text);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+    return { error: "Variables must be a JSON object" };
   }
-  return { error: "Variables must be a JSON object" };
+  return v.t === "obj" ? { variables: v } : { error: "Variables must be a JSON object" };
 }
 
-/** Pretty-prints a JSON body; other bodies are shown as received. */
+/** Pretty-prints a JSON body with numeric values kept exact; other bodies are shown as received. */
 export function formatBody(body: string | null): string {
   if (body === null) return "";
   try {
-    return JSON.stringify(JSON.parse(body), null, 2);
+    return formatJsonText(body) ?? body;
   } catch {
     return body;
   }

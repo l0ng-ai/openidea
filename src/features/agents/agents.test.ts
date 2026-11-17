@@ -35,7 +35,6 @@ import {
 import {
   age,
   appendEntry,
-  attentionChange,
   branchLabel,
   entriesKey,
   findSubagent,
@@ -445,16 +444,6 @@ describe("agents model", () => {
     expect(appendEntry([u, { type: "agent", text: "H" }], 1, 2, "llo")).toBeNull();
     expect(appendEntry([u, a], 0, 0, "x")).toBeNull();
     expect(appendEntry([u, a], 2, 0, "x")).toBeNull();
-  });
-
-  it("notifies on finish, failure and questions only", () => {
-    expect(attentionChange("running", "ready")).toBe("finished");
-    expect(attentionChange("running", "failed")).toBe("failed");
-    expect(attentionChange("running", "limited")).toBe("failed");
-    expect(attentionChange("running", "needsInput")).toBe("input");
-    expect(attentionChange("needsInput", "running")).toBeNull();
-    expect(attentionChange("ready", "archived")).toBeNull();
-    expect(attentionChange(undefined, "ready")).toBeNull();
   });
 
   it("finds subagent cards and keys their conversations apart", () => {

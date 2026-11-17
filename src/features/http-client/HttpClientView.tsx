@@ -3,7 +3,7 @@
  * exchange (right): status line, timing, body (pretty-printed JSON / XML /
  * HTML or raw), response headers and the request as sent.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import type { HttpExchange, HttpHistoryEntry } from "@/platform/ipc";
 import {
@@ -18,6 +18,9 @@ import {
   T,
   useSelectionBoundary,
 } from "@/ui";
+import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
+import { DEFAULT_FIND_OPTIONS, findInLines, type ConsoleMatch, type FindOptions } from "@/ui/consoleFind";
+import { formatBinding, hasPrimaryModifier, hostBinding } from "@/platform/keymap";
 import { bodyKind, formatMs, formatSize, prettyBody } from "./format";
 import { cancelRunning, clearHistory, refreshHistory, selectEntry, useHttpClient } from "./store";
 import styles from "./HttpClient.module.css";
@@ -60,6 +63,49 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
   const r = ex.response;
   const kind = r?.body != null ? bodyKind(r.contentType, r.body) : "text";
   const body = useMemo(() => (r?.body == null ? null : raw ? r.body : prettyBody(kind, r.body)), [r, raw, kind]);
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [findOptions, setFindOptions] = useState<FindOptions>(DEFAULT_FIND_OPTIONS);
+  const [active, setActive] = useState(0);
+  const findInput = useRef<HTMLInputElement>(null);
+  const searchable = findOpen && tab === "body" && body != null;
+  const lines = useMemo(() => (body ?? "").split("\n").map((text, id) => ({ id, text })), [body]);
+  const found = useMemo(
+    () => (searchable ? findInLines(lines, query, findOptions) : { matches: [], overflow: false, invalid: false }),
+    [searchable, lines, query, findOptions],
+  );
+  const activeIndex = found.matches.length ? Math.min(active, found.matches.length - 1) : -1;
+  useEffect(() => {
+    pane.current?.querySelector("[data-find-current]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeIndex, found]);
+  const openFind = () => {
+    setFindOpen(true);
+    // The bar mounts with this render; focus it (and select the query) once it has.
+    requestAnimationFrame(() => findInput.current?.select());
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    pane.current?.focus();
+  };
+  const goToMatch = (step: number) => {
+    const n = found.matches.length;
+    if (n) setActive((activeIndex + step + n) % n);
+  };
+  // ⌘F in the response, as in IDEA's response viewer: the find bar of the Run console.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (
+      tab === "body" &&
+      body != null &&
+      e.key.toLowerCase() === "f" &&
+      hasPrimaryModifier(e) &&
+      !e.altKey &&
+      !e.shiftKey
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      openFind();
+    }
+  };
   return (
     <div className={styles.exchange}>
       <div className={styles.statusLine}>
@@ -91,18 +137,52 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
           { id: "request", label: "Request" },
         ]}
         trailing={
-          tab === "body" && kind !== "text" ? (
-            <IconButton
-              icon="soft-wrap"
-              title={raw ? "Show Formatted" : "Show Raw"}
-              pressed={raw}
-              onClick={() => setRaw((v) => !v)}
-            />
+          tab === "body" && body != null ? (
+            <>
+              <IconButton
+                icon="search"
+                title="Find…"
+                shortcut={formatBinding(hostBinding("Meta+F"))}
+                pressed={findOpen}
+                onClick={() => (findOpen ? closeFind() : openFind())}
+              />
+              {kind !== "text" && (
+                <IconButton
+                  icon="soft-wrap"
+                  title={raw ? "Show Formatted" : "Show Raw"}
+                  pressed={raw}
+                  onClick={() => setRaw((v) => !v)}
+                />
+              )}
+            </>
           ) : undefined
         }
       />
+      {searchable && (
+        <ConsoleFindBar
+          query={query}
+          onChange={(q) => {
+            setQuery(q);
+            setActive(0);
+          }}
+          options={findOptions}
+          onOptionsChange={(o) => {
+            setFindOptions(o);
+            setActive(0);
+          }}
+          count={found.matches.length}
+          active={activeIndex}
+          overflow={found.overflow}
+          invalid={found.invalid}
+          inputRef={findInput}
+          onNext={() => goToMatch(1)}
+          onPrevious={() => goToMatch(-1)}
+          onClose={closeFind}
+          label="Find in response"
+        />
+      )}
       {/* Focusable, so Select All and Copy work on the response like in a read-only editor. */}
-      <div ref={pane} className={styles.tabBody} tabIndex={0}>
+      <div ref={pane} className={styles.tabBody} tabIndex={0} onKeyDown={onKeyDown}>
         {tab === "body" &&
           (r == null ? (
             <pre className={styles.pre}>{ex.entry.error}</pre>
@@ -112,7 +192,7 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
             </EmptyState>
           ) : (
             <pre className={styles.pre} aria-label={tx("Response body")}>
-              {body}
+              {found.matches.length ? highlighted(lines, found.matches, activeIndex) : body}
               {r.truncated && (
                 <span className={styles.truncated}>{`\n… truncated (${formatSize(r.size)} received)`}</span>
               )}
@@ -129,6 +209,32 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
       </div>
     </div>
   );
+}
+
+/** The body with its find matches marked, the current one distinctly. */
+function highlighted(lines: readonly { text: string }[], matches: readonly ConsoleMatch[], current: number): ReactNode {
+  const out: ReactNode[] = [];
+  let m = 0;
+  lines.forEach(({ text }, line) => {
+    if (line > 0) out.push("\n");
+    let at = 0;
+    for (; m < matches.length && matches[m]!.line === line; m++) {
+      const { start, end } = matches[m]!;
+      if (start > at) out.push(text.slice(at, start));
+      out.push(
+        <mark
+          key={m}
+          className={clsx(styles.match, m === current && styles.matchCurrent)}
+          data-find-current={m === current ? "" : undefined}
+        >
+          {text.slice(start, end)}
+        </mark>,
+      );
+      at = end;
+    }
+    if (at < text.length) out.push(text.slice(at));
+  });
+  return <Fragment>{out}</Fragment>;
 }
 
 function HeaderTable({ headers }: { headers: Array<[string, string]> }) {
@@ -155,7 +261,7 @@ export function HttpClientView() {
     void refreshHistory();
   }, []);
   return (
-    <SplitGroup orientation="horizontal" className={styles.root}>
+    <SplitGroup orientation="horizontal" className={styles.root} storageKey="openidea.httpClient.split">
       <SplitPanel id="http-history" defaultSize="32%" minSize="160px">
         <div className={styles.list} role="list" aria-label={tx("Response history")}>
           {running && (

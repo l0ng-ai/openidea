@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
+import { selectAll } from "@codemirror/commands";
 import { getCM, Vim } from "@replit/codemirror-vim";
-import { embeddedEditorExtensions, transientChange, useEditorRegistry, onEditorEvent } from "@/editor/api";
+import {
+  embeddedEditorExtensions,
+  externalHistory,
+  transientChange,
+  useEditorRegistry,
+  onEditorEvent,
+} from "@/editor/api";
 import { executeAction, registerAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { _handleEx, applyRcCommands, vimExtension } from "../engine";
@@ -79,6 +86,39 @@ describe("Vim engine", () => {
     Vim.mapclear();
   });
 
+  it("leaves keys the user gave to the IDE to the editor: Select All, and the browser's cut and paste", () => {
+    const view = makeView([vimExtension(), keymap.of([{ key: "Ctrl-a", run: selectAll }])]);
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "n 5" } });
+    const press = (key: string) => {
+      const e = new KeyboardEvent("keydown", {
+        key,
+        code: `Key${key.toUpperCase()}`,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      view.contentDOM.dispatchEvent(e);
+      return e;
+    };
+    try {
+      useVimSettings.setState({ enabled: true, handlers: {} }, true);
+      press("a");
+      expect(view.state.doc.toString()).toBe("n 6");
+
+      useVimSettings.setState({ enabled: true, handlers: { "Ctrl+A": "ide", "Ctrl+V": "ide" } }, true);
+      expect(press("a").defaultPrevented).toBe(true);
+      expect(view.state.doc.toString()).toBe("n 6");
+      expect(view.state.selection.main).toMatchObject({ from: 0, to: 3 });
+
+      const paste = press("v");
+      expect(paste.defaultPrevented).toBe(false);
+      expect(getCM(view)!.state.vim!.visualBlock).toBeFalsy();
+    } finally {
+      useVimSettings.setState({ enabled: false, handlers: {} }, true);
+      view.destroy();
+    }
+  });
+
   it(":action runs OpenIDEA actions by IdeaVim or OpenIDEA id", async () => {
     const view = makeView();
     _handleEx(view, "action GotoDeclaration");
@@ -112,6 +152,19 @@ describe("Vim engine", () => {
     Vim.handleKey(cm as never, "d", "user");
     await tick();
     expect(ran).toEqual(["navigate.declaration"]);
+    view.destroy();
+  });
+
+  it("sends u and Ctrl-R to an editor's own history (notebook cells)", () => {
+    const history = { undo: vi.fn(), redo: vi.fn() };
+    const view = makeView([vimExtension(), externalHistory.of(history)]);
+    const cm = getCM(view)!;
+    Vim.handleKey(cm as never, "u", "user");
+    Vim.handleKey(cm as never, "<C-r>", "user");
+    Vim.handleKey(cm as never, "2", "user");
+    Vim.handleKey(cm as never, "u", "user");
+    expect(history.undo).toHaveBeenCalledTimes(3);
+    expect(history.redo).toHaveBeenCalledTimes(1);
     view.destroy();
   });
 

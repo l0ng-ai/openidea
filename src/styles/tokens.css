@@ -15,6 +15,10 @@ html {
   --fw-code-bold: 700;
 }
 :root {
+  /* Spacing scale on a 4px grid: --space-N = N * 4px. Used for gap. */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
@@ -114,6 +118,7 @@ html {
   --syn-type: #bcbec4;
   --syn-function: #56a8f5;
   --syn-function-call: #bcbec4;
+  --syn-shell-command: #c57633;
   --syn-comment: #7a7e85;
   --syn-comment-style: normal;
   --syn-doc-comment: #5f826b;
@@ -180,6 +185,8 @@ html {
   --syn-bracket-1: #e8c25b;
   --syn-bracket-2: #d78bd6;
   --syn-bracket-3: #4ea7f0;
+  --syn-bracket-4: #6fc28b;
+  --syn-bracket-5: #e5906f;
 
   /* editor (scheme colours) */
   --fg-editor: #bcbec4;
@@ -274,7 +281,10 @@ html {
   --terminal-ansi-bright-white: #ffffff;
 
   /* typography (Inter 13 UI, JetBrains Mono 13 editor) */
-  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+  /* Nerd Font icons (in agent task titles): an installed Nerd Font, set once the window is
+     idle by appearanceRuntime. Last in the UI stack, so only glyphs no text font has use it. */
+  --font-icons: sans-serif;
+  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif, var(--font-icons);
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
@@ -469,6 +479,15 @@ html {
   --db-color-blue: #3b92b8;
   --db-color-violet: #955ae0;
   --tint-strength: 22%;
+  /* File Colors palette (Appearance › File Colors); drawn as tints like the data source colours. */
+  --file-color-blue: #3b92b8;
+  --file-color-green: #5fad65;
+  --file-color-orange: #e08855;
+  --file-color-rose: #e06c88;
+  --file-color-violet: #955ae0;
+  --file-color-yellow: #d4b106;
+  --file-color-gray: #8c8c8c;
+  --file-tint-strength: 9%;
 }
 
 /* Windows caption buttons (frameless title bar): the system close red in every theme. */
@@ -558,6 +577,7 @@ html {
   --syn-type: #000000;
   --syn-function: #00627a;
   --syn-function-call: #080808;
+  --syn-shell-command: #0073bf;
   --syn-comment: #8c8c8c;
   --syn-comment-style: italic;
   --syn-doc-comment: #8c8c8c;
@@ -623,6 +643,8 @@ html {
   --syn-bracket-1: #0431fa;
   --syn-bracket-2: #319331;
   --syn-bracket-3: #7b3814;
+  --syn-bracket-4: #a3157f;
+  --syn-bracket-5: #00737d;
 
   /* editor */
   --fg-editor: #080808;
@@ -856,6 +878,7 @@ html {
   --syn-type: #e3e4e8;
   --syn-function: #7cc0ff;
   --syn-function-call: #e3e4e8;
+  --syn-shell-command: #c57633;
   --syn-comment: #a5a9b0;
   --syn-doc-comment: #8fb89c;
   --syn-doc-comment-tag: #8fcca3;
@@ -920,6 +943,8 @@ html {
   --syn-bracket-1: #ffd700;
   --syn-bracket-2: #ee90ee;
   --syn-bracket-3: #87cefa;
+  --syn-bracket-4: #8fef8f;
+  --syn-bracket-5: #ffa07a;
 
   --fg-editor: #e3e4e8;
   --caret: #ffffff;
@@ -1244,6 +1269,7 @@ html {
   --syn-type: var(--palette-type);
   --syn-function: var(--palette-blue);
   --syn-function-call: var(--palette-blue);
+  --syn-shell-command: var(--syn-function-call);
   --syn-comment: var(--palette-comment);
   --syn-doc-comment: var(--palette-comment);
   --syn-doc-comment-tag: var(--palette-keyword);
@@ -1306,6 +1332,8 @@ html {
   --syn-bracket-1: var(--palette-yellow);
   --syn-bracket-2: var(--palette-magenta);
   --syn-bracket-3: var(--palette-blue);
+  --syn-bracket-4: var(--palette-green);
+  --syn-bracket-5: var(--palette-orange);
   --ansi-black: var(--palette-ansi-black);
   --ansi-bright-black: var(--palette-ansi-bright-black);
   --ansi-red: var(--palette-ansi-red);
@@ -1497,8 +1525,65 @@ html {
   --db-connected: var(--success);
   --db-connected-ring: var(--success);
 }
-/* PHP editors: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
-.cm-editor[data-language="PHP"] {
+/*
+ * The bundled schemes' red-green variants (IDEA's deuteranopia / protanopia values): syntax
+ * without the green-red and purple-blue pairs, errors in orange, highlights in blue / olive.
+ * Other colour themes and plugin themes keep their own editor colours.
+ */
+:root[data-red-green]:not(
+    [data-theme="light"],
+    [data-theme="dark-hc"],
+    [data-contrast="high"],
+    [data-color-theme],
+    [data-plugin-theme]
+  ) {
+  --syn-keyword: #597cc2;
+  --syn-string: #94907f;
+  --syn-number: #66a6ff;
+  --syn-constant: #828eba;
+  --syn-property: #828eba;
+  --syn-function: #d9af6c;
+  --syn-annotation: #66a6ff;
+  --syn-decorator: #66a6ff;
+  --syn-escape: #597cc2;
+  --syn-todo: #bfa222;
+  --syn-invalid: #bd693c;
+  --syn-markup-heading: var(--syn-keyword);
+  --syn-markup-code: var(--syn-string);
+  --wave-error: #e57132;
+  --editor-error-decoration: underline wavy #e57132;
+  --editor-warning-background: #454122;
+  --wave-typo: #4b734f;
+  --bg-identifier-under-caret: #32394c;
+  --bg-identifier-under-caret-write: #253873;
+  --bg-search-result: #404861;
+  --bg-text-search-result: #363827;
+  --bg-text-search-result-current: #66731d;
+  --bg-breakpoint-line: #42372b;
+  --coverage-covered: #445956;
+  --coverage-partial: #807540;
+  --coverage-uncovered: #704b25;
+}
+:root[data-theme="light"][data-red-green]:not([data-color-theme], [data-plugin-theme]) {
+  --syn-keyword: #00428c;
+  --syn-string: #6a84db;
+  --syn-number: #3777e6;
+  --syn-constant: #004b9f;
+  --syn-property: #004b9f;
+  --syn-function: #121314;
+  --syn-annotation: #3381ff;
+  --syn-decorator: #3381ff;
+  --syn-todo: #3777e6;
+  --syn-invalid: #d95716;
+  --syn-markup-heading: var(--syn-keyword);
+  --syn-markup-code: var(--syn-string);
+  --editor-warning-background: #fff0a6;
+  --bg-identifier-under-caret: #d9e6ff;
+  --bg-identifier-under-caret-write: #e0e0cc;
+}
+/* PHP editors and PHP code blocks: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
+.cm-editor[data-language="PHP"],
+.cm-editor [data-language="PHP"] {
   --syn-variable: var(--syn-php-variable);
   --syn-function-call: var(--syn-php-function-call);
 }

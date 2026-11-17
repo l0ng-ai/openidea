@@ -165,6 +165,7 @@ impl Dispatcher {
         })
         .add("project_roots", |c| async move { ops::project::roots(&c.host, &c.window) })
         .add("settings_get", |c| async move { Ok(ops::project::settings(&c.host, &c.window)) })
+        .add("settings_removed_theme", |c| async move { Ok(ops::project::settings_removed_theme(&c.host, &c.window)) })
         .add("settings_set", |c| async move {
             let key: String = c.arg("key")?;
             let scope = c.arg("scope")?;
@@ -218,6 +219,13 @@ impl Dispatcher {
         })
         .add("fs_read_text", |c| async move { ops::fs::read_text(&c.host, &c.window, c.arg("path")?).await })
         .add("doc_open", |c| async move { ops::doc::open(&c.host, &c.window, c.arg("path")?).await })
+        .add("doc_open_untitled", |c| async move {
+            ops::doc::open_untitled(&c.host, &c.window, c.arg::<Option<String>>("name")?).await
+        })
+        .add(
+            "doc_save_as",
+            |c| async move { ops::doc::save_as(&c.host, &c.window, c.arg("doc")?, c.arg("path")?).await },
+        )
         .add("doc_close", |c| async move {
             ops::doc::blocking(move || ops::doc::close(&c.host, &c.window, c.arg("doc")?)).await
         })
@@ -270,7 +278,8 @@ impl Dispatcher {
         .add("run_resize", |c| async move { ops::run::resize(&c.host, c.arg("id")?, c.arg("cols")?, c.arg("rows")?) })
         .add("run_close_stdin", |c| async move { ops::run::close_stdin(&c.host, c.arg("id")?) })
         .add("run_list", |c| async move { Ok(ops::run::list(&c.host)) })
-        .add("vcs_status", |c| async move { ops::vcs::status(&c.host, &c.window).await });
+        .add("vcs_status", |c| async move { ops::vcs::status(&c.host, &c.window).await })
+        .add("vcs_status_paths", |c| async move { ops::vcs::status_paths(&c.host, &c.window, c.arg("paths")?).await });
         ops::register_all(&mut d);
         d
     }
@@ -300,13 +309,14 @@ pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core
 
 /// Whether a desktop shows an `event` notification of its server in the window. A server reports
 /// on its project; what this machine answers or owns itself (MCP approvals, app updates, window
-/// groups) never comes from it.
+/// groups, its own connection to the server) never comes from it.
 pub fn client_accepts(event: &IdeEvent) -> bool {
     match event {
         IdeEvent::McpRequest { .. }
         | IdeEvent::McpRequestClosed { .. }
         | IdeEvent::WindowGroupsChanged
         | IdeEvent::WindowFullscreenChanged
+        | IdeEvent::RemoteConnectionLost { .. }
         | IdeEvent::UpdateStatusChanged { .. }
         | IdeEvent::UpdateAvailable { .. } => false,
         IdeEvent::DbSourcesChanged

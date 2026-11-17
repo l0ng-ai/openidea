@@ -19,7 +19,7 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   min-width: 0;
   width: 100%;
 }

@@ -1,5 +1,14 @@
 /** Debugger popovers and dialogs: breakpoint properties, View Breakpoints, Evaluate, config chooser. */
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MutableRefObject } from "react";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MutableRefObject,
+} from "react";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, type AttachableProcess, type RunConfig, type Variable } from "@/platform/ipc";
@@ -24,12 +33,17 @@ import {
   type SpecialBreakpoint,
 } from "../breakpoints/special";
 import { attachConfig, attachDetail, attachRows, type AttachRow } from "../attach";
+import { openAttachPopup, installAttachAdapter } from "../attachPopup";
 import {
   exceptionGroups,
+  filterHint,
   refreshExceptionFilters,
   setExceptionFilter,
   useExceptionBreakpoints,
 } from "../breakpoints/exceptions";
+import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
+import { StreamChainChooser } from "../streams/StreamChainChooser";
+import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -47,6 +61,8 @@ export function DebuggerOverlays() {
       <ConfigChooser />
       <AttachPopup />
       <SmartStepChooser />
+      <StreamChainChooser />
+      <StreamAbortDialog />
     </>
   );
 }
@@ -502,6 +518,7 @@ function BreakpointsDialog() {
             }}
           />
           <ExceptionBreakpoints open={open} />
+          <EventBreakpointsSection />
         </div>
         <div className={styles.bpDetail}>
           {current?.type === "line" ? (
@@ -542,13 +559,18 @@ function ExceptionBreakpoints({ open }: { open: boolean }) {
           >
             {groups.length > 1 && <div className={styles.exceptionAdapter}>{g.adapter}</div>}
             {g.filters.map((f) => (
-              <span key={f.filter} title={f.description ?? undefined} className={styles.exceptionRow}>
-                <Checkbox
-                  checked={f.enabled}
-                  onChange={(on) => setExceptionFilter(g.adapter, f.filter, on)}
-                  label={f.label}
-                />
-              </span>
+              <Fragment key={f.filter}>
+                <span title={f.description ?? undefined} className={styles.exceptionRow}>
+                  <Checkbox
+                    checked={f.enabled}
+                    onChange={(on) => setExceptionFilter(g.adapter, f.filter, on)}
+                    label={f.label}
+                  />
+                </span>
+                {filterHint(g.adapter, f.filter) && (
+                  <div className={styles.exceptionHint}>{tx(filterHint(g.adapter, f.filter)!)}</div>
+                )}
+              </Fragment>
             ))}
           </div>
         ))
@@ -898,6 +920,7 @@ function AttachPopup() {
   const root = useProject((s) => s.project?.root ?? null);
   const [filter, setFilter] = useState("");
   const [active, setActive] = useState(0);
+  const [installing, setInstalling] = useState(false);
   const rows = useMemo(() => attachRows(state?.processes ?? [], filter), [state?.processes, filter]);
   const firstItem = rows.findIndex((r) => r.kind === "process");
   const activeIndex = rows[active]?.kind === "process" ? active : firstItem;
@@ -908,10 +931,11 @@ function AttachPopup() {
     useOverlays.setState({ attach: null });
   };
   const attach = async (p: AttachableProcess) => {
+    if (state.projectRoot !== undefined && state.projectRoot !== root) return close();
     close();
     if (!root) return;
     try {
-      await startSession(await attachConfig(p, root), { rerunnable: false });
+      await startSession(await attachConfig(p, root), { rerunnable: false, runConfig: state.runConfig });
     } catch (e) {
       notifications().notify({
         group: "run",
@@ -931,8 +955,44 @@ function AttachPopup() {
     }
   };
   return (
-    <Dialog open onClose={close} title="Attach to Process" width={640} position="top" aria-label="Attach to process">
+    <Dialog
+      open
+      onClose={close}
+      title={state.mode === "unity" ? "Attach to Unity Process" : "Attach to Process"}
+      width={640}
+      position="top"
+      aria-label={state.mode === "unity" ? "Attach to Unity Process" : "Attach to process"}
+      buttons={[
+        {
+          label: "Refresh",
+          role: "extra",
+          disabled: state.processes === null || installing,
+          onClick: () => {
+            setActive(0);
+            void openAttachPopup(state.mode, state.runConfig);
+          },
+        },
+        { label: "Cancel", role: "cancel", onClick: close },
+        {
+          label: "Attach",
+          role: "default",
+          disabled: rows[activeIndex]?.kind !== "process" || installing,
+          onClick: () => {
+            const row = rows[activeIndex];
+            if (row?.kind === "process") void attach(row.process);
+          },
+        },
+      ]}
+    >
       <div className={styles.evalBody}>
+        {state.mode === "unity" && (
+          <p>
+            <T>
+              Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process
+              below. Stopping debugging disconnects without closing Unity.
+            </T>
+          </p>
+        )}
         <Input
           value={filter}
           onChange={(e) => {
@@ -958,7 +1018,20 @@ function AttachPopup() {
             <T>Loading processes…</T>
           </div>
         ) : state.error ? (
-          <div className={styles.empty}>{state.error}</div>
+          <div className={styles.empty}>
+            <div>{state.error}</div>
+            {state.installTool && (
+              <Button
+                disabled={installing}
+                onClick={() => {
+                  setInstalling(true);
+                  void installAttachAdapter().finally(() => setInstalling(false));
+                }}
+              >
+                {installing ? "Installing…" : "Install Unity Debugger"}
+              </Button>
+            )}
+          </div>
         ) : (
           <List<AttachRow>
             items={rows}
@@ -979,7 +1052,11 @@ function AttachPopup() {
             className={styles.attachList}
             empty={
               <div className={styles.empty}>
-                {filter ? tx`No attachable processes match the filter.` : tx`No attachable processes.`}
+                {filter
+                  ? tx`No attachable processes match the filter.`
+                  : state.mode === "unity"
+                    ? tx`No Unity Editor processes found. Open Unity Editor, then refresh.`
+                    : tx`No attachable processes.`}
               </div>
             }
             renderItem={(r) =>

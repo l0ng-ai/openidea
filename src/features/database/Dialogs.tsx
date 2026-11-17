@@ -13,6 +13,9 @@ const ObjectDialogs = lazyComponent(() => import("./ObjectDialogs").then((m) => 
 const ExportDialog = lazyComponent(() => import("./ExportDialog").then((m) => m.ExportDialog));
 const HistoryDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.HistoryDialog));
 const ImportDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.ImportDialog));
+const SchemaCompareDialog = lazyComponent(() => import("./SchemaCompareDialog").then((m) => m.SchemaCompareDialog));
+const DumpDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.DumpDialog));
+const RestoreDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.RestoreDialog));
 
 function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok: boolean) => void }) {
   const [password, setPassword] = useState("");
@@ -185,10 +188,31 @@ export function DatabaseDialogs() {
   if (dialog.kind === "params") return <ParamsDialog names={dialog.names} resolve={dialog.resolve} />;
   if (dialog.kind === "export")
     return <ExportDialog data={dialog.data} source={dialog.source} initialFormat={dialog.format} />;
+  if (dialog.kind === "compareSchemas") return <SchemaCompareDialog initial={dialog.source} />;
   if (dialog.kind === "history") return <HistoryDialog key={dialog.id} id={dialog.id} path={dialog.path} />;
   if (dialog.kind === "import")
     return (
       <ImportDialog key={`${dialog.id}.${dialog.table}`} id={dialog.id} schema={dialog.schema} table={dialog.table} />
+    );
+  if (dialog.kind === "dump")
+    return (
+      <DumpDialog
+        key={dialog.target}
+        target={dialog.target}
+        database={dialog.database}
+        schemas={dialog.schemas}
+        tables={dialog.tables}
+        serverVersion={dialog.serverVersion}
+      />
+    );
+  if (dialog.kind === "restore")
+    return (
+      <RestoreDialog
+        key={dialog.target}
+        target={dialog.target}
+        database={dialog.database}
+        serverVersion={dialog.serverVersion}
+      />
     );
   if (dialog.kind === "sshSecret")
     return (

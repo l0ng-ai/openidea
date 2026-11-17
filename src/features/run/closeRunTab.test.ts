@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
-import { closeRunTab } from "./RunView";
+import { closeRunTab } from "./runTabs";
 import { useStackTraces } from "./stackTrace";
 import { useRun, type RunSession } from "./store";
 
@@ -20,9 +20,9 @@ it("hides the Run tool window once its last tab is closed", async () => {
   provideToolWindowService({ hide } as unknown as ToolWindowService);
   useRun.setState({ sessions: [finished("a"), finished("b")] });
   useStackTraces.setState({ tabs: [{ id: "t", title: "Trace", text: "" } as never] });
-  await closeRunTab("a", useStackTraces.getState().tabs);
-  await closeRunTab("t", useStackTraces.getState().tabs);
+  await closeRunTab("a");
+  await closeRunTab("t");
   expect(hide).not.toHaveBeenCalled();
-  await closeRunTab("b", useStackTraces.getState().tabs);
-  expect(hide).toHaveBeenCalledWith("run");
+  await closeRunTab("b");
+  expect(hide).toHaveBeenCalledWith("run", { removeFromStripe: true });
 });

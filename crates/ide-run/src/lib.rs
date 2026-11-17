@@ -8,6 +8,7 @@ mod external;
 pub mod go;
 pub mod gradle_jvm;
 pub mod import;
+pub mod java_agent;
 pub mod java_cmdline;
 pub mod junit;
 mod process;

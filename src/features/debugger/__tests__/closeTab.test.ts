@@ -15,5 +15,5 @@ it("hides the Debug tool window once its last session tab is closed", async () =
   expect(await closeSessionTab(1)).toBe(true);
   expect(hide).not.toHaveBeenCalled();
   expect(await closeSessionTab(2)).toBe(true);
-  expect(hide).toHaveBeenCalledWith("debug");
+  expect(hide).toHaveBeenCalledWith("debug", { removeFromStripe: true });
 });

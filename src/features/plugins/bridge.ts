@@ -9,6 +9,7 @@
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
+import { clearBackoffs } from "@/editor/lsp/availability";
 import { endpointsChanged, notifications } from "@/workbench/contributions";
 import { useI18n } from "@/platform/i18n";
 import { useProducerNames } from "@/platform/inspections";
@@ -69,7 +70,10 @@ export function syncProjection(): () => void {
   const unsubscribe = [
     usePlugins.subscribe((s, prev) => {
       if (s.ui !== prev.ui) loadCatalogs();
-      if (s.ui !== prev.ui || s.plugins !== prev.plugins) apply();
+      if (s.ui !== prev.ui || s.plugins !== prev.plugins) {
+        clearBackoffs();
+        apply();
+      }
     }),
     usePluginCatalogs.subscribe((s, prev) => s.catalogs !== prev.catalogs && apply()),
     useI18n.subscribe((s, prev) => s.locale !== prev.locale && loadCatalogs()),

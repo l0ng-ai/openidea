@@ -74,9 +74,8 @@ export function showHint(
   clearTimeout(timers.get(view));
   timers.set(
     view,
-    setTimeout(() => {
-      if (view.dom.isConnected && view.state.field(hintField, false)) view.dispatch({ effects: setHint.of(null) });
-    }, opts.timeout ?? 4000),
+    // Also while the view is hidden: it would show the hint again when its tab is shown.
+    setTimeout(() => hideHint(view), opts.timeout ?? 4000),
   );
 }
 
@@ -104,9 +103,10 @@ export function showPendingHint(view: EditorView, content: string): () => void {
   }, PENDING_HINT_DELAY_MS);
   return () => {
     clearTimeout(timer);
+    // Also when the request ended by opening another tab, which hid this view.
     if (shown && view.state.field(hintField, false) === shown) {
       clearTimeout(timers.get(view));
-      if (view.dom.isConnected) hideHint(view);
+      hideHint(view);
     }
   };
 }

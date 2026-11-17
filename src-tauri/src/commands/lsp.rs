@@ -97,6 +97,22 @@ pub async fn lsp_goto_implementation(
     ide_host::ops::lsp::lsp_goto_implementation(&state.host, window.label(), request, doc, pos, on_partial).await
 }
 
+/// Refines the implementations `targets` of the method at `pos` to their declarations (Java
+/// dependencies' class files point at the start of the class). Cancel with
+/// `cancel_request(request)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_implementation_locations(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    targets: Vec<Location>,
+) -> IdeResult<Vec<Location>> {
+    ide_host::ops::lsp::lsp_implementation_locations(&state.host, window.label(), request, doc, pos, targets).await
+}
+
 /// Implementations of the symbols at `positions`, one list per position (the
 /// editor's "is implemented / overridden" gutter markers). Cancel with
 /// `cancel_request(request)`.
@@ -319,6 +335,124 @@ pub async fn lsp_hierarchy_refactor(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn lsp_signature_info(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<MethodSignature> {
+    ide_host::ops::lsp::lsp_signature_info(&state.host, window.label(), request, doc, pos).await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_change_signature(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    signature: MethodSignature,
+    delegate: bool,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    ide_host::ops::lsp::lsp_change_signature(
+        &state.host,
+        window.label(),
+        request,
+        doc,
+        pos,
+        signature,
+        delegate,
+        confirmation,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_java_move_destinations(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::lsp::lsp_java_move_destinations(&state.host, window.label(), request, doc, kind, args).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_java_source_types(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    project_name: Option<String>,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::lsp::lsp_java_source_types(&state.host, window.label(), request, doc, project_name).await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_java_move(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    ide_host::ops::lsp::lsp_java_move(&state.host, window.label(), request, doc, kind, args, confirmation).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_extract_interface_info(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<ExtractInterfaceInfo> {
+    ide_host::ops::lsp::lsp_extract_interface_info(&state.host, window.label(), request, doc, pos).await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_extract_interface(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    members: Vec<String>,
+    name: String,
+    destination: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    ide_host::ops::lsp::lsp_extract_interface(
+        &state.host,
+        window.label(),
+        request,
+        doc,
+        pos,
+        members,
+        name,
+        destination,
+        confirmation,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn lsp_format(
     window: Window,
     state: State<'_, AppState>,
@@ -378,6 +512,17 @@ pub async fn lsp_call_hierarchy(
     direction: HierarchyDirection,
 ) -> IdeResult<CallHierarchy> {
     ide_host::ops::lsp::lsp_call_hierarchy(&state.host, window.label(), request, doc, pos, direction).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_prepare_type_hierarchy(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<HierarchyItem>> {
+    ide_host::ops::lsp::lsp_prepare_type_hierarchy(&state.host, window.label(), doc, pos).await
 }
 
 #[tauri::command]

@@ -69,8 +69,10 @@ for (const theme of ["light", "dark"] as const) {
       await checkSize(fileIcon);
       await checkSize(directoryIcon);
       await checkSize(find.getByRole("status", { name: "Loading", exact: true }));
+      // The close button stacks idle and hovered icons (both 16px); check every svg each button renders.
       for (const title of ["Stop", "Expand All", "Collapse All", "Close Tab"])
-        await checkSize(find.getByRole("button", { name: title, exact: true }).last().locator("svg"));
+        for (const icon of await find.getByRole("button", { name: title, exact: true }).last().locator("svg").all())
+          await checkSize(icon);
 
       await page.evaluate(async () => {
         const path = "/src/ui/iconAppearance.ts";

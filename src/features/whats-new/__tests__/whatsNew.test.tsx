@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Settings } from "@/platform/ipc";
@@ -35,6 +35,7 @@ const { _resetReleaseNotesForTests, recordInstalledUpdate } = await import("@/pl
 const { provideEditorService } = await import("@/workbench/contributions");
 const { checkAfterUpdate, openCurrentWhatsNew } = await import("../model");
 const { WhatsNewPage } = await import("../WhatsNew");
+const { _resetI18nForTests, setLocale } = await import("@/platform/i18n");
 
 const openInput = vi.fn(async (_input: unknown, _options?: unknown) => {});
 provideEditorService({
@@ -54,8 +55,11 @@ beforeEach(() => {
   localStorage.clear();
   openInput.mockClear();
   settingsSet.mockClear();
+  appReleaseNotes.mockClear();
   useProject.setState({ settings: settingsWith({}) });
 });
+
+afterEach(() => _resetI18nForTests());
 
 describe("the first start after an update", () => {
   it("records the version and opens the page once", async () => {
@@ -107,10 +111,10 @@ describe("the first start after an update", () => {
 });
 
 describe("the page", () => {
-  const input = (notes: string | null) => ({
+  const input = (notes: string | null, texts?: Record<string, string>) => ({
     kind: "whatsNew",
     key: "whatsNew:0.1.41",
-    data: { version: "0.1.41", notes },
+    data: { version: "0.1.41", notes, texts: texts ?? null },
   });
 
   it("shows the version and the notes, with its checkbox on by default", () => {
@@ -130,10 +134,50 @@ describe("the page", () => {
   });
 
   it("reads the manifest when the install recorded no notes", async () => {
-    appReleaseNotes.mockResolvedValueOnce({ status: "ok", data: "## From the manifest" });
+    appReleaseNotes.mockResolvedValueOnce({ status: "ok", data: { en: "## From the manifest" } });
     render(<WhatsNewPage input={input(null)} />);
     await waitFor(() => expect(document.body.textContent).toContain("From the manifest"));
     expect(appReleaseNotes).toHaveBeenCalledWith("0.1.41", "github");
+  });
+
+  it("shows the notes in the configured language when the manifest carries it", async () => {
+    await setLocale("zh");
+    appReleaseNotes.mockResolvedValueOnce({ status: "ok", data: { en: "## From the manifest", zh: "## 来自清单" } });
+    render(<WhatsNewPage input={input(null)} />);
+    await waitFor(() => expect(document.body.textContent).toContain("来自清单"));
+    expect(document.body.textContent).not.toContain("From the manifest");
+  });
+
+  it("shows the manifest's English notes when the configured language has no translation", async () => {
+    await setLocale("zh");
+    appReleaseNotes.mockResolvedValueOnce({ status: "ok", data: { en: "## From the manifest", ko: "## 새 소식" } });
+    render(<WhatsNewPage input={input(null)} />);
+    await waitFor(() => expect(document.body.textContent).toContain("From the manifest"));
+    expect(document.body.textContent).not.toContain("새 소식");
+  });
+
+  it("shows the recorded translation of the configured language without reading the manifest", async () => {
+    await setLocale("zh");
+    render(<WhatsNewPage input={input("- Fixed a crash", { zh: "- 修复了一个崩溃" })} />);
+    expect(document.body.textContent).toContain("修复了一个崩溃");
+    expect(appReleaseNotes).not.toHaveBeenCalled();
+  });
+
+  it("shows English recorded notes while it reads the manifest for the missing language", async () => {
+    await setLocale("zh");
+    appReleaseNotes.mockResolvedValueOnce({ status: "ok", data: { en: "- Fixed a crash", zh: "- 修复了一个崩溃" } });
+    render(<WhatsNewPage input={input("- Fixed a crash")} />);
+    expect(document.body.textContent).toContain("Fixed a crash");
+    await waitFor(() => expect(document.body.textContent).toContain("修复了一个崩溃"));
+    expect(appReleaseNotes).toHaveBeenCalledWith("0.1.41", "github");
+  });
+
+  it("keeps the English recorded notes when the manifest has no translation either", async () => {
+    await setLocale("zh");
+    appReleaseNotes.mockResolvedValueOnce({ status: "ok", data: { en: "- Fixed a crash" } });
+    render(<WhatsNewPage input={input("- Fixed a crash")} />);
+    await waitFor(() => expect(appReleaseNotes).toHaveBeenCalledWith("0.1.41", "github"));
+    expect(document.body.textContent).toContain("Fixed a crash");
   });
 
   it("points at the release page when there are no notes to show", async () => {

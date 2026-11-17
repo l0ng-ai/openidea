@@ -194,14 +194,23 @@ impl Session {
         }
         channel.eof().await.map_err(|e| self.failed(e))?;
         let mut out = ExecOutput::default();
-        while let Some(msg) = channel.wait().await {
+        loop {
+            // After the exit status, output still in flight is read until the channel goes quiet: a
+            // background child that inherited stdout keeps the channel open past the exit (as in `spawn`).
+            let msg = match out.code {
+                None => channel.wait().await,
+                Some(_) => tokio::time::timeout(EXIT_DRAIN, channel.wait()).await.ok().flatten(),
+            };
             match msg {
-                ChannelMsg::Data { data } => out.stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, ext: 1 } => out.stderr.extend_from_slice(&data),
-                ChannelMsg::ExitStatus { exit_status } => out.code = Some(exit_status),
-                _ => {}
+                Some(ChannelMsg::Data { data }) => out.stdout.extend_from_slice(&data),
+                Some(ChannelMsg::ExtendedData { data, ext: 1 }) => out.stderr.extend_from_slice(&data),
+                Some(ChannelMsg::ExitStatus { exit_status }) => out.code = Some(exit_status),
+                Some(_) => {}
+                None => break,
             }
         }
+        // Closed here, the channel doesn't stay open on the server for that child.
+        let _ = channel.close().await;
         Ok(out)
     }
 

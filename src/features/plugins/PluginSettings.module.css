@@ -4,12 +4,12 @@
 .array {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .field {
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .group h3 {
@@ -44,7 +44,7 @@
 
 .buttons {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex-wrap: wrap;
 }
 

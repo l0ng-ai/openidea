@@ -24,7 +24,7 @@ import {
 } from "@/platform/formatGuard";
 import { useProject } from "@/platform/project";
 import { CONTRIBUTED_FORMAT, contributedAt, whenSynced, type ContributedFormatter } from "@/editor/api";
-import { docOf, lspRequest, reportLspError } from "./lsp";
+import { docOf, isUnavailable, lspRequest, reportLspError } from "./lsp";
 import { formatIndentFacet } from "../core/cm/setup";
 import { offsetToPos, textEditsToChanges } from "./positions";
 import { tx, txTemplate } from "@/platform/i18n";
@@ -37,6 +37,8 @@ export interface FormatResult {
   changes: number;
   /** Lines of the result that the changes touched. */
   lines: number;
+  /** No formatter handles the file (no language server, or one that cannot format). */
+  noFormatter?: boolean;
 }
 
 const NOTHING: FormatResult = { applied: false, changes: 0, lines: 0 };
@@ -96,6 +98,36 @@ interface FormatDocumentOptions {
   onSave?: boolean;
   /** Runs this external formatter whatever the settings select (Reformat with Prettier/oxfmt). */
   tool?: ExternalFormatter;
+  /** Formats only these ranges, e.g. the text changed since the last commit; an empty list formats nothing. */
+  ranges?: readonly OffsetRange[];
+}
+
+interface OffsetRange {
+  from: number;
+  to: number;
+}
+
+type Change = { from: number; to: number; insert: string };
+
+/** `changes` inside `range` (some servers answer a range request with whole-file edits). */
+const within = (changes: readonly Change[], range: OffsetRange | null) =>
+  range ? changes.filter((c) => c.from >= range.from && c.to <= range.to) : changes;
+
+/** Sorted, without changes overlapping an earlier one. */
+function disjoint(changes: readonly Change[]): Change[] {
+  const out: Change[] = [];
+  for (const c of [...changes].sort((a, b) => a.from - b.from || a.to - b.to)) {
+    const last = out[out.length - 1];
+    if (!last || c.from >= last.to) out.push(c);
+  }
+  return out;
+}
+
+/** The ranges to format: the given ones, else the selection (when asked for), else the whole file. */
+function targetRanges(state: EditorState, opts: FormatDocumentOptions): readonly (OffsetRange | null)[] {
+  if (opts.ranges) return opts.ranges;
+  const sel = state.selection.main;
+  return (opts.selectionOnly ?? true) && !sel.empty ? [{ from: sel.from, to: sel.to }] : [null];
 }
 
 export async function formatDocument(
@@ -126,15 +158,18 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
   // The server formats the backend's copy: let pending keystrokes reach it first.
   await whenSynced(view);
   const state = view.state;
-  const sel = state.selection.main;
-  const useSelection = (opts.selectionOnly ?? true) && !sel.empty;
-  const range = useSelection ? { start: offsetToPos(state.doc, sel.from), end: offsetToPos(state.doc, sel.to) } : null;
+  const targets = targetRanges(state, opts);
+  if (!targets.length) return NOTHING;
   const options = formatOptionsOf(state);
-  let edits;
+  const formatted: Change[] = [];
   try {
-    edits = await lspRequest(() =>
-      commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
-    );
+    for (const target of targets) {
+      const range = target && { start: offsetToPos(state.doc, target.from), end: offsetToPos(state.doc, target.to) };
+      const edits = await lspRequest(() =>
+        commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
+      );
+      formatted.push(...within(textEditsToChanges(state.doc, edits), opts.ranges ? target : null));
+    }
   } catch (e) {
     const formatter =
       e instanceof IpcError && e.data?.type === "tool"
@@ -148,6 +183,8 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
       const tool = e.data.tool;
       if (e.kind === "notFound" && e.data.missing) {
         await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave, formatter: true });
+        // The formatter is not installed: a batch counts the file as having none.
+        return { ...NOTHING, noFormatter: true };
       } else if (e.kind !== "cancelled") {
         notifications().notify({
           group: "tools",
@@ -162,13 +199,13 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
         });
       }
     } else reportLspError(view, e, opts.explicit);
-    return NOTHING;
+    return isUnavailable(e) ? { ...NOTHING, noFormatter: true } : NOTHING;
   }
   if (view.state.doc !== state.doc) {
     if (opts.explicit) showHint(view, "The file changed while formatting; try again");
     return NOTHING;
   }
-  const changes = guardFormatChanges(state.doc.toString(), textEditsToChanges(state.doc, edits), guard);
+  const changes = guardFormatChanges(state.doc.toString(), disjoint(formatted), guard);
   if (!changes.length) {
     if (opts.explicit) showHint(view, "No lines changed: content is already properly formatted");
     return NOTHING;
@@ -236,13 +273,15 @@ function applyContributedFormat(
 ): FormatResult {
   const state = view.state;
   if (state.readOnly) return NOTHING;
-  const sel = state.selection.main;
-  const useSelection = (opts.selectionOnly ?? true) && !sel.empty;
   const changes = guardFormatChanges(
     state.doc.toString(),
-    format(state, useSelection ? { from: sel.from, to: sel.to } : null)
-      .filter((c) => state.sliceDoc(c.from, c.to) !== c.insert)
-      .sort((a, b) => a.from - b.from),
+    disjoint(
+      targetRanges(state, opts).flatMap((target) =>
+        within(format(state, target), opts.ranges ? target : null).filter(
+          (c) => state.sliceDoc(c.from, c.to) !== c.insert,
+        ),
+      ),
+    ),
     guard,
   );
   if (!changes.length) {

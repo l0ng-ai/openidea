@@ -24,8 +24,13 @@ pub fn index_file_extensions(window: Window, state: State<'_, AppState>) -> IdeR
 
 #[tauri::command]
 #[specta::specta]
-pub fn find_files(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
-    ide_host::ops::nav::find_files(&state.host, window.label(), query, limit)
+pub async fn find_files(
+    window: Window,
+    state: State<'_, AppState>,
+    query: String,
+    limit: u32,
+) -> IdeResult<Vec<FileMatch>> {
+    ide_host::ops::nav::find_files(&state.host, window.label(), query, limit).await
 }
 
 #[tauri::command]
@@ -37,8 +42,13 @@ pub async fn find_files_named(window: Window, state: State<'_, AppState>, name: 
 /// Folders holding indexed files, for `@` references.
 #[tauri::command]
 #[specta::specta]
-pub fn find_dirs(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
-    ide_host::ops::nav::find_dirs(&state.host, window.label(), query, limit)
+pub async fn find_dirs(
+    window: Window,
+    state: State<'_, AppState>,
+    query: String,
+    limit: u32,
+) -> IdeResult<Vec<FileMatch>> {
+    ide_host::ops::nav::find_dirs(&state.host, window.label(), query, limit).await
 }
 
 /// Spring Web mapping sources for the request-path index of Search Everywhere.
@@ -51,16 +61,42 @@ pub fn spring_route_sources(
     ide_host::ops::routes::spring_route_sources(&state.host, window.label())
 }
 
+/// Cucumber feature files and step definition files, for step navigation.
 #[tauri::command]
 #[specta::specta]
-pub fn find_symbols(
+pub async fn cucumber_sources(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_host::ops::bdd::StepSource>> {
+    let host = state.host.clone();
+    let label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::bdd::cucumber_sources(&host, &label))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn find_symbols(
     window: Window,
     state: State<'_, AppState>,
     query: String,
     filter: SymbolFilter,
     limit: u32,
 ) -> IdeResult<Vec<SymbolMatch>> {
-    ide_host::ops::nav::find_symbols(&state.host, window.label(), query, filter, limit)
+    ide_host::ops::nav::find_symbols(&state.host, window.label(), query, filter, limit).await
+}
+
+/// Index symbols named exactly one of `names` inside `within` (an agent task's folder).
+#[tauri::command]
+#[specta::specta]
+pub async fn find_symbols_named(
+    window: Window,
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    within: IpcPath,
+) -> IdeResult<Vec<SymbolMatch>> {
+    ide_host::ops::nav::find_symbols_named(&state.host, window.label(), names, within).await
 }
 
 #[tauri::command]
@@ -113,6 +149,14 @@ pub async fn nav_index_definitions(
     from: IpcPath,
 ) -> IdeResult<Vec<SymbolMatch>> {
     ide_host::ops::nav::nav_index_definitions(&state.host, window.label(), name, from).await
+}
+
+/// Every Python class in the project (attached dependency roots included) and its base names,
+/// for native inheritance gutter markers.
+#[tauri::command]
+#[specta::specta]
+pub async fn nav_inheritance(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ClassInheritance>> {
+    ide_host::ops::nav::nav_inheritance(&state.host, window.label()).await
 }
 
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).

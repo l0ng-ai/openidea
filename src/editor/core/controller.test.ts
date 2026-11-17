@@ -4,7 +4,12 @@ import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
 import { useDocMeta } from "./model/document";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
-import { registerTextEditorWrapper, setProjectViewLead, useProjectViewLead } from "@/workbench/contributions";
+import {
+  registerEditorKind,
+  registerTextEditorWrapper,
+  setProjectViewLead,
+  useProjectViewLead,
+} from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -13,6 +18,7 @@ import { evaluateWhen, getContext, setContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
 import { EDITOR_WHEN } from "@/editor/lsp/actions";
+import { setShownLine } from "@/editor/api";
 
 let ctrl: EditorController | null = null;
 
@@ -31,6 +37,98 @@ describe("EditorController", () => {
     setProjectViewLead({ path: "/p/src", dir: true });
     await ctrl.openInput({ kind: "agent-session", key: "task" });
     expect(useProjectViewLead.getState().lead).toBeNull();
+  });
+
+  it("goes back to the line a stand-in view shows (Markdown Preview only), not the hidden caret", async () => {
+    const text = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.md": text, "/p/b.md": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.md", { selection: { line: 45, col: 0 }, focus: false });
+    // The preview was scrolled after the file opened; then a link opens another file.
+    setShownLine("/p/a.md", 20);
+    try {
+      await ctrl.openFile("/p/b.md", { focus: false });
+      await ctrl.back();
+      const slot = ctrl.activeSlot!;
+      expect(slot.model.path).toBe("/p/a.md");
+      expect(slot.caret().line).toBe(20);
+    } finally {
+      setShownLine("/p/a.md", null);
+    }
+  });
+
+  it("goes back to the file whose last tab was just closed, then to the place before it", async () => {
+    const text = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    ctrl = new EditorController(createMemoryBackend({ "/p/x.ts": "x\n", "/p/a.ts": text }));
+    ctrl.start();
+    await ctrl.openFile("/p/x.ts", { focus: false });
+    await ctrl.openFile("/p/a.ts", { selection: { line: 30, col: 2 }, focus: false });
+    await ctrl.closeEverything();
+    expect(ctrl.activeSlot).toBeNull();
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/a.ts");
+    expect(ctrl.activeSlot!.caret()).toMatchObject({ line: 30, col: 2 });
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/x.ts");
+  });
+
+  it("keeps a diff preview open when a file opens from it, and goes back to the diff", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/x.ts": "x\n", "/p/b.ts": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/x.ts", { focus: false });
+    const diff = { kind: "diff", key: "diff:/p/a.ts", path: "/p/a.ts" };
+    await ctrl.openInput(diff, { preview: true });
+    // ⌘/Ctrl-click in the diff: the declaration opens in a tab of its own.
+    await ctrl.openFile("/p/b.ts", { focus: false });
+    const keys = () => Object.values(useTabs.getState().panes).flatMap((p) => p.tabs.map((t) => t.input.key));
+    expect(keys()).toContain(diff.key);
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(diff.key);
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/x.ts");
+    await ctrl.forward();
+    expect(ctrl.activeInput()?.key).toBe(diff.key);
+    // Recent Locations lists text places only.
+    expect(ctrl.nav.snapshot().entries.map((e) => e.path)).toEqual(["/p/x.ts", "/p/b.ts"]);
+  });
+
+  it("goes back to a diff closed without leaving it first", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const diff = { kind: "diff", key: "diff:/p/a.ts", path: "/p/a.ts" };
+    await ctrl.openInput(diff, { preview: true });
+    await ctrl.closeEverything();
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(diff.key);
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/a.ts");
+  });
+
+  it("goes back to a diff where it was left, open or closed", async () => {
+    // The diff viewer gives the input that reopens it at its caret.
+    const dispose = registerEditorKind({
+      kind: "diff",
+      title: () => "diff",
+      component: () => null,
+      navigationInput: (input) => ({ ...input, data: { line: 7 } }),
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/b.ts": "b\n" }));
+      ctrl.start();
+      const diff = { kind: "diff", key: "diff:/p/a.ts", path: "/p/a.ts", data: { line: null } };
+      await ctrl.openInput(diff, { preview: true });
+      await ctrl.openFile("/p/b.ts", { focus: false });
+      // Still open, it shows afresh when activated: at the caret too.
+      await ctrl.back();
+      expect(ctrl.activeInput()).toMatchObject({ key: diff.key, data: { line: 7 } });
+      await ctrl.forward();
+      await ctrl.closeInput(diff.key);
+      await ctrl.back();
+      expect(ctrl.activeInput()).toMatchObject({ key: diff.key, data: { line: 7 } });
+    } finally {
+      dispose();
+    }
   });
 
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
@@ -316,6 +414,39 @@ describe("EditorController", () => {
     expect(openFilePaths(useTabs.getState())).toEqual(["/p/a.ts"]);
   });
 
+  it("offers Find Usages immediately before Go To in the editor context menu", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    try {
+      ctrl.onContextMenu(slot, new MouseEvent("contextmenu"));
+      const items = useContextMenuStore.getState().menu!.items;
+      const goTo = items.findIndex((item) => "label" in item && item.label === "Go To");
+      expect(items[goTo - 1]).toEqual({ kind: "action", action: "find.usages", label: "Find Usages" });
+      const submenu = resolveMenuItems(items).find((item) => item.label === "Go To")!.submenu!;
+      expect(submenu.map((item) => (item.kind === "action" ? item.action : "-"))).toEqual([
+        "navigate.declaration",
+        "navigate.implementation",
+        "navigate.typeDeclaration",
+        "navigate.superMethod",
+        "navigate.relatedSymbol",
+        "navigate.gotoTest",
+        "-",
+        "navigate.callHierarchy",
+        "navigate.typeHierarchy",
+      ]);
+    } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
@@ -368,7 +499,7 @@ describe("EditorController", () => {
           "vcs.showHistoryForSelection",
           "vcs.rollback",
         ],
-        ["vcs.push", "vcs.update", "vcs.fetch"],
+        ["vcs.push", "vcs.pull", "vcs.fetch"],
         ["vcs.merge", "vcs.rebase"],
         ["vcs.branches", "vcs.newBranch", "vcs.newTag", "vcs.resetHead"],
         ["vcs.stash", "vcs.unstash"],

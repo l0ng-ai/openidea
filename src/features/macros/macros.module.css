@@ -1,5 +1,5 @@
 .status {
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .dot {
   width: 8px;
@@ -10,14 +10,14 @@
 .edit {
   display: grid;
   grid-template-columns: 220px 1fr;
-  gap: 12px;
+  gap: var(--space-3);
   height: 300px;
   padding: 14px;
 }
 .column {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 0;
 }
 .list {
@@ -34,7 +34,7 @@
 }
 .buttons {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .empty {
   padding: 6px 8px;

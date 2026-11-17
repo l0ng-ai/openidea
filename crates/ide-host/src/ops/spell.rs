@@ -65,6 +65,7 @@ pub async fn spell_check(
                     end: r.end,
                     kind: match r.kind {
                         SpellingKind::Comment => RegionKind::Comment,
+                        SpellingKind::String if r.raw => RegionKind::RawString,
                         SpellingKind::String => RegionKind::String,
                         SpellingKind::Name => RegionKind::Name,
                     },

@@ -1,0 +1,7 @@
+# Link debug builds for the oldest system we support, so Launch Services
+# accepts the bundle on macOS 11. Without this a newer SDK leaves
+# LC_BUILD_VERSION.minos at 12.0 and the app is refused (-10825) before main
+# can load a newer WebKit. An explicitly exported MACOSX_DEPLOYMENT_TARGET
+# still wins: this is only the default for local builds and CI.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"

@@ -7,6 +7,7 @@
 import { useEditorRegistry } from "@/editor/api";
 import { Breadcrumbs } from "@/editor/core";
 import { basename, useProject } from "@/platform/project";
+import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { useT } from "@/platform/i18n";
 import { ProgressBar } from "@/ui";
 import projectMark from "../../src-tauri/icons/source/openidea-mark.svg";
@@ -42,9 +43,10 @@ function LightEditFrame({ title }: { title?: string }) {
   const path = useEditorRegistry((s) => s.active?.ctx.path);
   const distractionFree = useDistractionFree((s) => s.active);
   const statusBar = useAppearanceFlag("showStatusBar");
+  const name = path ? (isUntitledUri(path) ? untitledTitle(path) : basename(path)) : "LightEdit";
   return (
     <>
-      <TitleBar lightEdit compact={distractionFree} title={title ?? (path ? basename(path) : "LightEdit")} />
+      <TitleBar lightEdit compact={distractionFree} title={title ?? name} />
       <main className={styles.lightEdit} data-light-edit>
         <div className={styles.lightEditIsland}>
           <EditorArea />

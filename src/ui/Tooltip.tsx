@@ -2,6 +2,9 @@
  * Tooltips are attribute-driven: any element with `data-tooltip` (and optional
  * `data-tooltip-shortcut`) gets one, shown by the single `<TooltipHost/>` after
  * 600ms of hover. Hidden on scroll, key press, pointer down or leave.
+ *
+ * Text cut off with an ellipsis gets one too, showing it whole, while it is cut off and
+ * has no tooltip or `title` of its own.
  */
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
@@ -20,6 +23,34 @@ export function tooltipAttrs(text: string | undefined, shortcut?: string, verbat
   if (shortcut) attrs["data-tooltip-shortcut"] = shortcut;
   if (verbatim) attrs["data-tooltip-verbatim"] = "";
   return attrs;
+}
+
+/** How far up from the hovered node an ellipsised text is looked for. */
+const TRUNCATED_DEPTH = 4;
+
+/** The element whose text is cut off with an ellipsis around `node`, up to `stop`, if any. */
+function truncatedText(node: Element | null, stop: Element | null): HTMLElement | null {
+  for (let el = node, depth = 0; el instanceof HTMLElement && depth < TRUNCATED_DEPTH; el = el.parentElement, depth++) {
+    // A native tooltip shows instead.
+    if (el.hasAttribute("title")) return null;
+    if (isTruncated(el)) return el;
+    if (el === stop) break;
+  }
+  return null;
+}
+
+const isTruncated = (el: HTMLElement) =>
+  el.scrollWidth > el.clientWidth && getComputedStyle(el).textOverflow === "ellipsis" && !!el.textContent?.trim();
+
+/**
+ * What the tooltip of `el` shows: its own text, and the whole of `cut`'s text while that is
+ * cut off (with its own text beside it, when that says something else).
+ */
+function tooltipText(el: HTMLElement, cut: HTMLElement | null): { text: string; note?: string } | undefined {
+  const own = el.dataset.tooltipVerbatim === undefined ? tx(el.dataset.tooltip) : el.dataset.tooltip;
+  const whole = cut?.isConnected && isTruncated(cut) ? cut.textContent!.trim().replace(/\s+/g, " ") : undefined;
+  if (!whole) return own ? { text: own, note: el.dataset.tooltipShortcut } : undefined;
+  return { text: whole, note: own && !own.includes(whole) ? own : undefined };
 }
 
 interface Shown {
@@ -49,15 +80,15 @@ export function TooltipHost() {
       setShown(null);
     };
 
-    const show = (el: HTMLElement) => {
-      const text = el.dataset.tooltipVerbatim === undefined ? tx(el.dataset.tooltip) : el.dataset.tooltip;
-      if (!text || !el.isConnected) return;
+    const show = (el: HTMLElement, cut: HTMLElement | null) => {
+      const shows = el.isConnected ? tooltipText(el, cut) : undefined;
+      if (!shows) return;
       visible = true;
       anchorRef.current = el;
       const stripe = el.dataset.tooltipStripe;
       setShown({
-        text,
-        shortcut: el.dataset.tooltipShortcut,
+        text: shows.text,
+        shortcut: shows.note,
         x: -9999,
         y: -9999,
         placed: false,
@@ -66,16 +97,20 @@ export function TooltipHost() {
     };
 
     const onOver = (e: PointerEvent) => {
-      const el = (e.target as Element | null)?.closest?.<HTMLElement>("[data-tooltip]");
+      const target = e.target as Element | null;
+      const owner = target?.closest?.<HTMLElement>("[data-tooltip]") ?? null;
+      // Cut-off text inside an element with a tooltip shows in that tooltip.
+      const cut = truncatedText(target, owner);
+      const el = owner ?? cut;
       if (!el) return;
       if (el === anchorRef.current) return;
       clearTimeout(timer);
       if (visible) {
-        show(el);
+        show(el, cut);
         return;
       }
       const warm = performance.now() - lastHidden < WARM_MS;
-      timer = setTimeout(() => show(el), warm ? 0 : TOOLTIP_DELAY);
+      timer = setTimeout(() => show(el, cut), warm ? 0 : TOOLTIP_DELAY);
       anchorRef.current = el;
     };
 

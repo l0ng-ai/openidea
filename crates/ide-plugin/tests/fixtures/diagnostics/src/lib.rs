@@ -39,12 +39,8 @@ impl Plugin for Fixture {
                     hover: None,
                     after: Some(after.into()),
                 };
-                host::set_decorations(
-                    path,
-                    "fixture",
-                    &[item("typo", "typo message"), item("weak", "weak message")],
-                )
-                .map(|()| None)
+                host::set_decorations(path, "fixture", &[item("typo", "typo message"), item("weak", "weak message")])
+                    .map(|()| None)
             }
             _ => Err(Error::NotFound(id.into())),
         }

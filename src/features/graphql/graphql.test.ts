@@ -6,6 +6,7 @@ import {
   endpointLines,
   expandEndpoint,
   discoverSchemas,
+  formatBody,
   globToRegExp,
   httpRequestText,
   introspectionTarget,
@@ -241,9 +242,32 @@ fragment H on Node { "}" }
 
   it("reads variables as a JSON object", () => {
     expect(parseVariables("  ")).toEqual({ variables: null });
-    expect(parseVariables('{"code":"VN"}')).toEqual({ variables: { code: "VN" } });
+    expect(parseVariables('{"code":"VN"}')).toMatchObject({
+      variables: { t: "obj", entries: [["code", { t: "str", v: "VN" }]] },
+    });
     expect("error" in parseVariables("[1]")).toBe(true);
     expect("error" in parseVariables("{")).toBe(true);
+  });
+
+  it("sends variable numbers with their exact digits in the outgoing body", () => {
+    const parsed = parseVariables('{"id":9007199254740993,"amount":1.0000000000000000002}');
+    expect("variables" in parsed && parsed.variables).toMatchObject({
+      t: "obj",
+      entries: [
+        ["id", { t: "num", text: "9007199254740993" }],
+        ["amount", { t: "num", text: "1.0000000000000000002" }],
+      ],
+    });
+    if (!("variables" in parsed)) return;
+    const request = httpRequestText(
+      { name: "x", url: "http://h/graphql", headers: {} },
+      "{ a }",
+      parsed.variables ?? null,
+    );
+    const body = request.slice(request.indexOf("\n\n") + 2);
+    expect(body).toBe(
+      '{"query":"\\u007b a \\u007d","variables":{"id":9007199254740993,"amount":1.0000000000000000002}}\n',
+    );
   });
 
   it("posts the query as JSON with the endpoint's headers", () => {
@@ -252,6 +276,14 @@ fragment H on Node { "}" }
     ).toBe(
       'POST http://h/graphql\nContent-Type: application/json\nAuthorization: Bearer t\n\n{"query":"\\u007b a \\u007d"}\n',
     );
+  });
+
+  it("formats a response body with numeric values kept exact", () => {
+    expect(formatBody('{"id":9007199254740993,"amount":1.0000000000000000002}')).toBe(
+      '{\n  "id": 9007199254740993,\n  "amount": 1.0000000000000000002\n}',
+    );
+    expect(formatBody("{oops")).toBe("{oops");
+    expect(formatBody(null)).toBe("");
   });
 
   it("uses the schema listing the file, else the closest config folder", () => {

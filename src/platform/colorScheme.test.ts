@@ -42,20 +42,26 @@ describe("color schemes", () => {
     expect(schemeTokens("light").get("--syn-php-variable")).toBe("#871094");
     expect(schemeTokens("light").get("--syn-php-function-call")).toBe("#00627a");
     const css = readFileSync("src/styles/tokens.css", "utf8");
-    expect(css).toMatch(/\.cm-editor\[data-language="PHP"\] \{\s*--syn-variable: var\(--syn-php-variable\);/);
+    expect(css).toMatch(
+      /\.cm-editor\[data-language="PHP"\],\s*\.cm-editor \[data-language="PHP"\] \{\s*--syn-variable: var\(--syn-php-variable\);/,
+    );
     // An imported PHP_VAR still wins: language overrides are emitted for the same element, !important.
     const imported = schemeCss(
       "theme-default",
       { dark: { "php.identifier": { foreground: "#48d8ee" } } },
       document.documentElement,
     );
-    expect(imported).toMatch(/\.cm-editor\[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/);
+    expect(imported).toMatch(
+      /\.cm-editor\[data-language="PHP"\], \.cm-editor \[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/,
+    );
   });
 
   it("offers a Go scheme page and scopes its overrides to Go editors", () => {
     expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
     const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });
     expect(css).toContain('.cm-editor[data-language="Go"]');
+    // A Go code block in a Markdown editor (#3808).
+    expect(css).toContain('.cm-editor [data-language="Go"]');
     expect(css).toContain("--syn-constant: #224466 !important");
   });
 
@@ -210,6 +216,37 @@ describe("color schemes", () => {
     expect(schemeCss("dark", { dark: { selectionForeground: { foreground: "#112233" } } })).toContain(
       "--fg-editor-selection: #112233 !important",
     );
+  });
+
+  // #3851: the editor showed the red-green colours while Color Scheme showed the plain ones.
+  it("resolves the red-green variant of the bundled schemes only", () => {
+    const rg = (id: Parameters<typeof schemeTokens>[0], name: string) => schemeTokens(id, undefined, true).get(name);
+    // The reporter's screenshot: keyword, string, function, number, constant.
+    expect(
+      ["--syn-keyword", "--syn-string", "--syn-function", "--syn-number", "--syn-constant"].map((n) => rg("dark", n)),
+    ).toEqual(["#597cc2", "#94907f", "#d9af6c", "#66a6ff", "#828eba"]);
+    expect(rg("light", "--syn-keyword")).toBe("#00428c");
+    for (const id of ["dark-hc", "solarized-dark"] as const)
+      expect(rg(id, "--syn-keyword")).toBe(schemeTokens(id).get("--syn-keyword"));
+    // VCS colours follow the setting in every scheme.
+    expect(rg("dark-hc", "--gutter-added")).not.toBe(schemeTokens("dark-hc").get("--gutter-added"));
+    expect(schemeTokens("dark").get("--syn-keyword")).toBe("#cf8e6d");
+    expect(resolvedAttribute("dark", "keyword", {}, true).foreground).toBe("#597cc2");
+    const customs = { "custom-rg": { name: "Mine", parent: "dark" as const, attributes: {} } };
+    expect(resolvedAttribute("custom-rg", "keyword", customs, true).foreground).toBe("#cf8e6d");
+  });
+
+  it("gives an explicit bundled scheme its red-green variant", () => {
+    const root = document.documentElement;
+    root.dataset.theme = "light";
+    root.dataset.redGreen = "";
+    try {
+      expect(schemeCss("dark", undefined, root)).toContain("--syn-keyword: #597cc2 !important");
+      delete root.dataset.redGreen;
+      expect(schemeCss("dark", undefined, root)).toContain("--syn-keyword: #cf8e6d !important");
+    } finally {
+      delete root.dataset.redGreen;
+    }
   });
 
   it("applies an explicit scheme over a plugin theme of the same base", () => {

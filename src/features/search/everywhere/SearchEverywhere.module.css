@@ -17,7 +17,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: 44px;
   padding: 0 8px 0 8px;
   background: var(--se-bg-header);
@@ -31,7 +31,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .tab {
   flex: none;
@@ -61,7 +61,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .include {
   flex: none;
@@ -80,7 +80,7 @@
 .field {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 32px;
   padding: 0 10px 0 8px;
   background: var(--bg-input);
@@ -178,7 +178,7 @@
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: var(--space-1-5);
   overflow: hidden;
 }
 .name {
@@ -230,7 +230,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .disabled .name,
 .disabled .location,
@@ -292,7 +292,7 @@
 .filterGroup {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 4px 12px 8px;
 }
 .filterGroup + .filterGroup {
@@ -309,13 +309,13 @@
 .filterItems {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding-left: 4px;
 }
 .filterMasks {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .filterMask {
   padding: 1px 6px;
@@ -334,7 +334,7 @@
   .header {
     flex-wrap: wrap;
     height: auto;
-    gap: 6px;
+    gap: var(--space-1-5);
     padding: 6px 8px;
   }
   .tabs {

@@ -23,7 +23,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 8px 0 4px;
   border-bottom: 1px solid var(--border);
   min-width: 0;
@@ -47,7 +47,7 @@
 .tabs {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   flex: none;
 }
 
@@ -112,7 +112,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 8px;
   border-radius: var(--radius-small);
   text-align: left;
@@ -180,7 +180,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 4px 0 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -190,7 +190,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .prompt {
@@ -231,7 +231,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 0;
   border-right: 1px solid var(--border);
 }

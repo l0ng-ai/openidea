@@ -75,6 +75,13 @@ fn decorations_replace_clear_validate_styles_badges_paths_and_limits() {
     assert!(host::set_file_note("a.txt", "notes", &"x".repeat(201), None).is_err());
     host::clear_file_decorations("notes").unwrap();
     assert!(mock.file_notes().is_empty());
+    host::set_file_icon("a.txt", "icons", "helm-chart", Some("Helm Chart")).unwrap();
+    assert_eq!(mock.file_icons().values().next(), Some(&("helm-chart".to_string(), Some("Helm Chart".to_string()))));
+    assert!(host::set_file_icon("a.txt", "icons", "Bad Icon", None).is_err());
+    host::set_file_icons("icons", &[("b.yaml".into(), "kustomize".into())]).unwrap();
+    assert_eq!(mock.file_icons().len(), 1);
+    host::clear_file_decorations("icons").unwrap();
+    assert!(mock.file_icons().is_empty());
     for i in 0..50 {
         host::set_decorations("a.txt", &format!("set{i}"), &[]).unwrap();
     }

@@ -33,12 +33,14 @@ import {
   useFileDecoration,
   type DecorationSegment,
 } from "@/workbench/contributions";
+import { useFileColors } from "@/workbench/fileColors";
 import {
   FILES_DRAG,
   REMOTE_FILES_DRAG,
   HighlightedText,
   Icon,
   Popup,
+  beginDrag,
   dragSession,
   registerDropTarget,
   Tree,
@@ -56,7 +58,7 @@ import {
 import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
-import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
+import { presentationIcon, useJvmPresentation } from "@/ui/filePresentation";
 import {
   isModuleFolder,
   moduleFolderIcon,
@@ -65,7 +67,7 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
-import { PROJECT_TYPES } from "./projectType";
+import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
@@ -285,7 +287,9 @@ const Row = memo(function Row({
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
-  const projectType = useProjectTree((s) => (node.root && !node.icon ? s.projectTypes.get(node.path) : undefined));
+  const projectType = useProjectTree((s) =>
+    s.members && node.root && !node.icon ? s.projectTypes.get(node.path) : undefined,
+  );
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
@@ -319,8 +323,10 @@ const Row = memo(function Row({
           size={16}
           className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)}
         />
+        {/* IDEA's symlink arrow, on file and folder links (the entry kind comes with the listing). */}
+        {node.symlink && <Icon name="symlink-mark" size={16} className={styles.overlay} label="Symbolic link" />}
         {!!file?.runnable && icon !== "spring-boot" && icon !== "jvm-test" && (
-          <Icon name="runnable-mark" size={16} className={styles.runnable} />
+          <Icon name="runnable-mark" size={16} className={styles.overlay} />
         )}
       </span>
       {isEditing && editing ? (
@@ -430,6 +436,8 @@ interface DragState {
 }
 
 const DRAG_THRESHOLD = 4;
+/** IDEA's "excluded" look: excluded folders and what is under them get a muted band. */
+const EXCLUDED_TINT = "var(--vcs-ignored)";
 
 /** Folder under a viewport point inside `container` (a file row resolves to its folder). */
 function folderAt(container: HTMLElement | null, x: number, y: number): { key: string; path: string } | null {
@@ -456,6 +464,7 @@ export function ProjectView() {
   useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
+  const fileColors = useFileColors("projectView");
   const expanded = useProjectTree((s) => s.expanded);
   const selected = useProjectTree((s) => s.selected);
   const editing = useProjectTree((s) => s.editing);
@@ -563,9 +572,9 @@ export function ProjectView() {
       void revealRange(
         lead.path,
         { start: lead.member.selection_range.start },
-        { preview: o.previewTab, focus: false },
+        { preview: o.previewTab, focus: false, external: false },
       );
-    } else void openFile(lead.path, { preview: o.previewTab, focus: false });
+    } else void openFile(lead.path, { preview: o.previewTab, focus: false, external: false });
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {
@@ -641,6 +650,38 @@ export function ProjectView() {
     // editor opens only files, so folders carry the trailing slash `findDirs`
     // uses and the editor leaves them out.
     let files: DragSession | null = null;
+    let endDrag: (() => void) | null = null;
+    // While dragging, the tree scrolls only when the pointer is near its top or bottom edge
+    // (IDEA's DnD autoscroll). Leaving the tree toward a drop target elsewhere (the terminal,
+    // an editor) keeps it where it is: WebKit's own autoscroll of the pressed scroll container
+    // would otherwise keep scrolling it toward the pointer.
+    const scroller = containerRef.current?.querySelector<HTMLElement>('[role="tree"]') ?? null;
+    let held = scroller?.scrollTop ?? 0;
+    let pointer: { x: number; y: number } | null = null;
+    let frame = 0;
+    const inside = (p: { x: number; y: number }) => {
+      const r = scroller?.getBoundingClientRect();
+      return !!r && p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+    };
+    const keep = () => {
+      if (!scroller) return;
+      if (pointer && !inside(pointer)) scroller.scrollTop = held;
+      else held = scroller.scrollTop;
+    };
+    const edgeScroll = () => {
+      frame = 0;
+      if (!scroller || !pointer || !inside(pointer)) return;
+      const r = scroller.getBoundingClientRect();
+      const delta = pointer.y < r.top + 24 ? -8 : pointer.y > r.bottom - 24 ? 8 : 0;
+      const before = scroller.scrollTop;
+      scroller.scrollTop = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, before + delta));
+      held = scroller.scrollTop;
+      if (held !== before) {
+        const target = folderAt(containerRef.current, pointer.x, pointer.y);
+        setDropTarget(target && !paths.some((p) => target.path === p || isInside(target.path, p)) ? target.key : null);
+        frame = requestAnimationFrame(edgeScroll);
+      }
+    };
     const move = (ev: PointerEvent) => {
       // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
       if (!(ev.buttons & 1)) {
@@ -651,6 +692,7 @@ export function ProjectView() {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
         dragged.current = true;
+        endDrag = beginDrag();
         const m = selectModel(useProjectTree.getState());
         const keys = before.has(node.key) ? [...before] : [node.key];
         if (before.has(node.key)) setSelection(before, lead);
@@ -662,6 +704,10 @@ export function ProjectView() {
           payload: nodes.map((n) => (n.dir ? `${n.path}/` : n.path)).join("\n"),
         });
       }
+      if (!pointer) scroller?.addEventListener("scroll", keep, { passive: true });
+      pointer = { x: ev.clientX, y: ev.clientY };
+      keep();
+      if (!frame) frame = requestAnimationFrame(edgeScroll);
       const target = folderAt(containerRef.current, ev.clientX, ev.clientY);
       const valid = target && !paths.some((p) => target.path === p || isInside(target.path, p));
       setDropTarget(valid ? target.key : null);
@@ -692,11 +738,16 @@ export function ProjectView() {
       }
     };
     const cleanup = () => {
+      scroller?.removeEventListener("scroll", keep);
+      cancelAnimationFrame(frame);
+      frame = 0;
+      pointer = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
+      endDrag?.();
       setDropTarget(null);
       setDrag(null);
     };
@@ -863,7 +914,9 @@ export function ProjectView() {
         isExpandable={isExpandable}
         loadChildren={loadChildren}
         renderNode={renderNode}
-        rowClassName={(n) => (n.excluded ? styles.excludedRow : undefined)}
+        rowTint={(n) =>
+          n.excluded ? EXCLUDED_TINT : n.group || n.placeholder ? undefined : fileColors?.(n.path, n.dir)
+        }
         expanded={expanded}
         onExpandedChange={onExpandedChange}
         selected={selected}

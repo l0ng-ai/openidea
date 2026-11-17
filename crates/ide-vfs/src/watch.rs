@@ -840,8 +840,8 @@ impl EventFilter {
 }
 
 #[cfg(test)]
-#[path = "watch_bench.rs"]
-mod pipeline_bench;
+#[path = "watch_pipeline_tests.rs"]
+mod pipeline_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1039,62 +1039,6 @@ mod tests {
             assert_eq!(expected.ignored, vec![root.join("file.ignored")]);
             assert!(!expected.modified.contains(&root.join("file.ignored")));
             assert_same_batch(&expected, &compact.batch(&pending.events));
-        }
-    }
-
-    #[test]
-    #[ignore = "manual queue microbenchmark, not an OS watcher or end-to-end benchmark"]
-    fn pending_modification_burst_benchmark() {
-        use std::hint::black_box;
-        let now = Instant::now();
-        let kind = EventKind::Modify(ModifyKind::Any);
-        for distinct in [false, true] {
-            let input: Vec<_> = (0..100_000)
-                .map(|n| ev(kind, vec![format!("src/{}.rs", if distinct { n } else { 0 }).into()]))
-                .collect();
-            let original = || {
-                let start = Instant::now();
-                let mut queue = Vec::new();
-                for event in &input {
-                    queue.push((black_box(event.clone()), now));
-                }
-                let elapsed = start.elapsed();
-                black_box(&queue);
-                assert_eq!(queue.len(), input.len());
-                elapsed
-            };
-            let compact = || {
-                let start = Instant::now();
-                let mut queue = PendingEvents::default();
-                for event in &input {
-                    queue.push(black_box(event.clone()), now);
-                }
-                let elapsed = start.elapsed();
-                black_box(&queue);
-                assert_eq!(queue.events.len(), if distinct { input.len() } else { 1 });
-                elapsed
-            };
-            let mut original_times = Vec::new();
-            let mut compact_times = Vec::new();
-            for round in 0..5 {
-                if round % 2 == 0 {
-                    original_times.push(original());
-                    compact_times.push(compact());
-                } else {
-                    compact_times.push(compact());
-                    original_times.push(original());
-                }
-            }
-            original_times.sort();
-            compact_times.sort();
-            eprintln!(
-                "distinct={distinct} received={} original_retained={} compact_retained={} original_median={:?} compact_median={:?}",
-                input.len(),
-                input.len(),
-                if distinct { input.len() } else { 1 },
-                original_times[2],
-                compact_times[2]
-            );
         }
     }
 

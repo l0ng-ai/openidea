@@ -4,7 +4,12 @@ import clsx from "clsx";
 import { BarButton, IconButton, Popup, ProgressBar, showContextMenu, T, tooltipAttrs } from "@/ui";
 import { useContributions, useStatusInfo, type StatusItemContribution } from "./contributions";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { isStatusItemVisible, statusBarMenu, useStatusWidgetOverrides } from "./statusBarWidgets";
+import {
+  isStatusItemVisible,
+  statusBarMenu,
+  useStatusWidgetOverrides,
+  useUnavailableStatusWidgets,
+} from "./statusBarWidgets";
 import { cancelTask, canCancel, useTasks, type BackgroundTask } from "./tasks";
 import styles from "./StatusBar.module.css";
 import { tx } from "@/platform/i18n";
@@ -32,7 +37,8 @@ export function StatusBar({ lightEdit = false }: { lightEdit?: boolean }) {
     () => orderStatusItems([...map.values()].filter((i) => !lightEdit || i.lightEdit)),
     [map, lightEdit],
   );
-  const visible = (i: StatusItemContribution) => isStatusItemVisible(i, overrides);
+  const unavailable = useUnavailableStatusWidgets();
+  const visible = (i: StatusItemContribution) => !unavailable.has(i.id) && isStatusItemVisible(i, overrides);
   const render = (item: StatusItemContribution) => {
     const C = item.component;
     const shrink = item.align === "left" || item.id === "workbench.tasks";

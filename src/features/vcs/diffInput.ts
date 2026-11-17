@@ -1,5 +1,6 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, RevisionChange } from "@/bindings";
+import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
 import { call, commands, type LineEnding } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
@@ -16,8 +17,11 @@ export type DiffSide =
   | { type: "worktree"; label?: string }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
-  /** `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent. */
-  | { type: "text"; text: string; label: string; absent?: boolean }
+  /**
+   * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
+   * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
+   */
+  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -41,6 +45,8 @@ export interface DiffData {
   line?: number;
   /** The side `line` is on. */
   lineSide?: "left" | "right";
+  /** UTF-16 column on `line` for the caret (the line start when absent). */
+  col?: number;
   /** Tab title instead of the default "name (left ↔ right)". */
   title?: string;
   /** Notes shown under lines (unified mode shows the right side's only). */
@@ -59,8 +65,12 @@ export interface DiffData {
   context?: { kind: string; [key: string]: unknown };
   /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
   embedded?: boolean;
+  /** Annotate the left (previous) side with Git Blame when the diff opens. */
+  annotateLeft?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
+  /** The user picked both sides (Compare Files, with Clipboard, blank diff): they can be swapped. */
+  swappable?: boolean;
 }
 
 export const DIFF_KIND = "diff";
@@ -115,6 +125,23 @@ export function sideLabel(s: DiffSide): string {
 
 const diffKey = (data: DiffData) => `diff:${data.path}:${sideKey(data.left)}:${sideKey(data.right)}`;
 
+/** Each diff's caret by tab key, most recent last, so Back returns to it there. */
+const carets = new Map<string, { line: number; col: number; side: "left" | "right" }>();
+
+export function rememberDiffCaret(key: string, line: number, col: number, side: "left" | "right") {
+  carets.delete(key);
+  carets.set(key, { line, col, side });
+  if (carets.size > 100) carets.delete(carets.keys().next().value!);
+}
+
+/** `input` reopening at its diff's last caret. */
+export function diffInputAtCaret(input: EditorInput): EditorInput {
+  const caret = carets.get(input.key);
+  if (!caret) return input;
+  const { reveal: _reveal, ...data } = input.data as DiffData;
+  return { ...input, data: { ...data, line: caret.line, col: caret.col, lineSide: caret.side } };
+}
+
 export function diffInput(data: DiffData): EditorInput {
   return { kind: DIFF_KIND, key: diffKey(data), path: data.path, data };
 }
@@ -141,7 +168,20 @@ export function diffTitle(data: DiffData): string {
 }
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
+  const combined = combinedOf(data);
+  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
+}
+
+/** An all-in-one diff tab: one per change (the same files with the same sides). */
+export function combinedDiffInput(data: CombinedDiffData): EditorInput {
+  const items = data.items.map(({ chain: _chain, reveal: _reveal, line: _line, lineSide: _side, ...item }) => item);
+  return {
+    kind: COMBINED_DIFF_KIND,
+    key: `combined-diff:${items.map(diffKey).join("\n")}`,
+    path: data.reveal ?? items[0]?.path ?? "",
+    data: { ...data, items },
+  };
 }
 
 /**

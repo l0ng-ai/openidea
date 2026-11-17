@@ -322,6 +322,20 @@ async fn a_process_that_exits_finishes_even_while_its_channel_stays_open() {
 }
 
 #[tokio::test]
+async fn a_command_that_exits_returns_even_while_its_channel_stays_open() {
+    let env = env().await;
+    let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), session.exec("linger", None))
+        .await
+        .expect("the exit status must end the command")
+        .unwrap();
+    assert_eq!(
+        (out.code, out.stdout.as_slice(), out.stderr.as_slice()),
+        (Some(3), b"ran: linger".as_slice(), b"oops".as_slice())
+    );
+}
+
+#[tokio::test]
 async fn upload_reports_a_command_that_stops_reading() {
     let env = env().await;
     let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();

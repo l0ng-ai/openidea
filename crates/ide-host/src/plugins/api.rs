@@ -97,6 +97,26 @@ pub trait PluginWorkspace: Send + Sync {
     fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
         None
     }
+    /// Sends `method` to the running language server named `server` of the project at
+    /// `root`: a request, or with `notify` a notification (the result is null).
+    #[allow(clippy::too_many_arguments)]
+    fn lsp_request(
+        &self,
+        _root: &Path,
+        server: &str,
+        _method: &str,
+        _params: Option<serde_json::Value>,
+        _notify: bool,
+        _cancel: &CancellationToken,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
+    }
+    /// What the IDE has resolved of the Maven / Gradle builds of the project at `root`;
+    /// never runs a build tool.
+    fn build_graph(&self, _root: &Path) -> Result<super::BuildGraph, HostError> {
+        Ok(super::BuildGraph::default())
+    }
     /// Current index of the project rooted at `root`; never reads disk or calls LSP.
     fn symbols(
         &self,
@@ -219,7 +239,7 @@ fn network_error(error: reqwest::Error) -> HostError {
         }
         source = e.source();
     }
-    HostError::Failed(error.to_string())
+    HostError::Failed(ide_http::client::describe(&error))
 }
 
 fn redirect_capability(from: &reqwest::Url, to: &reqwest::Url) -> Result<Capability, String> {
@@ -662,9 +682,14 @@ impl Shared {
         }
         let previous =
             self.setting_snapshots.lock().insert((client.map(str::to_owned), pkg.id().into()), current.clone());
-        previous
-            .map(|old| current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect())
-            .unwrap_or_default()
+        match previous {
+            // First contact since the plugin loaded (fresh install, update,
+            // re-enable): hand over every current key, so the synthetic
+            // post-install `settings-changed` wakes the plugin instead of being
+            // dropped for having no diff yet.
+            None => current.into_keys().collect(),
+            Some(old) => current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect(),
+        }
     }
 
     pub fn status_snapshot(&self, client: &str) -> Vec<super::PluginStatusItem> {
@@ -1531,13 +1556,8 @@ impl HostApi for PluginApi {
         }
         Ok(())
     }
-    fn open_diff(
-        &self,
-        client: &str,
-        diff: ide_plugin::ContentDiff,
-        file_name: Option<String>,
-    ) -> Result<(), HostError> {
-        super::execution::validate_diff(&diff)?;
+    fn open_diff(&self, client: &str, diff: ide_plugin::FileDiff, file_name: Option<String>) -> Result<(), HostError> {
+        super::execution::validate_file_diff(&diff)?;
         if let Some(name) = &file_name {
             super::execution::label(name, 256)?;
         }
@@ -1641,6 +1661,9 @@ impl HostApi for PluginApi {
         item: Option<ide_plugin::FileDecoration>,
     ) -> Result<(), HostError> {
         self.set_decorations(path, set, Vec::new(), item, true)
+    }
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        self.set_file_icon_decorations(set, items)
     }
     fn vcs_log(
         &self,
@@ -2175,6 +2198,49 @@ impl HostApi for PluginApi {
             cancel,
             deadline,
         )
+    }
+
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        self.require_api("`language-servers`", 9)?;
+        if !ide_lsp::plugin_method_allowed(method) {
+            return Err(HostError::Invalid(format!("`{method}` is not one of the server's own methods")));
+        }
+        let workspace = self
+            .shared
+            .workspace()
+            .ok_or_else(|| HostError::NotFound(format!("no language server `{server}` is running for this project")))?;
+        // The server reads and edits the project on the plugin's behalf, as a process would.
+        if !workspace.trusted(root) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        let params = params
+            .map(|p| serde_json::from_str(&p).map_err(|e| HostError::Invalid(format!("params are not JSON: {e}"))))
+            .transpose()?;
+        let result = workspace.lsp_request(root, server, method, params, notify, cancel, timeout)?;
+        Ok(result.to_string())
+    }
+
+    fn build_dependencies(
+        &self,
+        root: &Path,
+        module: Option<&str>,
+    ) -> Result<Vec<ide_plugin::DependencyNode>, HostError> {
+        self.require_api("`build`", 10)?;
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
+        // The graph comes from running the project's build, as `vcs.read` does git.
+        if !workspace.trusted(root) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        super::build_graph::dependency_nodes(&workspace.build_graph(root)?, module)
     }
 
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError> {
@@ -2779,7 +2845,7 @@ impl HostApi for PluginApi {
     }
 
     fn post_view_message(&self, view: &str, message: String) -> Result<(), HostError> {
-        let declared = [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
+        let declared = super::ui_points::WEB_POINTS
             .iter()
             .any(|point| self.shared.ui.items(point, Some(self.id())).iter().any(|i| i.key == view));
         if !declared {
@@ -3044,7 +3110,16 @@ impl PluginWorkspace for HostWorkspace {
             &project.root,
             &project.settings.effective(),
         );
-        if config.debug_adapter.is_none() {
+        if config.debug_adapter.is_none()
+            && let Some(language) = config.extras.params.get(super::run_detectors::DEBUG_LANGUAGE)
+        {
+            config.debug_adapter = project
+                .languages
+                .get(&ide_core::LanguageId::new(language.as_str()))
+                .and_then(|l| l.debugger)
+                .map(|d| d.adapter);
+        }
+        if config.debug_adapter.is_none() && !config.extras.params.contains_key(super::run_detectors::DEBUG_ATTACH) {
             let cwd = config.cwd.as_ref().map(|p| p.as_ref()).unwrap_or(&project.root);
             config.debug_adapter =
                 config.args.iter().map(|arg| cwd.join(arg)).filter(|path| path.is_file()).find_map(|path| {
@@ -3288,6 +3363,41 @@ impl PluginWorkspace for HostWorkspace {
             Err(e) if e.kind == ide_core::error::ErrorKind::InvalidInput => Err(HostError::Invalid(e.message)),
             Err(e) => Err(HostError::Failed(e.message)),
         }
+    }
+
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        use ide_core::error::ErrorKind;
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = HostWorkspace::project_covering(self, root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        let result = if notify {
+            project.lsp.server_notify(root, server, method, params).map(|()| serde_json::Value::Null)
+        } else {
+            host.runtime.block_on(project.lsp.server_request(root, server, method, params, cancel, timeout))
+        };
+        result.map_err(|e| match e.kind {
+            // A server that stopped while the request was on its way is as absent as one never started.
+            ErrorKind::NotFound | ErrorKind::Unavailable => HostError::NotFound(e.message),
+            ErrorKind::InvalidInput => HostError::Invalid(e.message),
+            ErrorKind::Cancelled => HostError::Cancelled,
+            _ => HostError::Failed(e.message),
+        })
+    }
+
+    fn build_graph(&self, root: &Path) -> Result<super::BuildGraph, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = HostWorkspace::project_covering(self, root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        crate::ops::build::analyzed_dependencies(&project, &host.config_dir, root).map_err(failed)
     }
 
     fn trusted(&self, root: &Path) -> bool {
@@ -4124,6 +4234,9 @@ impl PluginApi {
         {
             return Err(HostError::Invalid("a file note is one non-empty line of at most 200 characters".into()));
         }
+        if let Some(icon) = file.as_ref().and_then(|f| f.icon.as_ref()) {
+            ide_extension::validate_item_id(icon, "file icon id").map_err(HostError::Invalid)?;
+        }
         items.retain(|d| decoration_style(&d.style));
         if items.iter().any(|d| d.range.start > d.range.end) {
             return Err(HostError::Invalid("reversed decoration range".into()));
@@ -4132,24 +4245,14 @@ impl PluginApi {
             // The decoration follows the file, not the window's project: editors render
             // whatever they have open, including files outside every project root. The
             // set's root stays the path's own (deepest open) project for tree filtering.
-            let root = self
-                .shared
-                .workspace()
-                .map(|w| {
-                    w.projects()
-                        .into_iter()
-                        .filter(|root| path.starts_with(root))
-                        .max_by_key(|root| root.components().count())
-                })
-                .unwrap_or_default()
-                .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()));
+            let root = self.decoration_root(path);
             Some(super::DecorationSet {
                 root: root.into(),
                 path: ide_core::IpcPath(path.to_path_buf()),
                 set_id: set.into(),
                 tree,
                 items,
-                file: file.filter(|f| f.note.is_some() || decoration_style(&f.style)),
+                file: file.filter(|f| f.note.is_some() || f.icon.is_some() || decoration_style(&f.style)),
             })
         } else {
             None
@@ -4174,6 +4277,60 @@ impl PluginApi {
         }
         all.insert(self.id().into(), sets.clone());
         // Emit while holding the state lock so replacement snapshots cannot arrive out of order.
+        self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
+        Ok(())
+    }
+
+    fn decoration_root(&self, path: &Path) -> PathBuf {
+        self.shared
+            .workspace()
+            .map(|w| {
+                w.projects()
+                    .into_iter()
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+            })
+            .unwrap_or_default()
+            .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()))
+    }
+
+    fn set_file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        if set.is_empty() || set.len() > 128 {
+            return Err(HostError::Invalid("set id must be 1-128 bytes".into()));
+        }
+        if items.len() > 10_000 {
+            return Err(HostError::Invalid("at most 10000 file icons per set".into()));
+        }
+        let mut by_path = BTreeMap::new();
+        for (path, icon) in items {
+            ide_extension::validate_item_id(&icon, "file icon id").map_err(HostError::Invalid)?;
+            by_path.insert(path, icon);
+        }
+        let mut all = self.shared.decorations.lock();
+        let mut sets = all.get(self.id()).cloned().unwrap_or_default();
+        sets.retain(|s| !(s.tree && s.set_id == set));
+        for (path, icon) in by_path {
+            let root = self.decoration_root(&path);
+            sets.push(super::DecorationSet {
+                root: root.into(),
+                path: ide_core::IpcPath(path),
+                set_id: set.into(),
+                tree: true,
+                items: Vec::new(),
+                file: Some(ide_plugin::FileDecoration {
+                    badge: None,
+                    style: String::new(),
+                    tooltip: None,
+                    note: None,
+                    icon: Some(icon),
+                }),
+            });
+        }
+        let names: BTreeSet<_> = sets.iter().filter(|s| s.tree).map(|s| &s.set_id).collect();
+        if names.len() > 50 || serde_json::to_vec(&sets).map_err(failed)?.len() > 4 << 20 {
+            return Err(HostError::Invalid("decoration sets exceed plugin limits".into()));
+        }
+        all.insert(self.id().into(), sets.clone());
         self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
         Ok(())
     }
@@ -4330,7 +4487,8 @@ mod workbench_tests {
                     badge: Some("abc".into()),
                     style: "info".into(),
                     tooltip: None,
-                    note: None
+                    note: None,
+                    icon: None,
                 })
             )
             .is_err()
@@ -4340,6 +4498,7 @@ mod workbench_tests {
             style: String::new(),
             tooltip: Some("why".into()),
             note: Some(text.into()),
+            icon: None,
         };
         api.file_decorations(Some(&path), "notes", Some(note("entry point"))).unwrap();
         let notes = |api: &PluginApi| {
@@ -4353,6 +4512,18 @@ mod workbench_tests {
         for bad in ["", "two\nlines", &"x".repeat(201)] {
             assert!(api.file_decorations(Some(&path), "notes", Some(note(bad))).is_err(), "{bad:?}");
         }
+        api.file_icon_decorations(
+            "icons",
+            vec![(path.clone(), "helm-chart".into()), (root.join("chart"), "helm-dir".into())],
+        )
+        .unwrap();
+        let icons = api.shared.decoration_sets()["test"]
+            .iter()
+            .filter(|s| s.tree && s.set_id == "icons")
+            .filter_map(|s| s.file.as_ref().and_then(|f| f.icon.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(icons.len(), 2);
+        assert!(api.file_icon_decorations("icons", vec![(path.clone(), "BAD ID".into())]).is_err());
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
     }

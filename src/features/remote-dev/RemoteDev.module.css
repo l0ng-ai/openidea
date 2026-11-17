@@ -1,7 +1,7 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 14px;
 }
 .hint {
@@ -15,7 +15,7 @@
 }
 .row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 .grow {
@@ -34,7 +34,7 @@
 .folder {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   padding: 3px 8px;
   border: 0;
@@ -57,18 +57,23 @@
 .progress {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-top: 4px;
 }
 
 .progressLine {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }
 
 .percent {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
+}
+.lost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }

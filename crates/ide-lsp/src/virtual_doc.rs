@@ -32,7 +32,7 @@ pub(crate) fn normalize_uris(value: &mut serde_json::Value) {
                 if matches!(key.as_str(), "data" | "arguments") {
                     continue;
                 }
-                if matches!(key.as_str(), "uri" | "targetUri" | "oldUri" | "newUri")
+                if matches!(key.as_str(), "uri" | "targetUri" | "oldUri" | "newUri" | "target")
                     && let Some(uri) = value.as_str().and_then(escaped_uri)
                 {
                     *value = uri.into();
@@ -108,6 +108,17 @@ pub fn is_decompiled(text: &str) -> bool {
             .iter()
             .any(|marker| line.starts_with(marker))
         })
+}
+
+/// Whether a `.class` stub is written in Java: its first `package` or `import` line ends with `;`.
+/// The Kotlin language server shows Java classes from jars as Java and Kotlin ones as Kotlin, under
+/// the same `.class` name.
+pub fn is_java_class_stub(text: &str) -> bool {
+    text.lines()
+        .take(200)
+        .map(str::trim)
+        .find(|line| line.starts_with("package ") || line.starts_with("import "))
+        .is_some_and(|line| line.ends_with(';'))
 }
 
 /// `scheme` of a URI (`jdt` for `jdt://…`).
@@ -186,12 +197,17 @@ pub(crate) fn archive_modified(uri: &str) -> Option<std::time::SystemTime> {
     std::fs::metadata(archive(uri)?).and_then(|m| m.modified()).ok()
 }
 
-/// Check both the package and actual archive, so duplicate type names never pick another jar.
-pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, name: &str) -> bool {
+/// Whether `uri` is jdtls' class `package.name`, in any archive.
+pub(crate) fn matches_class_name(uri: &str, package: &str, name: &str) -> bool {
     let segs = segments(uri);
     scheme(uri) == "jdt"
         && (package.is_empty() && segs.len() == 3 || segs.get(2).is_some_and(|s| s == package))
         && segs.last().is_some_and(|s| s == &format!("{name}.class") || s == &format!("{name}.java"))
+}
+
+/// Check both the package and actual archive, so duplicate type names never pick another jar.
+pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, name: &str) -> bool {
+    matches_class_name(uri, package, name)
         && description(uri).is_some_and(|p| {
             let path = std::path::Path::new(&p);
             path == jar
@@ -199,11 +215,78 @@ pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, nam
         })
 }
 
+/// jdtls' document for class `package.name` of archive `jar` among `uris`. With `any_archive`,
+/// when the caller names the archive by another path than the Java model does (a copy another
+/// server made of a `system`-scope jar, say), the one class of that name in the model; with
+/// several, none rather than another jar's.
+pub(crate) fn pick_class(
+    uris: impl IntoIterator<Item = String>,
+    jar: &std::path::Path,
+    package: &str,
+    name: &str,
+    any_archive: bool,
+) -> Option<String> {
+    let named: Vec<String> = uris.into_iter().filter(|uri| matches_class_name(uri, package, name)).collect();
+    if let Some(uri) = named.iter().find(|uri| matches_class(uri, jar, package, name)) {
+        return Some(uri.clone());
+    }
+    match named.as_slice() {
+        [only] if any_archive => Some(only.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const JDT: &str = "jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot/SpringApplication.class?=spring-demo/%5C/Users%5C/me%5C/.m2%5C/repository%5C/spring-boot-4.1.1.jar%3Corg.springframework.boot%28SpringApplication.class";
+
+    #[test]
+    fn picks_the_class_of_the_archive_or_the_only_one_of_that_name() {
+        let jdt = |jar: &str, file: &str| {
+            format!(
+                "jdt://contents/{file}/org.springframework.boot/SpringApplication.class?=demo/%5C/repo%5C/{jar}%3Corg.springframework.boot%28SpringApplication.class"
+            )
+        };
+        let (a, b) = (jdt("a.jar", "a.jar"), jdt("b.jar", "b.jar"));
+        let pick = |uris: &[&String], jar: &str| {
+            pick_class(
+                uris.iter().map(|u| (*u).clone()),
+                std::path::Path::new(jar),
+                "org.springframework.boot",
+                "SpringApplication",
+                true,
+            )
+        };
+        assert_eq!(pick(&[&a, &b], "/repo/b.jar"), Some(b.clone()));
+        // Another path for the archive: the only class of that name.
+        assert_eq!(pick(&[&a], "/elsewhere/copy.jar"), Some(a.clone()));
+        // Two candidates and neither archive matches: none rather than a guess.
+        assert_eq!(pick(&[&a, &b], "/elsewhere/copy.jar"), None);
+        let other = JDT.replace("SpringApplication.class", "Banner.class");
+        assert_eq!(pick(&[&other], "/elsewhere/copy.jar"), None);
+        // Strict: only the named archive.
+        let strict = pick_class(
+            [a.clone()],
+            std::path::Path::new("/elsewhere/copy.jar"),
+            "org.springframework.boot",
+            "SpringApplication",
+            false,
+        );
+        assert_eq!(strict, None);
+    }
+
+    #[test]
+    fn class_stubs_in_java_or_kotlin() {
+        let java = "// IntelliJ API Decompiler stub source generated from a class file\n\npackage com.boydti.fawe.util;\n\npublic class EditSessionBuilder {\n}\n";
+        let kotlin = "// IntelliJ API Decompiler stub source generated from a class file\n// Implementation of methods is not available\n\npackage kotlin.collections\n\npublic fun <T> listOf(): List<T> { /* compiled code */ }\n";
+        let imports_only = "import java.util.List;\n\npublic class A {}\n";
+        assert!(is_java_class_stub(java));
+        assert!(is_java_class_stub(imports_only));
+        assert!(!is_java_class_stub(kotlin));
+        assert!(!is_java_class_stub("public class A {}"));
+    }
 
     #[test]
     fn csharp_metadata_titles_and_kinds() {
@@ -245,6 +328,22 @@ mod tests {
         assert_eq!(response[1]["location"]["targetUri"], encoded);
         assert_eq!(response.as_array().unwrap()[2..], original.as_array().unwrap()[2..]);
         assert!(encoded.parse::<lsp_types::Uri>().is_ok());
+    }
+
+    /// `DocumentLink.target` is a URI too: one unescaped link fails the whole `documentLink` response.
+    #[test]
+    fn document_link_targets_are_escaped() {
+        let range = serde_json::json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } });
+        let mut links = serde_json::json!([
+            { "range": range, "target": "file:///D:/My Game/项目/a.xsd" },
+            { "range": range, "target": "https://example.com/a b" }
+        ]);
+        assert!(serde_json::from_value::<Vec<lsp_types::DocumentLink>>(links.clone()).is_err());
+        normalize_uris(&mut links);
+        assert_eq!(links[0]["target"], "file:///D:/My%20Game/%E9%A1%B9%E7%9B%AE/a.xsd");
+        assert_eq!(links[1]["target"], "https://example.com/a b", "other schemes are not touched");
+        links[1]["target"] = "https://example.com/ab".into();
+        assert_eq!(serde_json::from_value::<Vec<lsp_types::DocumentLink>>(links).unwrap().len(), 2);
     }
 
     /// #3089: jdtls's Introduce Variable edit for a project under a Chinese path names the file

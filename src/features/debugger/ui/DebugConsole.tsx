@@ -34,7 +34,7 @@ import {
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { findOutputLinks, type OutputLink } from "@/features/run/links";
-import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
@@ -59,8 +59,8 @@ const DebugLine = memo(
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind === "url") void openUrl(link.url);
-      else void openTarget(link.target, cwd);
+      if (link.kind !== "url") void openTarget(link.target, cwd);
+      else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     if (segments.length === 0) return <>{"\u200B"}</>;
     return (
@@ -123,7 +123,12 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   // The debug console uses the same font as the Run console.
   const consoleFont = useConsoleFont();
   const { rowHeight } = consoleFont;
-  const fontStyle = { fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px` };
+  const fontStyle = {
+    fontFamily: consoleFont.family,
+    fontSize: `${consoleFont.size}px`,
+    fontWeight: consoleFont.weight,
+    ["--fw-code-bold" as string]: String(consoleFont.boldWeight),
+  };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
   const logColors = useWorkflowSettings((s) => s.console.logColors);

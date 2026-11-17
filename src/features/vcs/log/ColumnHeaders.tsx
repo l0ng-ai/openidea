@@ -1,0 +1,243 @@
+import { tx } from "@/platform/i18n";
+import { lockDragCursor, showContextMenu } from "@/ui";
+import clsx from "clsx";
+import { useCallback, useEffect, useRef, useState } from "react";
+import styles from "../GitLog.module.css";
+import { logOptions, type LogOptions } from "../logOptions";
+import { updateLogOptions } from "../logStore";
+import { useVcs } from "../store";
+import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
+
+interface ColumnDrag {
+  id: string;
+  target: string | null;
+  after: boolean;
+}
+
+export function ColumnHeaders({
+  columns,
+  options,
+  minWidth,
+}: {
+  columns: LogColumn[];
+  options: LogOptions;
+  minWidth: number;
+}) {
+  const [drag, setDrag] = useState<ColumnDrag | null>(null);
+  const ids = columnSequence(options.columnOrder, columns);
+  const cancel = useCallback(() => setDrag(null), []);
+  const move = (source: string, target: string | null, after: boolean) => {
+    if (!target || source === target || !ids.includes(source) || !ids.includes(target)) return;
+    const reordered = ids.filter((id) => id !== source);
+    const to = reordered.indexOf(target);
+    reordered.splice(after ? to + 1 : to, 0, source);
+    updateLogOptions({ columnOrder: reordered });
+  };
+  const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
+  return (
+    <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+      {options.showRepository && useVcs.getState().roots.length > 1 && (
+        <span className={styles.colRepository}>{tx("Repository")}</span>
+      )}
+      {ids.map((cid) => {
+        const column = cid === SUBJECT_COLUMN.id ? SUBJECT_COLUMN : columns.find((c) => c.id === cid);
+        if (!column) return null;
+        return (
+          <LogColumnHeader
+            key={cid}
+            column={column}
+            subject={cid === SUBJECT_COLUMN.id}
+            ids={visibleIds}
+            options={options}
+            drag={drag}
+            onMove={move}
+            onDragOver={(id, target, after) =>
+              setDrag((d) => (d?.id === id && d.target === target && d.after === after ? d : { id, target, after }))
+            }
+            onDragCancel={cancel}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// Column headers reorder by pointer capture: WebView2 blocks HTML5 drag events
+// while dragDropEnabled is on, so dragging must not rely on them.
+function LogColumnHeader({
+  column,
+  subject,
+  ids,
+  options,
+  drag,
+  onMove,
+  onDragOver,
+  onDragCancel,
+}: {
+  column: LogColumn;
+  subject?: boolean;
+  ids: string[];
+  options: LogOptions;
+  drag: ColumnDrag | null;
+  onMove(source: string, target: string | null, after: boolean): void;
+  onDragOver(id: string, target: string | null, after: boolean): void;
+  onDragCancel(): void;
+}) {
+  const press = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    element: HTMLElement;
+    pointerId: number;
+  } | null>(null);
+  const resizeDrag = useRef<{
+    x: number;
+    width: number;
+    element: HTMLElement;
+    pointerId: number;
+    releaseCursor: () => void;
+  } | null>(null);
+  const cancel = useCallback(() => {
+    const captures = [press.current, resizeDrag.current];
+    press.current = null;
+    resizeDrag.current?.releaseCursor();
+    resizeDrag.current = null;
+    for (const capture of captures)
+      if (capture?.element.hasPointerCapture?.(capture.pointerId))
+        capture.element.releasePointerCapture(capture.pointerId);
+    onDragCancel();
+  }, [onDragCancel]);
+  useEffect(() => {
+    const escape = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || (!press.current && !resizeDrag.current)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+    };
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", escape, true);
+    return () => {
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", escape, true);
+      cancel();
+    };
+  }, [cancel]);
+  const width = options.columnWidths[column.id] ?? column.width ?? 120;
+  const resize = (value: number) =>
+    updateLogOptions({
+      columnWidths: { ...logOptions().columnWidths, [column.id]: Math.max(40, Math.min(800, value)) },
+    });
+  const index = ids.indexOf(column.id);
+  const hitColumn = (x: number, y: number) => {
+    const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
+    if (!el || el.parentElement !== press.current?.element.parentElement) return null;
+    const rect = el.getBoundingClientRect();
+    return { id: el.getAttribute("data-log-column")!, after: x > rect.left + rect.width / 2 };
+  };
+  return (
+    <span
+      className={clsx(
+        styles.columnCell,
+        styles.columnHeading,
+        subject && styles.colSubject,
+        drag?.id === column.id && styles.dragSource,
+        drag &&
+          drag.target === column.id &&
+          drag.id !== column.id &&
+          (drag.after ? styles.dropAfter : styles.dropBefore),
+      )}
+      style={subject ? undefined : { width }}
+      data-log-column={column.id}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        press.current = { x: e.clientX, y: e.clientY, active: false, element: e.currentTarget, pointerId: e.pointerId };
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        const start = press.current;
+        if (!start || start.pointerId !== e.pointerId) return;
+        if (!start.active && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 4) return;
+        start.active = true;
+        const target = hitColumn(e.clientX, e.clientY);
+        onDragOver(column.id, target?.id ?? null, target?.after ?? false);
+      }}
+      onPointerUp={(e) => {
+        const start = press.current;
+        if (!start || start.pointerId !== e.pointerId) return;
+        const target = hitColumn(e.clientX, e.clientY);
+        if (start.active) onMove(column.id, target?.id ?? null, target?.after ?? false);
+        cancel();
+      }}
+      onPointerCancel={cancel}
+      onLostPointerCapture={cancel}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, [
+          {
+            label: "Move Left",
+            disabled: index === 0,
+            run: () => onMove(column.id, ids[index - 1] ?? null, false),
+          },
+          {
+            label: "Move Right",
+            disabled: index === ids.length - 1,
+            run: () => onMove(column.id, ids[index + 1] ?? null, true),
+          },
+          ...(subject ? [] : [{ label: "Reset Width", run: () => resize(column.width ?? 120) }]),
+        ]);
+      }}
+    >
+      {tx(column.title)}
+      {!subject && (
+        <span
+          className={styles.columnResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={tx`Resize ${tx(column.title)} column`}
+          aria-valuemin={40}
+          aria-valuemax={800}
+          aria-valuenow={width}
+          tabIndex={0}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            resizeDrag.current = {
+              x: e.clientX,
+              width,
+              element: e.currentTarget,
+              pointerId: e.pointerId,
+              releaseCursor: lockDragCursor("ew-resize"),
+            };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (resizeDrag.current && e.currentTarget.hasPointerCapture(e.pointerId))
+              resize(resizeDrag.current.width + e.clientX - resizeDrag.current.x);
+          }}
+          onPointerUp={(e) => {
+            resizeDrag.current?.releaseCursor();
+            resizeDrag.current = null;
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+          }}
+          onPointerCancel={() => {
+            resizeDrag.current?.releaseCursor();
+            resizeDrag.current = null;
+          }}
+          onLostPointerCapture={() => {
+            resizeDrag.current?.releaseCursor();
+            resizeDrag.current = null;
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.altKey)
+              onMove(column.id, ids[index + (e.key === "ArrowLeft" ? -1 : 1)] ?? null, e.key === "ArrowRight");
+            else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
+          }}
+        />
+      )}
+    </span>
+  );
+}

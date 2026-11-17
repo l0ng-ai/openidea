@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Compartment, EditorState, Prec, type StateEffect } from "@codemirror/state";
 import { EditorView, highlightSpecialChars, keymap } from "@codemirror/view";
@@ -23,6 +24,8 @@ import logStyles from "@/ui/LogPane.module.css";
 import { notifyEditorDocumentChanged, type EditorDocumentLifecycle, type EditorInput } from "@/workbench/contributions";
 import { errorText, usePlugins } from "../store";
 import { bindContentControls } from "./contentActions";
+import { ContentMarkdown, isMarkdownContent, MarkdownLayoutButtons, type MarkdownLayout } from "./ContentMarkdown";
+import markdownStyles from "./ContentMarkdown.module.css";
 import {
   cancelPluginContentRequests,
   dispatchContentTabAction,
@@ -192,6 +195,13 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
   const [status, setStatus] = useState<{ text: string; isError: boolean } | null>(null);
   const [find, setFind] = useState<{ replace: boolean; seq: number } | null>(null);
   const [viewGen, setViewGen] = useState(0);
+  // Markdown tabs show a preview; read-only ones (a review's description) open on it.
+  const markdown = isMarkdownContent(data);
+  const [layout, setLayout] = useState<MarkdownLayout>(() => (session.readOnly ? "preview" : "editor"));
+  const shownLayout: MarkdownLayout = markdown ? layout : "editor";
+  const previewShownRef = useRef(false);
+  previewShownRef.current = shownLayout !== "editor";
+  const [, setPreviewSeq] = useState(0);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -433,6 +443,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
               setModified(nextDirty);
               notifyEditorDocumentChanged();
             }
+            if (u.docChanged && previewShownRef.current) setPreviewSeq((n) => n + 1);
             if (u.docChanged || u.selectionSet) {
               findWatchersRef.current.forEach((fn) => fn(u));
             }
@@ -633,13 +644,16 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
           </span>
         )}
         <span className={logStyles.flex} />
-        <IconButton
-          icon="search"
-          size="small"
-          title="Find in Editor"
-          action="plugins.content.find"
-          actionArg={findId}
-        />
+        {markdown && <MarkdownLayoutButtons layout={shownLayout} onChange={setLayout} />}
+        {shownLayout !== "preview" && (
+          <IconButton
+            icon="search"
+            size="small"
+            title="Find in Editor"
+            action="plugins.content.find"
+            actionArg={findId}
+          />
+        )}
         {data.actions.map((action) => (
           <Button
             key={action.id}
@@ -663,7 +677,10 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
           onClose={closeFind}
         />
       )}
-      <div ref={hostRef} className={logStyles.output} />
+      <div className={markdownStyles.body}>
+        <div ref={hostRef} className={clsx(logStyles.output, shownLayout === "preview" && markdownStyles.hidden)} />
+        {shownLayout !== "editor" && <ContentMarkdown text={session.currentText} label={data.title} />}
+      </div>
     </div>
   );
 }

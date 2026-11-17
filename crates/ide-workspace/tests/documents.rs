@@ -202,7 +202,7 @@ fn ui_modes_are_redetected_without_a_language_change() {
     let opened = rec.log.lock().len();
 
     fs::write(&marker, "{}").unwrap();
-    assert_eq!(docs.ui_mode_of(&template).as_deref(), Some("Angular Template"));
+    assert_eq!(docs.language_of(&template, None).ui_mode.as_deref(), Some("Angular Template"));
     assert_eq!(docs.redetect_languages(), vec![a.id]);
     assert_eq!(docs.snapshot(a.id).unwrap().ui_mode.as_deref(), Some("Angular Template"));
     assert!(docs.redetect_languages().is_empty());
@@ -1003,4 +1003,135 @@ fn properties_ascii_noop_and_charset_conversion() {
     f.docs.set_encoding(doc.id, "utf-16le", true).unwrap();
     assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "a=世界😀");
     assert!(!f.docs.is_dirty(doc.id).unwrap());
+}
+
+#[test]
+fn untitled_buffers_are_editable_and_saved_to_a_chosen_path() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.line_ending = LineEnding::Lf;
+    f.docs.set_file_defaults(defaults);
+    let info = f.docs.open_untitled(None).unwrap();
+    assert_eq!(info.path, PathBuf::from("untitled:Untitled-1"));
+    assert_eq!(info.uri.as_deref(), Some("untitled:Untitled-1"));
+    assert_eq!(info.language, LanguageId::plain_text());
+    assert!(!info.read_only && !info.dirty && !info.large);
+
+    // Editing works; nothing is written anywhere.
+    let version = f.docs.edit(info.id, info.version, change(0, 0, "fn main() {}\n")).unwrap();
+    assert!(f.docs.is_dirty(info.id).unwrap());
+    f.docs.save(info.id).unwrap();
+    assert!(f.docs.is_dirty(info.id).unwrap(), "an untitled buffer has no file to save to");
+
+    // Save As: the buffer reaches the disk and becomes a regular file document
+    // (same id, re-keyed, language re-detected, missing parents created).
+    let target = f.root.join("new/nested/main.rs");
+    let saved = f.docs.save_as(info.id, &target).unwrap();
+    assert_eq!(saved.id, info.id);
+    assert_eq!(saved.path, target);
+    assert_eq!(saved.uri, None);
+    assert_eq!(saved.language, LanguageId::new("rust"));
+    assert!(!saved.dirty);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "fn main() {}\n");
+    assert_eq!(f.docs.by_path(&target), Some(info.id));
+    assert_eq!(f.docs.by_path(Path::new("untitled:Untitled-1")), None);
+    f.docs.edit(info.id, version, change(0, 0, "// hi\n")).unwrap();
+    f.docs.save(info.id).unwrap();
+    assert!(!f.docs.is_dirty(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "// hi\nfn main() {}\n");
+
+    // Re-opening the file references the same buffer (split editors share it).
+    let again = f.docs.open(&target).unwrap();
+    assert_eq!(again.id, info.id);
+    f.docs.close(again.id);
+    assert!(f.docs.snapshot(info.id).is_ok());
+    f.docs.close(info.id);
+    assert!(f.docs.snapshot(info.id).is_err());
+}
+
+#[test]
+fn save_as_rejects_paths_opened_elsewhere_and_reuses_free_names() {
+    let f = fixture();
+    let first = f.root.join("taken.txt");
+    fs::write(&first, "taken").unwrap();
+    let taken = f.docs.open(&first).unwrap();
+
+    let a = f.docs.open_untitled(None).unwrap();
+    let b = f.docs.open_untitled(None).unwrap();
+    assert_eq!(a.path, PathBuf::from("untitled:Untitled-1"));
+    assert_eq!(b.path, PathBuf::from("untitled:Untitled-2"));
+    f.docs.edit(a.id, a.version, change(0, 0, "draft")).unwrap();
+
+    let err = f.docs.save_as(a.id, &first).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert!(f.docs.is_dirty(a.id).unwrap(), "nothing was written");
+    assert_eq!(fs::read_to_string(&first).unwrap(), "taken");
+
+    let err = f.docs.save_as(a.id, Path::new("untitled:Untitled-2")).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+
+    // The smallest free name is minted again after a buffer closes.
+    f.docs.close(a.id);
+    let c = f.docs.open_untitled(None).unwrap();
+    assert_eq!(c.path, PathBuf::from("untitled:Untitled-1"));
+
+    // Non-untitled documents cannot be re-keyed.
+    let err = f.docs.save_as(taken.id, &f.root.join("other.txt")).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn untitled_buffers_take_file_defaults_and_refuse_encoding_reloads() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.line_ending = LineEnding::CrLf;
+    defaults.encoding = "utf-8".into();
+    defaults.utf8_bom = true;
+    f.docs.set_file_defaults(defaults);
+    let info = f.docs.open_untitled(None).unwrap();
+    assert_eq!(info.line_ending, LineEnding::CrLf);
+    assert!(info.has_bom);
+    assert!(!info.can_reload_encoding, "there is no file to re-read yet");
+
+    // Converting the encoding of the unsaved text works; re-decoding does not.
+    let encoding = f.docs.set_encoding(info.id, "utf-16le", false).unwrap();
+    assert_eq!(encoding.encoding, "utf-16le");
+    let err = f.docs.set_encoding(info.id, "utf-8", true).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+
+    // Disk syncs never touch an untitled buffer.
+    f.docs.edit(info.id, info.version, change(0, 0, "draft")).unwrap();
+    f.docs.sync_after_disk_change();
+    assert!(f.docs.is_dirty(info.id).unwrap());
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, "draft");
+}
+
+/// Previews and diffs show a file in the language opening it gives: from the hashbang of
+/// the shown text (a revision's), else of its open buffer or the file on disk.
+#[test]
+fn language_of_a_closed_file_reads_the_hashbang() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+    let docs = Documents::new(
+        sink,
+        Box::new(|p: &Path, first: Option<&str>| match first {
+            Some(l) if l.starts_with("#!/usr/bin/env bash") => LanguageId::new("shellscript"),
+            Some(l) if l.starts_with("#!/usr/bin/env python") => LanguageId::new("python"),
+            _ if p.extension().is_some_and(|e| e == "sh") => LanguageId::new("shellscript"),
+            _ => LanguageId::plain_text(),
+        }),
+    );
+    let deploy = tmp.path().join("deploy");
+    fs::write(&deploy, "#!/usr/bin/env bash\necho hi\n").unwrap();
+    let language = |first: Option<&str>| docs.language_of(&deploy, first).language.to_string();
+
+    assert_eq!(language(None), "shellscript", "the file's own first line");
+    assert_eq!(language(Some("#!/usr/bin/env python3")), "python", "the shown revision's first line");
+    assert_eq!(language(Some("echo")), LanguageId::plain_text().to_string());
+    assert_eq!(docs.language_of(&tmp.path().join("gone"), None).language, LanguageId::plain_text());
+
+    let doc = docs.open(&deploy).unwrap();
+    let all = Range::new(Pos::new(0, 0), Pos::new(0, 19));
+    docs.apply_edits(doc.id, &[TextEdit { range: all, new_text: "#!/usr/bin/env python3".into() }]).unwrap();
+    assert_eq!(language(None), "python", "the open buffer's first line");
 }

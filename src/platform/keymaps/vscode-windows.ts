@@ -45,6 +45,7 @@ export const vscodeWindows: Record<string, string[]> = {
   "db.drop": ["Delete"],
   "project.copyAbsolutePath": ["Alt+Shift+C"],
   "project.open": [],
+  "project.openInRightSplit": ["Ctrl+Enter"],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],
@@ -63,6 +64,8 @@ export const vscodeWindows: Record<string, string[]> = {
   "markdown.previewOnly": ["Ctrl+Shift+V"],
   // Agents (VS Code's chat: Ctrl+Shift+I)
   "agents.newTask": ["Ctrl+Shift+I"],
+  "agents.focusInput": ["Ctrl+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
 };

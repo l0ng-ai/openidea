@@ -6,7 +6,7 @@
  */
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
-import { familyFaces, fontsLoaded, monoStack, resolveMonoFont } from "@/platform/fonts";
+import { fontsLoaded, monoStack, nerdFontFaces, resolveMonoFont } from "@/platform/fonts";
 import { computedTokenColor, parseColor, type Rgba } from "@/platform/cssColor";
 
 export { parseColor, type Rgba };
@@ -122,6 +122,15 @@ export function buildSearchDecorations(read: TokenReader) {
   };
 }
 
+/** Terminal URL colour (`#rrggbb` for xterm decorations): the theme's `--link`, else the accent. */
+export function buildLinkColor(read: TokenReader): string {
+  return toHex(parseColor(read("--link")) ?? parseColor(read("--accent")) ?? parseColor(FALLBACK["--accent"]!)!);
+}
+
+export function readLinkColor() {
+  return buildLinkColor(documentTokenReader());
+}
+
 export function readSearchDecorations() {
   return buildSearchDecorations(documentTokenReader());
 }
@@ -140,18 +149,6 @@ export function documentTokenReader(): TokenReader {
 export function readTerminalTheme(): ITheme {
   return buildTheme(documentTokenReader());
 }
-
-const NERD_FONT_FALLBACKS = [
-  "Symbols Nerd Font Mono",
-  "JetBrainsMono Nerd Font Mono",
-  "JetBrainsMono Nerd Font",
-  "MesloLGS NF",
-  "MesloLGS Nerd Font",
-  "Hack Nerd Font",
-  "FiraCode Nerd Font",
-  "Hasklug Nerd Font",
-  "CaskaydiaCove Nerd Font",
-];
 
 export interface TerminalFontSettings {
   useEditorFont: boolean;
@@ -181,13 +178,9 @@ export interface TerminalFont {
   boldWeight: number;
 }
 
-/**
- * Prompt themes (powerlevel10k, starship) use Nerd Font private-use glyphs; list
- * common installs before the generic family so per-glyph fallback finds them.
- */
+/** Nerd Fonts before the generic family, so per-glyph fallback finds prompt icons. */
 function withNerdFonts(family: string): string {
-  const fallbacks = NERD_FONT_FALLBACKS.flatMap(familyFaces).join(", ");
-  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${fallbacks}, monospace`;
+  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${nerdFontFaces().join(", ")}, monospace`;
 }
 
 /**

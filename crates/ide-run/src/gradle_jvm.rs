@@ -26,9 +26,13 @@ pub fn init_script(jvm_args: &[String]) -> String {
     let list = jvm_args.iter().map(|a| groovy_string(a)).collect::<Vec<_>>().join(", ");
     format!(
         "// Written by OpenIDEA: VM options of the run configuration.\n\
+         import org.gradle.util.GradleVersion\n\
+         // `configureEach` (lazy) is Gradle 4.9+; older ones configure each task as it is added.\n\
+         def each = {{ tasks, Closure action -> GradleVersion.current() >= GradleVersion.version('4.9') ? \
+         tasks.configureEach(action) : tasks.all(action) }}\n\
          allprojects {{\n    \
-             tasks.withType(JavaExec).configureEach {{ jvmArgs([{list}]) }}\n    \
-             tasks.withType(Test).configureEach {{ jvmArgs([{list}]) }}\n\
+             each(tasks.withType(JavaExec)) {{ t -> t.jvmArgs([{list}]) }}\n    \
+             each(tasks.withType(Test)) {{ t -> t.jvmArgs([{list}]) }}\n\
          }}\n"
     )
 }
@@ -75,8 +79,10 @@ mod tests {
     fn adds_each_argument_to_java_exec_and_test_tasks() {
         let script = init_script(&args(&["-Ddemo.flag=on", "--add-opens", "java.base/java.lang=ALL-UNNAMED"]));
         let list = "['-Ddemo.flag=on', '--add-opens', 'java.base/java.lang=ALL-UNNAMED']";
-        assert!(script.contains(&format!("tasks.withType(JavaExec).configureEach {{ jvmArgs({list}) }}")), "{script}");
-        assert!(script.contains(&format!("tasks.withType(Test).configureEach {{ jvmArgs({list}) }}")), "{script}");
+        assert!(script.contains(&format!("each(tasks.withType(JavaExec)) {{ t -> t.jvmArgs({list}) }}")), "{script}");
+        assert!(script.contains(&format!("each(tasks.withType(Test)) {{ t -> t.jvmArgs({list}) }}")), "{script}");
+        // Gradle before 4.9 has no `configureEach` (#3864).
+        assert!(script.contains("? tasks.configureEach(action) : tasks.all(action)"), "{script}");
     }
 
     #[test]

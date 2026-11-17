@@ -4,7 +4,7 @@
  * context menu do with them.
  */
 import { create } from "zustand";
-import type { ChangedFile, Commit, FileLineStats, RevisionChange } from "@/bindings";
+import type { ChangedFile, Commit, FileLineStats, LinkTarget, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
@@ -36,6 +36,8 @@ export interface LogChange {
   repo?: string | null;
   oldPath: string | null;
   kind: ChangedFile["kind"];
+  /** Set for a symbolic link: what it points to in the revision holding it. */
+  link?: LinkTarget | null;
   /** `null`: the file did not exist before. */
   before: string | null;
   /** `null`: the change deleted the file. */
@@ -78,6 +80,7 @@ export function toLogChanges(
         path: f.path,
         oldPath: f.oldPath,
         kind: f.kind,
+        link: f.link,
         before: f.kind === "added" ? null : parent,
         after: f.kind === "deleted" ? null : commit.id,
         statsFrom: parent ?? EMPTY_TREE,
@@ -92,6 +95,7 @@ export function toLogChanges(
       path: r.path,
       oldPath: r.oldPath,
       kind: r.kind,
+      link: r.link,
       before: r.before,
       after: r.after,
       statsFrom: r.before ?? EMPTY_TREE,
@@ -223,7 +227,11 @@ export function changesArg(arg: unknown): LogChange[] {
  * editor's preview tab, so looking through a commit's files reuses one tab.
  * `preview`: without taking focus (selection in the pane).
  */
-export async function showChangesDiff(changes: readonly LogChange[], preview = false) {
+export async function showChangesDiff(
+  changes: readonly LogChange[],
+  preview = false,
+  chainChanges: readonly LogChange[] = useLogChanges.getState().all,
+) {
   const first = changes[0];
   if (!first) return;
   if (first.mergeParents?.length === 2 && first.after) {
@@ -241,8 +249,7 @@ export async function showChangesDiff(changes: readonly LogChange[], preview = f
     else await editorService().openInput(input, { preview: true, focus: !preview });
     return;
   }
-  const all = useLogChanges.getState().all;
-  const chain = all.includes(first) ? all : [...changes];
+  const chain = chainChanges.includes(first) ? chainChanges : [...changes];
   const data = withChain(
     chain.map((c) => c.diff),
     Math.max(0, chain.indexOf(first)),

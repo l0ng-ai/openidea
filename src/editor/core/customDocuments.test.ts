@@ -4,7 +4,7 @@ import { createMemoryBackend } from "./backend";
 import { findTab, initialTabsState, paneIds } from "./model/tabs";
 import { useDocMeta } from "./model/document";
 import { useProject } from "@/platform/project";
-import { ask } from "@/workbench/messages";
+import { ask, confirm } from "@/workbench/messages";
 import type * as Messages from "@/workbench/messages";
 import * as virtualDocs from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
@@ -18,6 +18,7 @@ import {
 vi.mock("@/workbench/messages", async (original) => ({
   ...(await original<typeof Messages>()),
   ask: vi.fn(),
+  confirm: vi.fn(),
 }));
 
 class TestDocument implements EditorDocumentLifecycle {
@@ -246,6 +247,57 @@ describe("custom editor document lifetime", () => {
     expect(doc.running).toBe(false);
     expect(doc.closed).toBe(true);
     expect(findTab(useTabs.getState(), input().key)).toBeNull();
+  });
+
+  it("keeps discarded changes when ending a busy tab's session is cancelled", async () => {
+    const busy = registerEditorKind({
+      kind: "busy-test",
+      component: () => null,
+      title: (i) => i.key,
+      isBusy: () => true,
+    });
+    try {
+      const doc = await open();
+      await ctrl.openInput({ kind: "busy-test", key: "busy:1" }, { focus: false });
+      vi.mocked(ask).mockResolvedValue({ button: "discard", checked: false });
+      vi.mocked(confirm).mockResolvedValue(false);
+      const pane = useTabs.getState().activePane;
+      expect(await ctrl.closeAll(pane)).toBe(false);
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(doc.text).toBe("edited");
+      expect(useTabs.getState().panes[pane]!.tabs.map((tab) => tab.input.key)).toEqual(["custom:a", "busy:1"]);
+    } finally {
+      busy();
+      vi.mocked(confirm).mockReset();
+    }
+  });
+
+  it("asks about a tab that becomes busy while changes are discarded", async () => {
+    let busyNow = false;
+    const busy = registerEditorKind({
+      kind: "busy-test",
+      component: () => null,
+      title: (i) => i.key,
+      isBusy: () => busyNow,
+    });
+    try {
+      const doc = await open();
+      doc.discard = async () => {
+        busyNow = true;
+        doc.pending = "";
+        doc.text = doc.saved;
+      };
+      await ctrl.openInput({ kind: "busy-test", key: "busy:1" }, { focus: false });
+      vi.mocked(ask).mockResolvedValue({ button: "discard", checked: false });
+      vi.mocked(confirm).mockResolvedValue(false);
+      const pane = useTabs.getState().activePane;
+      expect(await ctrl.closeAll(pane)).toBe(false);
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(useTabs.getState().panes[pane]!.tabs.map((tab) => tab.input.key)).toContain("busy:1");
+    } finally {
+      busy();
+      vi.mocked(confirm).mockReset();
+    }
   });
 
   it("discards without a removal-triggered autosave", async () => {

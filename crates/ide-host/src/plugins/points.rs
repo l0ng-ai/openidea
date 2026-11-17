@@ -64,6 +64,7 @@ pub fn register_builtin_points(
     ui: &Arc<UiStore>,
     languages: &Arc<PluginLanguages>,
     run_detectors: &Arc<super::run_detectors::RunDetectors>,
+    java_agents: &Arc<super::java_agents::JavaAgents>,
     providers: &Arc<super::providers::Providers>,
 ) -> Result<(), String> {
     registry.register(Arc::new(UiPoint::new(COMMANDS, ui.clone(), command)))?;
@@ -71,6 +72,7 @@ pub fn register_builtin_points(
     registry.register(Arc::new(LanguagesPoint::new(languages.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::icons::POINT_ID, ui.clone(), super::icons::icon_theme)))?;
     registry.register(Arc::new(super::run_detectors::RunDetectorsPoint::new(run_detectors.clone())))?;
+    registry.register(Arc::new(super::java_agents::JavaAgentsPoint::new(java_agents.clone())))?;
     registry.register(Arc::new(super::navigation::IndexersPoint))?;
     registry.register(Arc::new(super::providers::ProvidersPoint::new(providers.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::providers::SECRETS_POINT, ui.clone(), super::providers::secret)))?;
@@ -89,10 +91,12 @@ pub fn register_builtin_points(
     registry.register(Arc::new(UiPoint::new(p::SETTINGS, ui.clone(), p::settings)))?;
     registry.register(Arc::new(UiPoint::new(p::VIEWS, ui.clone(), p::view)))?;
     registry.register(Arc::new(UiPoint::new(p::CUSTOM_EDITORS, ui.clone(), p::custom_editor)))?;
+    registry.register(Arc::new(UiPoint::new(p::EDITOR_PANELS, ui.clone(), p::editor_panel)))?;
     registry.register(Arc::new(UiPoint::new(p::MARKER_ICONS, ui.clone(), p::marker_icon)))?;
     registry.register(Arc::new(UiPoint::new(p::FILE_ICONS, ui.clone(), p::file_icon)))?;
     registry.register(Arc::new(UiPoint::new(p::FILE_TEMPLATES, ui.clone(), p::file_template)))?;
     registry.register(Arc::new(UiPoint::new(p::COMMIT_CHECKS, ui.clone(), p::commit_check)))?;
+    registry.register(Arc::new(UiPoint::new(p::SERVER_COMMANDS, ui.clone(), p::server_command)))?;
     registry.register(Arc::new(UiPoint::new(ide_extension::LOCALES_POINT, ui.clone(), p::locales)))?;
     Ok(())
 }

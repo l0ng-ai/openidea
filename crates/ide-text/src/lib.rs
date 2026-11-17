@@ -39,6 +39,10 @@ impl LineEnding {
     /// The dominant line ending of `text`; ties and text without any line
     /// break resolve to [`LineEnding::Lf`].
     pub fn detect(text: &str) -> Self {
+        // Without `\r` both other counts are zero and `Lf` wins outright.
+        if !text.contains('\r') {
+            return Self::Lf;
+        }
         let (mut lf, mut crlf, mut cr) = (0usize, 0usize, 0usize);
         let bytes = text.as_bytes();
         let mut i = 0;
@@ -72,13 +76,20 @@ const DIFF_BUDGET: Duration = Duration::from_millis(50);
 
 type LineRange = std::ops::Range<usize>;
 
-/// Byte lengths of the common prefix and suffix; they never overlap.
+/// Byte lengths of the common prefix and suffix; they never overlap. Compared
+/// byte-wise (equal bytes imply equal chars) so the scan vectorizes, with the
+/// ends backed off to char boundaries.
 fn common_ends(a: &str, b: &str) -> (usize, usize) {
-    let shared = |a: &mut dyn Iterator<Item = char>, b: &mut dyn Iterator<Item = char>| -> usize {
-        a.zip(b).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum()
-    };
-    let prefix = shared(&mut a.chars(), &mut b.chars());
-    let suffix = shared(&mut a[prefix..].chars().rev(), &mut b[prefix..].chars().rev());
+    let (ab, bb) = (a.as_bytes(), b.as_bytes());
+    let mut prefix = ab.iter().zip(bb).take_while(|(x, y)| x == y).count();
+    while !a.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+    let limit = ab.len().min(bb.len()) - prefix;
+    let mut suffix = ab.iter().rev().zip(bb.iter().rev()).take(limit).take_while(|(x, y)| x == y).count();
+    while suffix > 0 && !a.is_char_boundary(a.len() - suffix) {
+        suffix -= 1;
+    }
     (prefix, suffix)
 }
 
@@ -94,7 +105,13 @@ fn line_starts(lines: &[&str]) -> Vec<usize> {
 }
 
 fn utf16_len(text: &str) -> u32 {
-    text.chars().map(|c| c.len_utf16() as u32).sum()
+    let bytes = text.as_bytes();
+    if bytes.is_ascii() {
+        return bytes.len() as u32;
+    }
+    // One unit per char (each starts with a non-continuation byte), two for
+    // 4-byte chars; byte classification vectorizes, unlike decoding `chars()`.
+    bytes.iter().map(|&b| u32::from((b & 0xC0) != 0x80) + u32::from(b >= 0xF0)).sum()
 }
 
 /// Converts `\r\n` and lone `\r` to `\n`. Borrows when there is nothing to do.
@@ -158,8 +175,12 @@ pub struct Document {
 impl Document {
     /// Builds a document from text with any line endings; detects and normalizes them.
     pub fn new(text: &str) -> Self {
-        let line_ending = LineEnding::detect(text);
-        let rope = ropey::Rope::from_str(&normalize_line_endings(text));
+        // One `\r` scan decides both: LF text needs no normalization pass.
+        let (line_ending, rope) = if text.contains('\r') {
+            (LineEnding::detect(text), ropey::Rope::from_str(&normalize_line_endings(text)))
+        } else {
+            (LineEnding::Lf, ropey::Rope::from_str(text))
+        };
         Self { rope, version: 0, line_ending }
     }
 

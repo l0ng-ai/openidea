@@ -58,7 +58,7 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-list-row);
   padding: 0 6px;
   border-radius: var(--radius-row);
@@ -87,7 +87,7 @@
 .childHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-list-row);
   padding: 0 6px;
   margin-bottom: 2px;

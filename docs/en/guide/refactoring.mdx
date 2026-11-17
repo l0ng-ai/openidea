@@ -18,17 +18,18 @@ The **Refactor** menu has IntelliJ IDEA's refactorings with their usual shortcut
 | Refactoring              | macOS | Windows / Linux | Works through                                          |
 | ------------------------ | ----- | --------------- | ------------------------------------------------------ |
 | **Rename…**              | `⇧F6` | `Shift+F6`      | Language server; local variables also without one      |
-| **Change Signature…**    | `⌘F6` | `Ctrl+F6`       | Language server                                        |
+| **Change Signature…**    | `⌘F6` | `Ctrl+F6`       | Java (dialog); other languages: language server        |
 | **Introduce Variable…**  | `⌥⌘V` | `Ctrl+Alt+V`    | Language server; simple cases also without one         |
 | **Introduce Constant…**  | `⌥⌘C` | `Ctrl+Alt+C`    | Language server; simple cases also without one         |
 | **Introduce Field…**     | `⌥⌘F` | `Ctrl+Alt+F`    | Language server                                        |
 | **Introduce Parameter…** | `⌥⌘P` | `Ctrl+Alt+P`    | Language server                                        |
 | **Extract Method…**      | `⌥⌘M` | `Ctrl+Alt+M`    | Language server                                        |
+| **Extract Interface…**   | —     | —               | Java                                                   |
 | **Inline…**              | `⌥⌘N` | `Ctrl+Alt+N`    | Language server                                        |
 | **Move…**                | `F6`  | `F6`            | Language server (symbols); the IDE (files and folders) |
 | **Safe Delete…**         | `⌘⌦`  | `Alt+Delete`    | The IDE, using the server's references                 |
-| **Pull Members Up…**     | —     | —               | Java only                                              |
-| **Push Members Down…**   | —     | —               | Java only                                              |
+| **Pull Members Up…**     | —     | —               | Java; PHP with Phoxite                                 |
+| **Push Members Down…**   | —     | —               | Java; PHP with Phoxite                                 |
 
 ## Rename
 
@@ -63,7 +64,7 @@ When the language server cannot help, Introduce Variable and Introduce Constant 
 
 In the Project view, **Rename…** (`⇧F6` / `Shift+F6`), **Move…** (`F6`, drag and drop, or cut and paste) and **Copy…** (`F5`, copy and paste, or `⌥`-drag / `Alt`-drag) open a dialog. With **Search for references** on, references to the file are updated through the language servers that support it (for example imports in TypeScript); **Search in comments and strings** also looks there. The changes are shown in a preview first.
 
-In the editor, **Move…** on a symbol runs the server's move refactoring, where the language has one.
+In the editor, **Move…** on a symbol runs the server's move refactoring, where the language has one. In Java it asks where to: a top-level class goes to another package (its package declaration, imports and every reference follow), a static member or nested class to another class, an instance method to the class of one of its fields or parameters; warnings are confirmed in **Problems Detected** first.
 
 ## Safe Delete
 
@@ -80,7 +81,15 @@ In the editor, **Move…** on a symbol runs the server's move refactoring, where
 
 ## Pull Members Up and Push Members Down
 
-These move fields and methods between a Java class and its superclasses or subclasses. A dialog lets you pick the members and the destination; problems the move would cause are listed in **Problems Detected** before you continue. They are provided by the Java extension bundled with OpenIDEA, so they are not available for other languages.
+These move fields and methods between a class and its superclasses or subclasses, in Java and, with Phoxite as the PHP server, in PHP (methods, properties and constants). A dialog lets you pick the members and the destination; problems the move would cause are listed in **Problems Detected** before you continue. For Java they are provided by the extension bundled with OpenIDEA, for PHP by Phoxite; they are not available for other languages or other PHP servers.
+
+## Extract Interface
+
+In Java, **Refactor › Extract Interface…** creates an interface from the class of the current file. In the dialog, enter the interface name, choose its package and check the methods (and constants) it should declare. **Refactor** creates the interface, makes the class implement it, replaces the class with the interface wherever that is possible, and opens the new file; **Preview** lists the changes first.
+
+## Change Signature
+
+In Java, **Change Signature…** (`⌘F6`) on a method opens a dialog to change its visibility, return type and name, and to add, remove and reorder its parameters. A new parameter needs a default value, which is passed at every existing call; **Delegate via overloading method** keeps the old signature as an overload that calls the new one. The preview line shows the resulting declaration. **Refactor** updates the method, its overrides and all calls in one step; **Preview** lists the changes first. In other languages it appears when the server offers a signature rewrite as a code action.
 
 ## Undo
 
@@ -89,5 +98,5 @@ A refactoring is one undo step, even when it changed several files. After a mult
 ## Limits
 
 - Refactorings other than Rename, Safe Delete and the syntax-based fallbacks need a running language server that offers them. Check the **Language Services** widget in the status bar if one is missing.
-- Change Signature appears only when the server offers a signature rewrite as a code action.
+- Outside Java, Change Signature appears only when the server offers a signature rewrite as a code action.
 - There is no structural search-and-replace refactoring in this menu; see **Edit › Find › Replace Structurally…** in [Inspections](/en/guide/inspections).

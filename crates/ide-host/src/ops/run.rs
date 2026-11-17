@@ -301,6 +301,8 @@ async fn start_inner(
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
     }
+    let on_target = config.extras.target.as_deref().is_some_and(|t| !t.is_empty());
+    add_java_agents(&mut config, &on_output, !on_target);
     // Settings › Run Targets: over SSH, or in a container.
     if config.kind == "tomcat" && config.extras.target.as_deref().is_some_and(|t| !t.is_empty()) {
         return Err(IdeError::invalid("Tomcat Local requires the local machine"));
@@ -446,6 +448,29 @@ async fn start_inner(
     host.processes.start(&project.root, &config, &options, sink, Box::new(move |c| on_output(c)))
 }
 
+/// Plugins' Java agents (`[[contributes.javaAgents]]`, granted `java.agent`) for the JVM of an
+/// Application, Spring Boot or JAR Application configuration started on this machine. A JVM on a
+/// run target gets none; the console says so, and why an approved agent was left out.
+fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, local: bool) {
+    if !ide_run::java_agent::applies(&config.kind) {
+        return;
+    }
+    let agents = ide_run::java_agent::current();
+    let say = |text: &str| on_output(OutputChunk::System { text: format!("{text}\n") });
+    if !local {
+        if !agents.options.is_empty() {
+            say(
+                "Plugin Java agents were not added: they load only into JVMs started on this machine, not on a run target.",
+            );
+        }
+        return;
+    }
+    for note in &agents.notes {
+        say(note);
+    }
+    ide_run::java_agent::add_to_args(&mut config.args, &agents.options);
+}
+
 /// The Ruby test reporter's directory, installed on demand, for runs that take it.
 fn ruby_reporter_dir(host: &Host, config: &RunConfig) -> Option<std::path::PathBuf> {
     if !ide_run::ruby_reporter::applies(config) {
@@ -508,7 +533,7 @@ pub fn list(host: &Host) -> Vec<RunInfo> {
 }
 
 mod commands;
-mod container;
+pub(crate) mod container;
 pub use commands::*;
 
 #[cfg(test)]

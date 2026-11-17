@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import { render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { RefLabels } from "../GitLog";
+import { RefLabels } from "../log/CommitMessage";
 
 const css = readFileSync("src/features/vcs/GitLog.module.css", "utf8");
 

@@ -441,6 +441,7 @@ mod tests {
             command: None,
             options: vec![],
             questions: vec![],
+            form: None,
             chosen: None,
         });
         assert_eq!(t.end_turn(None), vec![2, 3]);

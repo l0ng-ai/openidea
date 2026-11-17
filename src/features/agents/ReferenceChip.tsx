@@ -7,7 +7,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import { highlightInto, languageForPath } from "@/editor/lsp/markdown";
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
@@ -55,8 +55,8 @@ export function openReference(path: string, mention: Mention) {
 const nameOf = (m: Mention) => basename(m.rel.replace(/\/$/, "")) || m.rel;
 const iconOf = (m: Mention) => (m.dir ? "folder" : fileIconName(nameOf(m), m.rel));
 
-/** The chip as DOM, for the composer's editor. */
-export function chipElement(path: string, mention: Mention): HTMLElement {
+/** The chip as DOM, for the composer's editor; `onRemove` adds its × button. */
+export function chipElement(path: string, mention: Mention, onRemove?: () => void): HTMLElement {
   const chip = document.createElement("span");
   chip.className = styles.chip!;
   chip.dataset.refPath = path;
@@ -73,6 +73,20 @@ export function chipElement(path: string, mention: Mention): HTMLElement {
     lines.className = styles.lines!;
     lines.textContent = linesLabel(mention.lines);
     chip.append(lines);
+  }
+  if (onRemove) {
+    chip.classList.add(styles.removable!);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = styles.chipRemove!;
+    remove.setAttribute("aria-label", tx("Remove"));
+    remove.append(iconNode("close", 10));
+    remove.addEventListener("mousedown", (e) => e.preventDefault());
+    remove.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onRemove();
+    });
+    chip.append(remove);
   }
   if (!mention.dir)
     void fileExists(path).then((exists) => {

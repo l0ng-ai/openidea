@@ -24,6 +24,19 @@ pub(crate) fn char_mask(s: &str) -> u64 {
     m
 }
 
+/// A relative index key must stay below the project root.
+pub(crate) fn safe_rel(rel: &str) -> bool {
+    let mut any = false;
+    for component in Path::new(rel).components() {
+        if matches!(component, std::path::Component::Normal(_)) {
+            any = true;
+        } else {
+            return false;
+        }
+    }
+    any
+}
+
 #[inline]
 pub(crate) fn mask_bit(b: u8) -> u64 {
     match b.to_ascii_lowercase() {
@@ -93,6 +106,9 @@ pub(crate) struct StoredSymbol {
     pub kind: SymbolKind,
     pub container: Option<String>,
     pub range: Range,
+    /// Base names of a class definition; empty for every other symbol.
+    #[serde(default)]
+    pub bases: Vec<String>,
 }
 
 /// A symbol resolved out of [`SymTable`].
@@ -101,6 +117,8 @@ pub(crate) struct SymRef<'a> {
     pub kind: SymbolKind,
     pub container: Option<&'a str>,
     pub range: Range,
+    /// Base names joined with `'\0'`; empty when the symbol has none.
+    pub bases: &'a str,
 }
 
 pub(crate) struct FileEntry {
@@ -389,6 +407,8 @@ pub(crate) struct SymTable {
     container: Vec<Span>,
     kind: Vec<SymbolKind>,
     range: Vec<Range>,
+    /// Base names joined with `'\0'`, one interned span per symbol (`NONE` for none).
+    bases: Vec<Span>,
     text: String,
     dead_rows: usize,
 }
@@ -408,6 +428,18 @@ impl SymTable {
     pub(crate) fn container(&self, i: u32) -> Option<&str> {
         let span = self.container[i as usize];
         (span.start != u32::MAX).then(|| span.get(&self.text))
+    }
+
+    /// The symbol's base names joined with `'\0'`; empty when it has none.
+    #[inline]
+    pub(crate) fn bases(&self, i: u32) -> &str {
+        let span = self.bases[i as usize];
+        if span.start == u32::MAX { "" } else { span.get(&self.text) }
+    }
+
+    /// The base names of row `i`, split out of the interned string.
+    pub(crate) fn base_list(&self, i: u32) -> Vec<&str> {
+        self.bases(i).split('\0').filter(|b| !b.is_empty()).collect()
     }
 
     /// The mask + name rows of a file's contiguous symbol range.
@@ -446,10 +478,12 @@ impl SymTable {
                 Some(c) => self.intern(c),
                 None => Span::NONE,
             };
+            let bases = if s.bases.is_empty() { Span::NONE } else { self.intern(&s.bases.join("\0")) };
             self.head.push(SymHead { mask, name });
             self.container.push(container);
             self.kind.push(s.kind);
             self.range.push(s.range);
+            self.bases.push(bases);
         }
         (start, agg_mask)
     }
@@ -463,6 +497,7 @@ impl SymTable {
                     && self.container(i) == s.container.as_deref()
                     && self.kind(i) == s.kind
                     && self.range(i) == s.range
+                    && self.base_list(i) == s.bases.iter().map(String::as_str).collect::<Vec<_>>()
             })
     }
 
@@ -479,6 +514,7 @@ impl SymTable {
         let mut container = Vec::with_capacity(head.capacity());
         let mut kind = Vec::with_capacity(head.capacity());
         let mut range = Vec::with_capacity(head.capacity());
+        let mut bases = Vec::with_capacity(head.capacity());
         let mut live = 0u32;
         for (slot, row) in rows.iter_mut().enumerate() {
             if !row.live {
@@ -505,6 +541,14 @@ impl SymTable {
                 }
                 kind.push(self.kind[i as usize]);
                 range.push(self.range[i as usize]);
+                let bases_span = self.bases[i as usize];
+                if bases_span.start == u32::MAX {
+                    bases.push(Span::NONE);
+                } else {
+                    let b = bases_span.get(&self.text);
+                    bases.push(Span::of(&text, b));
+                    text.push_str(b);
+                }
                 live += 1;
             }
         }
@@ -512,6 +556,7 @@ impl SymTable {
         self.container = container;
         self.kind = kind;
         self.range = range;
+        self.bases = bases;
         self.text = text;
         self.dead_rows = 0;
     }
@@ -521,6 +566,7 @@ impl SymTable {
         self.container.shrink_to_fit();
         self.kind.shrink_to_fit();
         self.range.shrink_to_fit();
+        self.bases.shrink_to_fit();
         self.text.shrink_to_fit();
     }
 }
@@ -553,6 +599,68 @@ impl IndexData {
         self.by_path.get(path).copied()
     }
 
+    /// Reserves the flat tables for a bulk warm-start hydration.
+    pub(crate) fn reserve(&mut self, files: usize, symbols: usize, dirs: usize) {
+        self.files.reserve(files);
+        self.by_path.reserve(files);
+        self.dirs.reserve(dirs);
+        self.hot.rows.reserve(files);
+        self.dirs_hot.rows.reserve(dirs);
+        self.syms.head.reserve(symbols);
+        self.syms.container.reserve(symbols);
+        self.syms.kind.reserve(symbols);
+        self.syms.range.reserve(symbols);
+        self.syms.bases.reserve(symbols);
+    }
+
+    /// Hydrates a validated warm-start snapshot in one pass, without per-file
+    /// duplicate checks, ancestor walks or compaction checks.
+    pub(crate) fn load_bulk(
+        &mut self,
+        entries: Vec<(FileEntry, Vec<StoredSymbol>)>,
+        dirs: Vec<(Box<str>, PathBuf, u32)>,
+    ) {
+        self.files = Vec::with_capacity(entries.len());
+        self.by_path = HashMap::with_capacity(entries.len());
+        self.hot = HotFiles::default();
+        self.dirs_hot = HotDirs::default();
+        self.syms = SymTable::default();
+        self.dirs = HashMap::with_capacity(dirs.len());
+        let symbols: usize = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+        self.reserve(entries.len(), symbols, dirs.len());
+        self.symbol_count = 0;
+        for (slot, (mut entry, symbols)) in entries.into_iter().enumerate() {
+            let (sym_start, sym_mask) = self.syms.push(&symbols);
+            entry.sym_start = sym_start;
+            entry.sym_len = symbols.len() as u32;
+            self.symbol_count += entry.sym_len;
+            let rel = self.hot.append(&entry.rel);
+            self.hot.set(
+                slot as u32,
+                FileRow {
+                    rel,
+                    name_start: entry.name_start,
+                    sym_start,
+                    sym_len: entry.sym_len,
+                    sym_mask,
+                    rel_mask: entry.rel_mask,
+                    name_mask: entry.name_mask,
+                    dir_mask: char_mask(entry.dir()),
+                    ascii: entry.rel.is_ascii(),
+                    live: true,
+                },
+            );
+            self.by_path.insert(entry.path.clone(), slot as u32);
+            self.files.push(Some(entry));
+        }
+        self.file_count = self.files.len() as u32;
+        for (rel, path, count) in dirs {
+            let row = self.dirs_hot.push(&rel, &path);
+            self.dirs.insert(rel, (path, count, row));
+        }
+        self.free.clear();
+    }
+
     /// The persisted form of a file, rebuilt from [`IndexData::syms`].
     pub(crate) fn record(&self, e: &FileEntry) -> FileRecord {
         FileRecord {
@@ -566,14 +674,23 @@ impl IndexData {
                     kind: s.kind,
                     container: s.container.map(str::to_owned),
                     range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
                 })
                 .collect(),
             ignored: e.ignored,
         }
     }
 
-    pub(crate) fn record_of(&self, path: &Path) -> Option<FileRecord> {
-        self.get(path).map(|e| self.record(e))
+    /// Refreshes on-disk metadata of an unchanged-content file in place and
+    /// returns its persisted record.
+    pub(crate) fn refresh_metadata(&mut self, path: &Path, mtime: u64, size: u64, ignored: bool) -> Option<FileRecord> {
+        let slot = *self.by_path.get(path)?;
+        let e = self.files[slot as usize].as_mut()?;
+        e.mtime = mtime;
+        e.size = size;
+        e.ignored = ignored;
+        let e = self.files[slot as usize].as_ref()?;
+        Some(self.record(e))
     }
 
     /// The symbols of one file, in declaration order.
@@ -584,6 +701,7 @@ impl IndexData {
             kind: syms.kind(i),
             container: syms.container(i),
             range: syms.range(i),
+            bases: syms.bases(i),
         })
     }
 
@@ -741,6 +859,7 @@ mod tests {
                     kind: SymbolKind::Function,
                     container: None,
                     range: Range::default(),
+                    bases: Vec::new(),
                 })
                 .collect(),
             ..Default::default()
@@ -791,6 +910,23 @@ mod tests {
         }
         assert_eq!(d.dirs.len(), d.dirs_hot.rows.len());
         assert_eq!(d.symbol_count, d.files.iter().flatten().map(|e| e.sym_len).sum::<u32>());
+    }
+
+    #[test]
+    fn bulk_load_matches_incremental_insert() {
+        let mut incremental = IndexData::default();
+        insert(&mut incremental, "a/b.rs", 2);
+        insert(&mut incremental, "c.rs", 1);
+        assert_consistent(&incremental);
+
+        let mut bulk = IndexData::default();
+        bulk.load_bulk(vec![entry("a/b.rs", 2), entry("c.rs", 1)], vec![("a/".into(), PathBuf::from("/r/a"), 1)]);
+        assert_consistent(&bulk);
+        assert_eq!((bulk.file_count, bulk.symbol_count), (2, 3));
+        assert_eq!(bulk.hot.text(), incremental.hot.text());
+        assert_eq!(bulk.files.len(), incremental.files.len());
+        assert_eq!(bulk.slot(Path::new("/r/a/b.rs")), incremental.slot(Path::new("/r/a/b.rs")));
+        assert_eq!(bulk.dirs["a/"].1, 1);
     }
 
     #[test]
@@ -858,7 +994,13 @@ mod tests {
     }
 
     fn symbol(n: &str) -> StoredSymbol {
-        StoredSymbol { name: n.to_owned(), kind: SymbolKind::Function, container: None, range: Range::default() }
+        StoredSymbol {
+            name: n.to_owned(),
+            kind: SymbolKind::Function,
+            container: None,
+            range: Range::default(),
+            bases: Vec::new(),
+        }
     }
 
     #[test]
