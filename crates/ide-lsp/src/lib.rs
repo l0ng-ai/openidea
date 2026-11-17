@@ -1833,8 +1833,11 @@ impl LspManager {
     /// the same class from its Java model instead, decompiled with method bodies and navigable.
     /// Its documents belong to jdtls ([`Self::virtual_document`] records it).
     async fn jdt_library_classes(&self, snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-        let jar_class = |l: &Location| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"));
-        if !locs.iter().any(jar_class)
+        let lib_class = |u: &str| {
+            (u.starts_with("jar:") && u.ends_with(".class"))
+                || (u.starts_with("jdt://contents/") && u.contains(".class"))
+        };
+        if !locs.iter().any(|l| l.uri.as_deref().is_some_and(lib_class))
             || !self.servers.lock().iter().any(|s| s.name == jdtls::SERVER && s.running().is_some())
         {
             return locs;
@@ -1842,26 +1845,37 @@ impl LspManager {
         let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
         let mut out = Vec::with_capacity(locs.len());
         for loc in locs {
-            let entry = loc.uri.as_deref().filter(|_| jar_class(&loc)).and_then(library_source::parse);
-            let Some(entry) = entry else {
+            let Some(original) = loc.uri.as_deref().filter(|u| lib_class(u)) else {
                 out.push(loc);
                 continue;
             };
-            // The Kotlin server may name the jar by another path than jdtls (its own copy of a
-            // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
-            // of that name.
-            let uri = match self.archive_class(entry.jar, entry.entry, true).await {
-                Ok(uri) => uri,
-                Err(e) => {
-                    tracing::info!("library class stays a stub: {}", e.message);
+            let uri = if original.starts_with("jar:") {
+                let Some(entry) = library_source::parse(original) else {
                     out.push(loc);
                     continue;
+                };
+                // The Kotlin server may name the jar by another path than jdtls (its own copy of a
+                // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
+                // of that name.
+                match self.archive_class(entry.jar, entry.entry, true).await {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        tracing::info!("library class stays a stub: {}", e.message);
+                        out.push(loc);
+                        continue;
+                    }
                 }
+            } else {
+                original.to_owned()
             };
-            let range = match (&name, self.virtual_document(&uri).await) {
+            let computed = match (&name, self.virtual_document(&uri).await) {
                 (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),
                 _ => Range::default(),
             };
+            // jdtls maps Lombok-generated members onto the annotation / class, not the
+            // field; prefer the declaration located in the attached source when we find
+            // one, else keep the server's range.
+            let range = if uri.starts_with("jdt:") && computed == Range::default() { loc.range } else { computed };
             out.push(Location { path: uri.clone().into(), range, uri: Some(uri) });
         }
         out

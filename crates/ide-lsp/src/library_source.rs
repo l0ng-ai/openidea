@@ -223,9 +223,44 @@ pub(crate) fn declaration_range(text: &str, name: &str) -> Range {
             if java_member && fallback.is_none() {
                 fallback = Some(range);
             }
+            // A Java field (`private String name;`): Lombok sources declare only the
+            // field, the accessors exist solely in the compiled class.
+            let java_field = matches!(after, Some(';') | Some('='))
+                && !head.trim_end().ends_with('.')
+                && !head.trim().is_empty()
+                && !head.contains('(')
+                && !words.iter().any(|w| matches!(*w, "return" | "throw" | "new" | "yield" | "assert"));
+            if java_field {
+                return range;
+            }
+        }
+    }
+    if fallback.is_none()
+        && let Some(field) = accessor_field(name)
+    {
+        let range = declaration_range(text, &field);
+        if range != Range::default() {
+            return range;
         }
     }
     fallback.unwrap_or_default()
+}
+
+/// The field a Lombok/bean accessor stands for (`getName`/`setName` → `name`,
+/// `isActive` → `active`); `None` for names that are not accessors.
+fn accessor_field(name: &str) -> Option<String> {
+    let rest = ["get", "set", "is"]
+        .iter()
+        .find_map(|p| name.strip_prefix(p))
+        .filter(|r| r.chars().next().is_some_and(|c| c.is_uppercase()))?;
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    // Bean convention: `getURL` → `URL`, `getName` → `name`.
+    if rest.chars().nth(1).is_some_and(|c| c.is_uppercase()) {
+        Some(rest.to_owned())
+    } else {
+        Some(first.to_lowercase().collect::<String>() + chars.as_str())
+    }
 }
 
 /// The identifier around `col` (UTF-16) of `line`.
@@ -586,6 +621,31 @@ mod tests {
         assert_eq!(source("test001", "NotMe"), None, "only in a comment");
         assert_eq!(declared_package("package a.b.c;\n"), "a.b.c");
         assert_eq!(declared_package("class A"), "");
+    }
+
+    #[test]
+    fn lombok_accessors_and_java_fields_locate_the_field() {
+        // Lombok sources declare only the field; the accessors exist only in the
+        // compiled class, so navigation must fall back to the underlying field.
+        let lombok = "package example.entity;\n\nimport lombok.Getter;\nimport lombok.Setter;\n\n@Getter\n@Setter\npublic class UserEntity {\n    private String name;\n    private int age;\n    private boolean active;\n}\n";
+        for (name, line, col) in [
+            ("getName", 8, 19),
+            ("setName", 8, 19),
+            ("name", 8, 19),
+            ("getAge", 9, 16),
+            ("isActive", 10, 20),
+            ("active", 10, 20),
+        ] {
+            let r = declaration_range(lombok, name);
+            assert_eq!((r.start.line, r.start.col), (line, col), "{name}");
+        }
+        // An explicitly declared accessor still wins over the field.
+        let plain = "class Plain {\n    private String name;\n    public String getName() { return name; }\n}\n";
+        assert_eq!(declaration_range(plain, "getName").start.line, 2);
+        // Bean convention keeps acronyms; non-accessors are not remapped.
+        assert_eq!(accessor_field("getURL").as_deref(), Some("URL"));
+        assert_eq!(accessor_field("getter"), None);
+        assert_eq!(declaration_range(lombok, "missing"), Range::default());
     }
 
     #[test]
