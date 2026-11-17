@@ -290,11 +290,14 @@
 .docBody {
   padding: 10px 14px;
 }
-/* Go signatures: a type name opens its documentation (`linkSignatureTypes` in docs.ts). */
-.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName) {
+/* Signatures: a type name opens its documentation (`linkSignatureTypes` in docs.ts); other
+   languages' names look like links once they are found to lead somewhere. */
+.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName),
+.docBody :global(.cm-lsp-markdown [data-doc-ref]) {
   cursor: pointer;
 }
-.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName:hover) {
+.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName:hover),
+.docBody :global(.cm-lsp-markdown [data-doc-ref]:hover) {
   text-decoration: underline;
 }
 .defPopup {
