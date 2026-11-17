@@ -179,6 +179,45 @@ describe("log controls", () => {
     },
   );
 
+  it("exposes an invisible full-height resize strip on data rows, not a drawn divider", async () => {
+    useLogOptions.setState({ showColumnHeaders: true });
+    render(<LogView />);
+    await screen.findByRole("separator", { name: "Resize Author column" });
+    // IDEA's divider is invisible: no grip glyph, no painted line.
+    const header = screen.getByRole("separator", { name: "Resize Author column" });
+    expect(header.className).toMatch(/columnResize/);
+    // Data rows carry the same strips so the divider spans the whole table height.
+    const rowStrips = [...document.querySelectorAll<HTMLElement>('[role="option"] [class*="columnResize"]')];
+    expect(rowStrips.length).toBeGreaterThan(0);
+    for (const strip of rowStrips) {
+      expect(strip.getAttribute("aria-hidden")).toBe("true");
+      expect(strip.className).toMatch(/columnResize/);
+    }
+  });
+
+  it("resizes from a data-row strip and auto-fits on double-click (IDEA divider)", async () => {
+    useLogOptions.setState({ showColumnHeaders: true });
+    render(<LogView />);
+    await screen.findByRole("separator", { name: "Resize Author column" });
+    const rows = within(screen.getByRole("listbox", { name: "Commits" })).getAllByRole("option");
+    const rowStrip = rows[0]!.querySelector<HTMLElement>('[class*="columnResize"]')!;
+    const release = vi.fn();
+    rowStrip.setPointerCapture = vi.fn();
+    rowStrip.hasPointerCapture = () => true;
+    rowStrip.releasePointerCapture = release;
+    fireEvent.pointerDown(rowStrip, { button: 0, pointerId: 5, clientX: 10 });
+    fireEvent.pointerMove(rowStrip, { pointerId: 5, clientX: 45 });
+    fireEvent.pointerUp(rowStrip, { pointerId: 5, clientX: 45 });
+    const resized = useLogOptions.getState().columnWidths.author;
+    expect(resized).toBe(165);
+    expect(release).toHaveBeenCalledWith(5);
+
+    // Double-clicking the header divider drops the custom width so the column auto-fits.
+    const header = screen.getByRole("separator", { name: "Resize Author column" });
+    fireEvent.doubleClick(header);
+    expect(useLogOptions.getState().columnWidths.author).toBeUndefined();
+  });
+
   it("keeps pointer resizing separate from reordering and releases its capture on blur", async () => {
     useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);

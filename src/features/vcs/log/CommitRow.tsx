@@ -11,6 +11,7 @@ import { commitKey, commitRepo } from "../multiRoot";
 import { repoName, useVcs } from "../store";
 import { CommitMessage, RefLabels } from "./CommitMessage";
 import { GraphCell } from "./GraphCell";
+import { RowResizeHandle } from "./RowResizeHandle";
 import { commitMenu } from "./commitMenu";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
 
@@ -172,6 +173,7 @@ function CommitRowView({
         if (cid === SUBJECT_COLUMN.id) return subjectCell;
         const column = columns.find((col) => col.id === cid);
         if (!column) return null;
+        const width = opts.columnWidths[column.id] ?? column.width ?? 120;
         return (
           <span
             key={cid}
@@ -181,10 +183,11 @@ function CommitRowView({
               column.id === "author" && mine && styles.mine,
               column.id === "hash" && styles.hash,
             )}
-            style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
+            style={{ width }}
             title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
           >
             {column.render(c)}
+            <RowResizeHandle id={column.id} width={width} />
           </span>
         );
       })}

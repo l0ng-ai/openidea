@@ -202,15 +202,14 @@
   flex: none;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
+  position: relative;
 }
 .columnHeading {
   position: relative;
-  padding-inline-end: var(--space-2);
+  padding-inline-end: 6px;
   cursor: grab;
   touch-action: none;
-  /* Vertical rules make header cells read as separate columns; the header row's
-     bottom border alone left the columns visually merged together. */
-  border-inline-end: 1px solid var(--border);
 }
 .columnHeading.dragSource {
   cursor: grabbing;
@@ -222,38 +221,21 @@
 .columnHeading.dropAfter {
   box-shadow: inset -2px 0 0 var(--accent);
 }
+/* IDEA's column divider: an invisible hit strip with cursor-only feedback.
+   No drawn line, no grip — the cursor is the entire affordance. */
 .columnResize {
   position: absolute;
   inset-block: 0;
   inset-inline-end: 0;
-  width: 8px;
+  width: 4px;
   cursor: ew-resize;
   touch-action: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-/* A visible grip on the boundary itself, so the resize target reads as draggable. */
-.columnResize::after {
-  content: "";
-  width: 1px;
-  height: 60%;
-  background: var(--border-strong);
-  transition:
-    background 120ms var(--ease),
-    height 120ms var(--ease),
-    width 120ms var(--ease);
-}
-.columnResize:hover::after,
-.columnResize:active::after,
-.columnResize:focus-visible::after {
-  width: 2px;
-  height: 100%;
-  background: var(--accent);
+  z-index: 1;
 }
 .columnResize:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: -1px;
+  border-radius: 1px;
 }
 /* View Options › Highlight › Current Branch: commits reachable from HEAD are tinted. */
 .currentBranch {
