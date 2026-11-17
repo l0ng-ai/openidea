@@ -1,5 +1,9 @@
 {
   "Trust Project in Codex": "在 Codex 中信任项目",
+  "Go to Feign Endpoint": "跳转到 Feign 端点",
+  "Choose Feign Endpoint": "选择 Feign 端点",
+  "No matching Feign endpoint found": "未找到匹配的 Feign 端点",
+  "Cannot navigate to Feign endpoint": "无法跳转到 Feign 端点",
   "Keep Untrusted": "保持不信任",
   "Unity Editor": "Unity 编辑器",
   "Attach to Unity Process": "附加到 Unity 进程",

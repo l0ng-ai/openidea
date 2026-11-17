@@ -1,5 +1,9 @@
 {
   "Trust Project in Codex": "Trust Project in Codex",
+  "Go to Feign Endpoint": "Go to Feign Endpoint",
+  "Choose Feign Endpoint": "Choose Feign Endpoint",
+  "No matching Feign endpoint found": "No matching Feign endpoint found",
+  "Cannot navigate to Feign endpoint": "Cannot navigate to Feign endpoint",
   "Keep Untrusted": "Keep Untrusted",
   "Unity Editor": "Unity Editor",
   "Attach to Unity Process": "Attach to Unity Process",
