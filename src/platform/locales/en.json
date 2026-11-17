@@ -47,6 +47,7 @@
   "app.keymap.filter": "Filter by action or shortcut",
   "app.keymap.other": "Other",
   "app.keymap.preset": "Keymap: {preset}",
+  "app.keymap.rectangularSelectionOr": "or",
   "app.keymap.title": "Keymap Reference",
   "app.lightEdit.openProject": "Open as Project",
   "app.lightEdit.openProjectTooltip": "Open {folder} as a project",

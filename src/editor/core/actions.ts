@@ -907,6 +907,16 @@ export function registerEditorActions(): () => void {
       // The mouse selection style handles the pointer position and dragging.
       run: () => {},
     },
+    {
+      id: "editor.createRectangularSelectionOnMouseDrag",
+      title: "Create Rectangular Selection on Mouse Drag",
+      category: "Editor Actions",
+      when: "textEditorActive",
+      hidden: true,
+      keymap: true,
+      // The mouse selection style owns the drag; invoking the action alone is harmless.
+      run: () => {},
+    },
     text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
     text("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
     text("editor.matchBrace", "Move Caret to Matching Brace", (v) => cursorMatchBrace(v), {
