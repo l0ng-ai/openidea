@@ -99,17 +99,14 @@ describe("foldsFromRanges", () => {
     ]);
   });
 
-  it("keeps the closing line of a single multiline import", () => {
-    const s = EditorState.create({ doc: "import {\n  CreationIntent,\n} from './creation-assistant.js'\n" });
-    expect(foldsFromRanges(s, [fold(0, 2)])).toEqual([
-      { from: s.doc.line(1).to, to: s.doc.line(3).from, kind: "region" },
+  it("keeps a bare closing delimiter of an import block visible", () => {
+    const go = EditorState.create({ doc: 'package main\n\nimport (\n  "fmt"\n  "os"\n)\n' });
+    expect(foldsFromRanges(go, [{ start_line: 2, end_line: 5, kind: "imports" }])).toEqual([
+      { from: go.doc.line(3).to, to: go.doc.line(6).from, kind: "imports" },
     ]);
-  });
-
-  it("keeps the closing parenthesis of a Go import block", () => {
-    const s = EditorState.create({ doc: 'package main\n\nimport (\n  "fmt"\n  "os"\n)\n' });
-    expect(foldsFromRanges(s, [fold(2, 5)])).toEqual([
-      { from: s.doc.line(3).to, to: s.doc.line(6).from, kind: "region" },
+    const rust = EditorState.create({ doc: "use a::{\n  b,\n  c,\n};\n" });
+    expect(foldsFromRanges(rust, [{ start_line: 0, end_line: 3, kind: "imports" }])).toEqual([
+      { from: rust.doc.line(1).to, to: rust.doc.line(4).from, kind: "imports" },
     ]);
   });
 
