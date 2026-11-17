@@ -1135,6 +1135,8 @@ export interface SettingsPageContribution {
   component?: ComponentType;
   /** The page edits settings that a project can override (Global / This project switch). */
   projectScope?: boolean;
+  /** The page fills the area under the header edge to edge, without the usual padding. */
+  bleed?: boolean;
   /** The scope the switch starts on (default: global). */
   defaultScope?: "global" | "project";
 }
@@ -1178,6 +1180,14 @@ export const SettingsPageFocusContext = createContext<SettingsPageFocus>({ focus
 /** The `page#focus` target of the settings page being shown (provided by the Settings dialog). */
 export function useSettingsPageFocus(): SettingsPageFocus {
   return useContext(SettingsPageFocusContext);
+}
+
+/** Where a settings page may portal controls into the page header, beside its title. */
+export const SettingsHeaderSlotContext = createContext<HTMLElement | null>(null);
+
+/** The header slot of the settings page being shown; null outside the Settings dialog. */
+export function useSettingsHeaderSlot(): HTMLElement | null {
+  return useContext(SettingsHeaderSlotContext);
 }
 
 export const SettingsFormContext = createContext<SettingsForm | null>(null);
