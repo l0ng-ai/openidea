@@ -19,7 +19,15 @@
   const listeners = [];
   const themeListeners = [];
   const documentListeners = [];
-  const editorListeners = { target: [], viewport: [], highlights: [], problems: [], layout: [], selections: [] };
+  const editorListeners = {
+    target: [],
+    viewport: [],
+    highlights: [],
+    problems: [],
+    layout: [],
+    selections: [],
+    changes: [],
+  };
   const editorPanel = /(?:^|[?&])openidea=editor-panel(?:&|$)/.test(location.search.slice(1));
   const pending = new Map();
   const root = document.documentElement;
@@ -163,6 +171,10 @@
     selections: () => call("editor.selections"),
     /** Called with `selections()` when the caret moves, a selection changes, or the group shows another file, at most once a frame. */
     onSelections: listen(editorListeners.selections),
+    /** The VCS changes beside the line numbers: `[{ line, lastLine, kind }]`, kind `added`, `modified` or `deleted` (`lastLine` equals `line`, the line below the deleted text). */
+    changes: () => call("editor.changes"),
+    /** Called with `changes()` when the changes are recomputed or edits move them, or the group shows another file, at most once a frame. */
+    onChanges: listen(editorListeners.changes),
   });
 
   window.openidea = Object.freeze({

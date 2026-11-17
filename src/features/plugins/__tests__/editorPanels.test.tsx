@@ -4,10 +4,11 @@ import { javascript } from "@codemirror/lang-javascript";
 import { codeFolding, foldEffect, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
 import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { Diagnostic, PluginInfo } from "@/bindings";
+import type { Diagnostic, LineHunk, PluginInfo } from "@/bindings";
 import type { TextEditorHandle } from "@/editor/api";
 import { diagnosticsExtension, setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { lspDoc } from "@/editor/lsp/lsp";
+import { hunkField, setHunksEffect } from "@/features/vcs/gutter";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { setContext } from "@/platform/context";
 import { useEditorGroupPanels } from "@/workbench/contributions";
@@ -81,12 +82,14 @@ describe("frame bridge: openidea.editor", () => {
       folded(): Promise<unknown>;
       wrapped(from: number, to: number): Promise<unknown>;
       selections(): Promise<unknown>;
+      changes(): Promise<unknown>;
       onTarget(fn: (v: unknown) => void): void;
       onViewport(fn: (v: unknown) => void): void;
       onHighlights(fn: (v: unknown) => void): void;
       onProblems(fn: (v: unknown) => void): void;
       onLayout(fn: (v: unknown) => void): void;
       onSelections(fn: (v: unknown) => void): void;
+      onChanges(fn: (v: unknown) => void): void;
       document: unknown;
     };
     expect(editor.document).toBe(api.document);
@@ -116,6 +119,8 @@ describe("frame bridge: openidea.editor", () => {
     expect(sent.at(-1)).toMatchObject({ op: "editor.wrapped", args: { fromLine: 4, toLine: 9 } });
     void editor.selections();
     expect(sent.at(-1)).toMatchObject({ op: "editor.selections" });
+    void editor.changes();
+    expect(sent.at(-1)).toMatchObject({ op: "editor.changes" });
 
     const events: unknown[] = [];
     editor.onTarget((v) => events.push(["target", v]));
@@ -124,12 +129,14 @@ describe("frame bridge: openidea.editor", () => {
     editor.onProblems((v) => events.push(["problems", v]));
     editor.onLayout((v) => events.push(["layout", v]));
     editor.onSelections((v) => events.push(["selections", v]));
+    editor.onChanges((v) => events.push(["changes", v]));
     send({ editor: "target", value: null });
     send({ editor: "viewport", value: { firstLine: 1.5 } });
     send({ editor: "highlights", value: { fromLine: 0, toLine: 4 } });
     send({ editor: "problems", value: [] });
     send({ editor: "layout", value: { folded: [], softWrap: true } });
     send({ editor: "selections", value: [] });
+    send({ editor: "changes", value: [] });
     send({ editor: "constructor", value: 1 });
     expect(events).toEqual([
       ["target", null],
@@ -138,6 +145,7 @@ describe("frame bridge: openidea.editor", () => {
       ["problems", []],
       ["layout", { folded: [], softWrap: true }],
       ["selections", []],
+      ["changes", []],
     ]);
   });
 
@@ -166,6 +174,7 @@ describe("WebView as an editor panel", () => {
       problems: () => [{ line: 1, lastLine: 2, severity: "warning" }],
       folded: () => [{ fromLine: 0, toLine: 2 }],
       selections: () => [{ anchor: { line: 1, column: 0 }, head: { line: 1, column: 4 } }],
+      changes: () => [{ line: 0, lastLine: 1, kind: "added" }],
       wrapped: (from, to) => {
         calls.push(["wrapped", from, to]);
         return [1, 3];
@@ -237,6 +246,8 @@ describe("WebView as an editor panel", () => {
     expect(calls.at(-1)).toEqual(["wrapped", 1, 3]);
     send({ call: 14, op: "editor.selections" });
     expect((await reply(14)).value).toEqual([{ anchor: { line: 1, column: 0 }, head: { line: 1, column: 4 } }]);
+    send({ call: 15, op: "editor.changes" });
+    expect((await reply(15)).value).toEqual([{ line: 0, lastLine: 1, kind: "added" }]);
 
     editor.fire({ editor: "highlights", value: { fromLine: 0, toLine: 3 } });
     expect(posted.at(-1)).toEqual({ tag: FRAME_TAG, editor: "highlights", value: { fromLine: 0, toLine: 3 } });
@@ -645,6 +656,80 @@ describe("PanelEditor selections", () => {
     panel.dispose();
     a.destroy();
     b.destroy();
+  });
+});
+
+describe("PanelEditor changes", () => {
+  const hunk = (kind: LineHunk["kind"], start: number, lines: number): LineHunk => ({
+    kind,
+    start,
+    lines,
+    oldStart: start,
+    oldLines: kind === "added" ? 0 : 1,
+    oldText: kind === "added" ? "" : "old\n",
+  });
+
+  it("reports the change lane's hunks by line and follows them", async () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({ doc: "a\nb\nc\nd\ne\nf", extensions: [hunkField, editorPanelUpdates] }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: "/p/src/a.js", language: "javascript", uiMode: "JavaScript", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    await nextFrame();
+    // Showing a file: its changes (none yet, as outside version control).
+    expect(events).toContainEqual({ editor: "changes", value: [] });
+
+    events.length = 0;
+    view.dispatch({ effects: setHunksEffect.of([hunk("added", 0, 1), hunk("modified", 2, 2), hunk("deleted", 5, 0)]) });
+    const shown = [
+      { line: 0, lastLine: 0, kind: "added" },
+      { line: 2, lastLine: 3, kind: "modified" },
+      // Deleted above line 5: marked on line 5.
+      { line: 5, lastLine: 5, kind: "deleted" },
+    ];
+    expect(panel.changes()).toEqual(shown);
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "changes")).toEqual([{ editor: "changes", value: shown }]);
+
+    // An edit above moves them; deleting the added line leaves a deletion, as the lane shows it.
+    events.length = 0;
+    view.dispatch({ changes: { from: 0, to: 2 } });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "changes")).toEqual([
+      {
+        editor: "changes",
+        value: [
+          { line: 0, lastLine: 0, kind: "deleted" },
+          { line: 1, lastLine: 2, kind: "modified" },
+          { line: 4, lastLine: 4, kind: "deleted" },
+        ],
+      },
+    ]);
+
+    // Moving the caret alone says nothing.
+    events.length = 0;
+    view.dispatch({ selection: { anchor: 1 } });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "changes")).toEqual([]);
+
+    // No changes any more.
+    events.length = 0;
+    view.dispatch({ effects: setHunksEffect.of([]) });
+    await nextFrame();
+    expect(events).toEqual([{ editor: "changes", value: [] }]);
+
+    panel.dispose();
+    view.destroy();
   });
 });
 

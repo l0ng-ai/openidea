@@ -24,7 +24,7 @@
       // A minimal minimap over `openidea.editor`: each line 2px high, each character 1px wide,
       // in its highlight colour; the visible area as a frame that can be dragged; the wheel
       // scrolls the editor; the marker bar's problems as bars at the right edge; folded lines left out;
-      // the selected lines tinted and the caret's line marked.
+      // the selected lines tinted and the caret's line marked; VCS changes at the left edge.
       const editor = window.openidea.editor;
       const canvas = document.getElementById("map");
       const ctx = canvas.getContext("2d");
@@ -37,6 +37,7 @@
       let problems = [];
       let folds = [];
       let selections = [];
+      let changes = [];
       const PROBLEM_COLOR = { error: "--openidea-danger", warning: "--openidea-warning" };
       const PROBLEM_RANK = { error: 2, warning: 1 };
       let drag = null;
@@ -134,6 +135,13 @@
               ctx.fillRect(s.from, y, s.to - s.from, LINE - 0.5);
             }
         }
+        // Changes in the gutter's colours: a bar over changed lines, a notch where lines were deleted.
+        for (const c of changes) {
+          ctx.fillStyle = cssVar(`--openidea-change-${c.kind}`);
+          const y = Math.floor(rowOf(c.line)) * LINE - offset;
+          if (c.kind === "deleted") ctx.fillRect(0, y - 1, 4, 2);
+          else ctx.fillRect(0, y, 2, (Math.floor(rowOf(c.lastLine)) - Math.floor(rowOf(c.line)) + 1) * LINE);
+        }
         // Problems: errors drawn last, on top; weak warnings in the muted colour.
         const ranked = [...problems].sort((a, b) => (PROBLEM_RANK[a.severity] || 0) - (PROBLEM_RANK[b.severity] || 0));
         for (const p of ranked) {
@@ -184,6 +192,7 @@
         problems = editor.problems ? await editor.problems() : [];
         folds = editor.folded ? await editor.folded() : [];
         selections = editor.selections ? await editor.selections() : [];
+        changes = editor.changes ? await editor.changes() : [];
         view = Object.assign(await editor.viewport(), { version: target.version });
         redraw();
       }
@@ -215,6 +224,11 @@
       if (editor.onSelections)
         editor.onSelections((s) => {
           selections = s;
+          redraw();
+        });
+      if (editor.onChanges)
+        editor.onChanges((c) => {
+          changes = c;
           redraw();
         });
       window.openidea.onThemeChange(redraw);
