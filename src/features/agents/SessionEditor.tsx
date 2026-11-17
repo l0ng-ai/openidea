@@ -115,6 +115,16 @@ import {
 import { useRevealedText } from "./reveal";
 import { selectionIn } from "./selection";
 import { ChangesPane, openChangeDiff, useChangesOpen, useLocalHead } from "./session/ChangesPane";
+import {
+  conversationRows,
+  foldTurnRows,
+  isProcessEntry,
+  liveTool,
+  type ConversationRow,
+  type EntryRow,
+  type IndexedEntry,
+  type ToolEntryData,
+} from "./session/conversationRows";
 import { providerName, shortTitle, useNow, type UserEntry } from "./session/shared";
 import { focusedSession, setFocusedSession, type FocusedSession } from "./sessionFocus";
 import {
@@ -138,7 +148,7 @@ import {
   useAgents,
 } from "./store";
 import { taskMenu } from "./taskActions";
-import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import { foldedTurns, summarizeWork, workParts, type WorkSummary } from "./timeline";
 import {
   ACTIVITY_STATUS,
   activityOf,
@@ -1716,74 +1726,6 @@ function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (in
       <ImagePreview image={open} onClose={() => setOpen(null)} />
     </div>
   );
-}
-
-type ToolEntryData = Extract<AgentEntry, { type: "tool" }>;
-
-/** An entry and its index in the whole conversation (not in the painted tail). */
-type IndexedEntry = { index: number; entry: AgentEntry };
-
-/** A row of the conversation: an entry, or a run of reasoning/tool calls folded together. */
-type ConversationRow =
-  | { kind: "entry"; index: number; entry: AgentEntry }
-  | { kind: "process"; index: number; entries: IndexedEntry[] }
-  /** A finished turn's work before its reply, folded into one line under its message. */
-  | { kind: "turn"; index: number; turn: FoldedTurn; rows: ConversationRow[] };
-
-type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
-
-const liveTool = (entry: AgentEntry) =>
-  entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
-
-/**
- * Reasoning and tool calls fold together, running ones included: the run keeps its place while
- * a call finishes, and its summary line says what is running.
- */
-const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || entry.type === "tool";
-
-/**
- * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
- * one folded row (the work behind a decision), so messages and decisions stay readable.
- */
-export function conversationRows(entries: readonly AgentEntry[], from: number, group = true): ConversationRow[] {
-  if (!group) return entries.slice(from).map((entry, i) => ({ kind: "entry", index: from + i, entry }));
-  const rows: ConversationRow[] = [];
-  let run: IndexedEntry[] = [];
-  const flush = () => {
-    if (run.length > 1) rows.push({ kind: "process", index: run[0]!.index, entries: run });
-    else if (run.length === 1) rows.push({ kind: "entry", ...run[0]! });
-    run = [];
-  };
-  entries.slice(from).forEach((entry, i) => {
-    if (isProcessEntry(entry)) run.push({ index: from + i, entry });
-    else {
-      flush();
-      rows.push({ kind: "entry", index: from + i, entry });
-    }
-  });
-  flush();
-  return rows;
-}
-
-/** `rows` with the work of each turn in `turns` (keyed by its message) folded into one row. */
-export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number, FoldedTurn>): ConversationRow[] {
-  if (!turns.size) return rows;
-  const out: ConversationRow[] = [];
-  let open: Extract<ConversationRow, { kind: "turn" }> | null = null;
-  for (const row of rows) {
-    if (open && row.index < open.turn.reply) {
-      open.rows.push(row);
-      continue;
-    }
-    open = null;
-    out.push(row);
-    const turn = row.kind === "entry" ? turns.get(row.index) : undefined;
-    if (turn) {
-      open = { kind: "turn", index: row.index + 1, turn, rows: [] };
-      out.push(open);
-    }
-  }
-  return out;
 }
 
 /** "Edited 2 files · Read 4 files": what a run of work did; "Reasoning" when it only thought. */
