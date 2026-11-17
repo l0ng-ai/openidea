@@ -25,6 +25,7 @@ import { compare, readGolden, toolDrift, writeGolden, type ResultSet } from "./l
 import { TimeoutError } from "./lib/measure.ts";
 import { fingerprint, pinnedTools, sameMachine, toolVersions, type Fingerprint } from "./lib/machine.ts";
 import type { EvalScenario } from "./lib/scenario.ts";
+import { planSelection } from "./lib/selection.ts";
 import { Session } from "./lib/session.ts";
 import { idOf, judge, loadBudgets, table, type Condition, type Diagnostics, type Outcome } from "./lib/verdict.ts";
 
@@ -56,12 +57,7 @@ if (args.list) {
   process.exit(0);
 }
 
-const runs = Math.max(1, Number(args.runs));
-const warmup = Math.max(0, Number(args.warmup));
-const only = args.only?.split(",").map((s) => s.trim());
-const conditionFilter = args.condition as Condition | undefined;
-const selected = SCENARIOS.filter((s) => !only || only.some((o) => s.id === o || s.id.startsWith(`${o}.`)));
-if (only && !selected.length) throw new Error(`no scenario matches ${args.only} (see --list)`);
+const { runs, warmup, selected, expected, condition: conditionFilter } = planSelection(SCENARIOS, args);
 
 const goldenFile = (id: string) => join(ROOT, "evals", id.slice(0, id.indexOf(".")), "golden", `${id}.json`);
 
@@ -296,7 +292,7 @@ async function main() {
     else console.warn("warning: target/eval/baseline.json is from another machine or OS: not compared");
   }
   const repro = (o: Outcome) => `pnpm eval --only ${o.scenario} --condition ${o.condition}`;
-  const verdicts = judge(outcomes, loadBudgets(join(ROOT, "evals", "budgets.json")), baseline, repro);
+  const verdicts = judge(outcomes, loadBudgets(join(ROOT, "evals", "budgets.json")), baseline, repro, expected);
 
   const meta = {
     date: new Date().toISOString(),
@@ -313,17 +309,17 @@ async function main() {
     meta,
     pass: verdicts.every((v) => v.status === "pass"),
     verdicts: verdicts.map((v) => {
-      const o = outcomes.find((x) => idOf(x) === v.id)!;
+      const o = outcomes.find((x) => idOf(x) === v.id);
       return {
         ...v,
-        samples: o.samples,
-        results: o.results,
-        comparison: o.comparison,
-        drift: o.drift,
-        degraded: o.degraded,
-        error: o.error,
+        samples: o?.samples,
+        results: o?.results,
+        comparison: o?.comparison,
+        drift: o?.drift,
+        degraded: o?.degraded,
+        error: o?.error,
         // Diagnostics only where something needs a look.
-        diagnostics: v.status === "fail" || v.regressions.length ? o.diagnostics : undefined,
+        diagnostics: v.status === "fail" || v.regressions.length ? o?.diagnostics : undefined,
       };
     }),
   };
@@ -345,9 +341,9 @@ async function main() {
   for (const v of failing) {
     console.log(`\n${v.id} FAILED (${v.repro})`);
     for (const f of v.failures) console.log(`  ${f.kind}: ${f.detail}`);
-    const o = outcomes.find((x) => idOf(x) === v.id)!;
-    if (o.drift?.length) console.log(`  golden recorded with other tools: ${o.drift.join(", ")}`);
-    const slow = [...(o.diagnostics?.calls ?? [])].sort((a, b) => b.ms - a.ms).slice(0, 5);
+    const o = outcomes.find((x) => idOf(x) === v.id);
+    if (o?.drift?.length) console.log(`  golden recorded with other tools: ${o.drift.join(", ")}`);
+    const slow = [...(o?.diagnostics?.calls ?? [])].sort((a, b) => b.ms - a.ms).slice(0, 5);
     if (slow.length)
       console.log(
         `  slowest commands: ${slow.map((c) => `${c.cmd} ${Math.round(c.ms)} ms${c.pending ? " (no answer)" : c.ok ? "" : " (failed)"}`).join(", ")}`,

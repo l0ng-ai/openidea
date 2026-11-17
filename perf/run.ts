@@ -20,6 +20,7 @@ import { buildBundle, serveBundle } from "./lib/bundle.ts";
 import { Harness, type Metrics, type Scenario } from "./lib/harness.ts";
 import { topFunctions, type CpuProfile } from "./lib/profile.ts";
 import { installInPage } from "./lib/inpage.ts";
+import { countOption } from "./lib/options.ts";
 import { evaluate, loadBudgets, printReport, type ScenarioResult } from "./lib/report.ts";
 import { median } from "./lib/stats.ts";
 import { SCENARIOS } from "./scenarios.ts";
@@ -51,17 +52,28 @@ if (args.list) {
   process.exit(0);
 }
 
-const runs = Math.max(1, Number(args.runs));
-const warmup = Math.max(0, Number(args.warmup));
-const cpu = Math.max(1, Number(args.cpu));
+const runs = countOption("runs", args.runs!, 1);
+const warmup = countOption("warmup", args.warmup!, 0);
+const cpu = Number(args.cpu);
+if (!args.cpu?.trim() || !Number.isFinite(cpu) || cpu < 1) {
+  throw new Error("--cpu must be a finite number >= 1");
+}
 // Unminified builds keep function names readable in profiles; their bundle size is meaningless.
 const DIST = join(OUT, args.unminified ? "dist-unminified" : "dist");
-const only = args.only?.split(",").map((s) => s.trim());
-const scenarios = only ? SCENARIOS.filter((s) => only.includes(s.id)) : SCENARIOS;
-if (only && scenarios.length !== only.length) {
-  const known = new Set(SCENARIOS.map((s) => s.id));
-  throw new Error(`unknown scenario(s): ${only.filter((o) => !known.has(o)).join(", ")} (see --list)`);
+const only = args.only === undefined ? undefined : [...new Set(args.only.split(",").map((s) => s.trim()))];
+const known = new Set(SCENARIOS.map((s) => s.id));
+if (known.size !== SCENARIOS.length) throw new Error("duplicate scenario ID");
+if (only?.some((id) => !known.has(id))) {
+  throw new Error(`unknown scenario(s): ${only.filter((id) => !known.has(id)).join(", ")} (see --list)`);
 }
+const scenarios = only ? SCENARIOS.filter((s) => only.includes(s.id)) : SCENARIOS;
+if (!scenarios.length) throw new Error("empty workload");
+const budgets = loadBudgets(join(ROOT, "perf", "budgets.json"));
+for (const key of Object.keys(budgets.ui)) {
+  const id = key.slice(0, key.indexOf("."));
+  if (id !== "bundle" && !known.has(id)) throw new Error(`budget references unknown scenario: ${key}`);
+}
+const expected = [...(args.unminified ? [] : ["bundle"]), ...scenarios.map((s) => s.id)];
 
 function build() {
   buildBundle(ROOT, DIST, args.unminified ? ["--minify", "false"] : []);
@@ -188,8 +200,9 @@ async function main() {
   const baseline = existsSync(baselineFile)
     ? (JSON.parse(readFileSync(baselineFile, "utf8")) as ScenarioResult[])
     : null;
-  const budgets = loadBudgets(join(ROOT, "perf", "budgets.json"));
+  // Expectations were fixed before launch, independently of returned measurements.
   const report = evaluate(results, budgets.ui, baseline, {
+    expected,
     enforceBudgets: cpu === 1,
     tolerance: budgets.regressionTolerance,
     floor: budgets.regressionFloor,

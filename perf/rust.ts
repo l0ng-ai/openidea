@@ -8,15 +8,15 @@
  *   pnpm perf:rust -- --package ide-text --save-baseline
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { evaluate, loadBudgets, printReport, type ScenarioResult } from "./lib/report.ts";
+import { collectRustMetrics, rustBudgets, rustPaths, selectRustPackages } from "./lib/rust.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const TARGET = resolve(ROOT, process.env.CARGO_TARGET_DIR ?? "target");
+const { target: TARGET, criterion: CRITERION } = rustPaths(ROOT, process.env);
 const OUT = join(ROOT, "target", "perf");
-const PACKAGES = ["ide-text", "ide-language", "ide-index", "ide-search", "ide-host", "ide-heap"];
 
 const { values: args } = parseArgs({
   options: {
@@ -27,50 +27,27 @@ const { values: args } = parseArgs({
   },
 });
 
-const packages = args.package ?? PACKAGES;
+const packages = selectRustPackages(args.package);
+const budgets = loadBudgets(join(ROOT, "perf", "budgets.json"));
+const selectedBudgets = rustBudgets(packages, budgets.rust);
 const started = Date.now();
 if (!args["no-run"]) {
   const r = spawnSync("cargo", ["bench", ...packages.flatMap((p) => ["-p", p]), "--benches"], {
     cwd: ROOT,
     stdio: "inherit",
+    env: { ...process.env, CARGO_TARGET_DIR: TARGET, CRITERION_HOME: CRITERION },
   });
   if (r.status !== 0) throw new Error("cargo bench failed");
 }
 
-/** Criterion results (`<id>/new/{benchmark,estimates}.json`) → mean in µs. */
-function collect(dir: string, out: Record<string, number>) {
-  if (!existsSync(dir)) return;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === "report") continue;
-    const sub = join(dir, entry.name);
-    const bench = join(sub, "new", "benchmark.json");
-    if (existsSync(bench) && (args["no-run"] || statSync(bench).mtimeMs >= started)) {
-      const { full_id } = JSON.parse(readFileSync(bench, "utf8")) as { full_id: string };
-      const est = JSON.parse(readFileSync(join(sub, "new", "estimates.json"), "utf8")) as {
-        mean: { point_estimate: number };
-      };
-      out[full_id] = est.mean.point_estimate / 1000;
-    }
-    collect(sub, out);
-  }
-}
-
-const metrics: Record<string, number> = {};
-collect(join(TARGET, "criterion"), metrics);
-if (Object.keys(metrics).length === 0) throw new Error(`no criterion results under ${join(TARGET, "criterion")}`);
+const metrics = collectRustMetrics(CRITERION, packages, args["no-run"] ? undefined : started);
 
 mkdirSync(OUT, { recursive: true });
-const budgets = loadBudgets(join(ROOT, "perf", "budgets.json"));
 const results: ScenarioResult[] = [{ id: "rust", title: "criterion means (µs)", metrics }];
 const baselineFile = join(OUT, "baseline-rust.json");
 const baseline = existsSync(baselineFile) ? (JSON.parse(readFileSync(baselineFile, "utf8")) as ScenarioResult[]) : null;
-// Only budgets of benches that ran: `--package` may select a subset.
-const rustBudgets = Object.fromEntries(
-  Object.entries(budgets.rust)
-    .filter(([id]) => args["no-run"] || id in metrics || !args.package)
-    .map(([id, v]) => [`rust.${id}`, v]),
-);
-const report = evaluate(results, rustBudgets, baseline, {
+const report = evaluate(results, selectedBudgets, baseline, {
+  expected: ["rust"],
   enforceBudgets: true,
   tolerance: budgets.regressionTolerance,
   floor: budgets.regressionFloor,

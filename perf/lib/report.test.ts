@@ -32,6 +32,7 @@ describe("evaluate", () => {
   it("fails metrics over budget and budgeted metrics that are missing", () => {
     const r = evaluate(results, { "typing.maxMs": 33, "typing.missedFramePct": 2, "other.x": 1 }, null, {
       enforceBudgets: true,
+      expected: ["typing"],
     });
     expect(r.rows.find((x) => x.key === "typing.maxMs")?.verdict).toBe("over-budget");
     expect(r.rows.find((x) => x.key === "typing.missedFramePct")?.verdict).toBe("error");
@@ -41,18 +42,57 @@ describe("evaluate", () => {
   });
 
   it("reports but does not fail budgets when not enforced", () => {
-    const r = evaluate(results, { "typing.maxMs": 33 }, null, { enforceBudgets: false });
+    const r = evaluate(results, { "typing.maxMs": 33 }, null, { enforceBudgets: false, expected: ["typing"] });
     expect(r.rows.find((x) => x.key === "typing.maxMs")?.verdict).toBe("over-budget-info");
     expect(r.failures).toBe(0);
   });
 
   it("compares against the baseline with relative and absolute slack", () => {
     const baseline = [{ id: "typing", title: "", metrics: { p95Ms: 14, maxMs: 39.5, layoutsPerKey: 2 } }];
-    const r = evaluate(results, {}, baseline, { enforceBudgets: true, tolerance: 0.2, floor: 1 });
+    const r = evaluate(results, {}, baseline, {
+      enforceBudgets: true,
+      expected: ["typing"],
+      tolerance: 0.2,
+      floor: 1,
+    });
     const verdict = (k: string) => r.rows.find((x) => x.key === k)?.verdict;
     expect(verdict("typing.p95Ms")).toBe("regressed"); // +28 %, +4 ms
     expect(verdict("typing.maxMs")).toBe("ok"); // within 20 %
     expect(verdict("typing.layoutsPerKey")).toBe("ok"); // +50 % but only +1 (floor)
     expect(r.regressions).toBe(1);
+  });
+
+  it("fails when a declared scenario disappears from the results", () => {
+    const report = evaluate(results, { "scroll.jumpMs": 50 }, null, {
+      enforceBudgets: true,
+      expected: ["typing", "scroll"],
+    });
+    expect(report.errors).toContainEqual({ id: "scroll", error: "missing scenario result" });
+    expect(report.rows.find((r) => r.key === "scroll.jumpMs")?.verdict).toBe("error");
+    expect(report.failures).toBeGreaterThan(0);
+  });
+
+  it("rejects duplicate and unexpected scenario results", () => {
+    const report = evaluate([...results, ...results, { id: "other", title: "", metrics: { ms: 1 } }], {}, null, {
+      enforceBudgets: true,
+      expected: ["typing"],
+    });
+    expect(report.errors).toEqual([
+      { id: "typing", error: "duplicate scenario result" },
+      { id: "other", error: "unexpected scenario result" },
+    ]);
+  });
+
+  it("rejects an empty workload instead of returning a passing report", () => {
+    expect(evaluate([], {}, null, { enforceBudgets: true, expected: [] }).failures).toBeGreaterThan(0);
+  });
+
+  it("fails nonfinite metrics even without an absolute budget", () => {
+    const report = evaluate([{ id: "typing", title: "", metrics: { ms: Infinity } }], {}, null, {
+      enforceBudgets: false,
+      expected: ["typing"],
+    });
+    expect(report.rows[0]?.verdict).toBe("error");
+    expect(report.failures).toBe(1);
   });
 });

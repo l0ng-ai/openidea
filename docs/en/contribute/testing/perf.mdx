@@ -29,7 +29,9 @@ pnpm perf -- --only typing --profile --unminified   # CPU profile and top functi
 
 Other options: `--warmup <n>` (default 1), `--headed`, `--no-build` (reuse the last build), `--channel <browser>` (default `chromium`, or `OPENIDEA_PERF_CHANNEL`), `--fail-on-regression`.
 
-Scenarios (`perf/scenarios.ts`): `typing`, `typingLarge`, `typingAngular`, `completion`, `consoleOutput`, `terminalTui`, `keyRepeat`, `scroll`, `gitLog`, `gitLogScrollbar`, `resizePanels`, `startup`, `tabs`, `agentTabs`, `popups`, `toolWindows`, `projectTree`, `leaks`. Bundle size (`bundle.initialJsKb`, `bundle.initialCssKb`) is checked on every run.
+`--runs` must be a positive integer, `--warmup` a nonnegative integer, and `--cpu` a finite number of at least 1. Empty or unknown `--only` entries fail before building or launching a browser. Every declared selected scenario must return exactly one result; missing budgeted metrics and nonfinite metrics fail even when CPU throttling disables timing-budget enforcement. Unminified profiling builds intentionally omit bundle-size checks.
+
+Scenarios (`perf/scenarios.ts`): `typing`, `typingLarge`, `typingAngular`, `completion`, `consoleOutput`, `terminalTui`, `keyRepeat`, `scroll`, `gitLog`, `gitLogScrollbar`, `resizePanels`, `startup`, `tabs`, `agentTabs`, `popups`, `toolWindows`, `projectTree`, `leaks`. Bundle size (`bundle.initialJsKb`, `bundle.initialCssKb`) is checked except with `--unminified`.
 
 Latencies are measured from input to the start of the first frame that shows the result, so about 16.7 ms means "next frame".
 
@@ -44,7 +46,7 @@ A scenario in `perf/scenarios.ts` has an `id`, a `title` and a `run(h)` that dri
 
 ## Backend: `pnpm perf:rust`
 
-`perf/rust.ts` runs `cargo bench` for `ide-text`, `ide-language`, `ide-index`, `ide-search` and `ide-host`, reads the Criterion results from `target/criterion`, and checks each bench's mean (in µs).
+`perf/rust.ts` runs `cargo bench` for `ide-text`, `ide-language`, `ide-index`, `ide-search`, `ide-host` and `ide-heap`, reads the Criterion results, and checks each bench's mean (in µs).
 
 ```sh
 pnpm perf:rust                               # run the benches, then check
@@ -61,6 +63,16 @@ The benches live in `crates/<crate>/benches/`:
 | `index_100k/…` | `ide-index`    | file, directory and symbol queries on a 100k-file index                                            |
 | `search_5k/…`  | `ide-search`   | literal, regex and dense-match search over 5k files                                                |
 | `plugins/…`    | `ide-host`     | loading 50 plugins, cold activation, syntax highlights of a 2k-line file                           |
+
+Expected IDs and package ownership are declared independently of collected artifacts in `perf/lib/rust.ts`. A selected package must produce every expected ID, including observe-only measurements. `--package` scopes both collection and required budgets, also with `--no-run`; unknown packages fail before Cargo starts.
+
+Six IDs are observe-only (required finite measurements, without an absolute budget): `syntax_2mb/outline_uncached`, `syntax_2mb/folding_uncached`, `index_100k/find_files/zzzz`, `index_100k/find_symbols/renderView`, `startup_20k/reopen_wait_idle`, and `search_excluded_subtrees/5k_dependencies`. New IDs need an explicit budget or observe-only classification.
+
+## Code intelligence: `pnpm eval`
+
+Use `pnpm eval --list` for scenario IDs and supported conditions. `--only` accepts comma-separated IDs or dot-prefix groups; every entry must match executable work. `--condition` accepts only `warm` or `cold`, and a selection incompatible with that condition is rejected before building or launching. Repetition counts follow the UI runner's integer requirements.
+
+The selected scenario/condition plan defines the required outcomes independently of collected results. Missing, duplicate or unexpected outcomes fail; an empty workload cannot pass. Required timing and correctness metrics must be present and finite, rather than silently skipped by the judge.
 
 ## Budgets and baselines
 
