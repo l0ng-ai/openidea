@@ -1,4 +1,47 @@
 /** An agent task as an editor tab: the conversation, a composer and the task's changed files. */
+import type {
+  AgentChange,
+  AgentCommit,
+  AgentEntry,
+  AgentImage,
+  AgentLimit,
+  AgentQuestion,
+  AgentRetry,
+  AgentTask,
+  AgentUsage,
+} from "@/bindings";
+import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
+import { repositoryPath } from "@/features/vcs/repositoryPaths";
+import { executeAction } from "@/platform/actions";
+import { tx, useTx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { isSameOrInside } from "@/platform/paths";
+import { basename, relativeDir, useProject } from "@/platform/project";
+import {
+  Button,
+  Checkbox,
+  copyMenuFor,
+  copyText,
+  EmptyState,
+  fileIconName,
+  Icon,
+  IconButton,
+  Input,
+  Radio,
+  SearchField,
+  selectableText,
+  showContextMenu,
+  Spinner,
+  T,
+  Tabs,
+  Tree,
+  useSelectionBoundary,
+  type IconName,
+} from "@/ui";
+import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
+import clsx from "clsx";
 import {
   createContext,
   Fragment,
@@ -16,57 +59,21 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import type {
-  AgentChange,
-  AgentCommit,
-  AgentEntry,
-  AgentImage,
-  AgentLimit,
-  AgentQuestion,
-  AgentRetry,
-  AgentTask,
-  AgentUsage,
-} from "@/bindings";
-import { executeAction } from "@/platform/actions";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
-import { isSameOrInside } from "@/platform/paths";
-import { basename, relativeDir, useProject } from "@/platform/project";
-import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
-import { confirm } from "@/workbench/messages";
-import {
-  Button,
-  Checkbox,
-  EmptyState,
-  Icon,
-  IconButton,
-  Input,
-  Radio,
-  SearchField,
-  Spinner,
-  T,
-  Tabs,
-  Tree,
-  copyMenuFor,
-  copyText,
-  fileIconName,
-  selectableText,
-  useSelectionBoundary,
-  showContextMenu,
-  type IconName,
-} from "@/ui";
-import { useTx, tx } from "@/platform/i18n";
-import { isImeKey } from "@/platform/ime";
-import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
-import { repositoryPath } from "@/features/vcs/repositoryPaths";
-import { setChangesOptions, useChangesOptions } from "./changesOptions";
+import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
+import { ConfigPickers } from "./ConfigPickers";
+import { FormCard } from "./FormCard";
+import { ImagePreview, imageSrc } from "./ImagePreview";
+import { Markdown } from "./Markdown";
+import { McpPicker } from "./McpPicker";
 import { ReferencedText } from "./ReferenceChip";
+import styles from "./Session.module.css";
 import { SessionAssets } from "./SessionAssets";
-import { selectionIn } from "./selection";
 import { SubmitButton } from "./SubmitButton";
+import { useAgentSettings } from "./agentSettings";
+import { setChangesOptions, useChangesOptions } from "./changesOptions";
 import {
   canSend,
   costLabel,
@@ -78,36 +85,9 @@ import {
   usageLabel,
   workTime,
 } from "./composerModel";
-import { ConfigPickers } from "./ConfigPickers";
-import { McpPicker } from "./McpPicker";
+import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
-import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
-import { ImagePreview, imageSrc } from "./ImagePreview";
-import { useAgentSettings } from "./agentSettings";
-import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
-import { useRevealedText } from "./reveal";
-import {
-  ACTIVITY_STATUS,
-  PLAYFUL_MIN_MS,
-  PLAYFUL_WORD_MS,
-  PLAYFUL_WORDS,
-  activityOf,
-  playfulIndex,
-  progressKey,
-  type Activity,
-} from "./workingStatus";
-import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
-import { FormCard } from "./FormCard";
-import {
-  asksInCard,
-  commandPrefix,
-  permissionDetails,
-  permissionOption,
-  permissionResult,
-  type PermissionEntry,
-} from "./permission";
-import { Markdown } from "./Markdown";
 import { useAgentErrorText } from "./loginHint";
 import {
   branchLabel,
@@ -116,43 +96,64 @@ import {
   hasTaskTerminal,
   isBusy,
   providerIcon,
+  replyTimes,
+  replyTurns,
   sessionKey,
   statusLabel,
   subagentStatusLabel,
   subagentTitle,
   subagentWorking,
   turnNumbers,
-  replyTurns,
-  replyTimes,
   type ReplyTimes,
   type ReplyTurn,
   type SubagentEntry,
 } from "./model";
 import {
+  asksInCard,
+  commandPrefix,
+  permissionDetails,
+  permissionOption,
+  permissionResult,
+  type PermissionEntry,
+} from "./permission";
+import { useRevealedText } from "./reveal";
+import { selectionIn } from "./selection";
+import { providerName, shortTitle, useNow, type UserEntry } from "./session/shared";
+import { focusedSession, setFocusedSession, type FocusedSession } from "./sessionFocus";
+import {
   acceptChanges,
   cancelTask,
-  stopBackgroundTask,
+  editQueued,
+  forkTask,
   loadEntries,
   markVisible,
   refreshChanges,
-  rollbackChanges,
-  scheduleChanges,
-  editQueued,
-  forkTask,
-  rerunFrom,
   removeQueued,
+  rerunFrom,
   resendMessage,
   respond,
+  rollbackChanges,
+  scheduleChanges,
   sendMessage,
   sendQueuedNow,
   setTaskConfig,
   setTaskMcpOverrides,
+  stopBackgroundTask,
   useAgentCommands,
   useAgents,
 } from "./store";
-import { setFocusedSession, focusedSession, type FocusedSession } from "./sessionFocus";
 import { taskMenu } from "./taskActions";
-import styles from "./Session.module.css";
+import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import {
+  ACTIVITY_STATUS,
+  activityOf,
+  PLAYFUL_MIN_MS,
+  PLAYFUL_WORD_MS,
+  PLAYFUL_WORDS,
+  playfulIndex,
+  progressKey,
+  type Activity,
+} from "./workingStatus";
 
 export function SessionEditor({ input, docked = false }: { input: EditorInput; docked?: boolean }) {
   const id = (input.data as { task: string }).task;
@@ -316,10 +317,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       )}
     </div>
   );
-}
-
-function providerName(id: string) {
-  return useAgents.getState().providers.find((p) => p.id === id)?.name ?? id;
 }
 
 /**
@@ -516,16 +513,6 @@ function Usage({ usage }: { usage: AgentUsage }) {
       {`${label.percent}%`}
     </span>
   );
-}
-
-/** `Date.now()`, updated every `interval` ms. */
-function useNow(interval: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), interval);
-    return () => clearInterval(t);
-  }, [interval]);
-  return now;
 }
 
 /** Where a subagent conversation sits: the way back to the task, and the subagent's state. */
@@ -1097,8 +1084,6 @@ function Stream({
   );
 }
 
-type UserEntry = Extract<AgentEntry, { type: "user" }>;
-
 /** When a message was sent, or when the turn behind a reply finished, and how long it took. */
 function MessageTime({
   sentMs,
@@ -1156,6 +1141,7 @@ interface RangeSet {
   clear(): void;
   add(range: Range): void;
 }
+
 function setHighlight(name: string, ranges: Range[]) {
   const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
   const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
@@ -2201,9 +2187,6 @@ function WorkingSubagents({ entries, onOpen }: { entries: AgentEntry[] | null; o
     </div>
   );
 }
-
-/** Agent-written titles with the task's own folder dropped from paths. */
-const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
 
 /**
  * The answers to an open permission request. A request without options (some agents send
