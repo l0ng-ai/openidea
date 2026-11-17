@@ -10,11 +10,14 @@ use std::process::Command as ProcCommand;
 
 /// Output file of the `dependency:build-classpath` probe, relative to each module.
 const CP_FILE: &str = "target/ide-compile-cp.txt";
+// Older records include undeclared reactor test outputs even in runtime classpaths.
+const CLASSPATH_CACHE_VERSION: u32 = 1;
 
 /// The resolved dependency classpath for one module and scope, tied to the same
 /// inputs as its launch build so POM, JDK, settings and profile changes invalidate it.
 #[derive(Debug, Deserialize, Serialize)]
 struct CachedClasspath {
+    version: u32,
     fingerprint: LaunchFingerprint,
     classpath: String,
 }
@@ -132,6 +135,7 @@ pub fn module_classpath(
     if let (Some(fingerprint), Some(path)) = (&fingerprint, &cache_path)
         && let Ok(bytes) = fs::read(path)
         && let Ok(cached) = serde_json::from_slice::<CachedClasspath>(&bytes)
+        && cached.version == CLASSPATH_CACHE_VERSION
         && cached.fingerprint == *fingerprint
         && classpath_entries_exist(root, &cached.classpath)
     {
@@ -142,7 +146,7 @@ pub fn module_classpath(
         return Err(IdeError::cancelled());
     }
     if let (Some(fingerprint), Some(path)) = (fingerprint, cache_path) {
-        let cached = CachedClasspath { fingerprint, classpath: classpath.clone() };
+        let cached = CachedClasspath { version: CLASSPATH_CACHE_VERSION, fingerprint, classpath: classpath.clone() };
         if let Err(error) = cache_classpath(&path, &cached) {
             tracing::debug!(path = %path.display(), %error, "Cannot cache the Java launch classpath");
         }
@@ -208,11 +212,11 @@ fn classpath(
             if dir == target.module {
                 continue;
             }
-            for classes in ["target/classes", "target/test-classes"] {
-                let path = dir.join(classes);
-                if path.is_dir() {
-                    entries.push(path.to_string_lossy().into_owned());
-                }
+            // A dependency's tests are not exported with its main artifact. Any explicitly
+            // declared test artifact is supplied by Maven's resolved classpath below.
+            let path = dir.join("target/classes");
+            if path.is_dir() {
+                entries.push(path.to_string_lossy().into_owned());
             }
         }
     }
@@ -337,13 +341,19 @@ mod tests {
             root,
             "pom.xml",
             r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1</version>
-            <packaging>pom</packaging><modules><module>lib</module><module>app</module></modules></project>"#,
+            <packaging>pom</packaging><modules><module>shared</module><module>lib</module><module>app</module></modules></project>"#,
         );
         write(
             root,
             "lib/pom.xml",
             r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1</version></parent>
-            <artifactId>lib</artifactId></project>"#,
+            <artifactId>lib</artifactId><dependencies><dependency><groupId>demo</groupId><artifactId>shared</artifactId><version>1</version></dependency></dependencies></project>"#,
+        );
+        write(
+            root,
+            "shared/pom.xml",
+            r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1</version></parent>
+            <artifactId>shared</artifactId></project>"#,
         );
         write(
             root,
@@ -354,6 +364,7 @@ mod tests {
         write(root, "app/src/main/java/demo/Main.java", "class Main {}");
         write(root, "app/src/test/java/demo/MainTest.java", "class MainTest {}");
         write(root, "lib/target/classes/Lib.class", "built");
+        write(root, "shared/target/classes/Shared.class", "built");
         crate::load(root, &root.join("cache"), None)
     }
 
@@ -436,7 +447,9 @@ mod tests {
         let target = single_file_target(root, &model, &file).unwrap();
         assert!(target.top.command.ends_with("mvnw"));
         assert_eq!(target.pl, "app");
+        fs::create_dir_all(root.join("lib/target/test-classes")).unwrap();
         let cp = single_file_classpath(root, &model, &target).unwrap();
+        assert!(!std::env::split_paths(&cp).any(|p| p == root.join("lib/target/test-classes")), "{cp}");
         let separator = ':';
         // Reactor class directories first, so fresh outputs shadow installed snapshots.
         let lib = root.join("lib/target/classes").to_string_lossy().into_owned();
@@ -451,9 +464,16 @@ mod tests {
         assert!(cp.split(separator).count() >= 3, "{cp}");
         let args = fs::read_to_string(root.join("args.txt")).unwrap();
         assert!(!args.lines().any(|a| a == "compile" || a == "package"), "{args}");
+        fs::create_dir_all(root.join("app/target/test-classes")).unwrap();
+        let target = single_file_target(root, &model, &root.join("app/src/test/java/demo/MainTest.java")).unwrap();
+        let cp = single_file_classpath(root, &model, &target).unwrap();
+        let paths: Vec<_> = std::env::split_paths(&cp).collect();
+        assert_eq!(paths[0], root.join("app/target/test-classes"));
+        assert!(paths.contains(&root.join("app/target/classes")), "{cp}");
+        assert!(!paths.contains(&root.join("lib/target/test-classes")), "{cp}");
     }
 
-    /// A launch uses runtime dependencies, while tests additionally see test-scope ones.
+    /// Launches request Maven's matching scope without adding reactor test outputs.
     #[cfg(unix)]
     #[test]
     fn launch_module_classpath_uses_the_matching_dependency_scope() {
@@ -465,15 +485,29 @@ mod tests {
         let script = root.join("mvnw");
         fs::write(
             &script,
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\npl='.'\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = \"-pl\" ]; then pl=\"$2\"; shift 2; else shift; fi\ndone\nmkdir -p \"$pl/target\"\nprintf '/repo/runtime.jar:/repo/test.jar' > \"$pl/target/ide-compile-cp.txt\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\npl='.'\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = \"-pl\" ]; then pl=\"$2\"; shift 2; else shift; fi\ndone\nmkdir -p \"$pl/target\"\nprintf '/repo/runtime.jar:/repo/fixture-tests.jar:/repo/fixture/target/test-classes' > \"$pl/target/ide-compile-cp.txt\"\n",
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let model = crate::load(root, &root.join("cache"), None);
 
+        for dir in
+            ["app/target/classes", "app/target/test-classes", "lib/target/test-classes", "shared/target/test-classes"]
+        {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
         let cache = root.join("cache");
         let runtime =
             module_classpath(root, &model, &root.join("app"), false, None, &cache, &CancellationToken::new()).unwrap();
+        let paths: Vec<_> = std::env::split_paths(&runtime).collect();
+        assert!(paths.contains(&root.join("app/target/classes")), "{runtime}");
+        assert!(paths.contains(&root.join("lib/target/classes")), "{runtime}");
+        assert!(!paths.contains(&root.join("app/target/test-classes")), "{runtime}");
+        assert!(!paths.contains(&root.join("lib/target/test-classes")), "{runtime}");
+        assert!(paths.contains(&root.join("shared/target/classes")), "{runtime}");
+        assert!(!paths.contains(&root.join("shared/target/test-classes")), "{runtime}");
+        assert!(paths.contains(&PathBuf::from("/repo/fixture-tests.jar")), "{runtime}");
+        assert!(paths.contains(&PathBuf::from("/repo/fixture/target/test-classes")), "{runtime}");
         assert!(runtime.contains("/repo/runtime.jar"), "{runtime}");
         let args = fs::read_to_string(root.join("args.txt")).unwrap();
         assert!(args.lines().any(|a| a == "compile"), "{args}");
@@ -482,7 +516,15 @@ mod tests {
 
         let test =
             module_classpath(root, &model, &root.join("app"), true, None, &cache, &CancellationToken::new()).unwrap();
-        assert!(test.contains("/repo/test.jar"), "{test}");
+        assert!(test.contains("/repo/fixture-tests.jar"), "{test}");
+        let paths: Vec<_> = std::env::split_paths(&test).collect();
+        assert!(paths.contains(&root.join("app/target/test-classes")), "{test}");
+        assert!(paths.contains(&root.join("app/target/classes")), "{test}");
+        assert!(paths.contains(&root.join("lib/target/classes")), "{test}");
+        assert!(!paths.contains(&root.join("lib/target/test-classes")), "{test}");
+        assert!(paths.contains(&root.join("shared/target/classes")), "{test}");
+        assert!(!paths.contains(&root.join("shared/target/test-classes")), "{test}");
+        assert!(paths.contains(&PathBuf::from("/repo/fixture/target/test-classes")), "{test}");
         let args = fs::read_to_string(root.join("args.txt")).unwrap();
         assert!(args.lines().any(|a| a == "-Dmdep.includeScope=test"), "{args}");
     }
@@ -491,7 +533,7 @@ mod tests {
     /// build input changes; the probe does not run packaging plugins.
     #[cfg(unix)]
     #[test]
-    fn launch_classpath_cache_follows_the_runner_jdk() {
+    fn launch_classpath_cache_follows_the_runner_jdk_and_format() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -513,6 +555,7 @@ mod tests {
             fs::write(home.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
             fs::write(home.join("bin/java"), "").unwrap();
         }
+        fs::create_dir_all(root.join("app/target/classes")).unwrap();
         let cache = root.join("classpath-cache");
         let cancel = CancellationToken::new();
         let jdk21 = root.join("jdk21");
@@ -526,6 +569,30 @@ mod tests {
         assert_eq!(second, first);
         assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), "x");
 
+        let record = classpath_cache_path(root, &cache, &root.join("app"), false).unwrap();
+        let current: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        let test_output = root.join("lib/target/test-classes");
+        fs::create_dir_all(&test_output).unwrap();
+        let polluted = std::env::join_paths(std::env::split_paths(&first).chain([test_output])).unwrap();
+        let mut calls = "x".to_owned();
+        for version in [None, Some(0), Some(u32::MAX)] {
+            let mut stale = current.clone();
+            stale["classpath"] = polluted.to_string_lossy().as_ref().into();
+            if let Some(version) = version {
+                stale["version"] = version.into();
+            } else {
+                stale.as_object_mut().unwrap().remove("version");
+            }
+            fs::write(&record, serde_json::to_vec(&stale).unwrap()).unwrap();
+            let rebuilt = module_classpath(root, &model, &root.join("app"), false, None, &cache, &cancel).unwrap();
+            assert_eq!(rebuilt, first, "incompatible cache format {version:?} must be rebuilt");
+            calls.push('x');
+            assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), calls);
+            let reused = module_classpath(root, &model, &root.join("app"), false, None, &cache, &cancel).unwrap();
+            assert_eq!(reused, rebuilt);
+            assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), calls);
+        }
+
         let jdk8 = root.join("jdk8");
         for project in &mut model.maven.as_mut().unwrap().projects {
             project.env.insert("JAVA_HOME".into(), jdk8.to_string_lossy().into_owned());
@@ -533,6 +600,7 @@ mod tests {
         let switched = module_classpath(root, &model, &root.join("app"), false, None, &cache, &cancel).unwrap();
         assert!(switched.contains("jdk8/classpath/jdk.jar"), "{switched}");
         assert!(!switched.contains("jdk21/classpath/jdk.jar"), "{switched}");
-        assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), "xx");
+        calls.push('x');
+        assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap(), calls);
     }
 }
