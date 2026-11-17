@@ -16,9 +16,14 @@ vi.mock("@/workbench/contributions", async (orig) => {
 
 const { LspPopups, DocumentationWindow } = await import("./Popups");
 const { closePopup, openPopup, useLspPopup } = await import("./popupStore");
-const { useDocWindow, pushHistory, stepHistory, hoverCandidates } = await import("./docs");
+const { useDocWindow, hoverDoc, pushHistory, stepHistory, hoverCandidates } = await import("./docs");
+const { mountHoverDoc } = await import("./DocView");
+const { hoverSource } = await import("./hover");
 import popupStyles from "./Popups.module.css";
 import { registerImportsOnPasteActions } from "./importsOnPaste";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { CONTRIBUTED_HOVER, type ContributedHover } from "@/editor/api";
 
 const loc = (path: string, line: number): Location => ({
   path,
@@ -249,6 +254,77 @@ describe("documentation", () => {
     expect(useLspPopup.getState().popup).toBeNull();
     expect(show).toHaveBeenCalledWith("documentation", true);
     expect(useDocWindow.getState().entries).toHaveLength(1);
+  });
+});
+
+describe("hover documentation", () => {
+  const text = (value: string) => ({ markup: { kind: "plaintext" as const, value }, language: null });
+  const frame = (el: Element) => el.querySelector<HTMLElement>('[data-lsp-doc="hover"]')!;
+  afterEach(() => document.body.replaceChildren());
+
+  it("shows the hovered documentation in the same view as F1's", async () => {
+    const docHover: ContributedHover = (state, pos) => {
+      const w = state.wordAt(pos);
+      return w ? { from: w.from, to: w.to, markdown: "hovered docs" } : null;
+    };
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "query.FlightPlan",
+        extensions: [EditorState.languageData.of(() => [{ [CONTRIBUTED_HOVER]: docHover }])],
+      }),
+      parent: document.body.appendChild(document.createElement("div")),
+    });
+    const tooltip = await hoverSource(view, 2);
+    let created!: { dom: HTMLElement; destroy: () => void };
+    await act(async () => {
+      created = tooltip!.create() as typeof created;
+      document.body.appendChild(created.dom);
+    });
+    expect(frame(created.dom).textContent).toContain("hovered docs");
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+    created.destroy();
+    view.destroy();
+  });
+
+  it("walks its history with ← / →; Edit Source closes the hover", async () => {
+    const close = vi.fn();
+    const source = vi.fn(async () => loc("/p/b.ts", 3));
+    const doc = hoverDoc(text("first"), close);
+    doc.setState({ entries: [text("first"), { ...text("second"), source }], index: 1 });
+    const el = document.body.appendChild(document.createElement("div"));
+    await act(async () => void mountHoverDoc(el, doc));
+    expect(frame(el).textContent).toContain("second");
+    fireEvent.keyDown(frame(el), { key: "ArrowLeft" });
+    expect(frame(el).textContent).toContain("first");
+    fireEvent.click(screen.getByRole("button", { name: "Forward" }));
+    expect(frame(el).textContent).toContain("second");
+    fireEvent.keyDown(frame(el), { key: "F4" });
+    await vi.waitFor(() =>
+      expect(openFile).toHaveBeenCalledWith("/p/b.ts", { selection: { line: 3, col: 4 }, focus: true }),
+    );
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("keeps each hover's history apart (an editor shown again brings its hover back)", async () => {
+    const [a, b] = [hoverDoc(text("in a.go"), vi.fn()), hoverDoc(text("in b.rs"), vi.fn())];
+    const [elA, elB] = [0, 1].map(() => document.body.appendChild(document.createElement("div")));
+    await act(async () => {
+      mountHoverDoc(elA!, a);
+      mountHoverDoc(elB!, b);
+    });
+    await act(async () => b.setState({ entries: [text("in b.rs"), text("followed in b.rs")], index: 1 }));
+    expect(frame(elA!).textContent).toContain("in a.go");
+    expect(frame(elB!).textContent).toContain("followed in b.rs");
+  });
+
+  it("moves its history to the Documentation tool window", async () => {
+    const close = vi.fn();
+    const el = document.body.appendChild(document.createElement("div"));
+    await act(async () => void mountHoverDoc(el, hoverDoc(text("hovered"), close)));
+    fireEvent.click(screen.getByRole("button", { name: "Show in Documentation Tool Window" }));
+    expect(close).toHaveBeenCalled();
+    expect(show).toHaveBeenCalledWith("documentation", true);
+    expect(useDocWindow.getState().entries[0]?.markup.value).toBe("hovered");
   });
 });
 

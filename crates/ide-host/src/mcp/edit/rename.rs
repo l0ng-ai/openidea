@@ -873,15 +873,15 @@ async fn occurrences(
     let host = call.host();
     let request = crate::mcp::tool::request_id();
     let files = Arc::new(Mutex::new(Vec::new()));
-    let emit: crate::ops::Emit<SearchEvent> = {
+    let emit = {
         let files = files.clone();
-        Arc::new(move |event| {
+        crate::ops::Channel::new(move |event: SearchEvent| {
             if let SearchEvent::File { file } = event {
                 files.lock().push(file);
             }
         })
     };
-    let search = crate::ops::search::start(&host, call.window(), request, query, emit);
+    let search = crate::ops::search::search_start(&host, call.window(), request, query, emit);
     tokio::pin!(search);
     tokio::select! {
         r = &mut search => r?,

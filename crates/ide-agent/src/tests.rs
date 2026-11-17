@@ -1214,25 +1214,15 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     assert_eq!(queue.iter().map(|q| q.prompt.text.as_str()).collect::<Vec<_>>(), ["again"]);
     assert!(mgr.prompt(&task.id, text("  "), false).await.is_err());
 
-    mgr.send_queued_now(&task.id, &queue[0].id).unwrap();
-    for _ in 0..500 {
-        if mgr.entries(&task.id, None).unwrap().iter().any(|e| *e == AgentEntry::Agent { text: "second turn".into() }) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    let users: Vec<String> = mgr
-        .entries(&task.id, None)
-        .unwrap()
-        .into_iter()
-        .filter_map(|e| match e {
-            AgentEntry::User { text, .. } => Some(text),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(users, ["wait", "again"]);
+    // Sending it now joins the running turn when the agent takes messages mid-turn.
+    mgr.send_queued_now(&task.id, &queue[0].id).await.unwrap();
+    assert!(agent.calls.lock().iter().any(|c| c == "_openidea/steer \"again\""));
+    assert!(!agent.calls.lock().iter().any(|c| c == "session/cancel"));
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(entries.iter().any(|e| matches!(e, AgentEntry::User { text, steered: true, .. } if text == "again")));
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
 
     // Stopping a turn keeps the queue for later.
     mgr.prompt(&task.id, text("wait"), false).await.unwrap();
@@ -1245,6 +1235,40 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     assert_eq!(queued.len(), 1);
     assert_eq!(mgr.unqueue(&task.id, &queued[0].id).unwrap().prompt.text, "later");
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_now_interrupts_the_turn_when_steering_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent { session_steering: true, ..FakeAgent::default() });
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("wait"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Running).await;
+    mgr.prompt(&task.id, text("too late"), false).await.unwrap();
+    let queued = mgr.task(&task.id).unwrap().state.lock().task.queue[0].id.clone();
+
+    mgr.send_queued_now(&task.id, &queued).await.unwrap();
+    // The fake agent's next turn asks for permission.
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let calls = agent.calls.lock().clone();
+    assert!(calls.contains(&"_session/steering \"too late\"".to_owned()), "{calls:?}");
+    assert!(calls.contains(&"session/cancel".to_owned()), "{calls:?}");
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(entries.iter().any(|e| matches!(e, AgentEntry::User { text, steered: false, .. } if text == "too late")));
+    assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1309,6 +1333,25 @@ async fn subagents_get_their_own_conversation() {
     // Saved with the task.
     mgr.shutdown();
     check(&manager(tmp.path(), Arc::new(FakeAgent::default())));
+}
+
+#[test]
+fn image_blocks_declare_the_type_of_their_bytes() {
+    let image = |mime: &str, data: &str| AgentImage { mime_type: mime.into(), data: data.into(), name: None };
+    let cases = [
+        // A browser's JPEG pasted as PNG.
+        (image("image/png", "/9j/4AAQSkZJRgABAQ"), "image/jpeg"),
+        (image("image/jpeg", "iVBORw0KGgoAAAANSUhEUg"), "image/png"),
+        (image("image/png", "R0lGODlhAQABAIAAAP"), "image/gif"),
+        (image("image/png", "UklGRiQAAABXRUJQVlA4"), "image/webp"),
+        // Not recognised: as declared.
+        (image("image/bmp", "Qk02AAAAAAAAADYAAA"), "image/bmp"),
+        (image("image/png", "AAA"), "image/png"),
+    ];
+    for (image, expected) in cases {
+        let p = AgentPrompt { text: String::new(), files: vec![], images: vec![image] };
+        assert_eq!(blocks(&p, &[])[0]["mimeType"], expected, "{:?}", p.images[0].data);
+    }
 }
 
 #[test]

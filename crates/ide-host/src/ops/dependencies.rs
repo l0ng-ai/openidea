@@ -1,5 +1,6 @@
 //! Repository version lookups for manifest inspections and completion.
-use crate::{Host, rpc::Dispatcher};
+use crate::Host;
+use ide_command::command;
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
 use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go, maven, npm};
 use std::collections::BTreeMap;
@@ -193,7 +194,7 @@ fn go_source(project: &crate::Project, config_dir: &Path, path: &Path) -> IdeRes
     Ok(GoModules { root, env })
 }
 
-/// `offset` limits a completion request to its version string; inspections omit it.
+#[command(trust = trusted)]
 pub async fn dependency_versions(
     host: &Host,
     window: &str,
@@ -201,6 +202,7 @@ pub async fn dependency_versions(
     offset: Option<u32>,
     request: RequestId,
 ) -> IdeResult<Vec<DependencyVersions>> {
+    // `offset` limits a completion request to its version string; inspections omit it.
     let project = host.project(window)?;
     let cache = host.dependency_versions.clone();
     let config_dir = host.config_dir.clone();
@@ -247,12 +249,6 @@ pub async fn dependency_versions(
         .await;
     host.end_request(request);
     result
-}
-
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("dependency_versions", |c| async move {
-        dependency_versions(&c.host, &c.window, c.arg("doc")?, c.arg("offset")?, c.arg("request")?).await
-    });
 }
 
 #[cfg(test)]
@@ -361,3 +357,5 @@ mod tests {
         host.close_project("main");
     }
 }
+
+ide_command::domain!(dependencies: dependency_versions);

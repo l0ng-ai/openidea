@@ -1608,6 +1608,36 @@ async fn a_cancelled_pull_is_retried_and_a_refresh_pulls_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn show_message_request_unknown_action_replies_null() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("dismiss.mk", "abc\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let request = peer.request(
+        "window/showMessageRequest",
+        json!({ "type": 2, "message": "Continue?", "actions": [{ "title": "Yes" }] }),
+        None,
+    );
+    tokio::pin!(request);
+    let id = loop {
+        if let Some(id) = h.events.lock().iter().find_map(|event| match event {
+            IdeEvent::LspMessageRequest { id, message, .. } if message == "Continue?" => Some(*id),
+            _ => None,
+        }) {
+            break id;
+        }
+        tokio::select! {
+            _ = &mut request => panic!("showMessageRequest finished before the UI event"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    // An action that was not offered must not be sent back as a choice.
+    assert!(ide_lsp::answer_message_request(id, Some("No".into())));
+    let reply: Value = request.await.unwrap();
+    assert_eq!(reply, Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn apply_edit_hook_and_server_requests() {
     let h = harness(&[("mock", incremental_caps())]);
     let (_doc, path) = h.open("a.mk", "abc\n");
@@ -1657,15 +1687,34 @@ async fn apply_edit_hook_and_server_requests() {
     assert_eq!(folders[0]["uri"], json!(uri_of(&h.root)));
     let v: Value = peer.request("window/workDoneProgress/create", json!({ "token": "t" }), None).await.unwrap();
     assert_eq!(v, Value::Null);
-    let v: Value = peer
-        .request(
-            "window/showMessageRequest",
-            json!({ "type": 1, "message": "boom", "actions": [{ "title": "OK" }] }),
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(v, Value::Null);
+    let request = peer.request(
+        "window/showMessageRequest",
+        json!({ "type": 1, "message": "Rename Anyway?", "actions": [{ "title": "Rename Anyway" }, { "title": "Cancel" }] }),
+        None,
+    );
+    tokio::pin!(request);
+    let id = loop {
+        if let Some(id) = h.events.lock().iter().find_map(|event| match event {
+            IdeEvent::LspMessageRequest { id, message, actions, .. } if message == "Rename Anyway?" => {
+                assert_eq!(actions, &["Rename Anyway".to_owned(), "Cancel".to_owned()]);
+                Some(*id)
+            }
+            _ => None,
+        }) {
+            break id;
+        }
+        tokio::select! {
+            _ = &mut request => panic!("showMessageRequest finished before the UI event"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    assert!(ide_lsp::answer_message_request(id, Some("Rename Anyway".into())));
+    let v: Value = request.await.unwrap();
+    assert_eq!(v, json!({ "title": "Rename Anyway" }));
+    eventually(|| {
+        h.events.lock().iter().any(|event| matches!(event, IdeEvent::LspMessageRequestDone { id: done } if *done == id))
+    })
+    .await;
     let v: Value = peer
         .request(
             "client/registerCapability",
@@ -1691,8 +1740,8 @@ async fn apply_edit_hook_and_server_requests() {
     .await;
     let notifies = h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { .. })).count();
     assert_eq!(
-        notifies, 2,
-        "showMessageRequest error + showMessage warning; info and rust-analyzer's developer notices are not surfaced"
+        notifies, 1,
+        "showMessageRequest is now a question with actions, not a notification; info and developer notices are not surfaced"
     );
 
     // Dynamically registered capability is now usable.
@@ -2892,6 +2941,57 @@ async fn open_java_files_are_checked_again_after_a_project_update() {
     let mut expected = vec![json!(uri_of(&a)), json!(uri_of(&b))];
     expected.sort_by_key(|u| u.to_string());
     eventually(|| refreshed() == expected).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"]["commands"].as_array_mut().unwrap().push(json!("openidea.java.generatedSources"));
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (_, _) = h.open("App.java", "package com.example;\nclass App {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let write = |rel: &str, text: &str| {
+        let path = h.root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("pom.xml", "<project><artifactId>app</artifactId></project>");
+    write(
+        "target/generated-sources/protobuf/java/com/example/hello/Hello.java",
+        "package com.example.hello;\npublic class Hello {}",
+    );
+    write(
+        "target/generated-sources/protobuf/grpc-java/com/example/hello/HelloGrpc.java",
+        "package com.example.hello;\npublic class HelloGrpc {}",
+    );
+    write(
+        "target/generated-sources/annotations/com/example/hello/HelloMapperImpl.java",
+        "package com.example.hello;\nclass HelloMapperImpl {}",
+    );
+    let state = h.launcher.state("jdtls");
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    eventually(|| {
+        let requests = state.requested("workspace/executeCommand");
+        let generated = requests.iter().position(|p| p["command"] == "openidea.java.generatedSources");
+        let refresh = requests.iter().position(|p| p["command"] == "java.project.refreshDiagnostics");
+        matches!((generated, refresh), (Some(generated), Some(refresh)) if generated < refresh)
+    })
+    .await;
+    let requests = state.requested("workspace/executeCommand");
+    let generated = requests.iter().find(|p| p["command"] == "openidea.java.generatedSources").unwrap();
+    let paths: Vec<_> = generated["arguments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| (arg["path"].as_str().unwrap().to_owned(), arg["test"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            (h.root.join("target/generated-sources/protobuf/grpc-java").to_string_lossy().into_owned(), false),
+            (h.root.join("target/generated-sources/protobuf/java").to_string_lossy().into_owned(), false),
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

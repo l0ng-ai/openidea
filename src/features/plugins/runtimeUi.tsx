@@ -34,6 +34,7 @@ import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
+import { onLocalDiagnostics } from "@/platform/localDiagnostics";
 import { isOpenable, openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -364,16 +365,21 @@ function trackWorkbenchEvents(): () => void {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
   // Diagnostics arrive from language servers and builds without a file event; plugins
-  // that draw them (Inspection Lens) re-read the snapshot when this fires.
-  const offProblems = onIdeEvent("diagnostics", () => {
+  // that draw them (Inspection Lens) re-read the snapshot when this fires. Typo and
+  // other UI-side inspections publish through localDiagnostics instead, without an
+  // `IdeEvent::diagnostics`, so wire both sources to the same notification.
+  const problemsChanged = () => {
     if (wanted.has("problems-changed")) post({ kind: "problemsChanged" });
-  });
+  };
+  const offProblems = onIdeEvent("diagnostics", problemsChanged);
+  const offLocalProblems = onLocalDiagnostics(problemsChanged);
   return () => {
     offEditor();
     offActions();
     offVcs();
     offSettings();
     offProblems();
+    offLocalProblems();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
     queue = [];

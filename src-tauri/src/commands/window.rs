@@ -3,6 +3,7 @@
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
 use crate::windows::{self, Launch, OpenOutcome, WindowsState};
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -15,6 +16,7 @@ use tauri::{AppHandle, State, WebviewWindow, Window};
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
 /// `files` then open in that project's editor.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_project(
@@ -30,6 +32,7 @@ pub async fn window_open_project(
 /// open in some window goes to that window, the others to the LightEdit window (this one,
 /// another, or a new one from a remote project window). Returns the files this window opens
 /// itself, in LightEdit.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_files(
@@ -43,6 +46,7 @@ pub async fn window_open_files(
 /// Detaches an editor tab: opens `file` in a forced new window (`project`, None
 /// for LightEdit, decided by the caller), bypassing the focus-an-existing-window
 /// routing of [`window_open_project`] / [`window_open_files`].
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_file_in_new_window(
@@ -55,6 +59,7 @@ pub async fn window_open_file_in_new_window(
 
 /// [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
 /// Remote Development); a new window connects itself.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_remote(
@@ -67,6 +72,7 @@ pub async fn window_open_remote(
 }
 
 /// Opens an empty (welcome) window; returns its label.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_new(app: AppHandle) -> IdeResult<String> {
@@ -76,6 +82,7 @@ pub async fn window_new(app: AppHandle) -> IdeResult<String> {
 /// Opens this window's Settings window on `page` (or focuses it and navigates);
 /// `new_projects` edits the global layer only ("Settings for New Projects").
 /// `background` (`#rrggbb`) paints a new window until its page has loaded.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_settings(
@@ -90,6 +97,7 @@ pub async fn window_open_settings(
 
 /// Opens a window listing the files that differ between two revisions of this window's project.
 /// `background` (`#rrggbb`) paints it until its page has loaded.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_comparison(
@@ -103,6 +111,7 @@ pub async fn window_open_comparison(
 
 /// Opens a window showing `diff` next to this window ("Show Diff in New Window").
 /// `background` (`#rrggbb`) paints it until its page has loaded.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_diff(
@@ -116,6 +125,7 @@ pub async fn window_open_diff(
 
 /// Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 /// to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_deployment(
@@ -129,12 +139,14 @@ pub async fn window_open_deployment(
 }
 
 /// Focuses the next / previous window (⌘` / ⇧⌘`).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
     windows::cycle(&app, window.label(), forward);
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
@@ -142,6 +154,7 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
 }
 
 /// Fills the work area without the platform zoom animation. Returns whether it is filled now.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
@@ -152,6 +165,7 @@ pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
 /// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
 /// Linux sets the urgency hint). A focused window is never flashed: the user is already
 /// looking at it, and re-flashing it would steal attention for nothing.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
@@ -164,6 +178,7 @@ pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()>
 }
 
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResult<()> {
@@ -178,6 +193,7 @@ pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResu
 }
 
 /// What this window was opened for (taken once).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
@@ -185,6 +201,7 @@ pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState
 }
 
 /// Release the opening window's reservation after navigation or cancellation.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
@@ -204,6 +221,7 @@ pub struct OpenProject {
 }
 
 /// Projects open in project windows, in window order (title bar project widget).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_open_projects(
@@ -233,6 +251,7 @@ pub fn window_open_projects(
 }
 
 /// Whether this window is in native full screen (on macOS, also a tab of a fullscreen group).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
@@ -248,6 +267,7 @@ pub struct CloseContext {
     pub windows: u32,
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, WindowsState>) -> CloseContext {
@@ -265,6 +285,7 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
 }
 
 /// Quits: closes every window, each of which runs its own unsaved-changes check.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
@@ -276,6 +297,7 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
 }
 
 /// A window vetoed the quit (user cancelled its unsaved-changes prompt).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
@@ -288,6 +310,7 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
 /// Sets the menu's labels / accelerators and updates the menu when the visible
 /// items changed. Accelerators of actions that are not on the menu must not call
 /// `set_menu`, which redraws the macOS menu bar.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
@@ -317,6 +340,7 @@ fn owns_menu_config(source: &str, target: &str) -> bool {
 
 /// Updates the menu after the recent-projects list changed. Only the Open Recent
 /// submenu is rewritten when the rest of the menu is unchanged.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn menu_refresh(app: AppHandle, menu_state: State<'_, MenuState>, state: State<'_, AppState>) {
@@ -324,6 +348,7 @@ pub fn menu_refresh(app: AppHandle, menu_state: State<'_, MenuState>, state: Sta
 }
 
 /// The menu bar for a title bar drawn by the frontend (Windows).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<'_, MenuState>) -> Vec<menu::MenuNode> {
@@ -338,6 +363,7 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
 
 /// Action ids the focused window cannot run now: their native menu items are
 /// disabled in place (no rebuild).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn menu_set_disabled(window: WebviewWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
@@ -365,6 +391,7 @@ pub struct LogLocation {
     pub file: Option<ide_core::IpcPath>,
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_log_location() -> IdeResult<LogLocation> {
@@ -380,6 +407,7 @@ pub struct CliInstallation {
 }
 
 /// Installs the `openidea` command for this user.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_cli_install() -> IdeResult<CliInstallation> {
@@ -387,6 +415,7 @@ pub async fn app_cli_install() -> IdeResult<CliInstallation> {
 }
 
 /// Removes the installed `openidea` command; returns the links removed.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_cli_uninstall() -> IdeResult<Vec<ide_core::IpcPath>> {
@@ -407,6 +436,7 @@ pub struct BuildInfo {
     pub updates: bool,
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_build_info(app: AppHandle) -> BuildInfo {
@@ -450,10 +480,9 @@ fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
 
 /// The endpoints tried in order: `source` first, the other source when it fails or has
 /// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// No official endpoint (a build without updates) means no mirror either. Nightly builds
-/// aren't mirrored: the mirror's manifest would move them to the stable version.
-fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) -> Vec<String> {
-    if official.is_empty() || nightly {
+/// No official endpoint (a build without updates) means no mirror either.
+fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> {
+    if official.is_empty() {
         return official;
     }
     let mirror = vec![CNB_ENDPOINT.to_string()];
@@ -463,10 +492,6 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) 
     }
 }
 
-fn is_nightly(version: &str) -> bool {
-    version.contains("-nightly.")
-}
-
 fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -474,7 +499,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
     }
     let endpoints = match update_endpoint_env() {
         Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(app), source, is_nightly(&app.package_info().version.to_string())),
+        None => source_endpoints(config_endpoints(app), source),
     };
     let endpoints = endpoints
         .iter()
@@ -498,6 +523,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
         .map_err(|e| IdeError::unavailable(e.to_string()))
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_check_update(app: AppHandle, source: UpdateSource) -> IdeResult<UpdateCheck> {
@@ -523,6 +549,7 @@ pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeRe
     })
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_update_window_ready(
@@ -535,12 +562,14 @@ pub fn app_update_window_ready(
     Ok(())
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_update_status(state: State<'_, AppState>) -> IdeResult<UpdateStatus> {
     Ok(state.updates.state.lock().policy.status.clone())
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_update_announcement(state: State<'_, AppState>, version: String, automatic: bool) -> IdeResult<bool> {
@@ -602,6 +631,7 @@ impl Drop for InstallingGuard {
 /// Downloads and installs the available update, streaming progress to `on_progress`.
 /// Cancellable through `request` until the download completes; the UI then restarts
 /// with `app_restart`. One install runs at a time.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_install_update(
@@ -658,6 +688,7 @@ pub async fn app_install_update(
 /// can show the UI's language and fall back to English. An install records the
 /// notes it saw, so this is only for an update installed outside the app.
 /// `Ok(None)` when the manifest covers another version or carries no notes.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_release_notes(
@@ -667,7 +698,7 @@ pub async fn app_release_notes(
 ) -> IdeResult<Option<BTreeMap<String, String>>> {
     let endpoints = match update_endpoint_env() {
         Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
+        None => source_endpoints(config_endpoints(&app), source),
     };
     let client = ide_http::client::shared()?;
     for endpoint in endpoints {
@@ -794,22 +825,10 @@ mod tests {
     #[test]
     fn chosen_source_is_tried_first_and_the_other_after_it() {
         let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
-        assert_eq!(
-            source_endpoints(vec![github.clone()], UpdateSource::Github, false),
-            [github.clone(), CNB_ENDPOINT.into()]
-        );
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb, false), [CNB_ENDPOINT.into(), github]);
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Github), [github.clone(), CNB_ENDPOINT.into()]);
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
-        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb, false).is_empty());
-    }
-
-    #[test]
-    fn nightly_builds_update_from_their_own_manifest_whatever_the_source() {
-        let nightly = "https://github.com/l0ng-ai/openidea/releases/download/nightly/latest.json".to_string();
-        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Cnb, true), vec![nightly.clone()]);
-        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Github, true), [nightly]);
-        assert!(is_nightly("0.1.40-nightly.202611081417"));
-        assert!(!is_nightly("0.1.40"));
+        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
     }
 
     #[test]
@@ -820,3 +839,41 @@ mod tests {
         assert!(InstallingGuard::acquire().is_some());
     }
 }
+
+ide_command::desktop_domain!(
+    app_build_info,
+    app_cancel_quit,
+    app_check_update,
+    app_cli_install,
+    app_cli_uninstall,
+    app_install_update,
+    app_log_location,
+    app_quit,
+    app_release_notes,
+    app_update_announcement,
+    app_update_status,
+    app_update_window_ready,
+    menu_configure,
+    menu_model,
+    menu_refresh,
+    menu_set_disabled,
+    window_close_context,
+    window_complete_launch,
+    window_cycle,
+    window_flash_taskbar,
+    window_is_fullscreen,
+    window_new,
+    window_open_comparison,
+    window_open_deployment,
+    window_open_diff,
+    window_open_file_in_new_window,
+    window_open_files,
+    window_open_project,
+    window_open_projects,
+    window_open_remote,
+    window_open_settings,
+    window_set_titlebar_height,
+    window_take_launch,
+    window_toggle_fullscreen,
+    window_toggle_zoom,
+);

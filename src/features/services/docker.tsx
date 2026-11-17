@@ -19,6 +19,8 @@ import type {
 } from "@/platform/ipc";
 import { tx, useTx, useTxTemplate } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
+import { sshLabel } from "@/platform/remoteSettings";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { Button, EmptyState, IconButton, LogPane, Spinner, Tabs, T } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
@@ -100,6 +102,10 @@ function endpointText(ep: DockerEndpoint): string {
       return ep.tlsCertDir ? `${ep.host} (TLS)` : ep.host;
     case "context":
       return `context ${ep.name}`;
+    case "ssh": {
+      const config = workflowSettings().ssh.configs.find((c) => c.id === ep.config);
+      return `SSH ${config ? sshLabel(config) : ep.config}`;
+    }
   }
 }
 

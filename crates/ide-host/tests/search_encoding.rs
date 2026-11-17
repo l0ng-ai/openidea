@@ -6,12 +6,12 @@ async fn find(host: &Host, pattern: &str) -> Vec<ide_search::FileMatches> {
     let hits = Arc::new(Mutex::new(Vec::new()));
     let out = hits.clone();
     let query = serde_json::from_value(serde_json::json!({"pattern": pattern, "isRegex": false, "caseSensitive": false, "wholeWord": false, "include": [], "exclude": [], "scope": {"kind": "project"}, "maxMatches": 100})).unwrap();
-    ops::search::start(
+    ops::search::search_start(
         host,
         "main",
         RequestId::next(),
         query,
-        Arc::new(move |event| {
+        ops::Channel::new(move |event| {
             if let ops::search::SearchEvent::File { file } = event {
                 out.lock().unwrap().push(file);
             }

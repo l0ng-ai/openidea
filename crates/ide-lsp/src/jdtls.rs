@@ -17,10 +17,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) const SERVER: &str = "jdtls";
+const GENERATED_SOURCES: &str = "openidea.java.generatedSources";
 
 pub(crate) mod configuration;
 mod extract_interface;
 mod formatter;
+mod generated;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
 mod move_refactoring;
@@ -638,6 +640,7 @@ impl LspManager {
     /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
     /// change, a Maven sync, other Maven profiles), but does not check open documents
     /// again against the new classpath: their errors would stay until the next edit.
+    /// Generated Maven sources are attached first, so that recheck sees them.
     pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let uris: Vec<String> = self
             .docs
@@ -650,11 +653,10 @@ impl LspManager {
             })
             .map(|d| crate::uri::path_to_uri_string(&d.path))
             .collect();
-        if uris.is_empty() {
-            return;
-        }
+        let mgr = self.clone();
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
+            mgr.sync_generated_sources(&server, &run).await;
             for uri in uris {
                 let params =
                     json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
@@ -666,6 +668,49 @@ impl LspManager {
                 }
             }
         });
+    }
+
+    /// Puts Maven plugin output that already exists on disk (`target/generated-sources/...`)
+    /// onto the jdtls classpath. Best-effort: only a jdtls that is already running is
+    /// touched, so a Maven build does not start the language server by itself.
+    pub async fn sync_maven_generated_sources(&self, root: &Path) {
+        let servers: Vec<_> = self
+            .servers
+            .lock()
+            .iter()
+            .filter(|server| server.name == SERVER && server.running().is_some())
+            .filter(|server| server.root == root || root.starts_with(&server.root) || server.root.starts_with(root))
+            .cloned()
+            .collect();
+        for server in servers {
+            let Some(run) = server.running() else { continue };
+            self.sync_generated_sources(&server, &run).await;
+        }
+    }
+
+    async fn sync_generated_sources(&self, server: &Arc<Server>, run: &Running) {
+        if !run.caps.read().commands().iter().any(|command| command == GENERATED_SOURCES) {
+            return;
+        }
+        let root = server.root.clone();
+        let scan = tokio::task::spawn_blocking(move || generated::scan(&root))
+            .await
+            .unwrap_or(generated::GeneratedScan { maven: false, roots: Vec::new() });
+        if !scan.maven {
+            return;
+        }
+        let arguments: Vec<Value> = scan
+            .roots
+            .into_iter()
+            .map(|root| json!({ "path": root.path.to_string_lossy(), "test": root.test }))
+            .collect();
+        let params = json!({ "command": GENERATED_SOURCES, "arguments": arguments });
+        let request = run.peer.request::<_, Value>("workspace/executeCommand", params, None);
+        if let Ok(Err(e)) | Err(e) =
+            tokio::time::timeout(COMMAND_TIMEOUT, request).await.map_err(|_| ide_jsonrpc::RpcError::Timeout)
+        {
+            tracing::debug!("jdtls: {GENERATED_SOURCES}: {e}");
+        }
     }
 
     /// The jdtls instance serving `path` (a module directory or source file),
@@ -1025,36 +1070,38 @@ impl LspManager {
             .map_err(|e| IdeError::internal(e.to_string()))
     }
 
+    /// jdtls' document for class file `entry` of archive `jar`, from its Java model. With
+    /// `any_archive`, the one class of that name the model has when it knows `jar` by another path.
+    pub(crate) async fn archive_class(&self, jar: PathBuf, entry: String, any_archive: bool) -> IdeResult<String> {
+        let cancel = CancellationToken::new();
+        self.jdtls(&self.project_root, &cancel).await?;
+        let entry =
+            entry.strip_prefix("META-INF/versions/").and_then(|s| s.split_once('/').map(|(_, s)| s)).unwrap_or(&entry);
+        let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
+        let outer = class.split('$').next().unwrap_or(class);
+        let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
+        let query = outer.replace('/', ".");
+        let symbols = self.workspace_symbols(&query, cancel).await?;
+        let package = package.replace('/', ".");
+        let name = name.to_owned();
+        let outer = outer.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let uris = symbols.into_iter().filter_map(|s| s.location.uri);
+            crate::virtual_doc::pick_class(uris, &jar, &package, &name, any_archive)
+                .ok_or_else(|| IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display())))
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+    }
+
     /// Resolve a disk/archive class to project source or the server's binary document.
     /// Archive URIs must come from JDT's Java model: fabricated handles cannot map debug lines.
     pub async fn java_class_file(&self, path: &Path, archive: Option<(PathBuf, String)>) -> IdeResult<String> {
+        if let Some((jar, entry)) = archive {
+            return self.archive_class(jar, entry, false).await;
+        }
         let cancel = CancellationToken::new();
         self.jdtls(&self.project_root, &cancel).await?;
-        if let Some((jar, entry)) = archive {
-            let entry = entry
-                .strip_prefix("META-INF/versions/")
-                .and_then(|s| s.split_once('/').map(|(_, s)| s))
-                .unwrap_or(&entry);
-            let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
-            let outer = class.split('$').next().unwrap_or(class);
-            let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
-            let query = outer.replace('/', ".");
-            let symbols = self.workspace_symbols(&query, cancel).await?;
-            let package = package.replace('/', ".");
-            let name = name.to_owned();
-            let outer = outer.to_owned();
-            return tokio::task::spawn_blocking(move || {
-                symbols
-                    .into_iter()
-                    .filter_map(|s| s.location.uri)
-                    .find(|uri| crate::virtual_doc::matches_class(uri, &jar, &package, &name))
-                    .ok_or_else(|| {
-                        IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display()))
-                    })
-            })
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?;
-        }
         let uri = crate::uri::path_to_uri_string(path);
         // classFileContents accepts file URIs, but java-debug's line mapping only accepts JDT handles.
         let doc = self.virtual_document(&uri).await?;

@@ -1,11 +1,13 @@
 //! Font families installed on this machine, for the font pickers in Settings.
 //! Enumerates fonts on the local desktop, including in remote-development windows.
 
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
 use ide_fonts::FontFamily;
 
 /// Every installed family, sorted, each flagged monospaced or not. Read on
 /// first use (off the command threads), cached, and re-queried on `refresh`.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn system_font_families(refresh: bool) -> IdeResult<Vec<FontFamily>> {
@@ -15,6 +17,7 @@ pub async fn system_font_families(refresh: bool) -> IdeResult<Vec<FontFamily>> {
 }
 
 /// Raw font bundle, selected by family, never by a frontend-supplied path.
+#[desktop_command(trust = always, bindings = none)]
 #[tauri::command]
 pub async fn user_font_data(family: String) -> IdeResult<tauri::ipc::Response> {
     tauri::async_runtime::spawn_blocking(move || ide_fonts::user_font_data(&family))
@@ -23,3 +26,5 @@ pub async fn user_font_data(family: String) -> IdeResult<tauri::ipc::Response> {
         .map(tauri::ipc::Response::new)
         .map_err(|e| IdeError::invalid(e.to_string()))
 }
+
+ide_command::desktop_domain!(system_font_families);

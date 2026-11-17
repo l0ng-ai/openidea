@@ -1,7 +1,7 @@
 //! File move / rename refactoring: reference updates from the language
 //! servers, the move itself (one undoable step) and its undo.
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
 use ide_core::{IdeResult, RequestId, WorkspaceEdit};
 use ide_lsp::types::FileRenameEdits;
@@ -15,6 +15,7 @@ fn pairs(moves: &[FileMove]) -> Vec<(PathBuf, PathBuf)> {
 }
 
 /// `workspace/willRenameFiles` on every interested server (before the move). Cancellable.
+#[command(trust = always)]
 pub async fn refactor_file_move_edits(
     host: &Host,
     window: &str,
@@ -35,6 +36,7 @@ pub async fn refactor_file_move_edits(
 
 /// Applies `edit` (from [`refactor_file_move_edits`], possibly empty), moves the
 /// files and notifies the servers. Returns the id for [`refactor_undo_file_move`].
+#[command(trust = always)]
 pub async fn refactor_move_files(
     host: &Host,
     window: &str,
@@ -55,6 +57,7 @@ pub async fn refactor_move_files(
 }
 
 /// Undoes a file move: moves back and reverts the reference updates.
+#[command(trust = always)]
 pub async fn refactor_undo_file_move(host: &Host, window: &str, id: u32) -> IdeResult<UndoOutcome> {
     let project = host.project(window)?;
     let p = project.clone();
@@ -64,12 +67,14 @@ pub async fn refactor_undo_file_move(host: &Host, window: &str, id: u32) -> IdeR
 }
 
 /// Whether the file move `id` can still be undone.
+#[command(trust = always)]
 pub fn refactor_can_undo_file_move(host: &Host, window: &str, id: u32) -> IdeResult<bool> {
     Ok(host.project(window)?.moves.can_undo(id))
 }
 
 /// "Search in comments and strings": textual occurrences of the moved files'
 /// names, qualified names and paths (before the move). Cancellable.
+#[command(trust = always)]
 pub async fn refactor_file_move_text_edits(
     host: &Host,
     window: &str,
@@ -98,23 +103,11 @@ pub async fn refactor_file_move_text_edits(
     result
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("refactor_file_move_edits", |c| async move {
-        refactor_file_move_edits(&c.host, &c.window, c.arg("request")?, c.arg("moves")?).await
-    });
-    d.add("refactor_move_files", |c| async move {
-        refactor_move_files(&c.host, &c.window, c.arg("moves")?, c.arg("edit")?, c.arg("label")?).await
-    });
-    d.add(
-        "refactor_undo_file_move",
-        |c| async move { refactor_undo_file_move(&c.host, &c.window, c.arg("id")?).await },
-    );
-    d.add(
-        "refactor_can_undo_file_move",
-        |c| async move { refactor_can_undo_file_move(&c.host, &c.window, c.arg("id")?) },
-    );
-    d.add("refactor_file_move_text_edits", |c| async move {
-        refactor_file_move_text_edits(&c.host, &c.window, c.arg("request")?, c.arg("moves")?).await
-    });
-}
+ide_command::domain!(
+    refactor:
+    refactor_can_undo_file_move,
+    refactor_file_move_edits,
+    refactor_file_move_text_edits,
+    refactor_move_files,
+    refactor_undo_file_move,
+);

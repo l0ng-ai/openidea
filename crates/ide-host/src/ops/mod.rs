@@ -32,7 +32,7 @@ pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
-mod ssh;
+pub mod ssh;
 pub mod stream_trace;
 pub mod syntax;
 pub mod term;
@@ -69,38 +69,54 @@ impl<T> Clone for Channel<T> {
     }
 }
 
-/// Registers the commands of every module with the remote server.
-pub fn register_all(d: &mut crate::rpc::Dispatcher) {
-    agent::register(d);
-    lsp::register(d);
-    notebook::register(d);
-    nav::register(d);
-    refactor::register(d);
-    analysis::register(d);
-    syntax::register(d);
-    spell::register(d);
-    dependencies::register(d);
-    history::register(d);
-    coverage::register(d);
-    build::register(d);
-    tools::register(d);
-    scaffold::register(d);
-    sdk::register(d);
-    java::register(d);
-    debug::register(d);
-    heap::register(d);
-    stream_trace::register(d);
-    bytes::register(d);
-    vcs::register(d);
-    doc::register(d);
-    search::register(d);
-    run::register(d);
-    env::register(d);
-    deploy::register(d);
-    docker::register(d);
-    db::register(d);
-    ssh::register(d);
-}
+// Every module that declares `#[command]`s, by domain name.
+ide_command::domains!(
+    agent: crate::ops::agent,
+    analysis: crate::ops::analysis,
+    build: crate::ops::build,
+    bytes: crate::ops::bytes,
+    coverage: crate::ops::coverage,
+    db: crate::ops::db,
+    debug: crate::ops::debug,
+    dependencies: crate::ops::dependencies,
+    deploy: crate::ops::deploy,
+    doc: crate::ops::doc,
+    doc_commands: crate::ops::doc::commands,
+    docker: crate::ops::docker,
+    env: crate::ops::env,
+    fs: crate::ops::fs,
+    heap: crate::ops::heap,
+    history: crate::ops::history,
+    java: crate::ops::java,
+    jvm_icons: crate::ops::jvm_icons,
+    lsp: crate::ops::lsp,
+    mcp_reports: crate::mcp::reports,
+    nav: crate::ops::nav,
+    notebook: crate::ops::notebook,
+    plugins_commands: crate::plugins::commands,
+    plugins_commit: crate::plugins::commit,
+    plugins_index_ops: crate::plugins::index_ops,
+    plugins_run_targets: crate::plugins::run_targets,
+    plugins_views: crate::plugins::views,
+    project: crate::ops::project,
+    refactor: crate::ops::refactor,
+    run: crate::ops::run,
+    run_commands: crate::ops::run::commands,
+    scaffold: crate::ops::scaffold,
+    sdk: crate::ops::sdk,
+    sdk_container_python: crate::ops::sdk::container_python,
+    search: crate::ops::search,
+    search_commands: crate::ops::search::commands,
+    spell: crate::ops::spell,
+    ssh: crate::ops::ssh,
+    stream_trace: crate::ops::stream_trace,
+    syntax: crate::ops::syntax,
+    term: crate::ops::term,
+    tools: crate::ops::tools,
+    vcs: crate::ops::vcs,
+    vcs_commands: crate::ops::vcs::commands,
+    web: crate::ops::web,
+);
 
 impl Host {
     /// Runs blocking work (disk I/O, parsing, large copies) on the blocking pool.

@@ -129,6 +129,14 @@ OpenIDEA indexes Spring Web endpoints (`@RestController` / `@Controller` classes
 
 Plugins can contribute endpoints of other frameworks; they get an **Open in HTTP Client** gutter icon.
 
+### Feign navigation
+
+In Java and Kotlin `@FeignClient` interfaces, click the **Go to Feign Endpoint** gutter arrow or use the same action from the editor menu or Find Action. On a literal mapping path such as `@GetMapping("/users/{id}")`, modifier-click or Go to Declaration also opens matching controller methods. Multiple matches use the existing declaration chooser; method declarations keep their usual Find Usages behavior.
+
+The built-in index matches HTTP methods and literal paths, including whole `{variable}` segments. A literal Feign `name` or `value` narrows candidates against an unambiguous `spring.application.name` in the destination module's `src/main/resources/application.properties`, `.yml` or `.yaml` (also under `resources/config`). Configuration is never inherited from a parent module or test sources. Conflicting profile names, dynamic or missing identities, and clients with explicit/dynamic `url` retain method/path candidates. No HTTP request is sent.
+
+This is source navigation, not service-discovery or effective runtime configuration resolution. Custom source sets, composed/aliased annotations, inherited mappings, dynamic mapping paths, `@RequestLine`, Ant/regex path patterns and reverse controller-to-client navigation are outside this first version. Navigation reads bounded local configuration and rechecks current controller text, including unsaved editor changes.
+
 ## Not supported
 
 - JavaScript response handlers (`> {% ... %}`, `> handler.js`) and pre-request scripts. Handler lines are recognized and skipped.

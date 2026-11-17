@@ -36,7 +36,7 @@ import {
   providerIcon,
 } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
-import { focusedSession } from "./sessionFocus";
+import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
 import { clearAgentTabFontZoom } from "./fontZoom";
 import {
@@ -227,11 +227,13 @@ export function activate(): () => void {
       {
         id: "agents.focusInput",
         title: "Focus Agent Input",
-        description: "Focuses the message input of the current agent task without moving the caret.",
+        description:
+          "Focuses the message input of the current agent task, or of the one on screen when focus is elsewhere and no panel claims the shortcut, without moving the caret.",
         category: "Agents",
-        when: "agentSessionFocus && agentInputAvailable",
-        keyWhen: "agentSessionFocus && !popupOpen",
-        run: () => focusedSession()?.focusInput?.(),
+        when: "agentInputAvailable",
+        // In a task view it wins over the editor's Go to Line; elsewhere it yields wherever that applies.
+        keyWhen: "!popupOpen && (agentSessionFocus || !(textEditorActive && (editorFocus || !toolWindowFocus)))",
+        run: () => inputSession()?.focusInput?.(),
       },
       {
         id: "agents.cycleEffort",

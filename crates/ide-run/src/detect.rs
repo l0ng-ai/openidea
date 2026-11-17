@@ -10,7 +10,7 @@ mod zig;
 use crate::RunConfig;
 use ide_core::project_roots::expand_members;
 use serde_json::Value as Json;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -591,14 +591,15 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
         level = level.iter().flat_map(|d| subdirs(d)).filter(|d| !d.ends_with("src")).collect();
         modules.extend(level.iter().cloned());
     }
-    for module in modules {
-        if !applies_spring_boot(&module) {
+    let mut annotations = BootAnnotations::new(&modules);
+    for module in &modules {
+        if !applies_spring_boot(build, module) {
             continue;
         }
         // A budget per module: a large common library must not starve later app modules.
         let mut budget = SPRING_SCAN_FILES;
-        let module_rel = (module != root).then(|| relative(root, &module).to_string_lossy().replace('\\', "/"));
-        for class in spring_boot_classes(&module, &mut budget) {
+        let module_rel = (module != root).then(|| relative(root, module).to_string_lossy().replace('\\', "/"));
+        for class in spring_boot_classes(module, &mut budget, &mut annotations) {
             let simple = class.rsplit(['.', '$']).next().unwrap_or(&class).to_owned();
             let id = match &module_rel {
                 Some(m) => format!("application:{m}:{class}"),
@@ -612,28 +613,163 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
     }
 }
 
-/// The module's own build applies the Spring Boot plugin, and it has main sources.
-fn applies_spring_boot(module: &Path) -> bool {
+/// The module has main sources, and its build applies the Spring Boot plugin: its own build
+/// file, or a build above it in `build` that applies it to its modules (a parent POM's
+/// `<build><plugins>`, Gradle's `subprojects` / `allprojects`).
+fn applies_spring_boot(build: &Path, module: &Path) -> bool {
     if !["java", "kotlin"].iter().any(|l| module.join("src/main").join(l).is_dir()) {
         return false;
     }
     if let Some(pom) = read(&module.join("pom.xml")) {
-        return pom.contains("spring-boot-maven-plugin") && !pom.contains("<packaging>pom</packaging>");
+        if pom.contains("<packaging>pom</packaging>") {
+            return false;
+        }
+        if pom.contains("spring-boot-maven-plugin") {
+            return true;
+        }
+    } else if GRADLE_BUILDS.iter().filter_map(|n| read(&module.join(n))).any(|text| applies_boot_gradle_plugin(&text)) {
+        return true;
     }
-    GRADLE_BUILDS.iter().filter_map(|n| read(&module.join(n))).any(|text| {
-        text.lines().any(|l| {
-            let l = l.split("//").next().unwrap_or_default();
-            // The plugin id (`id("org.springframework.boot")`), not a dependency (`org.springframework.boot:…`).
-            ["org.springframework.boot\"", "org.springframework.boot'"].iter().any(|p| l.contains(p))
-                && !l.contains("apply false")
+    module.ancestors().skip(1).take_while(|dir| dir.starts_with(build)).any(|dir| {
+        if let Some(pom) = read(&dir.join("pom.xml")) {
+            return without_plugin_management(&pom).contains("spring-boot-maven-plugin");
+        }
+        GRADLE_BUILDS.iter().filter_map(|n| read(&dir.join(n))).any(|text| {
+            (text.contains("subprojects") || text.contains("allprojects")) && applies_boot_gradle_plugin(&text)
         })
     })
 }
 
-/// Binary names of the `@SpringBootApplication` classes with a `main` under
+/// A Gradle build applying the plugin (`id("org.springframework.boot")`, `apply plugin: '…'`),
+/// not only depending on Spring Boot (`org.springframework.boot:…`).
+fn applies_boot_gradle_plugin(text: &str) -> bool {
+    text.lines().any(|l| {
+        let l = l.split("//").next().unwrap_or_default();
+        ["org.springframework.boot\"", "org.springframework.boot'"].iter().any(|p| l.contains(p))
+            && !l.contains("apply false")
+    })
+}
+
+/// A POM without its `<pluginManagement>` sections, which configure plugins without applying them.
+fn without_plugin_management(pom: &str) -> String {
+    let mut out = String::with_capacity(pom.len());
+    let mut rest = pom;
+    while let Some(at) = rest.find("<pluginManagement>") {
+        out.push_str(&rest[..at]);
+        let Some(end) = rest[at..].find("</pluginManagement>") else { return out };
+        rest = &rest[at + end + "</pluginManagement>".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Annotations that mark a Spring Boot application class: `@SpringBootApplication`,
+/// `@SpringCloudApplication`, and the project's own annotations meta-annotated with either.
+struct BootAnnotations {
+    /// `src/main/{java,kotlin}` of every module, where a project annotation is looked up.
+    roots: Vec<PathBuf>,
+    known: HashMap<String, bool>,
+}
+
+const BOOT_ANNOTATIONS: [&str; 2] = ["SpringBootApplication", "SpringCloudApplication"];
+
+impl BootAnnotations {
+    fn new(modules: &[PathBuf]) -> Self {
+        let roots = modules
+            .iter()
+            .flat_map(|m| ["java", "kotlin"].map(|l| m.join("src/main").join(l)))
+            .filter(|d| d.is_dir())
+            .collect();
+        Self { roots, known: HashMap::new() }
+    }
+
+    /// Whether `@name`, as written in a file of `package` with `imports`, marks an application.
+    fn marks_application(&mut self, name: &str, package: Option<&str>, imports: &[&str]) -> bool {
+        let simple = name.rsplit('.').next().unwrap_or(name);
+        if BOOT_ANNOTATIONS.contains(&simple) {
+            return true;
+        }
+        let qualified = if name.contains('.') {
+            name.to_owned()
+        } else if let Some(import) = imports.iter().find(|i| i.rsplit('.').next() == Some(name)) {
+            (*import).to_owned()
+        } else {
+            match package {
+                Some(p) => format!("{p}.{name}"),
+                None => name.to_owned(),
+            }
+        };
+        if qualified.starts_with("org.springframework.") {
+            return false;
+        }
+        if let Some(&known) = self.known.get(&qualified) {
+            return known;
+        }
+        // Not yet known: no cycle through an annotation that names itself.
+        self.known.insert(qualified.clone(), false);
+        let found = self.declares_boot_annotation(&qualified);
+        self.known.insert(qualified, found);
+        found
+    }
+
+    /// The project declares annotation `qualified` and annotates it as an application.
+    fn declares_boot_annotation(&mut self, qualified: &str) -> bool {
+        let path = qualified.replace('.', "/");
+        let simple = qualified.rsplit('.').next().unwrap_or(qualified);
+        let source = self
+            .roots
+            .iter()
+            .flat_map(|r| ["java", "kt"].map(|x| r.join(format!("{path}.{x}"))))
+            .find_map(|f| read(&f));
+        let Some(src) = source else { return false };
+        let code = strip_line_comments(&src);
+        let Some(decl) = [format!("@interface {simple}"), format!("annotation class {simple}")]
+            .iter()
+            .find_map(|d| code.find(d.as_str()))
+        else {
+            return false;
+        };
+        let (package, imports) = package_and_imports(&code);
+        annotations_in(&code[..decl]).iter().any(|a| self.marks_application(a, package.as_deref(), &imports))
+    }
+}
+
+fn strip_line_comments(src: &str) -> String {
+    src.lines().map(|l| l.split("//").next().unwrap_or_default()).collect::<Vec<_>>().join("\n")
+}
+
+fn package_and_imports(code: &str) -> (Option<String>, Vec<&str>) {
+    let package = code
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("package "))
+        .map(|p| p.trim_end_matches(';').trim().to_owned())
+        .filter(|p| !p.is_empty());
+    let imports = code
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("import "))
+        .map(|i| i.trim_end_matches(';').trim())
+        .filter(|i| !i.starts_with("static ") && !i.ends_with('*'))
+        .collect();
+    (package, imports)
+}
+
+/// Names of the annotations in `code` (`@Foo`, `@a.b.Foo(…)`), in order; `@interface` excluded.
+fn annotations_in(code: &str) -> Vec<&str> {
+    code.match_indices('@')
+        .filter_map(|(at, _)| {
+            let rest = &code[at + 1..];
+            let len = rest.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(rest.len());
+            let name = rest[..len].trim_end_matches('.');
+            (!name.is_empty() && name != "interface" && !name.starts_with("file:")).then_some(name)
+        })
+        .collect()
+}
+
+/// Binary names of the Spring Boot application classes with a `main` under
 /// `src/main/{java,kotlin}`, from the shallowest packages that declare one (the
 /// application class sits in the root package of the code it scans).
-fn spring_boot_classes(module: &Path, budget: &mut usize) -> Vec<String> {
+fn spring_boot_classes(module: &Path, budget: &mut usize, annotations: &mut BootAnnotations) -> Vec<String> {
     let mut found = Vec::new();
     let mut level: Vec<PathBuf> =
         ["java", "kotlin"].iter().map(|l| module.join("src/main").join(l)).filter(|d| d.is_dir()).collect();
@@ -661,7 +797,7 @@ fn spring_boot_classes(module: &Path, budget: &mut usize) -> Vec<String> {
                 if fs::metadata(&file).is_ok_and(|m| m.len() > 256 * 1024) {
                     continue;
                 }
-                if let Some(class) = read(&file).and_then(|src| spring_boot_class(&src, &file)) {
+                if let Some(class) = read(&file).and_then(|src| spring_boot_class(&src, &file, annotations)) {
                     found.push(class);
                 }
             }
@@ -672,40 +808,34 @@ fn spring_boot_classes(module: &Path, budget: &mut usize) -> Vec<String> {
     found
 }
 
-/// The class to launch for a source file declaring a `@SpringBootApplication` with a `main`.
-pub(crate) fn spring_boot_class(src: &str, file: &Path) -> Option<String> {
-    let code: Vec<&str> = src.lines().map(|l| l.split("//").next().unwrap_or_default()).collect();
-    let code = code.join("\n");
-    let at = code.find("@SpringBootApplication")?;
-    let package = code
-        .lines()
-        .map(str::trim)
-        .find_map(|l| l.strip_prefix("package "))
-        .map(|p| p.trim_end_matches(';').trim().to_owned())
-        .filter(|p| !p.is_empty());
+/// The class to launch for a source file declaring a Spring Boot application class with a `main`.
+fn spring_boot_class(src: &str, file: &Path, annotations: &mut BootAnnotations) -> Option<String> {
+    let code = strip_line_comments(src);
+    let (package, imports) = package_and_imports(&code);
     let qualify = |name: &str| match &package {
         Some(p) => format!("{p}.{name}"),
         None => name.to_owned(),
     };
-    if file.extension().is_some_and(|x| x == "kt") {
-        // A top-level `fun main` compiles into the file facade (`AppKt`, or `@file:JvmName`).
-        if code.lines().any(|l| l.starts_with("fun main(")) {
-            let jvm_name = code
-                .lines()
-                .find_map(|l| l.trim().strip_prefix("@file:JvmName(")?.split('"').nth(1).map(str::to_owned));
-            let facade = jvm_name.unwrap_or_else(|| {
-                let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                let mut chars = stem.chars();
-                let upper: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
-                format!("{upper}Kt")
-            });
-            return Some(qualify(&facade));
-        }
-        if !code.contains("fun main(") {
-            return None;
-        }
-    } else if !code.contains("void main(") {
+    let kotlin = file.extension().is_some_and(|x| x == "kt");
+    if !(if kotlin { code.contains("fun main(") } else { code.contains("void main(") }) {
         return None;
+    }
+    // The annotation right before a class declaration: `@SpringBootApplication` or one carrying it.
+    let at = annotations_in(&code)
+        .into_iter()
+        .find(|a| !a.starts_with("file:") && annotations.marks_application(a, package.as_deref(), &imports))?;
+    let at = code.find(&format!("@{at}"))?;
+    if kotlin && code.lines().any(|l| l.starts_with("fun main(")) {
+        // A top-level `fun main` compiles into the file facade (`AppKt`, or `@file:JvmName`).
+        let jvm_name =
+            code.lines().find_map(|l| l.trim().strip_prefix("@file:JvmName(")?.split('"').nth(1).map(str::to_owned));
+        let facade = jvm_name.unwrap_or_else(|| {
+            let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut chars = stem.chars();
+            let upper: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+            format!("{upper}Kt")
+        });
+        return Some(qualify(&facade));
     }
     let name: String = code[at..]
         .split_whitespace()

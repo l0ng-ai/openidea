@@ -30,7 +30,7 @@ async fn restricted_status_does_not_select_the_project_git_for_other_windows() {
     ide_vcs::init(&root).unwrap();
 
     host.open_project("main", &root).unwrap();
-    ops::vcs::status(&host, "main").await.unwrap();
+    ops::vcs::vcs_status(&host, "main").await.unwrap();
 
     let _ = ide_vcs::git_version(None);
     assert!(!marker.exists(), "another window's next Git command would run the project's binary");

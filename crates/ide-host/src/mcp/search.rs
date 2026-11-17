@@ -317,7 +317,7 @@ async fn fill_lines(
     for item in items {
         let (Some(path), Some(line)) = (absolute(item), item.start_line) else { continue };
         if current.as_ref().is_none_or(|(p, _)| p != &path) {
-            let text = crate::ops::fs::read_text(&host, call.window(), path.clone()).await.ok();
+            let text = crate::ops::fs::fs_read_text(&host, call.window(), path.clone()).await.ok();
             let lines = text.map(|t| t.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_owned()).collect());
             current = Some((path, lines));
         }
@@ -595,7 +595,7 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         // such lines are matched again in the file's whole text.
         let long = |m: &ide_search::LineMatch| m.text_offset > 0 || m.text.encode_utf16().count() + 1 >= LINE_WINDOW;
         let whole = if file.matches.iter().any(long) {
-            crate::ops::fs::read_text(&host, call.window(), file.path.0.clone())
+            crate::ops::fs::fs_read_text(&host, call.window(), file.path.0.clone())
                 .await
                 .ok()
                 .and_then(|text| Some((ide_search::match_ranges(&text, &query).ok()?, text)))
@@ -678,7 +678,7 @@ async fn extend_spanning(call: &Call, query: &SearchQuery, hits: &mut [TextHit],
     let mut current: Option<FileText> = None;
     for (i, path) in spanning {
         if current.as_ref().is_none_or(|(p, ..)| p != &path) {
-            let Ok(text) = crate::ops::fs::read_text(&host, call.window(), path.clone()).await else { continue };
+            let Ok(text) = crate::ops::fs::fs_read_text(&host, call.window(), path.clone()).await else { continue };
             let Ok(ranges) = ide_search::match_ranges(&text, query) else { continue };
             let starts = std::iter::once(0).chain(text.match_indices('\n').map(|(i, _)| i + 1)).collect();
             current = Some((path, text, starts, ranges));
@@ -714,14 +714,14 @@ async fn run_search(call: &Call, query: SearchQuery) -> IdeResult<(Vec<FileMatch
     let request = crate::mcp::tool::request_id();
     let files = Arc::new(Mutex::new(Vec::new()));
     let done = Arc::new(Mutex::new(None));
-    let emit: crate::ops::Emit<SearchEvent> = {
+    let emit = {
         let (files, done) = (files.clone(), done.clone());
-        Arc::new(move |event| match event {
+        crate::ops::Channel::new(move |event: SearchEvent| match event {
             SearchEvent::File { file } => files.lock().push(file),
             SearchEvent::Done { summary } => *done.lock() = Some(summary),
         })
     };
-    let search = crate::ops::search::start(&host, call.window(), request, query, emit);
+    let search = crate::ops::search::search_start(&host, call.window(), request, query, emit);
     tokio::pin!(search);
     let mut timed_out = false;
     tokio::select! {
@@ -822,7 +822,7 @@ impl Walk {
     /// Collects matching files under `dir` (inside the walked root `base`) depth first in
     /// name order; true when it stopped early: more than `limit` match or the time ran out.
     fn dir(&self, dir: &Path, base: &Path, found: &mut Vec<String>) -> bool {
-        let Ok(mut entries) = tokio::runtime::Handle::current().block_on(crate::ops::fs::read_dir(
+        let Ok(mut entries) = tokio::runtime::Handle::current().block_on(crate::ops::fs::fs_read_dir(
             &self.host,
             &self.window,
             dir.to_path_buf(),

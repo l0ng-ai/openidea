@@ -923,8 +923,18 @@ fn str_of(v: &Value, key: &str) -> Option<String> {
 
 /// Session-scoped MCP configuration, carried in thread/start, resume and fork.
 pub(super) fn mcp_config(params: &Value) -> Option<Value> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+    let cwd = params.get("cwd").and_then(Value::as_str).map_or_else(|| std::path::Path::new("."), std::path::Path::new);
+    let external = crate::mcp::codex_external_server_names(home.as_deref(), cwd);
+    mcp_config_with_external(params, &external)
+}
+
+pub(super) fn mcp_config_with_external(
+    params: &Value,
+    external_names: &std::collections::BTreeSet<String>,
+) -> Option<Value> {
     let mut servers = serde_json::Map::new();
-    for server in params.get("mcpServers")?.as_array()? {
+    for server in params.get("mcpServers").and_then(Value::as_array).into_iter().flatten() {
         if server.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
             continue;
         }
@@ -945,6 +955,17 @@ pub(super) fn mcp_config(params: &Value) -> Option<Value> {
             json!({"command":command,
             "args":server.get("args").cloned().unwrap_or_else(||json!([])),"env":env}),
         );
+    }
+    for name in params
+        .pointer("/_meta/openidea/mcpServersOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !servers.contains_key(name) && external_names.contains(name) {
+            servers.insert(name.to_owned(), json!({ "enabled": false }));
+        }
     }
     (!servers.is_empty()).then(|| json!({"mcp_servers":servers}))
 }

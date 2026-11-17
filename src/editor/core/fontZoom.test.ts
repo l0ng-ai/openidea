@@ -4,6 +4,7 @@ import { EditorView } from "@codemirror/view";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { fontZoom, resetAllEditorsFontZoom, setFontZoom, stepAllEditorsFontZoom, wheelZoom } from "./cm/prefs";
+import { resetWheelZoomGesture } from "@/platform/wheelZoom";
 
 const zoomOf = (view: EditorView) => view.state.field(fontZoom, false);
 
@@ -19,6 +20,7 @@ describe("editor font zoom (active editor by default, all editors when configure
     return view;
   };
   beforeEach(() => {
+    resetWheelZoomGesture();
     resetAllEditorsFontZoom();
     useProject.setState({ settings: null });
   });
@@ -43,6 +45,16 @@ describe("editor font zoom (active editor by default, all editors when configure
     second.contentDOM.dispatchEvent(new WheelEvent("wheel", { bubbles: true, ctrlKey: true, deltaY: 10 }));
     expect(zoomOf(first)).toBe(1);
     expect(zoomOf(second)).toBe(-1);
+  });
+
+  it("doesn't zoom from the inertia of a scroll when ⌘/Ctrl is pressed during it", () => {
+    const view = makeView();
+    const plain = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -40 });
+    view.contentDOM.dispatchEvent(plain);
+    const coasting = new WheelEvent("wheel", { bubbles: true, cancelable: true, metaKey: true, deltaY: -20 });
+    view.contentDOM.dispatchEvent(coasting);
+    expect(coasting.defaultPrevented).toBe(false);
+    expect(zoomOf(view)).toBe(0);
   });
 
   it("zooms every open editor from ⌘/Ctrl+wheel when wheelZoomScope is 'all' (#2480)", () => {

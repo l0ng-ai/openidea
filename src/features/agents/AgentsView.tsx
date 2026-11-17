@@ -411,7 +411,7 @@ export function AgentsView() {
               {/* Docked, the list shows in the history popup, which lists the sessions itself. */}
               {!inline && (
                 <button type="button" className={styles.link} onClick={showImportSessions}>
-                  <T>Import Sessions from Other Apps…</T>
+                  <T>Import Sessions…</T>
                 </button>
               )}
             </div>

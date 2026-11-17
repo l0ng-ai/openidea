@@ -69,6 +69,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     homepage: null,
     changeNotes: null,
     icon: null,
+    javaAgent: null,
     source: "installed",
     path: `/plugins/${partial.id}`,
     enabled: true,
@@ -266,6 +267,41 @@ describe("plugin actions", () => {
       stop();
       offAction();
       useProject.setState({ project: null });
+    }
+  });
+
+  it("reports UI-side diagnostic changes (Typo saved to dictionary) to problems-changed plugins", async () => {
+    const posted: unknown[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      eventKinds: async () => ["problems-changed"],
+      postEvents: async (events) => void posted.push(...events),
+    });
+    const project = { root: "/p", trusted: true } as never;
+    act(() => useProject.setState({ project }));
+    const stop = startRuntimeUi();
+    try {
+      await new Promise((r) => setTimeout(r, 20));
+      // The file first has a Typo; saving the word to the dictionary re-checks
+      // it and clears the diagnostic through setFileDiagnostics ->
+      // publishLocalDiagnostics, not a backend `diagnostics` event. Plugins
+      // drawing problems must be woken by that clear too.
+      const { setFileDiagnostics } = await import("@/editor/lsp/diagnostics");
+      const typo = {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 6 } },
+        severity: "info" as const,
+        message: "Typo: In word 'mesage'",
+        source: "Spelling",
+        code: null,
+      };
+      act(() => setFileDiagnostics("/p/a.txt", "spelling", [typo]));
+      await waitFor(() => expect(posted).toContainEqual({ kind: "problemsChanged" }));
+      posted.length = 0;
+      act(() => setFileDiagnostics("/p/a.txt", "spelling", []));
+      await waitFor(() => expect(posted).toContainEqual({ kind: "problemsChanged" }));
+    } finally {
+      stop();
+      act(() => useProject.setState({ project: null }));
     }
   });
 });
@@ -857,13 +893,15 @@ describe("PluginsPage", () => {
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
   });
 
-  it("lists installed and marketplace plugins together, each group foldable", async () => {
+  it("switches between the marketplace and installed plugins; each group folds", async () => {
     const user = userEvent.setup();
     render(<PluginsPage />);
+    expect(await screen.findByRole("list", { name: "Available plugins" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Installed plugins" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Installed/ }));
     const installed = await screen.findByRole("list", { name: "Installed plugins" });
     await waitFor(() => expect(within(installed).getAllByRole("listitem")).toHaveLength(3));
-    expect(screen.queryByRole("tab", { name: /Available/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("list", { name: "Available plugins" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Available plugins" })).not.toBeInTheDocument();
     const toggle = within(installed).getByRole("button", { name: /^Installed/ });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     await user.click(toggle);
@@ -940,14 +978,13 @@ describe("PluginsPage", () => {
     act(() => useProject.setState({ project: null }));
   });
 
-  it("shows a plugin's own icon in its row and details", async () => {
+  it("shows a plugin's own icon in its row", async () => {
     const icon = { light: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>', dark: null };
     setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "iconic", name: "Iconic", icon })]));
     render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Installed plugins" });
     await waitFor(() => expect(within(list).getByText("Iconic")).toBeInTheDocument());
     expect(list.querySelector("circle")).not.toBeNull();
-    expect(screen.getByLabelText("Iconic details").querySelector("circle")).not.toBeNull();
   });
 
   describe.each(["installed", "catalog"] as const)("%s homepage", (source) => {
@@ -956,7 +993,7 @@ describe("PluginsPage", () => {
       const catalog = { ...sampleCatalog()[0]!, id: entry.id, name: entry.name, homepage };
       setPluginsBackend(createMemoryPluginsBackend(source === "installed" ? [entry] : [], [catalog]));
       const user = userEvent.setup();
-      render(<PluginsPage initialTab="installed" />);
+      render(<PluginsPage initialTab={source === "installed" ? "installed" : "marketplace"} />);
       await screen.findByRole("heading", { level: 2, name: entry.name });
       return user;
     }
@@ -1070,7 +1107,7 @@ describe("PluginsPage", () => {
     const user = userEvent.setup();
     const catalog = sampleCatalog();
     setPluginsBackend(createMemoryPluginsBackend([], catalog));
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Toy Language")).toBeInTheDocument());
     await user.click(within(list).getByText("Toy Language"));
@@ -1087,7 +1124,7 @@ describe("PluginsPage", () => {
       ...createMemoryPluginsBackend([], sampleCatalog()),
       marketUrl: () => Promise.reject({ kind: "unavailable", message: "Index unreachable", data: null }),
     });
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     expect(await within(list).findByText("Index unreachable")).toBeInTheDocument();
     expect(within(list).queryByText("[object Object]")).not.toBeInTheDocument();
@@ -1195,7 +1232,7 @@ describe("marketplace", () => {
       },
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
@@ -1239,7 +1276,7 @@ describe("marketplace", () => {
       },
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Examples")).toBeInTheDocument());
     const headers = within(list)
@@ -1261,7 +1298,7 @@ describe("marketplace", () => {
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [],
     });
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     expect(await screen.findByText("No plugin selected")).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Filter plugins" })).toHaveAttribute("placeholder", "Search plugins");
@@ -1325,7 +1362,7 @@ describe("marketplace", () => {
       ],
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Dusk")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Category" }));
@@ -1362,7 +1399,7 @@ describe("marketplace", () => {
       ],
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Incompatible")).toBeInTheDocument());
     await user.click(within(list).getByText("Next"));
@@ -1568,6 +1605,7 @@ describe("marketplace", () => {
             },
           ],
           contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
+          javaAgent: { fileName: "spring-agent.jar", args: "port=0", approved: true },
         }),
       ]),
     );
@@ -1575,6 +1613,47 @@ describe("marketplace", () => {
     const permissions = await screen.findByRole("list", { name: "Permissions" });
     expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
     expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+  });
+
+  it("warns when a granted Java agent jar changed and can approve it again", async () => {
+    const user = userEvent.setup();
+    const base = createMemoryPluginsBackend([
+      plugin({
+        id: "spring",
+        name: "Spring",
+        hasCode: false,
+        status: "static",
+        javaAgent: { fileName: "spring-agent.jar", args: null, approved: false },
+        capabilities: [
+          {
+            id: "java.agent",
+            risk: "high",
+            description: "Run code inside the Java applications you start",
+            optional: true,
+            granted: true,
+          },
+        ],
+        contributions: [{ point: "javaAgents", label: "spring-agent.jar" }],
+      }),
+    ]);
+    const calls: [string, string, boolean][] = [];
+    setPluginsBackend({
+      ...base,
+      setCapability: async (id, capability, granted) => {
+        calls.push([id, capability, granted]);
+        return base.setCapability(id, capability, granted);
+      },
+    });
+    render(<PluginsPage initialTab="installed" />);
+    const permissions = await screen.findByRole("list", { name: "Permissions" });
+    expect(within(permissions).getByRole("alert")).toHaveTextContent("The agent jar changed since you approved it");
+    await user.click(within(permissions).getByRole("button", { name: "Approve new jar" }));
+    await waitFor(() =>
+      expect(calls).toEqual([
+        ["spring", "java.agent", false],
+        ["spring", "java.agent", true],
+      ]),
+    );
   });
 
   it("offers to roll back an update", async () => {

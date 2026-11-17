@@ -1,7 +1,6 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
   min-width: 0;
   height: 100%;
   min-height: 420px;
@@ -15,24 +14,43 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 340px;
+  width: clamp(320px, 42%, 480px);
   min-height: 0;
   border-right: 1px solid var(--border);
 }
-.searchField {
-  flex: 0 1 340px;
-  min-width: 0;
-}
-/* The installed and marketplace lists scroll together, as one list. */
-.lists {
-  overflow: auto;
-}
-.lists .list {
+.sourceTabs {
   flex: none;
-  overflow: visible;
+  border-bottom: 0;
+}
+.tabCount {
+  min-width: 16px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  font-size: var(--fs-tiny);
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.searchRow {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.searchField {
+  flex: 1;
+  min-width: 0;
 }
 .spacer {
   flex: 1;
+}
+.page > .error {
+  padding: 8px 20px;
 }
 .error {
   color: var(--danger);
@@ -44,8 +62,7 @@
   min-width: 640px;
   flex: 1;
   min-height: 0;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border);
+  border-top: 1px solid var(--border);
   overflow: hidden;
 }
 
@@ -111,22 +128,19 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-small);
   background: var(--bg-control);
   color: var(--fg-secondary);
-}
-.iconLarge {
-  width: 56px;
-  height: 56px;
-  border-radius: var(--radius-popup);
 }
 .rowText {
   display: flex;
   flex: 1;
   flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
+  padding-top: 2px;
 }
 .rowVendor {
   overflow: hidden;
@@ -149,9 +163,20 @@
 }
 .row {
   display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding-right: 8px;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding-right: 12px;
+}
+/* Actions line up with the name, not the middle of the row. */
+.row > :not(.rowMain) {
+  flex: none;
+  margin-top: 10px;
+}
+.row > .rowCheck {
+  margin-top: 14px;
+}
+.row > .installedTag {
+  margin-top: 14px;
 }
 .row:hover {
   background: var(--bg-hover);
@@ -163,11 +188,10 @@
 .rowMain {
   display: flex;
   flex: 1;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: var(--space-3);
   min-width: 0;
-  min-height: 48px;
-  padding: 6px 8px 6px 12px;
+  padding: 10px 0 12px 12px;
   border: 0;
   background: transparent;
   color: var(--fg);
@@ -181,16 +205,20 @@
 .rowName {
   overflow: hidden;
   color: var(--fg-strong);
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .rowMeta {
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
+  gap: var(--space-2);
   color: var(--fg-muted);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
+}
+.rowMeta > :not(.rowVendor) {
+  flex-shrink: 0;
 }
 .devTag {
   padding: 0 4px;
@@ -209,25 +237,18 @@
 .details {
   flex: 1;
   min-width: 0;
-  padding: 12px 16px 16px;
+  padding: 16px 20px 20px;
   overflow: auto;
 }
 .detailsEmpty {
   flex: 1;
 }
+/* Tags, name, vendor, then the actions with the version. */
 .header {
   display: flex;
-  align-items: flex-start;
-  /* In a narrow window the actions go below rather than over the name. */
-  flex-wrap: wrap;
-  gap: 14px;
-}
-.headerText {
-  display: flex;
-  flex: 1 1 160px;
   flex-direction: column;
-  gap: var(--space-0-5);
-  min-width: 0;
+  align-items: flex-start;
+  gap: var(--space-1-5);
 }
 .detailTabs {
   margin-top: 12px;
@@ -264,9 +285,14 @@
 }
 .headerActions {
   display: flex;
-  flex: none;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1-5);
+  margin-top: var(--space-1);
+}
+.headerActions .version {
+  margin-left: var(--space-1-5);
+  color: var(--fg);
 }
 .description {
   margin: 10px 0 0;
@@ -425,25 +451,11 @@
   background: transparent;
 }
 
-.marketRow .rowMain {
-  align-items: flex-start;
-  min-height: 60px;
-}
-.marketRow .icon {
-  margin-top: 2px;
-}
 .rowTitle {
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
   min-width: 0;
-}
-.rowDescription {
-  overflow: hidden;
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .downloads {
   display: inline-flex;
@@ -479,9 +491,6 @@
   --tone: var(--info);
   background: color-mix(in srgb, var(--tone) 18%, transparent);
   color: var(--tone);
-}
-.iconLarge.monogram {
-  font-size: 24px;
 }
 .tone0 {
   --tone: var(--info);

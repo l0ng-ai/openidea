@@ -64,3 +64,24 @@ it("offers closing the other tabs and those on either side of the clicked tab", 
   expect(executeAction).toHaveBeenLastCalledWith("window.closeTabsToLeft", "project-1");
   expect(menuFor("Docs")("Close Tabs to the Right").disabled).toBe(true);
 });
+
+it("moves any tab to a new window from its own arrow, without selecting it first", () => {
+  render(<WindowGroupTabs />);
+  fireEvent.click(screen.getByRole("button", { name: "Move Backend to New Window" }));
+  expect(executeAction).toHaveBeenLastCalledWith("window.detachTab", "project-1");
+  expect(executeAction).not.toHaveBeenCalledWith("window.selectTab", "project-1");
+});
+
+it("offers Move Tab to New Window for every tab in its context menu", () => {
+  render(<WindowGroupTabs />);
+  fireEvent.contextMenu(screen.getByRole("tab", { name: "Backend" }));
+  const item = useContextMenuStore
+    .getState()
+    .menu!.items.find((i) => "label" in i && i.label === "Move Tab to New Window") as {
+    disabled?: boolean;
+    run?: () => unknown;
+  };
+  expect(item.disabled).toBeUndefined();
+  void item.run?.();
+  expect(executeAction).toHaveBeenLastCalledWith("window.detachTab", "project-1");
+});

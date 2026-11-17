@@ -22,6 +22,7 @@ import type {
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
+import { clearDismissedAssets } from "./sessionAssetsModel";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -613,6 +614,7 @@ function onEvent(e: AgentEvent) {
         ...(s.docked === e.id ? { docked: null } : {}),
       });
       clearAgentTaskFontZoom(sessionKey(e.id));
+      clearDismissedAssets(e.id);
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }

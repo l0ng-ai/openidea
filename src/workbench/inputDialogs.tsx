@@ -9,8 +9,11 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
+import { registerHostPathChooser, type ChoosePathOptions } from "@/platform/choosePath";
 import { t, tx, VerbatimTextContext } from "@/platform/i18n";
-import { Checkbox, Dialog, Given, Input, List, T } from "@/ui";
+import { call, commands, type FileEntry } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import { Checkbox, Dialog, Given, Icon, IconButton, Input, List, T } from "@/ui";
 import styles from "./inputDialogs.module.css";
 
 export interface PromptInputOptions {
@@ -59,7 +62,8 @@ export interface PickItemsOptions {
 type Request =
   | { kind: "prompt"; id: number; options: PromptInputOptions; resolve: (v: string | null) => void }
   | { kind: "choose"; id: number; options: ChooseItemOptions; resolve: (v: string | null) => void }
-  | { kind: "pick"; id: number; options: PickItemsOptions; resolve: (v: string[] | null) => void };
+  | { kind: "pick"; id: number; options: PickItemsOptions; resolve: (v: string[] | null) => void }
+  | { kind: "path"; id: number; options: ChoosePathOptions; resolve: (v: string | null) => void };
 
 const useInputDialogs = create<{ stack: Request[] }>(() => ({ stack: [] }));
 let seq = 0;
@@ -97,6 +101,13 @@ export function pickItems(options: PickItemsOptions): Promise<string[] | null> {
   return open<string[]>((id, resolve) => ({ kind: "pick", id, options, resolve }), options.signal);
 }
 
+/** A file or folder on the host this window's commands run on, browsed in the IDE (a remote window's chooser). */
+export function choosePathOnHost(options: ChoosePathOptions): Promise<string | null> {
+  return open<string>((id, resolve) => ({ kind: "path", id, options, resolve }));
+}
+
+registerHostPathChooser(choosePathOnHost);
+
 export function InputDialogsHost() {
   const stack = useInputDialogs((s) => s.stack);
   return (
@@ -108,6 +119,8 @@ export function InputDialogsHost() {
           </VerbatimTextContext.Provider>
         ) : r.kind === "choose" ? (
           <ChooseDialog key={r.id} options={r.options} done={r.resolve} />
+        ) : r.kind === "path" ? (
+          <PathDialog key={r.id} options={r.options} done={r.resolve} />
         ) : (
           <VerbatimTextContext.Provider key={r.id} value={!!r.options.verbatim}>
             <PickDialog options={r.options} done={r.resolve} />
@@ -332,6 +345,156 @@ function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: st
           )}
         />
       </div>
+    </Dialog>
+  );
+}
+
+/** The folder that holds `path` (either separator), or null at a root. */
+export function parentPath(path: string): string | null {
+  if (/^(?:[\\/]+|[A-Za-z]:[\\/]*)$/.test(path)) return null;
+  const trimmed = path.length > 1 ? path.replace(/[\\/]+$/, "") : path;
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (cut < 0) return null;
+  const parent = trimmed.slice(0, cut);
+  // `/a` → `/`; `C:\a` → `C:\`.
+  if (!parent || /^[A-Za-z]:$/.test(parent)) return parent + trimmed[cut];
+  return parent === trimmed ? null : parent;
+}
+
+function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: string | null) => void }) {
+  const root = useProject((s) => s.project?.root ?? null);
+  const [dir, setDir] = useState<string | null>(null);
+  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [active, setActive] = useState(-1);
+  const [value, setValue] = useState(options.defaultPath || root || "");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const request = useRef(0);
+
+  const isDir = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.targetKind === "dir");
+  const visit = async (path: string) => {
+    const id = ++request.current;
+    setLoading(true);
+    try {
+      const listed = await call(commands.fsReadDir(path));
+      if (id !== request.current) return true;
+      const shown = listed
+        .filter((e) => !options.directory || isDir(e))
+        .sort((a, b) => Number(isDir(b)) - Number(isDir(a)) || a.name.localeCompare(b.name));
+      setDir(path);
+      setEntries(shown);
+      setActive(-1);
+      setValue(path);
+      setError(null);
+      return true;
+    } catch (e) {
+      if (id === request.current) setError(e instanceof Error ? e.message : String(e));
+      return false;
+    } finally {
+      if (id === request.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const start = options.defaultPath || root || "/";
+    // A file path starts in its folder, with the file in the field.
+    void visit(start).then((ok) => {
+      const parent = parentPath(start);
+      if (!ok && parent) void visit(parent).then((found) => found && !options.directory && setValue(start));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const choose = (entry: FileEntry) => {
+    if (isDir(entry)) void visit(entry.path);
+    else done(entry.path);
+  };
+  const submit = async () => {
+    const path = value.trim();
+    if (!path) return;
+    let kind: string;
+    try {
+      kind = await call(commands.fsEntryKind(path));
+    } catch {
+      return setError(tx("No such file or folder"));
+    }
+    const folder = kind === "dir";
+    if (options.directory) return folder ? done(path) : setError(tx("Choose a folder"));
+    if (folder) return void visit(path);
+    done(path);
+  };
+  const up = dir === null ? null : parentPath(dir);
+
+  return (
+    <Dialog
+      open
+      blockWorkbenchShortcuts
+      title={options.title}
+      onClose={() => done(null)}
+      width={520}
+      buttons={[
+        { label: tx("OK"), role: "default", disabled: !value.trim(), onClick: () => void submit() },
+        { label: t("common.cancel"), role: "cancel" },
+      ]}
+    >
+      <form
+        className={styles.form}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <div className={styles.pathRow}>
+          <IconButton
+            icon="arrow-up"
+            title={tx("Parent Folder")}
+            disabled={!up || loading}
+            onClick={() => up && void visit(up)}
+          />
+          <Input
+            data-autofocus
+            className={styles.pathInput}
+            aria-label={options.title}
+            value={value}
+            invalid={!!error}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setError(null);
+            }}
+          />
+        </div>
+        <List
+          items={entries}
+          getKey={(e) => e.path}
+          activeIndex={active}
+          onActiveChange={(i) => {
+            setActive(i);
+            const entry = entries[i];
+            if (entry) setValue(entry.path);
+          }}
+          // A click selects; a double click or Enter opens the folder or chooses the file.
+          onActivate={(entry, _i, e) => (e.type !== "click" || e.detail > 1) && choose(entry)}
+          rowHeight={24}
+          className={styles.pathList}
+          aria-label={dir ?? options.title}
+          empty={
+            <div className={styles.hint}>
+              <T>{loading ? "Loading…" : "Empty folder"}</T>
+            </div>
+          }
+          renderItem={(entry, state) => (
+            <div className={`${state.active ? styles.activeRow : styles.row} ${styles.entry}`}>
+              <Icon name={isDir(entry) ? "folder" : "file"} />
+              <span className={styles.entryName}>{entry.name}</span>
+            </div>
+          )}
+        />
+        {error && (
+          <div className={styles.error}>
+            <T>{error}</T>
+          </div>
+        )}
+      </form>
     </Dialog>
   );
 }

@@ -33,10 +33,10 @@ struct Decl {
 }
 
 #[derive(Clone, Debug)]
-struct Agent {
+pub(super) struct Agent {
     /// The jar, resolved inside the package.
-    jar: PathBuf,
-    args: Option<String>,
+    pub(super) jar: PathBuf,
+    pub(super) args: Option<String>,
 }
 
 /// Agents of enabled plugins.
@@ -47,6 +47,10 @@ pub struct JavaAgents {
 }
 
 impl JavaAgents {
+    pub(super) fn for_plugin(&self, plugin: &str) -> Option<Agent> {
+        self.items.read().iter().find(|(_, id, _)| id == plugin).map(|(_, _, agent)| agent.clone())
+    }
+
     fn add(self: &Arc<Self>, plugin: String, agent: Agent) -> Disposable {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         self.items.write().push((seq, plugin, agent));
