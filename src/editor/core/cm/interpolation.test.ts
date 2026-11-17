@@ -17,6 +17,40 @@ async function tokens(mode: string, source: string) {
   return result;
 }
 
+describe("Kotlin soft keywords", () => {
+  const styleOf = (out: Awaited<ReturnType<typeof tokens>>, text: string, nth = 0) =>
+    out.filter((t) => t.text === text)[nth]?.style ?? "";
+
+  it("colours a soft keyword only where it acts as one", async () => {
+    const source = [
+      "import top.ttb.data.Model",
+      "data class Point(val x: Int)",
+      "open class Base { val data = result.data; private fun f() {} }",
+      "val open: Int get() = 1",
+      "fun g(data: String) = try { } catch (e: Exception) { } finally { }",
+    ].join("\n");
+    const out = await tokens("Kotlin", source);
+    // Package path, property access and names.
+    expect(styleOf(out, "data", 0)).not.toContain("tok-keyword");
+    expect(styleOf(out, "data", 2)).not.toContain("tok-keyword");
+    expect(styleOf(out, "data", 3)).not.toContain("tok-keyword");
+    expect(styleOf(out, "data", 4)).not.toContain("tok-keyword");
+    expect(styleOf(out, "open", 1)).not.toContain("tok-keyword");
+    // Modifiers and accessors.
+    expect(styleOf(out, "import")).toContain("tok-keyword");
+    expect(styleOf(out, "data", 1)).toContain("tok-keyword");
+    expect(styleOf(out, "open", 0)).toContain("tok-keyword");
+    expect(styleOf(out, "private")).toContain("tok-keyword");
+    expect(styleOf(out, "get")).toContain("tok-keyword");
+    expect(styleOf(out, "catch")).toContain("tok-keyword");
+    expect(styleOf(out, "finally")).toContain("tok-keyword");
+    // Hard keywords stay keywords.
+    expect(styleOf(out, "class")).toContain("tok-keyword");
+    expect(styleOf(out, "val")).toContain("tok-keyword");
+    expect(styleOf(out, "fun")).toContain("tok-keyword");
+  });
+});
+
 describe("frontend string interpolation", () => {
   it.each([
     ["Kotlin", 'println("$i + 1 = ${i + 1}")'],
