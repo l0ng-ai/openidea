@@ -18,6 +18,8 @@ export function activate(): () => void {
         title: event.server,
         body: event.message,
         buttons,
+        // The server may already offer its own Cancel; don't add a second one.
+        cancel: !event.actions.some((label) => /cancel/i.test(label)),
         verbatim: true,
         signal: controller.signal,
       });

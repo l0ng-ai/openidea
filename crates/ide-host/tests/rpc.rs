@@ -496,6 +496,9 @@ async fn the_desktop_routes_exactly_what_a_server_of_this_build_answers() {
     dispatcher.add(ide_host::plugins::remote::SYNC_COMMAND, |_| async { Ok(()) });
     assert_eq!(rpc::client_commands(), dispatcher.commands());
     assert!(rpc::client_commands().contains(&"term_spawn"));
+    // A server-side showMessageRequest must be answered on the server: the
+    // pending question lives in the process that runs the language server.
+    assert!(rpc::client_commands().contains(&"lsp_message_request_answer"));
     plugins.host().shutdown();
 }
 

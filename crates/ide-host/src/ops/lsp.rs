@@ -2069,6 +2069,12 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_rename", |c| async move {
         lsp_rename(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("newName")?).await
     });
+    // Must be dispatchable on the server as well: the pending question lives in
+    // the process that runs the language server, including remote projects.
+    d.add("lsp_message_request_answer", |c| async move {
+        ide_lsp::answer_message_request(c.arg("id")?, c.arg("choice")?);
+        Ok(())
+    });
     d.add("lsp_hierarchy_members", |c| async move {
         lsp_hierarchy_members(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("kind")?).await
     });

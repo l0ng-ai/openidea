@@ -370,7 +370,10 @@ impl ClientHandler {
                 items.iter().filter_map(|item| item.get("title").and_then(Value::as_str).map(str::to_owned)).collect()
             })
             .unwrap_or_default();
-        let (id, answer) = crate::message_requests::begin();
+        let Some((id, answer)) = crate::message_requests::begin() else {
+            tracing::warn!("[{}] too many pending message requests; dismissing", self.server.name);
+            return Ok(Value::Null);
+        };
         let sink = mgr.sink();
         struct Guard {
             id: u32,
@@ -386,10 +389,21 @@ impl ClientHandler {
         sink.emit(IdeEvent::LspMessageRequest {
             id,
             server: self.server.name.clone(),
-            message,
+            message: message.clone(),
             actions: actions.clone(),
         });
-        let chosen = answer.recv_timeout(Duration::from_secs(180)).ok().flatten();
+        // Below the IDE's 30 s timeout for the enclosing request (e.g. rename),
+        // so the dialog cannot outlive the operation it is answering.
+        let received = answer.recv_timeout(Duration::from_secs(20));
+        let timed_out = matches!(received, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        let chosen = received.ok().flatten();
+        if timed_out {
+            sink.emit(IdeEvent::Notify {
+                level: NotifyLevel::Warning,
+                title: self.server.name.clone(),
+                body: Some(format!("No answer in time for: {message}")),
+            });
+        }
         match chosen.filter(|title| actions.contains(title)) {
             Some(title) => Ok(json!({ "title": title })),
             None => Ok(Value::Null),
