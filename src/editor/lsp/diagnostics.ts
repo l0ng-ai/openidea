@@ -4,7 +4,7 @@
  * path through `@codemirror/lint` (wavy underlines, no gutter, no lint
  * tooltip — `hover.ts` renders diagnostics together with documentation).
  */
-import type { Text } from "@codemirror/state";
+import type { EditorState, Text } from "@codemirror/state";
 import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { forEachDiagnostic, linter, setDiagnostics, type Diagnostic as LintDiagnostic } from "@codemirror/lint";
@@ -165,31 +165,51 @@ const MARK_COLOR: Partial<Record<Severity, string>> = {
   info: "var(--info)",
 };
 
+/** A diagnostic's mark on the overview lane (the marker bar). */
+export interface ProblemMark extends ScrollbarMark {
+  to: number;
+  severity: Severity;
+}
+
 /** Overview-lane (scrollbar) marks for diagnostics, errors on top. */
-export function diagnosticMarks(diags: readonly LintDiagnostic[]): ScrollbarMark[] {
-  const out: ScrollbarMark[] = [];
+export function diagnosticMarks(diags: readonly LintDiagnostic[]): ProblemMark[] {
+  const out: ProblemMark[] = [];
   for (const d of diags) {
     const color = MARK_COLOR[d.severity];
     if (!color || d.markClass?.includes("cm-lsp-unnecessary") || d.markClass?.includes("cm-lsp-typo")) continue;
-    out.push({ from: d.from, to: d.to, color, tooltip: d.message, priority: 3 - SEVERITY_RANK[d.severity] });
+    out.push({
+      from: d.from,
+      to: d.to,
+      color,
+      tooltip: d.message,
+      priority: 3 - SEVERITY_RANK[d.severity],
+      severity: d.severity,
+    });
   }
   return out;
 }
 
-const setMarks = StateEffect.define<readonly ScrollbarMark[]>();
+const setMarks = StateEffect.define<readonly ProblemMark[]>();
 
-const marksField = StateField.define<readonly ScrollbarMark[]>({
+const marksField = StateField.define<readonly ProblemMark[]>({
   create: () => [],
   update(marks, tr) {
     for (const e of tr.effects) if (e.is(setMarks)) return e.value;
     if (!tr.docChanged || !marks.length) return marks;
     return marks.map((m) => {
       const from = tr.changes.mapPos(m.from);
-      return { ...m, from, to: Math.max(from, tr.changes.mapPos(m.to ?? m.from)) };
+      return { ...m, from, to: Math.max(from, tr.changes.mapPos(m.to)) };
     });
   },
   provide: (f) => scrollbarMarks.from(f),
 });
+
+const NO_MARKS: readonly ProblemMark[] = [];
+
+/** The problems the marker bar shows for `state`'s document, in document order; positions follow edits. */
+export function markerBarProblems(state: EditorState): readonly ProblemMark[] {
+  return state.field(marksField, false) ?? NO_MARKS;
+}
 
 const diagnosticsSync = ViewPlugin.fromClass(
   class {

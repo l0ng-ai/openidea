@@ -1422,6 +1422,35 @@ fn spelling_regions_cover_declared_names_only() {
     assert_eq!(names, ["Bird", "fly", "text"]);
 }
 
+#[test]
+fn spelling_regions_mark_raw_strings() {
+    let py = r#"a = r"\user" + R'\mesage' + fr"\wrd" + rb"\foo" + "\user""#;
+    let found: Vec<(&str, bool)> = syntax()
+        .spelling_regions(&lang("python"), py)
+        .unwrap()
+        .iter()
+        .filter(|r| r.kind == SpellingKind::String)
+        .map(|r| (&py[r.start..r.end], r.raw))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            (r#"r"\user""#, true),
+            (r"R'\mesage'", true),
+            (r#"fr"\wrd""#, true),
+            (r#"rb"\foo""#, true),
+            (r#""\user""#, false),
+        ]
+    );
+    // C# verbatim / Rust raw literals are named by the grammar itself.
+    let cs = r#"var s = @"C:\mesage";"#;
+    let raw = syntax().spelling_regions(&lang("csharp"), cs).unwrap().iter().any(|r| r.raw);
+    assert!(raw, "C# verbatim string should be raw");
+    let rs = r#"let s = r"\mesage";"#;
+    let raw = syntax().spelling_regions(&lang("rust"), rs).unwrap().iter().any(|r| r.raw);
+    assert!(raw, "Rust raw string should be raw");
+}
+
 // ---------------------------------------------------------------------------
 // Script regions of Vue SFCs and HTML documents
 
