@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Chunk, MergeView } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { bandAt, bandPath, transferY, UnalignedPanes, type Band } from "../diffScroll";
+import { bandAt, bandPath, transferY, PaddedPanes, UnalignedPanes, type Band } from "../diffScroll";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -174,6 +174,70 @@ describe("synchronized navigation scrolling", () => {
     } finally {
       p.controller.destroy();
       frame.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("padded pane scrolling (aligned diff)", () => {
+  function panes(sync = true) {
+    const root = document.createElement("div");
+    const view = () => {
+      const wrapper = root.appendChild(document.createElement("div"));
+      const dom = wrapper.appendChild(document.createElement("div"));
+      const scrollDOM = dom.appendChild(document.createElement("div"));
+      Object.defineProperty(scrollDOM, "scrollHeight", { value: 4000 });
+      scrollDOM.scrollTo = vi.fn();
+      return { dom, scrollDOM } as unknown as EditorView;
+    };
+    const a = view();
+    const b = view();
+    const controller = new PaddedPanes(sync);
+    controller.attach({ a, b } as unknown as MergeView);
+    const scroll = (view: EditorView, top: number) => {
+      view.scrollDOM.scrollTop = top;
+      view.scrollDOM.dispatchEvent(new Event("scroll"));
+    };
+    return { a, b, controller, scroll };
+  }
+
+  it("copies the scrolled pane's top to the other one", () => {
+    const p = panes();
+    try {
+      p.scroll(p.b, 500);
+      expect(p.a.scrollDOM.scrollTop).toBe(500);
+      p.scroll(p.a, 200);
+      expect(p.b.scrollDOM.scrollTop).toBe(200);
+    } finally {
+      p.controller.destroy();
+    }
+  });
+
+  it("leaves the panes alone when synchronized scrolling is off", () => {
+    const p = panes(false);
+    try {
+      p.scroll(p.b, 500);
+      expect(p.a.scrollDOM.scrollTop).toBe(0);
+    } finally {
+      p.controller.destroy();
+    }
+  });
+
+  it("keeps the navigation source in charge while its scroll animates", () => {
+    vi.useFakeTimers();
+    const p = panes();
+    try {
+      p.controller.scrollTo("b", { top: 2000, behavior: "smooth" });
+      p.scroll(p.b, 300);
+      expect(p.a.scrollDOM.scrollTop).toBe(300);
+      // The follower's echo must not pull the source back.
+      p.scroll(p.a, 300);
+      expect(p.b.scrollDOM.scrollTop).toBe(300);
+      vi.advanceTimersByTime(150);
+      p.scroll(p.a, 100);
+      expect(p.b.scrollDOM.scrollTop).toBe(100);
+    } finally {
+      p.controller.destroy();
       vi.useRealTimers();
     }
   });
