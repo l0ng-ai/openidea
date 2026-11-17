@@ -1710,6 +1710,14 @@ pub fn lsp_servers(host: &Host, window: &str) -> IdeResult<Vec<ServerInfo>> {
     Ok(host.project(window)?.lsp.servers())
 }
 
+/// Answers a server's `window/showMessageRequest` question (`null`: dismissed). It runs where the
+/// language server runs: the question waits in that process, a remote project's server included.
+#[command(trust = trusted)]
+pub fn lsp_message_request_answer(id: u32, choice: Option<String>) -> IdeResult<()> {
+    ide_lsp::answer_message_request(id, choice);
+    Ok(())
+}
+
 /// Re-emits the language servers' current diagnostics (the UI loaded after they arrived).
 #[command(trust = always)]
 pub fn lsp_resend_diagnostics(host: &Host, window: &str) -> IdeResult<()> {
@@ -2776,6 +2784,7 @@ ide_command::domain!(
     lsp_java_move_destinations,
     lsp_java_source_types,
     lsp_library_sources,
+    lsp_message_request_answer,
     lsp_prepare_rename,
     lsp_prepare_type_hierarchy,
     lsp_references,

@@ -358,6 +358,63 @@ impl ClientHandler {
         mgr.sink().emit(IdeEvent::Notify { level, title: self.server.name.clone(), body: Some(text) });
     }
 
+    /// `window/showMessageRequest` expects `MessageActionItem | null`. Showing
+    /// the question as a plain notification and replying null made Dart cancel
+    /// renames with a warning (`Renamed field will be invisible in …`).
+    fn message_request(&self, mgr: &LspManager, params: &Value) -> Result<Value, (i64, String)> {
+        let message = params.get("message").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let actions: Vec<String> = params
+            .get("actions")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items.iter().filter_map(|item| item.get("title").and_then(Value::as_str).map(str::to_owned)).collect()
+            })
+            .unwrap_or_default();
+        let sink = mgr.sink();
+        let Some((id, answer)) = crate::message_requests::begin() else {
+            tracing::warn!("[{}] too many pending message requests; dismissing", self.server.name);
+            sink.emit(IdeEvent::Notify {
+                level: NotifyLevel::Warning,
+                title: self.server.name.clone(),
+                body: Some("Too many open questions; try again".into()),
+            });
+            return Ok(Value::Null);
+        };
+        struct Guard {
+            id: u32,
+            sink: ide_core::SharedSink,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                crate::message_requests::close(self.id);
+                self.sink.emit(IdeEvent::LspMessageRequestDone { id: self.id });
+            }
+        }
+        let _guard = Guard { id, sink: sink.clone() };
+        sink.emit(IdeEvent::LspMessageRequest {
+            id,
+            server: self.server.name.clone(),
+            message: message.clone(),
+            actions: actions.clone(),
+        });
+        // Below the IDE's 30 s timeout for the enclosing request (e.g. rename),
+        // so the dialog cannot outlive the operation it is answering.
+        let received = answer.recv_timeout(Duration::from_secs(20));
+        let timed_out = matches!(received, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        let chosen = received.ok().flatten();
+        if timed_out {
+            sink.emit(IdeEvent::Notify {
+                level: NotifyLevel::Warning,
+                title: self.server.name.clone(),
+                body: Some(format!("No answer in time for: {message}")),
+            });
+        }
+        match chosen.filter(|title| actions.contains(title)) {
+            Some(title) => Ok(json!({ "title": title })),
+            None => Ok(Value::Null),
+        }
+    }
+
     fn configuration(&self, params: &Value) -> Value {
         let options = all_settings(&self.server.effective_config());
         let items = params.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -541,10 +598,7 @@ impl Handler for ClientHandler {
         };
         match method {
             "window/workDoneProgress/create" => Ok(Value::Null),
-            "window/showMessageRequest" => {
-                self.show_message(&mgr, &params);
-                Ok(Value::Null)
-            }
+            "window/showMessageRequest" => self.message_request(&mgr, &params),
             "window/showDocument" => Ok(json!({ "success": false })),
             "workspace/configuration" => Ok(self.configuration(&params)),
             "workspace/workspaceFolders" => Ok(mgr.workspace_folders(&self.server)),

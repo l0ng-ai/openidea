@@ -198,6 +198,8 @@ pub fn client_accepts(event: &IdeEvent) -> bool {
         | IdeEvent::LanguageServerWarning { .. }
         | IdeEvent::LanguageServerRemoved { .. }
         | IdeEvent::LspRefresh { .. }
+        | IdeEvent::LspMessageRequest { .. }
+        | IdeEvent::LspMessageRequestDone { .. }
         | IdeEvent::TerminalExited { .. }
         | IdeEvent::RunExited { .. }
         | IdeEvent::Debug { .. }
