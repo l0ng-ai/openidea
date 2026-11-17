@@ -16,6 +16,7 @@ export {
   beginDrag,
   dragSession,
   dropZoneAt,
+  isOutsideWindow,
   registerDropTarget,
   setDragRequiresAlt,
   startPointerDrag,

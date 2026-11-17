@@ -86,6 +86,7 @@ Each crate's `lib.rs` opens with a module doc comment describing its contract; r
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ide-cli`                        | The `openidea` command: argument parsing, the request it sends to a running app over a local socket, installing it on `PATH`.                                                   |
 | `ide-clipboard`                  | The OS clipboard's file list (Windows `CF_HDROP`, macOS `NSPasteboard` file URLs) for copying files between the Project view and the file manager.                              |
+| `ide-drag-out`                   | OS file drags out of a window (GTK, OLE, AppKit), so files dragged from the Project view to another app are copied there.                                                       |
 | `ide-fonts`                      | Installed font families for the font pickers, via CoreText, DirectWrite or fontconfig.                                                                                          |
 | `src-tauri` (package `openidea`) | The desktop shell: `AppState`, Tauri commands, the event sink, windows, menus, the remote-development client, the `openidea-plugin` URL scheme for plugin web views. Glue only. |
 

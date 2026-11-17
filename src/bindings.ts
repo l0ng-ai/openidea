@@ -1828,6 +1828,12 @@ export const commands = {
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	/**
+	 *  Drags `paths` (local files and folders) out of `window` while the primary mouse button is
+	 *  still down, so the app they are dropped on copies them (#2867). Resolves when the drag ends,
+	 *  with whether a target took the files.
+	 */
+	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
 	 *  Linux sets the urgency hint). A focused window is never flashed: the user is already

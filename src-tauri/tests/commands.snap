@@ -699,6 +699,7 @@ web_url                                      always             project_host bin
 window_close_context                         always             desktop      bindings sync
 window_complete_launch                       always             desktop      bindings sync
 window_cycle                                 always             desktop      bindings sync
+window_drag_files                            always             desktop      bindings async
 window_flash_taskbar                         always             desktop      bindings sync
 window_group_cancel_close                    always             desktop      bindings sync
 window_group_close                           always             desktop      bindings sync

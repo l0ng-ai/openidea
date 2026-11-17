@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { commands } from "@/platform/ipc";
+import { dragOut } from "@/platform/dragOut";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import type { RemoteSession } from "@/platform/ipc";
@@ -49,6 +51,29 @@ describe("files dropped from the OS", () => {
       expect(calls).toEqual([]);
     } finally {
       unregister();
+    }
+  });
+
+  it("ignores its own files dragged out of the window and dropped back on it", async () => {
+    let end!: () => void;
+    vi.spyOn(commands, "windowDragFiles").mockReturnValue(
+      new Promise((resolve) => (end = () => resolve({ status: "ok", data: false }))),
+    );
+    const handler = vi.fn(() => true);
+    const unregister = registerFileDropHandler(handler);
+    const { d, calls } = deps();
+    try {
+      const drag = dragOut(["/p/a.ts"]);
+      await handleFileDrop(["/p/a.ts"], 1, 1, d);
+      end();
+      await drag;
+      expect(handler).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      await handleFileDrop(["/p/a.ts"], 1, 1, d);
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
+      unregister();
+      vi.restoreAllMocks();
     }
   });
 

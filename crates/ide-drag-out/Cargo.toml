@@ -1,0 +1,20 @@
+[package]
+name = "ide-drag-out"
+description = "OS file drags out of an app window, so file managers and transfer clients copy the files: GTK on Linux, OLE / AppKit through the drag crate on Windows and macOS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+# The crate's GTK backend is not used: it ends the drag on button 256 and drops the
+# data handler before the target asks for it (crabnebula-dev/drag-rs#103, #84).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+drag = "2.1.1"
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+tempfile.workspace = true
