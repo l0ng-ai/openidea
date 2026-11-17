@@ -2,9 +2,9 @@
 //!
 //! Two strategies: the platform's native recursive watch (FSEvents on macOS,
 //! ReadDirectoryChangesW on Windows), or one non-recursive watch per directory
-//! that skips excluded / git-ignored directories (Linux, where a recursive
-//! inotify watch would register every directory of `node_modules` and
-//! `target` and exhaust `max_user_watches`).
+//! that skips explicitly excluded directories (Linux, where a recursive
+//! inotify watch would register every excluded dependency/build directory and
+//! exhaust `max_user_watches`). Ignored directories remain watched for filenames.
 //!
 //! When the OS watcher cannot start or runs out of watches (inotify limits
 //! used up, a file system without change notifications), the same directories
@@ -37,8 +37,8 @@ const SYNC_WATCH_BUDGET: usize = 256;
 pub enum WatchMode {
     /// One recursive watch on the root.
     Recursive,
-    /// One non-recursive watch per directory, skipping excluded and ignored
-    /// directories; new directories are picked up as they appear.
+    /// One non-recursive watch per directory, skipping explicit exclusions;
+    /// new directories are picked up as they appear.
     PerDirectory,
     /// The root's own entries only (loose files edited outside a project).
     Flat,
@@ -305,7 +305,7 @@ impl DirState {
     /// already polls.
     fn run(self: &Arc<Self>, deferred: Vec<(PathBuf, bool)>, mut polled: bool, emit: impl Fn(&FsBatch)) {
         if !deferred.is_empty() {
-            self.watch_stack(deferred, false, &mut Vec::new(), None);
+            self.watch_stack(deferred, false, &mut FsBatch::default(), None);
             polled = polled || self.poll_if_exhausted(|| ());
         }
         loop {
@@ -350,7 +350,7 @@ impl DirState {
 
     /// Follows directory creation / removal and ignore-rule changes.
     fn update_watches(&self, batch: &mut FsBatch, rule_dirs: &[PathBuf]) {
-        let mut discovered = Vec::new();
+        let mut discovered = FsBatch::default();
         for path in &batch.created {
             if path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
                 self.watch_tree(path, true, &mut discovered);
@@ -360,6 +360,21 @@ impl DirState {
         for path in &batch.modified {
             if !self.watched.lock().contains(path) && path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
                 self.watch_tree(path, true, &mut discovered);
+            }
+        }
+        // Ignored paths are index-only, but their directories still need watches
+        // and scans for files that arrived before registration.
+        for path in &batch.ignored {
+            match path.symlink_metadata() {
+                Ok(meta) if meta.is_dir() => {
+                    if !self.watched.lock().contains(path) {
+                        self.watch_tree(path, true, &mut discovered);
+                    }
+                }
+                Err(_) if self.watched.lock().contains(path) => {
+                    self.unwatch_tree(path);
+                }
+                _ => {}
             }
         }
         // VCS metadata directories (`.git`, `.git/worktrees/<name>`) need
@@ -378,12 +393,17 @@ impl DirState {
         for dir in rule_dirs {
             self.resync(dir);
         }
-        if !discovered.is_empty() {
+        if !discovered.created.is_empty() {
             let known: HashSet<&PathBuf> = batch.created.iter().chain(&batch.modified).collect();
-            let fresh: Vec<PathBuf> = discovered.into_iter().filter(|p| !known.contains(p)).collect();
+            let fresh = discovered.created.into_iter().filter(|p| !known.contains(p)).collect::<Vec<_>>();
             batch.created.extend(fresh);
             batch.created.sort();
             batch.created.dedup();
+        }
+        if !discovered.ignored.is_empty() {
+            batch.ignored.extend(discovered.ignored);
+            batch.ignored.sort();
+            batch.ignored.dedup();
         }
     }
 
@@ -442,7 +462,7 @@ impl DirState {
         };
         tracing::warn!("{reason}; polling {} for changes instead", self.filter.root.display());
         rewatch();
-        self.watch_tree(&self.filter.root, false, &mut Vec::new());
+        self.watch_tree(&self.filter.root, false, &mut FsBatch::default());
         true
     }
 
@@ -458,21 +478,21 @@ impl DirState {
     /// Watches `dir` and every watchable directory below it. With `report`,
     /// files and directories found inside (created before the watch was in
     /// place) are appended to `found`.
-    fn watch_tree(&self, dir: &Path, report: bool, found: &mut Vec<PathBuf>) {
+    fn watch_tree(&self, dir: &Path, report: bool, found: &mut FsBatch) {
         self.watch_stack(vec![(dir.to_path_buf(), false)], report, found, None);
     }
 
     /// Watches up to `budget` directories synchronously and returns any
     /// remaining `(dir, parent_verified)` entries for background registration.
     fn watch_tree_bounded(&self, dir: &Path, budget: usize) -> Vec<(PathBuf, bool)> {
-        self.watch_stack(vec![(dir.to_path_buf(), false)], false, &mut Vec::new(), Some(budget))
+        self.watch_stack(vec![(dir.to_path_buf(), false)], false, &mut FsBatch::default(), Some(budget))
     }
 
     fn watch_stack(
         &self,
         mut stack: Vec<(PathBuf, bool)>,
         report: bool,
-        found: &mut Vec<PathBuf>,
+        found: &mut FsBatch,
         budget: Option<usize>,
     ) -> Vec<(PathBuf, bool)> {
         let mut watched_now = 0;
@@ -490,8 +510,8 @@ impl DirState {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-                if report && self.filter.is_reported(&path, is_dir) {
-                    found.push(path.clone());
+                if report {
+                    self.filter.report_discovered(&path, is_dir, found);
                 }
                 if is_dir {
                     stack.push((path, true));
@@ -519,8 +539,7 @@ impl DirState {
                 self.unwatch_tree(&p);
             }
         }
-        let mut ignored = Vec::new();
-        self.watch_tree(dir, false, &mut ignored);
+        self.watch_tree(dir, false, &mut FsBatch::default());
     }
 }
 
@@ -601,9 +620,8 @@ impl EventFilter {
     }
 
     /// Whether a directory deserves its own watch in per-directory mode: not
-    /// excluded or git-ignored; inside `.git` the directory itself, `refs/`
-    /// and `worktrees/` (HEAD, index, refs and worktree metadata are what VCS
-    /// refresh needs).
+    /// explicitly excluded; inside `.git` only metadata needed by VCS and
+    /// repository-level ignore rules is watched.
     pub fn should_watch_dir(&self, dir: &Path) -> bool {
         self.should_watch_dir_inner(dir, false)
     }
@@ -629,26 +647,24 @@ impl EventFilter {
                 _ => false,
             };
         }
-        if parent_ok {
-            !self.excludes.read().is_match(rel) && !self.gitignore.is_ignored_self(dir, true)
-        } else {
-            !self.excludes.read().is_excluded(rel) && !self.gitignore.is_ignored(dir, true)
+        if parent_ok { !self.excludes.read().is_match(rel) } else { !self.excludes.read().is_excluded(rel) }
+    }
+
+    /// Files found before a new directory gained its watch need the same
+    /// index-only routing as ignored paths reported by the OS.
+    fn report_discovered(&self, path: &Path, is_dir: bool, found: &mut FsBatch) {
+        let Ok(rel) = path.strip_prefix(&self.root) else { return };
+        if Self::git_internal(rel).is_some()
+            || self.excludes.read().is_excluded(rel)
+            || crate::encoding::is_atomic_temp(path)
+        {
+            return;
         }
-    }
-
-    /// Whether a path found by scanning a new directory would be reported.
-    fn is_reported(&self, path: &Path, is_dir: bool) -> bool {
-        let Ok(rel) = path.strip_prefix(&self.root) else { return false };
-        Self::git_internal(rel).is_none()
-            && !self.excludes.read().is_excluded(rel)
-            && !self.gitignore.is_ignored(path, is_dir)
-    }
-
-    /// Whether a filtered-out file is ignored by a rule on the file itself, in a folder
-    /// that is neither excluded nor ignored.
-    fn is_ignored_file(&self, path: &Path, rel: &Path) -> bool {
-        !self.excludes.read().is_excluded(rel)
-            && path.parent().is_some_and(|dir| dir == self.root || !self.gitignore.is_ignored(dir, true))
+        if self.gitignore.is_ignored(path, is_dir) {
+            found.ignored.push(path.to_path_buf());
+        } else {
+            found.created.push(path.to_path_buf());
+        }
     }
 
     fn classify(&self, path: &Path, change: Change, out: &mut BTreeMap<PathBuf, Change>) {
@@ -750,6 +766,8 @@ impl EventFilter {
             };
             if let Ok(rel) = path.strip_prefix(&self.root) {
                 let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
+                let excluded = self.excludes.read().is_excluded(rel);
+                let ignored = !excluded && self.gitignore.is_ignored(&path, is_dir || change == Change::Removed);
                 // Directories that match an exclude / gitignore rule themselves
                 // still report their own create / remove / modify — the tree
                 // needs to see `target/` or `node_modules/` appear (marked
@@ -760,16 +778,19 @@ impl EventFilter {
                 // itself — reporting one extra file removal is harmless.
                 let self_excluded = (is_dir || change == Change::Removed)
                     && (self.excludes.read().is_match(rel) || self.gitignore.is_ignored_self(&path, true));
-                if !self_excluded && (self.excludes.read().is_excluded(rel) || self.gitignore.is_ignored(&path, is_dir))
-                {
+                if !self_excluded && (excluded || ignored) {
                     // Only a file appearing or going changes what the folder lists.
                     if change != Change::Modified {
                         excluded_dirs.extend(path.parent().map(Path::to_path_buf));
                     }
-                    if !is_dir && self.is_ignored_file(&path, rel) {
+                    if ignored {
                         batch.ignored.push(path);
                     }
                     continue;
+                }
+                if ignored {
+                    // Also report the directory itself for subtree arrivals/removals.
+                    batch.ignored.push(path.clone());
                 }
             }
             match change {
@@ -981,11 +1002,9 @@ mod tests {
         assert!(batch.removed.is_empty());
     }
 
-    /// `client install` produces an excluded / ignored directory wholesale:
-    /// the directory's own create passes through so the tree shows it appear
-    /// (marked excluded/ignored), while everything inside stays filtered out.
+    /// Excluded contents remain pruned; ignored contents go only to the index.
     #[test]
-    fn excluded_and_ignored_directories_report_themselves_but_not_contents() {
+    fn excluded_directories_are_pruned_and_ignored_contents_are_index_only() {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
         std::fs::create_dir_all(root.join(".git")).unwrap();
@@ -1004,8 +1023,8 @@ mod tests {
         let batch = filter.batch(&[ev(create_dir, vec![root.join("target")]), ev(create_dir, vec![root.join("dist")])]);
         assert_eq!(batch.created, vec![root.join("dist"), root.join("target")]);
 
-        // Everything inside the ignored / excluded directories stays filtered,
-        // as do files matching ignore patterns at the project root.
+        // Ignored contents, including files below ignored folders, stay apart
+        // from normal worktree events. Explicitly excluded contents stay absent.
         let batch = filter.batch(&[
             ev(create_file, vec![root.join("target/debug/out.o")]),
             ev(create_file, vec![root.join("dist/app.js")]),
@@ -1013,7 +1032,7 @@ mod tests {
         ]);
         assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty(), "{batch:?}");
         assert_eq!(batch.excluded_dirs, vec![root.clone(), root.join("dist"), root.join("target/debug")]);
-        assert_eq!(batch.ignored, vec![root.join("debug.log")], "only the ignored file outside ignored folders");
+        assert_eq!(batch.ignored, vec![root.join("debug.log"), root.join("dist/app.js")]);
 
         // An ignored file's edit and removal reach the index too (nothing else changes).
         let modify = EventKind::Modify(ModifyKind::Data(DataChange::Content));
@@ -1021,12 +1040,14 @@ mod tests {
         assert_eq!(batch.ignored, vec![root.join("debug.log")]);
         assert!(!batch.is_empty() && batch.excluded_dirs.is_empty());
         std::fs::remove_file(root.join("debug.log")).unwrap();
+        std::fs::remove_file(root.join("dist/app.js")).unwrap();
         let batch = filter.batch(&[
             ev(EventKind::Remove(RemoveKind::File), vec![root.join("debug.log")]),
             ev(EventKind::Remove(RemoveKind::File), vec![root.join("dist/app.js")]),
         ]);
         // A removed path can't tell file from folder: it goes out as a removal, as before.
         assert_eq!(batch.removed, vec![root.join("debug.log")]);
+        assert_eq!(batch.ignored, vec![root.join("debug.log"), root.join("dist/app.js")]);
 
         // Sibling files in unignored directories still come through.
         let batch = filter.batch(&[ev(create_file, vec![root.join("src/main.rs")])]);
@@ -1076,9 +1097,9 @@ mod tests {
         let touch = |paths: &[&str]| -> Vec<Event> { paths.iter().map(|p| ev(modify, vec![root.join(p)])).collect() };
         let (batch, rules) = filter.batch_detailed(&touch(&["pkg/a.tmp", "pkg/gen/x.rs", "pkg/keep.rs", "b.tmp"]));
         assert_eq!(batch.modified, vec![root.join("b.tmp"), root.join("pkg/keep.rs")]);
-        assert_eq!(batch.ignored, vec![root.join("pkg/a.tmp")], "nested rules, but not inside ignored folders");
+        assert_eq!(batch.ignored, vec![root.join("pkg/a.tmp"), root.join("pkg/gen/x.rs")]);
         assert!(rules.is_empty());
-        assert!(!filter.should_watch_dir(&root.join("pkg/gen")));
+        assert!(filter.should_watch_dir(&root.join("pkg/gen")));
 
         // The nested .gitignore changes in the same batch as files it governs;
         // `pkg/.gitignore` sorts after `pkg/-x.tmp`, so order must not matter.
@@ -1152,13 +1173,16 @@ mod tests {
                 let path = root.join(rel);
                 std::fs::write(&path, "").unwrap();
                 let filter = EventFilter::new(root.clone(), &[]);
-                assert!(filter.should_watch_dir(&root.join("generated")));
+                assert!(!filter.gitignore.is_ignored(&root.join("generated"), true));
                 std::fs::write(&path, "generated/\n").unwrap();
 
                 let (batch, rules) = filter.batch_detailed(&[ev(EventKind::Access(access), vec![path.clone()])]);
                 assert!(batch.is_empty(), "{access:?} on {rel}: {batch:?}");
                 assert!(rules.is_empty(), "{access:?} on {rel}: {rules:?}");
-                assert!(filter.should_watch_dir(&root.join("generated")), "{access:?} on {rel} reloaded rules");
+                assert!(
+                    !filter.gitignore.is_ignored(&root.join("generated"), true),
+                    "{access:?} on {rel} reloaded rules"
+                );
 
                 let (batch, rules) = filter.batch_detailed(&[ev(
                     EventKind::Modify(ModifyKind::Data(DataChange::Content)),
@@ -1167,7 +1191,10 @@ mod tests {
                 match rel {
                     ".git/info/exclude" | ".gitignore" | ".ignore" => {
                         assert_eq!(rules, vec![root.clone()], "{rel}");
-                        assert!(!filter.should_watch_dir(&root.join("generated")), "{rel} did not reload rules");
+                        assert!(
+                            filter.gitignore.is_ignored(&root.join("generated"), true),
+                            "{rel} did not reload rules"
+                        );
                     }
                     ".git/HEAD" => {
                         assert_eq!(batch.vcs, vec![path]);
@@ -1193,7 +1220,7 @@ mod tests {
         assert!(filter.should_watch_dir(&root));
         assert!(w("src") && w("src/deep"));
         assert!(!w("node_modules") && !w("a/node_modules/b"));
-        assert!(!w("build") && w("src/build"));
+        assert!(w("build") && w("src/build"));
         assert!(w(".git") && w(".git/refs") && w(".git/refs/heads") && w(".git/info"));
         assert!(!w(".git/objects") && !w(".git/objects/ab") && !w(".git/logs"));
         // Linked-worktree gitdirs are watched so worktrees added below the
@@ -1245,8 +1272,8 @@ mod tests {
             )
             .unwrap()
         };
-        // root, src, src/a, lib, .git, .git/refs, .git/refs/heads
-        assert_eq!(watcher.watch_count(), 7);
+        // root, src, src/a, lib, lib/out, .git, .git/refs, .git/refs/heads
+        assert_eq!(watcher.watch_count(), 8);
 
         // A new directory tree created in one go: its contents are reported
         // even when written before the watch on it was registered.
@@ -1271,16 +1298,11 @@ mod tests {
         assert!(!paths.iter().any(|p| p.starts_with(root.join("node_modules"))), "{paths:?}");
         assert!(!paths.contains(&root.join("lib/out/o.txt")));
 
-        // Un-ignoring lib/out registers a watch on it.
+        // Un-ignoring lib/out keeps its existing filename watch.
         let before = watcher.watch_count();
         std::fs::write(root.join("lib/.gitignore"), "*.log\n").unwrap();
         assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("lib/.gitignore"))));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while watcher.watch_count() == before && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(watcher.watch_count(), before + 1);
-        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(watcher.watch_count(), before);
         std::fs::write(root.join("lib/out/now.txt"), "x").unwrap();
         assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("lib/out/now.txt"))));
 
@@ -1451,6 +1473,147 @@ mod tests {
         fn kind() -> WatcherKind {
             WatcherKind::Inotify
         }
+    }
+
+    fn quiet_directory_state(root: &Path, polled: bool) -> DirState {
+        let watcher: Box<dyn notify::Watcher + Send> = if polled {
+            Box::new(PollWatcher::new(|_| {}, notify::Config::default().with_manual_polling()).unwrap())
+        } else {
+            Box::new(LimitedWatcher::<{ usize::MAX }>::default())
+        };
+        DirState {
+            filter: EventFilter::new(root.to_path_buf(), &["deps".into()]),
+            mode: WatchMode::PerDirectory,
+            watcher: Mutex::new(Some(watcher)),
+            watched: Mutex::default(),
+            queue: Mutex::default(),
+            wake: Condvar::new(),
+            stop: AtomicBool::new(false),
+            exhausted: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn per_directory_and_polling_register_ignored_but_not_excluded_directories() {
+        for polled in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(tmp.path()).unwrap();
+            for dir in [".git/info", ".git/objects/aa", "local/deep", "pkg/gen/deep", "deps/dep"] {
+                std::fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            std::fs::write(root.join(".git/info/exclude"), "local/\n").unwrap();
+            std::fs::write(root.join("pkg/.gitignore"), "gen/\n").unwrap();
+            let state = quiet_directory_state(&root, polled);
+            let deferred = state.watch_tree_bounded(&root, 2);
+            assert!(!deferred.is_empty());
+            let mut found = FsBatch::default();
+            state.watch_stack(deferred, false, &mut found, None);
+            assert!(found.is_empty(), "startup registration must not publish existing files");
+            let expected = ["", ".git", ".git/info", "local", "local/deep", "pkg", "pkg/gen", "pkg/gen/deep"]
+                .into_iter()
+                .map(|rel| root.join(rel))
+                .collect::<HashSet<_>>();
+            assert_eq!(*state.watched.lock(), expected, "polled={polled}");
+
+            // Rule changes reclassify filenames without dropping ignored watches.
+            for rule in [".git/info/exclude", "pkg/.gitignore"] {
+                let (mut batch, dirs) = state.filter.batch_detailed(&[ev(
+                    EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                    vec![root.join(rule)],
+                )]);
+                state.update_watches(&mut batch, &dirs);
+                assert_eq!(*state.watched.lock(), expected, "resync {rule}, polled={polled}");
+            }
+        }
+    }
+
+    #[test]
+    fn ignored_subtree_arrivals_and_removals_are_index_only() {
+        for polled in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(tmp.path()).unwrap();
+            for dir in [".git/info", "local", "pkg/gen"] {
+                std::fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            std::fs::write(root.join(".git/info/exclude"), "local/\n").unwrap();
+            std::fs::write(root.join("pkg/.gitignore"), "gen/\n").unwrap();
+            let state = quiet_directory_state(&root, polled);
+            state.watch_tree(&root, false, &mut FsBatch::default());
+
+            for dir in ["local/new", "pkg/gen/new"] {
+                let subtree = root.join(dir);
+                let inner = subtree.join("inner");
+                let file = inner.join("Widget.rs");
+                std::fs::create_dir_all(&inner).unwrap();
+                std::fs::write(&file, "struct Widget;").unwrap();
+                // Only the subtree arrival is delivered; its existing files
+                // predate their watches and must be discovered by the scan.
+                let (mut batch, dirs) =
+                    state.filter.batch_detailed(&[ev(EventKind::Create(CreateKind::Folder), vec![subtree.clone()])]);
+                state.update_watches(&mut batch, &dirs);
+                assert_eq!(batch.ignored, vec![subtree.clone(), inner.clone(), file.clone()]);
+                assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty());
+                assert!(state.watched.lock().contains(&inner), "polled={polled}, {dir}");
+
+                let later = inner.join("Later.rs");
+                std::fs::write(&later, "struct Later;").unwrap();
+                let batch = state.filter.batch(&[ev(EventKind::Create(CreateKind::File), vec![later.clone()])]);
+                assert_eq!(batch.ignored, vec![later.clone()]);
+                assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty());
+                std::fs::remove_file(&later).unwrap();
+                let batch = state.filter.batch(&[ev(EventKind::Remove(RemoveKind::File), vec![later.clone()])]);
+                assert_eq!(batch.ignored, vec![later]);
+                assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty());
+
+                std::fs::remove_dir_all(&subtree).unwrap();
+                let (mut batch, dirs) =
+                    state.filter.batch_detailed(&[ev(EventKind::Remove(RemoveKind::Folder), vec![subtree.clone()])]);
+                state.update_watches(&mut batch, &dirs);
+                assert_eq!(batch.ignored, vec![subtree.clone()]);
+                assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty());
+                assert!(!state.watched.lock().iter().any(|p| p.starts_with(&subtree)));
+            }
+
+            // A directory-only ignore must still match after metadata is gone.
+            std::fs::remove_dir_all(root.join("local")).unwrap();
+            let (mut batch, dirs) =
+                state.filter.batch_detailed(&[ev(EventKind::Remove(RemoveKind::Folder), vec![root.join("local")])]);
+            state.update_watches(&mut batch, &dirs);
+            assert_eq!(batch.ignored, vec![root.join("local")]);
+            assert!(!state.watched.lock().contains(&root.join("local")));
+        }
+    }
+
+    #[test]
+    fn new_directory_scan_keeps_nested_ignored_files_out_of_worktree_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let state = quiet_directory_state(&root, false);
+        state.watch_tree(&root, false, &mut FsBatch::default());
+        for dir in ["incoming/gen/deep", "incoming/deps/dep"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for (file, contents) in [
+            ("incoming/.gitignore", "gen/\n"),
+            ("incoming/gen/deep/Widget.rs", "struct Widget;"),
+            ("incoming/deps/dep/Hidden.rs", "struct Hidden;"),
+            ("incoming/Visible.rs", "struct Visible;"),
+        ] {
+            std::fs::write(root.join(file), contents).unwrap();
+        }
+        let (mut batch, dirs) =
+            state.filter.batch_detailed(&[ev(EventKind::Create(CreateKind::Folder), vec![root.join("incoming")])]);
+        state.update_watches(&mut batch, &dirs);
+        assert_eq!(
+            batch.created,
+            vec![root.join("incoming"), root.join("incoming/.gitignore"), root.join("incoming/Visible.rs")]
+        );
+        assert_eq!(
+            batch.ignored,
+            vec![root.join("incoming/gen"), root.join("incoming/gen/deep"), root.join("incoming/gen/deep/Widget.rs"),]
+        );
+        assert!(state.watched.lock().contains(&root.join("incoming/gen/deep")));
+        assert!(!state.watched.lock().iter().any(|p| p.starts_with(root.join("incoming/deps"))));
     }
 
     fn start_limited<const ALLOWED: usize>(root: &Path, batches: Arc<Mutex<Vec<FsBatch>>>) -> IdeResult<Inner> {

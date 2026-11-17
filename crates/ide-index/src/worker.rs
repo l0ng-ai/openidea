@@ -926,7 +926,7 @@ impl Shared {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-            if filter.is_excluded(&path, meta.is_dir()) {
+            if filter.is_excluded(&path) {
                 continue;
             }
             if meta.is_dir() {
