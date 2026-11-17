@@ -59,7 +59,7 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
+import { currentRepo, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
@@ -74,6 +74,16 @@ function argPath(arg: unknown): string | undefined {
   if (arg && typeof arg === "object" && "path" in arg && typeof (arg as { path: unknown }).path === "string")
     return (arg as { path: string }).path;
   return undefined;
+}
+
+/** Whether Git has no commit of the file: unversioned, ignored, or added and not committed yet. */
+function hasNoCommits(status: { staged: string | null; unstaged: string | null }): boolean {
+  return (
+    status.staged === "added" ||
+    status.unstaged === "untracked" ||
+    status.unstaged === "ignored" ||
+    status.staged === "ignored"
+  );
 }
 
 function argPaths(arg: unknown): string[] | undefined {
@@ -558,6 +568,15 @@ export function registerVcsActions(): () => void {
       toggled: () => {
         const ed = activeEditor();
         return !!ed && annotationsShown(ed.view);
+      },
+      // As in IDEA, a file Git has no commit of (unversioned, ignored, or added and not yet
+      // committed) has nothing to annotate; shown annotations can always be closed.
+      enabled: ({ arg }) => {
+        const ed = activeEditor();
+        const path = argPath(arg) ?? ed?.ctx.path;
+        if (!path || (ed?.ctx.path === path && annotationsShown(ed.view))) return true;
+        const status = statusOf(path);
+        return !status || !hasNoCommits(status);
       },
       run: ({ arg }) => annotate(arg),
     },
