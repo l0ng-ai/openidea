@@ -10,7 +10,13 @@ import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
-import { isUntitledUri, isVirtualUri, invalidateVirtualDocument, untitledTitle } from "@/platform/virtualDocs";
+import {
+  gitRevisionOf,
+  isUntitledUri,
+  isVirtualUri,
+  invalidateVirtualDocument,
+  untitledTitle,
+} from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
 import { useDocMeta, useOutline } from "../model/document";
 import { symbolChain } from "./outline";
@@ -80,6 +86,20 @@ function pathCrumbs(project: { root: string; name: string } | null, path: string
   if (isUntitledUri(path)) {
     const label = untitledTitle(path);
     return [{ label, icon: fileIconName(label), title: label }];
+  }
+  // A file at a Git revision: the short revision, then the file's folders in the working tree.
+  const revision = gitRevisionOf(path);
+  if (revision) {
+    const parts = revision.path.split("/");
+    const file = parts.pop()!;
+    return [
+      { label: revision.revision.slice(0, 8), icon: "commit", title: revision.revision },
+      ...parts.map((label, i): Crumb => {
+        const at = `${revision.repo}/${parts.slice(0, i + 1).join("/")}`;
+        return { label, icon: "folder", title: parts.slice(0, i + 1).join("/"), nav: { kind: "dir", path: at, label } };
+      }),
+      { label: file, icon: fileIconName(file), title: revision.path },
+    ];
   }
   const target = dir ? path : dirname(path);
   const segments: Crumb[] = [];
