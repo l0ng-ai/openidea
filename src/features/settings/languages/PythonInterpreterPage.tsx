@@ -24,7 +24,7 @@ import {
 } from "./api";
 import { validateRunTargets, type RunTargetValid } from "@/platform/remoteSettings";
 import { AddInterpreterDialog } from "./AddInterpreterDialog";
-import { useSetting } from "../components/context";
+import { useAppliedSetting, useSetting } from "../components/context";
 import { SdkField, tildify } from "./components";
 import { interpreterIcon, sameInterpreterPath, usePythonInterpreters } from "./interpreters";
 import styles from "./Sdk.module.css";
@@ -160,21 +160,25 @@ export function PythonInterpreterPage() {
   }, [root, created]);
 
   // The interpreter runs resolve to: the configured one while it exists, else the fallback.
+  // The backend resolves the applied setting, so only that one can be judged here: a choice
+  // not applied yet (an environment just created) is not reported missing.
+  const applied = useAppliedSetting<string>("languages.python.interpreter");
   const [resolved, setResolved] = useState<{ interpreter: string; path: string | null } | null>(null);
   useEffect(() => {
-    if (!interpreter) return;
+    if (!applied) return;
     let live = true;
     effectivePython()
-      .then((path) => live && setResolved({ interpreter, path }))
+      .then((path) => live && setResolved({ interpreter: applied, path }))
       .catch(() => live && setResolved(null));
     return () => {
       live = false;
     };
-  }, [root, interpreter, created]);
+  }, [root, applied, created]);
   // A configured interpreter whose executable is gone (PyCharm's "Invalid"): runs fall back.
   const invalid =
     !target &&
     !!interpreter &&
+    interpreter === applied &&
     resolved?.interpreter === interpreter &&
     !sameInterpreter(resolved.path, interpreter, root);
 
