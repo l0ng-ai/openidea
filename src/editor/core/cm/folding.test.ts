@@ -106,6 +106,13 @@ describe("foldsFromRanges", () => {
     ]);
   });
 
+  it("keeps the closing parenthesis of a Go import block", () => {
+    const s = EditorState.create({ doc: 'package main\n\nimport (\n  "fmt"\n  "os"\n)\n' });
+    expect(foldsFromRanges(s, [fold(2, 5)])).toEqual([
+      { from: s.doc.line(3).to, to: s.doc.line(6).from, kind: "region" },
+    ]);
+  });
+
   it("folds a custom region from its start marker through its end marker", () => {
     const s = EditorState.create({
       doc: "class A {\n  //region Fields\n  int a;\n  //endregion\n}\n",

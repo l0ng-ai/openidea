@@ -620,6 +620,12 @@ export class DocModel {
       })();
       const chosen = folds.filter((r) => {
         if (r.kind === "imports") return f.imports;
+        // A single multiline import is a syntax region, but follows the imports preference.
+        if (r.kind === "region" && f.imports) {
+          const header = state.doc.lineAt(r.from).text.trimStart();
+          const closing = state.doc.lineAt(r.to).text.trimStart();
+          if (/^(?:import|use|from\b.*\bimport)\s/.test(header) && /^[}\])]/.test(closing)) return true;
+        }
         if (r.kind !== "comment") return false;
         const header = state.doc.lineAt(r.from).from <= firstCode;
         return header ? f.fileHeader : f.docComments;

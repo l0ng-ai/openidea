@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState, StateEffect } from "@codemirror/state";
 import { showTooltip, type Tooltip } from "@codemirror/view";
-import { indentUnit, language as languageFacet } from "@codemirror/language";
+import { foldedRanges, indentUnit, language as languageFacet } from "@codemirror/language";
 import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
@@ -48,6 +48,23 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it.each([
+    ["main.go", 'package main\n\nimport (\n  "fmt"\n  "os"\n)\n', 2, 5],
+    ["main.rs", "use a::{\n  b,\n  c,\n};\n", 0, 3],
+  ])("folds a single multiline import by default in %s", async (name, text, start_line, end_line) => {
+    const path = `/p/${name}`;
+    const { backend, manager, frame } = setup({ [path]: text });
+    vi.spyOn(backend, "folding").mockResolvedValue([{ start_line, end_line, kind: "region" }]);
+    try {
+      const model = await manager.acquire(path);
+      const slot = new EditorSlot(model, name, host);
+      await frame();
+      expect(foldedRanges(slot.currentState()).size).toBe(1);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("emits a versioned document change from a real local edit", async () => {
     const { manager, frame } = setup({ "/p/a.txt": "abc" });
     const model = await manager.acquire("/p/a.txt");
