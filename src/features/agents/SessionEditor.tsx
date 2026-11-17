@@ -406,6 +406,11 @@ function SessionStatus({
     >
       {/* Where the task works, in one quiet line like the new-task page: project (in a workspace), branch, worktree. */}
       <span className={styles.where} title={task.cwd}>
+        {/* Which agent runs the task: with several tasks side by side, this tells their answers apart. */}
+        <span className={styles.fact} title={providerName(task.provider)}>
+          <Icon name={providerIcon(task.provider)} size={13} />
+          <span className={styles.factText}>{providerName(task.provider)}</span>
+        </span>
         {project?.workspace && projectName && (
           <span className={styles.fact}>
             <Icon name="folder" size={13} />
