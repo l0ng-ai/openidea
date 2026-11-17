@@ -22,10 +22,7 @@ async fn split_storage_keeps_user_history_and_uses_local_tools_and_caches() {
         runtime: tokio::runtime::Handle::current(),
         project_environment: false,
     });
-    assert_eq!(
-        std::path::PathBuf::from(ops::tools::jdk_download_location(&host, "main").unwrap()),
-        local.join("tools/jdks")
-    );
+    assert_eq!(std::path::PathBuf::from(ops::tools::jdk_download_location(&host).unwrap()), local.join("tools/jdks"));
     let light = host.open_light("main", &root.join("notes.txt")).unwrap();
     assert!(light.cache_dir.starts_with(&local));
     assert!(data.join("history").exists());

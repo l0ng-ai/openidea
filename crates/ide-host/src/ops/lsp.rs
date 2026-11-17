@@ -1,8 +1,7 @@
 use super::doc::blocking;
 use crate::Host;
-use crate::apply_workspace_edit as apply_edit;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::error::ErrorKind;
 use ide_core::{DocId, IdeError, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
@@ -60,6 +59,7 @@ async fn prepare_actions(
     .await
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_completion(
     host: &Host,
     window: &str,
@@ -224,6 +224,7 @@ fn plugin_completion(item: ide_plugin::CompletionItem) -> CompletionItem {
 }
 
 /// Inline (ghost text) suggestions at `pos`; `automatic` when triggered by typing.
+#[command(trust = trusted)]
 pub async fn lsp_inline_completion(
     host: &Host,
     window: &str,
@@ -256,6 +257,7 @@ pub async fn lsp_inline_completion(
     }
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_resolve_completion(
     host: &Host,
     window: &str,
@@ -265,6 +267,7 @@ pub async fn lsp_resolve_completion(
     host.project(window)?.lsp.resolve_completion(doc, item).await
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_hover(
     host: &Host,
     window: &str,
@@ -294,6 +297,7 @@ pub async fn lsp_hover(
     Ok(crate::plugins::merge_hover(server, hovers))
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
     let target = position_document(host, window, doc, pos).await?;
     let server = host.project(window)?.lsp.signature_help(target, pos).await;
@@ -313,6 +317,7 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
     }
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
     let target = position_document(host, window, doc, pos).await?;
     // ⌘B on a declaration shows its usages, also when a plugin's index links the name elsewhere
@@ -459,7 +464,8 @@ fn without_generated_helpers(locations: Vec<Location>) -> Vec<Location> {
     locations.into_iter().filter(|l| !generated(l)).collect()
 }
 
-/// Gutter markers from plugins (`line-markers` providers) for `doc`.
+/// Gutter markers of plugin `line-markers` providers for an open document.
+#[command(trust = trusted)]
 pub async fn plugin_line_markers(
     host: &Host,
     window: &str,
@@ -484,6 +490,7 @@ pub async fn plugin_line_markers(
 /// Implementations of the symbols at `positions`, one list per position (the
 /// editor's "is implemented / overridden" gutter markers). Cancel with
 /// `cancel_request(request)`.
+#[command(trust = trusted)]
 pub async fn lsp_implementations(
     host: &Host,
     window: &str,
@@ -553,6 +560,7 @@ pub async fn lsp_implementations(
 /// Refines the implementations `targets` of the method at `pos` to their declarations (Java
 /// dependencies' class files point at the start of the class). Cancel with
 /// `cancel_request(request)`.
+#[command(trust = trusted)]
 pub async fn lsp_implementation_locations(
     host: &Host,
     window: &str,
@@ -568,9 +576,10 @@ pub async fn lsp_implementation_locations(
     result
 }
 
-/// Go to Implementation of the symbol at `pos`. Implementations found before a slower
-/// search for the rest (Java: the project's, before the dependencies') arrive on
-/// `on_partial`; the result has them all. Cancel with `cancel_request(request)`.
+/// Go to Implementation of the symbol at `pos`. Implementations found before a
+/// slower search for the rest arrive on `on_partial`; the result has them all.
+/// Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
 pub async fn lsp_goto_implementation(
     host: &Host,
     window: &str,
@@ -579,6 +588,7 @@ pub async fn lsp_goto_implementation(
     pos: Pos,
     on_partial: super::Channel<Vec<Location>>,
 ) -> IdeResult<Vec<Location>> {
+    // Java: the project's implementations arrive before the dependencies'.
     let lsp = host.project(window)?.lsp.clone();
     let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let result = lsp
@@ -596,6 +606,7 @@ pub async fn lsp_goto_implementation(
 
 /// Contents of a read-only language-server document, including JDT library
 /// classes and disk class files. Cached per project.
+#[command(trust = trusted)]
 pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> IdeResult<VirtualDocument> {
     if uri.starts_with("git-revision:") {
         return crate::ops::vcs::revision_virtual_document(host, window, &uri, None).await;
@@ -603,8 +614,9 @@ pub async fn lsp_virtual_document(host: &Host, window: &str, uri: String) -> Ide
     host.project(window)?.lsp.virtual_document(&uri).await
 }
 
-/// Whether this class belongs to the project's Maven local repository.
+#[command(trust = trusted)]
 pub async fn lsp_can_download_sources(host: &Host, window: &str, uri: String) -> IdeResult<bool> {
+    // Whether this class belongs to the project's Maven local repository.
     let project = host.project(window)?;
     if !project.is_trusted() {
         return Ok(false);
@@ -620,7 +632,7 @@ pub async fn lsp_can_download_sources(host: &Host, window: &str, uri: String) ->
     .await
 }
 
-/// Download with the project's Maven configuration, or attach an archive selected by the user.
+#[command(trust = trusted)]
 pub async fn lsp_library_sources(
     host: &Host,
     window: &str,
@@ -629,6 +641,7 @@ pub async fn lsp_library_sources(
     pos: Pos,
     sources: Option<std::path::PathBuf>,
 ) -> IdeResult<Option<Location>> {
+    // Download with the project's Maven configuration, or attach an archive selected by the user.
     host.require_trust(window)?;
     let project = host.project(window)?;
     let cancel = host.begin_project_request(window, request);
@@ -679,19 +692,21 @@ pub async fn lsp_library_sources(
     result
 }
 
-/// Opens compiled classes through JDT, with project source taking priority on disk.
+#[command(trust = trusted)]
 pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::PathBuf) -> IdeResult<String> {
+    // Opens compiled classes through JDT, with project source taking priority on disk.
     let archive = ide_vfs::split_archive_path(&path);
     host.project(window)?.lsp.java_class_file(&path, archive).await
 }
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Java: without `libraries`, the dependencies and the JDK are not
-/// searched; with it and `project_wide`, those found in the sources arrive on `on_partial` before
+/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
+/// are not searched; with it, those found in the sources arrive on `on_partial` before
 /// the slower search for the rest, and the result has them all. Cancel with
 /// `cancel_request(request)`.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn lsp_references(
     host: &Host,
     window: &str,
@@ -703,6 +718,7 @@ pub async fn lsp_references(
     libraries: bool,
     on_partial: super::Channel<References>,
 ) -> IdeResult<References> {
+    // Java: without `libraries`, the dependencies and the JDK are not searched.
     let project = host.project(window)?;
     let lsp = project.lsp.clone();
     let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
@@ -842,6 +858,7 @@ fn merge_indexed_references(mut server: References, symbol: &crate::plugins::nav
     server
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Vec<Highlight>> {
     let target = position_document(host, window, doc, pos).await?;
     let server = host.project(window)?.lsp.document_highlights(target, pos).await;
@@ -852,6 +869,7 @@ pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos:
     Ok(merge_language_highlights(provider_server(server)?, items))
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_workspace_symbols(
     host: &Host,
     window: &str,
@@ -865,6 +883,7 @@ pub async fn lsp_workspace_symbols(
     result
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_code_actions(
     host: &Host,
     window: &str,
@@ -1018,6 +1037,7 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
+#[command(trust = trusted)]
 pub async fn lsp_code_action_query(
     host: &Host,
     window: &str,
@@ -1038,7 +1058,8 @@ pub async fn lsp_code_action_query(
     Ok(result)
 }
 
-/// Resolves a code action's edit without applying it.
+/// Resolves a code action's edit without applying it (intention preview).
+#[command(trust = trusted)]
 pub async fn lsp_resolve_code_action(
     host: &Host,
     window: &str,
@@ -1056,6 +1077,7 @@ pub async fn lsp_resolve_code_action(
 }
 
 /// Resolves (if needed), applies the edit, then runs the command of a code action.
+#[command(trust = trusted)]
 pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action: CodeAction) -> IdeResult<()> {
     let project = host.project(window)?;
     let action = if action.edit.is_none() && action.command.is_none() {
@@ -1072,7 +1094,7 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
     if let Some(edit) = &action.edit {
         let documents = project.documents.clone();
         let edit = edit.clone();
-        blocking(move || apply_edit(&documents, &edit)).await?;
+        blocking(move || documents.apply_workspace_edit(&edit)).await?;
     }
     open_plugin_action_target(&action, window);
     if let Some(command) = &action.command
@@ -1122,6 +1144,7 @@ async fn is_client_follow_up(
     !provided
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
     if let Some(symbol) = indexed_symbol(host, window, doc, pos).await? {
         let project = host.project(window)?;
@@ -1140,8 +1163,8 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
     host.project(window)?.lsp.prepare_rename(doc, pos).await
 }
 
-/// Computes the rename edit without applying it, so the UI can preview conflicts.
-/// The class at `pos` and the members a class-hierarchy refactoring can move.
+/// The class at `pos` and the members Pull Members Up / Push Members Down can move.
+#[command(trust = trusted)]
 pub async fn lsp_hierarchy_members(
     host: &Host,
     window: &str,
@@ -1157,8 +1180,9 @@ pub async fn lsp_hierarchy_members(
     result
 }
 
-/// Checks a class-hierarchy refactoring and computes its edit without applying it.
+/// Checks Pull Members Up / Push Members Down and computes the edit without applying it.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn lsp_hierarchy_refactor(
     host: &Host,
     window: &str,
@@ -1191,7 +1215,7 @@ pub async fn lsp_hierarchy_refactor(
     .await
 }
 
-/// The signature of the method at `pos`, for Change Signature.
+#[command(trust = trusted)]
 pub async fn lsp_signature_info(
     host: &Host,
     window: &str,
@@ -1199,6 +1223,7 @@ pub async fn lsp_signature_info(
     doc: DocId,
     pos: Pos,
 ) -> IdeResult<MethodSignature> {
+    // The signature of the method at `pos`, for Change Signature.
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
     let result = project.lsp.change_signature_info(doc, pos, cancel).await;
@@ -1206,8 +1231,8 @@ pub async fn lsp_signature_info(
     result
 }
 
-/// Checks changing the method at `pos` to `signature` and computes the edit without applying it.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn lsp_change_signature(
     host: &Host,
     window: &str,
@@ -1218,6 +1243,7 @@ pub async fn lsp_change_signature(
     delegate: bool,
     confirmation: Option<String>,
 ) -> IdeResult<ServerRefactored> {
+    // Checks changing the method at `pos` to `signature` and computes the edit without applying it.
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
@@ -1248,8 +1274,7 @@ fn json_strings(values: Vec<serde_json::Value>) -> Vec<String> {
     values.iter().map(serde_json::Value::to_string).collect()
 }
 
-/// Where a Java Move code action of `kind` can go; `args` (JSON) carries the code action's own
-/// arguments back unchanged, and each destination comes back as JSON.
+#[command(trust = trusted)]
 pub async fn lsp_java_move_destinations(
     host: &Host,
     window: &str,
@@ -1258,6 +1283,8 @@ pub async fn lsp_java_move_destinations(
     kind: String,
     args: String,
 ) -> IdeResult<Vec<String>> {
+    // Where a Java Move code action of `kind` can go; `args` (JSON) carries the code action's own
+    // arguments back unchanged, and each destination comes back as JSON.
     let args = json_argument(&args)?;
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
@@ -1266,7 +1293,7 @@ pub async fn lsp_java_move_destinations(
     result.map(json_strings)
 }
 
-/// The project's Java source types, for moving a member or type into a class.
+#[command(trust = trusted)]
 pub async fn lsp_java_source_types(
     host: &Host,
     window: &str,
@@ -1274,6 +1301,7 @@ pub async fn lsp_java_source_types(
     doc: DocId,
     project_name: Option<String>,
 ) -> IdeResult<Vec<String>> {
+    // The project's Java source types, for moving a member or type into a class.
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
     let result = project.lsp.java_source_types(doc, project_name, cancel).await;
@@ -1281,8 +1309,8 @@ pub async fn lsp_java_source_types(
     result.map(json_strings)
 }
 
-/// Checks a Java move and computes its edit without applying it.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn lsp_java_move(
     host: &Host,
     window: &str,
@@ -1292,6 +1320,7 @@ pub async fn lsp_java_move(
     args: String,
     confirmation: Option<String>,
 ) -> IdeResult<ServerRefactored> {
+    // Checks a Java move and computes its edit without applying it.
     let args = json_argument(&args)?;
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
@@ -1307,7 +1336,7 @@ pub async fn lsp_java_move(
     .await
 }
 
-/// The Java class to extract an interface from: its members and the packages for the interface.
+#[command(trust = trusted)]
 pub async fn lsp_extract_interface_info(
     host: &Host,
     window: &str,
@@ -1315,6 +1344,7 @@ pub async fn lsp_extract_interface_info(
     doc: DocId,
     pos: Pos,
 ) -> IdeResult<ExtractInterfaceInfo> {
+    // The Java class to extract an interface from: its members and the packages for the interface.
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
     let result = project.lsp.extract_interface_info(doc, pos, cancel).await;
@@ -1322,9 +1352,8 @@ pub async fn lsp_extract_interface_info(
     result
 }
 
-/// Checks extracting a Java interface and computes its edit without applying it; `destination`
-/// is one of the info's packages.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn lsp_extract_interface(
     host: &Host,
     window: &str,
@@ -1336,6 +1365,8 @@ pub async fn lsp_extract_interface(
     destination: String,
     confirmation: Option<String>,
 ) -> IdeResult<ServerRefactored> {
+    // Checks extracting a Java interface and computes its edit without applying it; `destination`
+    // is one of the info's packages.
     let destination = json_argument(&destination)?;
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
@@ -1351,6 +1382,8 @@ pub async fn lsp_extract_interface(
     .await
 }
 
+/// Computes the rename edit without applying it, so the UI can preview conflicts.
+#[command(trust = trusted)]
 pub async fn lsp_rename(
     host: &Host,
     window: &str,
@@ -1533,6 +1566,7 @@ fn merge_indexed_rename(
     renamed.edit.deduplicate();
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_format(
     host: &Host,
     window: &str,
@@ -1543,6 +1577,7 @@ pub async fn lsp_format(
     crate::formatter::format(host, window, doc, range, options).await
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
     let lsp = host.project(window)?.lsp.clone();
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::InlayHints) else {
@@ -1562,6 +1597,7 @@ pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range
     Ok(crate::plugins::merge_inlay_hints(server, hints, range))
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<SemanticTokens>> {
     let lsp = host.project(window)?.lsp.clone();
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::SemanticTokens) else {
@@ -1581,6 +1617,7 @@ pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeRe
     Ok(Some(crate::plugins::merge_semantic_tokens(server, tokens)))
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_code_lens(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<CodeLens>> {
     let server = host.project(window)?.lsp.code_lens(doc).await;
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::CodeLenses) else {
@@ -1600,6 +1637,7 @@ pub async fn lsp_code_lens(host: &Host, window: &str, doc: DocId) -> IdeResult<V
 }
 
 /// Links in a document (`href`s, Markdown links, `#include`s…) from its language servers.
+#[command(trust = trusted)]
 pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<DocumentLink>> {
     let server = host.project(window)?.lsp.document_links(doc).await;
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::DocumentLinks) else {
@@ -1630,6 +1668,7 @@ pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeRes
     Ok(out)
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_call_hierarchy(
     host: &Host,
     window: &str,
@@ -1645,6 +1684,7 @@ pub async fn lsp_call_hierarchy(
     result
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_type_hierarchy(
     host: &Host,
     window: &str,
@@ -1655,6 +1695,7 @@ pub async fn lsp_type_hierarchy(
     host.project(window)?.lsp.type_hierarchy(doc, pos, direction).await
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_prepare_type_hierarchy(
     host: &Host,
     window: &str,
@@ -1664,15 +1705,19 @@ pub async fn lsp_prepare_type_hierarchy(
     host.project(window)?.lsp.prepare_type_hierarchy(doc, pos).await
 }
 
+#[command(trust = always)]
 pub fn lsp_servers(host: &Host, window: &str) -> IdeResult<Vec<ServerInfo>> {
     Ok(host.project(window)?.lsp.servers())
 }
 
+/// Re-emits the language servers' current diagnostics (the UI loaded after they arrived).
+#[command(trust = always)]
 pub fn lsp_resend_diagnostics(host: &Host, window: &str) -> IdeResult<()> {
     host.project(window)?.lsp.resend_diagnostics();
     Ok(())
 }
 
+#[command(trust = trusted)]
 pub async fn lsp_restart(host: &Host, window: &str, server: ServerId) -> IdeResult<()> {
     let project = host.project(window)?;
     let java = project.lsp.servers().iter().any(|s| s.id == server && s.name == "jdtls");
@@ -1706,11 +1751,12 @@ pub async fn lsp_restart_named(host: &Host, name: &str) -> IdeResult<()> {
 }
 
 /// Applies a (previewed) workspace edit, e.g. after rename confirmation.
+#[command(trust = always)]
 pub async fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || {
         record_before_multi_file_edit(&project, &edit);
-        apply_edit(&project.documents, &edit)
+        project.documents.apply_workspace_edit(&edit)
     })
     .await
 }
@@ -1741,6 +1787,7 @@ fn record_before_multi_file_edit(project: &crate::Project, edit: &WorkspaceEdit)
     }
 }
 
+#[command(trust = always)]
 pub async fn prepare_workspace_edit(host: &Host, window: &str, mut edit: WorkspaceEdit) -> IdeResult<WorkspaceEdit> {
     let project = host.project(window)?;
     blocking(move || {
@@ -1750,11 +1797,13 @@ pub async fn prepare_workspace_edit(host: &Host, window: &str, mut edit: Workspa
     .await
 }
 
+#[command(trust = always)]
 pub async fn undo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || project.documents.undo_workspace_edit(id)).await
 }
 
+#[command(trust = always)]
 pub async fn redo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || project.documents.redo_workspace_edit(id)).await
@@ -1762,6 +1811,7 @@ pub async fn redo_workspace_edit(host: &Host, window: &str, id: u32) -> IdeResul
 
 /// Runs a server command (`workspace/executeCommand`), e.g. a completion item's
 /// follow-up command. Edits the server requests arrive via `workspace/applyEdit`.
+#[command(trust = trusted)]
 pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command: Command) -> IdeResult<()> {
     if let Some(rest) = command.command.strip_prefix("openidea.plugin-language:") {
         let (plugin, command_id) =
@@ -1832,7 +1882,7 @@ async fn run_plugin_server_command(
     Some(blocking(move || plugins.run_language_command(&plugin, &run, Some(&arguments), invocation)).await)
 }
 
-/// Resolves an interactive command without applying edits or executing it.
+#[command(trust = trusted)]
 pub async fn lsp_resolve_command(
     host: &Host,
     window: &str,
@@ -1842,6 +1892,7 @@ pub async fn lsp_resolve_command(
     command: Command,
     answers: Vec<FormAnswer>,
 ) -> IdeResult<Option<CommandForm>> {
+    // Resolves an interactive command without applying edits or executing it.
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
     let result = lsp.resolve_command(doc, server, command, answers, cancel).await;
@@ -1849,7 +1900,7 @@ pub async fn lsp_resolve_command(
     result
 }
 
-/// Applies an explicitly invoked action after the interactive answers have been validated.
+#[command(trust = trusted)]
 pub async fn lsp_execute_code_action(
     host: &Host,
     window: &str,
@@ -1858,6 +1909,7 @@ pub async fn lsp_execute_code_action(
     action: CodeAction,
     answers: Vec<FormAnswer>,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
+    // Applies an explicitly invoked action after the interactive answers have been validated.
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
     let result = async {
@@ -1869,7 +1921,7 @@ pub async fn lsp_execute_code_action(
         let open = plugin_action_open(&action).map(|(_, path)| path);
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
-            tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
+            tokio::task::spawn_blocking(move || documents.apply_workspace_edit(&edit))
                 .await
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
         }
@@ -1905,6 +1957,7 @@ pub struct PluginLanguageVisuals {
     pub colors: Vec<(String, ide_plugin::language_features::ColorInfo)>,
     pub gutter_actions: Vec<(String, ide_plugin::language_features::GutterAction)>,
 }
+#[command(trust = trusted)]
 pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> IdeResult<PluginLanguageVisuals> {
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
@@ -1941,6 +1994,7 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
     })
     .await
 }
+#[command(trust = trusted)]
 pub async fn plugin_color_presentations(
     host: &Host,
     window: &str,
@@ -1965,234 +2019,9 @@ pub async fn plugin_color_presentations(
     })
     .await
 }
-pub fn plugin_formatters() -> Vec<crate::plugins::language_features::FormatterChoice> {
-    crate::plugins::editor_plugin_host().map(|p| p.formatter_choices()).unwrap_or_default()
-}
-
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add(
-        "plugin_language_visuals",
-        |c| async move { plugin_language_visuals(&c.host, &c.window, c.arg("doc")?).await },
-    );
-    d.add("plugin_color_presentations", |c| async move {
-        plugin_color_presentations(&c.host, &c.window, c.arg("doc")?, c.arg("plugin")?, c.arg("color")?).await
-    });
-    d.add("plugin_formatters", |_c| async move { Ok(plugin_formatters()) });
-    d.add("lsp_completion", |c| async move {
-        lsp_completion(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("trigger")?).await
-    });
-    d.add("lsp_inline_completion", |c| async move {
-        lsp_inline_completion(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("automatic")?)
-            .await
-    });
-    d.add("lsp_resolve_completion", |c| async move {
-        lsp_resolve_completion(&c.host, &c.window, c.arg("doc")?, c.arg("item")?).await
-    });
-    d.add("lsp_hover", |c| async move {
-        lsp_hover(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?).await
-    });
-    d.add("lsp_signature_help", |c| async move {
-        lsp_signature_help(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
-    });
-    d.add(
-        "lsp_goto",
-        |c| async move { lsp_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("kind")?).await },
-    );
-    d.add("lsp_implementations", |c| async move {
-        lsp_implementations(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("positions")?).await
-    });
-    d.add("lsp_goto_implementation", |c| async move {
-        let on_partial = c.sender("onPartial")?;
-        lsp_goto_implementation(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, on_partial).await
-    });
-    d.add("lsp_implementation_locations", |c| async move {
-        lsp_implementation_locations(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("pos")?,
-            c.arg("targets")?,
-        )
-        .await
-    });
-    d.add(
-        "lsp_resolve_class_file",
-        |c| async move { lsp_resolve_class_file(&c.host, &c.window, c.arg("path")?).await },
-    );
-    d.add("lsp_virtual_document", |c| async move { lsp_virtual_document(&c.host, &c.window, c.arg("uri")?).await });
-    d.add(
-        "lsp_can_download_sources",
-        |c| async move { lsp_can_download_sources(&c.host, &c.window, c.arg("uri")?).await },
-    );
-    d.add("lsp_library_sources", |c| async move {
-        lsp_library_sources(&c.host, &c.window, c.arg("request")?, c.arg("uri")?, c.arg("pos")?, c.arg("sources")?)
-            .await
-    });
-    d.add("lsp_references", |c| async move {
-        let on_partial = c.sender("onPartial")?;
-        lsp_references(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("pos")?,
-            c.arg("includeDeclaration")?,
-            c.arg("projectWide")?,
-            c.arg("libraries")?,
-            on_partial,
-        )
-        .await
-    });
-    d.add("lsp_document_highlights", |c| async move {
-        lsp_document_highlights(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
-    });
-    d.add("lsp_workspace_symbols", |c| async move {
-        lsp_workspace_symbols(&c.host, &c.window, c.arg("request")?, c.arg("query")?).await
-    });
-    d.add("lsp_code_actions", |c| async move {
-        lsp_code_actions(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("only")?).await
-    });
-    d.add("lsp_code_action_query", |c| async move {
-        lsp_code_action_query(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("range")?, c.arg("only")?)
-            .await
-    });
-    d.add("lsp_resolve_code_action", |c| async move {
-        lsp_resolve_code_action(&c.host, &c.window, c.arg("doc")?, c.arg("action")?).await
-    });
-    d.add("lsp_apply_code_action", |c| async move {
-        lsp_apply_code_action(&c.host, &c.window, c.arg("doc")?, c.arg("action")?).await
-    });
-    d.add("lsp_prepare_rename", |c| async move {
-        lsp_prepare_rename(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
-    });
-    d.add("lsp_rename", |c| async move {
-        lsp_rename(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("newName")?).await
-    });
-    d.add("lsp_hierarchy_members", |c| async move {
-        lsp_hierarchy_members(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("kind")?).await
-    });
-    d.add("lsp_hierarchy_refactor", |c| async move {
-        lsp_hierarchy_refactor(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("pos")?,
-            c.arg("kind")?,
-            c.arg("target")?,
-            c.arg("choices")?,
-        )
-        .await
-    });
-    d.add("lsp_signature_info", |c| async move {
-        lsp_signature_info(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?).await
-    });
-    d.add("lsp_change_signature", |c| async move {
-        lsp_change_signature(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("pos")?,
-            c.arg("signature")?,
-            c.arg("delegate")?,
-            c.arg("confirmation")?,
-        )
-        .await
-    });
-    d.add("lsp_extract_interface_info", |c| async move {
-        lsp_extract_interface_info(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?).await
-    });
-    d.add("lsp_extract_interface", |c| async move {
-        lsp_extract_interface(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("pos")?,
-            c.arg("members")?,
-            c.arg("name")?,
-            c.arg("destination")?,
-            c.arg("confirmation")?,
-        )
-        .await
-    });
-    d.add("lsp_java_move_destinations", |c| async move {
-        lsp_java_move_destinations(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("kind")?, c.arg("args")?)
-            .await
-    });
-    d.add("lsp_java_source_types", |c| async move {
-        lsp_java_source_types(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("projectName")?).await
-    });
-    d.add("lsp_java_move", |c| async move {
-        lsp_java_move(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("kind")?,
-            c.arg("args")?,
-            c.arg("confirmation")?,
-        )
-        .await
-    });
-    d.add("lsp_format", |c| async move {
-        lsp_format(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("options")?).await
-    });
-    d.add(
-        "lsp_inlay_hints",
-        |c| async move { lsp_inlay_hints(&c.host, &c.window, c.arg("doc")?, c.arg("range")?).await },
-    );
-    d.add("lsp_semantic_tokens", |c| async move { lsp_semantic_tokens(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("lsp_code_lens", |c| async move { lsp_code_lens(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("lsp_document_links", |c| async move { lsp_document_links(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("lsp_call_hierarchy", |c| async move {
-        lsp_call_hierarchy(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?)
-            .await
-    });
-    d.add("lsp_type_hierarchy", |c| async move {
-        lsp_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?).await
-    });
-    d.add("lsp_prepare_type_hierarchy", |c| async move {
-        lsp_prepare_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
-    });
-    d.add("lsp_servers", |c| async move { lsp_servers(&c.host, &c.window) });
-    d.add("lsp_resend_diagnostics", |c| async move { lsp_resend_diagnostics(&c.host, &c.window) });
-    d.add("lsp_restart", |c| async move { lsp_restart(&c.host, &c.window, c.arg("server")?).await });
-    d.add("apply_workspace_edit", |c| async move { apply_workspace_edit(&c.host, &c.window, c.arg("edit")?).await });
-    d.add("lsp_resolve_command", |c| async move {
-        lsp_resolve_command(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("server")?,
-            c.arg("command")?,
-            c.arg("answers")?,
-        )
-        .await
-    });
-    d.add("lsp_execute_code_action", |c| async move {
-        lsp_execute_code_action(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("doc")?,
-            c.arg("action")?,
-            c.arg("answers")?,
-        )
-        .await
-    });
-    d.add(
-        "prepare_workspace_edit",
-        |c| async move { prepare_workspace_edit(&c.host, &c.window, c.arg("edit")?).await },
-    );
-    d.add("redo_workspace_edit", |c| async move { redo_workspace_edit(&c.host, &c.window, c.arg("id")?).await });
-    d.add("undo_workspace_edit", |c| async move { undo_workspace_edit(&c.host, &c.window, c.arg("id")?).await });
-    d.add("lsp_execute_command", |c| async move {
-        lsp_execute_command(&c.host, &c.window, c.arg("doc")?, c.arg("command")?).await
-    });
+#[command(trust = trusted)]
+pub fn plugin_formatters() -> IdeResult<Vec<crate::plugins::language_features::FormatterChoice>> {
+    Ok(crate::plugins::editor_plugin_host().map(|p| p.formatter_choices()).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -2915,3 +2744,60 @@ mod tests {
         assert_eq!(plugin_completion_kind("nonsense"), None);
     }
 }
+
+ide_command::domain!(
+    lsp:
+    apply_workspace_edit,
+    lsp_apply_code_action,
+    lsp_call_hierarchy,
+    lsp_can_download_sources,
+    lsp_change_signature,
+    lsp_code_action_query,
+    lsp_code_actions,
+    lsp_code_lens,
+    lsp_completion,
+    lsp_document_highlights,
+    lsp_document_links,
+    lsp_execute_code_action,
+    lsp_execute_command,
+    lsp_extract_interface,
+    lsp_extract_interface_info,
+    lsp_format,
+    lsp_goto,
+    lsp_goto_implementation,
+    lsp_hierarchy_members,
+    lsp_hierarchy_refactor,
+    lsp_hover,
+    lsp_implementation_locations,
+    lsp_implementations,
+    lsp_inlay_hints,
+    lsp_inline_completion,
+    lsp_java_move,
+    lsp_java_move_destinations,
+    lsp_java_source_types,
+    lsp_library_sources,
+    lsp_prepare_rename,
+    lsp_prepare_type_hierarchy,
+    lsp_references,
+    lsp_rename,
+    lsp_resend_diagnostics,
+    lsp_resolve_class_file,
+    lsp_resolve_code_action,
+    lsp_resolve_command,
+    lsp_resolve_completion,
+    lsp_restart,
+    lsp_semantic_tokens,
+    lsp_servers,
+    lsp_signature_help,
+    lsp_signature_info,
+    lsp_type_hierarchy,
+    lsp_virtual_document,
+    lsp_workspace_symbols,
+    plugin_color_presentations,
+    plugin_formatters,
+    plugin_language_visuals,
+    plugin_line_markers,
+    prepare_workspace_edit,
+    redo_workspace_edit,
+    undo_workspace_edit,
+);

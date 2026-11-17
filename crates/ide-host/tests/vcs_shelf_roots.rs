@@ -56,23 +56,24 @@ async fn check_shelves(layout: &str) {
                 .await
                 .is_err()
         );
-        assert!(vcs::vcs_shelves(&host, "main").unwrap().is_empty());
+        assert!(vcs::vcs_shelves(&host, "main").await.unwrap().is_empty());
     }
     for (i, root) in roots.iter().enumerate() {
         let entry = vcs::vcs_shelve(&host, "main", "work".into(), vec![root.join("src/same.txt")]).await.unwrap();
         assert_eq!(entry.repo.as_deref(), Some(root.as_path()));
         assert_eq!(std::fs::read_to_string(root.join("src/same.txt")).unwrap(), format!("base {i}\n"));
-        let listed = vcs::vcs_shelves(&host, "main").unwrap();
+        let listed = vcs::vcs_shelves(&host, "main").await.unwrap();
         assert_eq!(listed.iter().find(|s| s.id == entry.id).unwrap().repo, entry.repo);
         let diffs = vcs::vcs_shelf_diff(&host, "main", entry.id.clone()).await.unwrap();
         assert_eq!(diffs[0].before.as_deref(), Some(format!("base {i}\n").as_str()));
         assert_eq!(diffs[0].after.as_deref(), Some(format!("shelved {i}\n").as_str()));
-        vcs::vcs_shelf_rename(&host, "main", entry.id.clone(), "renamed".into()).unwrap();
-        let patch = vcs::vcs_shelf_patch(&host, "main", entry.id.clone(), None).unwrap();
+        vcs::vcs_shelf_rename(&host, "main", entry.id.clone(), "renamed".into()).await.unwrap();
+        let patch = vcs::vcs_shelf_patch(&host, "main", entry.id.clone(), None).await.unwrap();
         vcs::vcs_shelf_import(&host, "main", Some(root.clone()), "imported".into(), patch).await.unwrap();
-        let imported = vcs::vcs_shelves(&host, "main").unwrap().into_iter().find(|s| s.name == "imported").unwrap();
+        let imported =
+            vcs::vcs_shelves(&host, "main").await.unwrap().into_iter().find(|s| s.name == "imported").unwrap();
         assert_eq!(imported.repo, entry.repo);
-        vcs::vcs_shelf_delete(&host, "main", imported.id, None).unwrap();
+        vcs::vcs_shelf_delete(&host, "main", imported.id, None).await.unwrap();
         if root != &primary {
             let info = ide_core::project_dir::path(&project_root, "shelf").join(&entry.id).join("shelf.json");
             let original = std::fs::read(&info).unwrap();
@@ -93,7 +94,7 @@ async fn check_shelves(layout: &str) {
             metadata.as_object_mut().unwrap().remove("repo");
             std::fs::write(info, serde_json::to_vec(&metadata).unwrap()).unwrap();
             assert_eq!(
-                vcs::vcs_shelves(&host, "main").unwrap().into_iter().find(|s| s.id == entry.id).unwrap().repo,
+                vcs::vcs_shelves(&host, "main").await.unwrap().into_iter().find(|s| s.id == entry.id).unwrap().repo,
                 entry.repo
             );
             assert_eq!(

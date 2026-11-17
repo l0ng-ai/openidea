@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use ide_core::remote_settings::SshConfiguration;
+use ide_command::desktop_command;
 use ide_core::{IdeEvent, IdeResult};
 use tauri::State;
 
@@ -8,61 +8,8 @@ pub(crate) fn apply_ssh_settings(state: &AppState) {
     state.ssh.set_configs(state.global_settings.effective().ssh.configs);
 }
 
-/// Test Connection: connects with `config` as edited (not necessarily saved).
-#[tauri::command]
-#[specta::specta]
-pub async fn ssh_test(
-    state: State<'_, AppState>,
-    config: SshConfiguration,
-    secret: Option<String>,
-) -> IdeResult<String> {
-    let ssh = state.ssh.clone();
-    ssh.test(&config, secret).await
-}
-
-/// Remembers the password / passphrase of configuration `id` (`None` forgets it).
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_set_secret(state: State<'_, AppState>, id: String, secret: Option<String>, save: bool) {
-    state.ssh.set_secret(&id, secret, save);
-}
-
-/// Whether a password is saved under `key` (an FTP deployment server's).
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_password_saved(state: State<'_, AppState>, key: String) -> bool {
-    state.ssh.password_saved(&key)
-}
-
-/// Whether connecting with configuration `id` needs a password first.
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_needs_secret(state: State<'_, AppState>, id: String) -> IdeResult<bool> {
-    Ok(state.ssh.needs_secret(&state.ssh.config(&id)?))
-}
-
-/// Trusts the host key that failed the last connection of configuration `id`.
-#[tauri::command]
-#[specta::specta]
-pub async fn ssh_trust_host(state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    let ssh = state.ssh.clone();
-    ssh.trust_host(&id).await
-}
-
-/// Ids of the configurations with an open connection.
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_connected(state: State<'_, AppState>) -> Vec<String> {
-    state.ssh.connected()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_disconnect(state: State<'_, AppState>, id: String) {
-    state.ssh.disconnect(&id);
-}
-
 /// Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn ssh_askpass_answer(state: State<'_, AppState>, id: u64, answer: Option<String>, remember: bool) {
@@ -73,6 +20,7 @@ pub fn ssh_askpass_answer(state: State<'_, AppState>, id: u64, answer: Option<St
 }
 
 /// Settings › Git › Saved credentials: `scheme://host` of every saved entry.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn git_credentials(_state: State<'_, AppState>) -> Vec<String> {
@@ -80,6 +28,7 @@ pub fn git_credentials(_state: State<'_, AppState>) -> Vec<String> {
 }
 
 /// Forgets the credential of `key` (a `git_credentials` entry).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn git_credential_forget(_state: State<'_, AppState>, key: String) {
@@ -90,6 +39,7 @@ pub fn git_credential_forget(_state: State<'_, AppState>, key: String) {
 
 /// Tools › Start SSH Session: a shell on configuration `id` in a terminal tab, through the
 /// built-in client with the configuration's saved credentials.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn ssh_open_terminal(
@@ -113,3 +63,5 @@ pub async fn ssh_open_terminal(
     )
     .await
 }
+
+ide_command::desktop_domain!(git_credential_forget, git_credentials, ssh_askpass_answer, ssh_open_terminal,);

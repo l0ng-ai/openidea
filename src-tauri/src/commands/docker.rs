@@ -1,6 +1,7 @@
 //! Services tool window › Docker (`ide-docker`).
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_docker::{
     ComposeOp, ContainerOp, DockerContainerStats, DockerEndpoint, DockerEvent, DockerImageLayer, DockerLogLine,
@@ -26,18 +27,21 @@ async fn cancellable<T: Send + 'static>(
 }
 
 /// Availability plus containers, images, volumes and networks.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_snapshot(endpoint: DockerEndpoint) -> IdeResult<DockerSnapshot> {
     blocking(move || Ok(ide_docker::snapshot(&endpoint))).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_container_op(endpoint: DockerEndpoint, ids: Vec<String>, op: ContainerOp) -> IdeResult<()> {
     blocking(move || ide_docker::container_op(&endpoint, &ids, op)).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_remove(
@@ -50,6 +54,7 @@ pub async fn docker_remove(
 }
 
 /// Pretty-printed `docker inspect` JSON.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_inspect(endpoint: DockerEndpoint, object: DockerObject, id: String) -> IdeResult<String> {
@@ -57,6 +62,7 @@ pub async fn docker_inspect(endpoint: DockerEndpoint, object: DockerObject, id: 
 }
 
 /// Layers of an image (`docker image history`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_image_history(endpoint: DockerEndpoint, id: String) -> IdeResult<Vec<DockerImageLayer>> {
@@ -64,6 +70,7 @@ pub async fn docker_image_history(endpoint: DockerEndpoint, id: String) -> IdeRe
 }
 
 /// Processes running inside a container (`docker top`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_container_top(endpoint: DockerEndpoint, id: String) -> IdeResult<DockerProcessList> {
@@ -71,6 +78,7 @@ pub async fn docker_container_top(endpoint: DockerEndpoint, id: String) -> IdeRe
 }
 
 /// One-shot resource usage snapshot of a running container (`docker stats --no-stream`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_container_stats(endpoint: DockerEndpoint, id: String) -> IdeResult<DockerContainerStats> {
@@ -78,6 +86,7 @@ pub async fn docker_container_stats(endpoint: DockerEndpoint, id: String) -> Ide
 }
 
 /// Streams a container's log lines until it stops or the request is cancelled.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
@@ -100,6 +109,7 @@ pub async fn docker_logs(
 }
 
 /// Follows `docker events` until the daemon goes away or the request is cancelled.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_events(
@@ -117,6 +127,7 @@ pub async fn docker_events(
 }
 
 /// `docker pull`, logging in first when a saved registry with a password serves the image.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_pull(
@@ -136,6 +147,7 @@ pub async fn docker_pull(
     .await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_prune(
@@ -154,6 +166,7 @@ pub async fn docker_prune(
 }
 
 /// `docker compose` start / stop / restart / down of a project found through labels.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
@@ -176,6 +189,7 @@ pub async fn docker_compose_op(
 }
 
 /// Docker connections and registries (app-wide).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_settings(state: State<'_, AppState>) -> IdeResult<DockerSettings> {
@@ -183,6 +197,7 @@ pub async fn docker_settings(state: State<'_, AppState>) -> IdeResult<DockerSett
     blocking(move || Ok(ide_docker::load_settings(&data_dir))).await
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_save_settings(state: State<'_, AppState>, settings: DockerSettings) -> IdeResult<()> {
@@ -191,6 +206,7 @@ pub async fn docker_save_settings(state: State<'_, AppState>, settings: DockerSe
 }
 
 /// Saves (`None`: forgets) a registry's password.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_set_registry_password(
@@ -203,6 +219,7 @@ pub async fn docker_set_registry_password(
 }
 
 /// Test login to `registry` (`password`, else the saved one) through `endpoint`'s daemon.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_registry_login(
@@ -222,13 +239,21 @@ pub async fn docker_registry_login(
     .await
 }
 
-/// Environment for a Docker run configuration's command line: selects `endpoint`'s
-/// daemon and puts the docker executable on `PATH`.
-#[tauri::command]
-#[specta::specta]
-pub async fn docker_run_env(
-    state: State<'_, AppState>,
-    endpoint: DockerEndpoint,
-) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    ide_host::ops::docker::run_env(&state.host, endpoint).await
-}
+ide_command::desktop_domain!(
+    docker_compose_op,
+    docker_container_op,
+    docker_container_stats,
+    docker_container_top,
+    docker_events,
+    docker_image_history,
+    docker_inspect,
+    docker_logs,
+    docker_prune,
+    docker_pull,
+    docker_registry_login,
+    docker_remove,
+    docker_save_settings,
+    docker_set_registry_password,
+    docker_settings,
+    docker_snapshot,
+);

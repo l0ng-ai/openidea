@@ -7,6 +7,7 @@
 
 use crate::Host;
 use crate::project::Project;
+use ide_command::command;
 use ide_core::event::NotifyLevel;
 use ide_core::remote_settings::{RunTarget, RunTargetKind};
 use ide_core::settings::Settings;
@@ -100,7 +101,8 @@ pub(crate) fn library_group(host: &Host, root: &Path, settings: &Settings) -> Op
     snapshots::library_group(name, &dir, &snapshot)
 }
 
-/// The project interpreter when it is a run target's, with its snapshot.
+/// The project interpreter when it is a Docker or Compose run target's, with its snapshot.
+#[command(trust = trusted)]
 pub fn sdk_container_python(host: &Host, window: &str) -> IdeResult<Option<ContainerPython>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -129,9 +131,10 @@ fn describe(host: &Host, root: &Path, settings: &Settings) -> Option<ContainerPy
     Some(out)
 }
 
-/// Takes a new snapshot of the project interpreter's container (also of an image that
-/// has one already), then the language servers pick it up.
+/// Copies the container's Python libraries again (after the image changed).
+#[command(trust = trusted)]
 pub async fn sdk_container_python_refresh(host: &Host, window: &str) -> IdeResult<Option<ContainerPython>> {
+    // A new snapshot even of an image that has one already; the language servers then pick it up.
     host.require_trust(window)?;
     let project = host.project(window)?;
     update(Dirs::of(host), &project, true).await?;
@@ -296,3 +299,5 @@ fn unique() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     format!("{:x}-{}-{}", secs & 0xff_ffff, std::process::id(), COUNT.fetch_add(1, Ordering::Relaxed))
 }
+
+ide_command::domain!(sdk_container_python: sdk_container_python, sdk_container_python_refresh);

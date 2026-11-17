@@ -15,29 +15,42 @@ description: "通信约定：返回 IdeResult 的类型化命令、生成的绑�
 
 ## 命令
 
-命令是 `src-tauri/src/commands/<domain>.rs` 里的一层薄适配：从调用它的窗口解析出项目，调用共享实现（通常在 `ide_host::ops`），返回 `IdeResult<T>`：
+命令只在实现它的函数上声明一次。大多数命令在项目宿主上运行：实现位于 `ide_host::ops`，参数是 `&Host` 和窗口标签而不是 Tauri 类型，并带上 `#[command]`：
 
-```rust src-tauri/src/commands/app.rs
+```rust crates/ide-host/src/ops/bytes.rs
+/// Size and text/binary classification, from the file's head only.
+#[command(trust = always)]
+pub async fn fs_probe(path: PathBuf) -> IdeResult<FileProbe> {
+    blocking(move || ide_vfs::probe(&path)).await
+}
+
+ide_command::domain!(bytes: fs_probe, fs_read_image, fs_read_range);
+```
+
+`src-tauri` 由这处声明生成 Tauri 适配函数和它在 bindings 中的条目，`openidea-server` 由它生成 JSON-RPC 处理函数，所以远程窗口会在服务端运行该命令。函数名就是命令名，它的 `///` 注释就是 bindings 里的文档，除 `&Host` 和 `window: &str` 以外的参数都是命令参数，键名是参数名的 camelCase。新增一个命令：
+
+1. 在对应的 `ide_host::ops` 模块里写函数，并加上 `#[command(trust = …)]`。
+2. 把函数名加到该模块的 `ide_command::domain!` 列表里，它决定命令在 bindings 中的顺序。新模块还要加到 `crates/ide-host/src/ops/mod.rs` 的 `ide_command::domains!` 里。
+
+只有桌面端能运行的命令（需要 `AppHandle`、窗口或对话框之类的 Tauri 类型），仍是 `src-tauri/src/commands/<domain>.rs` 中手写的 Tauri 函数，带上 `#[desktop_command(trust = …)]`，并列在该模块的 `ide_command::desktop_domain!` 里（新模块还要加到 `src-tauri/src/commands/mod.rs` 的 `catalogue()` 里）：
+
+```rust src-tauri/src/commands/clipboard.rs
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub async fn project_trust_set(
-    state: State<'_, AppState>,
-    path: PathBuf,
-    trusted: bool,
-    folder: bool,
-) -> IdeResult<()> {
-    state.host.set_project_trust(&path, trusted, folder).await?;
+pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
     // ...
 }
 ```
 
-新命令要加到 `commands::builder()`（`src-tauri/src/commands/mod.rs`）的 `collect_commands!` 列表里。该模块的约定：
+漏写列表条目，或列表条目没有对应的声明，都会编译失败。`ide-command` 的 crate 文档说明了所有选项。约定：
 
 - 每个命令都返回 `IdeResult<T>`（在 JS 里以 `IdeError` reject）；
+- 每个命令都声明它的[信任级别](/zh/contribute/security)：`always`、`outside_restricted`（没有项目或项目受信任）或 `trusted`；
 - 项目相关的命令从调用窗口解析项目；
 - 流式结果用 `Channel<T>` 参数；可取消的请求接收 UI 分配的 `RequestId`，通过 `cancel_request` 取消。
 
-任何命令执行前，`src-tauri/src/lib.rs` 里的 invoke handler 都会检查[项目信任](/zh/contribute/security)，远程窗口的命令则会被路由到服务端。
+任何命令执行前，`src-tauri/src/lib.rs` 里的 invoke handler 都会用命令的信任级别对照窗口的项目进行检查，远程窗口中项目宿主上的命令则会被路由到服务端。
 
 ### 调用命令
 
@@ -190,12 +203,11 @@ onIdeEvent("projectTrustChanged", (e) => {
 
 ## 远程窗口
 
-远程开发不需要写任何特殊代码。在远程窗口里，`src/platform/remote.ts` 会把服务端能处理的命令经 `remote_invoke` 路由过去；每个 `Channel` 参数被替换成 `{ "$channel": id }`，其值带着 id 传回。事件以 `event` 通知到达，再在本地重新发出。你需要做的是：把实现放在 `ide-host::ops`，并注册到服务端的 `Dispatcher`（`crates/ide-host/src/rpc.rs` 和各 `ops` 模块里的 `d.add("search_start", ...)` 列表），这样服务端才能运行它。见[远程开发](/zh/contribute/architecture/remote)。
+远程开发不需要写任何特殊代码。在远程窗口里，`src/platform/remote.ts` 会把项目宿主上的命令经 `remote_invoke` 路由过去；每个 `Channel` 参数被替换成 `{ "$channel": id }`，其值带着 id 传回。事件以 `event` 通知到达，再在本地重新发出。在 `ide-host::ops` 中用 `#[command]` 声明的命令已经有了服务端处理函数。见[远程开发](/zh/contribute/architecture/remote)。
 
 ## 清单：新增一个命令
 
 1. 逻辑放在所属的 crate 里；在其边界把错误转成 `IdeError`；使用 IPC 坐标。
-2. 如果涉及项目，把共享实现加到 `ide-host::ops::<domain>`；远程窗口需要的话，注册到远程 dispatcher。
-3. 在 `src-tauri/src/commands/<domain>.rs` 添加 `#[tauri::command] #[specta::specta]` 适配函数，并加入 `collect_commands!`。
-4. 决定它的信任级别：在 `restricted_command_allowed`（受限模式下也可运行）或 `projectless_command_allowed`（未打开项目时也可运行）中按完整名称列出它，或者不列出，即需要受信任的项目。没有名称前缀规则；会执行任何东西的命令不要列出。
-5. 运行 `pnpm gen:bindings`，然后用 `call(commands.yourCommand(...))` 调用。它也会重写 `src-tauri/tests/commands.snap`；检查新增的那一行是否是你想要的信任级别和运行位置。
+2. 如果涉及项目，在 `ide-host::ops::<domain>` 中实现，带上 `#[command(trust = …)]`，并加入该模块的 `domain!`。如果只有桌面端能运行，在 `src-tauri/src/commands/<domain>.rs` 中写 Tauri 函数，带上 `#[desktop_command(trust = …)]`，并加入该模块的 `desktop_domain!`。
+3. 选择它的信任级别：`always`（受限模式下也可运行）、`outside_restricted`（未打开项目时也可运行）或 `trusted`。会执行任何东西的命令就是 `trusted`。
+4. 运行 `pnpm gen:bindings`，然后用 `call(commands.yourCommand(...))` 调用。它也会重写 `src-tauri/tests/commands.snap`；检查新增的那一行是否是你想要的信任级别和运行位置。

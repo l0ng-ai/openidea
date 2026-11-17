@@ -2,6 +2,7 @@
 
 use crate::state::AppState;
 use ide_android::{AndroidDevice, LogcatLine};
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use tauri::State;
 use tauri::ipc::Channel;
@@ -11,6 +12,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
 }
 
 /// Devices `adb` knows about, online ones first.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn android_devices() -> IdeResult<Vec<AndroidDevice>> {
@@ -19,6 +21,7 @@ pub async fn android_devices() -> IdeResult<Vec<AndroidDevice>> {
 
 /// Follows `serial`'s log until the request is cancelled, in batches of lines.
 /// `clear` empties the device's buffers first.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn android_logcat(
@@ -38,3 +41,5 @@ pub async fn android_logcat(
     state.end_request(request);
     result
 }
+
+ide_command::desktop_domain!(android_devices, android_logcat);

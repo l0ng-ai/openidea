@@ -15,29 +15,42 @@ All three are typed end to end: Rust types derive `specta::Type`, and tauri-spec
 
 ## Commands
 
-A command is a thin adapter in `src-tauri/src/commands/<domain>.rs`. It resolves the project from the calling window, calls the shared implementation (usually in `ide_host::ops`), and returns `IdeResult<T>`:
+A command is declared once, on the fn that implements it. Most commands run on the project host: their implementation lives in `ide_host::ops`, takes `&Host` and the window label instead of Tauri types, and carries `#[command]`:
 
-```rust src-tauri/src/commands/app.rs
+```rust crates/ide-host/src/ops/bytes.rs
+/// Size and text/binary classification, from the file's head only.
+#[command(trust = always)]
+pub async fn fs_probe(path: PathBuf) -> IdeResult<FileProbe> {
+    blocking(move || ide_vfs::probe(&path)).await
+}
+
+ide_command::domain!(bytes: fs_probe, fs_read_image, fs_read_range);
+```
+
+From that declaration `src-tauri` derives the Tauri adapter and its bindings entry, and `openidea-server` derives its JSON-RPC handler, so a remote window runs the command on its server. The fn's name is the command's name, its `///` lines are the bindings' docs, and its parameters other than `&Host` and `window: &str` are the arguments, keyed by their camelCase names. To add one:
+
+1. Write the fn with `#[command(trust = …)]` in its `ide_host::ops` module.
+2. Add its name to that module's `ide_command::domain!` list, which orders it in the bindings. A new module also goes into `ide_command::domains!` in `crates/ide-host/src/ops/mod.rs`.
+
+A command only the desktop can run, because it needs a Tauri type such as `AppHandle`, a window or a dialog, stays a hand-written Tauri fn in `src-tauri/src/commands/<domain>.rs` with `#[desktop_command(trust = …)]`, listed in that module's `ide_command::desktop_domain!` (a new module also goes into `catalogue()` in `src-tauri/src/commands/mod.rs`):
+
+```rust src-tauri/src/commands/clipboard.rs
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub async fn project_trust_set(
-    state: State<'_, AppState>,
-    path: PathBuf,
-    trusted: bool,
-    folder: bool,
-) -> IdeResult<()> {
-    state.host.set_project_trust(&path, trusted, folder).await?;
+pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
     // ...
 }
 ```
 
-Register new commands in the `collect_commands!` list of `commands::builder()` (`src-tauri/src/commands/mod.rs`). The module's conventions:
+A missing list entry, or a list entry without a declaration, fails to compile. The crate docs of `ide-command` describe every option. The conventions:
 
 - every command returns `IdeResult<T>` (it rejects with `IdeError` in JS);
+- every command declares its [trust class](/en/contribute/security#project-trust-and-restricted-mode): `always`, `outside_restricted` (no project or a trusted one) or `trusted`;
 - project-scoped commands resolve the project from the calling window;
 - streaming results use a `Channel<T>` argument; cancellable requests take a UI-allocated `RequestId` and are cancelled via `cancel_request`.
 
-Before any command runs, the invoke handler in `src-tauri/src/lib.rs` checks [project trust](/en/contribute/security#project-trust-and-restricted-mode) and, for a remote window, routes it to the server.
+Before any command runs, the invoke handler in `src-tauri/src/lib.rs` checks its trust class against the window's project and, for a remote window, routes a project-host command to the server.
 
 ### Calling a command
 
@@ -190,12 +203,11 @@ Long work never blocks the UI thread or a Tauri command thread. Make the command
 
 ## Remote windows
 
-You don't write anything special for remote development. In a remote window, `src/platform/remote.ts` routes the commands the server answers through `remote_invoke`; each `Channel` argument is replaced by `{ "$channel": id }` and its values come back tagged with the id. Events arrive as `event` notifications and are re-emitted locally. What you must do is keep the implementation in `ide-host::ops` and register it with the server's `Dispatcher` (the `d.add("search_start", ...)` lists in `crates/ide-host/src/rpc.rs` and the `ops` modules) so the server can run it. See [Remote development](/en/contribute/architecture/remote).
+You don't write anything special for remote development. In a remote window, `src/platform/remote.ts` routes the project-host commands through `remote_invoke`; each `Channel` argument is replaced by `{ "$channel": id }` and its values come back tagged with the id. Events arrive as `event` notifications and are re-emitted locally. A command declared with `#[command]` in `ide-host::ops` already has its server handler. See [Remote development](/en/contribute/architecture/remote).
 
 ## Checklist: adding a command
 
 1. Put the logic in the owning crate; convert errors to `IdeError` at its edge; use IPC coordinates.
-2. Add the shared implementation to `ide-host::ops::<domain>` if it touches a project; register it with the remote dispatcher if remote windows need it.
-3. Add the `#[tauri::command] #[specta::specta]` adapter in `src-tauri/src/commands/<domain>.rs` and list it in `collect_commands!`.
-4. Decide its trust class: list it by exact name in `restricted_command_allowed` (also in Restricted Mode) or `projectless_command_allowed` (also with no project open), or leave it out to require a trusted project. There are no name prefixes; if it executes anything, leave it out.
-5. `pnpm gen:bindings`, then call it with `call(commands.yourCommand(...))`. It also rewrites `src-tauri/tests/commands.snap`; check that the new line shows the trust class and placement you meant.
+2. If it touches a project, write it in `ide-host::ops::<domain>` with `#[command(trust = …)]` and add it to the module's `domain!`. If only the desktop can run it, write the Tauri fn in `src-tauri/src/commands/<domain>.rs` with `#[desktop_command(trust = …)]` and add it to the module's `desktop_domain!`.
+3. Choose its trust class: `always` (also in Restricted Mode), `outside_restricted` (also with no project open) or `trusted`. If it executes anything, it is `trusted`.
+4. `pnpm gen:bindings`, then call it with `call(commands.yourCommand(...))`. It also rewrites `src-tauri/tests/commands.snap`; check that the new line shows the trust class and placement you meant.

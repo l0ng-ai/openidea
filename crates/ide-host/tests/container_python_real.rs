@@ -101,7 +101,7 @@ async fn compose_target_is_the_python_interpreter() {
     set("runTargets", serde_json::json!([{ "kind": "compose", "id": "web", "name": "Compose web", "service": "web" }]));
 
     // A local interpreter: Django is only in the image.
-    ops::doc::open(&host, WINDOW, main.clone()).await.unwrap();
+    ops::doc::doc_open(&host, WINDOW, main.clone()).await.unwrap();
     let before = diagnostics(&events, &main, Duration::from_secs(120), unresolved).await;
     eprintln!("local interpreter: {before:?}");
 
@@ -140,15 +140,16 @@ async fn compose_target_is_the_python_interpreter() {
         allow_parallel: false,
         extras: Default::default(),
     };
-    ops::run::start(
+    ops::run::run_start(
         &host,
         WINDOW,
         config,
-        Arc::new(move |chunk| match chunk {
+        ide_host::ops::Channel::new(move |chunk| match chunk {
             OutputChunk::Stdout { text } | OutputChunk::Stderr { text } | OutputChunk::System { text } => {
                 sink.lock().unwrap().push_str(&text)
             }
         }),
+        None,
     )
     .await
     .unwrap();
