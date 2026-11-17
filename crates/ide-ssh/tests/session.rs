@@ -226,6 +226,19 @@ async fn password_authentication_and_forwarding() {
 }
 
 #[tokio::test]
+async fn command_tunnel_runs_the_command_per_connection() {
+    let env = env().await;
+    let session = Arc::new(env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap());
+    let tunnel = Tunnel::command(session, "docker system dial-stdio").await.unwrap();
+    for _ in 0..2 {
+        let mut s = TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        assert_eq!(out, "ran: docker system dial-stdio");
+    }
+}
+
+#[tokio::test]
 async fn forwarding_keeps_the_port_number_when_it_is_free() {
     let env = env().await;
     let target = env.target(SshAuth::Password);

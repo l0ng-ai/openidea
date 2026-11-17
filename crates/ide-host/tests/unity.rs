@@ -47,12 +47,12 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
         "include": [], "exclude": [], "scope": { "kind": "project" }, "maxMatches": 100,
     }))
     .unwrap();
-    ops::search::start(
+    ops::search::search_start(
         &host,
         "main",
         RequestId::next(),
         query,
-        Arc::new(move |event| {
+        ops::Channel::new(move |event| {
             if let ops::search::SearchEvent::File { file } = event {
                 out.lock().unwrap().push(file.rel_path);
             }
@@ -61,7 +61,7 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     .await
     .unwrap();
     assert_eq!(*hits.lock().unwrap(), ["Assets/Scripts/Player.cs"]);
-    let listing = ops::fs::read_dir(&host, "main", root.clone()).await.unwrap();
+    let listing = ops::fs::fs_read_dir(&host, "main", root.clone()).await.unwrap();
     assert!(listing.iter().any(|e| e.name == "Library" && e.excluded));
     assert!(project.exclude_globs().contains(&"/Obj".to_owned()));
 
@@ -83,10 +83,10 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     };
     let original_metadata = "fileFormatVersion: 2\nguid: 11111111111111111111111111111111\n";
     std::fs::write(meta(&original), original_metadata).unwrap();
-    ops::fs::rename(&host, "main", original.clone(), renamed.clone()).await.unwrap();
+    ops::fs::fs_rename(&host, "main", original.clone(), renamed.clone()).await.unwrap();
     assert!(!original.exists() && !meta(&original).exists());
     assert_eq!(std::fs::read_to_string(meta(&renamed)).unwrap(), original_metadata);
-    ops::fs::copy(&host, "main", renamed.clone(), copied.clone()).await.unwrap();
+    ops::fs::fs_copy(&host, "main", renamed.clone(), copied.clone()).await.unwrap();
     assert!(copied.exists());
     assert_ne!(std::fs::read_to_string(meta(&copied)).unwrap(), original_metadata);
     assert_eq!(std::fs::read_to_string(meta(&renamed)).unwrap(), original_metadata);

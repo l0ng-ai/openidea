@@ -1,8 +1,10 @@
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
 use std::time::Duration;
 
 /// Installed WSL distros, for the "Connect to WSL" picker. `wsl.exe` can stall while the WSL
 /// service starts, so the wait is bounded.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn wsl_distros() -> IdeResult<Vec<String>> {
@@ -15,8 +17,11 @@ pub async fn wsl_distros() -> IdeResult<Vec<String>> {
 
 /// The WSL project a `\\wsl.localhost\<distro>\…` folder stands for, so the frontend opens it
 /// through the distro and not as a network folder. `None` for any other path.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn wsl_resolve(path: std::path::PathBuf) -> Option<crate::windows::RemoteLaunch> {
     crate::windows::wsl_launch(&path)
 }
+
+ide_command::desktop_domain!(wsl_distros, wsl_resolve);

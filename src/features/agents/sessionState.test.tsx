@@ -2202,7 +2202,7 @@ describe("sessions from other apps", () => {
     fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
     await waitFor(() => expect(screen.getByText("Login fix")).toBeInTheDocument());
     expect(screen.getByText("No agent tasks yet")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Import Sessions from Other Apps…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Import Sessions…" })).toBeNull();
   });
 
   it("keeps two pending imports disabled", async () => {
@@ -2661,7 +2661,7 @@ describe("import sessions dialog", () => {
   it("opens from the empty task list", () => {
     act(() => useAgents.setState({ tasks: new Map() }));
     render(<AgentsView />);
-    fireEvent.click(screen.getByRole("button", { name: "Import Sessions from Other Apps…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import Sessions…" }));
     expect(useAgents.getState().importOpen).toBe(true);
   });
 

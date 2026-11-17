@@ -522,6 +522,14 @@ pub(super) fn wire_mcp_servers(acp_servers: Option<&Value>) -> Option<Value> {
     (!out.is_empty()).then_some(Value::Object(out))
 }
 
+/// Extracts `_meta.openidea.mcpServersOff` into Copilot's `disabledMcpServers` string array.
+pub(super) fn wire_disabled_mcp_servers(params: &Value) -> Option<Value> {
+    let list = params.pointer("/_meta/openidea/mcpServersOff")?.as_array()?;
+    let names: Vec<Value> =
+        list.iter().filter_map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| json!(s))).collect();
+    (!names.is_empty()).then_some(Value::Array(names))
+}
+
 /// Converts `commands.list` + `skills.discover` results into ACP `availableCommands`.
 pub(super) fn available_commands(commands_res: Option<&Value>, skills_res: Option<&Value>) -> Vec<Value> {
     let mut seen = HashSet::new();
@@ -566,6 +574,28 @@ pub(super) fn available_commands(commands_res: Option<&Value>, skills_res: Optio
         }));
     }
     out
+}
+
+/// The running entries of a `session.tasks.list` result, in the background-task shape the
+/// app shows (`task_id`, `task_type`, `description`).
+pub(super) fn background_tasks(list: &Value) -> Vec<Value> {
+    let tasks = list.get("tasks").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    tasks
+        .iter()
+        .filter(|t| matches!(str_of(t, "status"), Some("running" | "idle")))
+        .filter_map(|t| {
+            let id = str_of(t, "id")?;
+            let kind = str_of(t, "type").unwrap_or_default();
+            let task_type = match kind {
+                "shell" => "local_bash",
+                "agent" => "local_agent",
+                other => other,
+            };
+            let description =
+                str_of(t, "description").filter(|d| !d.is_empty()).or_else(|| str_of(t, "command")).unwrap_or(kind);
+            Some(json!({ "task_id": id, "task_type": task_type, "description": description }))
+        })
+        .collect()
 }
 
 fn trim_tail(text: &mut String) {

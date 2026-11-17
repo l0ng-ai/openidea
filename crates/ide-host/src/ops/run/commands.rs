@@ -1,11 +1,10 @@
-#[allow(unused_imports)]
-use super::*;
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_run::RunConfig;
 use ide_run::import::{RunImport, RunImportSource};
 
+#[command(trust = trusted)]
 pub async fn run_dotnet_resolve(host: &Host, window: &str, config: RunConfig, debug: bool) -> IdeResult<RunConfig> {
     host.require_trust(window)?;
     if !matches!(config.kind.as_str(), "dotnet" | "dotnet-test")
@@ -30,6 +29,7 @@ fn application_cache(project: &crate::project::Project, id: &str) -> std::path::
     project.cache_dir.join("application-update").join(format!("{:x}", hash.finish()))
 }
 
+#[command(trust = trusted)]
 pub async fn run_application_build(
     host: &Host,
     window: &str,
@@ -74,6 +74,7 @@ pub async fn run_application_build(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+#[command(trust = trusted)]
 pub async fn run_application_publish(
     host: &Host,
     window: &str,
@@ -96,54 +97,61 @@ pub async fn run_application_publish(
 }
 
 /// Configuration templates: per-type defaults applied to new configurations.
-pub fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
+#[command(trust = trusted)]
+pub async fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let root = host.project(window)?.root.clone();
-    ide_run::load_templates(&root)
+    crate::ops::doc::blocking(move || ide_run::load_templates(&root)).await
 }
 
-pub fn run_save_templates(host: &Host, window: &str, templates: Vec<RunConfig>) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn run_save_templates(host: &Host, window: &str, templates: Vec<RunConfig>) -> IdeResult<()> {
     let root = host.project(window)?.root.clone();
-    ide_run::save_templates(&root, &templates)
+    crate::ops::doc::blocking(move || ide_run::save_templates(&root, &templates)).await
 }
 
 /// Project files run configurations can be imported from (`.vscode/launch.json`).
-pub fn run_import_sources(host: &Host, window: &str) -> IdeResult<Vec<RunImportSource>> {
+#[command(trust = trusted)]
+pub async fn run_import_sources(host: &Host, window: &str) -> IdeResult<Vec<RunImportSource>> {
     let root = host.project(window)?.root.clone();
-    Ok(ide_run::import::available(&root))
+    crate::ops::doc::blocking(move || Ok(ide_run::import::available(&root))).await
 }
 
-/// Configurations read from `source`, not saved; names already in `existing` (the
-/// configurations being edited) are skipped.
-pub fn run_import_configs(
+/// Configurations read from `source`, not saved; names already in `existing` are skipped.
+#[command(trust = trusted)]
+pub async fn run_import_configs(
     host: &Host,
     window: &str,
     source: RunImportSource,
     existing: Vec<RunConfig>,
 ) -> IdeResult<RunImport> {
+    // `existing`: the configurations being edited.
     host.require_trust(window)?;
     let root = host.project(window)?.root.clone();
-    ide_run::import_configs(&root, source, &existing)
+    crate::ops::doc::blocking(move || ide_run::import_configs(&root, source, &existing)).await
 }
 
 /// The environment runs inherit when "Include system environment variables" is on.
-pub fn run_system_env(_host: &Host, _window: &str) -> std::collections::BTreeMap<String, String> {
+#[command(trust = always)]
+pub fn run_system_env() -> std::collections::BTreeMap<String, String> {
     ide_run::system_env()
 }
 
-/// Variables of the `.env` files a debug launch names, in order (later files win):
-/// the same files a run loads, over the system environment debug adapters inherit.
-pub fn run_env_files(
-    _host: &Host,
-    _window: &str,
-    files: Vec<std::path::PathBuf>,
-) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    ide_run::envfile::load(&files, &ide_run::system_env())
-        .map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))
+/// Variables of the `.env` files a debug launch names, for the debugger to start with.
+#[command(trust = trusted)]
+pub async fn run_env_files(files: Vec<std::path::PathBuf>) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    // In order (later files win): the same files a run loads, over the system environment
+    // debug adapters inherit.
+    crate::ops::doc::blocking(move || {
+        ide_run::envfile::load(&files, &ide_run::system_env())
+            .map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))
+    })
+    .await
 }
 
-/// Writes the Gradle init script that adds `jvm_args` to the JVMs the build forks
-/// (`bootRun`, `run`, tests) and returns its path, for `--init-script`.
-pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: Vec<String>) -> IdeResult<String> {
+/// Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path.
+#[command(trust = always)]
+pub async fn run_gradle_jvm_args_script(jvm_args: Vec<String>) -> IdeResult<String> {
+    // The forked JVMs: `bootRun`, `run`, tests; the path is for `--init-script`.
     tokio::task::spawn_blocking(move || {
         ide_run::gradle_jvm::write_init_script(&ide_run::gradle_jvm::default_dir(), &jvm_args)
             .map(|p| p.to_string_lossy().into_owned())
@@ -153,9 +161,10 @@ pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: V
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Writes one of the IDE's Gradle init scripts (`text`; the file is named `<name>-<hash>`) on
-/// the machine that runs the build, for `--init-script`, and returns its path.
-pub async fn run_gradle_init_script(_host: &Host, _window: &str, name: String, text: String) -> IdeResult<String> {
+/// Writes one of the IDE's Gradle init scripts where the build runs; returns its path.
+#[command(trust = trusted)]
+pub async fn run_gradle_init_script(name: String, text: String) -> IdeResult<String> {
+    // `text`; the file is named `<name>-<hash>`, for `--init-script`.
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err(IdeError::invalid(format!("invalid init script name {name:?}")));
     }
@@ -170,6 +179,7 @@ pub async fn run_gradle_init_script(_host: &Host, _window: &str, name: String, t
 
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 /// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
+#[command(trust = trusted)]
 pub async fn run_test_reports(
     host: &Host,
     window: &str,
@@ -184,6 +194,7 @@ pub async fn run_test_reports(
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResult<ide_run::tomcat::TomcatHome> {
     host.require_trust(window)?;
     let root = host.project(window)?.root.clone();
@@ -192,6 +203,7 @@ pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResu
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_installations(
     host: &Host,
     window: &str,
@@ -268,6 +280,7 @@ fn build_project_war(
     Ok(())
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -287,6 +300,7 @@ pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<id
     .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> IdeResult<Option<RunConfig>> {
     host.require_trust(window)?;
     if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
@@ -355,6 +369,7 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mode: String) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -366,8 +381,7 @@ pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mod
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Updates a running Tomcat artifact deployment from the module's compiled output and web
-/// resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
+#[command(trust = trusted)]
 pub async fn run_tomcat_sync(
     host: &Host,
     window: &str,
@@ -376,6 +390,8 @@ pub async fn run_tomcat_sync(
     class_paths: Vec<String>,
     resources_only: bool,
 ) -> IdeResult<bool> {
+    // Updates a running Tomcat artifact deployment from the module's compiled output and web
+    // resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
     host.require_trust(window)?;
     let project = host.project(window)?;
     if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
@@ -395,50 +411,24 @@ pub async fn run_tomcat_sync(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("run_dotnet_resolve", |c| async move {
-        run_dotnet_resolve(&c.host, &c.window, c.arg("config")?, c.arg("debug")?).await
-    });
-    d.add("run_application_build", |c| async move {
-        run_application_build(&c.host, &c.window, c.arg("config")?, c.arg("module")?).await
-    });
-    d.add("run_application_publish", |c| async move {
-        run_application_publish(&c.host, &c.window, c.arg("config")?, c.arg("classPaths")?, c.arg("mainClass")?).await
-    });
-    d.add("run_tomcat_home", |c| async move { run_tomcat_home(&c.host, &c.window, c.arg("home")?).await });
-    d.add("run_tomcat_installations", |c| async move { run_tomcat_installations(&c.host, &c.window).await });
-    d.add("run_tomcat_artifacts", |c| async move { run_tomcat_artifacts(&c.host, &c.window).await });
-    d.add("run_tomcat_build", |c| async move { run_tomcat_build(&c.host, &c.window, c.arg("config")?).await });
-    d.add("run_tomcat_sync", |c| async move {
-        run_tomcat_sync(
-            &c.host,
-            &c.window,
-            c.arg("config")?,
-            c.arg("module")?,
-            c.arg("classPaths")?,
-            c.arg("resourcesOnly")?,
-        )
-        .await
-    });
-    d.add("run_tomcat_update", |c| async move {
-        run_tomcat_update(&c.host, &c.window, c.arg("config")?, c.arg("mode")?).await
-    });
-    d.add("run_templates", |c| async move { run_templates(&c.host, &c.window) });
-    d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?) });
-    d.add("run_import_sources", |c| async move { run_import_sources(&c.host, &c.window) });
-    d.add("run_import_configs", |c| async move {
-        run_import_configs(&c.host, &c.window, c.arg("source")?, c.arg("existing")?)
-    });
-    d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
-    d.add("run_env_files", |c| async move { run_env_files(&c.host, &c.window, c.arg("files")?) });
-    d.add("run_gradle_jvm_args_script", |c| async move {
-        run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
-    });
-    d.add("run_gradle_init_script", |c| async move {
-        run_gradle_init_script(&c.host, &c.window, c.arg("name")?, c.arg("text")?).await
-    });
-    d.add("run_test_reports", |c| async move {
-        run_test_reports(&c.host, &c.window, c.arg("module")?, c.arg("sinceMs")?).await
-    });
-}
+ide_command::domain!(
+    run_commands:
+    run_application_build,
+    run_application_publish,
+    run_dotnet_resolve,
+    run_env_files,
+    run_gradle_init_script,
+    run_gradle_jvm_args_script,
+    run_import_configs,
+    run_import_sources,
+    run_save_templates,
+    run_system_env,
+    run_templates,
+    run_test_reports,
+    run_tomcat_artifacts,
+    run_tomcat_build,
+    run_tomcat_home,
+    run_tomcat_installations,
+    run_tomcat_sync,
+    run_tomcat_update,
+);

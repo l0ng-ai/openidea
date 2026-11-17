@@ -268,7 +268,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         let usage_doc = project.documents.open(&second).unwrap();
         ide_host::plugins::index_ops::plugin_navigation_index(
             &host,
-            plugins.clone(),
+            &plugins,
             "main",
             vec![first.clone(), second.clone()],
             RequestId(100),
@@ -297,7 +297,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         plugins.invalidate_client_navigation(&project.root, Some("main"), Some(std::slice::from_ref(&second)));
         ide_host::plugins::index_ops::plugin_navigation_index(
             &host,
-            plugins.clone(),
+            &plugins,
             "main",
             vec![second.clone()],
             RequestId(102),

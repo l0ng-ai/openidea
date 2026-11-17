@@ -33,7 +33,7 @@ fn host(base: &Path) -> Host {
 async fn find(host: &Host, paths: Vec<PathBuf>, pattern: &str) -> Vec<ide_search::FileMatches> {
     let files = Arc::new(Mutex::new(Vec::new()));
     let found = files.clone();
-    search::start(
+    search::search_start(
         host,
         "main",
         RequestId(519),
@@ -48,7 +48,7 @@ async fn find(host: &Host, paths: Vec<PathBuf>, pattern: &str) -> Vec<ide_search
             max_matches: 0,
             context: Default::default(),
         },
-        Arc::new(move |event| {
+        ide_host::ops::Channel::new(move |event| {
             if let search::SearchEvent::File { file } = event {
                 found.lock().unwrap().push(file);
             }
@@ -91,7 +91,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
     assert_eq!(project.text_of(&path).unwrap(), displayed);
     let closed = find(&host, vec![path.clone()], "target").await;
     let closed_json = serde_json::to_value(&closed).unwrap();
-    let opened = doc::open(&host, "main", path.clone()).await.unwrap();
+    let opened = doc::doc_open(&host, "main", path.clone()).await.unwrap();
     assert_eq!(opened.text, displayed);
     assert_eq!(serde_json::to_value(find(&host, vec![path.clone()], "target").await).unwrap(), closed_json);
     assert_eq!(closed[0].matches[0].ranges, vec![(10, 16)]);
@@ -100,18 +100,19 @@ async fn properties_search_git_and_document_coordinates_agree() {
     assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap().is_empty());
     assert_eq!(vcs::vcs_file_at(&host, "main", path.clone(), None).await.unwrap().as_deref(), Some(displayed));
     assert!(vcs::vcs_blame(&host, "main", path.clone(), None, None).await.unwrap().iter().all(|l| l.author == "Test"));
-    doc::edit(
+    doc::doc_edit(
         &host,
         "main",
         opened.id,
         opened.version,
         ChangeSet { changes: vec![TextChange { from: 10, to: 16, insert: r"\u4E16\u754C".into() }] },
     )
+    .await
     .unwrap();
     let hunks = vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap();
     assert_eq!(hunks.len(), 1);
     assert_eq!(hunks[0].old_text, "hello=你好😀target\n");
-    doc::save(&host, "main", opened.id).await.unwrap();
+    doc::doc_save(&host, "main", opened.id).await.unwrap();
     let saved = std::fs::read(&path).unwrap();
     assert!(saved.is_ascii());
     assert!(String::from_utf8(saved.clone()).unwrap().contains(r"\u4F60\u597D\uD83D\uDE00\u4E16\u754C"));
@@ -126,13 +127,13 @@ async fn properties_search_git_and_document_coordinates_agree() {
     repo.unstage(std::slice::from_ref(&path)).unwrap();
     let snap = project.documents.snapshot(opened.id).unwrap();
     project.documents.replace_all(opened.id, displayed).unwrap();
-    doc::save(&host, "main", opened.id).await.unwrap();
+    doc::doc_save(&host, "main", opened.id).await.unwrap();
     assert!(project.documents.snapshot(opened.id).unwrap().version > snap.version);
     assert!(vcs::vcs_line_hunks(&host, "main", path.clone()).await.unwrap().is_empty());
     // Partial commits identify hunks in displayed line coordinates as well.
     let partial_text = displayed.replace("target", r"\u4E16\u754C").replace("logical", "changed");
     project.documents.replace_all(opened.id, &partial_text).unwrap();
-    doc::save(&host, "main", opened.id).await.unwrap();
+    doc::doc_save(&host, "main", opened.id).await.unwrap();
     let hunks = ide_vcs::diff_hunks(displayed, &partial_text);
     assert_eq!(hunks.len(), 2);
     let selected = &hunks[0];

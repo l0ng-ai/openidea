@@ -1671,6 +1671,17 @@ fn session_mcp_servers_become_thread_configuration() {
             json!({"mcp_servers":{"OpenIDEA":{"command":"/app/openidea","args":["--mcp-stdio","--project","/project"],"env":{"K":"V"}}}})
         )
     );
+    let external = std::collections::BTreeSet::from(["linear".to_owned()]);
+    assert_eq!(
+        super::translate::mcp_config_with_external(
+            &json!({
+                "mcpServers": [],
+                "_meta": { "openidea": { "mcpServersOff": ["linear", "not-in-codex"] } }
+            }),
+            &external,
+        ),
+        Some(json!({ "mcp_servers": { "linear": { "enabled": false } } }))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

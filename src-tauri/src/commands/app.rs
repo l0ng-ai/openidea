@@ -1,6 +1,7 @@
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::settings::Settings;
-use ide_core::{EventSink, IdeError, IdeResult, RequestId, TaskId};
+use ide_core::{EventSink, IdeError, IdeResult};
 use ide_language::LanguageInfo;
 use ide_workspace::settings::SettingsScope;
 use ide_workspace::{RecentProject, RecentProjectGroup};
@@ -26,6 +27,7 @@ pub struct AppInfo {
 
 pub use ide_host::ops::project::ProjectInfo;
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_info(state: State<'_, AppState>) -> AppInfo {
@@ -49,6 +51,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn recent_projects(app: tauri::AppHandle) -> Vec<RecentProject> {
@@ -62,6 +65,7 @@ pub async fn recent_projects(app: tauri::AppHandle) -> Vec<RecentProject> {
     }
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
@@ -71,6 +75,7 @@ pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeRe
 }
 
 /// The welcome screen's project groups.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn recent_project_groups(state: State<'_, AppState>) -> Vec<RecentProjectGroup> {
@@ -79,6 +84,7 @@ pub fn recent_project_groups(state: State<'_, AppState>) -> Vec<RecentProjectGro
 
 /// Replaces the project groups; returns them as saved (names trimmed and unique, each
 /// project in one group, only recent projects).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn set_recent_project_groups(
@@ -88,9 +94,7 @@ pub fn set_recent_project_groups(
     state.recent.set_groups(groups)
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInfo> {
+pub(crate) async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInfo> {
     // Opening touches the disk (index cache, watcher, git): keep it off the async runtime threads.
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
@@ -111,6 +115,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
 
 /// Edits the loose file `path` in this window without a project (LightEdit);
 /// a window already in LightEdit keeps its files. Returns the effective (global) settings.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Settings> {
@@ -129,6 +134,7 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
 
 /// LightEdit without a file (File › New File from a welcome window); returns
 /// the effective (global) settings.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn light_edit_open_untitled(window: Window) -> IdeResult<Settings> {
@@ -160,6 +166,7 @@ fn project_info(project: &crate::state::Project) -> ProjectInfo {
 
 /// File › Rename Project…: the project's display name (title bar, recent
 /// projects); an empty `name` restores the folder name. Stored in the project's settings.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<ProjectInfo> {
@@ -181,9 +188,8 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
 }
 
 // Not on the main thread: closing stops the project's language servers, runs and file watcher.
-#[tauri::command(async)]
-#[specta::specta]
-pub fn close_project(window: Window, state: State<'_, AppState>) {
+pub(crate) fn close_project(window: Window) {
+    let state = window.state::<AppState>();
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
     state.close_project(window.label());
@@ -193,6 +199,7 @@ pub fn close_project(window: Window, state: State<'_, AppState>) {
     });
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
@@ -201,28 +208,23 @@ pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
     state.languages.all().iter().map(LanguageInfo::from).collect()
 }
 
-/// Effective settings for the window's project, or global settings without one.
-#[tauri::command]
-#[specta::specta]
-pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
+pub(crate) fn settings_get(window: Window) -> Settings {
+    let state = window.state::<AppState>();
     state.note_ipc();
-    ide_host::ops::project::settings(&state.host, window.label())
+    ide_host::ops::project::settings_get(&state.host, window.label())
 }
 
 /// Defaults plus the global layer, without any project's values: what new
 /// projects (and projects without their own value) get.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
     state.host.with_proxy_password(state.global_settings.effective())
 }
 
-/// The removed built-in theme id a settings file of this window still names, if any:
-/// `settings_get` reports the built-in that stands in for it, so the notice about
-/// a theme that moved to a plugin can address the installs it concerns.
-#[tauri::command]
-#[specta::specta]
-pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Option<String> {
+pub(crate) fn settings_removed_theme(window: Window) -> Option<String> {
+    let state = window.state::<AppState>();
     state.note_ipc();
     ide_host::ops::project::settings_removed_theme(&state.host, window.label())
 }
@@ -230,15 +232,8 @@ pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Opt
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 /// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 /// re-reads its effective settings.
-#[tauri::command]
-#[specta::specta]
-pub fn settings_set(
-    window: Window,
-    app: tauri::AppHandle,
-    scope: SettingsScope,
-    key: String,
-    value: String,
-) -> IdeResult<Settings> {
+pub(crate) fn settings_set(window: Window, scope: SettingsScope, key: String, value: String) -> IdeResult<Settings> {
+    let app = window.app_handle().clone();
     let window = window.label().to_owned();
     // The merge validates its result by deserializing the whole `Settings`, which needs
     // ~250 KiB of stack in a debug build (measured by bisecting a thread's stack size; the
@@ -287,6 +282,7 @@ fn settings_set_now(
 
 /// File › Manage IDE Settings › Export Settings…: the global settings plus the
 /// frontend's IDE-level `storage` (live / file templates, macros) to `path`.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_export(
@@ -308,6 +304,7 @@ pub struct SettingsImport {
 }
 
 /// Import Settings…: replaces the global settings with the file's; every window re-reads them.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_import(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<SettingsImport> {
@@ -326,12 +323,13 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     state.host.apply_proxy();
     state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
-    let settings = ide_host::ops::project::settings(&state.host, window.label());
+    let settings = ide_host::ops::project::settings_get(&state.host, window.label());
     Ok(SettingsImport { settings, storage })
 }
 
 /// Import Settings… with a JetBrains `settings.zip` or an IDE's settings folder: reads it; the
 /// frontend maps and applies it.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::settings::JetBrainsSettings> {
@@ -341,6 +339,7 @@ pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::
 }
 
 /// The settings folders of the JetBrains IDEs installed for this user, to import from.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::intellij::InstalledIdeSettings>> {
@@ -349,33 +348,9 @@ pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Effective source / test / resource / excluded roots of the window's project:
-/// auto-detected from build files, overridden by Settings › Project Structure.
-#[tauri::command]
-#[specta::specta]
-pub fn project_roots(window: Window, state: State<'_, AppState>) -> IdeResult<ide_workspace::ProjectRoots> {
-    ide_host::ops::project::roots(&state.host, window.label())
-}
-
-/// The project open in this window (a settings window: its parent's), if any.
-#[tauri::command]
-#[specta::specta]
-pub fn project_current(window: Window, state: State<'_, AppState>) -> Option<ProjectInfo> {
+pub(crate) fn project_current(window: Window) -> Option<ProjectInfo> {
+    let state = window.state::<AppState>();
     state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn cancel_request(state: State<'_, AppState>, id: RequestId) {
-    state.cancel_request(id);
-}
-
-/// Stops a background task the backend reported with `cancellable` set; false when it
-/// has ended or can't be cancelled.
-#[tauri::command]
-#[specta::specta]
-pub fn cancel_task(id: TaskId) -> bool {
-    ide_core::task::cancel(id)
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -388,6 +363,7 @@ pub enum LogLevel {
 }
 
 /// Routes frontend logs into the backend `tracing` pipeline.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn log_frontend(level: LogLevel, message: String) {
@@ -399,26 +375,8 @@ pub fn log_frontend(level: LogLevel, message: String) {
     }
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn project_trust_status(state: State<'_, AppState>, path: PathBuf) -> IdeResult<ide_host::trust::TrustStatus> {
-    state.trust.status(&path)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn project_trust_list(state: State<'_, AppState>) -> IdeResult<ide_host::trust::TrustDecisions> {
-    state.trust.decisions()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn project_trust_set(
-    state: State<'_, AppState>,
-    path: PathBuf,
-    trusted: bool,
-    folder: bool,
-) -> IdeResult<()> {
+pub(crate) async fn project_trust_set(window: Window, path: PathBuf, trusted: bool, folder: bool) -> IdeResult<()> {
+    let state = window.state::<AppState>();
     state.host.set_project_trust(&path, trusted, folder).await?;
     if !trusted {
         state.plugins.restrict_project(&dunce::canonicalize(&path).unwrap_or(path));
@@ -426,6 +384,7 @@ pub async fn project_trust_set(
     Ok(())
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
@@ -433,9 +392,8 @@ pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBu
     state.host.refresh_project_trust().await
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn project_trust_remove_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+pub(crate) async fn project_trust_remove_location(window: Window, path: PathBuf) -> IdeResult<()> {
+    let state = window.state::<AppState>();
     state.trust.remove_location(&path)?;
     state.host.refresh_project_trust().await?;
     for project in state.host.projects().into_iter().filter(|p| !p.is_trusted()) {
@@ -443,3 +401,22 @@ pub async fn project_trust_remove_location(state: State<'_, AppState>, path: Pat
     }
     Ok(())
 }
+
+ide_command::desktop_domain!(
+    app_info,
+    languages,
+    light_edit_open,
+    light_edit_open_untitled,
+    log_frontend,
+    project_rename,
+    project_trust_add_location,
+    recent_project_groups,
+    recent_projects,
+    remove_recent_project,
+    set_recent_project_groups,
+    settings_export,
+    settings_get_global,
+    settings_import,
+    settings_list_jetbrains_ides,
+    settings_read_jetbrains,
+);

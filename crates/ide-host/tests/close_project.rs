@@ -40,9 +40,12 @@ fn closing_a_project_closes_its_terminals_and_keeps_other_windows() {
         }));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
-        let project_shell =
-            ops::term::spawn(&host, "main", options(&root), Arc::new(|_| {})).expect("project terminal");
-        let other_shell = ops::term::spawn(&host, "other", options(&root), Arc::new(|_| {})).expect("other terminal");
+        let project_shell = ops::term::term_spawn(&host, "main", options(&root), ops::Channel::new(|_| {}))
+            .await
+            .expect("project terminal");
+        let other_shell = ops::term::term_spawn(&host, "other", options(&root), ops::Channel::new(|_| {}))
+            .await
+            .expect("other terminal");
         assert_eq!(host.terminals.list().len(), 2);
 
         host.close_project("main");
