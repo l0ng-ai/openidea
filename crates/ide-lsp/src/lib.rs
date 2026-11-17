@@ -33,6 +33,7 @@ mod tsserver_bridge;
 pub mod types;
 mod uri;
 mod virtual_doc;
+mod xml_catalog;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
@@ -3202,6 +3203,9 @@ impl LspManager {
         }
         if cfg.name == compose::SERVER {
             compose::configure_yaml_compose_schemas(&mut cfg, &self.open_compose_files());
+        }
+        if cfg.name == xml_catalog::SERVER {
+            xml_catalog::configure_lemminx_catalogs(&mut cfg);
         }
         cfg
     }
