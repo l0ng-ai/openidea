@@ -98,7 +98,7 @@ import {
   type DiffViewerHost,
   type DiffViewerPane,
 } from "./diffViewerProviders";
-import { UnalignedPanes } from "./diffScroll";
+import { PaddedPanes, UnalignedPanes, type DiffPanes } from "./diffScroll";
 import { groupOf } from "./changes";
 import { inclusionGutter } from "./hunkInclusion";
 import { hunksOverlapping } from "./hunks";
@@ -115,8 +115,8 @@ interface Views {
   b: EditorView;
   a: EditorView | null;
   merge: MergeView | null;
-  /** Unpadded side-by-side panes with synchronized scrolling (IDEA). */
-  panes: UnalignedPanes | null;
+  /** The panes' scroll machinery: unpadded panes sync through the changes, padded ones copy their scroll. */
+  panes: DiffPanes | null;
   destroy(): void;
 }
 
@@ -579,15 +579,20 @@ export function DiffEditor({
     let views: Views;
     if (viewMode === "split") {
       let merge: MergeView | null = null;
-      const panes = aligned
+      // Every split diff but a fitted block scrolls its panes themselves: a content-tall
+      // pane would render its horizontal scrollbar at the content's end, out of reach
+      // until the diff is scrolled there. The padded panes copy their scroll instead.
+      const panes: DiffPanes | null = fit
         ? null
-        : new UnalignedPanes({
-            sync: syncScroll.current,
-            arrows:
-              editableA || editableB
-                ? { toA: editableA, toB: editableB, apply: (i, source) => merge && applyChunk(merge, i, source) }
-                : undefined,
-          });
+        : aligned
+          ? new PaddedPanes(syncScroll.current)
+          : new UnalignedPanes({
+              sync: syncScroll.current,
+              arrows:
+                editableA || editableB
+                  ? { toA: editableA, toB: editableB, apply: (i, source) => merge && applyChunk(merge, i, source) }
+                  : undefined,
+            });
       // IDEA's colouring: lines by chunk type, carried into the gutters, and typed word highlights.
       const colours = [
         changedLineGutters,
@@ -600,8 +605,8 @@ export function DiffEditor({
           extensions: [
             side(attached.a, editableA, "left"),
             colours,
-            // Aligned panes scroll together: one stripe, on the right (as IDEA's shared scrollbar).
-            panes ? diffOverview("split") : [],
+            // A fitted block keeps one stripe, on the right (as IDEA's shared scrollbar).
+            fit ? [] : diffOverview("split"),
             panes?.extension ?? [],
             focusTracker("a"),
             findWatch("a"),
@@ -614,7 +619,7 @@ export function DiffEditor({
           extensions: [
             side(attached.b, editableB, "right"),
             colours,
-            diffOverview(panes ? "split" : "aligned"),
+            diffOverview("split"),
             panes?.extension ?? [],
             listener,
             focusTracker("b"),
@@ -651,7 +656,7 @@ export function DiffEditor({
       };
       if (scrollTop != null)
         requestAnimationFrame(() => {
-          // The left pane of unpadded panes follows by itself.
+          // A fitted block scrolls on the merge view; the panes scroll themselves.
           if (!panes) (mv.dom as HTMLElement).scrollTop = scrollTop;
           else mv.b.scrollDOM.scrollTop = scrollTop;
         });
@@ -737,6 +742,7 @@ export function DiffEditor({
     lang,
     viewMode,
     single,
+    fit,
     aligned,
     opts.collapse,
     opts.ignore,
@@ -756,29 +762,34 @@ export function DiffEditor({
   useEffect(() => {
     const views = viewsRef.current;
     if (!views) return;
-    // Aligned panes scroll in MergeView's outer element, which scrollSnapshot does not cover.
-    // A fitted block has no scroller of its own: anchoring would scroll the all-in-one diff.
-    const outer = !fit && views.merge && !views.panes ? views.merge.dom : null;
-    const top = outer?.getBoundingClientRect().top;
-    const block = top == null ? null : views.b.lineBlockAtHeight(Math.max(0, top - views.b.documentTop));
-    const anchor =
-      block && top != null
-        ? EditorView.scrollIntoView(block.from, { y: "start", yMargin: block.top + views.b.documentTop - top })
-        : null;
+    // Padded panes (an aligned split) re-insert MergeView's alignment spacers on their next measure,
+    // after the wrap reflow, so a scroll snapshot drifts: anchor each pane to its visible line and
+    // re-apply once the spacers land. Unaligned panes have no spacers; a fitted block has no scroller.
+    const panes = views.panes instanceof PaddedPanes ? views.panes : null;
+    const anchorFor = (view: EditorView) => {
+      const top = view.scrollDOM.getBoundingClientRect().top;
+      const block = view.lineBlockAtHeight(Math.max(0, top - view.documentTop));
+      return EditorView.scrollIntoView(block.from, { y: "start", yMargin: block.top + view.documentTop - top });
+    };
+    const anchors = panes ? { a: views.a ? anchorFor(views.a) : null, b: anchorFor(views.b) } : null;
+    // The re-anchored right pane leads the sync: the left pane's delayed reflow follows it rather than
+    // being read as a user scroll that pulls the right pane back to where it was.
+    if (anchors) panes?.leadScroll("b");
     for (const view of [views.a, views.b]) {
-      if (view)
-        view.dispatch({
-          effects: [
-            wrapSlot.reconfigure(softWrap ? EditorView.lineWrapping : []),
-            ...(outer ? (view === views.b && anchor ? [anchor] : []) : [view.scrollSnapshot()]),
-          ],
-        });
+      if (!view) continue;
+      const anchor = anchors ? (view === views.a ? anchors.a : anchors.b) : view.scrollSnapshot();
+      view.dispatch({
+        effects: [wrapSlot.reconfigure(softWrap ? EditorView.lineWrapping : []), ...(anchor ? [anchor] : [])],
+      });
     }
     // MergeView inserts alignment spacers on its next measure, after the panes have reflowed.
-    if (anchor) {
+    if (anchors) {
       let frame = requestAnimationFrame(() => {
         frame = requestAnimationFrame(() => {
-          if (viewsRef.current === views) views.b.dispatch({ effects: anchor });
+          if (viewsRef.current !== views) return;
+          panes?.leadScroll("b");
+          if (views.a && anchors.a) views.a.dispatch({ effects: anchors.a });
+          views.b.dispatch({ effects: anchors.b });
         });
       });
       return () => cancelAnimationFrame(frame);
@@ -1630,7 +1641,7 @@ export function DiffEditor({
         className={clsx(
           styles.host,
           opts.highlight === "none" && styles.noHighlight,
-          viewMode === "split" && !aligned && styles.unaligned,
+          viewMode === "split" && !fit && styles.paneScroll,
         )}
         hidden={!!binary || !!error || !ready}
         aria-label={diffTitle(data)}
