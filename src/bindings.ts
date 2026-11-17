@@ -3583,6 +3583,8 @@ export type CommitSettings = {
 	 *  `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
 	 */
 	doubleClickOpensDiff?: boolean | null,
+	/**  Team conventions for Generate Commit Message with Agent, added to its prompt. */
+	agentInstructions?: string,
 };
 
 export type Commit_Deserialize = {
