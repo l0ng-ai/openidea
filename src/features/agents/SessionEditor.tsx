@@ -33,7 +33,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { isSameOrInside } from "@/platform/paths";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { notifications, useEditorShown, useToolWindowShown, type EditorInput } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import {
   Button,
@@ -150,7 +150,7 @@ import {
   useAgentCommands,
   useAgents,
 } from "./store";
-import { setFocusedSession, focusedSession, type FocusedSession } from "./sessionFocus";
+import { setFocusedSession, focusedSession, registerReachableSession, type FocusedSession } from "./sessionFocus";
 import { taskMenu } from "./taskActions";
 import styles from "./Session.module.css";
 
@@ -225,7 +225,10 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const { fitWindowWidth } = useAgentSettings();
   const sessionRoot = useRef<HTMLDivElement>(null);
   const { fontZoom, zoomStyle } = useAgentFontZoomSurface(sessionRoot, sessionKey(id), docked, !!task);
-  const canFocusInput = shown && !!task && task.status !== "archived" && !view;
+  // A docked task is on screen while its tool window is; a tab's own `shown` is its editor slot's.
+  const toolWindowShown = useToolWindowShown();
+  const onScreen = docked ? toolWindowShown : shown;
+  const canFocusInput = onScreen && !!task && task.status !== "archived" && !view;
   const session = useMemo<FocusedSession>(
     () => ({
       openFind: () => {
@@ -247,6 +250,9 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       if (focusedSession() === session) setFocusedSession(null);
     };
   }, [session, shown]);
+  useLayoutEffect(() => {
+    if (session.focusInput) return registerReachableSession(session);
+  }, [session]);
   if (!task) return <EmptyState title="This agent task no longer exists" />;
   return (
     <div

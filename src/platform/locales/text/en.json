@@ -1535,7 +1535,7 @@
   "Close Agent Task": "Close Agent Task",
   "Close and New Agent Task": "Close and New Agent Task",
   "Focus Agent Input": "Focus Agent Input",
-  "Focuses the message input of the current agent task without moving the caret.": "Focuses the message input of the current agent task without moving the caret.",
+  "Focuses the message input of the current agent task, or of the one on screen when focus is elsewhere and no panel claims the shortcut, without moving the caret.": "Focuses the message input of the current agent task, or of the one on screen when focus is elsewhere and no panel claims the shortcut, without moving the caret.",
   "Cycle Agent Effort": "Cycle Agent Effort",
   "Cycles the current model's supported effort levels without changing the message.": "Cycles the current model's supported effort levels without changing the message.",
   "Effort: {level}": "Effort: {level}",

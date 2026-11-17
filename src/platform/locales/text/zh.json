@@ -4164,7 +4164,7 @@
   "Close Agent Task": "关闭 Agent 任务",
   "Close and New Agent Task": "关闭并新建 Agent 任务",
   "Focus Agent Input": "聚焦 Agent 输入框",
-  "Focuses the message input of the current agent task without moving the caret.": "聚焦当前 Agent 任务的消息输入框，不移动光标。",
+  "Focuses the message input of the current agent task, or of the one on screen when focus is elsewhere and no panel claims the shortcut, without moving the caret.": "聚焦当前 Agent 任务的消息输入框；焦点在其他位置且没有面板占用该快捷键时，聚焦屏幕上显示的任务的输入框。不移动光标。",
   "Cycle Agent Effort": "循环切换 Agent 思考强度",
   "Cycles the current model's supported effort levels without changing the message.": "循环切换当前模型支持的思考强度，不改变消息内容。",
   "Effort: {level}": "思考强度：{level}",
