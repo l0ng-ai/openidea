@@ -2435,5 +2435,12 @@
   "Instructions for Generate Commit Message with Agent": "Instructions for Generate Commit Message with Agent",
   "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.": "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.",
   "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.",
-  "Choose Include Path": "Choose Include Path"
+  "Choose Include Path": "Choose Include Path",
+  "direnv is not installed": "direnv is not installed",
+  "This project has an .envrc. Install direnv so terminals, run configurations and language servers get its environment, then reload the environment.": "This project has an .envrc. Install direnv so terminals, run configurations and language servers get its environment, then reload the environment.",
+  "The project's .envrc is blocked": "The project's .envrc is blocked",
+  "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.": "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.",
+  "Could not load the direnv environment": "Could not load the direnv environment",
+  "{file} changed": "{file} changed",
+  "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.": "Reload the environment so new terminals, runs and language servers get the project's direnv environment again."
 }

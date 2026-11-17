@@ -340,6 +340,36 @@ fn env_files_system_env_and_redirects() {
 }
 
 #[test]
+fn runs_get_the_project_environment_and_its_programs() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = harness();
+    let root = h.root.path();
+    // A Nix devshell's tool, on the project's `PATH` only.
+    let devshell = tempfile::tempdir().unwrap();
+    let tool = devshell.path().join("openidea-devshell-tool");
+    std::fs::write(&tool, "#!/bin/sh\nprintf 'tool:%s' \"$OPENIDEA_TEST_DEVSHELL\"\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(devshell.path().to_path_buf()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    ide_core::project_env::set(
+        root,
+        vec![("PATH".into(), Some(path)), ("OPENIDEA_TEST_DEVSHELL".into(), Some("loaded".into()))],
+    );
+    let mut config = cfg("t:devshell", "openidea-devshell-tool", &[]);
+    config.extras.include_system_env = true;
+    assert_eq!(ide_run::resolved_env(root, &config).unwrap().get("OPENIDEA_TEST_DEVSHELL").unwrap(), "loaded");
+    for pty in [false, true] {
+        config.extras.emulate_terminal = pty;
+        let (id, chunks) = start(&h, &config);
+        assert_eq!(wait_exit(&h, id, Duration::from_secs(10)), Some(0), "pty: {pty}");
+        assert!(wait_for(&chunks, "tool:loaded").contains("tool:loaded"), "pty: {pty}");
+    }
+    ide_core::project_env::remove(root);
+}
+
+#[test]
 fn emulated_terminal_is_a_tty_with_input_resize_and_exit_code() {
     let h = harness();
     let script = "[ -t 1 ] && echo tty-yes; echo \"term=$TERM\"; read line; echo \"got:$line\"; stty size; exit 3";

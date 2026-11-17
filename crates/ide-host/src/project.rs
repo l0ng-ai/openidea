@@ -108,6 +108,9 @@ impl Host {
         let trusted = Arc::new(AtomicBool::new(self.trust.window_trusted(&root)?));
         let post_start =
             trusted.load(Ordering::Acquire).then(|| self.environment.project_opened(&root, &sink)).flatten();
+        if trusted.load(Ordering::Acquire) {
+            self.environment.direnv_opened(&root, &sink);
+        }
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
         let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
@@ -386,6 +389,14 @@ impl Host {
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
                     if composer_changed(&root, changed.iter().chain(&batch.removed)) {
                         lsp.reconfigure_soon();
+                    }
+                    // Not while loading: a first `use flake` may write `flake.lock` itself.
+                    if trusted.load(Ordering::Acquire)
+                        && !ide_core::project_env::is_loading(&root)
+                        && let Some(file) = crate::direnv::reload_offer(&root, changed.iter().chain(&batch.removed))
+                    {
+                        let status = ide_core::event::DirenvStatus::Changed { file };
+                        sink.emit(IdeEvent::Direnv { root: root.clone().into(), status });
                     }
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&[&changed[..], &ignored].concat());

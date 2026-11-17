@@ -125,7 +125,7 @@ impl LspManager {
             return;
         }
         let config = server.effective_config();
-        let search = crate::launch::server_search_path(&config);
+        let search = crate::launch::server_search_path(&config, &server.root);
         let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
         let modules: Vec<String> = required.iter().map(|r| r.path.clone()).collect();
         let Some(deprecated) = list_deprecations(&dir, &search, &modules, cancel).await else { return };

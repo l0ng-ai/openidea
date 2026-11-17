@@ -229,12 +229,12 @@ pub async fn target_path(root: &Path, config: &RunConfig) -> IdeResult<String> {
         args.push(format!("-p:TargetFramework={framework}"));
     }
     let mut command = std::process::Command::new(&config.command);
-    ide_core::process::host_env(&mut command);
     command.args(args).current_dir(root);
+    ide_core::process::host_env(&mut command);
     if !config.extras.include_system_env {
         command.env_clear();
     } else {
-        command.envs(ide_core::process::shell_env());
+        command.envs(ide_core::process::shell_env_in(root));
     }
     command.envs(crate::resolved_env(root, config)?);
     let mut command = tokio::process::Command::from(command);

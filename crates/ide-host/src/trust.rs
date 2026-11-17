@@ -275,10 +275,12 @@ impl crate::Host {
                 if let Some(cmd) = self.environment.project_opened(&project.root, &project.sink) {
                     self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
                 }
+                self.environment.direnv_opened(&project.root, &project.sink);
                 project.lsp.set_execution_allowed(true);
                 project.lsp.prewarm_java_configuration();
             } else {
                 self.environment.project_closed();
+                self.environment.direnv_closed(&project.root);
                 project.agents.shutdown();
                 self.processes.kill_project(&project.root);
                 project.notebooks.restrict().await;
