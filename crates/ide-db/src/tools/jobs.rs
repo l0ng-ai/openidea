@@ -179,7 +179,9 @@ fn pg_restore(o: &DbPgRestoreOptions, file: &str) -> Vec<String> {
 }
 
 fn psql(o: &DbPsqlOptions, file: &str) -> Vec<String> {
-    let mut args: Vec<String> = (!file.is_empty()).then(|| format!("--file={file}")).into_iter().collect();
+    // `~/.psqlrc` could switch databases or change settings before the dump runs.
+    let mut args = vec!["--no-psqlrc".to_owned()];
+    args.extend((!file.is_empty()).then(|| format!("--file={file}")));
     args.extend(flag(o.single_transaction, "--single-transaction"));
     args.extend(flag(o.stop_on_error, "--set=ON_ERROR_STOP=1"));
     args
@@ -317,7 +319,7 @@ mod tests {
         let options = DbPsqlOptions { single_transaction: true, stop_on_error: true };
         assert_eq!(
             args(DbToolJob::Psql { file: "/tmp/shop.sql".into(), options }),
-            ["--file=/tmp/shop.sql", "--single-transaction", "--set=ON_ERROR_STOP=1"]
+            ["--no-psqlrc", "--file=/tmp/shop.sql", "--single-transaction", "--set=ON_ERROR_STOP=1"]
         );
     }
 
