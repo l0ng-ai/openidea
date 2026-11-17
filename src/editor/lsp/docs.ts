@@ -3,9 +3,10 @@
  * their documentation in place (⌘-click opens the source instead), ← / →
  * walk the history, Edit Source (F4) jumps to the declaration, and F1 on a
  * focused popup moves it to the Documentation tool window, which then shows
- * F1's documentation instead of a popup while it is open.
+ * F1's documentation instead of a popup while it is open. The hover's
+ * documentation is the same view with its own history.
  */
-import { create } from "zustand";
+import { create, createStore, type StoreApi } from "zustand";
 import { commands, nextRequestId, type Location } from "@/platform/ipc";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { editorService, maybeEditorService, toolWindowService } from "@/workbench/contributions";
@@ -54,31 +55,77 @@ export function showInDocWindow(entry: DocEntry, themeClasses: string) {
   toolWindowService().show(DOCUMENTATION_WINDOW, false);
 }
 
-/** F1 on a focused documentation popup: the popup's history moves to the tool window. */
-export function moveDocPopupToWindow(): boolean {
+/** F1 on a focused documentation popup: the popup's (or the hover's) history moves to the tool window. */
+export function moveDocPopupToWindow(host: "popup" | HoverDoc = "popup"): boolean {
+  const h = history(host);
+  if (!h) return false;
   const popup = useLspPopup.getState().popup;
-  if (popup?.kind !== "doc") return false;
-  useDocWindow.setState({ entries: popup.entries, index: popup.index, themeClasses: popup.themeClasses });
-  closePopup();
+  const themeClasses = host === "popup" && popup?.kind === "doc" ? popup.themeClasses : "";
+  useDocWindow.setState((s) => ({ entries: h.entries, index: h.index, themeClasses: themeClasses || s.themeClasses }));
+  closeHost(host);
   toolWindowService().show(DOCUMENTATION_WINDOW, true);
   return true;
 }
 
 // ---------------------------------------------------------------------------
+// Hover documentation: each hover tooltip keeps its own history (an editor that comes back
+// into view brings its open hover back too).
+
+interface HoverDocState extends DocHistory {
+  close: () => void;
+}
+
+export type HoverDoc = StoreApi<HoverDocState>;
+
+export function hoverDoc(entry: DocEntry, close: () => void): HoverDoc {
+  return createStore<HoverDocState>(() => ({ entries: [entry], index: 0, close }));
+}
+
+/** The size the documentation popup was last resized to, kept across sessions as IDEA does. */
+const DOC_SIZE_KEY = "openidea.lsp.docPopupSize";
+export const DOC_MIN_WIDTH = 240;
+export const DOC_MIN_HEIGHT = 120;
+
+export function loadDocSize(): { w: number; h: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(DOC_SIZE_KEY) ?? "null") as { w?: unknown; h?: unknown } | null;
+    return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDocSize(size: { w: number; h: number }) {
+  try {
+    localStorage.setItem(DOC_SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Storage unavailable: the next popup opens at its default size.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Shared by the popup and the tool window
 
-/** Where a doc view keeps its history: the popup or the tool window. */
-export type DocHost = "popup" | "window";
+/** Where a doc view keeps its history: the F1 popup, the hover or the tool window. */
+export type DocHost = "popup" | "window" | HoverDoc;
 
 function history(host: DocHost): DocHistory | null {
   if (host === "window") return useDocWindow.getState();
+  if (typeof host === "object") return host.getState();
   const p = useLspPopup.getState().popup;
   return p?.kind === "doc" ? p : null;
 }
 
 function setHistory(host: DocHost, h: DocHistory) {
   if (host === "window") useDocWindow.setState(h);
+  else if (typeof host === "object") host.setState(h);
   else updatePopup("doc", h);
+}
+
+/** Closes the popup or the hover a link or Edit Source leaves; the tool window stays. */
+function closeHost(host: DocHost) {
+  if (host === "popup") closePopup();
+  else if (typeof host === "object") host.getState().close();
 }
 
 export function docStep(host: DocHost, delta: -1 | 1) {
@@ -92,7 +139,7 @@ export async function editDocSource(host: DocHost): Promise<boolean> {
   const entry = h?.entries[h.index];
   const loc = (await entry?.source?.().catch(() => null)) ?? null;
   if (!loc) return false;
-  if (host === "popup") closePopup();
+  closeHost(host);
   await editorService().openFile(loc.path, {
     selection: { line: loc.range.start.line, col: loc.range.start.col },
     focus: true,
@@ -145,14 +192,14 @@ export function docLinkHandler(host: DocHost): DocLinkHandler {
   return (href, e) => {
     const target = sourceLink(href);
     if (!target || hasPrimaryModifier(e)) {
-      if (host === "popup" && target) closePopup();
+      if (target) closeHost(host);
       return false;
     }
     void (async () => {
       const entry = await docAt(target).catch(() => null);
       const h = history(host);
       if (!entry || !h) {
-        if (host === "popup") closePopup();
+        closeHost(host);
         void maybeEditorService()?.openFile(target.path, {
           selection: { line: target.line, col: target.col },
           focus: true,
