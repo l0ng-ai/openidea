@@ -7,6 +7,7 @@ use super::output::OutputCollector;
 use super::process::{quote, split_words};
 use super::targets;
 use crate::Project;
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::run::timeout;
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use ide_build::compile::BuildKind;
@@ -19,8 +20,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT_MS: usize = 10_000;
-/// No limit in JetBrains; the process keeps running after the timeout anyway.
-const MAX_TIMEOUT_MS: usize = 1_800_000;
+/// Configurations `get_run_configurations` lists by default.
+const CONFIGURATIONS_LIMIT: usize = 100;
 /// Output of a failed before-launch process kept for the error message.
 const MAX_PROCESS_OUTPUT_LENGTH: usize = 20_000;
 /// A before-launch build gets this long.
@@ -52,7 +53,8 @@ fn describe_config(call: &Call, c: &RunConfig) -> Value {
         if let Some(cwd) = c.cwd.as_deref() {
             v["workingDirectory"] = call.display(&call.root().join(cwd)).into();
         }
-        if !c.env.is_empty() {
+        // A detected configuration's environment is the IDE's own (its tools on `PATH`).
+        if !c.env.is_empty() && !c.detected {
             v["environment"] = json!(c.env);
         }
     }
@@ -135,8 +137,28 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
                 .await?;
                 return Output::json(json!({ "filePath": file, "runPoints": points }));
             }
-            let list: Vec<Value> = configs.iter().map(|c| describe_config(&call, c)).collect();
-            Output::json(json!({ "configurations": list }))
+            let page = Page::of(&call, CONFIGURATIONS_LIMIT)?;
+            let query = call.opt_str("query")?.map(|q| q.to_lowercase());
+            let dir = crate::mcp::scope::Scope::of(&call)?;
+            let list: Vec<Value> = configs
+                .iter()
+                // A configuration belongs where it runs.
+                .filter(|c| {
+                    dir.contains(&c.cwd.as_deref().map_or_else(|| call.root().to_path_buf(), |d| call.root().join(d)))
+                })
+                .filter(|c| {
+                    query.as_ref().is_none_or(|q| {
+                        [c.name.as_str(), c.kind.as_str(), command_line(c).as_str()]
+                            .iter()
+                            .any(|s| s.to_lowercase().contains(q.as_str()))
+                    })
+                })
+                .map(|c| describe_config(&call, c))
+                .collect();
+            let mut out = Map::new();
+            let list = page.take(list, &mut out);
+            out.insert("configurations".into(), list.into());
+            Output::json(Value::Object(out))
         },
     )
     .write()
@@ -146,6 +168,10 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
         "Optional file path relative to the project root. When provided, returns run points (executable entry points) \
 in the file instead of project-wide run configurations.",
     ))
+    .param(Param::optional("query", ParamType::String, "Only configurations whose name, type or command contains it"))
+    .param(crate::mcp::scope::param())
+    .param(Param::optional("limit", ParamType::Integer, "Configurations to return at most (default 100)"))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
 
 /// What `execute_run_configuration` runs.
@@ -541,7 +567,7 @@ tool window; output files are private and deleted after a day.",
             )?;
             let wait = call.flag("waitForExit", true)?;
             // As JetBrains: `timeout` is ignored without waiting, and 0 returns without waiting.
-            let limit = if wait { Some(timeout(&call, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)?) } else { None };
+            let limit = if wait { Some(timeout(&call, DEFAULT_TIMEOUT_MS)?) } else { None };
             let envs = call.args.get("envs").filter(|v| !v.is_null()).map(|_| call.str_map("envs")).transpose()?;
             let configs = load_configs(&call).await?;
             let mut config = match &target {

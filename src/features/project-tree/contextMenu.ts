@@ -3,12 +3,13 @@ import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
-import { relativePath, useProject } from "@/platform/project";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
 import { menuGroupItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
 import type { FolderRole } from "@/platform/languageSettings";
 import { directoryRole, markDirectory } from "./markDirectory";
+import { fileColorMenu } from "./fileColor";
 import type { ProjectNode } from "./model";
 import { packageKindAt } from "./packages";
 import {
@@ -25,12 +26,15 @@ import {
   openFile,
   openMoveDialog,
   openRenameDialog,
+  openSelectionInRightSplit,
   paste,
+  reformatNodes,
   reloadFromDisk,
   revealInFinder,
   vcsArg,
 } from "./operations";
 import { isSameOrInside } from "./paths";
+import { useProjectTree } from "./store";
 import { tx } from "@/platform/i18n";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
@@ -48,6 +52,21 @@ export const LOCAL_KEYS: Record<string, string> = {
 
 export const keyLabel = (id: string) =>
   shortcutLabel(id) ?? (LOCAL_KEYS[id] ? formatBinding(hostBinding(LOCAL_KEYS[id])) : undefined);
+
+/**
+ * The comparison for a selection, shared by the context menu and Compare With… (⌘D): two folders,
+ * two files or one node. Mixed file/folder selections cannot apply.
+ */
+export function compareTarget(nodes: ProjectNode[]): { action: string; arg: unknown; label: string } | null {
+  if (nodes.length === 2 && nodes.every((n) => n.dir && !n.placeholder))
+    return { action: "diff.compareDirectories", arg: nodes.map((n) => n.path), label: "Compare Directories" };
+  if (nodes.length === 2 && nodes.every((n) => !n.dir))
+    return { action: "diff.compareFiles", arg: nodes.map((n) => n.path), label: "Compare Files" };
+  const single = nodes.length === 1 ? nodes[0]! : null;
+  if (!single || single.placeholder) return null;
+  const arg = single.dir ? { path: single.path, directory: true } : single.path;
+  return { action: "diff.compareWith", arg, label: "Compare With…" };
+}
 
 /**
  * New › items for `parent`. `outsideTree` (⌘N in the editor): File asks for the
@@ -105,7 +124,12 @@ function showProjectView() {
 
 /** File kinds contributed to the `new` menu group (templates, HTTP Request, Scratch File…). */
 function contributedNewItems(parent: string | null): MenuItem[] {
-  const items = menuGroupItems("new", parent ? { paths: [parent], dirs: [true] } : { paths: [] });
+  const owner = parent ? projectFolder(useProject.getState().project, parent) : null;
+  const projectType =
+    parent && owner && isSameOrInside(parent, owner.root)
+      ? useProjectTree.getState().projectTypes.get(owner.root)
+      : undefined;
+  const items = menuGroupItems("new", parent ? { paths: [parent], dirs: [true], projectType } : { paths: [] });
   return items.length ? [{ kind: "separator" }, ...items] : [];
 }
 
@@ -151,6 +175,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const project = useProject.getState().project;
   // Scratches and other contributed roots live outside the project: no VCS, roots or LSP usages.
   const inProject = !!project && nodes.every((n) => isSameOrInside(n.path, project.root));
+  // Workspace members may live outside the workspace folder; they have VCS and usages too.
+  const memberRoots = project ? [project.root, ...(project.workspace?.projects ?? [])] : [];
+  const inWorkspace = nodes.every((n) => memberRoots.some((root) => isSameOrInside(n.path, root)));
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
@@ -170,7 +197,11 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  push({ id: "new", label: "New", submenu: newMenuItems(folder) }, { kind: "separator" });
+  push(
+    { id: "new", label: "New", submenu: newMenuItems(folder) },
+    single?.root && act("maven.importExternal", undefined, "Import Module from Existing Sources"),
+    { kind: "separator" },
+  );
 
   // Cut / Copy / Copy Path/Reference… / Paste
   push(
@@ -202,6 +233,8 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         },
         { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
         { id: "rel", label: "Path From Content Root", run: () => void copyPaths("relative", nodes) },
+        { kind: "separator" },
+        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
       ],
     },
     {
@@ -224,7 +257,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       shortcut: keyLabel("project.open"),
       run: () => files.forEach((f) => void openFile(f.path)),
     },
-    inProject &&
+    inWorkspace &&
       singleFile && {
         id: "findUsages",
         label: "Find Usages",
@@ -269,14 +302,14 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
   );
 
-  // Reformat Code / Optimize Imports / Delete…
+  // Reformat Code (one file at once, directories or several files through its dialog) / Optimize Imports / Delete…
   push(
-    singleFile &&
-      getAction("code.reformatFile") && {
+    nodes.some((n) => !n.group) &&
+      getAction(singleFile ? "code.reformatFile" : "code.reformatFiles") && {
         id: "reformat",
         label: "Reformat Code",
         shortcut: keyLabel("project.reformatCode"),
-        run: () => void delegate("code.reformatFile", { path: singleFile.path }),
+        run: () => void reformatNodes(nodes),
       },
     singleFile &&
       getAction("code.optimizeImportsFile") && {
@@ -298,8 +331,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
   push(...menuGroupItems("projectView", menuGroupContext(nodes)));
 
-  // Open In ›
+  // Open in Right Split / Open In ›
   push(
+    files.length > 0 && openInRightSplitItem(files),
     submenu("openIn", "Open In", [
       canRevealInFileManager() && {
         id: "finder",
@@ -334,7 +368,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   );
 
   // Git › (`vcsAvailable` also covers repositories nested below a non-Git project root)
-  if (inProject && (project?.isGit || getContext().vcsAvailable === true)) {
+  if (inWorkspace && (project?.isGit || getContext().vcsAvailable === true)) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
     push(
@@ -363,10 +397,10 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
           act("vcs.push", undefined, "Push…"),
-          act("vcs.update", undefined, "Pull…"),
+          act("vcs.pull", arg, "Pull…"),
           act("vcs.fetch", undefined, "Fetch"),
-          act("vcs.merge", undefined, "Merge…"),
-          act("vcs.rebase", undefined, "Rebase…"),
+          act("vcs.merge", arg, "Merge…"),
+          act("vcs.rebase", arg, "Rebase…"),
           { kind: "separator" },
           act("vcs.branches", undefined, "Branches…"),
           act("vcs.newBranch", undefined, "New Branch…"),
@@ -382,29 +416,10 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  // Compare selections of the same kind; mixed file/folder selections cannot apply.
-  const compareArg = single?.dir ? { path: single.path, directory: true } : single?.path;
-  if (nodes.length === 2 && nodes.every((n) => n.dir && !n.placeholder))
+  const compare = compareTarget(nodes);
+  if (compare)
     push(
-      delegated(
-        "diff.compareDirectories",
-        nodes.map((n) => n.path),
-        "Compare Directories",
-        { icon: "diff" },
-      ),
-    );
-  if (files.length === 2 && nodes.length === 2)
-    push(
-      delegated(
-        "diff.compareFiles",
-        files.map((f) => f.path),
-        "Compare Files",
-        { icon: "diff" },
-      ),
-    );
-  else if (single && !single.placeholder)
-    push(
-      delegated("diff.compareWith", compareArg, "Compare With…", {
+      delegated(compare.action, compare.arg, compare.label, {
         icon: "diff",
         shortcut: keyLabel("project.compareWith"),
       }),
@@ -439,7 +454,21 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       ],
     });
   }
+  if (inProject && single && !single.root && !single.placeholder && !single.group) {
+    const color = fileColorMenu(single.path, single.dir);
+    if (color) push(color);
+  }
   return items;
+}
+
+function openInRightSplitItem(files: ProjectNode[]): MenuItem {
+  return {
+    id: "openInRightSplit",
+    label: "Open in Right Split",
+    icon: "split",
+    shortcut: keyLabel("project.openInRightSplit"),
+    run: () => void openSelectionInRightSplit(files),
+  };
 }
 
 /** Library sources (External Libraries) are read-only: copy, find and reveal only. */
@@ -465,6 +494,7 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
     !!folder && delegated("find.inPath", { directory: folder }, "Find in Files…", { icon: "search" }),
     !!folder && { kind: "separator" },
+    nodes.every((n) => !n.dir) && openInRightSplitItem(nodes),
     submenu("openIn", "Open In", [
       canRevealInFileManager() && {
         id: "finder",

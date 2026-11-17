@@ -17,6 +17,23 @@ pub async fn sdk_detect(window: Window, state: State<'_, AppState>, kind: SdkKin
     ide_host::ops::sdk::sdk_detect(&state.host, window.label(), kind).await
 }
 
+/// The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
+    ide_host::ops::sdk::sdk_jdk_at(path).await
+}
+
+/// The Python interpreters of the recently opened projects, each with its project.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_python_project_interpreters(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_host::ops::sdk::ProjectInterpreter>> {
+    ide_host::ops::sdk::sdk_python_project_interpreters(&state.host, window.label()).await
+}
+
 /// The interpreter the project uses: the configured one, else its virtualenv.
 #[tauri::command]
 #[specta::specta]
@@ -26,6 +43,26 @@ pub fn sdk_python_effective(
     near: Option<PathBuf>,
 ) -> IdeResult<Option<ide_core::IpcPath>> {
     ide_host::ops::sdk::sdk_python_effective(&state.host, window.label(), near)
+}
+
+/// The project interpreter when it is a Docker or Compose run target's, with its snapshot.
+#[tauri::command]
+#[specta::specta]
+pub fn sdk_container_python(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::sdk::ContainerPython>> {
+    ide_host::ops::sdk::sdk_container_python(&state.host, window.label())
+}
+
+/// Copies the container's Python libraries again (after the image changed).
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_container_python_refresh(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::sdk::ContainerPython>> {
+    ide_host::ops::sdk::sdk_container_python_refresh(&state.host, window.label()).await
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.

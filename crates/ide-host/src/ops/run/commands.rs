@@ -130,6 +130,17 @@ pub fn run_system_env(_host: &Host, _window: &str) -> std::collections::BTreeMap
     ide_run::system_env()
 }
 
+/// Variables of the `.env` files a debug launch names, in order (later files win):
+/// the same files a run loads, over the system environment debug adapters inherit.
+pub fn run_env_files(
+    _host: &Host,
+    _window: &str,
+    files: Vec<std::path::PathBuf>,
+) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    ide_run::envfile::load(&files, &ide_run::system_env())
+        .map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))
+}
+
 /// Writes the Gradle init script that adds `jvm_args` to the JVMs the build forks
 /// (`bootRun`, `run`, tests) and returns its path, for `--init-script`.
 pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: Vec<String>) -> IdeResult<String> {
@@ -191,12 +202,86 @@ pub async fn run_tomcat_installations(
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+/// Id prefix of a Project Structure WAR artifact (a project without a build tool).
+const PROJECT_ARTIFACT: &str = "project:";
+
+fn project_web_artifacts(ps: &ide_core::settings::ProjectStructureSettings) -> Vec<ide_build::web::WebArtifact> {
+    ide_build::compile::structure_web_artifacts(ps)
+        .into_iter()
+        .map(|a| ide_build::web::WebArtifact {
+            id: format!("{PROJECT_ARTIFACT}{}", a.name),
+            name: a.name.split(':').next().unwrap_or(&a.name).to_owned(),
+            module: if a.module == "." { String::new() } else { a.module.clone() },
+            tool: "project".into(),
+        })
+        .collect()
+}
+
+/// Compiles the project and packs the Project Structure artifact `name` as the WAR Tomcat
+/// deploys, recorded in `base` like a build tool's archive.
+fn build_project_war(
+    root: &std::path::Path,
+    settings: &ide_core::settings::Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    name: &str,
+    base: &std::path::Path,
+    cache: &std::path::Path,
+) -> IdeResult<()> {
+    use ide_build::compile;
+    let (ps, roots, jdk) = crate::ops::build::structure_inputs(root, settings, detected);
+    let artifact = ps
+        .artifacts
+        .iter()
+        .find(|a| a.name == name)
+        .ok_or_else(|| IdeError::invalid(format!("No artifact named {name} in Project Structure › Artifacts")))?;
+    let war = base.join("artifact").join(format!(
+        "{}.war",
+        name.split(':').next().unwrap_or(name).replace(|c: char| !c.is_alphanumeric() && c != '-', "_")
+    ));
+    let plan = compile::structure_war_plan(
+        root,
+        &ps,
+        &roots,
+        jdk.as_ref(),
+        &settings.languages.java.language_level,
+        artifact,
+        &war,
+        cache,
+    )?;
+    let result = compile::run(root, &plan, &ide_core::CancellationToken::new(), &|_| {})?;
+    if !result.success {
+        let first = result.messages.iter().find(|m| m.severity == ide_core::Severity::Error);
+        let text = match first {
+            Some(m) => match (&m.path, m.range) {
+                (Some(path), Some(range)) => {
+                    format!("{}:{}: {}", std::path::PathBuf::from(path.clone()).display(), range.start.line + 1, m.text)
+                }
+                _ => m.text.clone(),
+            },
+            None => "the build failed".into(),
+        };
+        return Err(IdeError::invalid(format!("Cannot build {name}: {text}")));
+    }
+    std::fs::create_dir_all(base)?;
+    std::fs::write(base.join("artifact-id.txt"), format!("{PROJECT_ARTIFACT}{name}"))?;
+    std::fs::write(base.join("artifact-path.txt"), war.to_string_lossy().as_bytes())?;
+    Ok(())
+}
+
 pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     tokio::task::spawn_blocking(move || {
-        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
-        ide_build::web::artifacts(&project.root, &model)
+        let settings = project.settings.effective();
+        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &settings);
+        let mut artifacts = ide_build::web::artifacts(&project.root, &model);
+        // Without a build tool, the Project Structure's WAR artifacts are built by the IDE.
+        if model.maven.is_none() && model.gradle.is_empty() {
+            let detected = project.detected_roots.read().clone();
+            let (ps, _, _) = crate::ops::build::structure_inputs(&project.root, &settings, &detected);
+            artifacts.extend(project_web_artifacts(&ps));
+        }
+        artifacts
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))
@@ -219,9 +304,23 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .or_else(|| artifacts.first().map(|a| &a.id))
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
+        if let Some(name) = id.strip_prefix(PROJECT_ARTIFACT) {
+            let settings = project.settings.effective();
+            let detected = project.detected_roots.read().clone();
+            build_project_war(&project.root, &settings, &detected, name, &base, &project.build_cache_dir())?;
+            return Ok(None);
+        }
         // "Build before launch" is skipped when the built WAR is already newer than the
-        // module's sources, so a repeated run does not rebuild (IDEA's up-to-date check).
-        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config) {
+        // sources of every module in the build, so a repeated run does not rebuild (IDEA's
+        // up-to-date check) but a change in a dependency module does.
+        let modules: Vec<std::path::PathBuf> = model
+            .maven
+            .iter()
+            .flat_map(|m| m.projects.iter().map(|p| p.dir.as_str()))
+            .chain(model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| p.dir.as_str())))
+            .map(std::path::PathBuf::from)
+            .collect();
+        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config, &modules) {
             return Ok(None);
         }
         let mut plan = ide_build::web::build(&project.root, &model, id, &base)?;
@@ -332,6 +431,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         run_import_configs(&c.host, &c.window, c.arg("source")?, c.arg("existing")?)
     });
     d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
+    d.add("run_env_files", |c| async move { run_env_files(&c.host, &c.window, c.arg("files")?) });
     d.add("run_gradle_jvm_args_script", |c| async move {
         run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
     });

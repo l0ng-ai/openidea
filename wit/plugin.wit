@@ -8,7 +8,7 @@
 /// `fs` and `workspace`, and everything else goes through the imports below,
 /// gated by the capabilities granted in `plugin.toml` (a missing one returns
 /// `error::denied`).
-package openidea:plugin@1.5.0;
+package openidea:plugin@1.10.0;
 
 world plugin {
     import log;
@@ -20,6 +20,7 @@ world plugin {
     import decorations;
     import invocation;
     import vcs;
+    import build;
     import commit;
     import events;
     import tasks;
@@ -31,6 +32,7 @@ world plugin {
     import output;
     import auth;
     import command-runner;
+    import language-servers;
     import views;
     import run;
     import run-targets;
@@ -183,6 +185,10 @@ world editor-diagnostics {
 world plugin-run-configurations { include plugin; export run-configurations; }
 /// Export-only configurations world, composed with plugin by SDK macros.
 world configurations-provider { export run-configurations; }
+/// A plugin that exports configurations with an environment and a debugger (API 1.9).
+world plugin-launch-configurations { include plugin; export launch-configurations; }
+/// Export-only launch configurations world, composed with plugin by SDK macros.
+world launch-configurations-provider { export launch-configurations; }
 /// A plugin that parses its test output.
 world plugin-test-results { include plugin; export test-results; }
 /// Export-only test parser world, composed with plugin by SDK macros.

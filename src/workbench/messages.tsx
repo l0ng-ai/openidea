@@ -145,6 +145,7 @@ function MessageDialog({ message }: { message: Pending }) {
     <VerbatimTextContext.Provider value={!!message.verbatim}>
       <Dialog
         open
+        blockWorkbenchShortcuts
         onClose={() => done("cancel")}
         title={message.title}
         icon={message.icon ?? "question"}

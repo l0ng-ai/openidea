@@ -22,6 +22,9 @@ use std::time::{Duration, Instant};
 /// How long Inspect Code waits for a server that is still starting (jdtls,
 /// rust-analyzer on a large workspace).
 const INSPECT_START_WAIT: Duration = Duration::from_secs(60);
+/// Quiet period after a publish before a checked file counts as done (follow-up publishes:
+/// syntax first, semantics later).
+const CHECK_SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug)]
 pub struct InspectOptions {
@@ -46,6 +49,29 @@ pub trait InspectHost: Send + Sync + 'static {
     /// Returns the document and whether it was open before.
     fn open(&self, path: &Path) -> IdeResult<(DocId, bool)>;
     fn close(&self, doc: DocId);
+}
+
+/// One language server's part in a [`DocumentCheck`].
+#[derive(Clone, Debug)]
+pub struct CheckedServer {
+    pub name: String,
+    /// Its state when the check ended: not `Ready`/`Busy` means it could not check.
+    pub status: ide_core::event::ServerStatus,
+    /// Why it isn't running (not installed, misconfigured, crashed), as the status bar says.
+    pub message: Option<String>,
+    /// Its diagnostics are in the result.
+    pub checked: bool,
+    /// It was still analysing (or had not published for this change) when the wait ended.
+    pub incomplete: bool,
+    /// Asking it failed.
+    pub error: Option<String>,
+}
+
+/// Fresh diagnostics of a document, with every language server that serves it.
+#[derive(Clone, Debug, Default)]
+pub struct DocumentCheck {
+    pub diagnostics: Vec<Diagnostic>,
+    pub servers: Vec<CheckedServer>,
 }
 
 /// What became of one file.
@@ -196,6 +222,99 @@ impl LspManager {
             Some(e) if out.is_empty() && targets.len() == 1 => Err(e),
             _ => Ok(Some(out)),
         }
+    }
+
+    /// Fresh diagnostics of the open document `doc`, whose text the caller just synced
+    /// (`changed`: at that instant, so diagnostics published before it are stale). Tells the
+    /// servers the document was saved, since checks that run on save (rust-analyzer's
+    /// `cargo check`) don't run for a change made outside the IDE, then waits for each server
+    /// to be ready, to answer for this text and to finish the background work it started, up
+    /// to `timeout`. Every server serving the document is reported, so a caller can tell "no
+    /// problems" from "nothing could check".
+    pub async fn check_document(
+        &self,
+        doc: DocId,
+        changed: Option<Instant>,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> IdeResult<DocumentCheck> {
+        let snap = self.snapshot(doc)?;
+        // The text may have changed before this call synced it (the file watcher reloaded it):
+        // only diagnostics published after the servers got the current text are fresh.
+        let changed = Some(changed.map_or(snap.changed, |c| c.max(snap.changed)));
+        let deadline = tokio::time::Instant::now() + timeout;
+        let left = || deadline.saturating_duration_since(tokio::time::Instant::now());
+        let ready = tokio::select! {
+            r = futures::future::join_all(snap.servers.iter().map(|s| s.wait_ready(left()))) => r,
+            () = cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        // Once the servers have the document: a save sent while one starts would not reach it.
+        self.did_save(doc, snap.text.as_str());
+        let per_server = snap.servers.iter().zip(ready).map(|(server, run)| async {
+            let mut report = CheckedServer {
+                name: server.name.clone(),
+                status: server.status(),
+                message: server.status_message(),
+                checked: false,
+                incomplete: false,
+                error: None,
+            };
+            let Some(run) = run else { return Some((report, Vec::new())) };
+            let t = Target { server: server.clone(), run };
+            if !t.caps().restriction.diagnostics() {
+                return None;
+            }
+            let pull = t.caps().has("diagnosticProvider");
+            let mut since = changed;
+            let raw = loop {
+                // A pull asks for this text; a push server is waited on to publish for it.
+                let raw = if pull {
+                    server.wait_idle(left(), cancel).await;
+                    self.pull_diagnostics(&t, &snap.uri, cancel, left()).await
+                } else {
+                    let opts = InspectOptions { concurrency: 1, timeout: left(), settle: CHECK_SETTLE };
+                    wait_for_publish(server, &snap.path, since, opts, cancel).await
+                };
+                // The save may have started work (a `cargo check`) that publishes when it ends.
+                if raw.is_err() || pull || !server.is_busy() || left().is_zero() {
+                    break raw;
+                }
+                if !server.wait_idle(left(), cancel).await {
+                    break raw.map(|_| server.diagnostics_for(&snap.path));
+                }
+                // Idle: its last publish is final once quiet.
+                since = None;
+            };
+            report.status = server.status();
+            match raw {
+                Ok(items) => {
+                    report.checked = true;
+                    let fresh =
+                        pull || changed.is_none_or(|c| server.last_published(&snap.path).is_some_and(|p| p >= c));
+                    report.incomplete = !fresh || server.is_busy();
+                    let conv = self.conv(t.enc());
+                    let items = items
+                        .into_iter()
+                        .map(|d| convert::diagnostic(&conv, &snap.path, d, &t.server.name))
+                        .collect::<Vec<_>>();
+                    Some((report, items))
+                }
+                Err(e) => {
+                    report.error = Some(e.message);
+                    Some((report, Vec::new()))
+                }
+            }
+        });
+        let results = tokio::select! {
+            r = futures::future::join_all(per_server) => r,
+            () = cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        let mut out = DocumentCheck::default();
+        for (report, items) in results.into_iter().flatten() {
+            out.servers.push(report);
+            out.diagnostics.extend(items);
+        }
+        Ok(out)
     }
 
     async fn pull_diagnostics(

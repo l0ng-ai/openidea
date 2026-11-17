@@ -5,6 +5,7 @@ const invoked: Array<[string, unknown[]]> = [];
 let shortenCommandLine: string | null = null;
 let kotlinFiles = false;
 const files: Record<string, string> = {};
+let missingTools: string[] = [];
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   const ok = (data: unknown) => Promise.resolve({ status: "ok", data });
@@ -20,6 +21,13 @@ vi.mock("@/platform/ipc", async (orig) => {
         ),
       fsReadText: (path: string) => ok(files[path] ?? "package a;\npublic class Main {}"),
       runConfigs: () => ok([]),
+      toolsList: () =>
+        ok(
+          ["kotlin-debug-adapter", "kotlin-lsp"].map((name) => ({
+            name,
+            status: missingTools.includes(name) ? "missing" : "installed",
+          })),
+        ),
       fsReadDir: (path: string) =>
         ok(
           kotlinFiles && path.endsWith("/src")
@@ -50,7 +58,8 @@ vi.mock("@/platform/ipc", async (orig) => {
   };
 });
 
-const { isJavaDebuggable, javaAttachConfig, javaLaunchConfig, javaProjectName } = await import("../java");
+const { isJavaDebuggable, javaAttachConfig, javaLaunchConfig, javaProjectName, jvmAttachDebuggerReady } =
+  await import("../java");
 
 const app: RunConfig = {
   id: "application:a.Main",
@@ -93,6 +102,18 @@ describe("Java debugging (java-debug through jdtls)", () => {
       shortenCommandLine: "none",
       projectName: "p",
     });
+  });
+
+  it("echoes the equivalent Java command in the Debug console", async () => {
+    const report = vi.fn();
+    await javaLaunchConfig(app, "/p", {
+      request: 1,
+      signal: new AbortController().signal,
+      report,
+    });
+    expect(report).toHaveBeenCalledWith(
+      '/jdk21/bin/java -Xmx1g -cp /p/target/classes:/m2/a.jar a.Main --port "8081 x"\n',
+    );
   });
 
   it("debugs Spring Boot with coloured console output, as Run does", async () => {
@@ -220,4 +241,25 @@ it("reports a save failure before starting Java Debug", async () => {
     }),
   ).rejects.toThrow("save failed");
   expect(invoked).toEqual([]);
+});
+
+describe("the debugger for a build tool's JVMs", () => {
+  it("is ready for Kotlin sources when kotlin-lsp or kotlin-debug-adapter is installed", async () => {
+    kotlinFiles = true;
+    const retry = vi.fn();
+    try {
+      for (const missing of [[], ["kotlin-debug-adapter"], ["kotlin-lsp"]]) {
+        missingTools = missing;
+        expect(await jvmAttachDebuggerReady("app", "/p", retry)).toBe(true);
+      }
+      missingTools = ["kotlin-debug-adapter", "kotlin-lsp"];
+      expect(await jvmAttachDebuggerReady("app", "/p", retry)).toBe(false);
+      kotlinFiles = false;
+      expect(await jvmAttachDebuggerReady("app", "/p", retry)).toBe(true);
+      expect(retry).not.toHaveBeenCalled();
+    } finally {
+      kotlinFiles = false;
+      missingTools = [];
+    }
+  });
 });

@@ -21,6 +21,30 @@ async function searchFiles(page: Page) {
   return dialog;
 }
 
+for (const count of [1, 2, 24]) {
+  test(`without the preview the results list shows its rows (${count} results)`, async ({ workbench: page }) => {
+    await stubDesktop(page);
+    await page.evaluate((count) => {
+      window.__ipc.handlers.find_files = () =>
+        Array.from({ length: count }, (_, i) => ({
+          path: `/dev/acme-api/src/main${i}.js`,
+          relPath: `src/main${i}.js`,
+          score: 100 - i,
+          indices: [],
+        }));
+    }, count);
+    await doubleShift(page);
+    const dialog = page.locator('[role="dialog"]:has(#se-query)');
+    await dialog.getByRole("tab", { name: "Files", exact: true }).click();
+    await dialog.getByRole("combobox", { name: "Search query" }).fill("main");
+    await expect(dialog.getByRole("separator", { name: "Preview", exact: true })).toBeHidden();
+    const list = dialog.getByRole("listbox", { name: "Results" });
+    await expect
+      .poll(async () => (await list.boundingBox())?.height ?? 0)
+      .toBeGreaterThanOrEqual(Math.min(count, 5) * 24);
+  });
+}
+
 test("preview splitter resizes with mouse and keyboard, keeps query focus and remembers its ratio", async ({
   workbench: page,
 }) => {

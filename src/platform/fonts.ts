@@ -108,6 +108,79 @@ export function familyFaces(family: string): readonly string[] {
   return [quoteFontFamily(entry.alias), quoteFontFamily(name)];
 }
 
+/** Common Nerd Font installs; the full-width faces before their Mono variants, which shrink icons to one cell. */
+const NERD_FONTS = [
+  "Symbols Nerd Font",
+  "Symbols Nerd Font Mono",
+  "JetBrainsMono Nerd Font",
+  "JetBrainsMono Nerd Font Mono",
+  "MesloLGS NF",
+  "MesloLGS Nerd Font",
+  "Hack Nerd Font",
+  "FiraCode Nerd Font",
+  "Hasklug Nerd Font",
+  "CaskaydiaCove Nerd Font",
+];
+/** In running text the proportional faces give icons their own width instead of one cell's. */
+const UI_NERD_FONTS = [
+  "JetBrainsMono Nerd Font Propo",
+  "MesloLGS Nerd Font Propo",
+  "Hack Nerd Font Propo",
+  "FiraCode Nerd Font Propo",
+  "Hasklug Nerd Font Propo",
+  "CaskaydiaCove Nerd Font Propo",
+  ...NERD_FONTS,
+];
+
+/** Nerd Font naming: the patched families ("… Nerd Font") and their v3 short forms ("… NF"). */
+const NERD_FONT_NAME = /nerd\s*font|\bnf\b/i;
+const NERD_FONT_MONO = /(?:nerd\s*font|\bnf\b)\s+mono$/i;
+const NERD_FONT_PROPO = /(?:nerd\s*font|\bnf\b)\s+propo$/i;
+
+/**
+ * Nerd Font families among `installed`, full faces first (their icons keep the wide
+ * prompt glyph), then the Mono variants that shrink icons to one cell, Propo last.
+ */
+export function nerdFontFamilies(installed: readonly string[]): string[] {
+  const rank = (name: string) => (NERD_FONT_MONO.test(name) ? 1 : NERD_FONT_PROPO.test(name) ? 2 : 0);
+  return installed.filter((name) => NERD_FONT_NAME.test(name)).sort((a, b) => rank(a) - rank(b));
+}
+
+/** Discovered installs beyond the known list (`discoverNerdFonts`), in the same order. */
+let discoveredNerdFonts: readonly string[] = [];
+
+/**
+ * Feeds the terminal fallback from the native font catalog, loaded off startup: a Nerd
+ * Font outside the known list (Maple Mono NF CN, Cascadia Code NF…) otherwise never
+ * reaches the font stack, and unlike Windows Terminal the webview does no per-glyph
+ * system fallback, so prompt icons (#3723) render as boxes.
+ */
+export function discoverNerdFonts(installed: readonly string[]): void {
+  const known = new Set(NERD_FONTS.map((name) => name.toLowerCase()));
+  discoveredNerdFonts = nerdFontFamilies(installed).filter((name) => !known.has(name.toLowerCase()));
+}
+
+/** Installed Nerd Fonts, resolved like any family, for prompt-theme icons (powerlevel10k, starship). */
+export function nerdFontFaces(): string[] {
+  return [...NERD_FONTS, ...discoveredNerdFonts].flatMap(familyFaces);
+}
+
+/**
+ * The icon font for UI text (Nerd Font icons in agent task titles): the first installed
+ * Nerd Font, proportional faces first. Any one has the whole icon set, so the others aren't
+ * probed or loaded. Without the installed families (browser), every candidate by name.
+ * A family outside the known list fills in from the same discovery, Propo first.
+ */
+export function uiIconFaces(installed?: readonly string[]): string[] {
+  if (!installed) return UI_NERD_FONTS.flatMap(familyFaces);
+  const names = new Set(installed.map((name) => name.toLowerCase()));
+  const family = UI_NERD_FONTS.find((name) => names.has(name.toLowerCase()));
+  if (family) return [...familyFaces(family)];
+  const found = nerdFontFamilies(installed);
+  const pick = found.find((name) => NERD_FONT_PROPO.test(name)) ?? found[0];
+  return pick ? [...familyFaces(pick)] : [];
+}
+
 /** The `--font-mono` stack, resolved (canvas / xterm can't use `var()`). */
 export function monoStack(): string {
   if (typeof document === "undefined") return MONO_STACK_FALLBACK;
@@ -124,6 +197,40 @@ export function monoFontFamily(family: string | undefined, fallback = "", base =
   const fb = familyName(fallback);
   const head = familyFaces(name || BUNDLED_MONO_FAMILY);
   return [...head, ...(fb ? familyFaces(fb) : []), base].join(", ");
+}
+
+/** Tools › Terminal › Font, shared by the terminal and the Run console. */
+export interface MonoFontChoice {
+  useEditorFont: boolean;
+  fontFamily: string;
+  fallbackFontFamily: string;
+  fontSize: number;
+}
+
+export interface EditorFontChoice {
+  fontFamily?: string | null;
+  fallbackFont?: string | null;
+  fontSize?: number | null;
+}
+
+/**
+ * The family and size Settings › Tools › Terminal resolves against Editor › Font.
+ * The console uses the terminal's choice too, so the font picker there controls
+ * both the terminal and Run output; `base` is `var(--font-mono)` for CSS consumers
+ * and the resolved stack for canvas consumers (xterm).
+ */
+export function resolveMonoFont(
+  choice: MonoFontChoice | undefined,
+  editor: EditorFontChoice | undefined,
+  base = "var(--font-mono)",
+): { family: string; size: number } {
+  const useEditor = choice?.useEditorFont !== false;
+  const family = (useEditor ? editor?.fontFamily : choice?.fontFamily) || BUNDLED_MONO_FAMILY;
+  const fallback = useEditor
+    ? choice?.fallbackFontFamily.trim() || editor?.fallbackFont || ""
+    : choice?.fallbackFontFamily.trim() || "";
+  const size = (useEditor ? editor?.fontSize : choice?.fontSize) || 13;
+  return { family: monoFontFamily(family, fallback, base), size };
 }
 
 /**

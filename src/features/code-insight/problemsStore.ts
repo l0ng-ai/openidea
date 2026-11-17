@@ -64,6 +64,37 @@ export function fileDiagnostics(map: ProblemsMap, path: string): Diagnostic[] {
 }
 
 /** The producer (inspection) that reported `d`, one of `path`'s problems in `map`. */
+/**
+ * The file the Problems "File" tab shows: the active text editor's, or the active tab's
+ * own path when it is another editor kind (a notebook keeps its cells' diagnostics there).
+ */
+export function currentProblemsPath(
+  textPath: string | null,
+  activeInput: { kind: string; path?: string | null } | null,
+): string | null {
+  if (activeInput && activeInput.kind !== "file" && activeInput.kind !== "virtual" && activeInput.path)
+    return activeInput.path;
+  return textPath;
+}
+
+const CELL_SCHEME = "vscode-notebook-cell:";
+
+/** The notebook a cell's diagnostics key (`vscode-notebook-cell:<notebook path>#<cell>`) belongs to. */
+function cellNotebook(key: string): string | null {
+  if (!key.startsWith(CELL_SCHEME)) return null;
+  const rest = key.slice(CELL_SCHEME.length);
+  const hash = rest.indexOf("#");
+  const path = decodeURIComponent(hash < 0 ? rest : rest.slice(0, hash));
+  return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
+}
+
+/** The diagnostics keys of one file: the file itself and, for a notebook, its cells. */
+export function filePaths(map: ProblemsMap, path: string): string[] {
+  const out = map.has(path) ? [path] : [];
+  for (const key of map.keys()) if (cellNotebook(key) === path) out.push(key);
+  return out;
+}
+
 export function producerFor(map: ProblemsMap, path: string, d: Diagnostic): string | null {
   for (const [source, items] of map.get(path) ?? []) if (items.includes(d)) return source;
   return null;
@@ -156,4 +187,26 @@ export function installProblemsEvents(): () => void {
     offLocal();
     offProfile();
   };
+}
+
+/**
+ * Errors and warnings as `rel:line:col: severity: message (source)` lines, errors first, at most
+ * `max`; null when there are none. For an agent's context.
+ */
+export function problemsReport(map: ProblemsMap, root: string, max = 60): string | null {
+  const rows: { severity: Severity; text: string }[] = [];
+  for (const path of map.keys()) {
+    const rel = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+    for (const d of fileDiagnostics(map, path)) {
+      if (d.severity !== "error" && d.severity !== "warning") continue;
+      const at = `${rel}:${d.range.start.line + 1}:${d.range.start.col + 1}`;
+      const source = d.source ? ` (${d.source})` : "";
+      rows.push({ severity: d.severity, text: `${at}: ${d.severity}: ${d.message.split("\n")[0]}${source}` });
+    }
+  }
+  if (!rows.length) return null;
+  rows.sort((a, b) => Number(a.severity !== "error") - Number(b.severity !== "error"));
+  const shown = rows.slice(0, max).map((r) => r.text);
+  if (rows.length > max) shown.push(`… ${rows.length - max} more`);
+  return shown.join("\n");
 }

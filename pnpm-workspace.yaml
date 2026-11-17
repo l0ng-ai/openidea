@@ -1,2 +1,5 @@
 allowBuilds:
   simple-git-hooks: true
+overrides:
+  # GHSA-238p-pmpm-9mq7 (fixed in 0.18.2); mermaid 12.1 still asks for katex ^0.16.
+  mermaid>katex: ^0.18.2

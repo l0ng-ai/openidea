@@ -11,8 +11,12 @@ export const TASK_DRAG = "application/x-openidea-agent-task";
 export const REGISTRY_PAGE = "agents.list";
 /** The Settings folder holding the agent pages. */
 export const AGENTS_GROUP = "Agents";
-/** Settings › Agents › Model Context Protocol (MCP): User and Workspace MCP configurations. */
+/** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
 export const MCP_PAGE = "agents.mcpServers";
+/** Settings › Agents › Command Permissions. */
+export const POLICY_PAGE = "agents.policy";
+/** Settings › Agents › Working Status: the playful words under a working conversation. */
+export const WORKING_STATUS_PAGE = "agents.workingStatus";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 
@@ -53,12 +57,15 @@ const PROVIDER_ICONS = new Set([
   "cursor",
   "opencode",
   "qwen",
+  "qoder",
+  "qodercn",
   "kimi",
   "goose",
   "auggie",
   "kiro",
   "vibe",
   "omp",
+  "deepseek-harness",
 ]);
 
 /** The agent's logo; custom agents get the generic agents icon. */
@@ -81,6 +88,17 @@ const GROUPS: Array<[TaskGroup["status"], string, AgentStatus[]]> = [
   ["archived", "Archived", ["archived"]],
 ];
 
+const ATTENTION_RANK = new Map<AgentStatus, number>(
+  GROUPS.flatMap(([, , members], rank) => members.map((status): [AgentStatus, number] => [status, rank])),
+);
+
+/** Where a task sits in the panel by status: what waits for the user comes first. */
+export const attentionRank = (status: AgentStatus) => ATTENTION_RANK.get(status) ?? GROUPS.length;
+
+/** The group a status is shown in (`starting` runs). */
+export const groupStatus = (status: AgentStatus): TaskGroup["status"] =>
+  GROUPS.find(([, , members]) => members.includes(status))?.[0] ?? "ready";
+
 export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
   const sorted = [...tasks].sort((a, b) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0));
   return GROUPS.map(([status, label, members]) => ({
@@ -91,6 +109,10 @@ export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
 }
 
 export const isBusy = (s: AgentStatus) => s === "running" || s === "starting" || s === "needsInput";
+
+/** Whether `task` runs outside the project root (its own worktree, or an imported subfolder). */
+export const hasTaskTerminal = (task: AgentTask, projectRoot?: string | null) =>
+  task.isolation === "worktree" || (!!projectRoot && task.cwd !== projectRoot);
 
 /** `entries` with `entry` at `index` (appended when `index` is the length; gaps wait for a reload). */
 export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEntry): AgentEntry[] | null {
@@ -220,17 +242,4 @@ export function age(ms: number, now = Date.now()): string {
   const h = Math.round(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.round(h / 24)}d`;
-}
-
-/** The status change worth a notification, if any. */
-export function attentionChange(
-  prev: AgentStatus | undefined,
-  next: AgentStatus,
-): "finished" | "failed" | "input" | null {
-  if (prev === next || prev === undefined) return null;
-  if (next === "needsInput") return "input";
-  if (!isBusy(prev)) return null;
-  if (next === "ready") return "finished";
-  if (next === "failed" || next === "limited") return "failed";
-  return null;
 }

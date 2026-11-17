@@ -28,13 +28,13 @@ export interface SelectProps<V extends string = string> {
   onChange: (value: V) => void;
   placeholder?: string;
   disabled?: boolean;
-  /** `ghost` renders as plain text + chevron (title bar widgets). */
-  variant?: "framed" | "ghost";
+  /** `ghost` renders as plain text + chevron (title bar widgets); `chip` as a chip that opens. */
+  variant?: "framed" | "ghost" | "chip";
   className?: string;
   "aria-label"?: string;
   /** Custom trigger content. */
   renderValue?: (option: SelectOption<V> | undefined) => ReactNode;
-  /** Show a search box in the popup (useful for long option lists). */
+  /** Show a search box in the popup (useful for long option lists); typing on the closed trigger opens it with that text. */
   searchable?: boolean;
   /** The option under the pointer or keyboard while the list is open; `null` once it closes. */
   onPreview?: (value: V | null) => void;
@@ -59,7 +59,11 @@ export interface SelectListboxProps<V extends string = string> {
   /** Called with the chosen option; closing, if any, is the caller's. */
   onChoose: (value: V) => void;
   searchable?: boolean;
+  /** Search text the list opens with. */
+  initialQuery?: string;
   onPreview?: (value: V | null) => void;
+  /** Optional trailing action control rendered at the end of a non-section row. */
+  renderAction?: (option: SelectOption<V>) => ReactNode;
   /** Extra class for the scrolling list, e.g. to set its height. */
   listClassName?: string;
   "aria-label"?: string;
@@ -71,7 +75,9 @@ export function SelectListbox<V extends string = string>({
   options,
   onChoose,
   searchable = false,
+  initialQuery = "",
   onPreview,
+  renderAction,
   listClassName,
   ...aria
 }: SelectListboxProps<V>) {
@@ -83,7 +89,8 @@ export function SelectListbox<V extends string = string>({
       options.findIndex((o) => !o.section && !o.disabled && o.value === value),
     ),
   );
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
+  const caretPlaced = useRef(false);
   const typeAhead = useRef({ text: "", at: -Infinity });
   const isSection = (o: SelectOption<V>) => !!o.section;
   const unavailable = (o: SelectOption<V>) => !!(o.section || o.disabled);
@@ -205,6 +212,13 @@ export function SelectListbox<V extends string = string>({
             value={query}
             autoFocus
             data-autofocus
+            onFocus={(e) => {
+              // Keep typing after the text that opened the list instead of before it.
+              if (caretPlaced.current) return;
+              caretPlaced.current = true;
+              const end = e.currentTarget.value.length;
+              e.currentTarget.setSelectionRange(end, end);
+            }}
             placeholder={tx("Search…")}
             onChange={(v) => {
               setQuery(v);
@@ -242,20 +256,35 @@ export function SelectListbox<V extends string = string>({
         rowHeight={24}
         aria-label={given(aria["aria-label"])}
         className={clsx(styles.list, listClassName)}
-        renderItem={(o) => (
-          <span className={clsx(styles.option, o.disabled && styles.disabled)} aria-disabled={o.disabled || undefined}>
-            <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
-            {o.icon && <Icon name={o.icon} size={14} />}
-            <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={labelOf(o)}>
-              {labelOf(o)}
-            </span>
-            {o.detail && (
-              <span className={styles.detail} title={o.detail}>
-                {given(o.detail)}
+        renderItem={(o) => {
+          const action = !o.section && !o.disabled ? renderAction?.(o) : null;
+          return (
+            <span
+              className={clsx(styles.option, o.disabled && styles.disabled)}
+              aria-disabled={o.disabled || undefined}
+            >
+              <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
+              {o.icon && <Icon name={o.icon} size={14} />}
+              <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={labelOf(o)}>
+                {labelOf(o)}
               </span>
-            )}
-          </span>
-        )}
+              {o.detail && (
+                <span className={styles.detail} title={o.detail}>
+                  {given(o.detail)}
+                </span>
+              )}
+              {action && (
+                <span
+                  className={styles.rowAction}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {action}
+                </span>
+              )}
+            </span>
+          );
+        }}
       />
     </div>
   );
@@ -277,9 +306,13 @@ export function Select<V extends string = string>({
 }: SelectProps<V>) {
   const given = useGivenTx();
   const [open, setOpen] = useState(false);
+  const [initialQuery, setInitialQuery] = useState("");
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = options.find((o) => !o.section && o.value === value);
-  const openPopup = () => setOpen(true);
+  const openPopup = (query = "") => {
+    setInitialQuery(query);
+    setOpen(true);
+  };
   // Selection can update the callback as the list unmounts; use the committed trigger props.
   const previewRef = useRef(onPreview);
   useLayoutEffect(() => {
@@ -300,9 +333,22 @@ export function Select<V extends string = string>({
         className={clsx(styles.trigger, styles[variant], className)}
         onClick={() => (open ? setOpen(false) : openPopup())}
         onKeyDown={(e) => {
-          if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          if (open) return;
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
             e.preventDefault();
             openPopup();
+          } else if (
+            searchable &&
+            e.key.length === 1 &&
+            e.key !== " " &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            !e.altKey &&
+            !e.nativeEvent.isComposing
+          ) {
+            // Type to search: the key starts the query instead of being lost on the button.
+            e.preventDefault();
+            openPopup(e.key);
           }
         }}
       >
@@ -330,6 +376,7 @@ export function Select<V extends string = string>({
           value={value}
           options={options}
           searchable={searchable}
+          initialQuery={initialQuery}
           onPreview={preview}
           aria-label={aria["aria-label"]}
           onChoose={(v) => {

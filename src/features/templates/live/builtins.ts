@@ -186,6 +186,58 @@ const go = group(
   ],
 );
 
+const zig = group(
+  "Zig",
+  "zig",
+  ["zig"],
+  [
+    {
+      abbrev: "fn",
+      description: "Function",
+      body: "fn $NAME$($PARAMS$) $RET$ {\n\t$END$\n}",
+      variables: [v("RET", undefined, '"void"')],
+    },
+    {
+      abbrev: "pfn",
+      description: "Public function",
+      body: "pub fn $NAME$($PARAMS$) $RET$ {\n\t$END$\n}",
+      variables: [v("RET", undefined, '"void"')],
+    },
+    { abbrev: "main", description: "main function", body: "pub fn main() !void {\n\t$END$\n}" },
+    {
+      abbrev: "test",
+      description: "Test block",
+      body: 'test "$NAME$" {\n\t$END$\n}',
+      variables: [v("NAME", undefined, '"it works"')],
+    },
+    { abbrev: "st", description: "Struct type", body: "pub const $NAME$ = struct {\n\t$END$\n};" },
+    { abbrev: "en", description: "Enum type", body: "pub const $NAME$ = enum {\n\t$END$\n};" },
+    { abbrev: "un", description: "Tagged union type", body: "pub const $NAME$ = union(enum) {\n\t$END$\n};" },
+    { abbrev: "if", description: "if statement", body: "if ($COND$) {\n\t$END$\n}" },
+    { abbrev: "ife", description: "if / else", body: "if ($COND$) {\n\t$END$\n} else {\n\t\n}" },
+    {
+      abbrev: "iferr",
+      description: "if result / error",
+      body: "if ($EXPR$) |$VAL$| {\n\t$END$\n} else |$ERR$| {\n\t\n}",
+      variables: [v("VAL", undefined, '"value"'), v("ERR", undefined, '"err"')],
+    },
+    { abbrev: "while", description: "while loop", body: "while ($COND$) {\n\t$END$\n}" },
+    {
+      abbrev: "for",
+      description: "for loop",
+      body: "for ($ITER$) |$ITEM$| {\n\t$END$\n}",
+      variables: [v("ITER"), v("ITEM", undefined, '"item"')],
+    },
+    { abbrev: "defer", description: "defer block", body: "defer {\n\t$END$\n}" },
+    { abbrev: "const", description: "const declaration", body: "const $NAME$ = $END$;" },
+    { abbrev: "var", description: "var declaration", body: "var $NAME$ = $END$;" },
+    { abbrev: "try", description: "try expression", body: "try $END$;" },
+    { abbrev: "catch", description: "catch block", body: "$EXPR$ catch {\n\t$END$\n}" },
+    { abbrev: "sw", description: "switch expression", body: "switch ($EXPR$) {\n\t$END$\n}" },
+    { abbrev: "p", description: "std.debug.print", body: 'std.debug.print("{any}\\n", .{$END$});' },
+  ],
+);
+
 const java = group(
   "Java",
   "java",
@@ -495,6 +547,7 @@ export const BUILTIN_TEMPLATES: readonly LiveTemplate[] = [
   ...ts,
   ...python,
   ...go,
+  ...zig,
   ...java,
   ...kotlin,
   ...php,

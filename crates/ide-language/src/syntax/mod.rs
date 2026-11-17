@@ -6,12 +6,15 @@ mod external;
 mod folding;
 mod grammars;
 mod highlight;
+mod inheritance;
 pub(crate) mod lines;
 mod literals;
 mod outline;
+mod python_facts;
 mod rst;
 mod selection;
 mod sfc;
+mod vue;
 mod web;
 
 use crate::{FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
@@ -21,13 +24,16 @@ pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, 
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};
+pub use inheritance::ClassBases;
 pub use lines::{shift_pos, shift_range};
 pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
 pub use outline::merge_visibility;
+pub use python_facts::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use tree_sitter::{Language, Parser, Tree};
+pub use vue::{VueComponentImport, VueRefAccess, VueRefElement};
 pub use web::{CSS_CLASS, CSS_ID, CSS_VARIABLE, FileReference, WebReference, WebReferenceKind};
 
 /// Texts larger than this are not parsed (minified bundles, generated dumps).
@@ -130,29 +136,11 @@ impl Syntax {
         SPECS.iter().map(|s| s.name)
     }
 
-    /// Changes whenever extraction output may change (grammar set, queries,
-    /// crate version); persistent caches of [`Syntax::tags`] key on it.
+    /// Changes whenever extraction output may change (this crate's sources,
+    /// queries, language definitions, tree-sitter crate versions; see
+    /// `build.rs`); persistent caches of [`Syntax::tags`] key on it.
     pub fn fingerprint(&self) -> String {
-        static FP: OnceLock<String> = OnceLock::new();
-        FP.get_or_init(|| {
-            let mut h = blake3::Hasher::new();
-            h.update(env!("CARGO_PKG_VERSION").as_bytes());
-            // Bump when web definitions (`.class`, `#id`, `--var` tags) change.
-            h.update(b"web-definitions-1");
-            for s in SPECS {
-                h.update(s.name.as_bytes());
-                h.update(&Language::new(s.language).abi_version().to_le_bytes());
-                h.update(s.outline.as_bytes());
-                for list in [s.fold_nodes, s.fold_bodies, s.imports, s.constructors] {
-                    for k in list {
-                        h.update(k.as_bytes());
-                        h.update(b"\0");
-                    }
-                }
-            }
-            h.finalize().to_hex()[..16].to_owned()
-        })
-        .clone()
+        env!("SYNTAX_SOURCE_HASH").to_owned()
     }
 
     /// Whether a tree-sitter grammar is bundled for this language.

@@ -4,7 +4,7 @@ import { IconButton, Input } from "@/ui";
 import { Row, Section, Select, Toggle } from "../components/Form";
 import { useSetting } from "../components/context";
 import { DEFAULT_LANGUAGES } from "@/platform/languageSettings";
-import { choosePath } from "./api";
+import { choosePath } from "@/platform/choosePath";
 import styles from "./Sdk.module.css";
 
 const names: Record<string, string> = {

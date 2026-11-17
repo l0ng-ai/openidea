@@ -21,7 +21,7 @@ export const useServicesTree = create<TreeState>(() => ({
   roots: {},
   selectedKey: null,
   selectedKeys: new Set(),
-  expanded: new Set(["docker:default", "docker:default:group:containers"]),
+  expanded: new Set(),
 }));
 
 /** Keys of nodes asking to start expanded that were shown once (collapsing them then sticks). */

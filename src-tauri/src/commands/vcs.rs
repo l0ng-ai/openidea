@@ -1,5 +1,6 @@
 //! IPC commands of `ide_host::ops::vcs` (the shared implementation).
 
+use super::doc::blocking;
 use crate::state::AppState;
 use ide_core::{IdeResult, RequestId};
 #[allow(unused_imports)]
@@ -7,13 +8,23 @@ pub use ide_host::ops::vcs::*;
 use ide_vcs::*;
 use std::path::PathBuf;
 use tauri::ipc::Channel;
-use tauri::{State, Window};
+use tauri::{AppHandle, Manager, State, Window};
 
 /// Changes of every repository of the project.
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_status(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<FileStatus>> {
     ide_host::ops::vcs::status(&state.host, window.label()).await
+}
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_status_paths(
+    window: Window,
+    paths: Vec<PathBuf>,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::status_paths(&state.host, window.label(), paths).await
 }
 /// The project's repositories, the primary one first.
 #[tauri::command]
@@ -48,6 +59,19 @@ pub async fn vcs_file_at(
     rev: Option<String>,
 ) -> IdeResult<Option<String>> {
     ide_host::ops::vcs::vcs_file_at(&state.host, window.label(), path, rev).await
+}
+
+/// The file's git mode at `rev` (`100644`, `100755`, `120000`…), `"WT"` for the
+/// worktree; `None` when absent there. Lets the diff viewer report a mode-only change.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_file_mode(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    rev: Option<String>,
+) -> IdeResult<Option<String>> {
+    ide_host::ops::vcs::vcs_file_mode(&state.host, window.label(), path, rev).await
 }
 
 /// History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
@@ -213,6 +237,17 @@ pub async fn vcs_add_to_ignore(
     destination: IgnoreDestination,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     ide_host::ops::vcs::vcs_add_to_ignore(&state.host, window.label(), paths, destination).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_ignore_blame_revision(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_ignore_blame_revision(&state.host, window.label(), path, commit).await
 }
 
 #[tauri::command]
@@ -404,8 +439,10 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index).await
+    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index, paths)
+        .await
 }
 
 #[tauri::command]
@@ -473,8 +510,27 @@ pub async fn vcs_diff_text(
 /// Line hunks between two arbitrary texts (diff viewer, commit dialog).
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_diff_hunks(state: State<'_, AppState>, old_text: String, new_text: String) -> Vec<LineHunk> {
-    ide_host::ops::vcs::vcs_diff_hunks(&state.host, "", old_text, new_text)
+pub async fn vcs_diff_hunks(app: AppHandle, old_text: String, new_text: String) -> Vec<LineHunk> {
+    // Off the main thread: diffing two large texts would freeze the window.
+    let host = app.state::<AppState>().host.clone();
+    tauri::async_runtime::spawn_blocking(move || ide_host::ops::vcs::vcs_diff_hunks(&host, "", old_text, new_text))
+        .await
+        .expect("line diff panicked")
+}
+
+/// Show Diff in External Tool: starts the tool set in the global settings (never a
+/// project's, which a cloned repository could carry) on the two sides, on this machine
+/// (a remote window passes the sides as text).
+#[tauri::command]
+#[specta::specta]
+pub async fn diff_external_tool(
+    state: State<'_, AppState>,
+    left: ExternalDiffSide,
+    right: ExternalDiffSide,
+    title: String,
+) -> IdeResult<()> {
+    let settings = state.global_settings.effective().external_diff;
+    state.host.blocking(move || launch_external_diff(&settings, &left, &right, &title)).await
 }
 
 /// Stages only the selected hunks of a file's working-tree changes.
@@ -749,6 +805,17 @@ pub async fn vcs_create_patch(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_pending_patch(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    options: CommitOptions,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_pending_patch(&state.host, window.label(), repo, options).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_patch_preview(
     window: Window,
     state: State<'_, AppState>,
@@ -783,8 +850,9 @@ pub async fn vcs_shelve(
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelves(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ShelvedChangeList>> {
-    ide_host::ops::vcs::vcs_shelves(&state.host, window.label())
+pub async fn vcs_shelves(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ShelvedChangeList>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelves(&host, &label)).await
 }
 
 /// Unshelve: applies the shelved patch (3-way merging; conflicts are left for the
@@ -803,33 +871,44 @@ pub async fn vcs_unshelve(
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_delete(window: Window, state: State<'_, AppState>, id: String, path: Option<String>) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_shelf_delete(&state.host, window.label(), id, path)
+pub async fn vcs_shelf_delete(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    path: Option<String>,
+) -> IdeResult<()> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelf_delete(&host, &label, id, path)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_rename(window: Window, state: State<'_, AppState>, id: String, name: String) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_shelf_rename(&state.host, window.label(), id, name)
+pub async fn vcs_shelf_rename(window: Window, state: State<'_, AppState>, id: String, name: String) -> IdeResult<()> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelf_rename(&host, &label, id, name)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_shelf_patch(
+pub async fn vcs_shelf_patch(
     window: Window,
     state: State<'_, AppState>,
     id: String,
     path: Option<String>,
 ) -> IdeResult<String> {
-    ide_host::ops::vcs::vcs_shelf_patch(&state.host, window.label(), id, path)
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_shelf_patch(&host, &label, id, path)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn vcs_changelists_load(window: Window, state: State<'_, AppState>) -> IdeResult<ChangelistState> {
-    ide_host::ops::vcs::vcs_changelists_load(&state.host, window.label())
+pub async fn vcs_changelists_load(window: Window, state: State<'_, AppState>) -> IdeResult<ChangelistState> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::vcs::vcs_changelists_load(&host, &label)).await
 }
 
+// Synchronous on purpose: the UI saves without waiting (debounced), and on the main thread
+// the saves land in order, so an older state can't overwrite a newer one.
 #[tauri::command]
 #[specta::specta]
 pub fn vcs_changelists_save(window: Window, state: State<'_, AppState>, changelists: ChangelistState) -> IdeResult<()> {

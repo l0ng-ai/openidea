@@ -1,0 +1,26 @@
+id = "haskell"
+name = "Haskell"
+group = "Haskell"
+icon = "project-haskell"
+description = "A Cabal package from cabal init."
+
+[[requires]]
+program = "cabal"
+hint = "Install GHCup: https://www.haskell.org/ghcup/"
+
+[[fields]]
+id = "kind"
+label = "Type:"
+type = "choice"
+segmented = true
+options = [
+    { value = "--exe", label = "Executable" },
+    { value = "--lib", label = "Library" },
+    { value = "--libandexe", label = "Library and executable" },
+]
+default = "--exe"
+
+[[steps]]
+label = "Running cabal init"
+program = "cabal"
+args = ["init", "--non-interactive", "{{kind}}", "--package-name={{name|kebab}}", "--tests"]

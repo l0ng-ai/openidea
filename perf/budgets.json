@@ -144,6 +144,9 @@
 
     "plugins/load_50": 20000,
     "plugins/cold_activation": 30000,
-    "plugins/syntax_highlights_2k_lines": 50000
+    "plugins/syntax_highlights_2k_lines": 50000,
+
+    "heap/index_1m_objects": 400000,
+    "heap/dominators_1m_random": 1000000
   }
 }

@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -26,13 +27,22 @@ import { nativeDropPoint } from "@/platform/nativeDrop";
 import type { RootFolder } from "@/platform/languageSettings";
 import { useDetectedRoots, useEffectiveRoots } from "@/platform/projectRoots";
 import { macStroke, strokeOf } from "@/platform/keymap";
-import { OWNS_FILE_DROP, prepareMenuGroups, useFileDecoration } from "@/workbench/contributions";
+import {
+  OWNS_FILE_DROP,
+  prepareMenuGroups,
+  useFileDecoration,
+  type DecorationSegment,
+} from "@/workbench/contributions";
+import { useFileColors } from "@/workbench/fileColors";
 import {
   FILES_DRAG,
+  REMOTE_FILES_DRAG,
   HighlightedText,
   Icon,
   Popup,
+  beginDrag,
   dragSession,
+  registerDropTarget,
   Tree,
   acquirePopup,
   fileIconName,
@@ -48,7 +58,7 @@ import {
 import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
-import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
+import { presentationIcon, useJvmPresentation } from "@/ui/filePresentation";
 import {
   isModuleFolder,
   moduleFolderIcon,
@@ -57,23 +67,16 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
-import { PROJECT_TYPES } from "./projectType";
+import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
   cancelEditing,
   checkEditingName,
   commitEditing,
-  copyPaths,
-  copySelection,
-  deleteSelection,
   dropPaths,
   importExternal,
   openFile,
-  openMoveDialog,
-  openRenameDialog,
-  openSelection,
-  paste,
   refreshOsClipboard,
   targetFolder,
   undoLastFileOperation,
@@ -284,7 +287,9 @@ const Row = memo(function Row({
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
-  const projectType = useProjectTree((s) => (node.root && !node.icon ? s.projectTypes.get(node.path) : undefined));
+  const projectType = useProjectTree((s) =>
+    s.members && node.root && !node.icon ? s.projectTypes.get(node.path) : undefined,
+  );
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
@@ -305,6 +310,7 @@ const Row = memo(function Row({
       className={clsx(styles.content, cut && styles.cut, dropTarget && styles.dropTarget)}
       data-project-path={node.placeholder ? undefined : node.path}
       data-project-key={node.key}
+      data-project-icon={icon}
       data-dir={node.dir || undefined}
       title={deco.tooltip ?? hint ?? undefined}
       onClick={(e) => onClick(node, e)}
@@ -317,8 +323,10 @@ const Row = memo(function Row({
           size={16}
           className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)}
         />
+        {/* IDEA's symlink arrow, on file and folder links (the entry kind comes with the listing). */}
+        {node.symlink && <Icon name="symlink-mark" size={16} className={styles.overlay} label="Symbolic link" />}
         {!!file?.runnable && icon !== "spring-boot" && icon !== "jvm-test" && (
-          <Icon name="runnable-mark" size={16} className={styles.runnable} />
+          <Icon name="runnable-mark" size={16} className={styles.overlay} />
         )}
       </span>
       {isEditing && editing ? (
@@ -345,6 +353,7 @@ const Row = memo(function Row({
             indices={matches}
             tone="accent"
           />
+          {deco.suffix && <DecorationSuffix segments={deco.suffix} color={deco.suffixColor} />}
           {detail && <span className={styles.detail}>{detail}</span>}
           {deco.badge && <span className={styles.badge}>{deco.badge}</span>}
         </>
@@ -352,6 +361,43 @@ const Row = memo(function Row({
     </span>
   );
 });
+
+interface DecorationSuffixProps {
+  segments: readonly DecorationSegment[];
+  color?: string;
+}
+
+function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
+  return (
+    <span className={styles.suffix} style={color ? { color } : undefined}>
+      {segments.map((s, i) => {
+        const text = s.strike ? <s>{s.text}</s> : s.text;
+        const style: CSSProperties | undefined =
+          s.color || s.fontWeight || s.fontStyle || s.textDecoration
+            ? {
+                ...(s.color ? { color: s.color } : null),
+                ...(s.fontWeight ? { fontWeight: s.fontWeight } : null),
+                ...(s.fontStyle ? { fontStyle: s.fontStyle } : null),
+                ...(s.textDecoration ? { textDecoration: s.textDecoration } : null),
+              }
+            : undefined;
+        return (
+          <span
+            key={i}
+            className={styles.suffixSegment}
+            role={s.label ? "img" : undefined}
+            aria-label={s.label}
+            title={s.label}
+            style={style}
+          >
+            {text}
+            {s.icon && <Icon name={s.icon} size={12} />}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Member rows ("Show Members")
@@ -390,6 +436,8 @@ interface DragState {
 }
 
 const DRAG_THRESHOLD = 4;
+/** IDEA's "excluded" look: excluded folders and what is under them get a muted band. */
+const EXCLUDED_TINT = "var(--vcs-ignored)";
 
 /** Folder under a viewport point inside `container` (a file row resolves to its folder). */
 function folderAt(container: HTMLElement | null, x: number, y: number): { key: string; path: string } | null {
@@ -416,6 +464,7 @@ export function ProjectView() {
   useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
+  const fileColors = useFileColors("projectView");
   const expanded = useProjectTree((s) => s.expanded);
   const selected = useProjectTree((s) => s.selected);
   const editing = useProjectTree((s) => s.editing);
@@ -523,9 +572,9 @@ export function ProjectView() {
       void revealRange(
         lead.path,
         { start: lead.member.selection_range.start },
-        { preview: o.previewTab, focus: false },
+        { preview: o.previewTab, focus: false, external: false },
       );
-    } else void openFile(lead.path, { preview: o.previewTab, focus: false });
+    } else void openFile(lead.path, { preview: o.previewTab, focus: false, external: false });
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {
@@ -601,6 +650,7 @@ export function ProjectView() {
     // editor opens only files, so folders carry the trailing slash `findDirs`
     // uses and the editor leaves them out.
     let files: DragSession | null = null;
+    let endDrag: (() => void) | null = null;
     const move = (ev: PointerEvent) => {
       // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
       if (!(ev.buttons & 1)) {
@@ -611,6 +661,7 @@ export function ProjectView() {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
         dragged.current = true;
+        endDrag = beginDrag();
         const m = selectModel(useProjectTree.getState());
         const keys = before.has(node.key) ? [...before] : [node.key];
         if (before.has(node.key)) setSelection(before, lead);
@@ -657,6 +708,7 @@ export function ProjectView() {
       window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
+      endDrag?.();
       setDropTarget(null);
       setDrag(null);
     };
@@ -696,6 +748,24 @@ export function ProjectView() {
     };
   }, []);
 
+  // Files and folders dragged from Remote Host download into the folder they are dropped on.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === REMOTE_FILES_DRAG,
+      over: (_, x, y) => setDropTarget(folderAt(el, x, y)?.key ?? null),
+      leave: () => setDropTarget(null),
+      drop: (data, x, y) => {
+        setDropTarget(null);
+        const target = folderAt(el, x, y);
+        if (!target) return;
+        const { server, paths } = JSON.parse(data.payload) as { server: string; paths: string[] };
+        void executeAction("deployment.downloadRemoteInto", { server, paths, target: target.path });
+      },
+    });
+  }, []);
+
   // Reconcile external files and expired Copy/Cut state when returning from another app.
   useEffect(() => {
     void refreshOsClipboard();
@@ -704,43 +774,20 @@ export function ProjectView() {
     return () => window.removeEventListener("focus", refresh);
   }, []);
 
+  // The keymap owns the action keys (Delete, Shift+F6, F6, F4, copy/paste, New …):
+  // the global dispatcher runs them from the presets in the capture phase, so a
+  // cleared binding stays cleared and a rebound one follows the user (issue #2801).
+  // Only the strokes no preset binds stay local: ⌘Z undoing the last file
+  // refactoring (`project.undoMove` is unbound) and ⌃Enter's New popup on macOS.
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
     const stroke = strokeOf(e.nativeEvent);
     let handled = true;
     switch (stroke && macStroke(stroke)) {
-      case "Delete":
-      case "Meta+Backspace":
-        void deleteSelection();
-        break;
-      case "Shift+F6":
-        void openRenameDialog();
-        break;
-      case "F6":
-        openMoveDialog();
-        break;
       case "Meta+Z":
         handled = undoLastFileOperation();
         break;
-      case "Meta+C":
-        copySelection(false);
-        break;
-      case "Meta+X":
-        copySelection(true);
-        break;
-      case "Meta+V":
-        void paste();
-        break;
-      case "Shift+Meta+C":
-        void copyPaths("absolute");
-        break;
-      case "F4":
-      case "Meta+Down":
-        openSelection();
-        break;
-      case "Meta+N":
       case "Ctrl+Enter":
-      case "Alt+Insert":
         showNewPopup();
         break;
       default:
@@ -828,7 +875,9 @@ export function ProjectView() {
         isExpandable={isExpandable}
         loadChildren={loadChildren}
         renderNode={renderNode}
-        rowClassName={(n) => (n.excluded ? styles.excludedRow : undefined)}
+        rowTint={(n) =>
+          n.excluded ? EXCLUDED_TINT : n.group || n.placeholder ? undefined : fileColors?.(n.path, n.dir)
+        }
         expanded={expanded}
         onExpandedChange={onExpandedChange}
         selected={selected}

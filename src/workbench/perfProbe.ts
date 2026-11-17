@@ -3,12 +3,15 @@
  * Loaded only in dev and in `vite build --mode perf`; release builds never
  * include it. Measurement itself lives in the harness so it stays out of the app.
  */
+import { completionStatus, currentCompletions } from "@codemirror/autocomplete";
 import { syntaxParserRunning } from "@codemirror/language";
+import { forEachDiagnostic } from "@codemirror/lint";
 import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
 import type { Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
+import { openProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
 import { editorService } from "./contributions";
 
@@ -16,6 +19,8 @@ export interface PerfProbe {
   /** Seeds file contents for the in-memory document backend (plain-browser mode). */
   seed(path: string, text: string): void;
   openFile(path: string): Promise<void>;
+  /** Opens project `path` in this window (as the welcome screen does), without the window chooser. */
+  openProject(path: string): Promise<void>;
   runAction(id: string, arg?: unknown): Promise<boolean>;
   /** Effective keymap bindings of an action, e.g. `["Ctrl+Shift+A"]`. */
   bindings(id: string): string[];
@@ -23,8 +28,22 @@ export interface PerfProbe {
   setCursor(offset: number): void;
   /** True while the active editor's background syntax parser still has work. */
   parsing(): boolean;
-  /** Document length and caret of the active editor. */
-  editorState(): { path: string; length: number; lines: number; head: number } | null;
+  /** The active editor's text. */
+  editorText(): string | null;
+  /** Inserts `text` after the first `after` in the active editor, as an edit of the user's; the offset after it. */
+  insertAfter(after: string, text: string): number;
+  /** Replaces the active editor's whole text, as an edit of the user's. */
+  setText(text: string): void;
+  /** Labels of the completion lookup open in the active editor. */
+  completions(): string[];
+  /** True while a completion source of the active editor has not answered yet. */
+  completionPending(): boolean;
+  /** The diagnostics in the active editor (0-based line). */
+  diagnostics(): Array<{ line: number; severity: string; message: string }>;
+  /** 0-based line of the active editor shown at viewport `y` (e.g. a gutter marker's), or -1. */
+  lineAtY(y: number): number;
+  /** Document length and caret (offset, 0-based line, the word around it) of the active editor. */
+  editorState(): { path: string; length: number; lines: number; head: number; line: number; word: string } | null;
   /**
    * Answers code completion with `items` generated items (a language server's
    * list); other language server requests report no server. `0` removes it.
@@ -126,6 +145,12 @@ function setRoute(name: string, next: Route | null) {
   );
 }
 
+function requireView() {
+  const view = activeEditor()?.view;
+  if (!view) throw new Error("no active editor");
+  return view;
+}
+
 export function installPerfProbe(): () => void {
   const probe: PerfProbe = {
     seed(path, text) {
@@ -134,11 +159,11 @@ export function installPerfProbe(): () => void {
       backend.files.set(path, text);
     },
     openFile: (path) => editorService().openFile(path),
+    openProject: async (path) => void (await openProject(path)),
     runAction: (id, arg) => executeAction(id, arg),
     bindings: (id) => bindingsFor(id),
     setCursor(offset) {
-      const view = activeEditor()?.view;
-      if (!view) throw new Error("no active editor");
+      const view = requireView();
       view.dispatch({ selection: { anchor: Math.min(offset, view.state.doc.length) }, scrollIntoView: true });
       view.focus();
     },
@@ -177,11 +202,50 @@ export function installPerfProbe(): () => void {
           : null,
       );
     },
+    editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
+    insertAfter(after, text) {
+      const view = requireView();
+      const at = view.state.doc.toString().indexOf(after);
+      if (at < 0) throw new Error(`no ${JSON.stringify(after)} in the active editor`);
+      const from = at + after.length;
+      view.dispatch({ changes: { from, insert: text }, userEvent: "input" });
+      return from + text.length;
+    },
+    setText(text) {
+      const view = requireView();
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: "input" });
+    },
+    completions: () => currentCompletions(requireView().state).map((c) => c.label),
+    completionPending: () => completionStatus(requireView().state) === "pending",
+    diagnostics() {
+      const found: Array<{ line: number; severity: string; message: string }> = [];
+      const state = activeEditor()?.view.state;
+      if (!state) return found;
+      forEachDiagnostic(state, (d, from) =>
+        found.push({ line: state.doc.lineAt(from).number - 1, severity: d.severity, message: d.message }),
+      );
+      return found;
+    },
+    lineAtY(y) {
+      const view = activeEditor()?.view;
+      if (!view) return -1;
+      const block = view.lineBlockAtHeight(y - view.documentTop);
+      return view.state.doc.lineAt(block.from).number - 1;
+    },
     editorState() {
       const e = activeEditor();
       if (!e) return null;
       const { doc, selection } = e.view.state;
-      return { path: e.ctx.path, length: doc.length, lines: doc.lines, head: selection.main.head };
+      const head = selection.main.head;
+      const word = e.view.state.wordAt(head);
+      return {
+        path: e.ctx.path,
+        length: doc.length,
+        lines: doc.lines,
+        head,
+        line: doc.lineAt(head).number - 1,
+        word: word ? doc.sliceString(word.from, word.to) : "",
+      };
     },
   };
   const w = window as unknown as { __openideaPerf?: PerfProbe };

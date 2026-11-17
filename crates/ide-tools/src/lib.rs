@@ -19,7 +19,10 @@ pub mod archive;
 mod bundled;
 pub mod formatter;
 pub mod jdk;
+mod moved_venv;
 pub mod platform;
+#[cfg(any(windows, test))]
+pub mod portable_update;
 mod process;
 pub mod registry;
 pub mod server;
@@ -31,8 +34,8 @@ use ide_language::LanguageConfig;
 use parking_lot::Mutex;
 use platform::{Os, Platform};
 pub use process::progress_event;
-pub use process::{Emit, Http, run_streamed};
-use process::{run_collect, run_quiet};
+use process::run_collect;
+pub use process::{Emit, Http, run_quiet, run_streamed};
 pub use registry::{Method, ReleaseSource, TOOLS, ToolKind, ToolSpec};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -44,6 +47,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
+
+pub use moved_venv::drop_moved_venvs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +95,10 @@ pub struct ToolInfo {
     /// The interchangeable servers this one belongs to, in preference order: a
     /// server and the `fallback` ones after it. Empty when it has none.
     pub alternatives: Vec<String>,
+    /// A language server used for part of what its languages need (`features` in its
+    /// definition: pylsp-rope's refactorings next to basedpyright). Not offered for install
+    /// when missing; the Language Servers page lists it.
+    pub companion: bool,
 }
 
 /// Streamed install progress.
@@ -100,6 +109,17 @@ pub enum InstallEvent {
     Line { text: String },
     /// Download progress; `fraction` is 0..1 when the size is known.
     Progress { fraction: Option<f64>, message: String },
+}
+
+/// A newer version of a tool the IDE installed, as its install source offers it now.
+#[derive(Clone, Debug, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolUpdate {
+    pub name: String,
+    /// The installed version.
+    pub current: String,
+    /// The version installing the tool again would get.
+    pub latest: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -318,6 +338,7 @@ struct Usage {
     args: Vec<String>,
     initialization_options: Option<String>,
     alternatives: Vec<String>,
+    companion: bool,
 }
 
 fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
@@ -349,6 +370,11 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
             let name =
                 if servers.contains(d.adapter.as_str()) && d.command != d.adapter { &d.command } else { &d.adapter };
             add(name, &d.command, ToolKind::Debugger, d.install_hint.as_ref(), &l.name);
+        }
+    }
+    for s in langs.iter().flat_map(|l| &l.language_servers).filter(|s| !s.features.is_empty()) {
+        if let Some(u) = map.get_mut(&s.name) {
+            u.companion = true;
         }
     }
     for (plugin, host) in registry::PLUGIN_HOSTS {
@@ -736,6 +762,7 @@ impl Tools {
                 default_args: u.args.clone(),
                 default_initialization_options: u.initialization_options.clone(),
                 alternatives: u.alternatives.clone(),
+                companion: u.companion,
             })
             .map(|info| self.apply_custom(info, None));
         };
@@ -762,6 +789,7 @@ impl Tools {
             default_args: usage.map(|u| u.args.clone()).unwrap_or_default(),
             default_initialization_options: usage.and_then(|u| u.initialization_options.clone()),
             alternatives: usage.map(|u| u.alternatives.clone()).unwrap_or_default(),
+            companion: usage.is_some_and(|u| u.companion),
         })
         .map(|info| self.apply_custom(info, Some(spec)))
     }
@@ -1243,6 +1271,42 @@ impl Tools {
         Err(IdeError::new(ErrorKind::Io, format!("pip install {package} failed ({status})")))
     }
 
+    /// A command running pip, before its arguments. The interpreter's own pip when it has one;
+    /// a virtualenv made by uv has none, so then pip through `uv tool run`, or another Python
+    /// on `PATH` that has it.
+    fn pip_command(&self, python: PathBuf, emit: Emit) -> Command {
+        let has_pip = |python: &Path| {
+            let mut c = self.python_command(python);
+            c.args(["-m", "pip", "--version"]);
+            run_quiet(c, Duration::from_secs(20)).is_some_and(|(ok, _)| ok)
+        };
+        let module = |python: &Path| {
+            let mut c = self.python_command(python);
+            c.args(["-m", "pip"]);
+            c
+        };
+        if has_pip(&python) {
+            return module(&python);
+        }
+        let note = format!("{} has no pip", python.display());
+        if let Some(uv) = self.which("uv") {
+            emit(InstallEvent::Line { text: format!("{note}; running pip with uv") });
+            // pip runs in uv's own Python: the same private working directory applies.
+            let mut c = self.python_command(uv);
+            c.args(["tool", "run", "pip"]);
+            return c;
+        }
+        let other = ["python3", "python"]
+            .into_iter()
+            .filter_map(|name| ide_core::tool_path::find_command(name, &self.system_path, &self.root))
+            .find(|p| *p != python && has_pip(p));
+        if let Some(other) = other {
+            emit(InstallEvent::Line { text: format!("{note}; using {}", other.display()) });
+            return module(&other);
+        }
+        module(&python)
+    }
+
     /// The universal (`py3-none-any`) wheel, so the copy works with every interpreter
     /// version a project selects, not just the one that installed it.
     fn install_pip_target(
@@ -1256,8 +1320,8 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = python_lib_dir(&self.root, spec.name);
         std::fs::create_dir_all(&lib)?;
-        let mut c = self.python_command(self.python().expect("checked"));
-        c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
+        let mut c = self.pip_command(self.python().expect("checked"), emit);
+        c.args(["install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
             .arg(&lib)
             .args(["--only-binary=:all:", "--platform", "any", "--implementation", "py"])
             .arg(package);
@@ -1283,6 +1347,14 @@ impl Tools {
         cancel: &CancellationToken,
     ) -> IdeResult<sources::Download> {
         match source {
+            ReleaseSource::Fixed { version, url, sha256 } => Ok(sources::Download {
+                version: version.into(),
+                name: url.rsplit('/').next().unwrap_or("download").into(),
+                url: url.into(),
+                size: None,
+                sha256: Some(sha256.into()),
+                checksum_url: None,
+            }),
             ReleaseSource::GitHub { repo } => match http.get_text(&sources::github_latest_url(repo), cancel) {
                 Ok(json) => sources::github_pick(&json, assets, self.platform),
                 Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
@@ -1387,7 +1459,9 @@ impl Tools {
         let pkg = staging.join("pkg");
         let kind = archive::ArchiveKind::from_name(&dl.name);
         let main = spec.commands[0];
-        let exe_name = self.platform.exe(main);
+        // A PHP archive keeps its name and runs through `php` (Windows can't launch it itself).
+        let phar = dl.name.ends_with(".phar");
+        let exe_name = if phar { format!("{main}.phar") } else { self.platform.exe(main) };
         match kind {
             archive::ArchiveKind::Gz | archive::ArchiveKind::Raw => {
                 archive::extract(&archive, kind, &pkg.join("bin"), &exe_name, cancel)?
@@ -1408,10 +1482,16 @@ impl Tools {
             .ok_or_else(|| IdeError::new(ErrorKind::Io, format!("`{main}` was not found in {}", dl.name)))?;
         let rel = found.strip_prefix(&pkg).expect("inside pkg").to_path_buf();
         let final_dir = self.root.join(spec.name);
-        if final_dir.exists() {
-            std::fs::remove_dir_all(&final_dir)?;
-        }
-        std::fs::rename(&pkg, &final_dir)?;
+        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
+        clear_quarantine(&pkg);
+        // The previous install is removed in the background once replaced: deleting a large
+        // tool takes a while, and there is nothing left to cancel by then.
+        let previous = self.root.join(format!(".previous-{}", spec.name));
+        let _ = std::fs::remove_dir_all(&previous);
+        put_in_place(&pkg, &final_dir, &previous, cancel)?;
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(previous);
+        });
         let target = final_dir.join(&rel);
         let bin = final_dir.join("bin");
         if is_bundle(main) {
@@ -1423,12 +1503,87 @@ impl Tools {
         } else {
             archive::make_executable(&target)?;
             if self.exe_in(&bin, main).as_deref() != Some(target.as_path()) {
-                archive::link_executable(&bin, main, &target)?;
+                if spec.name == "unity-debug" && cfg!(unix) {
+                    archive::link_executable_with_runtime(&bin, main, &target, Some("mono"))?;
+                } else if phar {
+                    archive::link_executable_with_runtime(&bin, main, &target, Some("php"))?;
+                } else {
+                    archive::link_executable(&bin, main, &target)?;
+                }
             }
         }
-        // Downloads made by the IDE itself are not quarantined, but archives may carry the flag.
-        clear_quarantine(&final_dir);
         self.write_manifest(spec.name, &Manifest { version: Some(dl.version.clone()), source: Some(dl.url.clone()) })
+    }
+
+    /// Newer versions of the tools the IDE installed into its tools folder, for the install
+    /// sources that can be asked: release downloads (GitHub, Open VSX, Maven Central, …) and
+    /// npm packages. A tool whose lookup fails (offline, rate limited) is left out.
+    pub fn updates(&self, cancel: &CancellationToken) -> IdeResult<Vec<ToolUpdate>> {
+        let installed: Vec<(&ToolSpec, Method, String)> = TOOLS
+            .iter()
+            .filter_map(|spec| {
+                let method = self.install_method(spec);
+                Some((spec, method, self.installed_version(spec, method)?))
+            })
+            .collect();
+        let updates = std::thread::scope(|scope| {
+            let lookups: Vec<_> = installed
+                .iter()
+                .map(|(spec, method, current)| {
+                    scope.spawn(move || match self.for_method(*method).latest_version(*method, cancel) {
+                        Ok(Some(latest)) if latest != *current => {
+                            Some(ToolUpdate { name: spec.name.into(), current: current.clone(), latest })
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::info!("update check for {}: {}", spec.name, e.message);
+                            None
+                        }
+                    })
+                })
+                .collect();
+            lookups.into_iter().filter_map(|lookup| lookup.join().ok().flatten()).collect()
+        });
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        Ok(updates)
+    }
+
+    /// The version of `spec` in the IDE's tools folder, when `method` (how it was installed)
+    /// can tell the latest one.
+    fn installed_version(&self, spec: &ToolSpec, method: Method) -> Option<String> {
+        match method {
+            Method::Release { .. } => {
+                managed_bin_dir(&self.root, spec, self.platform).and_then(|dir| self.exe_in(&dir, spec.commands[0]))?;
+                self.manifest(spec.name)?.version
+            }
+            // A pinned package (`typescript@6`) stays on its major version.
+            Method::Npm { packages } if npm_name(packages[0]) == packages[0] => self.npm_package_version(packages[0]),
+            _ => None,
+        }
+    }
+
+    /// The version installing with `method` would get now.
+    fn latest_version(&self, method: Method, cancel: &CancellationToken) -> IdeResult<Option<String>> {
+        match method {
+            Method::Release { source, assets, .. } => {
+                let http = Http::new(&self.system_path)?;
+                Ok(Some(self.resolve_release(&http, source, assets, cancel)?.version))
+            }
+            Method::Npm { packages } => {
+                let (manager, _) = self.npm_manager()?;
+                let mut c = self.command(manager);
+                // The registry the user's npm configuration names (a mirror, a proxy). A cold npm
+                // on a slow registry takes several seconds per package, more when run side by side.
+                c.args(["view", packages[0], "version"]).current_dir(&self.root);
+                match run_quiet(c, Duration::from_secs(60)) {
+                    Some((true, out)) => Ok(out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(String::from)),
+                    _ => Err(IdeError::unavailable(format!("cannot look up the latest {}", packages[0]))),
+                }
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Removes a tool the IDE installed.
@@ -1561,6 +1716,25 @@ fn fetch_verified(
 }
 
 /// Removes the quarantine flag archives may carry, so macOS runs what was unpacked.
+/// Moves the unpacked `pkg` to `dest`, moving a previous install aside to `aside`.
+/// Cancelling stops it until then: the last point where the previous install is untouched.
+fn put_in_place(pkg: &Path, dest: &Path, aside: &Path, cancel: &CancellationToken) -> IdeResult<()> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let replaced = dest.exists();
+    if replaced {
+        std::fs::rename(dest, aside)?;
+    }
+    if let Err(e) = std::fs::rename(pkg, dest) {
+        if replaced {
+            let _ = std::fs::rename(aside, dest);
+        }
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 fn clear_quarantine(dir: &Path) {
     #[cfg(target_os = "macos")]
     {

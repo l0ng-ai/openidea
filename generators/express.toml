@@ -1,0 +1,77 @@
+id = "express"
+name = "Express"
+group = "JavaScript"
+icon = "project-express"
+order = 8
+description = "A minimal Express server."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[files]]
+path = "package.json"
+content = '''
+{
+  "name": "{{name|kebab}}",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
+'''
+
+[[files]]
+path = "index.js"
+content = '''
+import express from "express";
+
+const app = express();
+const port = process.env.PORT ?? 3000;
+
+app.get("/", (req, res) => {
+  res.send("Hello, World!");
+});
+
+app.listen(port, () => {
+  console.log(`Listening on http://localhost:${port}`);
+});
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+node_modules/
+'''
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

@@ -5,6 +5,7 @@
  * it. Tracked on the window so an editor sees the key even when it isn't focused.
  */
 import { hasPrimaryModifier, isMacHost } from "./keymap";
+import { notifyEach } from "./listeners";
 
 type ModifierEvent = Pick<MouseEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">;
 
@@ -21,7 +22,7 @@ let installed: (() => void) | null = null;
 function setHeld(value: boolean) {
   if (held === value) return;
   held = value;
-  for (const fn of [...listeners]) fn(value);
+  notifyEach([...listeners], (fn) => fn(value), "navigation modifier");
 }
 
 function install() {

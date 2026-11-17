@@ -8,6 +8,24 @@ def canon = { File f -> f.canonicalPath }
 // the identity path (`:lib:core`, `:buildSrc`) tells them apart and addresses their tasks
 // from the root build. Internal API, hence the fallback.
 def identity = { Project p -> try { p.identityPath.toString() } catch (ignored) { p.path } }
+// The task copying a source set's resources and its output folder, when it changes them on the
+// way (filters, `expand`, renames, includes / excludes, extra sources): jdtls copies resources as
+// they are, so launches take them from Gradle. Internal API, hence the fallback.
+def processedResources = { Project p, s ->
+    try {
+        def task = p.tasks.findByName(s.processResourcesTaskName)
+        if (task == null) return null
+        def specs = 0
+        def changes = task.mainSpec.sourcePaths.size() > 1
+        task.rootSpec.buildRootResolver().walk { r ->
+            specs++
+            changes |= !r.allCopyActions.isEmpty() || !r.allIncludes.isEmpty() || !r.allExcludes.isEmpty() ||
+                !r.allIncludeSpecs.isEmpty() || !r.allExcludeSpecs.isEmpty() || r.destPath.segments.length > 0
+        }
+        // The root and main specs exist for every task; more come from `from(…) { … }`.
+        (changes || specs > 2) ? [task: task.name, dir: canon(task.destinationDir)] : null
+    } catch (ignored) { null }
+}
 
 def describe = { Project p ->
     def m = [path: identity(p), dir: canon(p.projectDir), buildDir: canon(p.layout.buildDirectory.get().asFile)]
@@ -26,7 +44,10 @@ def describe = { Project p ->
             def test = s.name == 'test' || s.name == 'testFixtures' || suites.contains(s.name) ||
                 s.name.endsWith('Test') || s.name.endsWith('Tests') ||
                 (!src.isEmpty() && src.every { ideaTests.contains(it) })
-            [name: s.name, test: test, src: src, res: res]
+            def set = [name: s.name, test: test, src: src, res: res]
+            def processed = processedResources(p, s)
+            if (processed != null) set.processed = processed
+            set
         }
     }
     try {

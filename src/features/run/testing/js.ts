@@ -10,6 +10,8 @@ const TEST_FILE = String.raw`[^\s>()]+\.(?:[cm]?[jt]sx?|vue|svelte|astro)`;
 const JEST_FILE_RE = new RegExp(String.raw`^\s*(PASS|FAIL)\s+(${TEST_FILE})(?:\s+\(.*\))?\s*$`);
 const VITEST_FAIL_HEADER_RE = new RegExp(String.raw`^\s*FAIL\s+(${TEST_FILE})\s+>\s+(.+?)\s*$`);
 const JEST_FAIL_HEADER_RE = /^\s*● (.+)$/;
+/** Vitest: `stdout | src/a.test.ts > suite > test` heads the console output of that test, up to a blank line. */
+const VITEST_CONSOLE_RE = new RegExp(String.raw`^(?:stdout|stderr) \| (${TEST_FILE})(?:\s+>\s+(.+?))?\s*$`);
 const LOCATION_RE = new RegExp(String.raw`(?:\(|\s|^)(?:file:\/\/)?((?:\/|\.{0,2}\/?)?${TEST_FILE}):(\d+):(\d+)\)?`);
 const JEST_SUMMARY_RE = /^Tests:\s+(.+?)\s*$/;
 const VITEST_SUMMARY_RE = /^\s*Tests\s+(.+?)\s+\((\d+)\)\s*$/;
@@ -42,6 +44,8 @@ export function jsParser(): TestOutputParser {
   let inVerboseBlock = false;
   let failure: string[] | null = null;
   let locationFound = false;
+  /** The test whose console output (Vitest `stdout | …` block) the next lines are. */
+  let consoleOf: string[] | null = null;
 
   const startFailure = (path: string[]) => {
     failure = path;
@@ -54,12 +58,27 @@ export function jsParser(): TestOutputParser {
       const line = raw.replace(/\s+$/, "");
       let m: RegExpExecArray | null;
 
+      if (consoleOf) {
+        if (line) events.push({ type: "output", path: consoleOf, line: raw });
+        else consoleOf = null;
+        return events;
+      }
+      if ((m = VITEST_CONSOLE_RE.exec(line))) {
+        consoleOf = [m[1]!, ...(m[2] ? m[2].split(/\s+>\s+/) : [])];
+        return events;
+      }
+
       if ((m = JEST_FILE_RE.exec(line))) {
         file = m[2]!;
         describes = [];
         inVerboseBlock = true;
         failure = null;
         events.push({ type: "result", path: [file], status: m[1] === "PASS" ? "passed" : "failed" });
+        return events;
+      }
+      // Vitest separators (`⎯⎯ Failed Tests 1 ⎯⎯`, `⎯⎯[1/2]⎯`) end a failure's details.
+      if (line.trimStart().startsWith("⎯")) {
+        failure = null;
         return events;
       }
       if ((m = VITEST_FAIL_HEADER_RE.exec(line))) {
@@ -105,6 +124,13 @@ export function jsParser(): TestOutputParser {
         if (fm && FILE_COUNT_RE.test(body)) {
           file = fm[1]!;
           events.push({ type: "result", path: [file], status: "failed", durationMs: trailingDuration(body) });
+          return events;
+        }
+        // Vitest default reporter: `   ❯ Cart (4)` opens a suite with failed tests; its tests follow, indented.
+        const suite = /^(.+?) \(\d+\)$/.exec(body);
+        if (suite && file && !failure) {
+          while (describes.length && describes[describes.length - 1]!.indent >= indent) describes.pop();
+          describes.push({ indent, name: suite[1]! });
           return events;
         }
         if (failure) events.push({ type: "output", path: failure, line: raw });

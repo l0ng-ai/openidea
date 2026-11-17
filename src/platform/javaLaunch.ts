@@ -15,6 +15,7 @@ import {
 } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { useBuildPresentation } from "@/platform/projectPresentation";
+import { isRemoteWindow } from "@/platform/remote";
 
 export const CLASSPATH = "${classpath}";
 export const TEST_CLASSPATH = "${testClasspath}";
@@ -23,6 +24,25 @@ export const JVM_APPLICATION_KINDS = ["application", "spring-boot"];
 
 export function isJvmApplication(config: Pick<RunConfig, "kind">): boolean {
   return JVM_APPLICATION_KINDS.includes(config.kind);
+}
+
+/** Run configuration kinds whose JVM gets the plugins' Java agents (`[[contributes.javaAgents]]`). */
+const JAVA_AGENT_KINDS = ["application", "spring-boot", "jar-application"];
+
+/**
+ * The console line of a Java launch in a remote project, when plugins with a granted
+ * `java.agent` would have added their agent: the JVM runs on the server, and agents load
+ * only into JVMs on this machine. `null` otherwise. Plugins are the desktop's own.
+ */
+export async function remoteJavaAgentNote(config: Pick<RunConfig, "kind">): Promise<string | null> {
+  if (!JAVA_AGENT_KINDS.includes(config.kind) || !isRemoteWindow()) return null;
+  const snapshot = await call(commands.pluginList()).catch(() => null);
+  const names = (snapshot?.plugins ?? [])
+    .filter((p) => p.enabled && p.capabilities.some((c) => c.id === "java.agent" && c.granted))
+    .map((p) => p.name);
+  if (!names.length) return null;
+  const list = names.join(", ");
+  return tx`Java agents of ${list} were not added: they load only in local projects.` + "\n";
 }
 
 /** `java` options whose value is the next argument. */
@@ -128,6 +148,14 @@ export function joinJavaArgs(args: readonly string[]): string {
 
 /** JDWP agent options: listen on a free local port and wait for the debugger. */
 export const JDWP_AGENT = "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0";
+
+/** Makes a HotSpot JVM open its attach socket at start-up; the memory view finds the debuggee through it. */
+export const ATTACH_LISTENER = "-XX:+StartAttachListener";
+
+/** True when VM options already decide about the attach mechanism, so the IDE must not override them. */
+export function optsOutOfAttach(text: string): boolean {
+  return /StartAttachListener|DisableAttachMechanism/.test(text);
+}
 
 /** The port of `Listening for transport dt_socket at address: 5005` (JDWP's start-up line). */
 export function jdwpListeningPort(line: string): number | null {

@@ -4,6 +4,7 @@ import { confirmProjectTrust } from "@/platform/projectTrust";
 import { executeAction } from "@/platform/actions";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { invokeLocal } from "@/platform/tauriCore";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { useContributions, useSettingsPages } from "@/workbench/contributions";
@@ -29,10 +30,14 @@ vi.mock("@/platform/ipc", async (original) => {
       projectTrustSet: (...args: unknown[]) => decide(...args),
       projectTrustList: () => listDecisions(),
       projectTrustAddLocation: (...args: unknown[]) => addLocation(...args),
+      remoteTrustStatus: () => remoteStatus(),
+      remoteTrustSet: (...args: unknown[]) => remoteDecide(...args),
       projectCurrent: async () => null,
     },
   };
 });
+const remoteStatus = vi.fn();
+const remoteDecide = vi.fn();
 let dispose: () => void;
 beforeEach(() => {
   vi.mocked(invokeLocal).mockReset();
@@ -40,13 +45,56 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (root: string) => ({ status: "ok", data: { root, trusted: false, decided: false } }));
   decide.mockReset().mockResolvedValue({ status: "ok", data: null });
+  remoteStatus
+    .mockReset()
+    .mockResolvedValue({ status: "ok", data: { root: "/srv/app", trusted: false, decided: false } });
+  remoteDecide.mockReset().mockResolvedValue({ status: "ok", data: null });
   addLocation.mockReset().mockResolvedValue({ status: "ok", data: null });
   listDecisions.mockReset().mockResolvedValue({ status: "ok", data: { projects: [], locations: [], restricted: [] } });
   pickFolder.mockReset().mockResolvedValue(null);
   useProject.setState({ project: null });
   dispose = activate();
 });
-afterEach(() => dispose());
+afterEach(() => {
+  dispose();
+  useRemote.setState({ session: null });
+});
+
+function remoteSession() {
+  useRemote.setState({
+    session: { target: { kind: "ssh", config: "box" }, root: "/srv/app", host: "box", os: "linux", commands: [] },
+  });
+}
+
+it("asks in a remote window when only the server has a trust decision, and records the answer on both", async () => {
+  remoteSession();
+  status.mockResolvedValue({ status: "ok", data: { root: "/srv/app", trusted: true, decided: true } });
+  render(<OverlayHost />);
+  const opening = confirmProjectTrust("/srv/app");
+  await screen.findByRole("dialog");
+  fireEvent.click(screen.getByRole("button", { name: "Preview in Restricted Mode" }));
+  await act(async () => opening);
+  expect(decide).toHaveBeenCalledWith("/srv/app", false, false);
+  expect(remoteDecide).toHaveBeenCalledWith(false);
+});
+
+it("reuses a remote project's decision once this machine has the same one", async () => {
+  remoteSession();
+  status.mockResolvedValue({ status: "ok", data: { root: "/srv/app", trusted: true, decided: true } });
+  remoteStatus.mockResolvedValue({ status: "ok", data: { root: "/srv/app", trusted: true, decided: true } });
+  render(<OverlayHost />);
+  await act(async () => confirmProjectTrust("/srv/app"));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(remoteDecide).not.toHaveBeenCalled();
+});
+
+it("revokes a remote project's trust on this machine too", async () => {
+  remoteSession();
+  useProject.setState({ project: { root: "/srv/app", name: "app", isGit: false, trusted: true, settings: {} } });
+  await act(async () => executeAction("project.revokeTrust"));
+  expect(decide).toHaveBeenCalledWith("/srv/app", false, false);
+  expect(remoteDecide).toHaveBeenCalledWith(false);
+});
 
 it("offers three choices, cancels without a trust decision, and supports restricted preview", async () => {
   render(<OverlayHost />);
@@ -175,4 +223,21 @@ it.each([false, true])("recovers an attached member whose trust is lost (decided
   fireEvent.click(screen.getAllByRole("button", { name: "Trust Project" }).at(-1)!);
   await act(async () => {});
   expect(decide).toHaveBeenCalledWith("/other", true, false);
+});
+
+it("asks over the splash of a window launched for an untrusted project, not over its Welcome screen", async () => {
+  const splash = document.createElement("div");
+  splash.id = "splash";
+  document.body.append(splash);
+  try {
+    render(<OverlayHost />);
+    vi.mocked(invokeLocal).mockResolvedValue({ root: "/launched", trusted: false, decided: false });
+    const opening = confirmProjectTrust("/launched", "local").catch(() => "cancelled");
+    await screen.findByRole("dialog");
+    expect(splash.classList.contains("splash-under-dialogs")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Don't Open" }));
+    expect(await opening).toBe("cancelled");
+  } finally {
+    splash.remove();
+  }
 });

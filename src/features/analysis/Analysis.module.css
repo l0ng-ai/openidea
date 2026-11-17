@@ -18,7 +18,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--h-row);
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
@@ -39,7 +39,7 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
   white-space: nowrap;
@@ -115,7 +115,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   height: var(--h-row);
   padding: 0 8px;
@@ -163,7 +163,7 @@
 .scope {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   margin: 0;
   padding: 0;
   border: 0;
@@ -176,7 +176,7 @@
 .radioRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 3px 0;
   color: var(--fg);
   cursor: default;
@@ -187,7 +187,7 @@
 }
 .dirRow {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 4px 0 0 22px;
 }
 .grow {
@@ -197,7 +197,7 @@
 .fieldRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .languageSelect {
   min-width: 180px;
@@ -245,7 +245,7 @@
 .previewItem {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -257,7 +257,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .previewWhere {
   color: var(--fg-subtle);
@@ -298,7 +298,7 @@
 .details {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 10px 12px;
   overflow: auto;
   border-left: 1px solid var(--border);
@@ -312,7 +312,7 @@
 .detailsTitle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-strong);
 }
 .detailsMessage {
@@ -322,5 +322,5 @@
 }
 .detailsActions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }

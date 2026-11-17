@@ -43,6 +43,17 @@ export function headPushed(branch: BranchInfo | null): boolean {
   return !!branch?.upstream && branch.ahead === 0;
 }
 
+/** Pushed history of a protected branch cannot be rewritten (force push is not allowed there). */
+export function protectedBranchProblem(
+  branch: { head: string | null; upstream: string | null },
+  protectedBranch: (name: string) => boolean,
+): string | null {
+  const name = branch.head;
+  // With no upstream there is no force push to prohibit, so the branch is not protected.
+  if (!name || !branch.upstream || !protectedBranch(name)) return null;
+  return `Pushed commits of the protected branch '${name}' cannot be rewritten`;
+}
+
 export function initialRows(commits: readonly Commit[]): RebaseRow[] {
   return autosquash(commits.map((commit) => ({ commit, action: "pick", message: commit.message })));
 }

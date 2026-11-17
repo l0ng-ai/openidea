@@ -22,7 +22,7 @@ export async function openProjectDialog() {
     });
     return;
   }
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const defaultPath = useProject.getState().settings?.general?.defaultProjectDirectory?.trim() || undefined;
   const picked = await open({ directory: true, multiple: false, title: "Open Folder", defaultPath });
   const path = Array.isArray(picked) ? picked[0] : picked;
@@ -69,7 +69,7 @@ export function registerShellActions(): () => void {
       category: "File",
       when: "projectOpen",
       run: async () => {
-        if (!useProject.getState().project || !(await confirmLeaveProject())) return;
+        if (!useProject.getState().project || !(await confirmLeaveProject(false))) return;
         try {
           await closeProject();
         } catch (e) {

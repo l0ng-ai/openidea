@@ -1,0 +1,44 @@
+id = "phoenix"
+name = "Phoenix"
+group = "Elixir"
+icon = "project-phoenix"
+order = 1
+description = "A Phoenix application from mix phx.new."
+
+[[requires]]
+program = "mix"
+hint = "Install Elixir: https://elixir-lang.org/install.html"
+
+[[fields]]
+id = "app"
+label = "Application name:"
+type = "text"
+pattern = '^[a-z][a-z0-9_]*$'
+default = "{{name|snake}}"
+
+[[fields]]
+id = "database"
+label = "Database:"
+type = "choice"
+options = [
+    { value = "postgres", label = "PostgreSQL" },
+    { value = "mysql", label = "MySQL" },
+    { value = "sqlite3", label = "SQLite" },
+    { value = "none", label = "None" },
+]
+default = "postgres"
+
+[[steps]]
+label = "Installing the Phoenix generator"
+program = "mix"
+args = ["archive.install", "hex", "phx_new", "--force"]
+
+[[steps]]
+label = "Running mix phx.new"
+program = "mix"
+cwd = "parent"
+args = [
+    "phx.new", "{{name}}", "--app", "{{app}}", "--no-install",
+    { when = { database = ["postgres", "mysql", "sqlite3"] }, args = ["--database", "{{database}}"] },
+    { when = { database = "none" }, args = ["--no-ecto"] },
+]

@@ -1,0 +1,4721 @@
+{
+ "source": "https://docs.snowflake.com/en/sql-reference/sql-all",
+ "commands": [
+  {
+   "command": "ALTER <object>",
+   "sql": "ALTER TABLE my_table RENAME TO my_table_2",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ACCOUNT",
+   "sql": "ALTER ACCOUNT SET STATEMENT_TIMEOUT_IN_SECONDS = 3600",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ACCOUNT SET INGRESS POLICY",
+   "sql": "ALTER ACCOUNT SET INGRESS POLICY IF EXISTS my_account_set_ingress_poli SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER AGENT",
+   "sql": "ALTER AGENT IF EXISTS my_agent SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER AGGREGATION POLICY",
+   "sql": "ALTER AGGREGATION POLICY IF EXISTS my_aggregation_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ALERT",
+   "sql": "ALTER ALERT IF EXISTS my_alert SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER API INTEGRATION",
+   "sql": "ALTER API INTEGRATION IF EXISTS my_api_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION",
+   "sql": "ALTER APPLICATION IF EXISTS my_application SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION DROP SPECIFICATION",
+   "sql": "ALTER APPLICATION DROP SPECIFICATION IF EXISTS my_application_drop_specifi SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION DROP CONFIGURATION DEFINITION",
+   "sql": "ALTER APPLICATION DROP CONFIGURATION DEFINITION IF EXISTS my_application_drop_configu SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION PACKAGE",
+   "sql": "ALTER APPLICATION PACKAGE IF EXISTS my_application_package SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION PACKAGE … MODIFY RELEASE CHANNEL",
+   "sql": "ALTER APPLICATION PACKAGE my_application_package MODIFY RELEASE CHANNEL",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION PACKAGE … RELEASE DIRECTIVE (Legacy)",
+   "sql": "ALTER APPLICATION PACKAGE my_application_package RELEASE DIRECTIVE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION PACKAGE … VERSION",
+   "sql": "ALTER APPLICATION PACKAGE my_application_package VERSION",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION ROLE",
+   "sql": "ALTER APPLICATION ROLE IF EXISTS my_application_role SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION … { APPROVE | DECLINE} SPECIFICATION",
+   "sql": "ALTER APPLICATION my_application APPROVE SPECIFICATION",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION SERVICE",
+   "sql": "ALTER APPLICATION SERVICE IF EXISTS my_application_service SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "Application Service",
+   "sql": "ALTER SERVICE my_service SUSPEND",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION SET SPECIFICATION",
+   "sql": "ALTER APPLICATION SET SPECIFICATION IF EXISTS my_application_set_specific SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION SET CONFIGURATION DEFINITION",
+   "sql": "ALTER APPLICATION SET CONFIGURATION DEFINITION IF EXISTS my_application_set_configur SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION SET CONFIGURATION VALUE",
+   "sql": "ALTER APPLICATION SET CONFIGURATION VALUE IF EXISTS my_application_set_configur SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER APPLICATION UNSET CONFIGURATION",
+   "sql": "ALTER APPLICATION UNSET CONFIGURATION IF EXISTS my_application_unset_config SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ARTIFACT REPOSITORY",
+   "sql": "ALTER ARTIFACT REPOSITORY IF EXISTS my_artifact_repository SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "artifact repository",
+   "sql": "CREATE ARTIFACT REPOSITORY my_repo",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER AUTHENTICATION POLICY",
+   "sql": "ALTER AUTHENTICATION POLICY IF EXISTS my_authentication_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER BACKUP POLICY",
+   "sql": "ALTER BACKUP POLICY IF EXISTS my_backup_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER BACKUP SET",
+   "sql": "ALTER BACKUP SET IF EXISTS my_backup_set SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER CATALOG INTEGRATION",
+   "sql": "ALTER CATALOG INTEGRATION IF EXISTS my_catalog_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER COMPUTE POOL",
+   "sql": "ALTER COMPUTE POOL IF EXISTS my_compute_pool SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER CONNECTION",
+   "sql": "ALTER CONNECTION IF EXISTS my_connection SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER CONTACT",
+   "sql": "ALTER CONTACT IF EXISTS my_contact SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER CORTEX SEARCH SERVICE",
+   "sql": "ALTER CORTEX SEARCH SERVICE IF EXISTS my_cortex_search_service SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATA MOVEMENT POLICY",
+   "sql": "ALTER DATA MOVEMENT POLICY IF EXISTS my_data_movement_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATA MOVEMENT RULE",
+   "sql": "ALTER DATA MOVEMENT RULE IF EXISTS my_data_movement_rule SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATABASE",
+   "sql": "ALTER DATABASE IF EXISTS my_database SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATABASE (catalog-linked)",
+   "sql": "ALTER DATABASE IF EXISTS my_database SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATABASE ROLE",
+   "sql": "ALTER DATABASE ROLE IF EXISTS my_database_role SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATASET",
+   "sql": "ALTER DATASET IF EXISTS my_dataset SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATASET … ADD VERSION",
+   "sql": "ALTER DATASET my_dataset ADD VERSION",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DATASET … DROP VERSION",
+   "sql": "ALTER DATASET my_dataset DROP VERSION",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DBT PROJECT",
+   "sql": "ALTER DBT PROJECT IF EXISTS my_dbt_project SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DCM PROJECT",
+   "sql": "ALTER DCM PROJECT IF EXISTS my_dcm_project SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER DYNAMIC TABLE",
+   "sql": "ALTER DYNAMIC TABLE IF EXISTS my_dynamic_table SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EVENT ROUTING TABLE",
+   "sql": "ALTER EVENT ROUTING TABLE IF EXISTS my_event_routing_table SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXPERIMENT",
+   "sql": "ALTER EXPERIMENT IF EXISTS my_experiment SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL AGENT",
+   "sql": "ALTER EXTERNAL AGENT IF EXISTS my_external_agent SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL CONSUMER",
+   "sql": "ALTER EXTERNAL CONSUMER IF EXISTS my_external_consumer SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL CONSUMER … ADD PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER EXTERNAL CONSUMER my_external_consumer ADD PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL CONSUMER … MODIFY PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER EXTERNAL CONSUMER my_external_consumer MODIFY PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL CONSUMER … REMOVE PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER EXTERNAL CONSUMER my_external_consumer REMOVE PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL CONSUMER … ROTATE PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER EXTERNAL CONSUMER my_external_consumer ROTATE PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL ACCESS INTEGRATION",
+   "sql": "ALTER EXTERNAL ACCESS INTEGRATION IF EXISTS my_external_access_integrat SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL TABLE",
+   "sql": "ALTER EXTERNAL TABLE IF EXISTS my_external_table SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER EXTERNAL VOLUME",
+   "sql": "ALTER EXTERNAL VOLUME IF EXISTS my_external_volume SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER FAILOVER GROUP",
+   "sql": "ALTER FAILOVER GROUP IF EXISTS my_failover_group SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER FEATURE POLICY",
+   "sql": "ALTER FEATURE POLICY IF EXISTS my_feature_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER FILE FORMAT",
+   "sql": "ALTER FILE FORMAT IF EXISTS my_file_format SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER FUNCTION",
+   "sql": "ALTER FUNCTION my_fn(NUMBER, NUMBER) SET SECURE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER FUNCTION (DMF)",
+   "sql": "ALTER FUNCTION IF EXISTS my_function SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER FUNCTION (Snowpark Container Services)",
+   "sql": "ALTER FUNCTION IF EXISTS my_function SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER GATEWAY",
+   "sql": "ALTER GATEWAY IF EXISTS my_gateway SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER GIT REPOSITORY",
+   "sql": "ALTER GIT REPOSITORY IF EXISTS my_git_repository SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ICEBERG TABLE",
+   "sql": "ALTER ICEBERG TABLE IF EXISTS my_iceberg_table SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ICEBERG TABLE … ALTER COLUMN … SET DATA TYPE (structured types)",
+   "sql": "ALTER ICEBERG TABLE my_iceberg_table ALTER COLUMN my_part SET DATA TYPE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ICEBERG TABLE … CONVERT TO MANAGED",
+   "sql": "ALTER ICEBERG TABLE my_iceberg_table CONVERT TO MANAGED",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ICEBERG TABLE … OPTIMIZE",
+   "sql": "ALTER ICEBERG TABLE my_iceberg_table OPTIMIZE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ICEBERG TABLE … ADD | DROP | REPLACE PARTITION BY",
+   "sql": "ALTER ICEBERG TABLE my_iceberg_table ADD PARTITION BY",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ICEBERG TABLE … REFRESH",
+   "sql": "ALTER ICEBERG TABLE my_iceberg_table REFRESH",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ICEBERG TABLE … VERSION_TAG",
+   "sql": "ALTER ICEBERG TABLE my_iceberg_table VERSION_TAG",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER IMAGE REPOSITORY",
+   "sql": "ALTER IMAGE REPOSITORY IF EXISTS my_image_repository SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER INGRESS POLICY",
+   "sql": "ALTER INGRESS POLICY IF EXISTS my_ingress_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER INTEGRATION",
+   "sql": "ALTER INTEGRATION IF EXISTS my_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER JOIN POLICY",
+   "sql": "ALTER JOIN POLICY IF EXISTS my_join_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER LISTING",
+   "sql": "ALTER LISTING IF EXISTS my_listing SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MAINTENANCE POLICY",
+   "sql": "ALTER MAINTENANCE POLICY IF EXISTS my_maintenance_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MASKING POLICY",
+   "sql": "ALTER MASKING POLICY IF EXISTS my_masking_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MATERIALIZED VIEW",
+   "sql": "ALTER MATERIALIZED VIEW IF EXISTS my_materialized_view SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MODEL",
+   "sql": "ALTER MODEL IF EXISTS my_model SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MODEL … ADD VERSION",
+   "sql": "ALTER MODEL my_model ADD VERSION",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MODEL … DROP VERSION",
+   "sql": "ALTER MODEL my_model DROP VERSION",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MODEL … MODIFY VERSION",
+   "sql": "ALTER MODEL my_model MODIFY VERSION",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MODEL MONITOR",
+   "sql": "ALTER MODEL MONITOR IF EXISTS my_model_monitor SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER MULTI PARTY APPROVAL POLICY",
+   "sql": "ALTER MULTI PARTY APPROVAL POLICY IF EXISTS my_multi_party_approval_pol SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NETWORK POLICY",
+   "sql": "ALTER NETWORK POLICY IF EXISTS my_network_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NETWORK RULE",
+   "sql": "ALTER NETWORK RULE IF EXISTS my_network_rule SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTEBOOK",
+   "sql": "ALTER NOTEBOOK IF EXISTS my_notebook SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (email)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (inbound from an Azure Event Grid topic)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (inbound from a Google Pub/Sub topic)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (inbound from multiple queues)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (outbound to an Amazon SNS topic)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (outbound to an Azure Event Grid topic)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (outbound to a Google Pub/Sub topic)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER NOTIFICATION INTEGRATION (webhooks)",
+   "sql": "ALTER NOTIFICATION INTEGRATION IF EXISTS my_notification_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER OPENFLOW DATA PLANE",
+   "sql": "ALTER OPENFLOW DATA PLANE IF EXISTS my_openflow_data_plane SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ONLINE FEATURE TABLE",
+   "sql": "ALTER ONLINE FEATURE TABLE IF EXISTS my_online_feature_table SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "online feature table",
+   "sql": "CREATE ONLINE FEATURE TABLE my_features (id NUMBER) PRIMARY KEY (id)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER OPENFLOW CONNECTOR",
+   "sql": "ALTER OPENFLOW CONNECTOR IF EXISTS my_openflow_connector SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER OPENFLOW DEPLOYMENT",
+   "sql": "ALTER OPENFLOW DEPLOYMENT IF EXISTS my_openflow_deployment SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER OPENFLOW RUNTIME",
+   "sql": "ALTER OPENFLOW RUNTIME IF EXISTS my_openflow_runtime SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ORGANIZATION",
+   "sql": "ALTER ORGANIZATION IF EXISTS my_organization SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ORGANIZATION ACCOUNT",
+   "sql": "ALTER ORGANIZATION ACCOUNT IF EXISTS my_organization_account SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ORGANIZATION PROFILE",
+   "sql": "ALTER ORGANIZATION PROFILE IF EXISTS my_organization_profile SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ORGANIZATION SET EVENT ROUTING TABLE",
+   "sql": "ALTER ORGANIZATION SET EVENT ROUTING TABLE IF EXISTS my_organization_set_event_r SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ORGANIZATION UNSET EVENT ROUTING TABLE",
+   "sql": "ALTER ORGANIZATION UNSET EVENT ROUTING TABLE IF EXISTS my_organization_unset_event SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ORGANIZATION USER",
+   "sql": "ALTER ORGANIZATION USER IF EXISTS my_organization_user SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ORGANIZATION USER GROUP",
+   "sql": "ALTER ORGANIZATION USER GROUP IF EXISTS my_organization_user_group SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER PACKAGES POLICY",
+   "sql": "ALTER PACKAGES POLICY IF EXISTS my_packages_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER PASSWORD POLICY",
+   "sql": "ALTER PASSWORD POLICY IF EXISTS my_password_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER PIPE",
+   "sql": "ALTER PIPE IF EXISTS my_pipe SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER POSTGRES INSTANCE",
+   "sql": "ALTER POSTGRES INSTANCE IF EXISTS my_postgres_instance SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER PRIVACY POLICY",
+   "sql": "ALTER PRIVACY POLICY IF EXISTS my_privacy_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER PROCEDURE",
+   "sql": "ALTER PROCEDURE my_proc(NUMBER) SET COMMENT = 'doubles; a number'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER PROJECTION POLICY",
+   "sql": "ALTER PROJECTION POLICY IF EXISTS my_projection_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER REPLICATION GROUP",
+   "sql": "ALTER REPLICATION GROUP IF EXISTS my_replication_group SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER RESOURCE MONITOR",
+   "sql": "ALTER RESOURCE MONITOR IF EXISTS my_resource_monitor SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER RESTRICTED SESSION SCOPE",
+   "sql": "ALTER RESTRICTED SESSION SCOPE IF EXISTS my_restricted_session_scope SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ROLE",
+   "sql": "ALTER ROLE IF EXISTS my_role SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER ROW ACCESS POLICY",
+   "sql": "ALTER ROW ACCESS POLICY IF EXISTS my_row_access_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SCHEMA",
+   "sql": "ALTER SCHEMA IF EXISTS my_schema SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECRET",
+   "sql": "ALTER SECRET IF EXISTS my_secret SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (External API Authentication)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (External secret provider)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (AWS IAM Authentication)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (External OAuth)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (Snowflake OAuth)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (OIDC)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (SAML2)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SECURITY INTEGRATION (SCIM)",
+   "sql": "ALTER SECURITY INTEGRATION IF EXISTS my_security_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SEMANTIC VIEW",
+   "sql": "ALTER SEMANTIC VIEW IF EXISTS my_semantic_view SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SEQUENCE",
+   "sql": "ALTER SEQUENCE IF EXISTS my_sequence SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SERVICE",
+   "sql": "ALTER SERVICE IF EXISTS my_service SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SESSION",
+   "sql": "ALTER SESSION SET QUERY_TAG = 'nightly; load', TIMEZONE = 'UTC'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SESSION POLICY",
+   "sql": "ALTER SESSION POLICY IF EXISTS my_session_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SHARE",
+   "sql": "ALTER SHARE IF EXISTS my_share SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SNAPSHOT",
+   "sql": "ALTER SNAPSHOT IF EXISTS my_snapshot SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SNAPSHOT POLICY — Deprecated",
+   "sql": "ALTER SNAPSHOT POLICY IF EXISTS my_snapshot_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER SNAPSHOT SET — Deprecated",
+   "sql": "ALTER SNAPSHOT SET IF EXISTS my_snapshot_set SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER STAGE",
+   "sql": "ALTER STAGE IF EXISTS my_stage SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER STORAGE INTEGRATION",
+   "sql": "ALTER STORAGE INTEGRATION IF EXISTS my_storage_integration SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER STORAGE LIFECYCLE POLICY",
+   "sql": "ALTER STORAGE LIFECYCLE POLICY IF EXISTS my_storage_lifecycle_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER STREAM",
+   "sql": "ALTER STREAM IF EXISTS my_stream SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER STREAMLIT",
+   "sql": "ALTER STREAMLIT IF EXISTS my_streamlit SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER TABLE",
+   "sql": "ALTER TABLE IF EXISTS my_table ADD COLUMN note VARCHAR DEFAULT 'a;b'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER TABLE … ALTER COLUMN",
+   "sql": "ALTER TABLE my_table ALTER COLUMN note SET DATA TYPE VARCHAR(200)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER TABLE (event tables)",
+   "sql": "ALTER TABLE IF EXISTS my_table SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER TAG",
+   "sql": "ALTER TAG IF EXISTS my_tag SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER TASK",
+   "sql": "ALTER TASK my_task RESUME",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER TASK GRAPH",
+   "sql": "ALTER TASK GRAPH IF EXISTS my_task_graph SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER TYPE",
+   "sql": "ALTER TYPE IF EXISTS my_type SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER",
+   "sql": "ALTER USER jane SET DEFAULT_ROLE = analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … ADD KEY PAIR",
+   "sql": "ALTER USER my_user ADD KEY PAIR",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … ADD PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER USER my_user ADD PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … ADD WORKLOAD IDENTITY",
+   "sql": "ALTER USER my_user ADD WORKLOAD IDENTITY",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … MODIFY KEY PAIR",
+   "sql": "ALTER USER my_user MODIFY KEY PAIR",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … MODIFY PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER USER my_user MODIFY PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … MODIFY WORKLOAD IDENTITY",
+   "sql": "ALTER USER my_user MODIFY WORKLOAD IDENTITY",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … REMOVE KEY PAIR",
+   "sql": "ALTER USER my_user REMOVE KEY PAIR",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … REMOVE PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER USER my_user REMOVE PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … REMOVE WORKLOAD IDENTITY",
+   "sql": "ALTER USER my_user REMOVE WORKLOAD IDENTITY",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … ROTATE KEY PAIR",
+   "sql": "ALTER USER my_user ROTATE KEY PAIR",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER … ROTATE PROGRAMMATIC ACCESS TOKEN (PAT)",
+   "sql": "ALTER USER my_user ROTATE PROGRAMMATIC ACCESS TOKEN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER USER SET INGRESS POLICY",
+   "sql": "ALTER USER SET INGRESS POLICY IF EXISTS my_user_set_ingress_policy SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER VARIABLE",
+   "sql": "ALTER VARIABLE IF EXISTS my_variable SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER VIEW",
+   "sql": "ALTER VIEW IF EXISTS my_view SET COMMENT = 'changed; on purpose'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ALTER WAREHOUSE",
+   "sql": "ALTER WAREHOUSE my_wh RESUME IF SUSPENDED",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "BEGIN",
+   "sql": "BEGIN TRANSACTION NAME t1",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CALL",
+   "sql": "CALL my_db.my_schema.my_proc(1, 'a;b') INTO :result",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CALL (with anonymous procedure)",
+   "sql": "WITH doubled AS PROCEDURE (n NUMBER)\n  RETURNS NUMBER\n  LANGUAGE SQL\n  AS\n  $$\n  BEGIN\n    RETURN n * 2;\n  END;\n  $$\nCALL doubled(21)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "COMMENT",
+   "sql": "COMMENT ON TABLE my_table IS 'orders; one row per order'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "COMMIT",
+   "sql": "COMMIT WORK",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "COPY FILES",
+   "sql": "COPY FILES INTO @my_stage/out/ FROM @other_stage/in/ PATTERN = '.*[.]csv'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "COPY INTO <location>",
+   "sql": "COPY INTO @my_stage/unload/ FROM (SELECT id, payload:customer.name FROM my_table) FILE_FORMAT = (TYPE = CSV FIELD_DELIMITER = ';')",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "COPY INTO <table>",
+   "sql": "COPY INTO my_table FROM @my_stage/data/ FILE_FORMAT = (FORMAT_NAME = 'my_format') ON_ERROR = 'CONTINUE'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE <object>",
+   "sql": "CREATE TABLE IF NOT EXISTS my_table (id NUMBER)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ACCOUNT",
+   "sql": "CREATE OR REPLACE ACCOUNT my_account COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE AGENT",
+   "sql": "CREATE OR REPLACE AGENT my_agent COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE AGGREGATION POLICY",
+   "sql": "CREATE OR REPLACE AGGREGATION POLICY my_aggregation_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE AI FUNCTION",
+   "sql": "CREATE OR REPLACE AI FUNCTION my_ai_function COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ALERT",
+   "sql": "CREATE OR REPLACE ALERT my_alert WAREHOUSE = my_wh SCHEDULE = '1 MINUTE' IF (EXISTS (SELECT 1 FROM gauges WHERE v > 200)) THEN INSERT INTO history VALUES (CURRENT_TIMESTAMP())",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE API INTEGRATION",
+   "sql": "CREATE OR REPLACE API INTEGRATION my_api_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE APPLICATION",
+   "sql": "CREATE OR REPLACE APPLICATION my_application COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE APPLICATION PACKAGE",
+   "sql": "CREATE OR REPLACE APPLICATION PACKAGE my_application_package COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE APPLICATION ROLE",
+   "sql": "CREATE OR REPLACE APPLICATION ROLE my_application_role COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE APPLICATION SERVICE",
+   "sql": "CREATE OR REPLACE APPLICATION SERVICE my_application_service COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ARTIFACT REPOSITORY",
+   "sql": "CREATE OR REPLACE ARTIFACT REPOSITORY my_artifact_repository COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE AUTHENTICATION POLICY",
+   "sql": "CREATE OR REPLACE AUTHENTICATION POLICY my_authentication_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE BACKUP POLICY",
+   "sql": "CREATE OR REPLACE BACKUP POLICY my_backup_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE BACKUP SET",
+   "sql": "CREATE OR REPLACE BACKUP SET my_backup_set COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION (Delta Sharing)",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "Delta tables",
+   "sql": "CREATE ICEBERG TABLE my_delta CATALOG = my_catalog BASE_LOCATION = 'delta/path'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION (AWS Glue)",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION (Object storage)",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION (Snowflake Horizon Catalog)",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION (Snowflake Open Catalog)",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION (Apache Iceberg™ REST)",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CATALOG INTEGRATION (Snowflake Postgres)",
+   "sql": "CREATE OR REPLACE CATALOG INTEGRATION my_catalog_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE <object> … CLONE",
+   "sql": "CREATE TABLE my_copy CLONE my_table AT (OFFSET => -60)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE COMPUTE POOL",
+   "sql": "CREATE OR REPLACE COMPUTE POOL my_compute_pool COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CONNECTION",
+   "sql": "CREATE OR REPLACE CONNECTION my_connection COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CONTACT",
+   "sql": "CREATE OR REPLACE CONTACT my_contact COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CORTEX SEARCH SERVICE",
+   "sql": "CREATE OR REPLACE CORTEX SEARCH SERVICE my_cortex_search_service COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DATA METRIC FUNCTION",
+   "sql": "CREATE OR REPLACE DATA METRIC FUNCTION my_data_metric_function COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DATA MOVEMENT POLICY",
+   "sql": "CREATE OR REPLACE DATA MOVEMENT POLICY my_data_movement_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DATA MOVEMENT RULE",
+   "sql": "CREATE OR REPLACE DATA MOVEMENT RULE my_data_movement_rule COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DATABASE",
+   "sql": "CREATE DATABASE IF NOT EXISTS my_db DATA_RETENTION_TIME_IN_DAYS = 1",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DATABASE (catalog-linked)",
+   "sql": "CREATE OR REPLACE DATABASE my_database COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DATABASE ROLE",
+   "sql": "CREATE OR REPLACE DATABASE ROLE my_database_role COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DATASET",
+   "sql": "CREATE OR REPLACE DATASET my_dataset COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DBT PROJECT",
+   "sql": "CREATE OR REPLACE DBT PROJECT my_dbt_project COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DCM PROJECT",
+   "sql": "CREATE OR REPLACE DCM PROJECT my_dcm_project COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE DYNAMIC TABLE",
+   "sql": "CREATE OR REPLACE DYNAMIC TABLE my_dt TARGET_LAG = '20 minutes' WAREHOUSE = my_wh AS SELECT id, name FROM my_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EVENT ROUTING TABLE",
+   "sql": "CREATE OR REPLACE EVENT ROUTING TABLE my_event_routing_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EVENT TABLE",
+   "sql": "CREATE OR REPLACE EVENT TABLE my_event_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EXPERIMENT",
+   "sql": "CREATE OR REPLACE EXPERIMENT my_experiment COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EXTERNAL AGENT",
+   "sql": "CREATE OR REPLACE EXTERNAL AGENT my_external_agent COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EXTERNAL CONSUMER",
+   "sql": "CREATE OR REPLACE EXTERNAL CONSUMER my_external_consumer COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EXTERNAL ACCESS INTEGRATION",
+   "sql": "CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION my_external_access_integrat COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EXTERNAL FUNCTION",
+   "sql": "CREATE EXTERNAL FUNCTION my_ext(x VARCHAR) RETURNS VARIANT API_INTEGRATION = my_api AS 'https://example.com/fn'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EXTERNAL TABLE",
+   "sql": "CREATE OR REPLACE EXTERNAL TABLE my_external_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE EXTERNAL VOLUME",
+   "sql": "CREATE OR REPLACE EXTERNAL VOLUME my_external_volume COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE FAILOVER GROUP",
+   "sql": "CREATE OR REPLACE FAILOVER GROUP my_failover_group COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE FEATURE POLICY",
+   "sql": "CREATE OR REPLACE FEATURE POLICY my_feature_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE FILE FORMAT",
+   "sql": "CREATE OR REPLACE FILE FORMAT my_format TYPE = CSV FIELD_DELIMITER = ';' SKIP_HEADER = 1 NULL_IF = ('NULL', '')",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE FUNCTION",
+   "sql": "CREATE OR REPLACE FUNCTION my_fn(a NUMBER, b NUMBER)\n  RETURNS NUMBER\n  LANGUAGE JAVASCRIPT\n  AS $$ var s = A + B; return s; // not; a statement end\n$$",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE FUNCTION (Snowpark Container Services)",
+   "sql": "CREATE FUNCTION my_fn(x VARCHAR) RETURNS VARCHAR SERVICE = my_service ENDPOINT = api AS '/echo'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE GATEWAY",
+   "sql": "CREATE OR REPLACE GATEWAY my_gateway COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE GIT REPOSITORY",
+   "sql": "CREATE OR REPLACE GIT REPOSITORY my_git_repository COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE HYBRID TABLE",
+   "sql": "CREATE OR REPLACE HYBRID TABLE my_hybrid_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ICEBERG TABLE",
+   "sql": "CREATE OR REPLACE ICEBERG TABLE my_iceberg_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ICEBERG TABLE (AWS Glue as the Iceberg catalog)",
+   "sql": "CREATE OR REPLACE ICEBERG TABLE my_iceberg_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ICEBERG TABLE (Delta files in object storage)",
+   "sql": "CREATE OR REPLACE ICEBERG TABLE my_iceberg_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ICEBERG TABLE (Iceberg files in object storage)",
+   "sql": "CREATE OR REPLACE ICEBERG TABLE my_iceberg_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ICEBERG TABLE (Parquet files in object storage)",
+   "sql": "CREATE OR REPLACE ICEBERG TABLE my_iceberg_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ICEBERG TABLE (Iceberg REST catalog)",
+   "sql": "CREATE OR REPLACE ICEBERG TABLE my_iceberg_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ICEBERG TABLE (Snowflake as the Iceberg catalog)",
+   "sql": "CREATE OR REPLACE ICEBERG TABLE my_iceberg_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE IMAGE REPOSITORY",
+   "sql": "CREATE OR REPLACE IMAGE REPOSITORY my_image_repository COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE INDEX",
+   "sql": "CREATE OR REPLACE INDEX my_index COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE INGRESS POLICY",
+   "sql": "CREATE OR REPLACE INGRESS POLICY my_ingress_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE INTEGRATION",
+   "sql": "CREATE OR REPLACE INTEGRATION my_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE INTERACTIVE TABLE",
+   "sql": "CREATE OR REPLACE INTERACTIVE TABLE my_interactive_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE INTERACTIVE WAREHOUSE",
+   "sql": "CREATE OR REPLACE INTERACTIVE WAREHOUSE my_interactive_warehouse COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE JOIN POLICY",
+   "sql": "CREATE OR REPLACE JOIN POLICY my_join_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE LISTING",
+   "sql": "CREATE OR REPLACE LISTING my_listing COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MAINTENANCE POLICY",
+   "sql": "CREATE OR REPLACE MAINTENANCE POLICY my_maintenance_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MANAGED ACCOUNT",
+   "sql": "CREATE OR REPLACE MANAGED ACCOUNT my_managed_account COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MASKING POLICY",
+   "sql": "CREATE MASKING POLICY my_mask AS (val STRING) RETURNS STRING -> CASE WHEN CURRENT_ROLE() IN ('ANALYST') THEN val ELSE '***' END",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MATERIALIZED VIEW",
+   "sql": "CREATE MATERIALIZED VIEW my_mv AS SELECT id, COUNT(*) AS n FROM my_table GROUP BY id",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MCP SERVER",
+   "sql": "CREATE OR REPLACE MCP SERVER my_mcp_server COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MODEL",
+   "sql": "CREATE OR REPLACE MODEL my_model COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MODEL MONITOR",
+   "sql": "CREATE OR REPLACE MODEL MONITOR my_model_monitor COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE MULTI PARTY APPROVAL POLICY",
+   "sql": "CREATE OR REPLACE MULTI PARTY APPROVAL POLICY my_multi_party_approval_pol COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NETWORK POLICY",
+   "sql": "CREATE OR REPLACE NETWORK POLICY my_network_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NETWORK RULE",
+   "sql": "CREATE OR REPLACE NETWORK RULE my_network_rule COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTEBOOK",
+   "sql": "CREATE NOTEBOOK my_notebook FROM '@my_stage/nb' MAIN_FILE = 'main.ipynb' QUERY_WAREHOUSE = my_wh",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTEBOOK PROJECT",
+   "sql": "CREATE OR REPLACE NOTEBOOK PROJECT my_notebook_project COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE CODE BUNDLE",
+   "sql": "CREATE OR REPLACE CODE BUNDLE my_code_bundle COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (email)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (inbound from multiple queues)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (inbound from an Azure Event Grid topic)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (inbound from a Google Pub/Sub topic)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (outbound to an Amazon SNS topic)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (outbound to an Azure Event Grid topic)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (outbound to a Google Pub/Sub topic)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE NOTIFICATION INTEGRATION (webhooks)",
+   "sql": "CREATE OR REPLACE NOTIFICATION INTEGRATION my_notification_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ONLINE FEATURE TABLE",
+   "sql": "CREATE OR REPLACE ONLINE FEATURE TABLE my_online_feature_table COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE OPENFLOW CONNECTOR",
+   "sql": "CREATE OR REPLACE OPENFLOW CONNECTOR my_openflow_connector COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE OPENFLOW DEPLOYMENT",
+   "sql": "CREATE OR REPLACE OPENFLOW DEPLOYMENT my_openflow_deployment COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE OPENFLOW RUNTIME",
+   "sql": "CREATE OR REPLACE OPENFLOW RUNTIME my_openflow_runtime COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE OR ALTER <object>",
+   "sql": "CREATE OR ALTER TABLE my_table (id NUMBER, name VARCHAR)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ORGANIZATION ACCOUNT",
+   "sql": "CREATE OR REPLACE ORGANIZATION ACCOUNT my_organization_account COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ORGANIZATION LISTING",
+   "sql": "CREATE OR REPLACE ORGANIZATION LISTING my_organization_listing COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ORGANIZATION PROFILE",
+   "sql": "CREATE OR REPLACE ORGANIZATION PROFILE my_organization_profile COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ORGANIZATION USER",
+   "sql": "CREATE OR REPLACE ORGANIZATION USER my_organization_user COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ORGANIZATION USER GROUP",
+   "sql": "CREATE OR REPLACE ORGANIZATION USER GROUP my_organization_user_group COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE PACKAGES POLICY",
+   "sql": "CREATE OR REPLACE PACKAGES POLICY my_packages_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE PASSWORD POLICY",
+   "sql": "CREATE OR REPLACE PASSWORD POLICY my_password_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE PIPE",
+   "sql": "CREATE PIPE my_pipe AUTO_INGEST = TRUE AS COPY INTO my_table FROM @my_stage FILE_FORMAT = (TYPE = JSON)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE POSTGRES INSTANCE",
+   "sql": "CREATE OR REPLACE POSTGRES INSTANCE my_postgres_instance COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE PRIVACY POLICY",
+   "sql": "CREATE OR REPLACE PRIVACY POLICY my_privacy_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE PROCEDURE",
+   "sql": "CREATE OR REPLACE PROCEDURE my_proc(n NUMBER)\n  RETURNS VARCHAR\n  LANGUAGE SQL\n  AS\n$$\nBEGIN\n  LET total := n * 2; -- a semicolon in a body; and another\n  RETURN 'done; ' || total;\nEND;\n$$",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE PROJECTION POLICY",
+   "sql": "CREATE OR REPLACE PROJECTION POLICY my_projection_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE PROVISIONED THROUGHPUT",
+   "sql": "CREATE OR REPLACE PROVISIONED THROUGHPUT my_provisioned_throughput COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE REPLICATION GROUP",
+   "sql": "CREATE OR REPLACE REPLICATION GROUP my_replication_group COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE RESOURCE MONITOR",
+   "sql": "CREATE OR REPLACE RESOURCE MONITOR my_resource_monitor COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE RESTRICTED SESSION SCOPE",
+   "sql": "CREATE OR REPLACE RESTRICTED SESSION SCOPE my_restricted_session_scope COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ROLE",
+   "sql": "CREATE ROLE IF NOT EXISTS analyst COMMENT = 'reads; never writes'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE ROW ACCESS POLICY",
+   "sql": "CREATE ROW ACCESS POLICY my_rap AS (region VARCHAR) RETURNS BOOLEAN -> region = CURRENT_REGION()",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SCHEMA",
+   "sql": "CREATE SCHEMA IF NOT EXISTS my_db.my_schema WITH MANAGED ACCESS",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECRET",
+   "sql": "CREATE OR REPLACE SECRET my_secret COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (External API Authentication)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (External secret provider)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (AWS IAM Authentication)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (External OAuth)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (Snowflake OAuth)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (OIDC)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (SAML2)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SECURITY INTEGRATION (SCIM)",
+   "sql": "CREATE OR REPLACE SECURITY INTEGRATION my_security_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SEMANTIC VIEW",
+   "sql": "CREATE SEMANTIC VIEW my_sv TABLES (o AS my_db.my_schema.orders PRIMARY KEY (id)) METRICS (o.total AS SUM(amount))",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SEQUENCE",
+   "sql": "CREATE SEQUENCE my_seq START = 1 INCREMENT = 1",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SERVICE",
+   "sql": "CREATE OR REPLACE SERVICE my_service COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SESSION POLICY",
+   "sql": "CREATE OR REPLACE SESSION POLICY my_session_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SHARE",
+   "sql": "CREATE OR REPLACE SHARE my_share COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SNAPSHOT",
+   "sql": "CREATE OR REPLACE SNAPSHOT my_snapshot COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SNAPSHOT POLICY — Deprecated",
+   "sql": "CREATE OR REPLACE SNAPSHOT POLICY my_snapshot_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE SNAPSHOT SET — Deprecated",
+   "sql": "CREATE OR REPLACE SNAPSHOT SET my_snapshot_set COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE STAGE",
+   "sql": "CREATE OR REPLACE STAGE my_stage URL = 's3://bucket/path/' FILE_FORMAT = (TYPE = JSON) DIRECTORY = (ENABLE = TRUE)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE STORAGE INTEGRATION",
+   "sql": "CREATE OR REPLACE STORAGE INTEGRATION my_storage_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE STORAGE INTEGRATION (Postgres Internal Storage)",
+   "sql": "CREATE OR REPLACE STORAGE INTEGRATION my_storage_integration COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE STORAGE LIFECYCLE POLICY",
+   "sql": "CREATE OR REPLACE STORAGE LIFECYCLE POLICY my_storage_lifecycle_policy COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE STREAM",
+   "sql": "CREATE STREAM my_stream ON TABLE my_table APPEND_ONLY = TRUE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE STREAMLIT",
+   "sql": "CREATE STREAMLIT my_app ROOT_LOCATION = '@my_stage/app' MAIN_FILE = 'app.py'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE TABLE",
+   "sql": "CREATE OR REPLACE TRANSIENT TABLE my_db.my_schema.my_table (id NUMBER(38,0) NOT NULL PRIMARY KEY, payload VARIANT, note VARCHAR DEFAULT 'a;b') CLUSTER BY (id) COMMENT = 'it''s; a table'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE | ALTER TABLE … CONSTRAINT",
+   "sql": "ALTER TABLE my_table ADD CONSTRAINT pk PRIMARY KEY (id)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE TAG",
+   "sql": "CREATE OR REPLACE TAG my_tag COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE TASK",
+   "sql": "CREATE OR REPLACE TASK my_task\n  WAREHOUSE = my_wh\n  SCHEDULE = 'USING CRON 0 9 * * * UTC'\n  AS\n  BEGIN\n    INSERT INTO log (at) VALUES (CURRENT_TIMESTAMP());\n    DELETE FROM log WHERE at < DATEADD(day, -30, CURRENT_TIMESTAMP());\n  END",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE TASK GRAPH",
+   "sql": "CREATE OR REPLACE TASK GRAPH my_task_graph COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE TYPE",
+   "sql": "CREATE OR REPLACE TYPE my_type COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE USER",
+   "sql": "CREATE USER jane LOGIN_NAME = 'jane.doe@example.com' DEFAULT_ROLE = analyst MUST_CHANGE_PASSWORD = TRUE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE VARIABLE",
+   "sql": "CREATE OR REPLACE VARIABLE my_variable COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE OR ALTER VERSIONED SCHEMA",
+   "sql": "CREATE OR REPLACE OR ALTER VERSIONED SCHEMA my_or_alter_versioned_schem COMMENT = 'sample; with a semicolon'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE VIEW",
+   "sql": "CREATE OR REPLACE SECURE VIEW my_view (id, name) AS SELECT id, name FROM my_table WHERE note <> ';'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "CREATE WAREHOUSE",
+   "sql": "CREATE WAREHOUSE IF NOT EXISTS my_wh WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DELETE",
+   "sql": "DELETE FROM my_table USING other WHERE my_table.id = other.id",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DESCRIBE <object>",
+   "sql": "DESCRIBE TABLE my_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE AGENT",
+   "sql": "DESC AGENT my_agent",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE AGGREGATION POLICY",
+   "sql": "DESCRIBE AGGREGATION POLICY my_aggregation_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE ALERT",
+   "sql": "DESC ALERT my_alert",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE APPLICATION",
+   "sql": "DESC APPLICATION my_application",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE APPLICATION PACKAGE",
+   "sql": "DESC APPLICATION PACKAGE my_application_package",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE APPLICATION SERVICE",
+   "sql": "DESC APPLICATION SERVICE my_application_service",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE ARTIFACT REPOSITORY",
+   "sql": "DESC ARTIFACT REPOSITORY my_artifact_repository",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE AUTHENTICATION POLICY",
+   "sql": "DESC AUTHENTICATION POLICY my_authentication_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE AVAILABLE LISTING",
+   "sql": "DESC AVAILABLE LISTING my_available_listing",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE AVAILABLE ORGANIZATION PROFILE",
+   "sql": "DESCRIBE AVAILABLE ORGANIZATION PROFILE my_available_organization_p",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE BACKUP POLICY",
+   "sql": "DESC BACKUP POLICY my_backup_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE BACKUP SET",
+   "sql": "DESCRIBE BACKUP SET my_backup_set",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE CATALOG INTEGRATION",
+   "sql": "DESC CATALOG INTEGRATION my_catalog_integration",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE COMMITTED TASK",
+   "sql": "DESCRIBE COMMITTED TASK my_committed_task",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE COMPUTE POOL",
+   "sql": "DESCRIBE COMPUTE POOL my_compute_pool",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE CONFIGURATION",
+   "sql": "DESC CONFIGURATION my_configuration",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE CORTEX SEARCH SERVICE",
+   "sql": "DESC CORTEX SEARCH SERVICE my_cortex_search_service",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE DATA MOVEMENT POLICY",
+   "sql": "DESCRIBE DATA MOVEMENT POLICY my_data_movement_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE DATA MOVEMENT RULE",
+   "sql": "DESCRIBE DATA MOVEMENT RULE my_data_movement_rule",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE DATABASE",
+   "sql": "DESCRIBE DATABASE my_database",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE DBT PROJECT",
+   "sql": "DESC DBT PROJECT my_dbt_project",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE DCM PROJECT",
+   "sql": "DESC DCM PROJECT my_dcm_project",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE DYNAMIC TABLE",
+   "sql": "DESC DYNAMIC TABLE my_dynamic_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE EVENT TABLE",
+   "sql": "DESC EVENT TABLE my_event_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE EXTERNAL AGENT",
+   "sql": "DESCRIBE EXTERNAL AGENT my_external_agent",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE EXTERNAL CONSUMER",
+   "sql": "DESC EXTERNAL CONSUMER my_external_consumer",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE EXTERNAL TABLE",
+   "sql": "DESCRIBE EXTERNAL TABLE my_external_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE EXTERNAL VOLUME",
+   "sql": "DESC EXTERNAL VOLUME my_external_volume",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE FEATURE POLICY",
+   "sql": "DESCRIBE FEATURE POLICY my_feature_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE FILE FORMAT",
+   "sql": "DESC FILE FORMAT my_file_format",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE FUNCTION",
+   "sql": "DESC FUNCTION my_fn(NUMBER, NUMBER)",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE FUNCTION (DMF)",
+   "sql": "DESCRIBE FUNCTION my_function",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE FUNCTION (Snowpark Container Services)",
+   "sql": "DESCRIBE FUNCTION my_function",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE GATEWAY",
+   "sql": "DESC GATEWAY my_gateway",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE GIT REPOSITORY",
+   "sql": "DESCRIBE GIT REPOSITORY my_git_repository",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE ICEBERG TABLE",
+   "sql": "DESC ICEBERG TABLE my_iceberg_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE INGRESS POLICY",
+   "sql": "DESCRIBE INGRESS POLICY my_ingress_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE INTEGRATION",
+   "sql": "DESC INTEGRATION my_integration",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE JOIN POLICY",
+   "sql": "DESC JOIN POLICY my_join_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE LISTING",
+   "sql": "DESC LISTING my_listing",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE MAINTENANCE POLICY",
+   "sql": "DESCRIBE MAINTENANCE POLICY my_maintenance_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE MASKING POLICY",
+   "sql": "DESCRIBE MASKING POLICY my_masking_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE MATERIALIZED VIEW",
+   "sql": "DESC MATERIALIZED VIEW my_materialized_view",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE MCP SERVER",
+   "sql": "DESCRIBE MCP SERVER my_mcp_server",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE MODEL MONITOR",
+   "sql": "DESC MODEL MONITOR my_model_monitor",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE MULTI PARTY APPROVAL POLICY",
+   "sql": "DESC MULTI PARTY APPROVAL POLICY my_multi_party_approval_pol",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE NETWORK POLICY",
+   "sql": "DESCRIBE NETWORK POLICY my_network_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE NETWORK RULE",
+   "sql": "DESCRIBE NETWORK RULE my_network_rule",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE NOTEBOOK",
+   "sql": "DESCRIBE NOTEBOOK my_notebook",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE NOTIFICATION INTEGRATION",
+   "sql": "DESCRIBE NOTIFICATION INTEGRATION my_notification_integration",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE OPENFLOW DATA PLANE INTEGRATION",
+   "sql": "DESC OPENFLOW DATA PLANE INTEGRATION my_openflow_data_plane_inte",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE ONLINE FEATURE TABLE",
+   "sql": "DESCRIBE ONLINE FEATURE TABLE my_online_feature_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE OPENFLOW CONNECTOR",
+   "sql": "DESCRIBE OPENFLOW CONNECTOR my_openflow_connector",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE OPENFLOW DEPLOYMENT",
+   "sql": "DESC OPENFLOW DEPLOYMENT my_openflow_deployment",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE OPENFLOW RUNTIME",
+   "sql": "DESCRIBE OPENFLOW RUNTIME my_openflow_runtime",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE ORGANIZATION PROFILE",
+   "sql": "DESCRIBE ORGANIZATION PROFILE my_organization_profile",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE PACKAGES POLICY",
+   "sql": "DESC PACKAGES POLICY my_packages_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE PASSWORD POLICY",
+   "sql": "DESC PASSWORD POLICY my_password_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE PIPE",
+   "sql": "DESCRIBE PIPE my_pipe",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE POSTGRES INSTANCE",
+   "sql": "DESC POSTGRES INSTANCE my_postgres_instance",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE PRIVACY POLICY",
+   "sql": "DESCRIBE PRIVACY POLICY my_privacy_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE PROCEDURE",
+   "sql": "DESCRIBE PROCEDURE my_proc(NUMBER)",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE PROJECTION POLICY",
+   "sql": "DESC PROJECTION POLICY my_projection_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE RESULT",
+   "sql": "DESCRIBE RESULT LAST_QUERY_ID()",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "DESCRIBE RESTRICTED SESSION SCOPE",
+   "sql": "DESCRIBE RESTRICTED SESSION SCOPE my_restricted_session_scope",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE ROW ACCESS POLICY",
+   "sql": "DESC ROW ACCESS POLICY my_row_access_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SCHEMA",
+   "sql": "DESCRIBE SCHEMA my_schema",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SEARCH OPTIMIZATION",
+   "sql": "DESC SEARCH OPTIMIZATION my_search_optimization",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SECRET",
+   "sql": "DESCRIBE SECRET my_secret",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SEMANTIC VIEW",
+   "sql": "DESC SEMANTIC VIEW my_semantic_view",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SEQUENCE",
+   "sql": "DESCRIBE SEQUENCE my_sequence",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SERVICE",
+   "sql": "DESC SERVICE my_service",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SESSION POLICY",
+   "sql": "DESCRIBE SESSION POLICY my_session_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SHARE",
+   "sql": "DESC SHARE my_share",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SNAPSHOT",
+   "sql": "DESCRIBE SNAPSHOT my_snapshot",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SNAPSHOT POLICY",
+   "sql": "DESC SNAPSHOT POLICY my_snapshot_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SNAPSHOT SET",
+   "sql": "DESCRIBE SNAPSHOT SET my_snapshot_set",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE SPECIFICATION",
+   "sql": "DESC SPECIFICATION my_specification",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE STAGE",
+   "sql": "DESC STAGE my_stage",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE STORAGE LIFECYCLE POLICY",
+   "sql": "DESCRIBE STORAGE LIFECYCLE POLICY my_storage_lifecycle_policy",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE STREAM",
+   "sql": "DESCRIBE STREAM my_stream",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE STREAMLIT",
+   "sql": "DESC STREAMLIT my_streamlit",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE TABLE",
+   "sql": "DESC TABLE my_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE TASK",
+   "sql": "DESCRIBE TASK my_task",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE TASK GRAPH",
+   "sql": "DESCRIBE TASK GRAPH my_task_graph",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE TRANSACTION",
+   "sql": "DESC TRANSACTION my_transaction",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE TYPE",
+   "sql": "DESCRIBE TYPE my_type",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE USER",
+   "sql": "DESCRIBE USER my_user",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE VARIABLE",
+   "sql": "DESCRIBE VARIABLE my_variable",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE VIEW",
+   "sql": "DESCRIBE VIEW my_view",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DESCRIBE WAREHOUSE",
+   "sql": "DESC WAREHOUSE my_warehouse",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "DROP <object>",
+   "sql": "DROP TABLE IF EXISTS my_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ACCOUNT",
+   "sql": "DROP ACCOUNT IF EXISTS my_account",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP AGENT",
+   "sql": "DROP AGENT IF EXISTS my_agent",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP AGGREGATION POLICY",
+   "sql": "DROP AGGREGATION POLICY IF EXISTS my_aggregation_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ALERT",
+   "sql": "DROP ALERT IF EXISTS my_alert",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP APPLICATION",
+   "sql": "DROP APPLICATION IF EXISTS my_application",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP APPLICATION PACKAGE",
+   "sql": "DROP APPLICATION PACKAGE IF EXISTS my_application_package",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP APPLICATION ROLE",
+   "sql": "DROP APPLICATION ROLE IF EXISTS my_application_role",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP APPLICATION SERVICE",
+   "sql": "DROP APPLICATION SERVICE IF EXISTS my_application_service",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ARTIFACT REPOSITORY",
+   "sql": "DROP ARTIFACT REPOSITORY IF EXISTS my_artifact_repository",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP AUTHENTICATION POLICY",
+   "sql": "DROP AUTHENTICATION POLICY IF EXISTS my_authentication_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP BACKUP POLICY",
+   "sql": "DROP BACKUP POLICY IF EXISTS my_backup_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP BACKUP SET",
+   "sql": "DROP BACKUP SET IF EXISTS my_backup_set",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP CATALOG INTEGRATION",
+   "sql": "DROP CATALOG INTEGRATION IF EXISTS my_catalog_integration",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP COMPUTE POOL",
+   "sql": "DROP COMPUTE POOL IF EXISTS my_compute_pool",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP CONNECTION",
+   "sql": "DROP CONNECTION IF EXISTS my_connection",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP CONTACT",
+   "sql": "DROP CONTACT IF EXISTS my_contact",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP CORTEX SEARCH SERVICE",
+   "sql": "DROP CORTEX SEARCH SERVICE IF EXISTS my_cortex_search_service",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP DATA MOVEMENT POLICY",
+   "sql": "DROP DATA MOVEMENT POLICY IF EXISTS my_data_movement_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP DATA MOVEMENT RULE",
+   "sql": "DROP DATA MOVEMENT RULE IF EXISTS my_data_movement_rule",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP DATABASE",
+   "sql": "DROP DATABASE IF EXISTS my_database",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP DATABASE ROLE",
+   "sql": "DROP DATABASE ROLE IF EXISTS my_database_role",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP DBT PROJECT",
+   "sql": "DROP DBT PROJECT IF EXISTS my_dbt_project",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP DCM PROJECT",
+   "sql": "DROP DCM PROJECT IF EXISTS my_dcm_project",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP DYNAMIC TABLE",
+   "sql": "DROP DYNAMIC TABLE IF EXISTS my_dynamic_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP EVENT ROUTING TABLE",
+   "sql": "DROP EVENT ROUTING TABLE IF EXISTS my_event_routing_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP EXPERIMENT",
+   "sql": "DROP EXPERIMENT IF EXISTS my_experiment",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP EXTERNAL AGENT",
+   "sql": "DROP EXTERNAL AGENT IF EXISTS my_external_agent",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP EXTERNAL CONSUMER",
+   "sql": "DROP EXTERNAL CONSUMER IF EXISTS my_external_consumer",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP EXTERNAL TABLE",
+   "sql": "DROP EXTERNAL TABLE IF EXISTS my_external_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP EXTERNAL VOLUME",
+   "sql": "DROP EXTERNAL VOLUME IF EXISTS my_external_volume",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP EXTERNAL VOLUME",
+   "sql": "UNDROP EXTERNAL VOLUME my_external_volume",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP FAILOVER GROUP",
+   "sql": "DROP FAILOVER GROUP IF EXISTS my_failover_group",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP FEATURE POLICY",
+   "sql": "DROP FEATURE POLICY IF EXISTS my_feature_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP FILE FORMAT",
+   "sql": "DROP FILE FORMAT IF EXISTS my_file_format",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP FUNCTION",
+   "sql": "DROP FUNCTION IF EXISTS my_fn(NUMBER, NUMBER)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP FUNCTION (DMF)",
+   "sql": "DROP FUNCTION IF EXISTS my_function",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP FUNCTION (Snowpark Container Services)",
+   "sql": "DROP FUNCTION IF EXISTS my_function",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP GATEWAY",
+   "sql": "DROP GATEWAY IF EXISTS my_gateway",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP GIT REPOSITORY",
+   "sql": "DROP GIT REPOSITORY IF EXISTS my_git_repository",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ICEBERG TABLE",
+   "sql": "DROP ICEBERG TABLE IF EXISTS my_iceberg_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP ICEBERG TABLE",
+   "sql": "UNDROP ICEBERG TABLE my_iceberg_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP IMAGE REPOSITORY",
+   "sql": "DROP IMAGE REPOSITORY IF EXISTS my_image_repository",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP INDEX",
+   "sql": "DROP INDEX IF EXISTS my_index",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP INGRESS POLICY",
+   "sql": "DROP INGRESS POLICY IF EXISTS my_ingress_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP INTEGRATION",
+   "sql": "DROP INTEGRATION IF EXISTS my_integration",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP JOIN POLICY",
+   "sql": "DROP JOIN POLICY IF EXISTS my_join_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP LISTING",
+   "sql": "DROP LISTING IF EXISTS my_listing",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MAINTENANCE POLICY",
+   "sql": "DROP MAINTENANCE POLICY IF EXISTS my_maintenance_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MANAGED ACCOUNT",
+   "sql": "DROP MANAGED ACCOUNT IF EXISTS my_managed_account",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MASKING POLICY",
+   "sql": "DROP MASKING POLICY IF EXISTS my_masking_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MATERIALIZED VIEW",
+   "sql": "DROP MATERIALIZED VIEW IF EXISTS my_materialized_view",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MCP SERVER",
+   "sql": "DROP MCP SERVER IF EXISTS my_mcp_server",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MODEL",
+   "sql": "DROP MODEL IF EXISTS my_model",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MODEL MONITOR",
+   "sql": "DROP MODEL MONITOR IF EXISTS my_model_monitor",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP MULTI PARTY APPROVAL POLICY",
+   "sql": "DROP MULTI PARTY APPROVAL POLICY IF EXISTS my_multi_party_approval_pol",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP NETWORK POLICY",
+   "sql": "DROP NETWORK POLICY IF EXISTS my_network_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP NETWORK RULE",
+   "sql": "DROP NETWORK RULE IF EXISTS my_network_rule",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP NOTEBOOK",
+   "sql": "DROP NOTEBOOK IF EXISTS my_notebook",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP NOTEBOOK",
+   "sql": "UNDROP NOTEBOOK my_notebook",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ONLINE FEATURE TABLE",
+   "sql": "DROP ONLINE FEATURE TABLE IF EXISTS my_online_feature_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP OPENFLOW CONNECTOR",
+   "sql": "DROP OPENFLOW CONNECTOR IF EXISTS my_openflow_connector",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP OPENFLOW DEPLOYMENT",
+   "sql": "DROP OPENFLOW DEPLOYMENT IF EXISTS my_openflow_deployment",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP OPENFLOW RUNTIME",
+   "sql": "DROP OPENFLOW RUNTIME IF EXISTS my_openflow_runtime",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ORGANIZATION PROFILE",
+   "sql": "DROP ORGANIZATION PROFILE IF EXISTS my_organization_profile",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ORGANIZATION USER",
+   "sql": "DROP ORGANIZATION USER IF EXISTS my_organization_user",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ORGANIZATION USER GROUP",
+   "sql": "DROP ORGANIZATION USER GROUP IF EXISTS my_organization_user_group",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP PACKAGES POLICY",
+   "sql": "DROP PACKAGES POLICY IF EXISTS my_packages_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP PASSWORD POLICY",
+   "sql": "DROP PASSWORD POLICY IF EXISTS my_password_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP PIPE",
+   "sql": "DROP PIPE IF EXISTS my_pipe",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP POSTGRES INSTANCE",
+   "sql": "DROP POSTGRES INSTANCE IF EXISTS my_postgres_instance",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP PRIVACY POLICY",
+   "sql": "DROP PRIVACY POLICY IF EXISTS my_privacy_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP PROCEDURE",
+   "sql": "DROP PROCEDURE IF EXISTS my_proc(NUMBER)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP PROJECTION POLICY",
+   "sql": "DROP PROJECTION POLICY IF EXISTS my_projection_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP REPLICATION GROUP",
+   "sql": "DROP REPLICATION GROUP IF EXISTS my_replication_group",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP RESOURCE MONITOR",
+   "sql": "DROP RESOURCE MONITOR IF EXISTS my_resource_monitor",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP RESTRICTED SESSION SCOPE",
+   "sql": "DROP RESTRICTED SESSION SCOPE IF EXISTS my_restricted_session_scope",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ROLE",
+   "sql": "DROP ROLE IF EXISTS my_role",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP ROW ACCESS POLICY",
+   "sql": "DROP ROW ACCESS POLICY IF EXISTS my_row_access_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SCHEMA",
+   "sql": "DROP SCHEMA IF EXISTS my_schema",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SECRET",
+   "sql": "DROP SECRET IF EXISTS my_secret",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SEMANTIC VIEW",
+   "sql": "DROP SEMANTIC VIEW IF EXISTS my_semantic_view",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SEQUENCE",
+   "sql": "DROP SEQUENCE IF EXISTS my_sequence",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SERVICE",
+   "sql": "DROP SERVICE IF EXISTS my_service",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SESSION POLICY",
+   "sql": "DROP SESSION POLICY IF EXISTS my_session_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SHARE",
+   "sql": "DROP SHARE IF EXISTS my_share",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SNAPSHOT",
+   "sql": "DROP SNAPSHOT IF EXISTS my_snapshot",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SNAPSHOT POLICY — Deprecated",
+   "sql": "DROP SNAPSHOT POLICY IF EXISTS my_snapshot_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP SNAPSHOT SET — Deprecated",
+   "sql": "DROP SNAPSHOT SET IF EXISTS my_snapshot_set",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP STAGE",
+   "sql": "DROP STAGE IF EXISTS my_stage",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP STORAGE LIFECYCLE POLICY",
+   "sql": "DROP STORAGE LIFECYCLE POLICY IF EXISTS my_storage_lifecycle_policy",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP STREAM",
+   "sql": "DROP STREAM IF EXISTS my_stream",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP STREAMLIT",
+   "sql": "DROP STREAMLIT IF EXISTS my_streamlit",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP TABLE",
+   "sql": "DROP TABLE IF EXISTS my_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP TABLE",
+   "sql": "UNDROP TABLE my_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP TAG",
+   "sql": "DROP TAG IF EXISTS my_tag",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP TASK",
+   "sql": "DROP TASK IF EXISTS my_task",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP TASK GRAPH",
+   "sql": "DROP TASK GRAPH IF EXISTS my_task_graph",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP TYPE",
+   "sql": "DROP TYPE IF EXISTS my_type",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP USER",
+   "sql": "DROP USER IF EXISTS my_user",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP VARIABLE",
+   "sql": "DROP VARIABLE IF EXISTS my_variable",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP VIEW",
+   "sql": "DROP VIEW IF EXISTS my_view",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "DROP WAREHOUSE",
+   "sql": "DROP WAREHOUSE IF EXISTS my_warehouse",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE ALERT",
+   "sql": "EXECUTE ALERT my_alert",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE DBT PROJECT",
+   "sql": "EXECUTE DBT PROJECT my_project ARGS = 'run --select my_model'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE DCM PROJECT",
+   "sql": "EXECUTE DCM PROJECT my_project PLAN",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE IMMEDIATE",
+   "sql": "EXECUTE IMMEDIATE $$\nDECLARE\n  n NUMBER DEFAULT 0;\nBEGIN\n  FOR i IN 1 TO 3 DO\n    n := n + i;\n  END FOR;\n  IF (n > 3) THEN\n    RETURN n;\n  END IF;\n  RETURN 0;\nEND;\n$$",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE IMMEDIATE FROM",
+   "sql": "EXECUTE IMMEDIATE FROM @my_stage/scripts/setup.sql USING (env => 'dev')",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE INFERENCE JOB SERVICE",
+   "sql": "EXECUTE INFERENCE JOB SERVICE IN COMPUTE POOL my_pool NAME = my_job",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE JOB SERVICE",
+   "sql": "EXECUTE JOB SERVICE IN COMPUTE POOL my_pool NAME = my_job FROM @my_stage SPECIFICATION_FILE = 'job.yaml'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE NOTEBOOK",
+   "sql": "EXECUTE NOTEBOOK my_db.my_schema.my_notebook()",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE NOTEBOOK PROJECT",
+   "sql": "EXECUTE NOTEBOOK PROJECT my_project MAIN_FILE = 'main.ipynb'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE CODE BUNDLE",
+   "sql": "EXECUTE CODE BUNDLE my_bundle",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE TASK",
+   "sql": "EXECUTE TASK my_task",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXECUTE TASK GRAPH",
+   "sql": "EXECUTE TASK my_root_task RETRY LAST",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXPERIMENT (CREATE / EXECUTE / SHOW / DROP)",
+   "sql": "CREATE EXPERIMENT my_experiment",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "EXPLAIN",
+   "sql": "EXPLAIN USING TABULAR SELECT * FROM my_table WHERE id = 1",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "GET",
+   "sql": "GET @my_stage/data/part_0.csv.gz file:///tmp/data/",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT APPLICATION ROLE",
+   "sql": "GRANT APPLICATION ROLE my_app.viewer TO ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT CALLER",
+   "sql": "GRANT CALLER SELECT ON TABLE my_table TO ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT DATABASE ROLE",
+   "sql": "GRANT DATABASE ROLE my_db.reader TO ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT DATABASE ROLE … TO SHARE",
+   "sql": "GRANT DATABASE ROLE my_db.reader TO SHARE my_share",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT OWNERSHIP",
+   "sql": "GRANT OWNERSHIP ON TABLE my_table TO ROLE analyst COPY CURRENT GRANTS",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT <privileges> … TO ROLE",
+   "sql": "GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA my_db.my_schema TO ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT <privileges> … TO APPLICATION",
+   "sql": "GRANT USAGE ON WAREHOUSE my_wh TO APPLICATION my_app",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT <privileges> … TO APPLICATION ROLE",
+   "sql": "GRANT SELECT ON VIEW my_view TO APPLICATION ROLE viewer",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT <privilege> … TO SHARE",
+   "sql": "GRANT USAGE ON DATABASE my_db TO SHARE my_share",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT <privileges> … TO USER",
+   "sql": "GRANT SELECT ON TABLE my_table TO USER jane",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT ROLE",
+   "sql": "GRANT ROLE analyst TO USER jane",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "GRANT SERVICE ROLE",
+   "sql": "GRANT SERVICE ROLE my_service!all_endpoints_usage TO ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "INSERT",
+   "sql": "INSERT OVERWRITE INTO my_table (id, name) VALUES (1, 'a;b'), (2, 'it''s')",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "INSERT (multi-table)",
+   "sql": "INSERT ALL WHEN n > 10 THEN INTO big (n) ELSE INTO small (n) SELECT n FROM src",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "LIST",
+   "sql": "LIST @my_stage/data/ PATTERN = '.*[.]gz'",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "MERGE",
+   "sql": "MERGE INTO target t USING source s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.v = s.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "PUT",
+   "sql": "PUT file:///tmp/data/part_0.csv @my_stage/data/ AUTO_COMPRESS = TRUE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REMOVE",
+   "sql": "REMOVE @my_stage/data/ PATTERN = '.*[.]tmp'",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE APPLICATION ROLE",
+   "sql": "REVOKE APPLICATION ROLE my_app.viewer FROM ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE CALLER",
+   "sql": "REVOKE CALLER SELECT ON TABLE my_table FROM ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE DATABASE ROLE",
+   "sql": "REVOKE DATABASE ROLE my_db.reader FROM ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE DATABASE ROLE … FROM SHARE",
+   "sql": "REVOKE DATABASE ROLE my_db.reader FROM SHARE my_share",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE <privileges> … FROM ROLE",
+   "sql": "REVOKE SELECT, INSERT ON ALL TABLES IN SCHEMA my_db.my_schema FROM ROLE analyst CASCADE",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE <privileges> … FROM APPLICATION",
+   "sql": "REVOKE USAGE ON WAREHOUSE my_wh FROM APPLICATION my_app",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE <privileges> … FROM APPLICATION ROLE",
+   "sql": "REVOKE SELECT ON VIEW my_view FROM APPLICATION ROLE viewer",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE <privilege> … FROM SHARE",
+   "sql": "REVOKE USAGE ON DATABASE my_db FROM SHARE my_share",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE <privileges> … FROM USER",
+   "sql": "REVOKE SELECT ON TABLE my_table FROM USER jane",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE ROLE",
+   "sql": "REVOKE ROLE analyst FROM USER jane",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "REVOKE SERVICE ROLE",
+   "sql": "REVOKE SERVICE ROLE my_service!all_endpoints_usage FROM ROLE analyst",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "ROLLBACK",
+   "sql": "ROLLBACK",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "SELECT",
+   "sql": "SELECT t.id, t.payload:customer.name::string AS name, $1 FROM my_db.my_schema.my_table t WHERE t.note = 'a;b' QUALIFY ROW_NUMBER() OVER (ORDER BY t.id) = 1",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SET",
+   "sql": "SET (min_id, max_id) = (1, 100)",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "SHOW <objects>",
+   "sql": "SHOW TABLES LIKE 'MY%' IN SCHEMA my_db.my_schema",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ACCOUNTS",
+   "sql": "SHOW ACCOUNTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW AGENTS",
+   "sql": "SHOW AGENTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW AGGREGATION POLICIES",
+   "sql": "SHOW AGGREGATION POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ALERTS",
+   "sql": "SHOW ALERTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW APPLICATION PACKAGES",
+   "sql": "SHOW APPLICATION PACKAGES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW APPLICATION ROLES",
+   "sql": "SHOW APPLICATION ROLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW APPLICATION SERVICES",
+   "sql": "SHOW APPLICATION SERVICES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "Application Services",
+   "sql": "SHOW SERVICES IN APPLICATION my_app",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW APPLICATIONS",
+   "sql": "SHOW APPLICATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ARTIFACT REPOSITORIES",
+   "sql": "SHOW ARTIFACT REPOSITORIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "artifact repositories",
+   "sql": "SHOW ARTIFACT REPOSITORIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW AUTHENTICATION POLICIES",
+   "sql": "SHOW AUTHENTICATION POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW AVAILABLE LISTINGS",
+   "sql": "SHOW AVAILABLE LISTINGS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW AVAILABLE OFFERS",
+   "sql": "SHOW AVAILABLE OFFERS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW AVAILABLE ORGANIZATION PROFILES",
+   "sql": "SHOW AVAILABLE ORGANIZATION PROFILES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW BACKUP POLICIES",
+   "sql": "SHOW BACKUP POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW BACKUP SETS",
+   "sql": "SHOW BACKUP SETS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW BACKUPS IN BACKUP SET",
+   "sql": "SHOW BACKUPS IN BACKUP SET",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CALLER GRANTS",
+   "sql": "SHOW CALLER GRANTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CATALOG INTEGRATIONS",
+   "sql": "SHOW CATALOG INTEGRATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CHANNELS",
+   "sql": "SHOW CHANNELS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CLASSES",
+   "sql": "SHOW CLASSES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW COLUMNS",
+   "sql": "SHOW COLUMNS IN TABLE my_db.my_schema.my_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW COMMITTED TASKS",
+   "sql": "SHOW COMMITTED TASKS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW COMPUTE POOL INSTANCE FAMILIES",
+   "sql": "SHOW COMPUTE POOL INSTANCE FAMILIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW COMPUTE POOLS",
+   "sql": "SHOW COMPUTE POOLS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CONFIGURATIONS",
+   "sql": "SHOW CONFIGURATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CONNECTIONS",
+   "sql": "SHOW CONNECTIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CONTACTS",
+   "sql": "SHOW CONTACTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CORTEX BASE MODELS",
+   "sql": "SHOW CORTEX BASE MODELS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CORTEX SEARCH SERVICES",
+   "sql": "SHOW CORTEX SEARCH SERVICES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATA METRIC FUNCTIONS",
+   "sql": "SHOW DATA METRIC FUNCTIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATA MOVEMENT POLICIES",
+   "sql": "SHOW DATA MOVEMENT POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATA MOVEMENT RULES",
+   "sql": "SHOW DATA MOVEMENT RULES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATABASE ROLES",
+   "sql": "SHOW DATABASE ROLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATABASES",
+   "sql": "SHOW DATABASES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATABASES IN FAILOVER GROUP",
+   "sql": "SHOW DATABASES IN FAILOVER GROUP",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATABASES IN REPLICATION GROUP",
+   "sql": "SHOW DATABASES IN REPLICATION GROUP",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DATASETS",
+   "sql": "SHOW DATASETS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DBT PROJECTS",
+   "sql": "SHOW DBT PROJECTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DCM PROJECTS",
+   "sql": "SHOW DCM PROJECTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DELEGATED AUTHORIZATIONS",
+   "sql": "SHOW DELEGATED AUTHORIZATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DEPLOYMENTS IN DCM PROJECT",
+   "sql": "SHOW DEPLOYMENTS IN DCM PROJECT",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW DYNAMIC TABLES",
+   "sql": "SHOW DYNAMIC TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ENDPOINTS",
+   "sql": "SHOW ENDPOINTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ENTITIES IN DCM PROJECT",
+   "sql": "SHOW ENTITIES IN DCM PROJECT",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EVENT ROUTING TABLE ON ORGANIZATION",
+   "sql": "SHOW EVENT ROUTING TABLE ON ORGANIZATION",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EVENT ROUTING TABLES",
+   "sql": "SHOW EVENT ROUTING TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EVENT TABLES",
+   "sql": "SHOW EVENT TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EXPERIMENTS",
+   "sql": "SHOW EXPERIMENTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EXTERNAL AGENTS",
+   "sql": "SHOW EXTERNAL AGENTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW USER PROGRAMMATIC ACCESS TOKENS FOR EXTERNAL CONSUMER",
+   "sql": "SHOW USER PROGRAMMATIC ACCESS TOKENS FOR EXTERNAL CONSUMER",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EXTERNAL CONSUMERS",
+   "sql": "SHOW EXTERNAL CONSUMERS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EXTERNAL FUNCTIONS",
+   "sql": "SHOW EXTERNAL FUNCTIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EXTERNAL TABLES",
+   "sql": "SHOW EXTERNAL TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW EXTERNAL VOLUMES",
+   "sql": "SHOW EXTERNAL VOLUMES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW FAILOVER GROUPS",
+   "sql": "SHOW FAILOVER GROUPS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW FEATURE POLICIES",
+   "sql": "SHOW FEATURE POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW FILE FORMATS",
+   "sql": "SHOW FILE FORMATS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW FILES IN ARTIFACT REPOSITORY",
+   "sql": "SHOW FILES IN ARTIFACT REPOSITORY",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW FUNCTIONS",
+   "sql": "SHOW FUNCTIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW FUNCTIONS IN MODEL",
+   "sql": "SHOW FUNCTIONS IN MODEL",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW GATEWAYS",
+   "sql": "SHOW GATEWAYS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW GIT BRANCHES",
+   "sql": "SHOW GIT BRANCHES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW GIT REPOSITORIES",
+   "sql": "SHOW GIT REPOSITORIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW GIT TAGS",
+   "sql": "SHOW GIT TAGS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW GLOBAL ACCOUNTS",
+   "sql": "SHOW GLOBAL ACCOUNTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW GRANTS",
+   "sql": "SHOW GRANTS TO ROLE analyst",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW GRANTS IN DCM PROJECT",
+   "sql": "SHOW GRANTS IN DCM PROJECT",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW HYBRID TABLES",
+   "sql": "SHOW HYBRID TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ICEBERG TABLES",
+   "sql": "SHOW ICEBERG TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW IMAGE REPOSITORIES",
+   "sql": "SHOW IMAGE REPOSITORIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW IMAGES IN IMAGE REPOSITORY",
+   "sql": "SHOW IMAGES IN IMAGE REPOSITORY",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW INDEXES",
+   "sql": "SHOW INDEXES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW INDEXES (STANDARD TABLE)",
+   "sql": "SHOW INDEXES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW INGRESS POLICIES",
+   "sql": "SHOW INGRESS POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW INTEGRATIONS",
+   "sql": "SHOW INTEGRATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW INTERACTIVE TABLES",
+   "sql": "SHOW INTERACTIVE TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW JOIN POLICIES",
+   "sql": "SHOW JOIN POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW LISTINGS",
+   "sql": "SHOW LISTINGS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW LISTINGS IN FAILOVER GROUP",
+   "sql": "SHOW LISTINGS IN FAILOVER GROUP",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW LOCKS",
+   "sql": "SHOW LOCKS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MAINTENANCE POLICIES",
+   "sql": "SHOW MAINTENANCE POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MANAGED ACCOUNTS",
+   "sql": "SHOW MANAGED ACCOUNTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MASKING POLICIES",
+   "sql": "SHOW MASKING POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MATERIALIZED VIEWS",
+   "sql": "SHOW MATERIALIZED VIEWS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MCP SERVERS",
+   "sql": "SHOW MCP SERVERS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MFA METHODS",
+   "sql": "SHOW MFA METHODS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MODEL MONITORS",
+   "sql": "SHOW MODEL MONITORS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MODELS",
+   "sql": "SHOW MODELS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW MULTI PARTY APPROVAL POLICIES",
+   "sql": "SHOW MULTI PARTY APPROVAL POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW NETWORK POLICIES",
+   "sql": "SHOW NETWORK POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW NETWORK RULES",
+   "sql": "SHOW NETWORK RULES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW NODES IN COMPUTE POOL",
+   "sql": "SHOW NODES IN COMPUTE POOL",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW NOTEBOOK PROJECTS",
+   "sql": "SHOW NOTEBOOK PROJECTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW CODE BUNDLES",
+   "sql": "SHOW CODE BUNDLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW NOTEBOOKS",
+   "sql": "SHOW NOTEBOOKS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW NOTIFICATION INTEGRATIONS",
+   "sql": "SHOW NOTIFICATION INTEGRATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OBJECTS",
+   "sql": "SHOW OBJECTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OBJECTS OWNED BY APPLICATION",
+   "sql": "SHOW OBJECTS OWNED BY APPLICATION",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OFFERS",
+   "sql": "SHOW OFFERS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OPENFLOW DATA PLANE INTEGRATIONS",
+   "sql": "SHOW OPENFLOW DATA PLANE INTEGRATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ONLINE FEATURE TABLES",
+   "sql": "SHOW ONLINE FEATURE TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "online feature tables",
+   "sql": "SHOW ONLINE FEATURE TABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OPENFLOW CONNECTOR DEFINITIONS",
+   "sql": "SHOW OPENFLOW CONNECTOR DEFINITIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OPENFLOW CONNECTORS",
+   "sql": "SHOW OPENFLOW CONNECTORS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OPENFLOW DEPLOYMENTS",
+   "sql": "SHOW OPENFLOW DEPLOYMENTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW OPENFLOW RUNTIMES",
+   "sql": "SHOW OPENFLOW RUNTIMES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ORGANIZATION ACCOUNTS",
+   "sql": "SHOW ORGANIZATION ACCOUNTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ORGANIZATION CONTRACTS",
+   "sql": "SHOW ORGANIZATION CONTRACTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ORGANIZATION PROFILES",
+   "sql": "SHOW ORGANIZATION PROFILES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ORGANIZATION USER GROUPS",
+   "sql": "SHOW ORGANIZATION USER GROUPS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ORGANIZATION USERS",
+   "sql": "SHOW ORGANIZATION USERS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PACKAGES IN ARTIFACT REPOSITORY",
+   "sql": "SHOW PACKAGES IN ARTIFACT REPOSITORY",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PACKAGES POLICIES",
+   "sql": "SHOW PACKAGES POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PARAMETERS",
+   "sql": "SHOW PARAMETERS LIKE 'TIME%' IN SESSION",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PASSWORD POLICIES",
+   "sql": "SHOW PASSWORD POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PIPES",
+   "sql": "SHOW PIPES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW POSTGRES INSTANCES",
+   "sql": "SHOW POSTGRES INSTANCES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PRICING PLANS",
+   "sql": "SHOW PRICING PLANS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PRIMARY KEYS",
+   "sql": "SHOW PRIMARY KEYS IN TABLE my_table",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PRIVACY POLICIES",
+   "sql": "SHOW PRIVACY POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PRIVILEGES",
+   "sql": "SHOW PRIVILEGES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PROCEDURES",
+   "sql": "SHOW PROCEDURES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW PROJECTION POLICIES",
+   "sql": "SHOW PROJECTION POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW REFERENCES",
+   "sql": "SHOW REFERENCES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW REGIONS",
+   "sql": "SHOW REGIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW RELEASE CHANNELS",
+   "sql": "SHOW RELEASE CHANNELS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW RELEASE DIRECTIVES",
+   "sql": "SHOW RELEASE DIRECTIVES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW REPLICATION ACCOUNTS",
+   "sql": "SHOW REPLICATION ACCOUNTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW REPLICATION DATABASES",
+   "sql": "SHOW REPLICATION DATABASES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW REPLICATION GROUPS",
+   "sql": "SHOW REPLICATION GROUPS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW RESOURCE MONITORS",
+   "sql": "SHOW RESOURCE MONITORS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW RESTRICTED SESSION SCOPES",
+   "sql": "SHOW RESTRICTED SESSION SCOPES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ROLES",
+   "sql": "SHOW ROLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ROLES IN SERVICE",
+   "sql": "SHOW ROLES IN SERVICE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW ROW ACCESS POLICIES",
+   "sql": "SHOW ROW ACCESS POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW RULES IN EVENT ROUTING TABLE",
+   "sql": "SHOW RULES IN EVENT ROUTING TABLE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW RUN … IN EXPERIMENT",
+   "sql": "SHOW RUN my_run IN EXPERIMENT",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW RUNS IN EXPERIMENT",
+   "sql": "SHOW RUNS IN EXPERIMENT",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SCHEMA VARIABLES IN SCHEMA",
+   "sql": "SHOW SCHEMA VARIABLES IN SCHEMA",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SCHEMAS",
+   "sql": "SHOW SCHEMAS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SECRETS",
+   "sql": "SHOW SECRETS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SEMANTIC DIMENSIONS",
+   "sql": "SHOW SEMANTIC DIMENSIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SEMANTIC DIMENSIONS FOR METRIC",
+   "sql": "SHOW SEMANTIC DIMENSIONS FOR METRIC",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SEMANTIC FACTS",
+   "sql": "SHOW SEMANTIC FACTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SEMANTIC METRICS",
+   "sql": "SHOW SEMANTIC METRICS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SEMANTIC VIEWS",
+   "sql": "SHOW SEMANTIC VIEWS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SEQUENCES",
+   "sql": "SHOW SEQUENCES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SERVICE CONTAINERS IN SERVICE",
+   "sql": "SHOW SERVICE CONTAINERS IN SERVICE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SERVICE INSTANCES IN SERVICE",
+   "sql": "SHOW SERVICE INSTANCES IN SERVICE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SERVICE VOLUMES IN SERVICE",
+   "sql": "SHOW SERVICE VOLUMES IN SERVICE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SERVICES",
+   "sql": "SHOW SERVICES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SESSION POLICIES",
+   "sql": "SHOW SESSION POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SHARED CONTENT IN APPLICATION PACKAGE",
+   "sql": "SHOW SHARED CONTENT IN APPLICATION PACKAGE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SHARES",
+   "sql": "SHOW SHARES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SHARES IN FAILOVER GROUP",
+   "sql": "SHOW SHARES IN FAILOVER GROUP",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SHARES IN REPLICATION GROUP",
+   "sql": "SHOW SHARES IN REPLICATION GROUP",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SNAPSHOT POLICIES — Deprecated",
+   "sql": "SHOW SNAPSHOT POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SNAPSHOT SETS — Deprecated",
+   "sql": "SHOW SNAPSHOT SETS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SNAPSHOTS",
+   "sql": "SHOW SNAPSHOTS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SNAPSHOTS IN SNAPSHOT SET — Deprecated",
+   "sql": "SHOW SNAPSHOTS IN SNAPSHOT SET",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW SPECIFICATIONS",
+   "sql": "SHOW SPECIFICATIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW STAGES",
+   "sql": "SHOW STAGES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW STORAGE LIFECYCLE POLICIES",
+   "sql": "SHOW STORAGE LIFECYCLE POLICIES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW STREAMLITS",
+   "sql": "SHOW STREAMLITS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW STREAMS",
+   "sql": "SHOW STREAMS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW TABLES",
+   "sql": "SHOW TERSE TABLES IN DATABASE my_db STARTS WITH 'A' LIMIT 10 FROM 'AB'",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW TAGS",
+   "sql": "SHOW TAGS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW TASK GRAPHS",
+   "sql": "SHOW TASK GRAPHS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW TASKS",
+   "sql": "SHOW TASKS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW TELEMETRY EVENT DEFINITIONS",
+   "sql": "SHOW TELEMETRY EVENT DEFINITIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW TRANSACTIONS",
+   "sql": "SHOW TRANSACTIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW TYPES",
+   "sql": "SHOW TYPES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW USER FUNCTIONS",
+   "sql": "SHOW USER FUNCTIONS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW USER KEY PAIRS",
+   "sql": "SHOW USER KEY PAIRS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW USER PROCEDURES",
+   "sql": "SHOW USER PROCEDURES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW USER PROGRAMMATIC ACCESS TOKENS",
+   "sql": "SHOW USER PROGRAMMATIC ACCESS TOKENS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW USER WORKLOAD IDENTITY AUTHENTICATION METHODS",
+   "sql": "SHOW USER WORKLOAD IDENTITY AUTHENTICATION METHODS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW USERS",
+   "sql": "SHOW USERS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VARIABLES",
+   "sql": "SHOW VARIABLES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN APPLICATION PACKAGE",
+   "sql": "SHOW VERSIONS IN APPLICATION PACKAGE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN ARTIFACT REPOSITORY",
+   "sql": "SHOW VERSIONS IN ARTIFACT REPOSITORY",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN DATASET",
+   "sql": "SHOW VERSIONS IN DATASET",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN DBT PROJECT",
+   "sql": "SHOW VERSIONS IN DBT PROJECT",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN LISTING",
+   "sql": "SHOW VERSIONS IN LISTING",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN MODEL",
+   "sql": "SHOW VERSIONS IN MODEL",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN OPENFLOW CONNECTOR",
+   "sql": "SHOW VERSIONS IN OPENFLOW CONNECTOR",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VERSIONS IN ORGANIZATION PROFILE",
+   "sql": "SHOW VERSIONS IN ORGANIZATION PROFILE",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW VIEWS",
+   "sql": "SHOW VIEWS",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW WAREHOUSES",
+   "sql": "SHOW WAREHOUSES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "SHOW WORKSPACES",
+   "sql": "SHOW WORKSPACES",
+   "reads": true,
+   "rerunnable": true
+  },
+  {
+   "command": "TRUNCATE MATERIALIZED VIEW",
+   "sql": "TRUNCATE MATERIALIZED VIEW my_view",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "TRUNCATE TABLE",
+   "sql": "TRUNCATE TABLE IF EXISTS my_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP <object>",
+   "sql": "UNDROP TABLE my_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP ACCOUNT",
+   "sql": "UNDROP ACCOUNT my_account",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP AGENT",
+   "sql": "UNDROP AGENT my_agent",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP DATABASE",
+   "sql": "UNDROP DATABASE my_database",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP DYNAMIC TABLE",
+   "sql": "UNDROP DYNAMIC TABLE my_dynamic_table",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP SCHEMA",
+   "sql": "UNDROP SCHEMA my_schema",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP SNAPSHOT",
+   "sql": "UNDROP SNAPSHOT my_snapshot",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP STAGE",
+   "sql": "UNDROP STAGE my_stage",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP STREAMLIT",
+   "sql": "UNDROP STREAMLIT my_streamlit",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP TAG",
+   "sql": "UNDROP TAG my_tag",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP TYPE",
+   "sql": "UNDROP TYPE my_type",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNDROP VARIABLE",
+   "sql": "UNDROP VARIABLE my_variable",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "UNSET",
+   "sql": "UNSET (min_id, max_id)",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "UPDATE",
+   "sql": "UPDATE my_table SET name = 'x;y' FROM other WHERE my_table.id = other.id",
+   "reads": false,
+   "rerunnable": false
+  },
+  {
+   "command": "USE <object>",
+   "sql": "USE SCHEMA my_db.my_schema",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "USE DATABASE",
+   "sql": "USE DATABASE my_db",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "USE ROLE",
+   "sql": "use role auditor",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "USE SCHEMA",
+   "sql": "USE SCHEMA \"My Db\".\"my schema\"",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "USE SECONDARY ROLES",
+   "sql": "USE SECONDARY ROLES ALL",
+   "reads": true,
+   "rerunnable": false
+  },
+  {
+   "command": "USE WAREHOUSE",
+   "sql": "USE WAREHOUSE my_wh",
+   "reads": true,
+   "rerunnable": false
+  }
+ ]
+}

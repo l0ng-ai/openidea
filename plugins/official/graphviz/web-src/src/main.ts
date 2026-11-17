@@ -6,7 +6,7 @@
  * which turns it into the file's problems.
  */
 import { instance, type Viz } from "@viz-js/viz";
-import { ENGINES, type Engine, exportName, problemsOf, renderOptions } from "./render";
+import { ENGINES, type Engine, exportName, problemsOf, renderOptions, withoutLinks } from "./render";
 
 const RENDER_DELAY_MS = 150;
 const MIN_ZOOM = 0.1;
@@ -73,7 +73,7 @@ function start(bridge: OpenideaBridge) {
     const problems = problemsOf(result);
     report(problems);
     if (result.status === "success") {
-      canvas.innerHTML = result.output;
+      canvas.innerHTML = withoutLinks(result.output);
       canvas.classList.remove("stale");
       banner.hidden = true;
       if (fitted) fit();

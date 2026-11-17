@@ -10,6 +10,7 @@ import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { call, commands, isTauri, type DocumentLink } from "@/platform/ipc";
+import { onOtherShare } from "@/platform/paths";
 import { openExternalUrl } from "@/platform/openUrl";
 import { executeAction } from "@/platform/actions";
 import { editorService } from "@/workbench/contributions";
@@ -53,10 +54,17 @@ export function knownLinks(view: EditorView): DocumentLink[] | undefined {
   return fetchedLinks.get(view.state.doc);
 }
 
-export function linkReference(text: Text, links: readonly DocumentLink[], offset: number): Reference | null {
+/** The server's link around `offset` in the document at `path`; none to a network share that document is not on. */
+export function linkReference(
+  text: Text,
+  links: readonly DocumentLink[],
+  offset: number,
+  path: string,
+): Reference | null {
   for (const l of links) {
     const { from, to } = rangeToOffsets(text, l.range);
     if (offset < from || offset > to) continue;
+    if (l.path && onOtherShare(l.path, path)) return null;
     if (l.path) return { kind: "file", from, to, path: l.path, fragment: l.fragment };
     if (l.url) return { kind: "url", from, to, url: l.url };
   }
@@ -195,7 +203,7 @@ export async function followReference(ref: Reference): Promise<void> {
  * named by a quoted path. Null when there is none.
  */
 export async function referenceAt(view: EditorView, doc: EditorDocContext, offset: number): Promise<Reference | null> {
-  const link = linkReference(view.state.doc, await documentLinks(view, doc), offset);
+  const link = linkReference(view.state.doc, await documentLinks(view, doc), offset, doc.path);
   const ref = textReference(view.state.doc, offset);
   if (link?.kind !== "file") {
     if (link) return link;

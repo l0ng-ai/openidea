@@ -21,7 +21,7 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   margin-bottom: 6px;
 }
 .search {
@@ -34,7 +34,7 @@
   min-width: 520px;
   min-height: 0;
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .treeWrap {
   flex: 3;
@@ -54,7 +54,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding-right: 8px;
 }
 .name {
@@ -98,14 +98,14 @@
 .severityRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
 .options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 0;
   padding: 10px 0 0;
   border: none;
@@ -128,14 +128,14 @@
 .nameBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 14px;
 }
 .nameRow {
   display: grid;
   grid-template-columns: 60px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .nameError {
   color: var(--danger);

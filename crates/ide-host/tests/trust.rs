@@ -46,6 +46,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "clear_caches",
         "clipboard_file_list",
         "clipboard_has_files",
+        "clipboard_has_image",
         "clipboard_image",
         "clipboard_set_file_list",
         "clipboard_write_text",
@@ -53,6 +54,11 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "jdk_download_releases",
         "jdk_download_location",
         "jdk_download",
+        "jdtls_required_java",
+        "scaffold_catalog",
+        "scaffold_options",
+        "scaffold_requirements",
+        "scaffold_create",
         "run_system_env",
         "run_gradle_jvm_args_script",
         "proxy_check_connection",
@@ -61,6 +67,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "docker_set_registry_password",
         "docker_run_env",
         "db_console_path",
+        "db_consoles",
         "db_export_file",
         "vcs_write_patch",
         "remote_bootstrap_list",
@@ -87,9 +94,11 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "vcs_git_version",
         "docker_compose_op",
         "db_execute",
+        "agent_refresh_models",
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
+        "remote_download_into",
         "remote_import_local",
         "remote_bootstrap_exec",
         "deploy_upload",
@@ -177,7 +186,7 @@ async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
     host.remote.test_connection(&connection, "/projects").await.unwrap();
     let local = tmp.path().join("local-deployment");
     std::fs::create_dir(&local).unwrap();
-    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into())
+    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into(), None)
         .await
         .unwrap();
     assert_eq!(std::fs::read_dir(local).unwrap().count(), 0, "write probe is cleaned up");
@@ -481,4 +490,33 @@ fn attached_member_trust_is_required_after_restart_and_revocation() {
     assert!(!trust.window_trusted(&root).unwrap());
     trust.decide(&other, true, false).unwrap();
     assert!(trust.window_trusted(&root).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_created_with_new_project_is_trusted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(&tmp.path().join("app"), false);
+    let req: ide_scaffold::CreateRequest = serde_json::from_value(serde_json::json!({
+        "generator": "empty",
+        "location": tmp.path().join("projects").to_string_lossy(),
+        "name": "fresh",
+        "git": false,
+        "values": {},
+    }))
+    .unwrap();
+    let dir = ide_host::ops::scaffold::scaffold_create(
+        &host,
+        "welcome",
+        req,
+        ide_core::RequestId(902),
+        ide_host::ops::Channel::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    let dir = std::path::PathBuf::from(dir);
+    assert!(host.trust.status(&dir).unwrap().trusted);
+    // Its siblings are not.
+    let sibling = tmp.path().join("projects/other");
+    std::fs::create_dir(&sibling).unwrap();
+    assert!(!host.trust.status(&sibling).unwrap().trusted);
 }

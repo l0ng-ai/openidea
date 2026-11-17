@@ -16,8 +16,12 @@ pub struct AppInfo {
     pub platform: String,
     pub windows_build_number: Option<u32>,
     pub config_dir: ide_core::IpcPath,
+    /// User data (plugins, scratches, Local History); follows `OPENIDEA_DATA_DIR`.
+    pub data_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
+    /// Caption buttons of the frameless title bar: the desktop's layout on Linux.
+    pub window_buttons: ide_core::platform::WindowButtonLayout,
 }
 
 pub use ide_host::ops::project::ProjectInfo;
@@ -31,18 +35,31 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         platform: std::env::consts::OS.into(),
         windows_build_number: ide_core::platform::windows_build_number(),
         config_dir: state.config_dir.clone().into(),
+        data_dir: state.data_dir.clone().into(),
         #[cfg(target_os = "linux")]
         wayland: crate::linux_window_state::is_wayland(),
         #[cfg(not(target_os = "linux"))]
         wayland: false,
+        #[cfg(target_os = "linux")]
+        window_buttons: crate::linux_window_state::decoration_layout()
+            .and_then(|layout| ide_core::platform::WindowButtonLayout::from_gtk_decoration_layout(&layout))
+            .unwrap_or_default(),
+        #[cfg(not(target_os = "linux"))]
+        window_buttons: Default::default(),
     }
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn recent_projects(state: State<'_, AppState>) -> Vec<RecentProject> {
+pub async fn recent_projects(app: tauri::AppHandle) -> Vec<RecentProject> {
+    let state = app.state::<AppState>();
     state.note_ipc();
-    state.recent.list()
+    let items = state.recent.list();
+    // Reading every project's `.git/HEAD` may touch slow disks: off the async runtime.
+    match tauri::async_runtime::spawn_blocking(move || ide_workspace::recent::with_live_branches(items)).await {
+        Ok(items) => items,
+        Err(_) => state.recent.list(),
+    }
 }
 
 #[tauri::command]
@@ -110,6 +127,33 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
     Ok(project.settings.effective())
 }
 
+/// LightEdit without a file (File › New File from a welcome window); returns
+/// the effective (global) settings.
+#[tauri::command]
+#[specta::specta]
+pub async fn light_edit_open_untitled(window: Window) -> IdeResult<Settings> {
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    let log_label = label.clone();
+    let result = async {
+        if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
+            crate::windows::close_auxiliary_windows(&app, &label);
+            crate::window_groups::detach(&app, &label)?;
+            crate::window_groups::persist(&app).await?;
+        }
+        tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_light_empty(&label))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    match result.await {
+        Ok(project) => Ok(project.settings.effective()),
+        Err(e) => {
+            tracing::warn!("light_edit_open_untitled ({log_label}): {e}");
+            Err(e)
+        }
+    }
+}
+
 fn project_info(project: &crate::state::Project) -> ProjectInfo {
     ide_host::ops::project::info(project)
 }
@@ -173,6 +217,16 @@ pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
     state.host.with_proxy_password(state.global_settings.effective())
 }
 
+/// The removed built-in theme id a settings file of this window still names, if any:
+/// `settings_get` reports the built-in that stands in for it, so the notice about
+/// a theme that moved to a plugin can address the installs it concerns.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Option<String> {
+    state.note_ipc();
+    ide_host::ops::project::settings_removed_theme(&state.host, window.label())
+}
+
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 /// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 /// re-reads its effective settings.
@@ -180,22 +234,44 @@ pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
 #[specta::specta]
 pub fn settings_set(
     window: Window,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     scope: SettingsScope,
     key: String,
     value: String,
 ) -> IdeResult<Settings> {
-    let applied = ide_host::ops::project::set_settings(&state.host, window.label(), scope, &key, &value)?;
+    let window = window.label().to_owned();
+    // The merge validates its result by deserializing the whole `Settings`, which needs
+    // ~250 KiB of stack in a debug build (measured by bisecting a thread's stack size; the
+    // same with and without a settings file, so it is the type, not the data). A WebView2
+    // IPC callback reaches this command with ~750 KiB of the main thread's 1 MiB already
+    // used, so the merge — and anything else called from that callback — can overflow it.
+    // A worker thread starts from a clean stack, where the default 2 MiB is ample.
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        settings_set_now(&state, &window, scope, &key, &value)
+    })
+    .join()
+    .map_err(|_| IdeError::internal("settings worker panicked"))?
+}
+
+fn settings_set_now(
+    state: &AppState,
+    window: &str,
+    scope: SettingsScope,
+    key: &str,
+    value: &str,
+) -> IdeResult<Settings> {
+    let applied = ide_host::ops::project::set_settings(&state.host, window, scope, key, value)?;
     if key == "mcpServer" || key.starts_with("mcpServer.") {
-        crate::commands::mcp::apply(&state);
+        crate::commands::mcp::apply(state);
     }
     if !applied.project_scope {
         state.updates.wake.notify_one();
     }
     // A project value concerns only that project's window (and its settings window).
-    let event = ide_core::IdeEvent::SettingsChanged { key };
+    let event = ide_core::IdeEvent::SettingsChanged { key: key.to_owned() };
     if applied.project_scope {
-        let owner = AppState::owner_window(window.label());
+        let owner = AppState::owner_window(window);
         for label in [owner.to_owned(), crate::windows::settings_label(owner)] {
             let sink = crate::events::TauriSink { app: state.app.clone(), window: Some(label) };
             sink.emit(event.clone());
@@ -218,6 +294,7 @@ pub async fn settings_export(
     path: PathBuf,
     storage: std::collections::BTreeMap<String, String>,
 ) -> IdeResult<()> {
+    ide_host::ops::agent::move_user_mcp_values(&state.host);
     state.global_settings.export_bundle(&path, storage)
 }
 
@@ -235,6 +312,7 @@ pub struct SettingsImport {
 #[specta::specta]
 pub async fn settings_import(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<SettingsImport> {
     let (_, storage) = state.global_settings.import_bundle(&path)?;
+    ide_host::ops::agent::move_user_mcp_values(&state.host);
     for project in state.projects() {
         let effective = project.settings.reload();
         project

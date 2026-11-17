@@ -34,6 +34,40 @@ const RAW = import.meta.glob<string>(["./expui/**/*.svg", "./openidea/**/*.svg",
 const ICONS = {
   "project-flutter": "brands/flutter",
   "project-vite": "brands/vite",
+  "project-angular": "brands/angular",
+  "project-astro": "brands/astro",
+  "project-cpp": "brands/cpp",
+  "project-dart": "brands/dart",
+  "project-django": "brands/django",
+  "project-dotnet": "brands/dotnet",
+  "project-elixir": "brands/elixir",
+  "project-express": "brands/express",
+  "project-fastapi": "brands/fastapi",
+  "project-flask": "brands/flask",
+  "project-go": "brands/go",
+  "project-haskell": "brands/haskell",
+  "project-html": "brands/html",
+  "project-java": "brands/java",
+  "project-kotlin": "brands/kotlin",
+  "project-ktor": "brands/ktor",
+  "project-laravel": "brands/laravel",
+  "project-nestjs": "brands/nestjs",
+  "project-nextjs": "brands/nextjs",
+  "project-node": "brands/node",
+  "project-nuxt": "brands/nuxt",
+  "project-phoenix": "brands/phoenix",
+  "project-php": "brands/php",
+  "project-python": "brands/python",
+  "project-quarkus": "brands/quarkus",
+  "project-rails": "brands/rails",
+  "project-ruby": "brands/ruby",
+  "project-rust": "brands/rust",
+  "project-scala": "brands/scala",
+  "project-spring-boot": "brands/spring-boot",
+  "project-sveltekit": "brands/sveltekit",
+  "project-swift": "brands/swift",
+  "project-symfony": "brands/symfony",
+  "project-zig": "brands/zig",
   // Files & folders
   folder: "nodes/folder",
   "folder-open": "nodes/folder",
@@ -55,6 +89,7 @@ const ICONS = {
   exception: "nodes/exception",
   "jvm-test": "nodes/test",
   "runnable-mark": "nodes/runnableMark",
+  "symlink-mark": "nodes/symlink",
   "kotlin-object": "kotlin/objectKotlin",
   "spring-config": "openidea/runConfigurations/springBoot",
   "gradle-project": "gradle/gradle",
@@ -83,6 +118,7 @@ const ICONS = {
   "file-ts": "fileTypes/typeScript",
   "file-tsx": "openidea/fileTypes/tsx",
   "file-npm": "openidea/fileTypes/npm",
+  "file-bun": "openidea/fileTypes/bun",
   "file-vue": "fileTypes/vue",
   "file-svelte": "openidea/fileTypes/svelte",
   "file-jsp": "openidea/fileTypes/jsp",
@@ -143,6 +179,9 @@ const ICONS = {
   "file-gdshader": "openidea/fileTypes/gdshader",
   "file-asciidoc": "openidea/fileTypes/asciidoc",
   "file-d": "openidea/fileTypes/d",
+  "file-gherkin": "openidea/fileTypes/gherkin",
+  "file-prisma": "openidea/fileTypes/prisma",
+  "file-slint": "openidea/fileTypes/slint",
   "file-dart": "openidea/fileTypes/dart",
   "file-elixir": "openidea/fileTypes/elixir",
   "file-erlang": "openidea/fileTypes/erlang",
@@ -209,6 +248,7 @@ const ICONS = {
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
   "toolwindow-graphql": "openidea/toolwindows/graphql",
+  "toolwindow-sbt": "openidea/toolwindows/sbt",
   // Coding agents (logos via Paseo)
   "agent-claude": "openidea/agents/claude",
   "agent-codex": "openidea/agents/codex",
@@ -217,15 +257,24 @@ const ICONS = {
   "agent-cursor": "openidea/agents/cursor",
   "agent-opencode": "openidea/agents/opencode",
   "agent-qwen": "openidea/agents/qwen",
+  "agent-qoder": "openidea/agents/qoder",
+  "agent-qodercn": "openidea/agents/qoder",
   "agent-kimi": "openidea/agents/kimi",
   "agent-goose": "openidea/agents/goose",
   "agent-auggie": "openidea/agents/auggie",
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
   "agent-omp": "openidea/agents/omp",
+  "agent-deepseek-harness": "brands/deepseek",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
+  // Python environment sources: virtualenv / conda / uv / Poetry, and version managers (pyenv, mise, asdf).
+  "python-venv": "openidea/python/venv",
+  "python-conda": "openidea/python/conda",
+  "python-uv": "openidea/python/uv",
+  "python-poetry": "openidea/python/poetry",
+  "python-versions": "openidea/python/versions",
   // General UI
   "chevron-right": "general/chevronRight",
   "chevron-down": "general/chevronDown",
@@ -233,6 +282,8 @@ const ICONS = {
   "chevron-up": "general/chevronUp",
   "chevron-left": "general/chevronLeft",
   close: "general/close",
+  "project-tab-close": "general/windowClose",
+  "project-tab-close-hovered": "general/windowCloseHovered",
   plus: "general/add",
   minus: "general/remove",
   check: "actions/checked",
@@ -261,6 +312,8 @@ const ICONS = {
   split: "general/splitVertically",
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
+  "swap-panels": "actions/swapPanels",
+  "external-tools": "general/externalTools",
   "editor-preview": "general/editorPreview",
   "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
@@ -335,6 +388,7 @@ const ICONS = {
   "db-sequence": "openidea/database/sequence",
   "db-plan": "openidea/database/plan",
   "db-chart": "openidea/database/chart",
+  "db-in-editor-results": "openidea/database/inEditorResults",
   "db-sort": "openidea/database/sort",
   "db-folder": "openidea/database/folder",
   "db-add": "openidea/database/addDropdown",
@@ -346,6 +400,7 @@ const ICONS = {
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
   "db-oracle": "openidea/database/oracle",
+  "db-snowflake": "openidea/database/snowflake",
   "db-mariadb": "openidea/database/mariadb",
   "db-aurora": "openidea/database/aurora",
   "db-redshift": "openidea/database/redshift",
@@ -401,6 +456,8 @@ const ICONS = {
   "gutter-implementing": "gutter/implementingMethod",
   "gutter-overridden": "gutter/overridenMethod",
   "gutter-overriding": "gutter/overridingMethod",
+  "gutter-javadoc-read": "gutter/javadocRead",
+  "gutter-javadoc-edit": "gutter/javadocEdit",
   stop: "run/stop",
   rerun: "run/rerun",
   "hot-reload": "openidea/general/hotReload",
@@ -430,6 +487,8 @@ const ICONS = {
   "breakpoint-exception": "breakpoints/breakpointException",
   "mute-breakpoint": "run/muteBreakpoints",
   "view-breakpoints": "run/viewBreakpoints",
+  "heap-snapshot": "actions/profileMemory",
+  "stream-trace": "openidea/general/streamTrace",
   // Build tools (Maven / Gradle tool windows)
   "maven-project": "maven/mavenProject",
   "maven-module": "maven/mavenModule",
@@ -657,13 +716,20 @@ export function setFileIconTheme(theme: FileIconTheme | null) {
   useFileIconRevision.setState((n) => n + 1, true);
 }
 
-/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+/** The icon theme's (or plugin path provider's) icon for a plain folder, or null to keep the built-in one. */
 export function themedFolderIconName(
   folderName: string,
   expanded = false,
   holdsOpenFile = false,
   path: string | null = null,
 ): IconName | null {
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   return (fileIconTheme?.folder(folderName, expanded, holdsOpenFile, path) ?? null) as IconName | null;
 }
 
@@ -760,8 +826,19 @@ const withIds = (p: Prepared, prefix: string) => (p.hasIds ? p.html.replace(/__I
 
 // ---------------------------------------------------------------------------
 
+/** Largest `data:` image accepted as an icon (an avatar or a status badge a plugin fetched). */
+const MAX_IMAGE_ICON = 64 * 1024;
+
+/** A small raster image given as a `data:` URI (PNG, JPEG, GIF, WebP), shown in place of an icon. */
+function isImageIcon(name: string): boolean {
+  return name.length <= MAX_IMAGE_ICON && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/.test(name);
+}
+
 export interface IconProps {
-  /** Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon. */
+  /**
+   * Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon,
+   * and a raster `data:` image URI (see `isImageIcon`) renders that image.
+   */
   name: IconName | (string & {});
   size?: number;
   className?: string;
@@ -770,7 +847,26 @@ export interface IconProps {
   label?: string;
 }
 
-export function Icon({ name, size = 16, className, style, label }: IconProps) {
+export function Icon(props: IconProps) {
+  return isImageIcon(props.name) ? <ImageIcon {...props} /> : <SvgIcon {...props} />;
+}
+
+function ImageIcon({ name, size = 16, className, style, label }: IconProps) {
+  return (
+    <img
+      className={clsx(styles.icon, styles.image, className)}
+      style={style}
+      src={name}
+      width={size}
+      height={size}
+      alt={label ?? ""}
+      aria-hidden={label ? undefined : true}
+      draggable={false}
+    />
+  );
+}
+
+function SvgIcon({ name, size = 16, className, style, label }: IconProps) {
   useFileIconRevision();
   const uid = useId();
   const path = iconPath(name);
@@ -1001,12 +1097,12 @@ const EXT_ICONS = table({
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-rst": "rst",
-  "file-yaml": "yaml yml",
+  "file-yaml": "yaml yml gotmpl",
   "file-toml": "toml",
   "file-text": "txt text",
   "file-log": "log",
   "file-csv": "csv tsv",
-  "file-html": "html htm shtml html.tmpl",
+  "file-html": "html htm shtml html.tmpl djhtml",
   "file-xhtml": "xhtml",
   "file-css": "css pcss postcss",
   "file-less": "less",
@@ -1058,6 +1154,9 @@ const EXT_ICONS = table({
   "file-gdshader": "gdshader gdshaderinc",
   "file-asciidoc": "adoc asciidoc",
   "file-d": "d di",
+  "file-gherkin": "feature",
+  "file-prisma": "prisma",
+  "file-slint": "slint",
   "file-dart": "dart",
   "file-elixir": "ex exs",
   "file-erlang": "erl hrl escript app.src",
@@ -1090,12 +1189,25 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
-/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
+/** Icons for exact project paths (plugin `decorations.set-file-icon`), newest first: before filename globs. */
+let pathIconProviders: ReadonlyArray<(path: string) => string | null> = [];
+
+/** Icons for particular files (plugin `fileIcons`), newest first: after path providers, before the icon theme's. */
 let fileIconProviders: ReadonlyArray<(fileName: string, path: string | null) => string | null> = [];
 
 /** Bumps the file-icon revision so mounted trees and editor tabs re-resolve icons. */
 export function bumpFileIconRevision() {
   useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** Adds an exact-path icon provider for files and plain folders; the returned function removes it. */
+export function addPathIconProvider(resolve: (path: string) => string | null): () => void {
+  pathIconProviders = [resolve, ...pathIconProviders];
+  bumpFileIconRevision();
+  return () => {
+    pathIconProviders = pathIconProviders.filter((p) => p !== resolve);
+    bumpFileIconRevision();
+  };
 }
 
 /** Adds a file icon provider (an `ext:` or built-in icon name or null); the returned function removes it. */
@@ -1112,6 +1224,13 @@ export function addFileIconProvider(resolve: (fileName: string, path: string | n
 export function fileIconName(fileName: string, path: string | null = null): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   for (const provide of fileIconProviders) {
     const icon = provide(fileName, path);
     if (icon && iconPath(icon)) return icon as IconName;

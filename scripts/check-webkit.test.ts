@@ -10,12 +10,16 @@ it.each([
   "Object.groupBy(items, key)",
   "Array.fromAsync(items)",
   "text.toWellFormed()",
+  "input.showPicker()",
+  'Intl.supportedValuesOf("collator")',
+  "items.toSorted(compare)",
+  "path.toReversed()",
   'new RegExp("[a-z]", "v")',
   'RegExp("(?<=a)b")',
   "/[a-z]/v",
   "/(?<!a)b/",
   'import data from "./data.json" with { type: "json" }',
-])("rejects %s in the Safari 16 startup graph", (source) => {
+])("rejects %s in the Safari 15.4 startup graph", (source) => {
   expect(checkSource(source, true).length).toBeGreaterThan(0);
 });
 

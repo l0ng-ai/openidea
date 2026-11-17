@@ -1,16 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, IconButton } from "./Button";
 import { Icon } from "./icons";
-import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
+import { FOCUSABLE, dismissPopups, onWindowDeactivate, openLayer, trapTab } from "./popupState";
+import { PopupAncestry } from "./Popup";
 import { tx, useGivenTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
 import appIcon from "../../src-tauri/icons/128x128.png";
 import styles from "./Dialog.module.css";
 import { isImeKey } from "@/platform/ime";
 import { lockDragCursor } from "./dragCursor";
+import { suspendKeyboardDispatch } from "@/platform/keymap";
 
 /**
  * `default`: filled accent button, triggered by Enter. `cancel`: Esc / close
@@ -99,6 +101,8 @@ export interface DialogProps {
   open: boolean;
   /** Cancel: Escape, the close button / light, and `cancel` buttons without a handler. */
   onClose: () => void;
+  /** Keep workbench shortcuts out of blocking prompts; dialog-local keys still work. */
+  blockWorkbenchShortcuts?: boolean;
   title?: ReactNode;
   children: ReactNode;
   /** Footer buttons; ordered per platform (see `orderDialogButtons`). */
@@ -208,6 +212,7 @@ const ENTER_OWNERS =
 
 function DialogInner({
   onClose,
+  blockWorkbenchShortcuts = false,
   title,
   children,
   buttons,
@@ -271,7 +276,11 @@ function DialogInner({
     return onWindowDeactivate(() => onCloseRef.current());
   }, [cancelOnDeactivate]);
 
+  useEffect(() => (blockWorkbenchShortcuts ? suspendKeyboardDispatch() : undefined), [blockWorkbenchShortcuts]);
+
+  const ancestry = useRef(useContext(PopupAncestry));
   useEffect(() => {
+    dismissPopups(new Set(ancestry.current.flatMap((r) => (r.current === null ? [] : [r.current]))));
     const layer = openLayer(() => ref.current);
     let previous = document.activeElement as HTMLElement | null;
     const el = ref.current;

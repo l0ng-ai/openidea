@@ -10,6 +10,8 @@
 //! - `process:<program>` grants record the program's absolute path and file
 //!   hash at grant time. Calls use that path, never a `PATH` lookup, and fail
 //!   when the file changed (re-confirmation needed).
+//! - `java.agent` grants record the agent jar's path and hash the same way;
+//!   a launch adds the agent only while the jar still has that hash.
 
 use crate::capability::{Capability, Risk};
 use serde::{Deserialize, Serialize};
@@ -267,7 +269,7 @@ impl Ledger {
             if cap == &Capability::NetAsk {
                 grant.net_hosts.clear();
             }
-            if let Capability::Process(_) = cap {
+            if let Capability::Process(_) | Capability::JavaAgent = cap {
                 grant.binaries.remove(&s);
                 for binaries in grant.project_binaries.values_mut() {
                     binaries.remove(&s);
@@ -290,7 +292,7 @@ impl Ledger {
         self.grants.get_mut(subject).is_some_and(|g| g.net_hosts.remove(host))
     }
 
-    /// Records the program approved for a `process:` grant.
+    /// Records the program approved for a `process:` grant (or the jar of a `java.agent` one).
     pub fn set_binary(&mut self, subject: &Subject, cap: &Capability, binary: BinaryGrant) {
         if let Some(grant) = self.grants.get_mut(subject) {
             grant.binaries.insert(cap.to_string(), binary);
@@ -458,16 +460,13 @@ fn canonical_dir(p: &Path) -> PathBuf {
 
 fn is_executable(p: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(p) else { return false };
-    if !meta.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
-    true
+    meta.is_file()
 }
 
 /// blake3 of a file, hex.
@@ -676,6 +675,21 @@ mod tests {
         assert_eq!(l.check_binary(&r.subject, &cap).unwrap(), resolved);
         std::fs::write(&target, "#!/bin/sh\necho evil\n").unwrap();
         assert!(l.check_binary(&r.subject, &cap).unwrap_err().contains("changed"));
+    }
+
+    #[test]
+    fn revoking_java_agent_forgets_its_jar() {
+        let mut l = Ledger::in_memory();
+        let r = req("1.0.0", "h", &[], &["java.agent"]);
+        let cap = Capability::JavaAgent;
+        let jar = BinaryGrant { path: "/plugins/p/agent.jar".into(), hash: "abc".into() };
+        l.confirm(&r, std::slice::from_ref(&cap), [(cap.to_string(), jar.clone())].into());
+        assert_eq!(l.pinned_binary(&r.subject, &cap), Some(jar.clone()));
+        l.set(&r.subject, &cap, false);
+        assert_eq!(l.pinned_binary(&r.subject, &cap), None);
+        // Granting again without a new hash does not bring the old one back.
+        l.set(&r.subject, &cap, true);
+        assert_eq!(l.pinned_binary(&r.subject, &cap), None);
     }
 
     #[test]

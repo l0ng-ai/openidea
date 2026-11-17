@@ -255,13 +255,22 @@ describe("catalogs", () => {
   const OWN_SCRIPT = new Set(["zh", "ko"]);
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
+    "4096 MB",
+    "6144 MB",
+    "8192 MB",
+    "12288 MB",
+    "16384 MB",
     "Docker",
+    "Code Vision",
     "JUnit",
     "⌘Enter",
     "Fork",
     "Shell",
+    "ID",
+    "my-agent",
     "Java",
     "Python",
+    "Python {short}",
     "C/C++",
     "C#",
     "Go",
@@ -269,6 +278,10 @@ describe("catalogs", () => {
     "Kotlin",
     "PHP",
     "SQL",
+    "COPY",
+    "INSERT",
+    "pg_restore",
+    "psql",
     "JavaScript",
     "TypeScript",
     "HTML",
@@ -277,12 +290,20 @@ describe("catalogs", () => {
     "YAML",
     "XML",
     "Maven",
+    "Thymeleaf",
+    "sbt",
     "Gradle",
     "npm",
     "pnpm",
     "Yarn",
     "Cargo",
     "CMake",
+    "f-string",
+    "Tailwind CSS",
+    "Bun",
+    "Deno",
+    "Node.js",
+    "bun-dap (Bun)",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 
@@ -290,6 +311,20 @@ describe("catalogs", () => {
     expect(translated.length).toBeGreaterThan(0);
     expect(Object.keys(translations).sort()).toEqual(translated);
     expect(Object.keys(texts).sort()).toEqual([...SUPPORTED_LOCALES].sort());
+  });
+
+  it("list every key once", () => {
+    // JSON.parse keeps the last of two equal keys, so a merge that adds a key twice goes unnoticed.
+    for (const dir of [LOCALES_DIR, join(LOCALES_DIR, "text")]) {
+      for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+        const keys = [...readFileSync(join(dir, file), "utf8").matchAll(/^ {2}("(?:[^"\\]|\\.)*"):/gm)].map(
+          (m) => JSON.parse(m[1]!) as string,
+        );
+        const seen = new Set<string>();
+        const repeated = keys.filter((key) => seen.has(key) || !seen.add(key));
+        expect(repeated, `${file} in ${dir}`).toEqual([]);
+      }
+    }
   });
 
   it("translate source text into non-empty text", () => {

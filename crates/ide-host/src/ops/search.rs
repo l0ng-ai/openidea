@@ -62,13 +62,25 @@ pub(crate) fn search_project(
         _ => None,
     };
     let workspace = ide_workspace::workspace::Workspace::load(root)?.is_some_and(|w| w.is_container(root));
-    let include_root = !workspace
-        || matches!(query.scope, ide_search::SearchScope::Directory { .. } | ide_search::SearchScope::Files { .. });
+    // A directory inside a content root is searched from that root, so that the project's
+    // exclusions (a `.*` name) meet the paths there as in a whole-project search.
+    let within = match &query.scope {
+        ide_search::SearchScope::Directory { path } => {
+            project.content_roots().into_iter().filter(|r| path.0.starts_with(r)).max_by_key(|r| r.components().count())
+        }
+        _ => None,
+    };
+    let include_root = within.is_none()
+        && (!workspace
+            || matches!(
+                query.scope,
+                ide_search::SearchScope::Directory { .. } | ide_search::SearchScope::Files { .. }
+            ));
     let content_roots = match query.scope {
         ide_search::SearchScope::Project
         | ide_search::SearchScope::FileSet { .. }
         | ide_search::SearchScope::Pattern { .. } => project.content_roots(),
-        _ => Vec::new(),
+        _ => within.into_iter().collect(),
     };
     let filter = |rel: &str| match set {
         Some(ProjectFileSet::Production) => !roots.is_test(rel),
@@ -79,9 +91,24 @@ pub(crate) fn search_project(
         let language = project.languages.detect(path, text.lines().next());
         Some(syntax.literals(&language, text)?.into_iter().map(literal_range).collect())
     };
+    let defaults = project.documents.file_defaults();
+    let decode = |path: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, defaults.fallback_for(path));
     let mut total = SearchSummary::default();
     for dir in std::iter::once(root).filter(|_| include_root).chain(&content_roots) {
         let mut remaining = query.clone();
+        // A root inside the project (one its walk skips) goes by its path there.
+        let prefix = (dir != root).then(|| match dir.strip_prefix(root) {
+            Ok(rel) if !workspace => rel.to_string_lossy().replace('\\', "/"),
+            _ => dir.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        });
+        if let Some(prefix) = &prefix {
+            remaining.include = rebase_masks(&query.include, prefix);
+            remaining.exclude = rebase_masks(&query.exclude, prefix);
+            // Only paths elsewhere were asked for.
+            if remaining.include.is_empty() && !query.include.is_empty() {
+                continue;
+            }
+        }
         let max = if query.max_matches == 0 { 10_000 } else { query.max_matches };
         remaining.max_matches = max.saturating_sub(total.matches).max(1);
         let summary = ide_search::search_in_context(
@@ -89,12 +116,11 @@ pub(crate) fn search_project(
             &remaining,
             Some(&filter),
             Some(&literals),
-            &|p| project.documents.search_text_of(p),
+            ide_search::TextSource { overlay: &|p| project.documents.search_text_of(p), decode: &decode },
             cancel,
             &|mut file| {
-                if dir != root {
-                    let name = dir.file_name().unwrap_or_default().to_string_lossy();
-                    file.rel_path = format!("{name}/{}", file.rel_path);
+                if let Some(prefix) = &prefix {
+                    file.rel_path = format!("{prefix}/{}", file.rel_path);
                 }
                 emit(file);
             },
@@ -109,6 +135,42 @@ pub(crate) fn search_project(
         }
     }
     Ok(total)
+}
+
+/// Project-relative `masks` (each a comma-separated list) for a search from the content root
+/// shown as `prefix`: paths below it lose the prefix, other paths can match nothing there and
+/// are dropped, names and `**/` patterns (`*.rs`, `**/build/**`) stay as they are.
+fn rebase_masks(masks: &[String], prefix: &str) -> Vec<String> {
+    let prefix = format!("{}/", prefix.trim_end_matches('/'));
+    masks
+        .iter()
+        .filter_map(|group| {
+            let kept: Vec<String> = group
+                .split(',')
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .filter_map(|mask| {
+                    let (negated, body) = mask.strip_prefix('!').map_or(("", mask), |b| ("!", b.trim()));
+                    let body = body.trim_start_matches("./").trim_start_matches('/');
+                    if !body.contains('/') || body.starts_with("**/") {
+                        return Some(mask.to_owned());
+                    }
+                    body.strip_prefix(&prefix).map(|rest| format!("{negated}{rest}"))
+                })
+                .collect();
+            (!kept.is_empty()).then(|| kept.join(","))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn masks_follow_the_root_they_search() {
+        let masks = vec![".wt/a/src/**, src/**".into(), "*.rs".into(), "!.wt/a/out/**".into(), "**/build/**".into()];
+        assert_eq!(super::rebase_masks(&masks, ".wt/a"), ["src/**", "*.rs", "!out/**", "**/build/**"]);
+        assert_eq!(super::rebase_masks(&["src/**".into()], ".wt/a"), Vec::<String>::new());
+    }
 }
 
 mod commands;

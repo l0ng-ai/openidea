@@ -66,8 +66,9 @@ install-hint = "Install CodeLLDB in Settings › Languages & Frameworks › Lang
 | `debugger`           | 表             | 调试适配器，见下文。                                                                                                                                                                                                   |
 | `formatter`          | 表             | 外部格式化工具，见下文。                                                                                                                                                                                               |
 | `scratch-template`   | 字符串         | 新建该语言草稿文件时的内容，`$END$` 表示光标位置。                                                                                                                                                                     |
+| `rainbow-brackets`   | 表             | 彩虹括号为其尖括号着色的语法节点，见下文。                                                                                                                                                                             |
 
-内置的 tree-sitter 语法：`bash`、`c`、`cmake`、`cpp`、`csharp`、`css`、`dart`、`elixir`、`gdscript`、`go`、`graphql`、`haskell`、`hcl`、`html`、`java`、`javascript`、`json`、`kotlin`、`lua`、`make`、`markdown`、`nix`、`ocaml`、`ocaml_interface`、`php`、`proto`、`python`、`ruby`、`rust`、`scala`、`swift`、`toml`、`tsx`、`typescript`、`xml`、`yaml`、`zig`。新的语法需要编译进 IDE；没有语法的语言可以改由插件提供高亮和结构（见 [语言功能](/zh/plugins/guides/language-features)）。
+内置的 tree-sitter 语法：`bash`、`c`、`cmake`、`cpp`、`csharp`、`css`、`dart`、`elixir`、`gdscript`、`go`、`graphql`、`haskell`、`hcl`、`html`、`java`、`javascript`、`json`、`kotlin`、`lua`、`make`、`markdown`、`nix`、`ocaml`、`ocaml_interface`、`php`、`prisma`、`proto`、`python`、`ruby`、`rust`、`scala`、`swift`、`toml`、`tsx`、`typescript`、`xml`、`yaml`、`zig`。新的语法需要编译进 IDE；没有语法的语言可以改由插件提供高亮和结构（见 [语言功能](/zh/plugins/guides/language-features)）。
 
 ### `[[framework-ui-modes]]`
 
@@ -84,6 +85,21 @@ ui-mode = "Angular Template"
 root-markers = ["angular.json", "node_modules/@angular/core"]
 ```
 
+### `[rainbow-brackets]`
+
+打开**尖括号和标签**（配色方案 › 语言默认值 › 彩虹括号）后，编辑器只为这里列出的节点中的 `<` 和 `>` 着色，比较运算符和移位运算符永远不会被着色。名称是 `ui-mode` 语法中的节点名。所有语言的名称在每个编辑器中都生效，因此嵌入的代码（Vue 文件中的 TypeScript、Markdown 中的 HTML）也能着色。
+
+| 字段    | 类型       | 说明                                                                                           |
+| ------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `angle` | 字符串数组 | 以 `<` 开头、以 `>` 结尾的节点，例如类型实参和类型形参列表。它们的 `<` 和 `>` 像括号一样配对。 |
+| `tags`  | 字符串数组 | 标记语言的标签节点（`<a>`、`</a>`、`<a/>`）。元素的开始和结束标签占一层深度，其内容占下一层。  |
+
+```toml
+[rainbow-brackets]
+angle = ["TypeArgList", "TypeParamList"]
+tags = ["JSXOpenTag", "JSXCloseTag", "JSXSelfClosingTag", "JSXFragmentTag"]
+```
+
 ## `[[language-servers]]`
 
 每一项启动一个 LSP 服务器。服务器按顺序列出：普通服务器同时运行；`fallback` 服务器只有在排在它前面的服务器都缺失时才运行。
@@ -94,12 +110,14 @@ root-markers = ["angular.json", "node_modules/@angular/core"]
 | `command`                 | 字符串     | 要启动的可执行文件。先在 IDE 的工具文件夹中查找，再查 `PATH`。                                                                                                                                                                                                                                                                                                                                                                                         |
 | `args`                    | 字符串数组 | 参数，例如 `["--stdio"]`。                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `env`                     | 表         | 额外的环境变量。                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `requires-env`            | 字符串数组 | 服务器必需的环境变量，例如下载包所在的文件夹。只要其中一个未设置或为空（`env` 和 IDE 的环境里都没有），服务器就视为未安装，显示 `install-hint`，不会启动。                                                                                                                                                                                                                                                                                             |
 | `root-markers`            | 字符串数组 | 标记工作区根目录的文件。文件上方（项目内）最外层包含标记的目录就是服务器的根目录。标记可以是相对路径、带一个 `*` 的模式（`*.csproj`），或用 `file#table` 要求 TOML 文件中有某个表（`pyproject.toml#tool.ruff`）。                                                                                                                                                                                                                                      |
 | `require-root-marker`     | 布尔       | 只服务根标记下面的文件，而不是整个项目。适合与语言自身服务器并存的框架服务器。                                                                                                                                                                                                                                                                                                                                                                         |
 | `initialization-options`  | 表         | 服务器启动时作为 `initializationOptions` 发送。                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `settings`                | 表         | 用于响应服务器的 `workspace/configuration` 请求。不写时，从 `initialization-options` 中查找请求的配置节。                                                                                                                                                                                                                                                                                                                                              |
 | `install-hint`            | 字符串     | 服务器缺失且 IDE 无法安装时显示的提示。                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `fallback`                | 布尔       | 作为前面服务器的备选，只在它们都未安装时使用。                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `replaces`                | 字符串数组 | 排在它后面、因它而变得多余的服务器名称。它为文件提供服务时，这些服务器不会被使用。用于能覆盖附加服务器功能的备选服务器。                                                                                                                                                                                                                                                                                                                               |
 | `features`                | 字符串数组 | 只把服务器用于这些功能；为空表示全部。可选值：`completion`、`inline-completion`、`hover`、`signature-help`、`definition`、`declaration`、`type-definition`、`implementation`、`references`、`document-highlight`、`document-symbol`、`workspace-symbol`、`code-action`、`code-lens`、`rename`、`formatting`、`inlay-hint`、`semantic-tokens`、`document-link`、`call-hierarchy`、`type-hierarchy`、`folding-range`、`selection-range`、`diagnostics`。 |
 | `code-action-kinds`       | 字符串数组 | 只保留这些种类的代码操作，按前缀匹配（`refactor` 包含 `refactor.extract`）；为空则全部保留。                                                                                                                                                                                                                                                                                                                                                           |
 | `connect`                 | 字符串     | 通过 TCP 提供 LSP 的服务器地址 `host:port`，见 [TCP 服务器](#tcp-服务器)。                                                                                                                                                                                                                                                                                                                                                                             |

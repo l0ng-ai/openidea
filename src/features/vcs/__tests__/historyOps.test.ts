@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
 import type { Commit } from "@/bindings";
+import { describe, expect, it } from "vitest";
 import { operationActions } from "../BranchWidget";
+import { commitMenu } from "../log/commitMenu";
+import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
 import { controlLabel, inProgress, operationControls, operationTitle, validateTagName } from "../operations";
 import { suggestedPatchName } from "../patches";
-import { commitMenu } from "../GitLog";
-import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
 
 const commit = (summary: string, id = "0123456789abcdef0123456789abcdef01234567"): Commit => ({
   id,
@@ -84,22 +84,34 @@ describe("Git Log commit actions", () => {
     expect(items.every((i) => !("arg" in i) || i.arg === c)).toBe(true);
   });
 
-  it("disables history rewriting for pushed commits", () => {
+  it("adds file-scoped revision actions only to a File History commit menu", () => {
+    const c = commit("Rename file");
+    const items = commitMenu(c, [c], "/repo/new.txt");
+    const show = items.find((i) => "action" in i && i.action === "vcs.log.showFileAtRevision");
+    const compare = items.find((i) => "action" in i && i.action === "vcs.log.compareWithLocal");
+    const scoped = { kind: "file-history-commit", commit: c, target: "/repo/new.txt" };
+    expect(show).toMatchObject({ arg: scoped });
+    expect(compare).toMatchObject({ arg: scoped });
+    expect(commitMenu(c).some((i) => "action" in i && i.action === "vcs.log.showFileAtRevision")).toBe(false);
+  });
+
+  it("offers history rewriting for pushed commits too (IDEA allows it; the run confirms)", () => {
     const local = commit("Local", "1".repeat(40));
     const pushed = commit("Pushed", "2".repeat(40));
     useGitLog.setState({ outgoing: new Set([local.id]) });
+    const rewriting = (c: Commit) =>
+      commitMenu(c).flatMap((i) =>
+        i.kind === "action" &&
+        i.disabled &&
+        ["editMessage", "fixup", "squashInto", "dropCommit", "interactiveRebase"].some((a) => i.action.endsWith(a))
+          ? [i.action]
+          : [],
+      );
+    expect(rewriting(local)).toEqual([]);
+    expect(rewriting(pushed)).toEqual([]);
+    // Push All up to Here keeps its own rule: it cannot push past a pushed commit.
     const disabled = (c: Commit) => commitMenu(c).flatMap((i) => (i.kind === "action" && i.disabled ? [i.action] : []));
-    expect(disabled(local)).not.toContain("vcs.log.editMessage");
-    expect(disabled(pushed)).toEqual(
-      expect.arrayContaining([
-        "vcs.log.editMessage",
-        "vcs.log.fixup",
-        "vcs.log.squashInto",
-        "vcs.log.dropCommit",
-        "vcs.log.interactiveRebase",
-        "vcs.log.pushUpToHere",
-      ]),
-    );
+    expect(disabled(pushed)).toContain("vcs.log.pushUpToHere");
     useGitLog.setState({ outgoing: null });
   });
 
@@ -120,6 +132,23 @@ describe("Git Log commit actions", () => {
     // Compare Versions needs exactly two commits (IDEA).
     expect(ids([a, b, c])).not.toContain("vcs.log.compareVersions");
     expect(ids([a, b, c])).toContain("vcs.log.cherryPick");
+  });
+
+  it("scopes only File History Compare Versions to its selected file", () => {
+    const older = { ...commit("Older", "a".repeat(40)), historyPath: "old/name.ts" };
+    const newer = { ...commit("Newer", "b".repeat(40)), historyPath: "renamed/name.ts" };
+    const target = "/repo/current/name.ts";
+    const normal = commitMenu(newer, [newer, older]).find(
+      (i) => i.kind === "action" && i.action === "vcs.log.compareVersions",
+    );
+    const history = commitMenu(newer, [newer, older], target).find(
+      (i) => i.kind === "action" && i.action === "vcs.log.compareVersions",
+    );
+
+    expect(normal).toMatchObject({ arg: [newer, older] });
+    expect(history).toMatchObject({
+      arg: { kind: "file-history-commits", commits: [newer, older], target },
+    });
   });
 
   it("extends and toggles the log selection", () => {

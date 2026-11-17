@@ -427,3 +427,52 @@ it("allows a newly mounted menu to focus before its popup layer registers", () =
   rerender(show(true));
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Menu item" }));
 });
+
+describe("Dialog over popups", () => {
+  it("closes the popups open when it opens, but not one it is rendered inside", () => {
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    const sessions = vi.fn();
+    const pinned = vi.fn();
+    const { rerender } = render(
+      <>
+        <Popup open anchor={anchor} onClose={sessions} aria-label="Sessions">
+          <span>tasks</span>
+        </Popup>
+        <Popup open anchor={anchor} onClose={pinned} closeOnDeactivate={false} aria-label="Pinned">
+          <span>pinned</span>
+        </Popup>
+      </>,
+    );
+    rerender(
+      <>
+        <Popup open anchor={anchor} onClose={sessions} aria-label="Sessions">
+          <span>tasks</span>
+        </Popup>
+        <Popup open anchor={anchor} onClose={pinned} closeOnDeactivate={false} aria-label="Pinned">
+          <span>pinned</span>
+        </Popup>
+        <Dialog open onClose={() => {}} title="Delete Agent Task">
+          <span>delete?</span>
+        </Dialog>
+      </>,
+    );
+    expect(sessions).toHaveBeenCalledExactlyOnceWith("outside");
+    // Popups that stay open while the window is inactive stay open here too.
+    expect(pinned).not.toHaveBeenCalled();
+
+    const outer = vi.fn();
+    const Breakpoint = ({ editing }: { editing: boolean }) => (
+      <Popup open anchor={anchor} onClose={outer} aria-label="Breakpoint">
+        <Dialog open={editing} onClose={() => {}} title="Edit">
+          <span>inside</span>
+        </Dialog>
+      </Popup>
+    );
+    const inner = render(<Breakpoint editing={false} />);
+    inner.rerender(<Breakpoint editing />);
+    expect(screen.getByRole("dialog", { name: "Edit" })).toBeTruthy();
+    expect(outer).not.toHaveBeenCalled();
+    anchor.remove();
+  });
+});

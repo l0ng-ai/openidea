@@ -115,8 +115,9 @@ and its `postStartCommand` runs once each time the server starts.
 ## Start an SSH terminal
 
 **Tools › Start SSH Session…** (or **SSH Session…** in the Terminal tool window's new-tab menu) picks an SSH
-configuration and opens a terminal tab that runs `ssh` for it. This uses the OpenSSH client on your machine, so `ssh`
-must be on your `PATH`. It does not open a remote project.
+configuration and opens a shell on that host in a terminal tab. The IDE's built-in SSH client connects with the
+configuration's saved password, key or agent, and asks for a password or passphrase that isn't saved, or to trust an
+unknown host key. No OpenSSH client is needed. It does not open a remote project.
 
 ## Connect to WSL (Windows)
 
@@ -133,7 +134,7 @@ Opening a folder under `\\wsl.localhost\<distribution>\` also opens it through t
 - **Run targets** (**Settings › Build, Execution, Deployment › Run Targets**) run a configuration on an SSH host. See
   [Run configurations](/en/guide/run).
 - **Data sources** can connect through an SSH tunnel. See [Database](/en/guide/database).
-- **Tools › Deployment** uploads, downloads and syncs project files with a server over SFTP.
+- **Tools › Deployment** uploads, downloads and syncs project files with a server over SFTP, FTP or FTPS.
 
 ## Limits
 

@@ -39,13 +39,13 @@ export default defineConfig(() => ({
   // separate projects with their own dependencies, never part of this bundle.
   optimizeDeps: { entries: ["index.html"] },
   build: {
-    target: "safari16",
+    target: "safari15.4",
     sourcemap: true,
   },
   test: {
     environment: "jsdom",
     globals: false,
     setupFiles: ["./src/test/setup.ts"],
-    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}", "perf/**/*.test.ts", "evals/**/*.test.ts", "scripts/**/*.test.ts"],
   },
 }));

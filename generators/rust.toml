@@ -1,0 +1,29 @@
+id = "rust"
+name = "Rust"
+group = "Rust"
+icon = "project-rust"
+description = "A Cargo package: a binary or a library."
+
+[[requires]]
+program = "cargo"
+hint = "Install Rust: https://rustup.rs"
+
+[[fields]]
+id = "kind"
+label = "Type:"
+type = "choice"
+segmented = true
+options = [{ value = "--bin", label = "Binary" }, { value = "--lib", label = "Library" }]
+default = "--bin"
+
+[[fields]]
+id = "crate"
+label = "Package name:"
+type = "text"
+pattern = '^[A-Za-z][A-Za-z0-9_-]*$'
+default = "{{name|kebab}}"
+
+[[steps]]
+label = "Running cargo init"
+program = "cargo"
+args = ["init", "{{kind}}", "--name", "{{crate}}", "--vcs", "none"]

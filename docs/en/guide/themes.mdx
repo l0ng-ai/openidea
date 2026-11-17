@@ -11,7 +11,6 @@ Open **Settings › Appearance & Behavior › Appearance** and pick a **Theme**.
 | ----------------------- | -------------- |
 | Islands Light (default) | Islands Dark   |
 | Solarized Light         | Solarized Dark |
-| One Light               | One Dark       |
 |                         | High Contrast  |
 
 Themes from installed plugins appear in the same list, under the plugin's name.
@@ -23,8 +22,9 @@ Themes from installed plugins appear in the same list, under the plugin's name.
 
 The same page also has:
 
-- **Accent colour**: the UI's accent colour.
+- **Accent color**: the UI's accent color.
 - **Different tool window background**: set tool windows apart from the editor.
+- **Background Image**: an image shown through the project window, with its **Opacity**, **Fill** (scale, original size or tile) and **Anchor**.
 - **Accessibility**: **Use contrast scrollbars** and **Adjust colors for red-green vision deficiency** (for protanopia and deuteranopia).
 - **Compact mode** under **UI Options**.
 
@@ -35,7 +35,7 @@ The editor's syntax colours come from a color scheme. In **Settings › Appearan
 **Settings › Editor › Color Scheme** edits schemes:
 
 - Select an element in the tree and change its foreground, background, bold, italic and effects. Changes are stored per scheme; **Restore Defaults** drops them.
-- **Language Defaults** has **Semantic highlighting** (local variables and parameters get a colour derived from their name) and **Rainbow brackets** (brackets coloured by depth).
+- **Language Defaults** has **Semantic highlighting** (local variables and parameters get a colour derived from their name) and **Rainbow brackets** (brackets coloured by depth). Below it, choose which kinds are coloured and how many colours (2–5) the depth cycles through. A kind switched off keeps counting toward the depth of the others. **Angle brackets and tags** colours type argument and parameter lists and HTML, XML and JSX tags only where the syntax tree marks them, never comparisons; they count toward the depth of what they enclose, with an element's start and end tags at one level and its content at the next.
 - **Import Scheme** reads an IntelliJ color scheme (`.icls`) exported from a JetBrains IDE. If a scheme with the same name exists, choose **Overwrite** or **Keep Both**. **Export Scheme** writes the selected scheme as `.icls`.
 
 ## IntelliJ themes
@@ -64,7 +64,7 @@ To create a theme or icon theme, see [Themes](/en/plugins/guides/themes) and [Ic
 - **Enable ligatures** for fonts with programming ligatures.
 - **Typography Settings**: **Main font weight**, **Bold font weight**, and a **Fallback font** for characters the main font lacks.
 
-To change the size temporarily, use **Increase Font Size** (`⌥⇧.` / `Alt+Shift+.`) and **Decrease Font Size** (`⌥⇧,` / `Alt+Shift+,`); **View › Reset Font Size in All Editors** goes back. On macOS, **Change font size with Command+Mouse Wheel** in **Settings › Editor › General** enables wheel zoom.
+To change the size temporarily in the active editor, use **Increase Font Size** (`⌥⇧.` / `Alt+Shift+.`) and **Decrease Font Size** (`⌥⇧,` / `Alt+Shift+,`); **View › Reset Font Size** (or **View › Reset Font Size in All Editors**) goes back. In **Settings › Editor › General**, **Change font size with Ctrl/Command+Mouse Wheel** enables wheel zoom for the **Active editor** (default) or **All editors**.
 
 ### UI font and zoom
 

@@ -14,7 +14,8 @@ import { copyText } from "@/ui/selectableText";
 import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
+import { ideaDiffConfig } from "./diffOptions";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
 import { syncMergeScroll } from "./mergeScroll";
@@ -62,6 +63,7 @@ import { refreshNow } from "./store";
 import styles from "./MergeEditor.module.css";
 
 import type { MergeData } from "./mergeKind";
+import { readClipboardPlainText } from "@/platform/clipboard";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
 const NOTHING_LEFT: MergeSummary = {
@@ -90,6 +92,12 @@ const writeAutoApply = (on: boolean) => {
     // The choice then lasts only until the editor closes.
   }
 };
+
+// Each side against the base is compared line by line, as in the diff viewer. The default diff
+// gives up on long files and marks the whole file as one changed block.
+const SIDE_DIFF = ideaDiffConfig("none", "words");
+/** A file without a language; one value, so finding none again doesn't rebuild the panes. */
+const NO_LANGUAGE: Extension = [];
 
 export function MergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
@@ -147,13 +155,16 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   useEffect(() => {
     void Promise.resolve().then(load);
   }, [load]);
+  // From a side's first line (hashbang-only scripts): the file on disk may start with a conflict marker.
+  const firstLine = state ? firstLineOf(state.ours || state.theirs) : undefined;
   useEffect(() => {
+    if (firstLine === undefined) return;
     let alive = true;
-    void languageFor(path).then((l) => alive && setLang(() => l ?? []));
+    void languageFor(path, firstLine).then((l) => alive && setLang(() => l ?? NO_LANGUAGE));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, firstLine]);
 
   useEffect(() => {
     if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;
@@ -175,7 +186,9 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) refreshMergeActions(actionHost);
       }),
-      state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      state.base !== null
+        ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true, diffConfig: SIDE_DIFF })
+        : [],
       sideControls(which, controls),
       mergeStripe(which),
       mergeTheme,
@@ -348,6 +361,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     applyChange: () => false,
     file: () => {},
     showSettings: () => void actionHost.run("settings"),
+    focusOpposite: () => false,
+    close: () => false,
+    swapSides: () => false,
+    showInExternalTool: () => false,
   }));
   useEffect(
     () => () => {
@@ -497,7 +514,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         const { from, to } = view.state.selection.main;
         if (id === "selectAll") view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
         else if (id === "paste") {
-          const text = await navigator.clipboard?.readText().catch(() => undefined);
+          const text = await readClipboardPlainText().catch(() => undefined);
           if (text !== undefined) view.dispatch({ ...view.state.replaceSelection(text), userEvent: "input.paste" });
         } else {
           await copyText(view.state.sliceDoc(from, to));
@@ -540,6 +557,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   }, [actionHost]);
 
   const focusProps = {
+    // WebKit doesn't focus a clicked button: focus then moves to the nearest focusable
+    // ancestor, which must be this editor for the footer and toolbar buttons to keep it the
+    // focused merge editor their actions run in.
+    tabIndex: -1,
     onFocusCapture: (e: React.FocusEvent<HTMLDivElement>) => {
       const target = e.target as Node;
       if (oursRef.current?.contains(target)) paneRef.current = "left";
@@ -581,7 +602,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   return (
     <div ref={rootRef} className={styles.root} {...focusProps}>
-      <MergeToolbar summary={summary} />
+      <MergeToolbar summary={summary} step={goto} run={(c) => void runAction(c)} />
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>
         <span>
@@ -617,7 +638,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
         />
       </div>
-      <MergeFooter />
+      <MergeFooter run={(c) => void runAction(c)} />
     </div>
   );
 }

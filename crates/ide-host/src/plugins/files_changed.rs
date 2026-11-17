@@ -507,7 +507,13 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit]) -> Result<u64, ide_plugin::HostError> {
+        fn apply_edits(
+            &self,
+            _: &Path,
+            _: u64,
+            _: &[ide_core::TextEdit],
+            _: bool,
+        ) -> Result<u64, ide_plugin::HostError> {
             unreachable!()
         }
         fn trusted(&self, _: &Path) -> bool {

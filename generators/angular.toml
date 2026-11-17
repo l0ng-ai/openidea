@@ -1,0 +1,59 @@
+id = "angular"
+name = "Angular"
+group = "JavaScript"
+icon = "project-angular"
+order = 4
+description = "An Angular app from the Angular CLI."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "style"
+label = "Stylesheets:"
+type = "choice"
+segmented = true
+options = [{ value = "css", label = "CSS" }, { value = "scss", label = "Sass (SCSS)" }, { value = "less", label = "Less" }]
+default = "css"
+
+[[fields]]
+id = "ssr"
+label = "Server-side rendering"
+type = "checkbox"
+default = "false"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running ng new"
+package = "@angular/cli@latest"
+cwd = "parent"
+args = [
+    "new", "{{name}}", "--defaults", "--interactive=false", "--skip-git", "--skip-install",
+    "--style={{style}}", "--ssr={{ssr}}", "--package-manager={{pm}}",
+]
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

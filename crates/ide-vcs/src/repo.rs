@@ -71,7 +71,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let pack_dir = common_dir.join("objects").join("pack");
     let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
-        execution_allowed: std::sync::atomic::AtomicBool::new(true),
+        execution_allowed: std::sync::atomic::AtomicBool::new(false),
         root,
         git_dir,
         inner: std::sync::Mutex::new(cache),
@@ -128,6 +128,27 @@ impl Repo {
     /// worktree or paths already relative to it.
     pub(crate) fn rel_path(&self, path: &Path) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok(self.index_spelling(self.given_rel_path(path)?))
+    }
+
+    /// The blob of `path` at `rev`. A revision may spell a file differently from the index (a
+    /// case-only rename staged or made since it): the spelling given wins when the revision has
+    /// it, the index's spelling is the fallback.
+    pub(crate) fn blob_of(&self, path: &Path, rev: &str) -> IdeResult<Option<Vec<u8>>> {
+        let repo = self.gix()?;
+        let given = self.given_rel_path(path)?;
+        let indexed = self.index_spelling(given.clone());
+        if !rev.starts_with(':')
+            && indexed != given
+            && let Some(bytes) = blob_at(&repo, &given, rev)?
+        {
+            return Ok(Some(bytes));
+        }
+        blob_at(&repo, &indexed, rev)
+    }
+
+    /// `path` relative to the worktree, spelled as given.
+    pub(crate) fn given_rel_path(&self, path: &Path) -> IdeResult<String> {
         let rel = if path.is_absolute() {
             self.strip_root(path)
                 .ok_or_else(|| IdeError::invalid(format!("{} is outside the repository", path.display())))?
@@ -148,6 +169,22 @@ impl Repo {
             }
         }
         Ok(parts.join("/"))
+    }
+
+    /// `rel` as the index spells it. On a case-insensitive worktree (`core.ignoreCase`) the
+    /// IDE names a file the way the disk does, which differs from its index entry after a
+    /// case-only rename of it or a parent directory; git's pathspecs and tree lookups are
+    /// case-sensitive and only find the index's spelling.
+    fn index_spelling(&self, rel: String) -> String {
+        if rel.is_empty() {
+            return rel;
+        }
+        let Ok(repo) = self.gix() else { return rel };
+        if !ignores_case(&repo) {
+            return rel;
+        }
+        let Ok(index) = repo.index_or_empty() else { return rel };
+        index_spelling(&index, &rel).unwrap_or(rel)
     }
 
     fn strip_root(&self, path: &Path) -> Option<PathBuf> {
@@ -186,6 +223,86 @@ impl Repo {
         }
         p
     }
+}
+
+/// Whether the worktree's file system ignores case, as `git init`/`clone` recorded it.
+pub(crate) fn ignores_case(repo: &gix::Repository) -> bool {
+    repo.config_snapshot().boolean("core.ignoreCase").unwrap_or(false)
+}
+
+/// The index's spelling of the file or directory `rel` when it differs only in ASCII case
+/// (git's own case folding), `None` when the index has `rel` as spelled or not at all.
+fn index_spelling(index: &gix::index::State, rel: &str) -> Option<String> {
+    let rel = rel.as_bytes();
+    if index.entry_by_path(rel.as_bstr()).is_some() {
+        return None;
+    }
+    let mut found = None;
+    for entry in index.entries() {
+        let path: &[u8] = entry.path(index);
+        let spelled = match path.len().cmp(&rel.len()) {
+            std::cmp::Ordering::Equal => path,
+            std::cmp::Ordering::Greater if path[rel.len()] == b'/' => &path[..rel.len()],
+            _ => continue,
+        };
+        if spelled == rel {
+            return None;
+        }
+        if found.is_none() && spelled.eq_ignore_ascii_case(rel) {
+            found = Some(spelled.to_str_lossy().into_owned());
+        }
+    }
+    found
+}
+
+/// The mode a worktree file would be committed with (`100755` when executable,
+/// `100644` otherwise, `120000` for a symlink), `None` when `abs` is not a file.
+/// On filesystems without an executable bit git can't record one, so it is `100644`.
+pub(crate) fn worktree_mode(root: &Path, rel: &str) -> IdeResult<Option<String>> {
+    let meta = match std::fs::symlink_metadata(root.join(rel)) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    if meta.file_type().is_symlink() {
+        return Ok(Some("120000".to_owned()));
+    }
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(Some(if meta.permissions().mode() & 0o111 != 0 { "100755" } else { "100644" }.to_owned()))
+    }
+    #[cfg(not(unix))]
+    Ok(Some("100644".to_owned()))
+}
+
+/// The entry's mode of `rel` at `rev` as git prints it (`100644`, `100755`, `120000`,
+/// `160000`…), `None` when the path is absent there. Same `rev` rules as [`blob_at`].
+pub(crate) fn mode_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult<Option<String>> {
+    if let Some(stage) = rev.strip_prefix(':') {
+        let stage = match stage {
+            "" | "0" => gix::index::entry::Stage::Unconflicted,
+            "1" => gix::index::entry::Stage::Base,
+            "2" => gix::index::entry::Stage::Ours,
+            "3" => gix::index::entry::Stage::Theirs,
+            other => return Err(IdeError::invalid(format!("invalid index stage :{other}"))),
+        };
+        let index = repo.index_or_empty().map_err(gx)?;
+        let Some(entry) = index.entry_by_path_and_stage(BStr::new(rel.as_bytes()), stage) else {
+            return Ok(None);
+        };
+        return Ok(entry.mode.to_tree_entry_mode().map(|m| format!("{:o}", m.value())));
+    }
+    let Some(tree) = tree_of(repo, rev)? else { return Ok(None) };
+    let Some(entry) = tree.lookup_entry_by_path(Path::new(rel)).map_err(gx)? else {
+        return Ok(None);
+    };
+    if !entry.mode().is_blob_or_symlink() {
+        return Ok(None);
+    }
+    Ok(Some(format!("{:o}", entry.mode().value())))
 }
 
 /// Blob content of `rel` at `rev`. `rev` is a revision (`HEAD`, a branch, an id) or
@@ -248,6 +365,65 @@ pub(crate) fn tree_of<'r>(repo: &'r gix::Repository, rev: &str) -> IdeResult<Opt
     let id = resolve(repo, rev)?;
     let tree = repo.find_object(id).map_err(gx)?.peel_to_tree().map_err(gx)?;
     Ok(Some(tree))
+}
+
+/// What the symbolic link at `rel` points to inside `tree`; `None` when `rel` is not a link
+/// there. Git stores only the target path, so the target is followed through this tree
+/// (links on the way included), never the working tree, which may have moved on.
+pub(crate) fn link_target(repo: &gix::Repository, tree: &gix::Tree<'_>, rel: &str) -> Option<crate::LinkTarget> {
+    use crate::LinkTarget;
+    let entry = tree.lookup_entry_by_path(Path::new(rel)).ok()??;
+    if !entry.mode().is_link() {
+        return None;
+    }
+    // Real directories resolved so far, and the components still to walk.
+    let mut dir: Vec<String> = rel.split('/').map(str::to_owned).collect();
+    dir.pop();
+    let mut pending: Vec<String> = Vec::new();
+    let mut link = entry.oid().to_owned();
+    let mut hops = 0;
+    loop {
+        let Ok(target) = blob_data(repo, link) else { return Some(LinkTarget::Unresolved) };
+        let target = target.to_str_lossy();
+        if target.is_empty() || target.starts_with('/') || target.starts_with('\\') {
+            return Some(LinkTarget::Unresolved);
+        }
+        // `pending` is a stack: the target is walked first, then whatever followed the link.
+        pending.extend(target.rsplit('/').map(str::to_owned));
+        loop {
+            let Some(component) = pending.pop() else { return Some(LinkTarget::Dir) };
+            match component.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    if dir.pop().is_none() {
+                        return Some(LinkTarget::Unresolved);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let path = if dir.is_empty() { component.clone() } else { format!("{}/{component}", dir.join("/")) };
+            let Ok(Some(entry)) = tree.lookup_entry_by_path(Path::new(&path)) else {
+                return Some(LinkTarget::Unresolved);
+            };
+            let mode = entry.mode();
+            if mode.is_link() {
+                hops += 1;
+                if hops > 40 {
+                    return Some(LinkTarget::Unresolved);
+                }
+                link = entry.oid().to_owned();
+                break;
+            }
+            if mode.is_tree() || mode.is_commit() {
+                dir.push(component);
+            } else if pending.iter().all(|c| c.is_empty() || c == ".") {
+                return Some(LinkTarget::File);
+            } else {
+                return Some(LinkTarget::Unresolved);
+            }
+        }
+    }
 }
 
 /// Resolves a revision spec to an object id.

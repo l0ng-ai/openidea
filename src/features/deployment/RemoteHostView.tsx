@@ -10,6 +10,7 @@ import {
   IconButton,
   Select,
   Spinner,
+  REMOTE_FILES_DRAG,
   T,
   Tree,
   fileIconName,
@@ -20,6 +21,7 @@ import { resolveServer, serverLabel } from "./model";
 import {
   copyRemotePath,
   deleteEntries,
+  downloadTo,
   downloadToProject,
   ensureRoot,
   loadFolder,
@@ -86,6 +88,12 @@ export function RemoteHostView() {
         label: "Download to Project",
         disabled: !entries.length,
         run: () => void downloadToProject(server, entries),
+      },
+      {
+        id: "downloadTo",
+        label: "Download to…",
+        disabled: !entries.length,
+        run: () => void downloadTo(server, entries),
       },
       { kind: "separator" },
       {
@@ -181,6 +189,10 @@ export function RemoteHostView() {
             speedSearch
             onActivate={(e) => !e.isDir && void openRemote(server, e)}
             onContextMenu={(node, selection, e) => showContextMenu(e, menuFor(node, selection))}
+            getDragData={(nodes) => ({
+              type: REMOTE_FILES_DRAG,
+              payload: JSON.stringify({ server: server.id, paths: nodes.map((n) => n.path) }),
+            })}
             empty={<T>Empty folder</T>}
           />
         </div>

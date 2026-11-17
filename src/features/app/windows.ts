@@ -15,6 +15,7 @@ import {
   confirmLeaveProject,
   dirname,
   openLightEdit,
+  openLightEditUntitled,
   openProject,
   provideStartupLaunch,
   useProject,
@@ -26,6 +27,7 @@ import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
+import { editorSwitching } from "@/editor/api";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
 
 export const LAUNCH_EVENT = "openidea://launch";
@@ -53,10 +55,10 @@ function openFailed(path: string, e: unknown) {
 /** Opens project `path` in this window; true once it is this window's project. */
 async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
-  if (!(await confirmLeaveProject())) return false;
+  // A folder of a WSL distro runs there, not as a network folder; the window then drops untitled buffers.
+  const wsl = await commands.wslResolve(path).catch(() => null);
+  if (!(await confirmLeaveProject(!wsl))) return false;
   try {
-    // A folder of a WSL distro runs there, not as a network folder.
-    const wsl = await commands.wslResolve(path).catch(() => null);
     if (wsl) await connectRemote(wsl.target, wsl.path);
     else await openProject(path);
     return true;
@@ -129,6 +131,17 @@ export async function openPaths(
 }
 
 /**
+ * `window_open_project`. When that may create a window, the trust question is asked here
+ * first (IntelliJ IDEA asks before the project frame opens): the new window would otherwise
+ * show its Welcome screen under the question. A WSL folder opens as a remote project, whose
+ * window asks about the distribution's folder itself.
+ */
+async function openProjectWindow(path: string, newWindow: boolean, files: readonly string[] = []) {
+  if (newWindow && !(await commands.wslResolve(path).catch(() => null))) await confirmProjectTrust(path, "local");
+  return call(commands.windowOpenProject(path, newWindow, [...files]));
+}
+
+/**
  * Opens `path`, focusing the window that already has it. `newWindow`: always a
  * new window; otherwise this window unless it already has a project or LightEdit
  * session. `files` then open in the project's editor.
@@ -138,7 +151,7 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
   const s = useProject.getState();
   const inNew = newWindow || s.project !== null || s.lightEdit;
   try {
-    const outcome = await call(commands.windowOpenProject(path, inNew, [...files]));
+    const outcome = await openProjectWindow(path, inNew, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch (e) {
     openFailed(path, e);
@@ -208,14 +221,14 @@ export function defaultProjectDirectory(): string | undefined {
 }
 
 async function pickFolder(title: string): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: true, multiple: false, title, defaultPath: defaultProjectDirectory() });
   const path = Array.isArray(picked) ? picked[0] : picked;
   return path ?? null;
 }
 
 async function pickFiles(title: string): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ directory: false, multiple: true, title, defaultPath: defaultProjectDirectory() });
   return picked === null ? [] : Array.isArray(picked) ? picked : [picked];
 }
@@ -282,7 +295,7 @@ async function openCliDiff(diff: { left: string; right: string }): Promise<void>
     import("@/features/vcs/diffInput"),
     import("@/features/vcs/compareData"),
   ]);
-  await openVcsDiff(compareFilesData(diff.left, diff.right));
+  await openVcsDiff({ ...compareFilesData(diff.left, diff.right), swappable: true });
 }
 
 /** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */
@@ -481,6 +494,20 @@ export function windowActions(): Action[] {
       },
     },
     {
+      id: "file.newUntitled",
+      title: t("app.action.newFile"),
+      category: t("app.category.file"),
+      icon: "plus",
+      keywords: ["new", "create", "untitled", "file", "light edit"],
+      run: async () => {
+        if (desktopOnly()) return;
+        const s = useProject.getState();
+        // A welcome window becomes a LightEdit one first (its buffers need a backend project).
+        if (!s.project && !s.lightEdit) await openLightEditUntitled();
+        await editorService().openUntitled?.({ focus: true });
+      },
+    },
+    {
       // Files and folders dropped on the Welcome screen.
       id: "file.openPaths",
       title: "Open Paths",
@@ -519,7 +546,7 @@ export function windowActions(): Action[] {
         const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
         if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
         try {
-          const outcome = await call(commands.windowOpenProject(arg.path, arg.newWindow, []));
+          const outcome = await openProjectWindow(arg.path, arg.newWindow);
           if (outcome.kind === "current") await openHere(arg.path);
         } catch (error) {
           openFailed(arg.path, error);
@@ -578,7 +605,9 @@ async function closeThisWindow(): Promise<void> {
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();
   const off = editor?.onActiveInputChange?.((input) => {
-    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length) return;
+    // A mode switch clears and re-fills the tabs in place: while it runs, the
+    // momentarily empty editor must not read as "the user closed everything".
+    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length || editorSwitching()) return;
     void closeWindow().catch((e) => console.warn("could not close the window", e));
   });
   return () => off?.();

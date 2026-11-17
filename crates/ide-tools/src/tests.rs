@@ -50,6 +50,24 @@ fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
 }
 
 #[test]
+fn unity_adapter_download_is_pinned_and_checksum_verified() {
+    let env = Env::new();
+    let tools = env.tools();
+    let spec = registry::find("unity-debug").unwrap();
+    let Method::Release { source, assets, locate } = spec.method else { panic!("expected release") };
+    // A fixed release resolves without a network request.
+    let curl = env.sys.join(if cfg!(windows) { "curl.exe" } else { "curl" });
+    fs::write(&curl, b"unused").unwrap();
+    archive::make_executable(&curl).unwrap();
+    let http = Http::new(env.sys.as_os_str()).unwrap();
+    let download = tools.resolve_release(&http, source, assets, &CancellationToken::new()).unwrap();
+    assert_eq!(download.version, "3.0.1");
+    assert!(download.url.starts_with("https://github.com/Unity-Technologies/vscode-unity-debug/releases/download/"));
+    assert_eq!(download.sha256.as_deref(), Some("4fa00660e0b52b0413726f80962e7d3d6efd41ac6cfd4df39520cae4a8ba5bd0"));
+    assert_eq!(locate, &["UnityDebug.exe"]);
+}
+
+#[test]
 fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads() {
     for os in [Os::Mac, Os::Linux, Os::Windows] {
         for arch in [platform::Arch::Arm64, platform::Arch::X64] {
@@ -177,7 +195,10 @@ fn interchangeable_servers_list_their_alternatives() {
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
     for name in ["jdtls", "kmp-lsp"] {
         assert_eq!(find(&list, name).alternatives, ["jdtls", "kmp-lsp"]);
-        assert_eq!(find(&list, name).languages, ["Java"]);
+        assert_eq!(find(&list, name).languages, if name == "kmp-lsp" { &["Java", "Kotlin"][..] } else { &["Java"] });
+    }
+    for name in ["kotlin-lsp", "kotlin-language-server"] {
+        assert_eq!(find(&list, name).alternatives, ["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]);
     }
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
@@ -294,9 +315,10 @@ fn concurrent_installs_of_one_tool_are_rejected() {
 
 /// A second caller mid-install joins the run (the other Settings window's
 /// duplicate install) and shares the result instead of `AlreadyExists`.
+// Slot names no real install in other tests uses: tests share the process-wide slots.
 #[test]
 fn second_install_joins_the_running_one() {
-    let slot = match install_slot("sqls", &CancellationToken::new()) {
+    let slot = match install_slot("join-test-slot", &CancellationToken::new()) {
         Ok(slot) => slot,
         Err(_) => panic!("no install is running"),
     };
@@ -307,7 +329,7 @@ fn second_install_joins_the_running_one() {
                 slot.broadcast(InstallEvent::Line { text: format!("line {i}") });
                 std::thread::sleep(Duration::from_millis(20));
             }
-            release_install_slot("sqls", &slot);
+            release_install_slot("join-test-slot", &slot);
             slot.finish(Err(IdeError::new(ErrorKind::Io, "compile failed")));
         })
     };
@@ -327,8 +349,8 @@ fn second_install_joins_the_running_one() {
     assert!(texts.contains(&"Joined the install already in progress…".to_string()), "{texts:?}");
     assert!(texts.iter().any(|l| l == "line 2"), "{texts:?}");
     // The slot is released: a fresh install can start.
-    match install_slot("sqls", &CancellationToken::new()) {
-        Ok(fresh) => release_install_slot("sqls", &fresh),
+    match install_slot("join-test-slot", &CancellationToken::new()) {
+        Ok(fresh) => release_install_slot("join-test-slot", &fresh),
         Err(_) => panic!("the finished install still holds its slot"),
     }
 }
@@ -336,7 +358,7 @@ fn second_install_joins_the_running_one() {
 /// A late caller gets the finished result without waiting.
 #[test]
 fn install_joined_after_it_finished_returns_the_result() {
-    let slot = match install_slot("marksman", &CancellationToken::new()) {
+    let slot = match install_slot("finished-test-slot", &CancellationToken::new()) {
         Ok(slot) => slot,
         Err(_) => panic!("no install is running"),
     };
@@ -359,8 +381,9 @@ fn install_joined_after_it_finished_returns_the_result() {
         default_args: vec![],
         default_initialization_options: None,
         alternatives: vec![],
+        companion: false,
     };
-    release_install_slot("marksman", &slot);
+    release_install_slot("finished-test-slot", &slot);
     slot.finish(Ok(ok));
     let info = join_install(&slot, &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.version.as_deref(), Some("1.0"));
@@ -436,6 +459,51 @@ esac"#,
     let err = env.tools().install("lua-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
     assert!(err.message.contains("checksum mismatch"), "{}", err.message);
     assert!(exe.exists());
+}
+
+/// A PHP archive release (phpactor) keeps its `.phar` name and is launched through `php`.
+#[cfg(unix)]
+#[test]
+fn phar_release_installs_with_a_php_launcher() {
+    let env = Env::new();
+    let fixtures = env.root.parent().unwrap().join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let phar = fixtures.join("phpactor.phar");
+    fs::write(&phar, b"<?php __HALT_COMPILER();").unwrap();
+    let digest = sources::sha256_file(&phar).unwrap();
+    let json = fixtures.join("release.json");
+    fs::write(
+        &json,
+        format!(
+            r#"{{"tag_name":"2026.10.07.0","assets":[{{"name":"phpactor.phar","browser_download_url":"https://example.invalid/phpactor.phar","size":{},"digest":"sha256:{digest}"}}]}}"#,
+            fs::metadata(&phar).unwrap().len()
+        ),
+    )
+    .unwrap();
+    env.script(
+        &env.sys,
+        "curl",
+        &format!(
+            r#"out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+case "$url" in
+  https://api.github.com/*) /bin/cat '{json}';;
+  *) /bin/cp '{phar}' "$out";;
+esac"#,
+            json = json.display(),
+            phar = phar.display()
+        ),
+    );
+    env.script(&env.sys, "php", r#"echo "php $*""#);
+
+    let info = env.tools().install("phpactor", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    let launcher = env.root.join("phpactor/bin/phpactor");
+    assert_eq!(info.path.as_deref(), Some(launcher.as_path()));
+    let archive = env.root.join("phpactor/bin/phpactor.phar");
+    assert_eq!(fs::read(&archive).unwrap(), b"<?php __HALT_COMPILER();");
+    let out = Command::new(&launcher).arg("language-server").env("PATH", &env.sys).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("php {} language-server", archive.display()));
 }
 
 /// npm installs go to `<tools>/node_modules` with `--prefix`.
@@ -874,9 +942,14 @@ esac
     }
 }
 
+/// Installs of one tool name share a process-wide slot: tests installing debugpy take turns.
+#[cfg(unix)]
+static DEBUGPY_INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 #[cfg(unix)]
 #[test]
 fn selected_python_is_used_for_pip_and_uv_even_with_a_versioned_filename() {
+    let _guard = DEBUGPY_INSTALL.lock();
     let env = Env::new();
     env.script(&env.sys, "python3", "exit 99");
     let sdk = env._tmp.path().join("python-sdk");
@@ -912,4 +985,91 @@ exit 1
     let _ = tools.install("ruff", &langs(), &CancellationToken::new(), &|_| {});
     let args = fs::read_to_string(log).unwrap();
     assert!(args.contains(&format!("--python {}", sdk.join("python3.14").display())), "{args}");
+}
+
+/// A virtualenv made by uv has no pip: debugpy's private copy is made with pip through uv.
+#[cfg(unix)]
+#[test]
+fn debugpy_installs_through_uv_when_the_selected_python_has_no_pip() {
+    let _guard = DEBUGPY_INSTALL.lock();
+    let env = Env::new();
+    let venv = env._tmp.path().join("project/.venv/bin");
+    env.script(&venv, "python", "echo \"$(basename \"$0\"): No module named pip\" >&2; exit 1");
+    let log = env._tmp.path().join("uv.log");
+    env.script(
+        &env.sys,
+        "uv",
+        &format!(
+            r#"
+echo "$@" >> '{log}'
+while [ $# -gt 0 ]; do
+    if [ "$1" = "--target" ]; then
+        /bin/mkdir -p "$2/debugpy" "$2/debugpy-1.8.0.dist-info"
+        /usr/bin/touch "$2/debugpy/__init__.py"
+        exit 0
+    fi
+    shift
+done
+exit 1
+"#,
+            log = log.display()
+        ),
+    );
+    let tools = env.tools().with_runtime(BTreeMap::from([("python".into(), venv.join("python"))]), BTreeMap::new());
+    let lines = Mutex::new(Vec::new());
+    let info = tools
+        .install("debugpy", &langs(), &CancellationToken::new(), &|e| {
+            if let InstallEvent::Line { text } = e {
+                lines.lock().push(text);
+            }
+        })
+        .unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    assert_eq!(info.version.as_deref(), Some("1.8.0"));
+    let args = fs::read_to_string(log).unwrap();
+    assert!(args.starts_with("tool run pip install "), "{args}");
+    assert!(args.contains("--platform any"), "{args}");
+    assert!(lines.lock().iter().any(|l| l.contains("has no pip")));
+}
+
+#[test]
+fn a_cancelled_install_leaves_the_previous_one_in_place() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (pkg, dest, aside) = (tmp.path().join("pkg"), tmp.path().join("tool"), tmp.path().join(".previous-tool"));
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(pkg.join("new"), "").unwrap();
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("old"), "").unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let err = put_in_place(&pkg, &dest, &aside, &cancel).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Cancelled);
+    assert!(dest.join("old").exists() && pkg.join("new").exists() && !aside.exists());
+
+    put_in_place(&pkg, &dest, &aside, &CancellationToken::new()).unwrap();
+    assert!(dest.join("new").exists() && !dest.join("old").exists());
+    assert!(aside.join("old").exists(), "the previous install is moved aside");
+}
+
+/// An npm tool the IDE installed is offered the version the user's npm registry has now.
+#[cfg(unix)]
+#[test]
+fn npm_tools_report_a_newer_registry_version() {
+    let env = Env::new();
+    let sdk = env._tmp.path().join("node-sdk/bin");
+    let modules = env.root.join("node_modules");
+    env.script(&modules.join(".bin"), "bash-language-server", "echo 5.4.0");
+    fs::create_dir_all(modules.join("bash-language-server")).unwrap();
+    fs::write(modules.join("bash-language-server/package.json"), r#"{"version":"5.4.0"}"#).unwrap();
+    env.script(&sdk, "node", "exit 0");
+    let tools = |latest: &str| {
+        env.script(&sdk, "npm", &format!(r#"[ "$1 $2 $3" = "view bash-language-server version" ] && echo {latest}"#));
+        env.tools().with_runtime(BTreeMap::from([("node".into(), sdk.join("node"))]), BTreeMap::new())
+    };
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        tools("5.6.1").updates(&cancel).unwrap(),
+        vec![ToolUpdate { name: "bash-language-server".into(), current: "5.4.0".into(), latest: "5.6.1".into() }]
+    );
+    assert_eq!(tools("5.4.0").updates(&cancel).unwrap(), vec![]);
 }

@@ -13,6 +13,28 @@ export type Antialiasing = "subpixel" | "greyscale" | "none";
 export type OpenProjectIn = "ask" | "new" | "same";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 export type NavigationBarPosition = "top" | "statusBar" | "hidden";
+export type BackgroundImageFill = "scale" | "plain" | "tile";
+export const BACKGROUND_IMAGE_ANCHORS = [
+  "top-left",
+  "top",
+  "top-right",
+  "left",
+  "center",
+  "right",
+  "bottom-left",
+  "bottom",
+  "bottom-right",
+] as const;
+export type BackgroundImageAnchor = (typeof BACKGROUND_IMAGE_ANCHORS)[number];
+
+/** Appearance › Background Image; an empty `path` shows no image. */
+export interface BackgroundImageValid {
+  path: string;
+  /** Percent, 0–100. */
+  opacity: number;
+  fill: BackgroundImageFill;
+  anchor: BackgroundImageAnchor;
+}
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = ThemeChoiceId;
 
@@ -37,9 +59,11 @@ export interface AppearanceExtras {
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
   menuIcons: boolean;
-  mainMenuStyle: "hamburger" | "merged";
+  mainMenuStyle: "hamburger" | "merged" | "toolbar";
   /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
   mainMenuAlt: boolean;
+  /** Settings open in a native window of their own; off opens the in-page dialog (#3797). */
+  settingsInSeparateWindow: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -52,6 +76,7 @@ export interface AppearanceExtras {
   /** View › Appearance › Navigation Bar: the file path breadcrumbs, shown above
    * the editor, in the status bar, or not at all. */
   navigationBar: NavigationBarPosition;
+  backgroundImage: BackgroundImageValid;
 }
 
 export interface DateFormatValid {
@@ -67,6 +92,10 @@ export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
   updateSource: UpdateSourceSetting;
   autoCheckUpdates: boolean;
+  /** System Settings › Updates: show the What's New page after the app starts a new version. */
+  showWhatsNewAfterUpdate: boolean;
+  /** Version the app last started with; empty on the first run. */
+  lastRunVersion: string;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -78,9 +107,18 @@ export interface NotificationGroupValid {
   log: boolean;
 }
 
+/** When a finished terminal command notifies (#3712, Settings › Notifications › Terminal). */
+export type TerminalCompletionMode = "off" | "longRunning" | "all";
+
 export interface NotificationsValid {
   balloons: boolean;
   sound: boolean;
+  /** Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
+  systemNotifications: boolean;
+  /** Terminal command completions: off, long-running ones only (default), or every one. */
+  terminalCompletion: TerminalCompletionMode;
+  /** Mode `longRunning`: the run time a command must reach, in seconds. */
+  terminalThresholdSeconds: number;
   groups: Record<string, NotificationGroupValid>;
 }
 
@@ -107,6 +145,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   menuIcons: true,
   mainMenuStyle: "hamburger",
   mainMenuAlt: true,
+  settingsInSeparateWindow: true,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -116,6 +155,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showMainToolbar: true,
   showStatusBar: true,
   navigationBar: "statusBar",
+  backgroundImage: { path: "", opacity: 15, fill: "scale", anchor: "center" },
 };
 
 const NAV_BAR_POSITIONS: readonly NavigationBarPosition[] = ["top", "statusBar", "hidden"];
@@ -124,13 +164,22 @@ export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
   updateSource: "auto",
   autoCheckUpdates: true,
+  showWhatsNewAfterUpdate: true,
+  lastRunVersion: "",
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
   dateFormat: { overrideSystem: false, pattern: "dd.MM.yyyy", use24Hour: true, pretty: true },
 };
 
-export const DEFAULT_NOTIFICATIONS: NotificationsValid = { balloons: true, sound: false, groups: {} };
+export const DEFAULT_NOTIFICATIONS: NotificationsValid = {
+  balloons: true,
+  sound: false,
+  systemNotifications: true,
+  terminalCompletion: "longRunning",
+  terminalThresholdSeconds: 10,
+  groups: {},
+};
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
@@ -143,6 +192,7 @@ const int = (v: unknown, d: number, { min, max }: { min: number; max: number }) 
 const AA: readonly Antialiasing[] = ["subpixel", "greyscale", "none"];
 const concrete = (v: unknown, d: ConcreteTheme): ConcreteTheme => (isThemeChoiceId(v) ? v : d);
 const DISPLAYS: readonly NotificationDisplay[] = ["balloon", "sticky", "none"];
+const TERMINAL_COMPLETIONS: readonly TerminalCompletionMode[] = ["off", "longRunning", "all"];
 
 export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
   const a = obj(raw);
@@ -169,8 +219,9 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
-    mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
+    mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged", "toolbar"], d.mainMenuStyle),
     mainMenuAlt: b("mainMenuAlt"),
+    settingsInSeparateWindow: b("settingsInSeparateWindow"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
@@ -186,6 +237,18 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
       if (!("navigationBar" in a) && typeof legacy === "boolean") return legacy ? "statusBar" : "hidden";
       return oneOf(a.navigationBar, NAV_BAR_POSITIONS, d.navigationBar);
     })(),
+    backgroundImage: validateBackgroundImage(a.backgroundImage),
+  };
+}
+
+function validateBackgroundImage(raw: unknown): BackgroundImageValid {
+  const b = obj(raw);
+  const d = DEFAULT_APPEARANCE_EXTRAS.backgroundImage;
+  return {
+    path: typeof b.path === "string" ? b.path.trim() : d.path,
+    opacity: int(b.opacity, d.opacity, { min: 0, max: 100 }),
+    fill: oneOf(b.fill, ["scale", "plain", "tile"], d.fill),
+    anchor: oneOf(b.anchor, BACKGROUND_IMAGE_ANCHORS, d.anchor),
   };
 }
 
@@ -197,6 +260,8 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
     openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
+    showWhatsNewAfterUpdate: bool(g.showWhatsNewAfterUpdate, d.showWhatsNewAfterUpdate),
+    lastRunVersion: typeof g.lastRunVersion === "string" ? g.lastRunVersion : d.lastRunVersion,
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),
@@ -219,6 +284,12 @@ export function validateNotifications(raw: unknown): NotificationsValid {
   return {
     balloons: bool(n.balloons, DEFAULT_NOTIFICATIONS.balloons),
     sound: bool(n.sound, DEFAULT_NOTIFICATIONS.sound),
+    systemNotifications: bool(n.systemNotifications, DEFAULT_NOTIFICATIONS.systemNotifications),
+    terminalCompletion: oneOf(n.terminalCompletion, TERMINAL_COMPLETIONS, DEFAULT_NOTIFICATIONS.terminalCompletion),
+    terminalThresholdSeconds: int(n.terminalThresholdSeconds, DEFAULT_NOTIFICATIONS.terminalThresholdSeconds, {
+      min: 1,
+      max: 86_400,
+    }),
     groups,
   };
 }

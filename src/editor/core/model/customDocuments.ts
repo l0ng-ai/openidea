@@ -52,6 +52,19 @@ export function inputDirty(input: EditorInput, kinds: Kinds): boolean | null {
   return lifecycle ? documentDirty({ input, lifecycle }) : null;
 }
 
+/**
+ * Whether the input's editor kind reports it busy (`EditorKindContribution.isBusy`).
+ * A failing check counts as not busy, so a broken kind cannot make its tabs unclosable.
+ */
+export async function inputBusy(input: EditorInput, kinds: Kinds): Promise<boolean> {
+  try {
+    return (await kinds.get(input.kind)?.isBusy?.(input)) === true;
+  } catch (e) {
+    console.warn(`editor input ${input.key}: isBusy failed`, e);
+    return false;
+  }
+}
+
 /** The rejection reasons of `results` (an AggregateError contributes each of its errors). */
 export function failures(results: readonly PromiseSettledResult<unknown>[]): unknown[] {
   return results.flatMap((r) =>

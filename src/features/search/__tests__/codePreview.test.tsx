@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { Text } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { Prec, Text } from "@codemirror/state";
+import { Decoration, EditorView } from "@codemirror/view";
 import { redo, undo } from "@codemirror/commands";
 import { _emitEditorEvent, _provideCodePreview, _provideDocumentAttacher, setLibraryRoots } from "@/editor/api";
 import { createMemoryBackend } from "@/editor/core/backend";
@@ -57,7 +57,7 @@ async function preview(container: HTMLElement): Promise<EditorView> {
 const { CodePreview, previewDecorations } = await import("../find/parts");
 
 describe("CodePreview", () => {
-  it("marks matches (the current line's as current) and the current line", () => {
+  it("marks matches and the current line", () => {
     const doc = Text.of(["ab", "order order", "x"]);
     const set = previewDecorations(doc, 1, [
       {
@@ -76,9 +76,9 @@ describe("CodePreview", () => {
     });
     expect(out).toEqual([
       "3-3:cm-activeLine",
-      "3-8:cm-openidea-findMatch cm-openidea-findMatch-current",
-      "9-14:cm-openidea-findMatch cm-openidea-findMatch-current",
-      "15-16:cm-openidea-findMatch",
+      "3-8:cm-openidea-searchResult",
+      "9-14:cm-openidea-searchResult",
+      "15-16:cm-openidea-searchResult",
     ]);
   });
 
@@ -87,7 +87,21 @@ describe("CodePreview", () => {
     await preview(container);
     expect(container.querySelector(".cm-content")?.textContent).toContain("val order = 1");
     expect(container.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("true");
-    expect(container.querySelector(".cm-openidea-findMatch")?.textContent).toBe("order");
+    expect(container.querySelector(".cm-openidea-searchResult")?.textContent).toBe("order");
+  });
+
+  it("nests matches inside syntax token spans, as find matches in an editor tab", async () => {
+    // Like the syntax highlighter: a `Prec.high` mark with its own colour over "order".
+    const token = Prec.high(
+      EditorView.decorations.of(Decoration.set(Decoration.mark({ class: "token" }).range(15, 20))),
+    );
+    _provideCodePreview(async (path, editable) => [
+      await previewExtensions(path, undefined, undefined, editable),
+      token,
+    ]);
+    const { container } = render(<CodePreview path={path} line={1} highlights={[{ line: 1, ranges: [[4, 9]] }]} />);
+    await preview(container);
+    expect(container.querySelector(".token .cm-openidea-searchResult")?.textContent).toBe("order");
   });
 
   it.each([false, true])("shares edits, document undo and save with a tab (mounted: %s)", async (mounted) => {
@@ -101,7 +115,7 @@ describe("CodePreview", () => {
     act(() => view.dispatch({ changes: { from: 0, insert: "// 😀\n" }, userEvent: "input.type" }));
     expect(tab.currentState().doc.toString()).toBe("// 😀\n" + original);
     expect(model.getMeta().dirty).toBe(true);
-    expect(view.state.doc.lineAt(view.posAtDOM(container.querySelector(".cm-openidea-findMatch")!)).number).toBe(3);
+    expect(view.state.doc.lineAt(view.posAtDOM(container.querySelector(".cm-openidea-searchResult")!)).number).toBe(3);
     // The tab's Undo removes preview typing; the preview follows immediately.
     act(() => {
       undo({ state: tab.currentState(), dispatch: (tr) => tab.dispatchLocal(tr) });

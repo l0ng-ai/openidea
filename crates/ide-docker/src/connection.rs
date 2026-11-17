@@ -136,24 +136,19 @@ pub struct DockerRegistry {
     pub username: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DockerSettings {
-    #[serde(default = "default_connections")]
+    #[serde(default)]
     pub connections: Vec<DockerConnection>,
     #[serde(default)]
     pub registries: Vec<DockerRegistry>,
 }
 
-impl Default for DockerSettings {
-    fn default() -> Self {
-        Self { connections: default_connections(), registries: Vec::new() }
-    }
-}
-
-/// Before anything is configured the CLI's own daemon is shown, as before connections existed.
-fn default_connections() -> Vec<DockerConnection> {
-    vec![DockerConnection { id: "default".into(), name: "Docker".into(), endpoint: DockerEndpoint::Default }]
+/// Whether `c` is the connection older versions injected when nothing was configured:
+/// Services lists only connections the user added, so this one is dropped on load.
+fn is_injected_default(c: &DockerConnection) -> bool {
+    c.id == "default" && c.name == "Docker" && c.endpoint == DockerEndpoint::Default
 }
 
 const SETTINGS_FILE: &str = "docker.json";
@@ -161,10 +156,17 @@ const PASSWORDS_FILE: &str = "docker-passwords.json";
 
 pub fn load_settings(data_dir: &Path) -> DockerSettings {
     match std::fs::read(data_dir.join(SETTINGS_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            tracing::warn!("{SETTINGS_FILE}: {e}");
-            DockerSettings::default()
-        }),
+        // A file written before the opt-in Services rework carries the injected default
+        // (saved along with a registry or another connection); drop it unless edited.
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(|mut s: DockerSettings| {
+                s.connections.retain(|c| !is_injected_default(c));
+                s
+            })
+            .unwrap_or_else(|e| {
+                tracing::warn!("{SETTINGS_FILE}: {e}");
+                DockerSettings::default()
+            }),
         Err(_) => DockerSettings::default(),
     }
 }
@@ -373,7 +375,8 @@ mod tests {
     fn settings_round_trip_and_passwords() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        assert_eq!(load_settings(dir).connections[0].endpoint, DockerEndpoint::Default);
+        // Nothing configured: no connection is invented.
+        assert!(load_settings(dir).connections.is_empty());
         let settings = DockerSettings {
             connections: vec![DockerConnection {
                 id: "c1".into(),
@@ -395,8 +398,32 @@ mod tests {
         assert!(auth_for(dir, "postgres").is_none());
         save_settings(dir, &DockerSettings { registries: Vec::new(), ..settings }).unwrap();
         assert_eq!(registry_password(dir, "r1"), None);
-        // An empty list stays empty (the default connection is only for a missing file).
+        // An empty list stays empty.
         save_settings(dir, &DockerSettings { connections: Vec::new(), registries: Vec::new() }).unwrap();
         assert!(load_settings(dir).connections.is_empty());
+    }
+
+    #[test]
+    fn load_drops_the_injected_default_connection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let injected =
+            || DockerConnection { id: "default".into(), name: "Docker".into(), endpoint: DockerEndpoint::Default };
+        let registry =
+            DockerRegistry { id: "r1".into(), name: "GHCR".into(), address: "ghcr.io".into(), username: "me".into() };
+        // Saved untouched by an older version (e.g. along with a registry): dropped on load.
+        save_settings(dir, &DockerSettings { connections: vec![injected()], registries: vec![registry.clone()] })
+            .unwrap();
+        let loaded = load_settings(dir);
+        assert!(loaded.connections.is_empty());
+        assert_eq!(loaded.registries, vec![registry]);
+        // A connection the user renamed or re-pointed stays theirs.
+        let renamed = DockerConnection { name: "Local engine".into(), ..injected() };
+        save_settings(dir, &DockerSettings { connections: vec![renamed.clone()], registries: Vec::new() }).unwrap();
+        assert_eq!(load_settings(dir).connections, vec![renamed]);
+        let repointed =
+            DockerConnection { endpoint: DockerEndpoint::Socket { path: "/var/run/docker.sock".into() }, ..injected() };
+        save_settings(dir, &DockerSettings { connections: vec![repointed.clone()], registries: Vec::new() }).unwrap();
+        assert_eq!(load_settings(dir).connections, vec![repointed]);
     }
 }

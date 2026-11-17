@@ -353,6 +353,22 @@ function jvmTargets(lines: string[], relPath: string): RunTarget[] {
  * Run targets of a file (relative path picks the language). `django`: a Django project, where
  * `tests.py` (Django's default test module) holds tests too.
  */
+/** Zig: a top-level `pub fn main` and `test "name" {` / `test name {` blocks, nested ones too. */
+export function zigTargets(content: string): RunTarget[] {
+  if (content.length > MAX_SCAN) return [];
+  const out: RunTarget[] = [];
+  content.split("\n").forEach((line, i) => {
+    if (/^pub\s+fn\s+main\s*\(/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
+    const test = /^\s*test\s+(?:"((?:[^"\\]|\\.)*)"|([A-Za-z_]\w*))\s*\{/.exec(line);
+    if (test) {
+      // Unescape for display and for `--test-filter`: the runner reports the raw name.
+      const name = test[1]?.replace(/\\(.)/g, "$1") ?? test[2]!;
+      out.push({ line: i, kind: "test", name, path: [name] });
+    }
+  });
+  return out;
+}
+
 export function detectRunTargets(text: string, relPath: string, django = false): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
@@ -397,6 +413,29 @@ export function jsNamePattern(target: RunTarget): string {
 
 function withLast(args: string[], f: (last: string) => string): string[] {
   return args.length ? [...args.slice(0, -1), f(args[args.length - 1]!)] : args;
+}
+
+/**
+ * GoLand's "Run with Fuzzing" of a `Fuzz` function: its `go test` configuration with
+ * `-fuzz` added. Null for other targets, and when the configuration doesn't test one
+ * package (`go test -fuzz` refuses several).
+ */
+export function goFuzzConfig(config: RunConfig, target: RunTarget): RunConfig | null {
+  if (target.kind !== "test" || target.path.length !== 1 || !/^Fuzz/.test(target.name)) return null;
+  if (config.kind !== "go" || config.args[0] !== "test") return null;
+  const parts = goTestParts(config.args);
+  if (parts.targets.length !== 1 || /(^|\/)\.\.\.$/.test(parts.targets[0]!)) return null;
+  const pattern = `^${escapeRegExp(target.name)}$`;
+  const flags = withoutGoSelection(parts.flags);
+  return {
+    ...config,
+    id: `${config.id}:fuzz`,
+    name: `${config.name} (fuzzing)`,
+    args: ["test", ...flags, ...parts.targets, "-run", pattern, "-fuzz", pattern, ...withoutGoSelection(parts.program)],
+    ...(config.params?.goKind
+      ? { params: { ...config.params, pattern, toolArgs: formatArgs([...flags, "-fuzz", pattern]) } }
+      : {}),
+  };
 }
 
 /** Run configuration for one target, or null when the project has no matching runner. */

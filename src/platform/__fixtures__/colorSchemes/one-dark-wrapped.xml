@@ -1,0 +1,11 @@
+<application>
+  <component name="EditorColorsSchemeImpl">
+    <scheme version="142" parent_scheme="Darcula">
+      <colors><option name="SELECTION_BACKGROUND" value="3a3d41" /></colors>
+      <attributes>
+        <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="c678dd" /><option name="FONT_TYPE" value="1" /></value></option>
+        <option name="TEXT"><value><option name="FOREGROUND" value="abb2bf" /><option name="BACKGROUND" value="282c34" /></value></option>
+      </attributes>
+    </scheme>
+  </component>
+</application>

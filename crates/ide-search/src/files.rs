@@ -43,7 +43,7 @@ pub fn scope_files(
             on_disk.push(path);
         }
     }
-    walk_files(&on_disk, || {
+    walk_files(&on_disk, &|path| mask.has_directory_exclusions() && mask.excludes_dir(&rel_path(root, path)), || {
         let found = &found;
         let keep = &keep;
         Box::new(move |path| {

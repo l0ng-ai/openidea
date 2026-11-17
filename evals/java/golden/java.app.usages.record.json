@@ -1,0 +1,21 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "usages": [
+      "src/main/java/com/example/orders/BulkDiscount.java:14",
+      "src/main/java/com/example/orders/ListPrice.java:6",
+      "src/main/java/com/example/orders/OrderBook.java:10",
+      "src/main/java/com/example/orders/OrderBook.java:13",
+      "src/main/java/com/example/orders/OrderBook.java:14",
+      "src/main/java/com/example/orders/OrderBook.java:19",
+      "src/main/java/com/example/orders/OrderBook.java:23",
+      "src/main/java/com/example/orders/OrderBook.java:24",
+      "src/main/java/com/example/orders/OrderBook.java:29",
+      "src/main/java/com/example/orders/PricingRule.java:5",
+      "src/test/java/com/example/orders/OrderBookTest.java:21"
+    ]
+  }
+}

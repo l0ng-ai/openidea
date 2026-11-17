@@ -56,7 +56,7 @@ export function formatSql(
     const line = text.lastIndexOf("\n", first.from - 1) + 1;
     const lead = text.slice(line, first.from);
     const indent = /^[ \t]*$/.test(lead) ? lead : "";
-    edits.push({ from: first.from, to: last.to, insert: formatStatement(items.slice(a, end), indent) });
+    edits.push({ from: first.from, to: last.to, insert: formatStatement(items.slice(a, end), indent, driver) });
   };
   items.forEach((it, i) => {
     if (it.kind === "punct" && it.text === "(") depth++;
@@ -89,6 +89,8 @@ const NEWLINE_CLAUSES = new Set([
 ]);
 const JOIN_START = new Set(["JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "STRAIGHT_JOIN"]);
 const JOIN_MODIFIERS = new Set(["LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "OUTER"]);
+/** Clauses whose AND / OR start a line. */
+const AND_OR_CLAUSES = new Set(["WHERE", "HAVING", "QUALIFY"]);
 /** Where a list item continues: the width of `select `, `from `, `set `, `values `. */
 const ITEM_COLUMN: Record<string, number> = { SELECT: 7, FROM: 5, SET: 4, VALUES: 7 };
 /** Keywords written like functions: `cast(x as int)`. */
@@ -105,7 +107,7 @@ interface Frame {
   between: boolean;
 }
 
-function formatStatement(items: Item[], base: string): string {
+function formatStatement(items: Item[], base: string, driver: DbDriver): string {
   const lines: string[] = [];
   let line = "";
   const newline = (column: number) => {
@@ -117,6 +119,8 @@ function formatStatement(items: Item[], base: string): string {
   const frames: Frame[] = [{ kind: "query", indent: 0, clause: "", count: 0, between: false }];
   let prev: Item | null = null;
   let unary = false;
+  // Snowflake's QUALIFY is a clause of its own, like HAVING.
+  const isClause = (word: string) => NEWLINE_CLAUSES.has(word) || (driver === "snowflake" && word === "QUALIFY");
 
   items.forEach((it, i) => {
     const frame = frames.at(-1)!;
@@ -124,19 +128,19 @@ function formatStatement(items: Item[], base: string): string {
     const isQuery = frame.kind === "query";
 
     // Line breaks before the token.
-    const afterLineComment = prev?.kind === "comment" && /^(--|#)/.test(prev.text);
+    const afterLineComment = prev?.kind === "comment" && /^(--|#|\/\/)/.test(prev.text);
     if (afterLineComment) {
       newline(isQuery && frame.clause in ITEM_COLUMN ? frame.indent + ITEM_COLUMN[frame.clause]! : frame.indent);
     } else if (it.kind === "punct" && it.text === ")" && frame.kind === "create") {
       newline(frames.at(-2)!.indent);
     } else if (isQuery && word && frame.count > 0) {
-      if (NEWLINE_CLAUSES.has(word)) {
+      if (isClause(word)) {
         if (!atLineStart()) newline(frame.indent);
       } else if (word === "ON" && frame.clause === "VALUES") {
         newline(frame.indent);
       } else if (JOIN_START.has(word) && !JOIN_MODIFIERS.has(prev?.upper ?? "") && frame.clause === "FROM") {
         newline(frame.indent + 9);
-      } else if ((word === "AND" || word === "OR") && (frame.clause === "WHERE" || frame.clause === "HAVING")) {
+      } else if ((word === "AND" || word === "OR") && AND_OR_CLAUSES.has(frame.clause)) {
         if (word === "AND" && frame.between) frame.between = false;
         else newline(frame.indent + (word === "AND" ? 2 : 3));
       } else if ((word === "INSERT" || word === "UPDATE" || word === "DELETE") && isP(prev, ")")) {
@@ -151,7 +155,12 @@ function formatStatement(items: Item[], base: string): string {
       const at = last.lastIndexOf(prev!.text);
       lines[lines.length - 1] = `${last.slice(0, at).trimEnd()}, ${last.slice(at)}`;
     } else {
-      if (!atLineStart() && spaceBefore(prev, it, items[i - 2], unary)) line += " ";
+      if (
+        !atLineStart() &&
+        !(driver === "snowflake" && isTightPath(prev, it)) &&
+        spaceBefore(prev, it, items[i - 2], unary)
+      )
+        line += " ";
       line += it.text;
     }
     unary = it.kind === "punct" && (it.text === "-" || it.text === "+") && (!prev || isOperatorLike(prev));
@@ -159,7 +168,7 @@ function formatStatement(items: Item[], base: string): string {
     // Bookkeeping and breaks after the token.
     frame.count++;
     if (isQuery && word) {
-      if (NEWLINE_CLAUSES.has(word)) frame.clause = word;
+      if (isClause(word)) frame.clause = word;
       else if (word === "ON" && frame.clause === "VALUES") frame.clause = "CONFLICT";
       if (word === "BETWEEN") frame.between = true;
     }
@@ -196,6 +205,16 @@ const isP = (t: Item | null | undefined, p: string) => !!t && t.kind === "punct"
 function isOperatorLike(t: Item): boolean {
   if (t.kind === "punct") return t.text !== ")";
   return t.kind === "word" && isReserved(t.text);
+}
+
+/** Snowflake `col:key` / `col['key']`: a colon or bracket written without spaces stays so. */
+function isTightPath(prev: Item | null, it: Item): boolean {
+  return (
+    !!prev &&
+    prev.to === it.from &&
+    // `name!member` is a service role or a model's method.
+    (isP(it, ":") || isP(prev, ":") || isP(it, "[") || isP(prev, "[") || isP(it, "]") || isP(it, "!") || isP(prev, "!"))
+  );
 }
 
 function spaceBefore(prev: Item | null, it: Item, beforePrev: Item | undefined, unary: boolean): boolean {

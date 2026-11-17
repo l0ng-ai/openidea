@@ -1,19 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
+  canOpenWithSystemApp,
   canRevealInFileManager,
   fileManagerName,
   fileManagerPath,
+  openWithSystemApp,
   revealInFileManager,
   revealInFileManagerLabel,
   showInFileManagerLabel,
 } from "./fileManager";
 import { _resetI18nForTests, setLocale, tx } from "./i18n";
-import type { RemoteTarget } from "./ipc";
+import { commands, type RemoteTarget } from "./ipc";
 import { usePlatform } from "./platformInfo";
 import { useRemote } from "./remote";
 
-vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), revealItemInDir: vi.fn() }));
 vi.mock("./ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./ipc")>()),
   isTauri: () => true,
@@ -95,6 +97,39 @@ describe("revealInFileManager", () => {
     useRemote.setState({ session: { target: ssh, root: "/p", host: "h", os: "linux", commands: [] } });
     expect(await revealInFileManager("/Users/me/Library/Logs/openidea.log", null)).toBe(true);
     expect(revealItemInDir).toHaveBeenCalledExactlyOnceWith("/Users/me/Library/Logs/openidea.log");
+  });
+});
+
+describe("openWithSystemApp", () => {
+  afterEach(() => {
+    useRemote.setState({ session: null });
+    vi.restoreAllMocks();
+  });
+
+  const ssh: RemoteTarget = { kind: "ssh", config: "box" };
+  const container: RemoteTarget = { kind: "devContainer", folder: "/Users/me/app", config: "" };
+  const wsl: RemoteTarget = { kind: "wsl", distro: "Ubuntu" };
+  it.each<{ window: string; target: RemoteTarget | null; path: string; launched: boolean }>([
+    { window: "a local window", target: null, path: "/Users/me/a.xlsx", launched: true },
+    { window: "a WSL window", target: wsl, path: "/home/me/a.xlsx", launched: false },
+    { window: "an SSH window", target: ssh, path: "/srv/app/a.xlsx", launched: false },
+    { window: "a dev-container window", target: container, path: "/workspaces/app/a.xlsx", launched: false },
+  ])("in $window asks the backend only for this desktop's own files", async ({ target, path, launched }) => {
+    const open = vi.spyOn(commands, "fsOpenWithSystem").mockResolvedValue({ status: "ok", data: null });
+    useRemote.setState({ session: target && { target, root: "/p", host: "h", os: "linux", commands: [] } });
+    expect(await openWithSystemApp(path)).toBe(launched);
+    if (launched) expect(open).toHaveBeenCalledExactlyOnceWith(path);
+    else expect(open).not.toHaveBeenCalled();
+    expect(canOpenWithSystemApp()).toBe(launched);
+  });
+
+  it("reports a refused launch so the caller can fall back", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(commands, "fsOpenWithSystem").mockResolvedValue({
+      status: "error",
+      error: { kind: "invalid", message: "outside the project" } as never,
+    });
+    expect(await openWithSystemApp("/Users/me/a.xyz")).toBe(false);
   });
 });
 

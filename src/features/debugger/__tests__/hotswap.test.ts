@@ -74,6 +74,7 @@ function session(id: number, hotCodeReplace: boolean): DebugSession {
     frames: [],
     selectedFrame: null,
     hits: 0,
+    stops: 0,
     exitCode: null,
     caps: { hotCodeReplace } as DebugCapabilities,
   };

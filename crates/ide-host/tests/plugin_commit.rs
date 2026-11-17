@@ -39,7 +39,7 @@ impl PluginWorkspace for Workspace {
     fn document(&self, _: &Path) -> Option<(u64, String)> {
         None
     }
-    fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit], _: bool) -> Result<u64, HostError> {
         Err(HostError::NotFound("not open".into()))
     }
     fn trusted(&self, _: &Path) -> bool {

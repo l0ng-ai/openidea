@@ -3,6 +3,7 @@ import { MemoryFs, setProjectFsForTests } from "./fs";
 import { visibleInfo } from "./model";
 import {
   applyFsChange,
+  reloadArchiveDirs,
   reloadLoadedDirs,
   currentModel,
   expandAll,
@@ -42,6 +43,22 @@ afterEach(() => {
 });
 
 const childLabels = (key: string) => (currentModel().children.get(key) ?? []).map((n) => n.label);
+
+it("retains cached types only for members that remain in the same workspace", () => {
+  initProjectTree("/workspace", "Workspace", ["/go", "/web"]);
+  useProjectTree.setState({
+    projectTypes: new Map([
+      ["/go", "go"],
+      ["/web", "node"],
+    ]),
+  });
+
+  initProjectTree("/workspace", "Workspace", ["/go", "/new"]);
+  expect([...useProjectTree.getState().projectTypes]).toEqual([["/go", "go"]]);
+
+  initProjectTree("/other-workspace", "Other workspace", ["/go"]);
+  expect(useProjectTree.getState().projectTypes.size).toBe(0);
+});
 
 describe("lazy loading", () => {
   it("loads folders on demand and shares concurrent requests", async () => {
@@ -94,6 +111,28 @@ describe("refresh of excluded folders", () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith("/p/docs");
+    spy.mockRestore();
+  });
+});
+
+describe("refresh of library archives", () => {
+  it("re-reads the loaded folders inside archives only", async () => {
+    await fs.createFile("/m2/lib.jar!/p/A.class");
+    await loadDir(ROOT);
+    await loadDir("/m2/lib.jar!");
+    await loadDir("/m2/lib.jar!/p");
+    await fs.createFile("/m2/lib.jar!/p/B.class");
+    const spy = vi.spyOn(fs, "readDir");
+
+    await reloadArchiveDirs();
+
+    expect(spy.mock.calls.map(([p]) => p).sort()).toEqual(["/m2/lib.jar!", "/m2/lib.jar!/p"]);
+    expect(
+      useProjectTree
+        .getState()
+        .listings.get("/m2/lib.jar!/p")
+        ?.map((e) => e.name),
+    ).toEqual(["A.class", "B.class"]);
     spy.mockRestore();
   });
 });

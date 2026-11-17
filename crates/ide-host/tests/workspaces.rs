@@ -106,6 +106,120 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_attached_inside_the_root_is_searched_and_indexed_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("app");
+    // `.wt/feature` is its own repository, which the outer one ignores; `lib` is not ignored.
+    let (ignored, covered) = (root.join(".wt/feature"), root.join("lib"));
+    for dir in [&root, &ignored, &covered] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for repo in [&root, &ignored] {
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(repo).status().unwrap().success());
+    }
+    std::fs::write(root.join(".git/info/exclude"), "/.wt/\n").unwrap();
+    std::fs::write(root.join("main.txt"), "needle\n").unwrap();
+    std::fs::write(ignored.join("feature.txt"), "needle\n").unwrap();
+    std::fs::write(covered.join("lib.txt"), "needle\n").unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    for dir in [&root, &ignored, &covered] {
+        host.trust.decide(dir, true, false).unwrap();
+    }
+    let project = host.open_project("main", &root).unwrap();
+    ops::project::attach_workspace(&host, "main", &ignored).unwrap();
+    ops::project::attach_workspace(&host, "main", &covered).unwrap();
+    assert_eq!(project.content_roots(), vec![ignored.clone()], "the root's walk covers `lib`");
+
+    assert!(project.index.wait_idle(Duration::from_secs(10)));
+    let files = project.index.find_files(".txt", 100);
+    let mut indexed = files.iter().map(|f| f.rel_path.clone()).collect::<Vec<_>>();
+    indexed.sort();
+    assert_eq!(indexed, [".wt/feature/feature.txt", "lib/lib.txt", "main.txt"]);
+
+    let hits = Arc::new(Mutex::new(Vec::new()));
+    let out = hits.clone();
+    let query = serde_json::from_value(serde_json::json!({"pattern":"needle", "isRegex":false, "caseSensitive":false,"wholeWord":false,"include":[],"exclude":[],"scope":{"kind":"project"},"maxMatches":100})).unwrap();
+    ops::search::start(
+        &host,
+        "main",
+        RequestId::next(),
+        query,
+        Arc::new(move |event| {
+            if let ops::search::SearchEvent::File { file } = event {
+                out.lock().unwrap().push(file.rel_path);
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    let mut found = hits.lock().unwrap().clone();
+    found.sort();
+    assert_eq!(found, [".wt/feature/feature.txt", "lib/lib.txt", "main.txt"]);
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_effective_interpreter_falls_back_to_the_primary_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let primary = base.join("primary");
+    let venv_python =
+        if cfg!(windows) { primary.join(".venv/Scripts/python.exe") } else { primary.join(".venv/bin/python") };
+    std::fs::create_dir_all(venv_python.parent().unwrap()).unwrap();
+    std::fs::write(primary.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+    std::fs::write(&venv_python, "").unwrap();
+    let member = base.join("attached");
+    std::fs::create_dir_all(member.join("src")).unwrap();
+    // The primary project with an attached folder (the "attach" flow, not a container workspace).
+    Workspace::attach(&primary, "Primary", vec![primary.clone(), member.clone()]).unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&primary, true, false).unwrap();
+    host.trust.decide(&member, true, false).unwrap();
+    host.open_project("main", &primary).unwrap();
+    let python = |near: Option<&std::path::Path>| {
+        ops::sdk::sdk_python_effective(&host, "main", near.map(|p| p.to_path_buf())).unwrap().map(|p| p.into_path_buf())
+    };
+    // The primary project's own virtualenv, and the bare member inheriting it.
+    assert_eq!(python(Some(&primary)), Some(venv_python.clone()));
+    assert_eq!(python(Some(&member.join("src"))), Some(venv_python.clone()));
+    // The member's own settings win: an explicit interpreter configured for it
+    // (its file is created here — a missing one would be skipped as invalid).
+    let configured = member.join("selected").join(if cfg!(windows) { "python.exe" } else { "python" });
+    std::fs::create_dir_all(configured.parent().unwrap()).unwrap();
+    std::fs::write(&configured, "").unwrap();
+    ide_workspace::SettingsStore::load(&base.join("config"), Some(&member))
+        .set(
+            ide_workspace::SettingsScope::Project,
+            "languages.python.interpreter",
+            serde_json::to_value(configured.to_string_lossy().into_owned()).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(python(Some(&member.join("src"))), Some(configured));
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn php_language_level_follows_the_member_of_the_file() {
     use ide_sdk::php::{PhpLanguageLevel, PhpLevelSource};
     let temp = tempfile::tempdir().unwrap();

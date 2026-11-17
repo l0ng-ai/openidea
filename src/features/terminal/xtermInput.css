@@ -1,0 +1,22 @@
+/*
+ * xterm reads IME commits from its hidden textarea. Its `white-space: nowrap` makes WebKit
+ * store a typed trailing space as U+00A0, so a space committed by an IME (Fcitx5 on Linux)
+ * reached the shell as a non-breaking space. `pre` keeps the line unwrapped and the space a space.
+ */
+.xterm textarea.xterm-helper-textarea {
+  white-space: pre;
+}
+
+/* An icon or fallback symbol wider than its cell stays over the next cell's background
+   (domRowCache), while selected spans keep xterm's `.xterm-decoration-top` z-index (2). */
+.xterm .xterm-rows .openidea-terminal-icon:not(.xterm-decoration-top) {
+  position: relative;
+  z-index: 1;
+}
+
+/* Always-on underline for highlighted URLs (linkHighlights); the decoration's foreground colour tints the text. */
+.xterm .xterm-decoration.openidea-terminal-link {
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--link, var(--accent));
+  pointer-events: none;
+}

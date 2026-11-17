@@ -5,9 +5,10 @@ use crate::state::AppState;
 use ide_core::IdeResult;
 use ide_core::event::ServerStatus;
 use ide_language::SyntaxCacheStats;
-use ide_workspace::memory::{self, MemoryCategory, MemoryRoot, ProcessMemory, ProcessTable};
+use ide_workspace::memory::{self, CpuSampler, MemoryCategory, MemoryRoot, ProcessMemory, ProcessTable};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, State, Window};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -55,6 +56,9 @@ fn ms(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
+/// CPU time of every measured process at the previous `app_metrics` call, shared by all windows.
+static CPU: LazyLock<Mutex<CpuSampler>> = LazyLock::new(Default::default);
+
 /// Snapshot of process memory and subsystem sizes, summed over all projects.
 /// Async: the process walk runs on the blocking pool, not the main thread.
 #[tauri::command]
@@ -83,7 +87,6 @@ pub async fn app_metrics(app: AppHandle, state: State<'_, AppState>) -> IdeResul
         m.index_files += status.files;
         m.index_symbols += status.symbols;
         m.indexing |= status.indexing;
-        let project = project_name(&p.root);
         for s in p.lsp.servers() {
             if matches!(s.status, ServerStatus::Starting | ServerStatus::Ready | ServerStatus::Busy) {
                 m.language_servers += 1;
@@ -93,7 +96,10 @@ pub async fn app_metrics(app: AppHandle, state: State<'_, AppState>) -> IdeResul
                     pid,
                     category: MemoryCategory::LanguageServer,
                     label: s.name,
-                    detail: Some(project.clone()),
+                    // A project can attach several roots (additional content
+                    // roots); name the server's own workspace root, not the
+                    // project folder, so rows of one name don't collide.
+                    detail: Some(project_name(s.root.as_ref())),
                     with_children: true,
                 });
             }
@@ -127,7 +133,9 @@ pub async fn app_metrics(app: AppHandle, state: State<'_, AppState>) -> IdeResul
                     .map(|(pid, label)| openidea_root(pid, label.into(), None)),
             );
         }
-        Ok(memory::attribute(&table, me, &roots, memory::footprint_bytes))
+        let mut cpu = CPU.lock().unwrap_or_else(|e| e.into_inner());
+        cpu.retain(&table);
+        Ok(memory::attribute(&table, me, &roots, memory::footprint_bytes, |pid| cpu.percent(pid)))
     })
     .await?;
     Ok(m)
@@ -217,6 +225,15 @@ pub struct ClearCachesResult {
 
 /// "Clear caches": drops syntax trees and EditorConfig files of the window's
 /// project, shrinks the in-memory index and compacts its on-disk cache.
+/// Ends a process OpenIDEA started (a row of the memory breakdown) and its
+/// children; its owner (language server, run, terminal) sees it exit. Returns
+/// false for a process that isn't ours.
+#[tauri::command]
+#[specta::specta]
+pub async fn end_process(pid: u32) -> IdeResult<bool> {
+    blocking(move || Ok(memory::end_process_tree(std::process::id(), pid, std::time::Duration::from_secs(3)))).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn clear_caches(window: Window, state: State<'_, AppState>) -> IdeResult<ClearCachesResult> {
@@ -232,4 +249,25 @@ pub async fn clear_caches(window: Window, state: State<'_, AppState>) -> IdeResu
         Ok(ClearCachesResult { syntax_trees, rss_before_bytes, rss_after_bytes: own_footprint() })
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Language server rows are named by the server's own workspace root, not
+    /// the project folder: one project window can attach additional content
+    /// roots, and a server per root would otherwise show up as rows with the
+    /// same label and detail (e.g. "pyrefly MindSpeed" twice for MindSpeed +
+    /// Megatron-LM).
+    #[test]
+    fn server_row_detail_is_the_server_root_folder() {
+        let project = std::path::Path::new("B:/Program/Project/Ascend/MindSpeed");
+        let megatron = std::path::PathBuf::from("B:/Program/Project/Source/Megatron-LM");
+        assert_eq!(project_name(project), "MindSpeed");
+        assert_ne!(project_name(&megatron), project_name(project));
+        // IPC paths are `/`-separated on every OS, so `file_name` sees the
+        // folder without a Windows special case.
+        assert_eq!(project_name(&megatron), "Megatron-LM");
+    }
 }

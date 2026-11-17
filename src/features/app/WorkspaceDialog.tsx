@@ -55,7 +55,7 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
     setAdding("");
   };
   const browse = async (target: "workspace" | "project") => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const result = await open({
       directory: true,
       multiple: target === "project",

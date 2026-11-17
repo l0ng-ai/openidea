@@ -180,6 +180,29 @@ unsafe extern "C-unwind" fn should_terminate(_this: *mut AnyObject, _selector: S
 
 static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
+/// Escape the page leaves unhandled reaches the window as `cancelOperation:`, on which NSWindow
+/// leaves full screen, so pressing Escape once more after closing a popup left full screen. The
+/// IDE's windows answer it with nothing; View › Appearance › Toggle Full Screen (⌃⌘F) leaves it.
+pub fn keep_full_screen_on_escape() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        let Some(class) = AnyClass::get(c"TaoWindow") else {
+            tracing::warn!("no TaoWindow class: Escape leaves full screen");
+            return;
+        };
+        let imp: Imp = std::mem::transmute(ignore_cancel_operation as CancelOperation);
+        let class = class as *const AnyClass as *mut AnyClass;
+        let added = objc2::ffi::class_addMethod(class, objc2::sel!(cancelOperation:), imp, c"v@:@".as_ptr());
+        if !added.as_bool() {
+            tracing::warn!("could not handle cancelOperation:");
+        }
+    });
+}
+
+type CancelOperation = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
+
+unsafe extern "C-unwind" fn ignore_cancel_operation(_this: *mut AnyObject, _selector: Sel, _sender: *mut AnyObject) {}
+
 /// Whether AppKit is handling a key press right now. A menu item performed at this point
 /// was chosen by its key equivalent: a click, arrow keys plus Return and accessibility
 /// presses all run with a non-key current event.

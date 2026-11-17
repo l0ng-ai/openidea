@@ -1,0 +1,74 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.notice {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.column {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+}
+
+.columnTitle {
+  color: var(--fg-strong);
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+
+.items {
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  overflow: auto;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1-5);
+  padding: 4px 8px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-control);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+
+.pattern {
+  overflow-wrap: anywhere;
+}
+
+.add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+}

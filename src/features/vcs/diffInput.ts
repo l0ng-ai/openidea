@@ -1,11 +1,12 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, RevisionChange } from "@/bindings";
+import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
 import { call, commands, type LineEnding } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
-import { groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
+import { changeFileNodes, groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 
@@ -16,7 +17,11 @@ export type DiffSide =
   | { type: "worktree"; label?: string }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
-  | { type: "text"; text: string; label: string }
+  /**
+   * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
+   * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
+   */
+  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -40,6 +45,8 @@ export interface DiffData {
   line?: number;
   /** The side `line` is on. */
   lineSide?: "left" | "right";
+  /** UTF-16 column on `line` for the caret (the line start when absent). */
+  col?: number;
   /** Tab title instead of the default "name (left ↔ right)". */
   title?: string;
   /** Notes shown under lines (unified mode shows the right side's only). */
@@ -58,11 +65,24 @@ export interface DiffData {
   context?: { kind: string; [key: string]: unknown };
   /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
   embedded?: boolean;
+  /** Annotate the left (previous) side with Git Blame when the diff opens. */
+  annotateLeft?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
+  /** The user picked both sides (Compare Files, with Clipboard, blank diff): they can be swapped. */
+  swappable?: boolean;
 }
 
 export const DIFF_KIND = "diff";
+
+/**
+ * Whether only one side exists (an added or deleted file): IDEA shows that side alone
+ * (SimpleOnesideDiffViewer) instead of a side-by-side diff with an empty half.
+ */
+export function oneSided(data: Pick<DiffData, "left" | "right">): boolean {
+  const absent = (s: DiffSide) => s.type === "text" && !!s.absent;
+  return absent(data.left) !== absent(data.right);
+}
 
 export function sideKey(s: DiffSide): string {
   switch (s.type) {
@@ -105,6 +125,23 @@ export function sideLabel(s: DiffSide): string {
 
 const diffKey = (data: DiffData) => `diff:${data.path}:${sideKey(data.left)}:${sideKey(data.right)}`;
 
+/** Each diff's caret by tab key, most recent last, so Back returns to it there. */
+const carets = new Map<string, { line: number; col: number; side: "left" | "right" }>();
+
+export function rememberDiffCaret(key: string, line: number, col: number, side: "left" | "right") {
+  carets.delete(key);
+  carets.set(key, { line, col, side });
+  if (carets.size > 100) carets.delete(carets.keys().next().value!);
+}
+
+/** `input` reopening at its diff's last caret. */
+export function diffInputAtCaret(input: EditorInput): EditorInput {
+  const caret = carets.get(input.key);
+  if (!caret) return input;
+  const { reveal: _reveal, ...data } = input.data as DiffData;
+  return { ...input, data: { ...data, line: caret.line, col: caret.col, lineSide: caret.side } };
+}
+
 export function diffInput(data: DiffData): EditorInput {
   return { kind: DIFF_KIND, key: diffKey(data), path: data.path, data };
 }
@@ -131,7 +168,20 @@ export function diffTitle(data: DiffData): string {
 }
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
+  const combined = combinedOf(data);
+  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
+}
+
+/** An all-in-one diff tab: one per change (the same files with the same sides). */
+export function combinedDiffInput(data: CombinedDiffData): EditorInput {
+  const items = data.items.map(({ chain: _chain, reveal: _reveal, line: _line, lineSide: _side, ...item }) => item);
+  return {
+    kind: COMBINED_DIFF_KIND,
+    key: `combined-diff:${items.map(diffKey).join("\n")}`,
+    path: data.reveal ?? items[0]?.path ?? "",
+    data: { ...data, items },
+  };
 }
 
 /**
@@ -178,6 +228,20 @@ export function changeNodeDiffData(roots: readonly ChangeNode[], node: ChangeNod
   );
 }
 
+/**
+ * The Commit window's diff of a file: every file of the tree (in tree order) as the F7 chain,
+ * so past the last change it goes on into the unversioned files, as IDEA's Commit diff
+ * preview does (`ChangesViewDiffPreviewProcessor.iterateAllChanges`).
+ */
+export function changeTreeDiffData(roots: readonly ChangeNode[], node: ChangeNode): DiffData {
+  const all = changeFileNodes(roots);
+  const nodes = all.includes(node) ? all : [node];
+  return withChain(
+    nodes.map((n) => changeNodeDiff(n)),
+    nodes.indexOf(node),
+  );
+}
+
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
 export function workingDiffData(path: string, line?: number, side?: "staged" | "unstaged" | null): DiffData {
   if (side === "staged") {
@@ -190,11 +254,12 @@ export function workingDiffData(path: string, line?: number, side?: "staged" | "
   const kind = st ? effectiveKind(st) : null;
   const left: DiffSide =
     kind === "untracked" || kind === "added"
-      ? { type: "text", text: "", label: "(does not exist)" }
+      ? { type: "text", text: "", label: "(does not exist)", absent: true }
       : st?.renamedFrom
         ? { type: "rev", rev: "HEAD", path: renamedFromPath(st) ?? undefined, label: `HEAD (${st.renamedFrom})` }
         : { type: "rev", rev: "HEAD" };
-  const right: DiffSide = kind === "deleted" ? { type: "text", text: "", label: "(deleted)" } : { type: "worktree" };
+  const right: DiffSide =
+    kind === "deleted" ? { type: "text", text: "", label: "(deleted)", absent: true } : { type: "worktree" };
   return { path, left, right, line };
 }
 
@@ -212,7 +277,7 @@ export function commitFileDiffData(
   const parent = commit.parents[0];
   const left: DiffSide =
     !parent || file.kind === "added"
-      ? { type: "text", text: "", label: "(does not exist)" }
+      ? { type: "text", text: "", label: "(does not exist)", absent: true }
       : {
           type: "rev",
           rev: parent,
@@ -221,7 +286,7 @@ export function commitFileDiffData(
         };
   const right: DiffSide =
     file.kind === "deleted"
-      ? { type: "text", text: "", label: "(deleted)" }
+      ? { type: "text", text: "", label: "(deleted)", absent: true }
       : { type: "rev", rev: commit.id, label: commit.shortId };
   return { path, left, right };
 }
@@ -237,10 +302,10 @@ export function revisionChangeDiffData(change: RevisionChange, root = currentRep
         path: change.oldPath ? joinRoot(change.oldPath, root) : undefined,
         label: before.slice(0, 8),
       }
-    : { type: "text", text: "", label: "(does not exist)" };
+    : { type: "text", text: "", label: "(does not exist)", absent: true };
   const right: DiffSide = after
     ? { type: "rev", rev: after, label: after.slice(0, 8) }
-    : { type: "text", text: "", label: "(deleted)" };
+    : { type: "text", text: "", label: "(deleted)", absent: true };
   return { path, left, right };
 }
 
@@ -256,6 +321,22 @@ export async function loadSide(path: string, side: DiffSide): Promise<string> {
       return side.text;
     case "history":
       return call(commands.historyContent(side.id));
+  }
+}
+
+/**
+ * The file's git mode on `side` (`100644`, `100755`, `120000`…), `null` when the
+ * side has no repository mode — non-git sides and absent files. When the texts
+ * compare equal but the modes differ, the diff reports a mode-only change.
+ */
+export async function loadSideMode(path: string, side: DiffSide): Promise<string | null> {
+  switch (side.type) {
+    case "rev":
+      return call(commands.vcsFileMode(side.path ?? path, side.rev)).catch(() => null);
+    case "worktree":
+      return call(commands.vcsFileMode(path, "WT")).catch(() => null);
+    default:
+      return null;
   }
 }
 

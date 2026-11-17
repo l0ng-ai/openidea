@@ -195,20 +195,20 @@ impl InlayHints for MyPlugin {
 声明 `engines.openidea = "^1.4"` 后可以使用下列类型，实现 `language_features::LanguageFeatures`
 并注册 `language_features`：
 
-| 类型                  | 方法                                             | 宿主如何使用                                                                                                              |
-| --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `formatting`          | `format(doc, range, options)`                    | 在 **设置 › 语言和框架 › 插件格式化工具** 中为每种语言选择插件。用于重新格式化代码、格式化选区和保存时格式化。预算 5 秒。 |
-| `signature-help`      | `signature_help(doc, at)`                        | 语言服务器没有返回签名时使用。                                                                                            |
-| `document-highlights` | `document_highlights(doc, at)`                   | 追加到服务器的高亮之后（`text`、`read`、`write`）。                                                                       |
-| `document-links`      | `document_links(doc)`                            | Ctrl/⌘ 点击目标：绝对路径、项目相对路径或 HTTP(S) URL。                                                                   |
-| `code-lenses`         | `code_lenses(doc)`                               | 与服务器的透镜一起显示。点击时执行插件声明的命令。                                                                        |
-| `selection-ranges`    | `selection_ranges(doc, at)`                      | 用于 **扩展选区**，从内到外；无结果时回退到 tree-sitter。                                                                 |
-| `folding`             | `folding(doc)`                                   | 与 tree-sitter 的折叠合并。                                                                                               |
-| `colors`              | `colors(doc)`、`color_presentations(doc, color)` | 颜色色块与取色器；各通道是 0–1 的浮点数。                                                                                 |
-| `document-symbols`    | `document_symbols(doc)`                          | 用于结构视图和痕迹导航，仅当服务器没有返回符号时生效。                                                                    |
-| `implementation`      | `implementation(doc, at)`                        | 与服务器的实现结果合并。                                                                                                  |
-| `type-definition`     | `type_definition(doc, at)`                       | 与服务器的类型声明结果合并。                                                                                              |
-| `gutter-actions`      | `gutter_actions(doc)`                            | 行号槽按钮，执行插件声明的命令，可带参数。                                                                                |
+| 类型                  | 方法                                             | 宿主如何使用                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `formatting`          | `format(doc, range, options)`                    | 在 **设置 › 编辑器 › 代码样式 › 格式化工具 › 插件格式化工具** 中为每种语言选择插件（有已启用的插件提供格式化工具时才显示）。用于重新格式化代码、格式化选区和保存时格式化。预算 5 秒。 |
+| `signature-help`      | `signature_help(doc, at)`                        | 语言服务器没有返回签名时使用。                                                                                                                                                        |
+| `document-highlights` | `document_highlights(doc, at)`                   | 追加到服务器的高亮之后（`text`、`read`、`write`）。                                                                                                                                   |
+| `document-links`      | `document_links(doc)`                            | Ctrl/⌘ 点击目标：绝对路径、项目相对路径或 HTTP(S) URL。                                                                                                                               |
+| `code-lenses`         | `code_lenses(doc)`                               | 与服务器的透镜一起显示。点击时执行插件声明的命令。                                                                                                                                    |
+| `selection-ranges`    | `selection_ranges(doc, at)`                      | 用于 **扩展选区**，从内到外；无结果时回退到 tree-sitter。                                                                                                                             |
+| `folding`             | `folding(doc)`                                   | 与 tree-sitter 的折叠合并。                                                                                                                                                           |
+| `colors`              | `colors(doc)`、`color_presentations(doc, color)` | 颜色色块与取色器；各通道是 0–1 的浮点数。                                                                                                                                             |
+| `document-symbols`    | `document_symbols(doc)`                          | 用于结构视图和痕迹导航，仅当服务器没有返回符号时生效。                                                                                                                                |
+| `implementation`      | `implementation(doc, at)`                        | 与服务器的实现结果合并。                                                                                                                                                              |
+| `type-definition`     | `type_definition(doc, at)`                       | 与服务器的类型声明结果合并。                                                                                                                                                          |
+| `gutter-actions`      | `gutter_actions(doc)`                            | 行号槽按钮，执行插件声明的命令，可带参数。                                                                                                                                            |
 
 下面是 [Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)
 示例中提供命令入口的代码透镜：

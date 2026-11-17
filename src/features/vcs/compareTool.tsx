@@ -93,6 +93,7 @@ export function CompareToolWindow() {
           from={target.from}
           to={target.to}
           native
+          listOnly
           swapped={swapped}
           onSelect={select}
           onShowDiff={showDiff}

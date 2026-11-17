@@ -1,7 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
-import { debugUnsupportedReason, launchConfigFor } from "../launch";
+import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
+
+const ipc = vi.hoisted(() => {
+  const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
+  return { ok, runEnvFiles: vi.fn((_files: string[]) => ok({} as Record<string, string>)) };
+});
+
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/platform/ipc")>();
+  const { ok: _ok, ...cmds } = ipc;
+  return { ...real, commands: { ...real.commands, ...cmds } };
+});
 
 const rc = (p: Partial<RunConfig>): RunConfig => ({
   id: "x",
@@ -20,7 +31,10 @@ const rc = (p: Partial<RunConfig>): RunConfig => ({
 const extra = (l: { extraJson: string | null } | null) => JSON.parse(l?.extraJson ?? "{}");
 
 const originalPlatform = usePlatform.getState();
-beforeEach(() => usePlatform.setState({ os: "linux" }));
+beforeEach(() => {
+  usePlatform.setState({ os: "linux" });
+  vi.clearAllMocks();
+});
 afterEach(() => usePlatform.setState(originalPlatform));
 
 describe("run config → launch config", () => {
@@ -84,6 +98,15 @@ describe("run config → launch config", () => {
     });
   });
 
+  it("cargo run under lldb-dap builds the same way and passes the environment as strings", () => {
+    const l = launchConfigFor(
+      rc({ kind: "cargo", command: "cargo", args: ["run"], env: { RUST_LOG: "debug" }, debugAdapter: "lldb-dap" }),
+      "/p",
+    )!;
+    expect(l.adapter).toBe("lldb-dap");
+    expect(extra(l)).toEqual({ cargo: { args: ["build"], filter: { kind: "bin" } }, env: ["RUST_LOG=debug"] });
+  });
+
   it("cargo test builds test binaries without running", () => {
     const l = launchConfigFor(
       rc({ kind: "cargo", command: "cargo", args: ["test", "--workspace"], debugAdapter: "codelldb" }),
@@ -99,7 +122,7 @@ describe("run config → launch config", () => {
     )!;
     expect(script.program).toBe("/p/manage.py");
     expect(script.args).toEqual(["runserver"]);
-    expect(extra(script)).toMatchObject({ python: "/p/.venv/bin/python", django: true, console: "internalConsole" });
+    expect(extra(script)).toMatchObject({ python: "/p/.venv/bin/python", django: true, console: "integratedTerminal" });
 
     const mod = launchConfigFor(
       rc({ kind: "python", command: "python3", args: ["-m", "app", "-v"], debugAdapter: "debugpy" }),
@@ -349,6 +372,31 @@ describe("run config → launch config", () => {
     },
   );
 
+  it("Zig under CodeLLDB: no source-language mode, so evaluation stays LLDB's own", () => {
+    const exe = launchConfigFor(
+      rc({ kind: "zig-application", command: "./zig-out/bin/app", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(exe.adapter).toBe("codelldb");
+    expect(extra(exe)).toEqual({ sourceLanguages: [] });
+    const single = launchConfigFor(
+      rc({
+        kind: "native",
+        command: "/tmp/openidea-run/calc-1",
+        debugAdapter: "codelldb",
+        params: { language: "zig" },
+      }),
+      "/p",
+    )!;
+    expect(extra(single)).toEqual({ sourceLanguages: [] });
+    // Rust-compiled binaries keep CodeLLDB's default (Rust) source mode.
+    const rust = launchConfigFor(
+      rc({ kind: "native", command: "/tmp/openidea-run/app-1", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(rust.extraJson).toBeNull();
+  });
+
   it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
     const project = rc({
       kind: "godot",
@@ -493,4 +541,19 @@ it("raw and typed Go debug configurations inherit custom tags unless explicitly 
       expect(extra(launch).__goUseTags).toBe(useTags !== "false");
     }
   }
+});
+
+describe("withEnvFiles", () => {
+  it("leaves configurations without .env files alone (no backend call)", async () => {
+    const config = rc({ env: { A: "1" } });
+    await expect(withEnvFiles(config, "/p")).resolves.toBe(config);
+    expect(ipc.runEnvFiles).not.toHaveBeenCalled();
+  });
+
+  it("loads .env files under the explicit variables, resolved against the project root", async () => {
+    ipc.runEnvFiles.mockResolvedValueOnce({ status: "ok", data: { FROM_FILE: "file", A: "file" } });
+    const out = await withEnvFiles(rc({ env: { A: "explicit" }, envFiles: [".env", "env/local.env"] }), "/p");
+    expect(ipc.runEnvFiles).toHaveBeenCalledWith(["/p/.env", "/p/env/local.env"]);
+    expect(out.env).toEqual({ FROM_FILE: "file", A: "explicit" });
+  });
 });

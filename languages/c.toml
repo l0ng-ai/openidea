@@ -25,4 +25,4 @@ install-hint = "Install clangd (LLVM): brew install llvm, apt install clangd, or
 [debugger]
 adapter = "lldb-dap"
 command = "lldb-dap"
-install-hint = "Install LLVM's lldb-dap (brew install llvm; on macOS also `xcrun -f lldb-dap`)"
+install-hint = "Install LLVM's lldb-dap (brew install llvm), or on macOS use the one found by xcrun -f lldb-dap"

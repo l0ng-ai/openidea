@@ -125,7 +125,7 @@ describe("theme tokens", () => {
  * the selection foreground, whose base default preserves syntax colours.
  */
 const INHERITED_FROM_BASE =
-  /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$|fg-editor-selection$)/;
+  /^--(project-color-|db-color-|file-color-|caption-close-|fg-caption-close-|tint-strength$|file-tint-strength$|fg-editor-selection$)/;
 
 describe("palette themes", () => {
   const ISLANDS = ["light", "dark", "dark-hc"];
@@ -144,7 +144,7 @@ describe("palette themes", () => {
   it("have a tokens.css block for every palette theme id, and no other", () => {
     const blocks = [...css.matchAll(/:root\[data-color-theme="([a-z0-9-]+)"\]/g)].map((m) => m[1]);
     expect([...new Set(blocks)].sort()).toEqual(palettes.map((t) => t.id).sort());
-    expect(palettes.length).toBeGreaterThanOrEqual(4);
+    expect(palettes.length).toBeGreaterThanOrEqual(2);
   });
 
   it.each(palettes)("$id defines every token or inherits it from its $kind base on purpose", ({ id, kind }) => {

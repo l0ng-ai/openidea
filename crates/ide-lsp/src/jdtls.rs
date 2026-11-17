@@ -16,12 +16,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const SERVER: &str = "jdtls";
+pub(crate) const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
+mod extract_interface;
 mod formatter;
 mod hierarchy;
+pub(crate) mod jvm_inspect;
+mod move_refactoring;
 pub(crate) mod reserved_names;
+mod signature;
+pub(crate) mod stream_trace;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -808,6 +813,21 @@ impl LspManager {
             .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
     }
 
+    /// Asks jdtls to re-read library archives replaced in place (`openidea.java.refreshArchives`):
+    /// a SNAPSHOT installed again keeps its path, and JDT would keep showing the classes it read
+    /// from the old archive. Best-effort: skipped while jdtls is not already running.
+    pub async fn java_refresh_archives(&self, path: &Path, archives: &[PathBuf]) -> IdeResult<()> {
+        let java = LanguageId::new("java");
+        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
+            return Ok(());
+        };
+        if server.running().is_none() {
+            return Ok(());
+        }
+        let archives = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
+        self.jdtls_command(path, "openidea.java.refreshArchives", archives).await.map(|_| ())
+    }
+
     /// Pause autobuild before resolving the launch classpath. That query takes the
     /// Java project's workspace scheduling rule, draining the interrupted autobuild.
     /// Keep this guard until Maven outputs have been copied out of JDT's reach.
@@ -1078,8 +1098,64 @@ impl LspManager {
         {
             tracing::debug!("vscode.java.updateDebugSettings: {e}");
         }
-        parse_port(&v).ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))
+        let port = parse_port(&v)
+            .ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))?;
+        self.debug_servers.lock().insert(port, path.to_path_buf());
+        Ok(port)
     }
+
+    /// The module path whose jdtls started the debug server on `port`.
+    pub fn java_debug_server_module(&self, port: u16) -> Option<PathBuf> {
+        self.debug_servers.lock().get(&port).cloned()
+    }
+}
+
+/// m2e couldn't compute a build plan because a build plugin (or one of its dependencies) doesn't
+/// resolve, e.g. a default version a company mirror lacks: "Plugin g:a:v or one of its dependencies
+/// could not be resolved", without the repository details that follow.
+fn unresolved_build_plugin(message: &str) -> Option<&str> {
+    let (_, message) = message.split_once("Could not calculate build plan:")?;
+    const UNRESOLVED: &str = "could not be resolved";
+    let reason = match message.find(UNRESOLVED) {
+        Some(end) => &message[..end + UNRESOLVED.len()],
+        None => message.lines().next().unwrap_or(message),
+    };
+    Some(reason.trim().trim_end_matches(':'))
+}
+
+const BUILD_PLAN_FIX: &str =
+    "make it available in your Maven repository or mirror, or set a version the repository has in pom.xml.";
+
+/// The error m2e puts on a `pom.xml` whose build plan can't be computed, as (plugin, notification
+/// body). A plugin the Java configuration needs (`maven-compiler-plugin`) leaves the module without
+/// it, so navigation finds nothing, with only this marker to tell.
+pub(crate) fn build_plan_failure(
+    path: &Path,
+    root: &Path,
+    diagnostics: &[lsp_types::Diagnostic],
+) -> Option<(String, String)> {
+    if path.file_name()? != "pom.xml" {
+        return None;
+    }
+    let reason = diagnostics
+        .iter()
+        .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+        .find_map(|d| unresolved_build_plugin(&d.message))?;
+    let body = format!(
+        "{}: {reason}. Java navigation and completion may not work in this module until Maven resolves it: {BUILD_PLAN_FIX}",
+        path.strip_prefix(root).unwrap_or(path).display(),
+    );
+    Some((reason.to_owned(), body))
+}
+
+/// The same failure when m2e only logs it: an unresolved plugin of the build itself (such as
+/// `maven-resources-plugin`) fails the import's last step and every build, but marks no file.
+pub(crate) fn logged_build_plan_failure(message: &str) -> Option<(String, String)> {
+    let reason = unresolved_build_plugin(message.lines().take(2).collect::<Vec<_>>().join("\n").as_str())?.to_owned();
+    let body = format!(
+        "{reason}. Maven can't build this project in the IDE, and Java navigation and completion may be incomplete until it resolves: {BUILD_PLAN_FIX}"
+    );
+    Some((reason, body))
 }
 
 impl LspManager {
@@ -1108,6 +1184,57 @@ mod tests {
         let language: ide_language::LanguageConfig =
             toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
         language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn an_unresolvable_build_plugin_is_explained() {
+        let diagnostic = |severity, message: &str| lsp_types::Diagnostic {
+            severity: Some(severity),
+            message: message.into(),
+            ..Default::default()
+        };
+        let error = diagnostic(
+            lsp_types::DiagnosticSeverity::ERROR,
+            "CoreException: Could not calculate build plan: Plugin org.apache.maven.plugins:maven-compiler-plugin:3.13.0 or one of its dependencies could not be resolved: Failure to find org.apache.maven.plugins:maven-compiler-plugin:jar:3.13.0 in https://nexus.corp/repository/public",
+        );
+        let info = diagnostic(
+            lsp_types::DiagnosticSeverity::INFORMATION,
+            "Plugin execution not covered by lifecycle configuration",
+        );
+        let (root, pom) = (Path::new("/w"), Path::new("/w/app/pom.xml"));
+        let (plugin, body) = build_plan_failure(pom, root, &[info.clone(), error.clone()]).unwrap();
+        assert_eq!(
+            plugin,
+            "Plugin org.apache.maven.plugins:maven-compiler-plugin:3.13.0 or one of its dependencies could not be resolved"
+        );
+        assert!(body.starts_with(&format!("app/pom.xml: {plugin}. Java navigation")), "{body}");
+        assert!(!body.contains("nexus.corp"));
+        assert_eq!(build_plan_failure(pom, root, &[info]), None);
+        assert_eq!(build_plan_failure(Path::new("/w/app/src/Main.java"), root, &[error]), None);
+    }
+
+    #[test]
+    fn a_build_plan_failure_only_logged_is_explained() {
+        // m2e's log when `maven-resources-plugin` is missing: no marker on pom.xml.
+        let log = "Nov 11, 2026, 9:29:04 PM Failed to configure some Maven project(s)\n\
+            org.eclipse.core.runtime.CoreException: Could not calculate build plan: Plugin org.apache.maven.plugins:maven-resources-plugin:3.4.0 or one of its dependencies could not be resolved:\n\
+            \tThe following artifacts could not be resolved: org.apache.maven.plugins:maven-resources-plugin:pom:3.4.0 (absent): Could not transfer artifact from/to central (https://nexus.corp/repository/public)\n\
+            \tat org.eclipse.m2e.core.internal.project.registry.MavenProjectFacade.lambda$5(MavenProjectFacade.java:550)\n\
+            Caused by: org.apache.maven.plugin.PluginResolutionException: Could not calculate build plan: elsewhere";
+        let (plugin, body) = logged_build_plan_failure(log).unwrap();
+        assert_eq!(
+            plugin,
+            "Plugin org.apache.maven.plugins:maven-resources-plugin:3.4.0 or one of its dependencies could not be resolved"
+        );
+        assert!(body.starts_with(&format!("{plugin}. Maven can't build this project")), "{body}");
+        assert!(!body.contains("nexus.corp"));
+        // Only the message itself counts, not a cause deep in a stack trace.
+        assert_eq!(
+            logged_build_plan_failure(
+                "Errors occurred during the build.\n\tat x\n\tat y\nCaused by: Could not calculate build plan: z"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1206,15 +1333,22 @@ mod tests {
         std::fs::write(&file, format!("{}=warning\n{}=ignore\nother=error\n", ACCESS_OPTIONS[0], ACCESS_OPTIONS[1]))
             .unwrap();
         let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
-        cfg.initialization_options = Some(
-            toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}}))
-                .unwrap(),
-        );
+        let with_url = |cfg: &mut ide_language::LanguageServerConfig, url: String| {
+            cfg.initialization_options =
+                Some(toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": url}}}})).unwrap());
+        };
+        with_url(&mut cfg, crate::uri::path_to_uri_string(&file));
         assert_eq!(compiler_defaults(&cfg), json!({}));
         for prefix in ["", "--jvm-arg="] {
             cfg.args = vec![format!("{prefix}-Djava.import.generatesMetadataFilesAtProjectRoot=false")];
             assert_eq!(compiler_defaults(&cfg), json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}));
         }
+        with_url(&mut cfg, file.to_string_lossy().into_owned());
+        assert_eq!(
+            compiler_defaults(&cfg),
+            json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}),
+            "a path"
+        );
         cfg.args.push("--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=true".into());
         assert_eq!(compiler_defaults(&cfg), json!({}), "the final JVM property wins");
         cfg.args.pop();

@@ -1,0 +1,4 @@
+{
+  "extends": "../perf/tsconfig.json",
+  "include": ["./**/*.ts", "../perf/lib/**/*.ts", "../smoke/server.ts", "../smoke/tauriShim.ts"]
+}

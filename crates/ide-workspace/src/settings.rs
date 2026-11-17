@@ -27,12 +27,59 @@ pub enum SettingsScope {
     Project,
 }
 
-fn remove_global_settings(layer: &mut Json) {
-    if let Some(layer) = layer.as_object_mut() {
-        layer.remove("mcpServer");
+/// Settings a project's own file can't hold: the IDE's MCP server, imported color schemes, and
+/// what agents may do without asking (commands run without asking, the modes new tasks start in,
+/// whether new tasks ask for approvals).
+const USER_ONLY: [&[&str]; 6] = [
+    &["mcpServer"],
+    &["editor", "customSchemes"],
+    &["agentSecurity", "allowedCommands"],
+    &["agents", "defaults"],
+    &["agents", "newTaskApprovals"],
+    // OS notification centre: machine-local; projects must not enable/disable.
+    &["notifications", "systemNotifications"],
+];
+
+/// The [`USER_ONLY`] setting that writing `value` at `key` would set, as a dotted key.
+fn user_only_setting(key: &str, value: &Json) -> Option<String> {
+    let segments: Vec<&str> = key.split('.').collect();
+    USER_ONLY
+        .iter()
+        .find(|path| match path.split_at_checked(segments.len()) {
+            Some((head, rest)) => head == segments && rest.iter().try_fold(value, |v, seg| v.get(seg)).is_some(),
+            None => segments.starts_with(path),
+        })
+        .map(|path| path.join("."))
+}
+
+/// Applies a project layer's limits before it merges onto `below`: [`USER_ONLY`] settings are
+/// dropped, and its blocked agent commands add to the ones below instead of replacing them.
+fn restrict_project_layer(below: &Json, layer: &mut Json) {
+    for path in USER_ONLY {
+        let (last, parents) = path.split_last().expect("non-empty path");
+        if let Some(table) = parents.iter().try_fold(&mut *layer, |v, seg| v.get_mut(seg)).and_then(Json::as_object_mut)
+        {
+            table.remove(*last);
+        }
     }
-    if let Some(editor) = layer.get_mut("editor").and_then(Json::as_object_mut) {
-        editor.remove("customSchemes");
+    if let (Some(inherited), Some(blocked)) = (
+        below.pointer("/agentSecurity/blockedCommands").and_then(Json::as_array),
+        layer.pointer_mut("/agentSecurity/blockedCommands").and_then(Json::as_array_mut),
+    ) {
+        let mut all = inherited.clone();
+        for pattern in blocked.drain(..) {
+            if !all.contains(&pattern) {
+                all.push(pattern);
+            }
+        }
+        *blocked = all;
+    }
+    // The IDE-wide interpreter list, its view options and the project interpreters of
+    // other projects belong to the user's settings, not to one project.
+    if let Some(python) = layer.get_mut("languages").and_then(|l| l.get_mut("python")).and_then(Json::as_object_mut) {
+        for key in ["interpreters", "hiddenInterpreters", "hideOtherProjectInterpreters", "showInterpreterPaths"] {
+            python.remove(key);
+        }
     }
 }
 
@@ -100,6 +147,19 @@ fn read_layer(file: &Path) -> Option<Json> {
             None
         }
     }
+}
+
+/// The first appearance theme key of `file` naming a removed theme, if any. Plugin themes
+/// (`plugin:<id>/<theme>`) carry their plugin's id, so a plain id can only be a built-in's.
+fn removed_theme_in(file: &Path) -> Option<String> {
+    const KEYS: [&str; 3] = ["theme", "preferredLightTheme", "preferredDarkTheme"];
+    let layer = read_layer(file)?;
+    KEYS.iter()
+        .filter_map(|key| match layer.pointer(&format!("/appearance/{key}"))? {
+            Json::String(id) => Some(id.clone()),
+            _ => None,
+        })
+        .find(|id| ide_core::settings::REMOVED_THEMES.iter().any(|(removed, _)| id.as_str() == *removed))
 }
 
 /// Merges `layer` onto `merged` if the result still deserializes.
@@ -219,12 +279,19 @@ impl SettingsStore {
             .collect()
     }
 
+    /// The removed built-in theme id (`REMOVED_THEMES`) a settings file still names, if any.
+    /// `Settings` reports its stand-in, so this reads the files again: it is what a settings
+    /// file named, not what the theme rows show now.
+    pub fn named_removed_theme(&self) -> Option<String> {
+        self.layers().into_iter().rev().find_map(|(_, file)| removed_theme_in(&file))
+    }
+
     fn compute(&self) -> Settings {
         let mut merged = defaults_json();
         for (scope, file) in self.layers() {
             let Some(mut layer) = read_layer(&file) else { continue };
             if scope == SettingsScope::Project {
-                remove_global_settings(&mut layer);
+                restrict_project_layer(&merged, &mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -254,7 +321,7 @@ impl SettingsStore {
             && let Some(mut layer) = read_layer(file)
         {
             if scope == SettingsScope::Project {
-                remove_global_settings(&mut layer);
+                restrict_project_layer(&merged, &mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -268,14 +335,9 @@ impl SettingsStore {
     /// wrong type are rejected with `InvalidInput`; the file is left untouched.
     pub fn set(&self, scope: SettingsScope, key: &str, value: serde_json::Value) -> IdeResult<Settings> {
         if scope == SettingsScope::Project
-            && (key == "editor.customSchemes"
-                || key.starts_with("editor.customSchemes.")
-                || (key == "editor" && value.get("customSchemes").is_some()))
+            && let Some(setting) = user_only_setting(key, &value)
         {
-            return Err(IdeError::invalid("custom color schemes belong to user settings"));
-        }
-        if scope == SettingsScope::Project && (key == "mcpServer" || key.starts_with("mcpServer.")) {
-            return Err(IdeError::invalid("MCP server belongs to user settings"));
+            return Err(IdeError::invalid(format!("{setting} belongs to user settings")));
         }
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
         let segments: Vec<&str> = key.split('.').collect();
@@ -316,7 +378,7 @@ impl SettingsStore {
             let layer = if is_target { parse_layer(&new_text).ok() } else { read_layer(&layer_file) };
             let Some(mut layer) = layer else { continue };
             if layer_scope == SettingsScope::Project {
-                remove_global_settings(&mut layer);
+                restrict_project_layer(&merged, &mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer)
                 && is_target
@@ -379,13 +441,26 @@ impl SettingsStore {
 #[serde(rename_all = "camelCase")]
 pub struct JetBrainsSettings {
     pub entries: Vec<String>,
-    /// Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads.
+    /// Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
+    /// `codestyles/*.xml` and some of `options/`.
     pub files: BTreeMap<String, String>,
 }
 
 const JETBRAINS_MARKER: &str = "IntelliJ IDEA Global Settings";
-const JETBRAINS_OPTIONS: [&str; 4] =
-    ["options/editor-font.xml", "options/colors.scheme.xml", "options/editor.xml", "options/ide.general.xml"];
+const JETBRAINS_OPTIONS: [&str; 9] = [
+    "options/editor-font.xml",
+    "options/terminal-font.xml",
+    "options/colors.scheme.xml",
+    "options/code.style.schemes.xml",
+    "options/editor.xml",
+    "options/ide.general.xml",
+    // The active keymap is stored per operating system.
+    "options/mac/keymap.xml",
+    "options/windows/keymap.xml",
+    "options/linux/keymap.xml",
+];
+/// Folders whose files are all read: (folder, extension).
+const JETBRAINS_READ_DIRS: [(&str, &str); 3] = [("colors/", ".icls"), ("keymaps/", ".xml"), ("codestyles/", ".xml")];
 const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
 
 /// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
@@ -396,11 +471,23 @@ pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
 
 fn is_mapped_jetbrains_file(name: &str) -> bool {
     JETBRAINS_OPTIONS.contains(&name)
-        || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"))
+        || JETBRAINS_READ_DIRS
+            .iter()
+            .any(|(dir, ext)| name.strip_prefix(dir).is_some_and(|n| !n.contains('/') && n.ends_with(ext)))
 }
 
 /// Folders of the settings folder whose files are listed (their names say what the user customised).
-const JETBRAINS_LISTED_DIRS: [&str; 6] = ["options", "colors", "keymaps", "codestyles", "templates", "inspection"];
+const JETBRAINS_LISTED_DIRS: [&str; 9] = [
+    "options",
+    "options/mac",
+    "options/windows",
+    "options/linux",
+    "colors",
+    "keymaps",
+    "codestyles",
+    "templates",
+    "inspection",
+];
 
 fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
     use std::io::Read;
@@ -486,6 +573,30 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn removed_theme_named_in_a_settings_file_is_reported_for_the_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        // Nothing to report without a removed id.
+        std::fs::write(cfg.join("settings.toml"), "[appearance]\ntheme = \"dark\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme(), None);
+        // The theme the notice is about, and the light one for good measure.
+        std::fs::write(cfg.join("settings.toml"), "[appearance]\ntheme = \"one-dark\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-dark"));
+        std::fs::write(
+            cfg.join("settings.toml"),
+            "[appearance]\npreferredDarkTheme = \"one-dark\"\ntheme = \"plugin:acme.themes/night\"\n",
+        )
+        .unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-dark"));
+        // A project layer naming it wins over the global one.
+        std::fs::write(proj.join(".openidea/settings.toml"), "[appearance]\ntheme = \"one-light\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-light"));
+    }
+
+    #[test]
     fn compose_file_choices_are_project_settings_and_survive_reload() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = tmp.path().join("cfg");
@@ -534,6 +645,34 @@ mod tests {
     }
 
     #[test]
+    fn the_interpreter_list_and_its_view_options_are_user_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+        store.set(SettingsScope::Global, "languages.python.interpreters", json!(["/envs/a/bin/python"])).unwrap();
+        store.set(SettingsScope::Global, "languages.python.showInterpreterPaths", json!(false)).unwrap();
+        let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
+        assert!(!loaded.languages.python.show_interpreter_paths);
+
+        // A project's own settings.toml cannot change the IDE-wide list or its view options.
+        std::fs::write(
+            proj.join(".openidea/settings.toml"),
+            "[languages.python]\ninterpreters = [\"/proj/bin/python\"]\n\
+             hiddenInterpreters = [\"/envs/a/bin/python\"]\nhideOtherProjectInterpreters = true\n\
+             showInterpreterPaths = true\n",
+        )
+        .unwrap();
+        let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
+        assert!(loaded.languages.python.hidden_interpreters.is_empty());
+        assert!(!loaded.languages.python.hide_other_project_interpreters);
+        assert!(!loaded.languages.python.show_interpreter_paths);
+    }
+
+    #[test]
     fn layering_and_fallback() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = tmp.path().join("cfg");
@@ -563,6 +702,22 @@ mod tests {
             global_only.set(SettingsScope::Project, "editor.fontSize", json!(1)).unwrap_err().kind,
             ide_core::error::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn set_console_log_colors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+
+        let s = store.set(SettingsScope::Global, "console.logColors.error", json!("#ff0000")).unwrap();
+        assert_eq!(s.console.log_colors.error, "#ff0000");
+        assert!(!s.console.log_colors.enabled, "off by default");
+        let s = store.set(SettingsScope::Global, "console.logColors.enabled", json!(true)).unwrap();
+        assert!(s.console.log_colors.enabled);
+        assert_eq!(s.console.log_colors.error, "#ff0000");
     }
 
     #[test]
@@ -806,11 +961,25 @@ mod tests {
                 ("options/editor-font.xml", "<application/>"),
                 ("options/vcs.xml", "<application/>"),
                 ("keymaps/macOS.xml", "<keymap/>"),
+                ("keymaps/nested/ignored.xml", "<keymap/>"),
+                ("codestyles/Default.xml", "<code_scheme/>"),
+                ("options/mac/keymap.xml", "<application/>"),
+                ("options/terminal-font.xml", "<application/>"),
             ],
         );
         let read = read_jetbrains_settings(&ok).unwrap();
-        assert_eq!(read.entries.len(), 5);
-        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(read.entries.len(), 9);
+        assert_eq!(
+            read.files.keys().collect::<Vec<_>>(),
+            [
+                "codestyles/Default.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "options/editor-font.xml",
+                "options/mac/keymap.xml",
+                "options/terminal-font.xml"
+            ]
+        );
         assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
         std::fs::write(tmp.path().join("plain.zip"), "not a zip").unwrap();
         assert!(read_jetbrains_settings(&tmp.path().join("plain.zip")).is_err());
@@ -829,18 +998,31 @@ mod tests {
         put("colors/nested/ignored.icls", "<scheme/>");
         put("options/editor-font.xml", "<application/>");
         put("options/vcs.xml", "<application/>");
+        put("options/mac/keymap.xml", "<application/>");
         put("keymaps/macOS.xml", "<keymap/>");
+        put("codestyles/Default.xml", "<code_scheme/>");
         put("plugins/Tools/lib/tools.jar", "jar");
 
         let read = read_jetbrains_settings(&config).unwrap();
-        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(
+            read.files.keys().collect::<Vec<_>>(),
+            [
+                "codestyles/Default.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "options/editor-font.xml",
+                "options/mac/keymap.xml"
+            ]
+        );
         assert_eq!(
             read.entries,
             [
                 "options/editor-font.xml",
                 "options/vcs.xml",
+                "options/mac/keymap.xml",
                 "colors/_@user_Darcula.icls",
                 "keymaps/macOS.xml",
+                "codestyles/Default.xml",
                 "installed.txt"
             ]
         );
@@ -1013,5 +1195,100 @@ mod tests {
                 .mcp_server
                 .enabled
         );
+    }
+
+    #[test]
+    fn a_project_file_can_only_add_to_the_agent_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("settings.toml"),
+            "[agentSecurity]\nallowedCommands = [\"git status\"]\nblockedCommands = [\"git push*\"]\n\n\
+             [agents.defaults.claude]\nmodel = \"opus\"\n",
+        )
+        .unwrap();
+        let project_file = project.join(".openidea/settings.toml");
+        std::fs::write(
+            &project_file,
+            "[agentSecurity]\nallowedCommands = [\"node\"]\nblockedCommands = [\"npm publish*\"]\n\n\
+             [agents.defaults.claude]\nmode = \"bypassPermissions\"\n\n\
+             [agents.defaults.codex]\nmode = \"full-access\"\n",
+        )
+        .unwrap();
+        let store = SettingsStore::load(&config, Some(&project));
+        let s = store.effective();
+        assert_eq!(s.agent_security.allowed_commands, ["git status"]);
+        assert_eq!(s.agent_security.blocked_commands, ["git push*", "npm publish*"]);
+        assert_eq!(
+            s.agents.defaults,
+            BTreeMap::from([("claude".to_owned(), BTreeMap::from([("model".to_owned(), "opus".to_owned())]))])
+        );
+        let layer = store.layer(SettingsScope::Project);
+        assert!(layer.agent_security.allowed_commands.is_empty());
+        assert!(layer.agents.defaults.is_empty());
+
+        // An empty project list doesn't clear the user's, nor the built-in one.
+        std::fs::write(&project_file, "[agentSecurity]\nblockedCommands = []\n").unwrap();
+        assert_eq!(store.reload().agent_security.blocked_commands, ["git push*"]);
+        std::fs::remove_file(config.join("settings.toml")).unwrap();
+        assert_eq!(
+            store.reload().agent_security.blocked_commands,
+            ide_core::settings::AgentSecuritySettings::default().blocked_commands
+        );
+
+        for (key, value) in [
+            ("agentSecurity.allowedCommands", json!(["node"])),
+            ("agentSecurity", json!({"allowedCommands": ["node"], "blockedCommands": []})),
+            ("agents.defaults", json!({"claude": {"mode": "bypassPermissions"}})),
+            ("agents.defaults.claude", json!({"mode": "bypassPermissions"})),
+            ("agents.defaults.claude.mode", json!("bypassPermissions")),
+            ("agents", json!({"defaults": {"codex": {"mode": "full-access"}}})),
+        ] {
+            assert!(store.set(SettingsScope::Project, key, value).is_err(), "{key}");
+        }
+        let s = store.set(SettingsScope::Project, "agentSecurity.blockedCommands", json!(["curl*"])).unwrap();
+        assert!(s.agent_security.blocked_commands.ends_with(&["curl*".to_owned()]));
+        assert!(s.agent_security.blocked_commands.contains(&"rm -rf /".to_owned()));
+        let s = store.set(SettingsScope::Project, "agents.showCost", json!(true)).unwrap();
+        assert!(s.agents.show_cost);
+    }
+
+    #[test]
+    fn new_task_approvals_are_a_user_setting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"ask\"\n").unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        use ide_core::settings::NewTaskApprovals;
+        assert_eq!(settings.effective().agents.new_task_approvals, NewTaskApprovals::Bypass);
+        assert!(settings.set(SettingsScope::Project, "agents.newTaskApprovals", json!("bypass")).is_err());
+        assert!(settings.set(SettingsScope::Project, "agents", json!({"newTaskApprovals": "bypass"})).is_err());
+        let s = settings.set(SettingsScope::Global, "agents.newTaskApprovals", json!("ask")).unwrap();
+        assert_eq!(s.agents.new_task_approvals, NewTaskApprovals::Ask);
+        std::fs::write(project.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"bypass\"\n").unwrap();
+        assert_eq!(settings.reload().agents.new_task_approvals, NewTaskApprovals::Ask);
+    }
+
+    #[test]
+    fn system_notifications_are_a_user_setting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = false\n")
+            .unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(settings.effective().notifications.system_notifications);
+        assert!(settings.set(SettingsScope::Project, "notifications.systemNotifications", json!(false)).is_err());
+        let s = settings.set(SettingsScope::Global, "notifications.systemNotifications", json!(false)).unwrap();
+        assert!(!s.notifications.system_notifications);
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = true\n")
+            .unwrap();
+        assert!(!settings.reload().notifications.system_notifications);
     }
 }

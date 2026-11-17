@@ -53,6 +53,22 @@ describe("plugin package inference uses built-in rules", () => {
     );
     expect(await packageFor({ ...plugin("java"), fileName: ".dockerignore" }, "/p/src/main/java/com/acme")).toBe("");
   });
+  it("uses the nearest .csproj for C#", async () => {
+    useProject.setState({ project: { root: "/p", name: "p" } as never });
+    const csproj = { kind: "file", name: "Shop.csproj", path: "/p/src/Shop/Shop.csproj" };
+    const readDir = vi
+      .mocked(commands.fsReadDir)
+      .mockImplementation((async (dir: string) => (dir === "/p/src/Shop" ? [csproj] : [])) as never);
+    mocks.read.mockResolvedValue(
+      "<Project><PropertyGroup><RootNamespace>Acme.Shop</RootNamespace></PropertyGroup></Project>",
+    );
+    try {
+      expect(await packageFor(plugin("cs"), "/p/src/Shop/Orders/Api")).toBe("Acme.Shop.Orders.Api");
+      expect(await packageFor(plugin("cs"), "/p/tools")).toBe("");
+    } finally {
+      readDir.mockReset();
+    }
+  });
   it("uses an existing Go package", async () => {
     useProject.setState({ project: { root: "/p", name: "p" } as never });
     mocks.read.mockResolvedValue("package service\n");

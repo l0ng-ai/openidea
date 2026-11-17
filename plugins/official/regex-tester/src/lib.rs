@@ -94,7 +94,23 @@ pub fn evaluate(run: &Run) -> Value {
         }
     }
     let replaced = run.replace.as_ref().map(|r| {
-        let mut out = re.replace_all(&run.text, r.as_str()).into_owned();
+        // Built match by match and cut off at the limit: `replace_all` would
+        // first build all of it (an empty match at every character, each
+        // replaced with a long text, runs out of memory).
+        let mut out = String::new();
+        let mut last = 0;
+        for caps in re.captures_iter(&run.text) {
+            let m = caps.get(0).expect("group 0");
+            out.push_str(&run.text[last..m.start()]);
+            caps.expand(r, &mut out);
+            last = m.end();
+            if out.len() > MAX_REPLACED {
+                break;
+            }
+        }
+        if out.len() <= MAX_REPLACED {
+            out.push_str(&run.text[last..]);
+        }
         if out.len() > MAX_REPLACED {
             let mut cut = MAX_REPLACED;
             while !out.is_char_boundary(cut) {
@@ -241,6 +257,13 @@ mod tests {
         assert!(bad["error"].as_str().unwrap().contains("unclosed"), "{bad}");
         assert_eq!(bad["count"], 0);
         assert_eq!(run("", "", "x", None)["count"], 0);
+        let long = run("(?:)", "", &"a".repeat(100_000), Some(&"b".repeat(10_000)));
+        let replaced = long["replaced"].as_str().unwrap();
+        assert!(replaced.len() <= MAX_REPLACED + '…'.len_utf8() && replaced.ends_with('…'));
+        for (pattern, text, with) in [("a*", "baac", "[$0]"), (r"(\w)(\d)", "a1 b2 c", "$2$1"), ("x", "y", "z")] {
+            let expected = regex::Regex::new(pattern).unwrap().replace_all(text, with).into_owned();
+            assert_eq!(run(pattern, "", text, Some(with))["replaced"], expected);
+        }
     }
 
     #[test]

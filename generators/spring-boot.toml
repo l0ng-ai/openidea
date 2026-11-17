@@ -1,0 +1,45 @@
+id = "spring-boot"
+name = "Spring Boot"
+group = "Java"
+icon = "project-spring-boot"
+order = 1
+description = "A Spring Boot application from Spring Initializr."
+
+[[fields]]
+id = "server"
+label = "Server URL:"
+type = "text"
+default = "https://start.spring.io"
+
+[[fields]]
+id = "jdk"
+label = "JDK:"
+type = "sdk"
+sdk = "jdk"
+
+[[fields]]
+id = "group"
+label = "Group:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "com.example"
+
+[[fields]]
+id = "artifact"
+label = "Artifact:"
+type = "text"
+pattern = '^[A-Za-z0-9_.-]+$'
+default = "{{name|kebab}}"
+
+[[fields]]
+id = "package"
+label = "Package:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "{{group}}.{{artifact|ident}}"
+
+[service]
+provider = "spring-initializr"
+
+[settings.java]
+jdk = "{{jdk}}"

@@ -2,7 +2,7 @@
 .trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-field, 28px);
   min-width: 0;
   padding: 0 6px 0 9px;
@@ -37,6 +37,22 @@
 .ghost[aria-expanded="true"] {
   background: var(--bg-toolbar-hover);
   color: var(--fg-strong);
+}
+/* A picker that reads as a chip beside the facts it belongs with (Chip). */
+.chip {
+  composes: surface from "./Chip.module.css";
+  padding: 0 4px 0 6px;
+}
+.chip:hover,
+.chip[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+.chip:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring),
+    0 0 0 1px var(--focus-ring);
 }
 .value {
   flex: 1;
@@ -80,7 +96,7 @@
 /* Mirrors a List row: inset, padding and gap. */
 .sizerRow {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 0 var(--list-inset, 6px);
   padding: 0 8px;
   white-space: nowrap;
@@ -141,4 +157,11 @@
 
 .option {
   display: contents;
+}
+
+.rowAction {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: 2px;
 }

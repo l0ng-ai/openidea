@@ -2,13 +2,21 @@
  * Web browsers (IDEA's Open In › Browser and the editor's browser bar): HTML
  * and SVG files open in an installed browser through the built-in server, and
  * HTML files get a built-in preview beside the editor. ⌃⇧R in an HTML editor
- * opens the default browser, like IDEA's Run for HTML files.
+ * opens the default browser, like IDEA's Run for HTML files. HTML files with
+ * Django template tags offer the Django Template language.
  */
 import { registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { basename } from "@/platform/project";
 import { lazyComponent, type MenuItem } from "@/ui";
-import { maybeEditorService, registerMenuGroup, registerTextEditorWrapper } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  registerEditorBanner,
+  registerMenuGroup,
+  registerTextEditorWrapper,
+} from "@/workbench/contributions";
+import { registerEditorContribution } from "@/editor/api";
+import { djangoContentWatcher, djangoTemplateBanner } from "./djangoTemplates";
 import {
   browserIcon,
   isHtmlPath,
@@ -59,6 +67,8 @@ function browserMenu(path: string): MenuItem {
 export function activate(): () => void {
   void loadBrowsers();
   const disposers = [
+    registerEditorBanner(djangoTemplateBanner),
+    registerEditorContribution({ id: "web.djangoContent", order: 57, extensions: djangoContentWatcher }),
     registerTextEditorWrapper({
       id: "web.html",
       matches: isHtmlPath,

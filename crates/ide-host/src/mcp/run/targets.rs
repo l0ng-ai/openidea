@@ -434,10 +434,23 @@ fn cwd_of(root: &Path, c: &RunConfig) -> String {
     cwd.trim_end_matches('/').to_owned()
 }
 
-/// Configs whose working directory most specifically contains `rel` (ties in their original order).
+/// The directory a config covers: a Cargo workspace member's own directory (its `cargo test -p`
+/// runs from the workspace root), else its working directory.
+fn scope_of(root: &Path, c: &RunConfig) -> String {
+    match c.extras.module.as_deref() {
+        Some(module) if c.kind == "cargo" => {
+            let module = module.replace('\\', "/");
+            let module = module.strip_prefix("./").unwrap_or(&module);
+            if module == "." { String::new() } else { module.trim_end_matches('/').to_owned() }
+        }
+        _ => cwd_of(root, c),
+    }
+}
+
+/// Configs whose scope ([`scope_of`]) most specifically contains `rel` (ties in their original order).
 fn all_closest<'a>(root: &Path, configs: &[&'a RunConfig], rel: &str) -> Vec<&'a RunConfig> {
     let score = |c: &RunConfig| -> Option<usize> {
-        let cwd = cwd_of(root, c);
+        let cwd = scope_of(root, c);
         if cwd.is_empty() { Some(0) } else { (rel == cwd || rel.starts_with(&format!("{cwd}/"))).then_some(cwd.len()) }
     };
     let scored: Vec<(&RunConfig, usize)> = configs.iter().filter_map(|c| score(c).map(|s| (*c, s))).collect();
@@ -920,6 +933,33 @@ mod tests {
         assert_eq!(c.args, ["test", "--", "math::tests::adds", "--exact"]);
         let c = target_config(root, &ts[0], "src/math.rs", &configs, src).unwrap();
         assert_eq!(c.args, ["test", "--", "math::tests::"]);
+    }
+
+    #[test]
+    fn a_workspace_member_runs_its_own_tests() {
+        let root = Path::new("/p");
+        let member = |pkg: &str, dir: &str| {
+            let mut c = blank(
+                format!("cargo:test:{pkg}"),
+                "test",
+                "cargo",
+                "cargo".into(),
+                vec!["test".into(), "-p".into(), pkg.into()],
+            );
+            c.is_test = true;
+            c.extras.module = Some(dir.into());
+            c
+        };
+        let mut workspace = blank("cargo:test".into(), "test", "cargo", "cargo".into(), vec!["test".into()]);
+        workspace.is_test = true;
+        let configs = vec![member("ide-agent", "crates/ide-agent"), member("ide-mcp", "crates/ide-mcp"), workspace];
+        let src = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {}\n}\n";
+        let rel = "crates/ide-mcp/src/stdio.rs";
+        let ts = detect(src, rel);
+        let c = target_config(root, &ts[1], rel, &configs, src).unwrap();
+        assert_eq!(c.args, ["test", "-p", "ide-mcp", "--", "stdio::tests::adds", "--exact"]);
+        let c = target_config(root, &ts[1], "src/lib.rs", &configs, src).unwrap();
+        assert!(!c.args.iter().any(|a| a == "-p"), "outside every member: the workspace's tests, {:?}", c.args);
     }
 
     #[test]

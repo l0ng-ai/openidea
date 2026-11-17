@@ -8,6 +8,7 @@
  */
 import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
+import { opensOtherShare } from "@/platform/paths";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -26,9 +27,21 @@ const marked = new Marked({
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
 
+/** Whether the webview would read `value` as an address on another host: it drops blanks and takes `\` for `/`. */
+const namesHost = (value: string) =>
+  /^(https?:|[\\/]{2})/i.test([...value].filter((c) => c.charCodeAt(0) > 32).join(""));
+
 function purify(): ReturnType<typeof DOMPurify> {
   if (purifier) return purifier;
   const p = DOMPurify(window);
+  // The preview loads nothing from other hosts. Only a link, opened on a click, names one;
+  // an image keeps its source for the preview to refuse.
+  p.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName === "alt" || data.attrName === "title") return;
+    if (data.attrName === "href" && node.tagName === "A") return;
+    if (data.attrName === "src" && node.tagName === "IMG") return;
+    if (namesHost(data.attrValue)) data.keepAttr = false;
+  });
   p.addHook("afterSanitizeAttributes", (node) => {
     if (node.tagName === "IMG") {
       const src = node.getAttribute("src");
@@ -165,8 +178,9 @@ export function renderMarkdown(text: string): string {
   return purify().sanitize(html, {
     USE_PROFILES: { html: true },
     ADD_ATTR: ["data-src", "data-line", "data-front-matter"],
-    FORBID_TAGS: ["style", "form"],
-    FORBID_ATTR: ["style"],
+    // `srcset` and `<source>` would pick an image past the one the preview loads.
+    FORBID_TAGS: ["style", "form", "source"],
+    FORBID_ATTR: ["style", "srcset"],
   });
 }
 
@@ -203,6 +217,7 @@ export function resolveLink(file: string, href: string): LinkTarget | null {
   const fragment = hash >= 0 ? decodeURIComponent(rest.slice(hash + 1)) : undefined;
   const pathPart = decodeURIComponent((hash >= 0 ? rest.slice(0, hash) : rest).replace(/\?.*$/, ""));
   const path = pathPart ? joinPath(dirOf(file), pathPart) : file;
+  if (pathPart && opensOtherShare(path, pathPart, file)) return null;
   const lineMatch = fragment ? /^L(\d+)/.exec(fragment) : null;
   if (lineMatch) return { kind: "file", path, line: Math.max(0, Number(lineMatch[1]) - 1) };
   return { kind: "file", path, ...(fragment ? { anchor: fragment } : {}) };

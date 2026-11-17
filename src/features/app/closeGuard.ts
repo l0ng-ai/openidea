@@ -12,7 +12,7 @@
  * `general.closeWithoutWelcome` is on, in which case it closes. When
  * `general.closeTabsWithWindow` is on, that close drops the saved editor tabs.
  */
-import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
+import { IpcError, commands, isCancelled, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -171,6 +171,7 @@ const defaultDeps: CloseDeps = {
     while ((await liveProcesses()).length > 0) await new Promise((r) => setTimeout(r, 100));
   },
   onSaveFailed: (e) =>
+    !isCancelled(e) &&
     notifications().notify({
       level: "error",
       title: t("app.unsaved.saveFailed"),
@@ -224,7 +225,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
     const s = useProject.getState();
     // The last project or LightEdit window can return to Welcome. Otherwise it closes.
     if (returnsToWelcome(ctx.quitting, ctx.windows, !!(s.project || s.lightEdit), s.settings)) {
-      if (await confirmLeave(deps)) {
+      if (await confirmLeave(deps, undefined, false)) {
         forgot = forgetTabs();
         try {
           await closeProject();
@@ -249,7 +250,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
         dirty: dirtyCount(),
         project: s.project?.displayName || s.project?.name || null,
       },
-      deps,
+      savingUntitled(deps),
     );
     if (!ok) {
       await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
@@ -269,6 +270,18 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   }
 }
 
+/** Save asks for each untitled buffer's path; one left unsaved (Save As cancelled) keeps the window open. */
+function savingUntitled(deps: CloseDeps): CloseDeps {
+  return {
+    ...deps,
+    saveAll: async () => {
+      await deps.saveAll();
+      if (maybeEditorService()?.untitledDirtyDocumentIds?.().length)
+        throw new IpcError({ kind: "cancelled", message: "Untitled files were not saved" });
+    },
+  };
+}
+
 /**
  * Unsaved changes before this window opens another project in place or closes it. `project` names
  * the project in the prompt when this window doesn't hold it (a comparison window).
@@ -276,9 +289,19 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
 export async function confirmLeave(
   deps: CloseDeps = defaultDeps,
   project = (useProject.getState().project?.displayName || useProject.getState().project?.name) ?? null,
+  keepUntitled = true,
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
   const confirmTerminate = workflowSettings().run.confirmTerminate;
+  // Untitled buffers follow the window into another project: they are neither counted nor
+  // saved then (the window keeps them open). Closing to Welcome drops them, so they count.
+  const untitled = new Set(keepUntitled ? (maybeEditorService()?.untitledDirtyDocumentIds?.() ?? []) : []);
+  const saveDeps: CloseDeps =
+    untitled.size > 0
+      ? { ...deps, saveAll: () => Promise.resolve(maybeEditorService()?.saveAll({ skipUntitled: true })) }
+      : keepUntitled
+        ? deps
+        : savingUntitled(deps);
   return decideClose(
     {
       quitting: false,
@@ -286,10 +309,10 @@ export async function confirmLeave(
       confirmExit: false,
       confirmTerminate,
       processes: confirmTerminate ? await processNames(deps) : [],
-      dirty: dirtyCount(),
+      dirty: dirtyCount() - untitled.size,
       project,
     },
-    deps,
+    saveDeps,
   );
 }
 
@@ -324,7 +347,7 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.lightEdit !== prev.lightEdit) dirtyDocs.clear();
     }),
-    provideLeaveProjectGuard(() => confirmLeave(deps)),
+    provideLeaveProjectGuard((keepUntitled) => confirmLeave(deps, undefined, keepUntitled)),
   ];
   let unlisten: (() => void) | undefined;
   let disposed = false;

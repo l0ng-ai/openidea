@@ -8,7 +8,9 @@ import { setContext } from "@/platform/context";
 import { t } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { toolWindowService } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
+import { completionAlert, completionPrefs, raiseCompletionNotification, type CompletionInfo } from "./completion";
 import { readStored, writeStored, type StoredTerminals } from "./persist";
 import { TerminalSession, type SessionOptions, type SessionSnapshot } from "./session";
 
@@ -82,6 +84,34 @@ export function sessionForTerminalId(id: number): TerminalSession | undefined {
   return allSessions().find((s) => s.terminalId === id);
 }
 
+/**
+ * A shell-integration command finished in a tool-window tab (#3712): per
+ * Settings › Notifications › Terminal, a long-running (or failing) command
+ * whose tab cannot be seen notifies and marks its tab until it is seen.
+ */
+function notifyCompletion(key: string, info: CompletionInfo) {
+  const state = useTerminals.getState();
+  const tab = state.tabs.find((t) => t.session === key);
+  if (!tab) return;
+  let watched = document.hasFocus();
+  if (watched) {
+    try {
+      watched = toolWindowService().isVisible("terminal") && state.selected[tab.group] === tab.id;
+    } catch {
+      watched = false;
+    }
+  }
+  const alert = completionAlert(completionPrefs(), info, watched);
+  if (!alert) return;
+  sessions.get(key)?.markUnseenDone();
+  raiseCompletionNotification(key, tabTitle(tab, state.sessions), alert, () => {
+    selectTab(tab.id);
+    toolWindowService().show("terminal", true);
+    // The pane re-mounts once the tool window is shown; then give xterm the caret.
+    requestAnimationFrame(() => sessions.get(key)?.focus());
+  });
+}
+
 function createSession(cwd: string, command?: SessionOptions["command"], fallbackRoot?: string): TerminalSession {
   const key = `s${++seq}`;
   const session = new TerminalSession({
@@ -94,9 +124,18 @@ function createSession(cwd: string, command?: SessionOptions["command"], fallbac
       const tab = tabOfSession(k);
       if (tab) selectTab(tab.id);
     },
+    onCompletion: notifyCompletion,
     onExit: (k) => {
       const tab = tabOfSession(k);
-      if (tab && workflowSettings().terminal.closeOnExit) closeTab(tab.id);
+      if (!tab || !workflowSettings().terminal.closeOnExit) return;
+      // A session ending on its own only takes the caret back when the terminal had it: a
+      // background shell exiting must not pull focus out of the editor.
+      const focus = document.activeElement;
+      const hadFocus = !!focus && [...sessions.values()].some((s) => s.host?.contains(focus));
+      closeTab(tab.id);
+      if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+      // Wait for the surviving pane to re-mount before giving xterm the caret.
+      else if (hadFocus) requestAnimationFrame(() => activeSession()?.focus());
     },
   });
   sessions.set(key, session);
@@ -240,6 +279,23 @@ export function closeTab(id: string) {
   if (!tab) return;
   disposeSession(tab.session);
   useTerminals.setState((s) => withoutTab(s, id));
+}
+
+/**
+ * Takes tab `id` out of the tool window and hands back its session, still running
+ * (Move to Editor): the tab goes away, the session is no longer this store's.
+ */
+export function detachTab(id: string): TerminalSession | undefined {
+  const tab = useTerminals.getState().tabs.find((t) => t.id === id);
+  const session = tab && sessions.get(tab.session);
+  if (!tab || !session) return undefined;
+  sessions.delete(tab.session);
+  useTerminals.setState((s) => {
+    const next = { ...s.sessions };
+    delete next[tab.session];
+    return { ...withoutTab(s, id), sessions: next };
+  });
+  return session;
 }
 
 /**

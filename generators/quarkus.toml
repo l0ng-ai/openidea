@@ -1,0 +1,50 @@
+id = "quarkus"
+name = "Quarkus"
+group = "Java"
+icon = "project-quarkus"
+order = 2
+description = "A Quarkus application from code.quarkus.io."
+
+[[fields]]
+id = "build"
+label = "Build system:"
+type = "choice"
+segmented = true
+options = [
+    { value = "MAVEN", label = "Maven" },
+    { value = "GRADLE", label = "Gradle" },
+    { value = "GRADLE_KOTLIN_DSL", label = "Gradle (Kotlin)" },
+]
+default = "MAVEN"
+
+[[fields]]
+id = "jdk"
+label = "JDK:"
+type = "sdk"
+sdk = "jdk"
+
+[[fields]]
+id = "group"
+label = "Group:"
+type = "text"
+pattern = '^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*$'
+default = "org.acme"
+
+[[fields]]
+id = "artifact"
+label = "Artifact:"
+type = "text"
+pattern = '^[A-Za-z0-9_.-]+$'
+default = "{{name|kebab}}"
+
+[[fields]]
+id = "version"
+label = "Version:"
+type = "text"
+default = "1.0.0-SNAPSHOT"
+
+[service]
+provider = "quarkus"
+
+[settings.java]
+jdk = "{{jdk}}"

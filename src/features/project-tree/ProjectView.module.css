@@ -56,15 +56,28 @@
 .excluded {
   color: var(--vcs-ignored);
 }
-.excludedRow {
-  background: color-mix(in srgb, var(--vcs-ignored) 14%, transparent);
-}
 .error {
   text-decoration-line: underline;
   text-decoration-style: wavy;
   text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
+}
+.suffix {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.suffixSegment {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
 }
 .detail {
   min-width: 0;
@@ -122,7 +135,7 @@
   z-index: var(--z-tooltip);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 22px;
   padding: 0 8px;
   border-radius: var(--radius-small);
@@ -147,7 +160,7 @@
   width: 16px;
   height: 16px;
 }
-.runnable {
+.overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;

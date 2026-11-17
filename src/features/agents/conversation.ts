@@ -1,4 +1,7 @@
-/** Reading an agent conversation: quoting, file links, turn times and finding text. */
+/** Reading an agent conversation: quoting, file and symbol links, turn times and finding text. */
+
+import type { SymbolKind } from "@/platform/ipc";
+import { opensOtherShare } from "@/platform/paths";
 
 /** `text` as a Markdown quote for the composer, followed by an empty line to type in. */
 export function quoteText(text: string): string {
@@ -24,7 +27,7 @@ const PATH = /^(?:\.\/)?([\w.@-]+(?:\/[\w.@-]+)*\.[A-Za-z][A-Za-z0-9]*)(?::(\d+)
 
 /** Explicit Markdown links can also name files with spaces or non-ASCII names. */
 export function fileHref(href: string, cwd: string): PathLink | null {
-  if (!href || href.startsWith("#") || href.startsWith("//") || /^[a-z][a-z\d+.-]*:/i.test(href)) return null;
+  if (!href || href.startsWith("#") || /^[a-z][a-z\d+.-]*:/i.test(href)) return null;
   let decoded: string;
   try {
     decoded = decodeURIComponent(href);
@@ -34,6 +37,7 @@ export function fileHref(href: string, cwd: string): PathLink | null {
   const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(decoded);
   if (!match?.[1] || [...decoded].some((char) => char.charCodeAt(0) < 32)) return null;
   const path = match[1].startsWith("/") ? match[1] : `${cwd.replace(/\/$/, "")}/${match[1]}`;
+  if (opensOtherShare(path, match[1], cwd)) return null;
   const link: PathLink = { path };
   const line = match[2] ?? match[4];
   if (line) link.line = Math.max(0, Number(line) - 1);
@@ -59,6 +63,48 @@ export function pathLink(text: string, cwd: string): PathLink | null {
   if (line) out.line = Math.max(0, Number(line) - 1);
   if (m[3]) out.col = Math.max(0, Number(m[3]) - 1);
   return out;
+}
+
+/** A symbol an inline code span names: `name`, inside `container` or `file` when the text says so. */
+export interface SymbolRef {
+  name: string;
+  container?: string;
+  /** The tail of the defining file's path (`lib.rs`, `src/a.ts`). */
+  file?: string;
+  kinds: readonly SymbolKind[];
+}
+
+const IDENT = "[A-Za-z_$][\\w$]*";
+const CALL = "(\\([^()]*\\))?";
+const SYMBOL = new RegExp(`^(?:(${IDENT})(?:\\.|#|::))?(${IDENT})${CALL}$`);
+const FILE_SYMBOL = new RegExp(`^((?:[\\w.@-]+\\/)*[\\w@-]+\\.[A-Za-z]\\w*)(?:#|::)(${IDENT})${CALL}$`);
+const TYPE_KINDS: readonly SymbolKind[] = ["class", "interface", "struct", "enum", "trait", "typeAlias", "function"];
+const CALLABLE_KINDS: readonly SymbolKind[] = ["function", "method", "constructor"];
+const MEMBER_KINDS: readonly SymbolKind[] = [...CALLABLE_KINDS, "field", "property", "constant", "enumMember"];
+const ANY_KINDS: readonly SymbolKind[] = [...new Set<SymbolKind>([...TYPE_KINDS, ...MEMBER_KINDS, "variable"])];
+/** Capitalized keywords and literals that read like a type name. */
+const LITERALS = new Set(["None", "True", "False", "Self", "Some", "Ok", "Err", "Null", "Nil", "NaN", "Infinity"]);
+
+/**
+ * The symbol inline code names (`FooView`, `load()`, `has_header`, `Config.load`,
+ * `lib.rs::has_header`, `a.ts#load`); null for words, keywords, literals and anything
+ * with spaces or shell syntax (`cargo test`, `true`, `None`, `x = 1`).
+ */
+export function symbolRef(text: string): SymbolRef | null {
+  const trimmed = text.trim();
+  const inFile = FILE_SYMBOL.exec(trimmed);
+  if (inFile) return { name: inFile[2]!, file: inFile[1]!, kinds: ANY_KINDS };
+  const match = SYMBOL.exec(trimmed);
+  if (!match) return null;
+  const [, container, name, call] = match;
+  if (LITERALS.has(container ?? name!)) return null;
+  if (container) return { name: name!, container, kinds: MEMBER_KINDS };
+  if (call) return { name: name!, kinds: CALLABLE_KINDS };
+  if (/^[A-Z]\w*[a-z]/.test(name!)) return { name: name!, kinds: TYPE_KINDS };
+  if (/^[a-z]\w*[a-z\d][A-Z]/.test(name!) || /^[a-z][a-z\d]*(?:_[a-z\d]+)+$/.test(name!)) {
+    return { name: name!, kinds: CALLABLE_KINDS };
+  }
+  return null;
 }
 
 /** `850ms`, `12s`, `1m 05s`, `2h 03m`. */
@@ -90,11 +136,36 @@ export function findAll(text: string, query: string): number[] {
   return out;
 }
 
-/** DOM ranges of `query` in the text under `root` (matches within one text node). */
+const SKIP_FIND_TAGS = new Set(["STYLE", "SCRIPT", "NOSCRIPT", "SVG", "BUTTON"]);
+
+function isUnselectable(el: Element): boolean {
+  const style = getComputedStyle(el);
+  return style.userSelect === "none" || style.webkitUserSelect === "none";
+}
+
+/**
+ * DOM ranges of `query` in the selectable text under `root` (matches within one text node).
+ * Skips `user-select: none` chrome (`.thought summary`, `.processSummary`, `.messageTime`,
+ * `.role`…): WebKit's `CSS.highlights` skips unselectable text renderers and paints the
+ * highlight over the next selectable text node instead.
+ */
 export function findRanges(root: Node, query: string): Range[] {
   const out: Range[] = [];
   if (!query) return out;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element;
+        const tag = el.tagName.toUpperCase();
+        if (SKIP_FIND_TAGS.has(tag)) return NodeFilter.FILTER_REJECT;
+        if (tag === "PRE" && el.parentElement?.getAttribute("data-mermaid-state") === "ok")
+          return NodeFilter.FILTER_REJECT;
+        if (isUnselectable(el)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_SKIP;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     for (const at of findAll(node.textContent ?? "", query)) {
       const range = document.createRange();
@@ -104,4 +175,21 @@ export function findRanges(root: Node, query: string): Range[] {
     }
   }
   return out;
+}
+
+/**
+ * True when `range` is rendered on screen and not inside a collapsed `<details>` or
+ * `user-select: none` subtree. WebKit hides closed `<details>` bodies with
+ * `content-visibility: hidden` (where `getClientRects()` stays non-empty once opened)
+ * and forwards unrendered or unselectable `CSS.highlights` ranges onto adjacent rows.
+ */
+export function isFindRangeShown(range: Range, root: Node): boolean {
+  for (let el = range.startContainer.parentElement; el && el !== root; el = el.parentElement) {
+    if (isUnselectable(el)) return false;
+    if (el instanceof HTMLDetailsElement && !el.open) {
+      const summary = el.querySelector(":scope > summary");
+      if (!summary?.contains(range.startContainer)) return false;
+    }
+  }
+  return range.getClientRects().length > 0;
 }

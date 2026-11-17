@@ -1,4 +1,4 @@
-//! Build tool models for the Maven and Gradle tool windows, and Build › Build
+//! Build tool models for the Maven, Gradle and sbt tool windows, and Build › Build
 //! Project ([`compile`]) for Maven, Gradle, Cargo, Go and TypeScript projects.
 //!
 //! [`load`] reads the project's build files (instant, no build tool involved)
@@ -13,13 +13,15 @@ pub mod kotlin_bridge;
 pub mod maven;
 pub mod pom_edit;
 mod process;
+pub mod sbt;
 mod sync;
 pub mod web;
 mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};
-pub use gradle_deps::{GradleDependency, gradle_dependencies};
+pub use gradle_deps::{GradleDependency, GradleReport, gradle_dependencies, gradle_reports, save_gradle_report};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
+pub use sbt::{SbtBuild, SbtProject};
 pub use sync::{
     SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_gradle_model, sync_maven,
 };
@@ -42,6 +44,9 @@ pub struct BuildModel {
     pub maven: Option<MavenModel>,
     #[serde(default)]
     pub gradle: Vec<GradleModel>,
+    /// sbt builds, read from their `build.sbt` (sbt is not started).
+    #[serde(default)]
+    pub sbt: Vec<SbtBuild>,
 }
 
 impl BuildModel {
@@ -96,7 +101,7 @@ pub fn load_linked(
             g
         })
         .collect();
-    BuildModel { maven, gradle }
+    BuildModel { maven, gradle, sbt: sbt::load(root) }
 }
 
 /// Gradle project folders outside `root` as of the last sync (`includeFlat` siblings):
@@ -120,6 +125,26 @@ pub fn gradle_external_roots(
         })
         .collect();
     gradle::external_roots(root, dirs.iter().map(String::as_str))
+}
+
+/// Directories outside `root`, outermost only, of Maven POMs linked from there and, in a
+/// trusted project, of the modules its reactor lists there (`<module>../service-a</module>`):
+/// extra content roots, as IDEA imports such modules with content roots of their own.
+/// Linked POMs are read as explicit paths; the reactor's POMs are parsed, but not their
+/// parents, and nothing walks directories. `cache_dir` holds the profiles chosen at the last sync.
+pub fn maven_external_roots(
+    root: &Path,
+    cache_dir: &Path,
+    settings: &ide_core::settings::MavenSettings,
+    trusted: bool,
+) -> Vec<PathBuf> {
+    let mut dirs = maven::external_pom_dirs(root, &settings.linked_projects);
+    if trusted {
+        let profiles = settings.profiles(&sync::maven_profiles(cache_dir));
+        dirs.extend(maven::reactor_external_dirs(root, &profiles, &settings.unlinked_projects));
+    }
+    let owned: Vec<String> = dirs.iter().map(|dir| dir.to_string_lossy().into_owned()).collect();
+    gradle::external_roots(root, owned.iter().map(String::as_str))
 }
 
 /// Source, resource and build folders of the last Gradle sync, absolute.
@@ -239,6 +264,59 @@ mod tests {
     }
 
     #[test]
+    fn reactor_modules_outside_the_root_are_content_roots_of_a_trusted_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("workspace");
+        let cache = base.join("cache");
+        let write = |rel: &str, text: &str| {
+            let path = base.join(rel).join("pom.xml");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("<project><artifactId>{rel}</artifactId>{text}</project>")).unwrap();
+        };
+        let reactor = |modules: &str| {
+            format!(
+                "<packaging>pom</packaging><modules>{modules}</modules>\
+                 <profiles><profile><id>extra</id><modules><module>../service-c</module></modules></profile></profiles>"
+            )
+        };
+        let all = "<module>core</module><module>../service-a</module><module>..</module>";
+        write("workspace", &reactor(all));
+        write("workspace/core", "<modules><module>../../service-d</module></modules>");
+        write("service-a", "<modules><module>impl</module><module>../service-e</module></modules>");
+        for module in ["service-a/impl", "service-c", "service-d", "service-e", "unrelated"] {
+            write(module, "");
+        }
+        // The folder holding the project is not a module beside it, nor are its other modules.
+        write("", "<modules><module>workspace</module><module>unrelated</module></modules>");
+
+        let mut settings = ide_core::settings::MavenSettings::default();
+        let roots = |settings: &ide_core::settings::MavenSettings, trusted| {
+            maven_external_roots(&root, &cache, settings, trusted)
+        };
+        let (a, c, d, e) =
+            (base.join("service-a"), base.join("service-c"), base.join("service-d"), base.join("service-e"));
+        assert_eq!(roots(&settings, true), [a.clone(), d.clone(), e.clone()]);
+        assert!(roots(&settings, false).is_empty(), "Restricted Mode does not widen the index");
+
+        settings.active_profiles = "extra".into();
+        assert_eq!(roots(&settings, true), [a.clone(), c.clone(), d.clone(), e.clone()]);
+        save_maven_profiles(&cache, &["!extra".into()]).unwrap();
+        assert_eq!(roots(&settings, true), [a.clone(), d.clone(), e.clone()]);
+
+        settings.unlinked_projects = vec![a.join("pom.xml").to_string_lossy().replace('\\', "/")];
+        assert_eq!(roots(&settings, true), std::slice::from_ref(&d));
+        settings.unlinked_projects.clear();
+
+        write("workspace", &reactor("<module>core</module>"));
+        assert_eq!(roots(&settings, true), std::slice::from_ref(&d));
+        write("workspace/core", "");
+        assert!(roots(&settings, true).is_empty());
+        write("workspace", &reactor(all));
+        assert_eq!(roots(&settings, true), [a, e]);
+    }
+
+    #[test]
     fn settings_profiles_and_checkbox_choices_control_modules_before_sync() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -321,7 +399,7 @@ mod tests {
             ..Default::default()
         };
         let gradle = gradle::load(root).into_iter().collect();
-        let model = BuildModel { maven: Some(maven), gradle };
+        let model = BuildModel { maven: Some(maven), gradle, sbt: Vec::new() };
         let names: Vec<String> = dependency_coordinates(root, &model)
             .into_iter()
             .map(|c| format!("{}{}:{}:{}", if c.gradle { "G " } else { "M " }, c.group_id, c.artifact_id, c.version))
@@ -340,7 +418,7 @@ mod tests {
             "ext { gson = '2.8.9' }\ndependencies { implementation \"com.google.code.gson:gson:${gson}\" }\n",
         )
         .unwrap();
-        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect(), sbt: Vec::new() };
         let names: Vec<String> = dependency_coordinates(root, &model)
             .into_iter()
             .map(|c| format!("{}:{}:{}", c.group_id, c.artifact_id, c.version))
@@ -359,7 +437,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("gradle.properties"), "# versions\nv = 1.2\nonlyInProperties: 2.3\n").unwrap();
-        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect(), sbt: Vec::new() };
         let versions: Vec<_> = dependency_coordinates(root, &model).into_iter().map(|c| c.version).collect();
         assert_eq!(versions, ["1.2", "2.3"]);
     }

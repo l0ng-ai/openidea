@@ -1,4 +1,4 @@
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
@@ -76,7 +76,7 @@ export function showCreatePatchForShelf(entry: ShelvedChangeList, path?: string)
 
 async function browseSave(current: string): Promise<string | null> {
   try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     return (await save({ defaultPath: current, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] })) ?? null;
   } catch {
     return null;
@@ -224,11 +224,11 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
   let source = "Clipboard";
   try {
     if (from === "clipboard") {
-      text = await navigator.clipboard.readText();
+      text = await readClipboardPlainText();
     } else {
       let file = path ?? null;
       if (!file) {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         const picked = await open({
           multiple: false,
           directory: false,

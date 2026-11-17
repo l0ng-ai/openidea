@@ -57,13 +57,15 @@ SSH 执行的命令默认只有很精简的环境，所以服务端启动时会�
 本机访问不了 GitHub 时，可以自己提供服务端二进制。桌面端按以下顺序查找：
 
 1. 环境变量 `OPENIDEA_SERVER_BINARY` 指向的文件（需在启动 OpenIDEA 时已设置）。
-2. 本机[本地数据目录](/zh/reference/data-directories)中的 `server/<os>-<arch>/openidea-server`，例如 `server/linux-x86_64/openidea-server`。
-3. 主机与本机平台相同时，OpenIDEA 可执行文件旁边的 `openidea-server`。
+2. 主机与本机平台相同时，OpenIDEA 可执行文件旁边的 `openidea-server`。
+3. 本机[本地数据目录](/zh/reference/data-directories)中的 `server/<版本>/<os>-<arch>/openidea-server`，例如
+   `server/0.1.44/linux-x86_64/openidea-server`。桌面端下载的服务端也放在这里，所以放在这里的文件会代替下载。
 
-从与你的 OpenIDEA 版本对应的 Release 下载 `openidea-server-<os>-<arch>.gz`，用 `gunzip` 解压后放到上述任一位置。版本必须与桌面端一致：
-协议版本不同的服务端会被拒绝。
+从与你的 OpenIDEA 版本对应的 Release 下载 `openidea-server-<os>-<arch>.gz`，用 `gunzip` 解压后放到该版本的目录。
+升级后桌面端会到新版本的目录查找，不会误用旧版服务端。
 
-如果主机上已经装有当前版本的某个构建，在无法下载时桌面端会直接使用它。
+无法下载时，桌面端先用主机上已装的当前版本构建，再用 `server/<os>-<arch>/openidea-server`（早期版本使用的位置），
+它可能是其他版本：之后新增的命令会提示服务端与应用版本不一致。
 
 ### 从源码构建
 

@@ -4,16 +4,18 @@ import { executeAction, useActions } from "@/platform/actions";
 import { call, commands, isTauri, type OpenProject, type RecentProject } from "@/platform/ipc";
 import { HighlightedText, Icon, Popup, showContextMenu, type IconName, T } from "@/ui";
 import type { ProjectPopupProps } from "@/workbench/contributions";
-import { askRemoveRecent, ProjectBadge, recentMenu } from "./RecentList";
+import { askRemoveRecent, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
 import { filterRecent, loadRecent, openRecent, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
+import { parseRemoteLocation, remoteLocation } from "@/platform/remote";
 
 type Entry =
   | { kind: "action"; id: string; label: string; icon: IconName }
   | { kind: "project"; open: boolean; m: RecentMatch };
 
 const ACTIONS: { id: string; label: string; icon: IconName }[] = [
+  { id: "file.newProject", label: "New Project…", icon: "plus" },
   { id: "file.openProject", label: "Open…", icon: "folder" },
   { id: "vcs.clone", label: "Clone Repository…", icon: "branch" },
   { id: "remote.connect", label: "Remote Development…", icon: "terminal" },
@@ -46,9 +48,13 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
   useEffect(() => void loadRecent(), []);
 
   const entries = useMemo<Entry[]>(() => {
-    const openPaths = new Set(openProjects.map((p) => p.root));
-    const asRecent = (p: OpenProject): RecentProject =>
-      recent.find((r) => r.path === p.root) ?? { path: p.root, name: p.name, openedAtMs: null, branch: null };
+    // A remote window's project is keyed like its recent entry (`wsl://…`, `ssh://…`).
+    const location = (p: OpenProject) => (p.remote ? remoteLocation(p.remote, p.root) : p.root);
+    const openPaths = new Set(openProjects.map(location));
+    const asRecent = (p: OpenProject): RecentProject => {
+      const path = location(p);
+      return recent.find((r) => r.path === path) ?? { path, name: p.name, openedAtMs: null, branch: null };
+    };
     const open = filterRecent(openProjects.map(asRecent), query, home).map((m) => ({
       kind: "project" as const,
       open: true,
@@ -72,7 +78,9 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
     if (!e) return;
     onClose();
     if (e.kind === "action") void executeAction(e.id);
-    else if (e.open) void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
+    else if (e.open && !parseRemoteLocation(e.m.project.path))
+      void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
+    // Opening a remote location focuses the window already connected to it.
     else void openRecent(e.m.project);
   };
 
@@ -159,7 +167,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
               {e.kind === "action" ? (
                 <>
                   <Icon name={e.icon} size={16} className={styles.actionIcon} />
-                  <span className={styles.label}>{e.label}</span>
+                  <span className={styles.label}>{tx(e.label)}</span>
                 </>
               ) : (
                 <ProjectRow m={e.m} active={i === current} />
@@ -189,11 +197,11 @@ function Header({ first, children }: { first: boolean; children: ReactNode }) {
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
   return (
     <>
-      <ProjectBadge name={m.project.name} className={styles.badge} />
-      <span className={styles.text}>
+      <ProjectBadge name={m.project.name} className={styles.badge} missing={!!m.project.missing} />
+      <span className={styles.text} title={unavailableTitle(m.project)}>
         <span className={styles.top}>
           <HighlightedText
-            className={styles.name}
+            className={clsx(styles.name, m.project.missing && styles.unavailable)}
             text={m.project.name}
             indices={m.nameMatch}
             tone={active ? "accent" : "strong"}

@@ -1173,3 +1173,54 @@ fn a_django_project_in_src_uses_the_environment_next_to_it() {
     assert!(c.iter().any(|c| c.id == "pytest"));
     assert!(!c.iter().any(|c| c.id.starts_with("pytest:")), "{:?}", c.iter().map(|c| &c.id).collect::<Vec<_>>());
 }
+
+#[test]
+fn rebar3_projects() {
+    let dir = project(&[("rebar.config", "{erl_opts, [debug_info]}.\n"), ("src/app.erl", "-module(app).\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rebar3:shell", "rebar3:eunit"]);
+    assert_eq!(cmdline(&c[0]), "rebar3 shell");
+    assert!(c[1].is_test);
+
+    // Common Test suites in an umbrella app; the project's own rebar3 script.
+    let dir = project(&[
+        ("rebar.config", ""),
+        ("rebar3", "#!/usr/bin/env escript\n"),
+        ("apps/core/test/core_SUITE.erl", "-module(core_SUITE).\n"),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rebar3:shell", "rebar3:eunit", "rebar3:ct"]);
+    if !cfg!(windows) {
+        assert_eq!(cmdline(find(&c, "rebar3:ct")), "./rebar3 ct");
+    }
+}
+
+#[test]
+fn mix_projects() {
+    let dir = project(&[("mix.exs", "defmodule App.MixProject do\n  defp deps, do: []\nend\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["mix:iex", "mix:test"]);
+    assert_eq!(cmdline(&c[0]), "iex -S mix");
+    assert!(c[1].is_test);
+
+    let dir = project(&[("mix.exs", "defp deps do\n  [{:phoenix, \"~> 1.7\"}]\nend\n")]);
+    assert_eq!(cmdline(&detect(dir.path())[0]), "iex -S mix phx.server");
+}
+
+#[test]
+fn sbt_projects() {
+    let dir = project(&[
+        ("build.sbt", "lazy val core = project\n"),
+        ("core/build.sbt", "libraryDependencies += \"a\" % \"b\" % \"1\"\n"),
+        ("core/src/main/scala/App.scala", "object App\n"),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["sbt:run", "sbt:test"]);
+    assert_eq!(cmdline(&c[0]), "sbt run");
+    assert!(c[1].is_test && c.iter().all(|c| c.kind == "sbt"));
+
+    let dir = project(&[("build.sbt", ""), ("sbt", "#!/bin/sh\n")]);
+    if !cfg!(windows) {
+        assert_eq!(cmdline(&detect(dir.path())[1]), "./sbt test");
+    }
+}

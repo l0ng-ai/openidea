@@ -42,5 +42,6 @@ describe("Main menu appearance setting", () => {
     expect(validateAppearanceExtras({}).mainMenuStyle).toBe("hamburger");
     expect(validateAppearanceExtras({ mainMenuStyle: "unknown" }).mainMenuStyle).toBe("hamburger");
     expect(validateAppearanceExtras({ mainMenuStyle: "merged" }).mainMenuStyle).toBe("merged");
+    expect(validateAppearanceExtras({ mainMenuStyle: "toolbar" }).mainMenuStyle).toBe("toolbar");
   });
 });

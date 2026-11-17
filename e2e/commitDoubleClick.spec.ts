@@ -147,3 +147,13 @@ test("modal Commit dialog: double-click opens the diff in a front window, not an
   await expect(sourceTab(page)).toHaveCount(0);
   await expect(diffTab(page)).toHaveCount(0);
 });
+
+test("F4 in the changes tree opens the source file even where activation opens the diff", async ({
+  workbench: page,
+}) => {
+  const panel = await openCommitWindow(page);
+  await panel.getByRole("tree", { name: "Changes" }).getByText(FILE, { exact: true }).click();
+  await page.keyboard.press("F4");
+  await expect(sourceTab(page)).toHaveAttribute("aria-selected", "true");
+  await expect(diffTab(page)).toHaveCount(0);
+});

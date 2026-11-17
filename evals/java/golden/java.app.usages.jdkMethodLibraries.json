@@ -1,0 +1,16 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "usages": [
+      "jdt://contents/java.base/java.util/Comparator.java:302",
+      "jdt://contents/java.base/java.util/Comparator.java:307",
+      "jdt://contents/jdk.jfr/jdk.jfr.internal.dcmd/AbstractDCmd.java:174",
+      "jdt://contents/jdk.jfr/jdk.jfr.internal.periodic/BatchManager.java:84",
+      "jdt://contents/jdk.jfr/jdk.jfr.internal/TypeLibrary.java:109",
+      "src/main/java/com/example/orders/OrderBook.java:24"
+    ]
+  }
+}

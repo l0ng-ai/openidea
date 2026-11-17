@@ -202,7 +202,7 @@ fn ui_modes_are_redetected_without_a_language_change() {
     let opened = rec.log.lock().len();
 
     fs::write(&marker, "{}").unwrap();
-    assert_eq!(docs.ui_mode_of(&template).as_deref(), Some("Angular Template"));
+    assert_eq!(docs.language_of(&template, None).ui_mode.as_deref(), Some("Angular Template"));
     assert_eq!(docs.redetect_languages(), vec![a.id]);
     assert_eq!(docs.snapshot(a.id).unwrap().ui_mode.as_deref(), Some("Angular Template"));
     assert!(docs.redetect_languages().is_empty());
@@ -342,6 +342,35 @@ fn backend_edits_emit_patches() {
     f.docs.set_line_ending(id, LineEnding::CrLf).unwrap();
     f.docs.save_all().unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "ONE\r\n2\r\nTHREE\r\n");
+}
+
+#[test]
+fn versioned_background_edits_are_marked_non_undoable() {
+    let f = fixture();
+    let path = f.root.join("remote.txt");
+    fs::write(&path, "one").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    let patches = || {
+        f.events
+            .lock()
+            .iter()
+            .filter_map(|event| match event {
+                IdeEvent::DocPatched { workspace_edit, .. } => Some(*workspace_edit),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // A command's versioned edit stays an editor Undo step; a background one doesn't.
+    let edit = |text: &str| [TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 0)), new_text: text.into() }];
+    assert_eq!(f.docs.apply_edits_at(doc, 0, &edit("a")).unwrap(), Some(1));
+    assert_eq!(f.docs.apply_background_edits_at(doc, 1, &edit("b")).unwrap(), Some(2));
+    assert_eq!(patches(), [false, true]);
+    assert_eq!(f.docs.apply_background_edits_at(doc, 1, &edit("stale")).unwrap(), None);
+    assert_eq!(
+        f.docs.apply_edits_at(doc, 0, &[TextEdit { range: Range::default(), new_text: "stale".into() }]).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -486,11 +515,15 @@ fn reload_and_convert_encoding() {
     let (bytes, _, _) = encoding_rs::GBK.encode("中文内容");
     fs::write(&path, &bytes).unwrap();
     let info = f.docs.open(&path).unwrap();
-    assert_eq!(f.docs.set_encoding(info.id, "gbk", true).unwrap(), "gbk");
+    let encoding = f.docs.set_encoding(info.id, "gbk", true).unwrap();
+    assert_eq!(encoding.encoding, "gbk");
+    assert!(!encoding.has_bom);
     assert_eq!(f.docs.snapshot(info.id).unwrap().text, "中文内容");
 
     // Convert: same text, written in the new encoding on save.
-    assert_eq!(f.docs.set_encoding(info.id, "utf-8", false).unwrap(), "utf-8");
+    let encoding = f.docs.set_encoding(info.id, "utf-8", false).unwrap();
+    assert_eq!(encoding.encoding, "utf-8");
+    assert!(!encoding.has_bom);
     f.docs.save(info.id).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "中文内容");
 
@@ -499,6 +532,71 @@ fn reload_and_convert_encoding() {
     // Reload refuses unsaved changes.
     f.docs.edit(info.id, f.docs.snapshot(info.id).unwrap().version, change(0, 0, "x")).unwrap();
     assert!(f.docs.set_encoding(info.id, "gbk", true).is_err());
+}
+
+#[test]
+fn external_changes_keep_a_chosen_encoding() {
+    // Valid UTF-8 bytes, so detection alone would read them as UTF-8.
+    let (first, changed) = (b"caf\xC3\xA9".as_slice(), b"caf\xC3\xA9 \xC3\xA8".as_slice());
+    for (encoding, reload) in [("windows-1252", true), ("gbk", true), ("windows-1252", false)] {
+        let f = fixture();
+        let path = f.root.join("legacy.txt");
+        fs::write(&path, first).unwrap();
+        let info = f.docs.open(&path).unwrap();
+        assert_eq!(info.encoding, "utf-8");
+        if reload {
+            f.docs.set_encoding(info.id, encoding, true).unwrap();
+        } else {
+            // Convert, then save: the file is now in the chosen encoding.
+            f.docs.replace_all(info.id, "café").unwrap();
+            f.docs.set_encoding(info.id, encoding, false).unwrap();
+            f.docs.save(info.id).unwrap();
+        }
+        let expected =
+            |bytes: &[u8]| encoding_rs::Encoding::for_label(encoding.as_bytes()).unwrap().decode(bytes).0.into_owned();
+        let changed = if reload { changed.to_vec() } else { ide_vfs::encode("café è", encoding, false).unwrap() };
+        fs::write(&path, &changed).unwrap();
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        let snapshot = f.docs.snapshot(info.id).unwrap();
+        assert_eq!(snapshot.text, expected(&changed), "{encoding} reload={reload}");
+        assert_eq!(snapshot.encoding, encoding, "{encoding} reload={reload}");
+        assert!(!snapshot.dirty);
+    }
+}
+
+#[test]
+fn external_changes_redetect_an_encoding_the_user_never_chose() {
+    let f = fixture();
+    let path = f.root.join("plain.txt");
+    fs::write(&path, "plain").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    fs::write(&path, ide_vfs::encode("wide", "utf-16le", true).unwrap()).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let snapshot = f.docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("wide", "utf-16le"));
+}
+
+#[test]
+fn utf8_bom_is_added_and_removed_on_save() {
+    let f = fixture();
+    let path = f.root.join("bom.txt");
+    fs::write(&path, "text").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    assert!(!info.has_bom);
+
+    assert!(f.docs.set_bom(info.id, true).unwrap().has_bom);
+    assert_eq!(fs::read(&path).unwrap(), b"text", "written on save only");
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFtext");
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, "text");
+
+    assert!(!f.docs.set_bom(info.id, false).unwrap().has_bom);
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"text");
+
+    // Other encodings have no BOM to toggle.
+    f.docs.set_encoding(info.id, "gbk", false).unwrap();
+    assert!(f.docs.set_bom(info.id, true).is_err());
 }
 
 #[cfg(unix)]
@@ -629,14 +727,14 @@ fn editorconfig_applies_on_open_and_save() {
 fn virtual_documents_are_read_only_and_keyed_by_uri() {
     let f = fixture();
     let uri = "jdt://contents/a.jar/p/C.class?=x";
-    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "class C {}\n").unwrap();
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "class C {}\n", "utf-8", false, true).unwrap();
     assert_eq!(info.uri.as_deref(), Some(uri));
     assert_eq!(info.path, PathBuf::from(uri));
     assert!(info.read_only && !info.dirty);
     assert_eq!(info.language.as_str(), "java");
 
     // Re-opening shares the document; edits and saves never reach a file.
-    let again = f.docs.open_virtual(uri, LanguageId::new("java"), "ignored").unwrap();
+    let again = f.docs.open_virtual(uri, LanguageId::new("java"), "ignored", "utf-8", false, true).unwrap();
     assert_eq!(again.id, info.id);
     assert_eq!(again.text, "class C {}\n");
     let err = f.docs.edit(info.id, info.version, change(0, 0, "x")).unwrap_err();
@@ -648,6 +746,68 @@ fn virtual_documents_are_read_only_and_keyed_by_uri() {
     f.docs.close(info.id);
     assert!(f.docs.snapshot(info.id).is_err());
     assert_eq!(*f.rec.log.lock(), vec!["open v0 java".to_owned(), "close".to_owned()]);
+}
+
+#[test]
+fn virtual_documents_carry_their_encoding_and_reload_capability() {
+    let f = fixture();
+    // Archive sources decoded by the backend report the charset actually used.
+    let uri = "jar:///m2/lib-1.0-sources.jar!/p/C.java";
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "中文", "gbk", false, true).unwrap();
+    assert_eq!((info.encoding.as_str(), info.has_bom, info.can_reload_encoding), ("gbk", false, true));
+    let bom =
+        f.docs.open_virtual("jar:///m2/b.jar!/p/B.java", LanguageId::new("java"), "x", "utf-8", true, true).unwrap();
+    assert!(bom.has_bom);
+    // Server-generated content (decompiled) cannot be re-decoded.
+    let decompiled = f
+        .docs
+        .open_virtual(
+            "csharp:/p/App.csproj/decompiled/Lib.cs",
+            LanguageId::new("csharp"),
+            "class Lib {}",
+            "utf-8",
+            false,
+            false,
+        )
+        .unwrap();
+    assert!(!decompiled.can_reload_encoding);
+    // File-backed documents can always be re-read from disk.
+    let path = f.root.join("f.txt");
+    fs::write(&path, "x").unwrap();
+    assert!(f.docs.open(&path).unwrap().can_reload_encoding);
+}
+
+#[test]
+fn virtual_documents_reload_with_another_encoding_without_becoming_editable() {
+    let f = fixture();
+    let uri = "jdt://contents/a.jar/p/C.class?=x";
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "涓枃", "utf-8", false, true).unwrap();
+    let encoding = f.docs.replace_virtual(info.id, "中文", "gbk", false).unwrap();
+    assert_eq!((encoding.encoding.as_str(), encoding.has_bom), ("gbk", false));
+    let snap = f.docs.snapshot(info.id).unwrap();
+    assert_eq!(snap.text, "中文");
+    assert_eq!(snap.encoding, "gbk");
+    assert!(snap.read_only && !snap.dirty, "reloading is not an edit");
+    assert!(snap.version > info.version);
+    assert_eq!(f.docs.virtual_uri(info.id).unwrap().as_deref(), Some(uri));
+    // The replacement reached observers and the event stream (editors resync).
+    assert!(f.rec.log.lock().iter().any(|l| l.starts_with("change v") && l.contains("中文")));
+    assert!(f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocPatched { doc, .. } if *doc == info.id)));
+
+    // Read-only protection is unchanged.
+    assert_eq!(f.docs.edit(info.id, snap.version, change(0, 0, "x")).unwrap_err().kind, ErrorKind::PermissionDenied);
+    assert!(f.docs.set_encoding(info.id, "utf-8", false).is_err());
+    assert!(f.docs.set_encoding(info.id, "gbk", true).is_err(), "the op layer routes virtual reloads");
+    assert!(f.docs.set_bom(info.id, true).is_err());
+    f.docs.save(info.id).unwrap();
+
+    // Unknown encodings are refused; file-backed documents are not virtual.
+    assert!(f.docs.replace_virtual(info.id, "x", "not-an-encoding", false).is_err());
+    let path = f.root.join("f.txt");
+    fs::write(&path, "x").unwrap();
+    let file = f.docs.open(&path).unwrap();
+    assert!(f.docs.replace_virtual(file.id, "y", "utf-8", false).is_err());
+    assert_eq!(f.docs.virtual_uri(file.id).unwrap(), None);
 }
 
 #[test]
@@ -843,4 +1003,135 @@ fn properties_ascii_noop_and_charset_conversion() {
     f.docs.set_encoding(doc.id, "utf-16le", true).unwrap();
     assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "a=世界😀");
     assert!(!f.docs.is_dirty(doc.id).unwrap());
+}
+
+#[test]
+fn untitled_buffers_are_editable_and_saved_to_a_chosen_path() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.line_ending = LineEnding::Lf;
+    f.docs.set_file_defaults(defaults);
+    let info = f.docs.open_untitled(None).unwrap();
+    assert_eq!(info.path, PathBuf::from("untitled:Untitled-1"));
+    assert_eq!(info.uri.as_deref(), Some("untitled:Untitled-1"));
+    assert_eq!(info.language, LanguageId::plain_text());
+    assert!(!info.read_only && !info.dirty && !info.large);
+
+    // Editing works; nothing is written anywhere.
+    let version = f.docs.edit(info.id, info.version, change(0, 0, "fn main() {}\n")).unwrap();
+    assert!(f.docs.is_dirty(info.id).unwrap());
+    f.docs.save(info.id).unwrap();
+    assert!(f.docs.is_dirty(info.id).unwrap(), "an untitled buffer has no file to save to");
+
+    // Save As: the buffer reaches the disk and becomes a regular file document
+    // (same id, re-keyed, language re-detected, missing parents created).
+    let target = f.root.join("new/nested/main.rs");
+    let saved = f.docs.save_as(info.id, &target).unwrap();
+    assert_eq!(saved.id, info.id);
+    assert_eq!(saved.path, target);
+    assert_eq!(saved.uri, None);
+    assert_eq!(saved.language, LanguageId::new("rust"));
+    assert!(!saved.dirty);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "fn main() {}\n");
+    assert_eq!(f.docs.by_path(&target), Some(info.id));
+    assert_eq!(f.docs.by_path(Path::new("untitled:Untitled-1")), None);
+    f.docs.edit(info.id, version, change(0, 0, "// hi\n")).unwrap();
+    f.docs.save(info.id).unwrap();
+    assert!(!f.docs.is_dirty(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "// hi\nfn main() {}\n");
+
+    // Re-opening the file references the same buffer (split editors share it).
+    let again = f.docs.open(&target).unwrap();
+    assert_eq!(again.id, info.id);
+    f.docs.close(again.id);
+    assert!(f.docs.snapshot(info.id).is_ok());
+    f.docs.close(info.id);
+    assert!(f.docs.snapshot(info.id).is_err());
+}
+
+#[test]
+fn save_as_rejects_paths_opened_elsewhere_and_reuses_free_names() {
+    let f = fixture();
+    let first = f.root.join("taken.txt");
+    fs::write(&first, "taken").unwrap();
+    let taken = f.docs.open(&first).unwrap();
+
+    let a = f.docs.open_untitled(None).unwrap();
+    let b = f.docs.open_untitled(None).unwrap();
+    assert_eq!(a.path, PathBuf::from("untitled:Untitled-1"));
+    assert_eq!(b.path, PathBuf::from("untitled:Untitled-2"));
+    f.docs.edit(a.id, a.version, change(0, 0, "draft")).unwrap();
+
+    let err = f.docs.save_as(a.id, &first).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert!(f.docs.is_dirty(a.id).unwrap(), "nothing was written");
+    assert_eq!(fs::read_to_string(&first).unwrap(), "taken");
+
+    let err = f.docs.save_as(a.id, Path::new("untitled:Untitled-2")).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+
+    // The smallest free name is minted again after a buffer closes.
+    f.docs.close(a.id);
+    let c = f.docs.open_untitled(None).unwrap();
+    assert_eq!(c.path, PathBuf::from("untitled:Untitled-1"));
+
+    // Non-untitled documents cannot be re-keyed.
+    let err = f.docs.save_as(taken.id, &f.root.join("other.txt")).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn untitled_buffers_take_file_defaults_and_refuse_encoding_reloads() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.line_ending = LineEnding::CrLf;
+    defaults.encoding = "utf-8".into();
+    defaults.utf8_bom = true;
+    f.docs.set_file_defaults(defaults);
+    let info = f.docs.open_untitled(None).unwrap();
+    assert_eq!(info.line_ending, LineEnding::CrLf);
+    assert!(info.has_bom);
+    assert!(!info.can_reload_encoding, "there is no file to re-read yet");
+
+    // Converting the encoding of the unsaved text works; re-decoding does not.
+    let encoding = f.docs.set_encoding(info.id, "utf-16le", false).unwrap();
+    assert_eq!(encoding.encoding, "utf-16le");
+    let err = f.docs.set_encoding(info.id, "utf-8", true).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+
+    // Disk syncs never touch an untitled buffer.
+    f.docs.edit(info.id, info.version, change(0, 0, "draft")).unwrap();
+    f.docs.sync_after_disk_change();
+    assert!(f.docs.is_dirty(info.id).unwrap());
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, "draft");
+}
+
+/// Previews and diffs show a file in the language opening it gives: from the hashbang of
+/// the shown text (a revision's), else of its open buffer or the file on disk.
+#[test]
+fn language_of_a_closed_file_reads_the_hashbang() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+    let docs = Documents::new(
+        sink,
+        Box::new(|p: &Path, first: Option<&str>| match first {
+            Some(l) if l.starts_with("#!/usr/bin/env bash") => LanguageId::new("shellscript"),
+            Some(l) if l.starts_with("#!/usr/bin/env python") => LanguageId::new("python"),
+            _ if p.extension().is_some_and(|e| e == "sh") => LanguageId::new("shellscript"),
+            _ => LanguageId::plain_text(),
+        }),
+    );
+    let deploy = tmp.path().join("deploy");
+    fs::write(&deploy, "#!/usr/bin/env bash\necho hi\n").unwrap();
+    let language = |first: Option<&str>| docs.language_of(&deploy, first).language.to_string();
+
+    assert_eq!(language(None), "shellscript", "the file's own first line");
+    assert_eq!(language(Some("#!/usr/bin/env python3")), "python", "the shown revision's first line");
+    assert_eq!(language(Some("echo")), LanguageId::plain_text().to_string());
+    assert_eq!(docs.language_of(&tmp.path().join("gone"), None).language, LanguageId::plain_text());
+
+    let doc = docs.open(&deploy).unwrap();
+    let all = Range::new(Pos::new(0, 0), Pos::new(0, 19));
+    docs.apply_edits(doc.id, &[TextEdit { range: all, new_text: "#!/usr/bin/env python3".into() }]).unwrap();
+    assert_eq!(language(None), "python", "the open buffer's first line");
 }

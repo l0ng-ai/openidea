@@ -7,11 +7,18 @@ import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
+import { AnsiStream, stripAnsi, type Span } from "@/ui/ansi";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { attachDocument, editorsFor } from "@/editor/api";
-import { maybeEditorService, notifications, type NotificationService } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  notifications,
+  toolWindowService,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { cancelTask, upsertTaskSoon, useTasks } from "@/workbench/tasks";
 import { progressFraction } from "./model";
+import { saveDiffWindows } from "./diffWindowSave";
 import { beginGitWork, conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 
 // ---------------------------------------------------------------------------
@@ -22,7 +29,10 @@ export interface ConsoleLine {
   id: number;
   time: number;
   kind: ConsoleKind;
+  /** The line without escape sequences (copying, searching). */
   text: string;
+  /** Its coloured runs, when the output had SGR colours (hook output). */
+  spans?: Span[];
 }
 
 interface ConsoleState {
@@ -35,11 +45,17 @@ export const useVcsConsole = create<ConsoleState>(() => ({ lines: [] }));
 
 export function logConsole(kind: ConsoleKind, text: string) {
   const time = Date.now();
+  // One stream per output, so a colour set on one line carries to the next.
+  const ansi = new AnsiStream();
   const add = text
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .filter((l, i, all) => l.length > 0 || (i > 0 && i < all.length - 1))
-    .map((l) => ({ id: ++lineSeq, time, kind, text: l }));
+    .map((l): ConsoleLine => {
+      if (!l.includes("\x1b")) return { id: ++lineSeq, time, kind, text: l };
+      const spans = ansi.parse(l);
+      return { id: ++lineSeq, time, kind, text: spans.map((s) => s.text).join(""), spans };
+    });
   if (!add.length) return;
   useVcsConsole.setState((s) => {
     const lines = s.lines.concat(add);
@@ -57,7 +73,13 @@ export function errorMessage(e: unknown): string {
 
 /** Feedback for an explicit Git command stays visible when background VCS notifications are muted. */
 function notify(n: Omit<Parameters<NotificationService["notify"]>[0], "group" | "userInitiated">) {
-  notifications().notify({ ...n, group: "vcs", userInitiated: true });
+  // Hook output (linters, test runners) is often coloured; a balloon shows it as plain text.
+  notifications().notify({
+    ...n,
+    body: typeof n.body === "string" ? stripAnsi(n.body) : n.body,
+    group: "vcs",
+    userInitiated: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +130,17 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
 
 /** Saves all documents so git sees the editor contents. */
 export async function saveAll() {
+  try {
+    await saveDiffWindows();
+  } catch (error) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: tx("Could not save diff"),
+      body: errorMessage(error),
+    });
+    throw error;
+  }
   try {
     await maybeEditorService()?.saveAll();
   } catch {
@@ -317,6 +350,24 @@ const commitsText = (n: number) => (n === 1 ? tx`${n} commit` : tx`${n} commits`
 const pushedTitle = (n: number, to: string) =>
   n === 1 ? tx`Pushed ${n} commit to ${to}` : tx`Pushed ${n} commits to ${to}`;
 
+/**
+ * View Commits: an Update Info tab in the Git tool window, the Log of each updated repository
+ * limited to the commits the update brought in. Each update opens a tab of its own.
+ */
+async function openUpdateInfo(updated: readonly UpdatedRange[]) {
+  const { roots, root } = useVcs.getState();
+  const repoRanges = Object.fromEntries(
+    updated.flatMap(({ repo, from, to }) => {
+      const r = repo ?? roots[0] ?? root;
+      return r ? [[r, `${from}..${to}`]] : [];
+    }),
+  );
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const { openLogTab } = await import("./logStore");
+  openLogTab("update", time, "toolWindow", Object.keys(repoRanges), { repoRanges });
+  toolWindowService().show("git", true);
+}
+
 /** IDEA's Update Project result: "N files updated in M commits" with View Commits. */
 async function notifyUpdated(updated: readonly UpdatedRange[]) {
   if (!updated.length) {
@@ -352,10 +403,7 @@ async function notifyUpdated(updated: readonly UpdatedRange[]) {
     actions: [
       {
         label: "View Commits",
-        run: () => {
-          const { repo, from, to } = updated.find((u) => u.repo === currentRepo()) ?? updated[0]!;
-          void import("./CompareBranches").then((m) => m.showCommitRange("Update Info", from, to, repo));
-        },
+        run: () => void openUpdateInfo(updated),
       },
     ],
   });

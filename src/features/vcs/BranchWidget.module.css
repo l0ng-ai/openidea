@@ -1,7 +1,7 @@
 .widget {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 280px;
   height: 30px;
   border-radius: 6px;
@@ -48,14 +48,16 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 6px 6px 6px 4px;
   border-bottom: 1px solid var(--border-popup);
 }
 .searchGrow {
   flex: 1;
 }
+/* Its height fits the rows; in a resized popup it takes the rest of the height. */
 .listWrap {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -78,7 +80,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .rowIcon {
   flex: none;

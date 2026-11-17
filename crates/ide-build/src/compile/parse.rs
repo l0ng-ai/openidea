@@ -7,6 +7,7 @@
 //! [`super::resolve`] turns them into IDE coordinates.
 
 use ide_core::Severity;
+pub(crate) use ide_core::output_encoding::strip_ansi;
 use serde_json::Value;
 
 /// Output dialect of a build step.
@@ -24,6 +25,8 @@ pub(crate) enum Format {
     Go,
     /// GCC / Clang (through `cmake --build`): `src/a.cpp:12:5: error: msg`.
     Gcc,
+    /// MSBuild (`dotnet build`): `C:\p\A.cs(12,5): error CS1002: msg [C:\p\App.csproj]`.
+    Msbuild,
 }
 
 /// What a printed column counts.
@@ -98,32 +101,6 @@ pub(crate) struct OutputParser {
     pending: Option<Pending>,
 }
 
-/// Removes ANSI escape sequences (colour, cursor movement).
-pub(crate) fn strip_ansi(s: &str) -> String {
-    if !s.contains('\u{1b}') {
-        return s.to_owned();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        if chars.peek() == Some(&'[') {
-            chars.next();
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() || c == '~' {
-                    break;
-                }
-            }
-        } else {
-            chars.next();
-        }
-    }
-    out
-}
-
 fn num(s: &str) -> Option<u32> {
     s.trim().parse().ok().filter(|n| *n > 0)
 }
@@ -169,6 +146,13 @@ fn bracket_pos(s: &str) -> Option<(u32, Option<u32>, &str)> {
     Some((line, col, rest.trim_start()))
 }
 
+/// `/C:/p/A.java` → `C:/p/A.java`: Maven and file URIs put a `/` before the drive letter on Windows.
+/// Joined as is, it would become the drive-relative `C:p/A.java`.
+fn drive_path(p: &str) -> &str {
+    let b = p.as_bytes();
+    if b.len() > 2 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' { &p[1..] } else { p }
+}
+
 /// `file:///p/A.kt` → `/p/A.kt` (percent-decoded).
 fn from_file_uri(s: &str) -> String {
     let Some(rest) = s.strip_prefix("file://") else { return s.to_owned() };
@@ -187,9 +171,7 @@ fn from_file_uri(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    let path = String::from_utf8_lossy(&out).into_owned();
-    // `file:///C:/x` on Windows.
-    if path.len() > 2 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' { path[1..].to_owned() } else { path }
+    drive_path(&String::from_utf8_lossy(&out)).to_owned()
 }
 
 /// Kotlin: `file:///p/A.kt:12:5 msg` or `/p/A.kt: (12, 5): msg`, after the `e: ` / `w: ` prefix.
@@ -247,7 +229,7 @@ fn maven_line(line: &str) -> Option<RawMessage> {
         && looks_like_source_path(path)
         && let Some((ln, col, msg)) = bracket_pos(&format!("[{pos}"))
     {
-        return Some(RawMessage::new(severity, msg, ColUnit::Char).at(path, ln, col));
+        return Some(RawMessage::new(severity, msg, ColUnit::Char).at(drive_path(path), ln, col));
     }
     if let Some(m) = kotlin_line(rest) {
         return Some(m);
@@ -285,6 +267,43 @@ fn tsc_line(line: &str) -> Option<RawMessage> {
     };
     let mut m = RawMessage::new(severity, msg, ColUnit::Utf16).at(path.trim(), ln, col);
     m.code = code;
+    Some(m)
+}
+
+/// MSBuild's canonical form: `path(12,5): error CS1002: msg [project]`, `path(12,5,12,9): …`,
+/// or `path : error NU1101: msg [project]` for a project-level message (no position).
+/// The path may contain spaces (`C:\Users\Jane Doe\…`); "error" / "warning" are never localized.
+fn msbuild_line(line: &str) -> Option<RawMessage> {
+    let line = line.trim();
+    // The project the message came from, appended by the console logger.
+    let line = match line.rfind(" [") {
+        Some(i) if line.ends_with(']') => &line[..i],
+        _ => line,
+    };
+    let (head, severity, rest) =
+        [(" error ", Severity::Error), (" warning ", Severity::Warning)].into_iter().find_map(|(word, severity)| {
+            let i = line.find(&format!(":{word}"))?;
+            Some((&line[..i], severity, &line[i + word.len() + 1..]))
+        })?;
+    let (code, msg) = rest.split_once(':')?;
+    let code = code.trim();
+    if code.is_empty() || code.contains(' ') {
+        return None;
+    }
+    let head = head.trim_end();
+    let (path, pos) = match head.strip_suffix(')').and_then(|h| h.rsplit_once('(')) {
+        Some((path, pos)) => (path, pos.split(',').map(num).collect::<Vec<_>>()),
+        None => (head, Vec::new()),
+    };
+    let at = |i: usize| pos.get(i).copied().flatten();
+    // `MSBUILD : error MSB1009` and the like name no file.
+    let file = path.rsplit(['/', '\\']).next().is_some_and(|n| n.contains('.'));
+    let mut m = RawMessage::new(severity, msg.trim(), ColUnit::Utf16);
+    if file {
+        m.path = Some(path.trim().to_owned());
+        (m.line, m.col, m.end_line, m.end_col) = (at(0), at(1), at(2), at(3));
+    }
+    m.code = Some(code.to_owned());
     Some(m)
 }
 
@@ -424,6 +443,7 @@ impl OutputParser {
             Format::Tsc => tsc_line(&line),
             Format::Go => go_line(&line),
             Format::Gcc => gcc_line(&line),
+            Format::Msbuild => msbuild_line(&line),
             Format::Cargo => None,
         };
         if let Some(msg) = parsed {
@@ -479,6 +499,20 @@ mod tests {
         assert_eq!(out[0].text, "cannot find symbol\nsymbol:   class Foo\nlocation: class a.A");
         assert_eq!(pos(&out[1]), (Severity::Warning, "/p/src/main/java/a/B.java", 3, Some(8)));
         assert_eq!(out[1].unit, ColUnit::Char);
+    }
+
+    #[test]
+    fn maven_windows_paths_drop_the_slash_before_the_drive() {
+        let out = parse(
+            Format::Maven,
+            "[ERROR] /C:/dev/p/src/main/java/a/A.java:[18,41] package a.b does not exist\n\
+             [ERROR] C:\\dev\\p\\B.java:[3,8] cannot find symbol\n\
+             [ERROR] file:///C:/dev/p/K.kt:4:9 Unresolved reference 'x'.\n",
+        );
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(pos(&out[0]), (Severity::Error, "C:/dev/p/src/main/java/a/A.java", 18, Some(41)));
+        assert_eq!(pos(&out[1]), (Severity::Error, "C:\\dev\\p\\B.java", 3, Some(8)));
+        assert_eq!(pos(&out[2]), (Severity::Error, "C:/dev/p/K.kt", 4, Some(9)));
     }
 
     #[test]
@@ -555,6 +589,27 @@ mod tests {
         assert!(a.messages.is_empty() && a.console.as_deref() == Some(""));
         let plain = p.feed("   Compiling p v0.1.0 (/w/crates/p)");
         assert!(plain.messages.is_empty() && plain.console.is_none());
+    }
+
+    #[test]
+    fn msbuild_canonical_messages() {
+        let out = parse(
+            Format::Msbuild,
+            "  Determining projects to restore...\n\
+             C:\\Users\\Jane Doe\\App\\Program.cs(12,5): error CS1002: ; expected [C:\\Users\\Jane Doe\\App\\App.csproj]\n\
+             /p/App/Models/User.cs(3,8,3,12): warning CS0168: The variable 'e' is declared but never used [/p/App/App.csproj]\n\
+             /p/App/App.csproj : error NU1101: Unable to find package Foo. [/p/App/App.csproj]\n\
+             MSBUILD : error MSB1009: Project file does not exist.\n\
+             Build FAILED.\n",
+        );
+        assert_eq!(out.len(), 4, "{out:?}");
+        assert_eq!(pos(&out[0]), (Severity::Error, "C:\\Users\\Jane Doe\\App\\Program.cs", 12, Some(5)));
+        assert_eq!((out[0].code.as_deref(), out[0].text.as_str()), (Some("CS1002"), "; expected"));
+        assert_eq!(pos(&out[1]), (Severity::Warning, "/p/App/Models/User.cs", 3, Some(8)));
+        assert_eq!((out[1].end_line, out[1].end_col), (Some(3), Some(12)));
+        assert_eq!((out[2].path.as_deref(), out[2].line), (Some("/p/App/App.csproj"), None));
+        assert_eq!(out[2].text, "Unable to find package Foo.");
+        assert_eq!((out[3].path.as_deref(), out[3].code.as_deref()), (None, Some("MSB1009")));
     }
 
     #[test]

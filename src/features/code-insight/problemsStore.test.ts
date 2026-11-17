@@ -4,8 +4,11 @@ import {
   applyDiagnosticsEvent,
   clearProblems,
   countSeverities,
+  currentProblemsPath,
   fileDiagnostics,
+  filePaths,
   mergeDiagnostics,
+  problemsReport,
   profiledProblems,
   projectCounts,
   useProblems,
@@ -103,5 +106,48 @@ describe("local inspections (issue #42)", () => {
     } finally {
       off();
     }
+  });
+});
+
+describe("currentProblemsPath", () => {
+  it("follows a non-text tab such as a notebook, else the text editor", () => {
+    expect(currentProblemsPath(null, { kind: "notebook", path: "/p/a.ipynb" })).toBe("/p/a.ipynb");
+    expect(currentProblemsPath("/p/old.py", { kind: "notebook", path: "/p/a.ipynb" })).toBe("/p/a.ipynb");
+    expect(currentProblemsPath("/p/a.py", { kind: "file", path: "/p/a.py" })).toBe("/p/a.py");
+    expect(currentProblemsPath("/p/a.py", null)).toBe("/p/a.py");
+    expect(currentProblemsPath(null, { kind: "welcome" })).toBeNull();
+  });
+});
+
+describe("filePaths", () => {
+  it("includes a notebook's cell documents", () => {
+    const map = new Map([
+      ["/p/a.ipynb", new Map([["x", [d(0)]]])],
+      ["vscode-notebook-cell:/p/a.ipynb#c1", new Map([["x", [d(1)]]])],
+      ["vscode-notebook-cell:/p/my%20nb.ipynb#c2", new Map([["x", [d(2)]]])],
+      ["vscode-notebook-cell:/C:/w/b.ipynb#c3", new Map([["x", [d(3)]]])],
+      ["/p/a.py", new Map([["x", [d(4)]]])],
+    ]);
+    expect(filePaths(map, "/p/a.ipynb")).toEqual(["/p/a.ipynb", "vscode-notebook-cell:/p/a.ipynb#c1"]);
+    expect(filePaths(map, "/p/my nb.ipynb")).toEqual(["vscode-notebook-cell:/p/my%20nb.ipynb#c2"]);
+    expect(filePaths(map, "C:/w/b.ipynb")).toEqual(["vscode-notebook-cell:/C:/w/b.ipynb#c3"]);
+    expect(filePaths(map, "/p/a.py")).toEqual(["/p/a.py"]);
+    expect(filePaths(map, "/p/none.py")).toEqual([]);
+  });
+});
+
+describe("problemsReport", () => {
+  it("lists errors before warnings with their places, leaving out hints, up to a limit", () => {
+    let map = mergeDiagnostics(new Map(), "/p/src/a.ts", "tsc", [d(3, "warning", "ts"), d(0, "hint")]);
+    map = mergeDiagnostics(map, "/p/src/b.ts", "tsc", [d(9, "error"), d(1, "error")]);
+    expect(problemsReport(map, "/p")).toBe(
+      [
+        "src/b.ts:2:1: error: line 1 (tsc)",
+        "src/b.ts:10:1: error: line 9 (tsc)",
+        "src/a.ts:4:1: warning: line 3 (ts)",
+      ].join("\n"),
+    );
+    expect(problemsReport(map, "/p", 1)).toBe("src/b.ts:2:1: error: line 1 (tsc)\n… 2 more");
+    expect(problemsReport(mergeDiagnostics(new Map(), "/p/a", "x", [d(0, "info")]), "/p")).toBeNull();
   });
 });

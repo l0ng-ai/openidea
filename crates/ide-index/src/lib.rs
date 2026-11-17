@@ -21,6 +21,7 @@ mod matching;
 mod store;
 mod worker;
 
+pub use filter::walk_skips;
 pub use worker::MAX_SYMBOL_FILE;
 use worker::{Job, MAX_RECENT, Shared};
 
@@ -47,6 +48,17 @@ pub struct SymbolMatch {
     pub score: u32,
     /// Matched char indices within `name`.
     pub indices: MatchIndices,
+}
+
+/// A class declaration of the index and the base names written in its source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassDecl {
+    pub path: PathBuf,
+    pub name: String,
+    /// Selection range: the class name's identifier.
+    pub range: Range,
+    /// Bare base names, as written (`class X(pkg.mod.Base)` keeps `Base`).
+    pub bases: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -199,16 +211,38 @@ impl ProjectIndex {
             return None;
         }
         Some(
-            file.symbols
-                .iter()
+            data.symbols_of(file)
                 .map(|s| ide_language::SymbolTag {
                     name: s.name.to_string(),
                     kind: s.kind,
-                    container: s.container.as_ref().map(ToString::to_string),
+                    container: s.container.map(ToString::to_string),
                     range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
                 })
                 .collect(),
         )
+    }
+
+    /// Every class declaration of the indexed project (content roots included) with the
+    /// base names written in its source, in path order. The UI builds an inheritance
+    /// graph from it, so it needs no language server's type hierarchy.
+    pub fn inheritance(&self) -> Vec<ClassDecl> {
+        let data = self.shared.data.read();
+        let mut out = Vec::new();
+        for entry in data.files.iter().flatten() {
+            for s in data.symbols_of(entry) {
+                if s.kind != SymbolKind::Class {
+                    continue;
+                }
+                out.push(ClassDecl {
+                    path: entry.path.clone(),
+                    name: s.name.to_owned(),
+                    range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
+                });
+            }
+        }
+        out
     }
 
     /// Bounded file inventory for background plugin indexers; honors the same
@@ -231,7 +265,7 @@ impl ProjectIndex {
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_files(&d, &matching::Recents { paths: &recent }, query, limit)
+        matching::find_files(&d, &matching::Recents::new(&recent), query, limit)
     }
 
     /// All indexed files with this exact basename, for resolving printed source locations.
@@ -274,7 +308,7 @@ impl ProjectIndex {
     pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_symbols(&d, &matching::Recents { paths: &recent }, query, filter, limit)
+        matching::find_symbols(&d, &matching::Recents::new(&recent), query, filter, limit)
     }
 
     /// Scoped symbol search with cooperative interruption, including lock waits.
@@ -303,15 +337,7 @@ impl ProjectIndex {
                 break data;
             }
         };
-        matching::find_symbols_until(
-            &data,
-            &matching::Recents { paths: &recent },
-            query,
-            filter,
-            limit,
-            include,
-            stopped,
-        )
+        matching::find_symbols_until(&data, &matching::Recents::new(&recent), query, filter, limit, include, stopped)
     }
 
     /// Symbols named exactly `name` (of `kind`, if given): `.card` selectors for `class="card"`.
@@ -330,6 +356,11 @@ impl ProjectIndex {
         limit: usize,
     ) -> Vec<SymbolMatch> {
         matching::symbols_named_within(&self.shared.data.read(), name, kind, roots, limit)
+    }
+
+    /// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per name.
+    pub fn symbols_named_any(&self, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {
+        matching::symbols_named_any(&self.shared.data.read(), names, root, limit)
     }
 
     /// Incrementally re-indexes changed paths (called from the vfs watcher).
@@ -520,10 +551,12 @@ pub mod bench_support {
                         kind: if k % 3 == 0 { SymbolKind::Class } else { SymbolKind::Method },
                         container: (k % 3 != 0).then(|| format!("{w}{s}")),
                         range: Range::default(),
+                        bases: Vec::new(),
                     })
                     .collect();
                 let record = FileRecord { symbols, ..Default::default() };
-                data.insert(FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record));
+                let (entry, symbols) = FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record);
+                data.insert(entry, symbols);
             }
             let recent = data.paths().take(MAX_RECENT).cloned().collect();
             Self { data, recent }
@@ -538,7 +571,7 @@ pub mod bench_support {
         }
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_files(&self.data, &matching::Recents { paths: &self.recent }, query, limit)
+            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, limit)
         }
 
         pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
@@ -546,7 +579,7 @@ pub mod bench_support {
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
-            matching::find_symbols(&self.data, &matching::Recents { paths: &self.recent }, query, filter, limit)
+            matching::find_symbols(&self.data, &matching::Recents::new(&self.recent), query, filter, limit)
         }
     }
 }

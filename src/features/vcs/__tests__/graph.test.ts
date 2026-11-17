@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { compactLanes, computeGraph, straightenLaneChanges, type GraphRow } from "../graph";
+import {
+  compactLanes,
+  computeGraph,
+  pruneFilteredEdges,
+  straightenLaneChanges,
+  type GraphCommit,
+  type GraphRow,
+} from "../graph";
 
 const c = (id: string, ...parents: string[]) => ({ id, parents });
 
@@ -60,6 +67,53 @@ describe("computeGraph", () => {
     const { rows } = computeGraph([c("t", "x"), c("m2", "b", "x"), c("x", "b"), c("b")]);
     const m2 = rows[1]!;
     expect(m2.down).toContainEqual({ from: m2.lane, to: 0, color: rows[0]!.color });
+  });
+});
+
+describe("pruneFilteredEdges", () => {
+  // A filtered log: hidden commits connect the rows to their nearest matching
+  // ancestors, one dashed edge per merge path (`filtered` kind).
+  const filtered = (id: string, ...parents: string[]): GraphCommit => ({
+    id,
+    parents,
+    dashed: parents.map(() => true),
+    edgeTypes: parents.map(() => "filtered" as const),
+  });
+  const shown = (id: string, parent: string): GraphCommit => ({
+    id,
+    parents: [parent],
+    dashed: [false],
+    edgeTypes: ["normal" as const],
+  });
+
+  it("drops filtered ancestors that another connection of the commit already reaches", () => {
+    // A merge pyramid under an author filter: every hidden merge path's nearest match
+    // is a different row, while v1's own chain already reaches the rest (#2670).
+    const commits = [
+      filtered("v0", "v1", "v2", "v3", "v4"),
+      shown("v1", "v2"),
+      shown("v2", "v3"),
+      shown("v3", "v4"),
+      shown("v4", "base"),
+      c("base"),
+    ];
+    // Without pruning each dashed connection opens a lane of its own.
+    expect(computeGraph(commits).rows[0]!.width).toBe(4);
+    const pruned = pruneFilteredEdges(commits);
+    expect(pruned[0]!.parents).toEqual(["v1"]);
+    expect(computeGraph(pruned).rows[0]!.width).toBe(1);
+  });
+
+  it("keeps filtered ancestors that no other connection reaches", () => {
+    // Two sibling side branches match on different commits: both edges are needed.
+    const commits = [filtered("tip", "left", "right"), shown("left", "base"), shown("right", "base"), c("base")];
+    expect(pruneFilteredEdges(commits)).toEqual(commits);
+  });
+
+  it("keeps real merge edges even when one parent reaches the other", () => {
+    // A full history has no filtered edges; `git log --graph` draws both parents.
+    const commits = [c("m", "b", "f"), c("f", "a"), c("b", "a"), c("a")];
+    expect(pruneFilteredEdges(commits)).toEqual(commits);
   });
 });
 

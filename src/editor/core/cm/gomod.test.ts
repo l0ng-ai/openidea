@@ -33,6 +33,21 @@ describe("goModParser", () => {
     ]);
   });
 
+  it("highlights tool, godebug and ignore directives", () => {
+    const state = initialGoModState();
+    expect(tokenize("tool golang.org/x/tools/cmd/stringer", state)).toEqual([
+      { text: "tool", token: "keyword" },
+      { text: "golang.org/x/tools/cmd/stringer", token: "string" },
+    ]);
+    expect(tokenize("tool (", state)[0]).toEqual({ text: "tool", token: "keyword" });
+    expect(tokenize("\tgithub.com/air-verse/air", state)).toEqual([
+      { text: "github.com/air-verse/air", token: "string" },
+    ]);
+    tokenize(")", state);
+    expect(tokenize("godebug default=go1.21", state)[0]).toEqual({ text: "godebug", token: "keyword" });
+    expect(tokenize("ignore ./node_modules", state)[0]).toEqual({ text: "ignore", token: "keyword" });
+  });
+
   it("highlights require blocks with module paths and versions", () => {
     const state = initialGoModState();
 

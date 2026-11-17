@@ -1,7 +1,10 @@
-import { pasteClipboardFiles, readClipboardText } from "@/platform/clipboard";
+import { pasteClipboardFiles, readClipboardPlainText, readClipboardText } from "@/platform/clipboard";
 import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
+import type { Terminal } from "@xterm/xterm";
+import { dialectOf, quoteForShell } from "./quote";
 
 export interface TerminalPasteTarget {
   id: TerminalId;
@@ -14,21 +17,20 @@ export interface TerminalPasteTarget {
 type Target = () => TerminalPasteTarget | null;
 
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+const ESC = "\x1b";
+
+/**
+ * xterm.js 6.0 brackets pasted text as it is, so an ESC[201~ inside it ends the bracket early and
+ * what follows is typed, Enter included. Shows each ESC as U+241B (␛), as xterm.js 6.1 does,
+ * while the shell has bracketed paste on.
+ */
+export function pasteIntoTerminal(term: Pick<Terminal, "paste" | "modes">, text: string): void {
+  term.paste(term.modes.bracketedPasteMode ? text.replaceAll(ESC, "\u241b") : text);
+}
 
 function pathsText(paths: readonly string[], target: TerminalPasteTarget): string {
-  const shell = target.shell.toLowerCase().replace(/\.exe$/, "");
-  return paths
-    .map((path) => {
-      if (shell === "cmd") {
-        if (/[%!"\r\n]/.test(path))
-          throw new Error(tx("Cannot paste this path safely in cmd.exe. Use PowerShell or a POSIX shell."));
-        return `"${path}"`;
-      }
-      if (shell === "powershell" || shell === "pwsh") return `'${path.replaceAll("'", "''")}'`;
-      if (shell === "fish") return `'${path.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
-      return `'${path.replaceAll("'", "'\\''")}'`;
-    })
-    .join(" ");
+  const dialect = dialectOf(target.shell, false);
+  return paths.map((path) => quoteForShell(path, dialect, true)).join(" ");
 }
 
 function isMedia(type: string): boolean {
@@ -106,6 +108,13 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
         return;
       }
     }
+    const pasted = transfer?.getData("text/plain");
+    if (!event.defaultPrevented && pasted?.includes(ESC)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (alive) paste(pasted);
+      return;
+    }
     pasteClipboardFiles(event, (text) => {
       if (alive) paste(text);
     });
@@ -120,6 +129,15 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
 export async function pasteTerminalClipboard(paste: (text: string) => void, getTarget?: Target) {
   const target = getTarget?.();
   try {
+    // WebKitGTK pastes nothing from a menu through either WebView path; the native
+    // clipboard has the text. An image-only clipboard still takes the paths below.
+    if (target && usePlatform.getState().os === "linux") {
+      const text = await readClipboardPlainText().catch(() => "");
+      if (text) {
+        if (target.current()) paste(text);
+        return;
+      }
+    }
     // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
     if (target && document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
     const images =
@@ -130,7 +148,7 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
           )
         : null;
     const text = target?.remote
-      ? ((await navigator.clipboard?.readText().catch(() => "")) ?? "")
+      ? await readClipboardPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
     if (target && !target.current()) return;
     if (text) {

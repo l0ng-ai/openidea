@@ -121,6 +121,7 @@ export class Server {
   onEvent: (window: string | null, event: unknown) => void = () => {};
 
   private closing: Promise<void> | undefined;
+  // A plain field, not a parameter property: the evals load this file with Node's type stripping.
   private readonly child: ChildProcessWithoutNullStreams;
 
   private constructor(child: ChildProcessWithoutNullStreams) {

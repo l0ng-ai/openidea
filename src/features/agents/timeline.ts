@@ -91,15 +91,6 @@ export function workParts(s: WorkSummary): Array<{ text: string; count: number }
   return parts.filter(([, , n]) => n > 0).map(([one, many, count]) => ({ text: count === 1 ? one : many, count }));
 }
 
-/** The running tool call of a run, if any: what the agent is doing right now. */
-export function currentTool(entries: readonly AgentEntry[]): ToolEntry | null {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]!;
-    if (e.type === "tool" && (e.status === "running" || e.status === "pending")) return e;
-  }
-  return null;
-}
-
 /** A finished turn: the message that asked it at `user`, its work in `[user + 1, reply)`. */
 export interface FoldedTurn {
   user: number;

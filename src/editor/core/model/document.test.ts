@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorState, StateEffect } from "@codemirror/state";
+import { showTooltip, type Tooltip } from "@codemirror/view";
 import { indentUnit, language as languageFacet } from "@codemirror/language";
-import { HEAVY_LIMIT, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
+import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
@@ -14,6 +15,15 @@ const host: SlotHost = {
   onSelection: () => {},
   onUserEdit: () => {},
   onContextMenu: () => {},
+};
+
+const testTooltip: Tooltip = {
+  pos: 0,
+  create: () => {
+    const dom = document.createElement("div");
+    dom.className = "test-tab-tooltip";
+    return { dom };
+  },
 };
 
 async function settle() {
@@ -38,6 +48,33 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it("emits a versioned document change from a real local edit", async () => {
+    const { manager, frame } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    const events: unknown[] = [];
+    const off = onEditorEvent((event) => {
+      if (event.type === "docChanged") events.push(event);
+    });
+    try {
+      slot.dispatchLocal({ changes: { from: 1, to: 2, insert: "XYZ" }, userEvent: "input.type" });
+      await frame();
+      expect(events).toEqual([
+        {
+          type: "docChanged",
+          doc: model.doc,
+          path: "/p/a.txt",
+          baseVersion: 0,
+          version: 1,
+          changes: [{ from: 1, to: 2, insert: "XYZ" }],
+        },
+      ]);
+    } finally {
+      off();
+      manager.stop();
+    }
+  });
+
   it("requests Kotlin declaration highlights while retaining its CodeMirror language", async () => {
     const { backend, manager, frame } = setup({ "/p/Palette.kt": "class Greeter { fun greet() {} }" });
     const highlights = vi.spyOn(backend, "highlights").mockResolvedValue({ kinds: ["function"], data: [20, 25, 0] });
@@ -332,6 +369,29 @@ describe("DocumentManager + slots", () => {
     expect(view.dom.isConnected).toBe(true);
     expect(shown).toContain(true);
     slot.dispose();
+    manager.stop();
+  });
+
+  it("takes a hidden tab's tooltips off the page with its view, and back when it shows again (#3647)", async () => {
+    const { manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    const other = new EditorSlot(model, "t2", host);
+    const tooltip = () => document.querySelector(".cm-tooltip.test-tab-tooltip");
+    const view = slot.mount(document.body);
+    // Any tooltip of the tab (a hint, hover, completion…): they live in `document.body`, outside the view.
+    view.dispatch({ effects: StateEffect.appendConfig.of(showTooltip.of(testTooltip)) });
+    expect(tooltip()).not.toBeNull();
+    slot.unmount();
+    other.mount(document.body);
+    expect(tooltip()).toBeNull();
+    other.unmount();
+    expect(slot.mount(document.body)).toBe(view);
+    expect(tooltip()).not.toBeNull();
+    // Disposing the tab leaves nothing of it in the page.
+    slot.dispose();
+    other.dispose();
+    expect(tooltip()).toBeNull();
     manager.stop();
   });
 

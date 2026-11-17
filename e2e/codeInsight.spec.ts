@@ -4,6 +4,7 @@
  * by `crates/ide-lsp/tests`.
  */
 import type { Locator, Page } from "@playwright/test";
+import type { CompletionItem } from "../src/bindings";
 import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 const ROOT = "/dev/acme-api";
@@ -70,13 +71,225 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const method = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^toDto$/ }) });
   await expect(method.locator(".cm-completionDetail")).toHaveText("()");
   await expect(method.locator(".cm-lsp-type")).toHaveText("OrderDto");
+  // CodeMirror anchors the popup at the completion's `from` (the word start), and the kind icon
+  // hangs left of the label. With no prefix typed yet `from` is the caret, so the label's x must
+  // match the caret column rather than the popup's left edge.
+  const wordStart = await editor.locator(".cm-content").evaluate(async (content) => {
+    const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+    const { EditorView } = await import(/* @vite-ignore */ viewModule);
+    const view = EditorView.findFromDOM(content as HTMLElement)!;
+    return view.coordsAtPos(view.state.selection.main.head)!.left;
+  });
+  const label = await method.locator(".cm-completionLabel").boundingBox();
+  // Subpixel rounding differs per platform/font; a mis-set inset is a whole icon column off.
+  expect(Math.abs(label!.x - wordStart)).toBeLessThanOrEqual(2);
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
+  // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
+  const footerBelowList = await popup.evaluate((t) => {
+    const list = t.querySelector(":scope > ul")!;
+    const footer = t.querySelector(":scope > .cm-lsp-completion-footer")!;
+    return footer.getBoundingClientRect().top >= list.getBoundingClientRect().bottom - 1;
+  });
+  expect(footerBelowList).toBe(true);
   await page.keyboard.press("Enter");
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
 });
+
+test("documentation shows beside the lookup instead of being clipped by it", async ({ workbench: page }, info) => {
+  const editor = await openSample(page);
+  await page.evaluate(async () => {
+    // Long enough for the pane to reach its max-width: a short doc leaves it at
+    // `width: max-content`, so the placement assertions would never exercise the room calculation.
+    const longDocs =
+      "Computes the order total including tax, discounts and shipping, rounded to the currency's scale. " +
+      "The result is cached until the order changes, so callers should not hold on to it across edits; " +
+      "ask for a fresh value after every update.";
+    const item = (label: string, detail: string) => ({
+      label,
+      labelDetail: "()",
+      detail,
+      kind: "method",
+      documentation: { kind: "markdown", value: `Docs for **${label}**. ${longDocs}` },
+      sortText: null,
+      filterText: null,
+      preselect: false,
+      deprecated: false,
+      insertText: `${label}()`,
+      isSnippet: false,
+      replaceRange: null,
+      replaceRangeTab: null,
+      additionalEdits: [],
+      commitCharacters: [],
+      command: null,
+      data: null,
+      server: 1,
+    });
+    window.__ipc.handlers.lsp_completion = () => ({
+      isIncomplete: false,
+      items: [item("total", "BigDecimal"), item("toDto", "OrderDto")],
+    });
+    const projectPath = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ projectPath);
+    const settings = structuredClone(useProject.getState().settings ?? {});
+    const editor = settings.editor ?? {};
+    settings.editor = {
+      ...editor,
+      completion: { ...editor.completion, showDocumentation: true, documentationDelay: 0 },
+    };
+    useProject.setState({ settings });
+  });
+  const popup = page.locator(".cm-tooltip-autocomplete");
+
+  const openLookup = async () => {
+    await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("order.");
+    await page.keyboard.press("Control+Space");
+    await expect(popup.getByText("total", { exact: true })).toBeVisible();
+    await expect(page.locator(".cm-completionInfo")).toContainText("Docs for");
+  };
+
+  const geometry = () =>
+    page.evaluate(() => {
+      const info = document.querySelector(".cm-completionInfo") as HTMLElement;
+      const list = (document.querySelector(".cm-tooltip-autocomplete") as HTMLElement).getBoundingClientRect();
+      const rect = info.getBoundingClientRect();
+      const overlapX = Math.max(0, Math.min(rect.right, list.right) - Math.max(rect.left, list.left));
+      const overlapY = Math.max(0, Math.min(rect.bottom, list.bottom) - Math.max(rect.top, list.top));
+      const side = info.classList.contains("cm-completionInfo-left")
+        ? "left"
+        : info.classList.contains("cm-completionInfo-right")
+          ? "right"
+          : "none";
+      return {
+        overlap: overlapX * overlapY,
+        visible: !!document.elementFromPoint(rect.left + 4, rect.top + 4)?.closest(".cm-completionInfo"),
+        inside: rect.left >= 0 && rect.right <= document.documentElement.clientWidth,
+        side,
+      };
+    });
+
+  await page.setViewportSize({ width: 760, height: 900 });
+  await openLookup();
+  await page.screenshot({ path: info.outputPath("completion-documentation.png"), animations: "disabled" });
+  const narrow = await geometry();
+  expect(narrow.overlap).toBe(0);
+  expect(narrow.visible).toBe(true);
+  expect(narrow.inside).toBe(true);
+  expect(narrow.side).toBe("left");
+
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await openLookup();
+  const wide = await geometry();
+  expect(wide.overlap).toBe(0);
+  expect(wide.visible).toBe(true);
+  expect(wide.inside).toBe(true);
+  expect(wide.side).toBe("right");
+});
+
+test("typing closes an open documentation tooltip", async ({ workbench: page }) => {
+  const editor = await openSample(page);
+  await page.evaluate(() => {
+    const item = (label: string) => ({
+      label,
+      labelDetail: "()",
+      detail: "Unit",
+      kind: "method",
+      documentation: { kind: "markdown", value: `Docs for **${label}**.` },
+      sortText: null,
+      filterText: null,
+      preselect: false,
+      deprecated: false,
+      insertText: `${label}()`,
+      isSnippet: false,
+      replaceRange: null,
+      replaceRangeTab: null,
+      additionalEdits: [],
+      commitCharacters: [],
+      command: null,
+      data: null,
+      server: 1,
+    });
+    window.__ipc.handlers.lsp_completion = () => ({
+      isIncomplete: false,
+      items: [item("service"), item("serviceName"), item("setUp")],
+    });
+    window.__ipc.handlers.lsp_hover = () => ({
+      contents: { kind: "markdown", value: "Docs for **service**." },
+      range: null,
+    });
+  });
+  const geometry = await editor.locator(".cm-content").evaluate(async (content) => {
+    const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+    const { EditorView } = await import(/* @vite-ignore */ viewModule);
+    const view = EditorView.findFromDOM(content as HTMLElement)!;
+    const find = view.state.doc.toString().indexOf("find");
+    if (find < 0 || !view.coordsAtPos(find)) throw new Error('the fixture has no visible "find"');
+    const word = view.coordsAtPos(find)!;
+    view.dispatch({ selection: { anchor: find + 5 } });
+    view.focus();
+    return { wordX: word.left + 2, wordY: (word.top + word.bottom) / 2 };
+  });
+  await page.mouse.move(geometry.wordX, geometry.wordY);
+  const tooltip = page.locator(".cm-tooltip-hover");
+  await expect(tooltip).toBeVisible();
+  await page.keyboard.type("se");
+  const popup = page.locator(".cm-tooltip-autocomplete");
+  await expect(popup.getByText("service", { exact: true })).toBeVisible();
+  await expect(tooltip).toHaveCount(0);
+});
+
+for (const key of ["Enter", "Tab"]) {
+  for (const prefix of ["", "v"]) {
+    test(`${key} leaves the caret after a field snippet at root.${prefix}`, async ({ workbench: page }, info) => {
+      const editor = await openSample(page);
+      await page.evaluate(() => {
+        const item = (label: string): CompletionItem => ({
+          label,
+          labelDetail: null,
+          labelDescription: "int",
+          detail: "int",
+          kind: "field",
+          documentation: null,
+          sortText: null,
+          filterText: null,
+          preselect: label === "val",
+          deprecated: false,
+          insertText: label,
+          isSnippet: true,
+          replaceRange: null,
+          replaceRangeTab: null,
+          additionalEdits: [],
+          commitCharacters: [],
+          command: null,
+          data: null,
+          server: 1,
+        });
+        window.__ipc.handlers.lsp_completion = () => ({ isIncomplete: false, items: [item("val"), item("value")] });
+      });
+      await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+      await page.keyboard.press("End");
+      await page.keyboard.press("Enter");
+      await page.keyboard.type(`int a = root.${prefix}`);
+      await page.keyboard.press("Control+Space");
+      const popup = page.locator(".cm-tooltip-autocomplete");
+      await expect(popup.getByText("val", { exact: true })).toBeVisible();
+      // CodeMirror ignores acceptance during its 75 ms lookup interaction delay.
+      await page.waitForTimeout(100);
+      await page.keyboard.press(key);
+      await expect(popup).toBeHidden();
+      await page.screenshot({ path: info.outputPath("accepted-completion.png"), animations: "disabled" });
+      await page.keyboard.type(";");
+      await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*int a = root\.val;$/);
+    });
+  }
+}
 
 test("⌘B goes to the declaration in another file", async ({ workbench: page }) => {
   const editor = await openSample(page);

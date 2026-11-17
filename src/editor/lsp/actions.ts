@@ -2,7 +2,8 @@
 import { isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
-import { activeEditor, editorsFor, registerSaveParticipant, type TextEditorHandle } from "@/editor/api";
+import { activeEditor, editorsFor, registerSaveParticipant, whenSynced, type TextEditorHandle } from "@/editor/api";
+import { call, commands } from "@/platform/ipc";
 import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { validateLanguages } from "@/platform/languageSettings";
@@ -18,7 +19,7 @@ import { docOf } from "./lsp";
 import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
-import { formatDocument, reformatDialog } from "./format";
+import { formatDocument, reformatDialog, type FormatResult } from "./format";
 import { showHint } from "./hint";
 import {
   refactorThis,
@@ -30,7 +31,7 @@ import {
 import { evaluateWhen } from "@/platform/context";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
-export const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 /**
  * Languages whose servers offer Generate (constructors, accessors, overrides…).
@@ -76,20 +77,32 @@ async function mountedEditor(path: string, frames = 60): Promise<TextEditorHandl
   return null;
 }
 
+/** The editor of `path` (opened first), else the active editor. */
+async function editorAt(path: unknown): Promise<TextEditorHandle | null> {
+  let ed = activeEditor();
+  if (typeof path === "string" && ed?.ctx.path !== path) {
+    await maybeEditorService()?.openFile(path, { focus: true });
+    ed = await mountedEditor(path);
+  }
+  return ed ?? null;
+}
+
 /** Runs on the file `{ path }` (opened in the editor first, as from the project view), else on the active editor. */
 function inFile(run: (view: EditorView) => unknown): Action["run"] {
   return async ({ arg }) => {
-    const path = typeof arg === "string" ? arg : (arg as { path?: unknown } | undefined)?.path;
-    let ed = activeEditor();
-    if (typeof path === "string" && ed?.ctx.path !== path) {
-      await maybeEditorService()?.openFile(path, { focus: true });
-      ed = await mountedEditor(path);
-    }
+    const ed = await editorAt(typeof arg === "string" ? arg : (arg as { path?: unknown } | undefined)?.path);
     if (ed) await run(ed.view);
   };
 }
 
 const reformat = (v: EditorView) => formatDocument(v, { explicit: true });
+/** WebStorm's Fix ESLint Problems: vscode-eslint's fix-all for the whole file. */
+const fixEslintProblems = (v: EditorView) =>
+  runKindAction(v, "source.fixAll.eslint", {
+    whole: true,
+    none: "No ESLint problems to fix",
+    label: "Fix ESLint Problems",
+  });
 const optimizeImports = (v: EditorView) =>
   runKindAction(v, "source.organizeImports", {
     whole: true,
@@ -97,17 +110,49 @@ const optimizeImports = (v: EditorView) =>
     label: "Optimize Imports",
   });
 
-interface CleanupOptions {
+export interface CleanupOptions {
   fixAll?: boolean;
   optimizeImports?: boolean;
   reformat?: boolean;
+  /** Reformats only the lines changed since the last commit (IDEA's "Only VCS changed text"). */
+  changedTextOnly?: boolean;
 }
 
-/** Code Cleanup of one document: the server's fix-all, organize imports, then reformat. */
-async function cleanup(view: EditorView, o: CleanupOptions) {
+/** The lines changed since the last commit, as document ranges; none outside version control. */
+async function vcsChangedRanges(view: EditorView): Promise<Array<{ from: number; to: number }>> {
+  const path = docOf(view)?.path;
+  if (!path) return [];
+  // The hunks are computed against the backend's copy of the text.
+  await whenSynced(view);
+  let hunks;
+  try {
+    hunks = await call(commands.vcsLineHunks(path));
+  } catch {
+    return [];
+  }
+  const doc = view.state.doc;
+  return hunks
+    .filter((h) => h.lines > 0 && h.start < doc.lines)
+    .map((h) => ({ from: doc.line(h.start + 1).from, to: doc.line(Math.min(h.start + h.lines, doc.lines)).to }));
+}
+
+/** Code Cleanup of one document: the server's fix-all, organize imports, then reformat (whose result it returns). */
+async function cleanup(view: EditorView, o: CleanupOptions): Promise<FormatResult | null> {
   if (o.fixAll !== false) await applyKindSilently(view, "source.fixAll");
   if (o.optimizeImports !== false) await applyKindSilently(view, "source.organizeImports");
-  if (o.reformat !== false) await formatDocument(view, { explicit: false });
+  if (o.reformat === false) return null;
+  const ranges = o.changedTextOnly ? await vcsChangedRanges(view) : undefined;
+  return formatDocument(view, { explicit: false, selectionOnly: false, ranges });
+}
+
+/**
+ * Code Cleanup of the file at `path`, opened in the editor first: the batch step of
+ * Code Cleanup and of Reformat Code on a directory. The reformat's result, or `null`
+ * when the file has no text editor or reformatting was not asked for.
+ */
+export async function cleanupFile(path: string, o: CleanupOptions): Promise<FormatResult | null> {
+  const ed = await editorAt(path);
+  return ed && ed.ctx.path === path ? cleanup(ed.view, o) : null;
 }
 
 /** Code action titles of Implement Methods (⌃I) and Override Methods (⌃O). */
@@ -217,6 +262,9 @@ export function registerLspActions(): () => void {
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),
     ),
+    editorAction("code.fixEslintProblems", "Fix ESLint Problems", "Code", fixEslintProblems, {
+      keywords: ["eslint", "lint", "fix all"],
+    }),
     editorAction("code.optimizeImports", "Optimize Imports", "Code", optimizeImports, {
       keywords: ["organize imports"],
     }),
@@ -310,6 +358,9 @@ export function registerLspActions(): () => void {
     editorAction("refactor.extractParameter", "Introduce Parameter…", "Refactor", (v) =>
       runRefactoring(v, "extractParameter"),
     ),
+    editorAction("refactor.extractInterface", "Extract Interface…", "Refactor", (v) =>
+      runRefactoring(v, "extractInterface"),
+    ),
     editorAction("refactor.move", "Move…", "Refactor", (v) => runRefactoring(v, "move")),
     editorAction("refactor.changeSignature", "Change Signature…", "Refactor", (v) =>
       runRefactoring(v, "changeSignature"),
@@ -357,8 +408,8 @@ export function registerLspActions(): () => void {
       description: "Shows `{ text, tone? }` as a transient hint at the caret of the active editor.",
       run: ({ arg }) => {
         const view = activeEditor()?.view;
-        const a = (arg ?? {}) as { text?: string; tone?: "info" | "warning" | "error" };
-        if (view && a.text) showHint(view, a.text, { tone: a.tone });
+        const a = (arg ?? {}) as { text?: string; tone?: "info" | "warning" | "error"; data?: Record<string, string> };
+        if (view && a.text) showHint(view, a.text, { tone: a.tone, data: a.data });
       },
     },
   ]);

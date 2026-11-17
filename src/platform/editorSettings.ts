@@ -78,13 +78,20 @@ export const EDITOR_EXTRA_DEFAULTS = {
   docstringFormat: "rest" as DocstringFormat,
   /** Color Scheme › Language Defaults › Rainbow brackets. */
   rainbowBrackets: false,
+  /** The bracket kinds rainbow brackets colour; angle: generics and markup tags. */
+  rainbowBracketKinds: { round: true, square: true, curly: true, angle: false },
+  /** Colours the rainbow bracket depth cycles through (2–5). */
+  rainbowBracketColors: 3,
   ligatures: false,
+  /** Editor › Font / Tools › Terminal › Font: the font pickers list only monospaced fonts. */
+  onlyMonospacedFonts: true,
   fallbackFont: "",
   /** Typography Settings › Main / Bold font weight (CSS weights, IDEA's Regular / Bold). */
   fontWeight: 400,
   boldFontWeight: 700,
   general: {
     wheelZoom: false,
+    wheelZoomScope: "active" as "active" | "all",
     markdownImageFolder: "assets",
     markdownImageNamePattern: "image-{timestamp}",
     dragAndDrop: true,
@@ -105,6 +112,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     smoothCaretMovement: false,
     caretMovementStyle: "snappy",
     lineNumbers: true,
+    lineNumberMode: "absolute",
     methodSeparators: false,
     whitespaceLeading: true,
     whitespaceInner: true,
@@ -113,6 +121,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     rainbowIndentGuides: false,
     hardWrapGuides: true,
     intentionBulb: true,
+    renderDocComments: false,
     distractionFreeWidth: 80,
   },
   breadcrumbs: { show: true, placement: "bottom", disabledLanguages: [] as string[] },
@@ -157,6 +166,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     pairQuotes: true,
     surroundSelection: true,
     tabOutOfPair: true,
+    simultaneousTagEditing: true,
     reformatOnPaste: "indentEachLine",
     escapeOnPaste: true,
     smartIndent: true,
@@ -177,8 +187,12 @@ export const EDITOR_EXTRA_DEFAULTS = {
     parameters: true,
     other: true,
     disabledLanguages: [] as string[],
+    codeVision: true,
     codeVisionUsages: true,
     codeVisionAuthor: true,
+    codeVisionNoUsages: true,
+    codeVisionUsagesPosition: "top" as "top" | "right",
+    codeVisionAuthorPosition: "top" as "top" | "right",
   },
   inlineCompletion: { enabled: true, onlyOnPause: false, pauseMs: 500, disabledLanguages: [] as string[] },
   gutterIconsDisabled: [] as string[],
@@ -258,8 +272,12 @@ export function fontWeightVars(main: unknown, bold: unknown): Record<"--fw-code"
 
 export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  if (!["active", "all"].includes(out.general.wheelZoomScope)) out.general.wheelZoomScope = "active";
   if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
   if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
+  for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)
+    if (!["top", "right"].includes(out.inlay[k])) out.inlay[k] = "top";
+  out.rainbowBracketColors = Math.min(5, Math.max(2, Math.round(out.rainbowBracketColors)));
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
   out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);
   return out;

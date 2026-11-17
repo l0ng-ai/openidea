@@ -1,0 +1,14 @@
+id = "slint"
+name = "Slint"
+extensions = ["slint"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 4, insert-spaces = true }
+# C-like: the C mode colours comments, strings, numbers and common keywords until
+# the server's semantic tokens arrive.
+ui-mode = "C"
+
+[[language-servers]]
+name = "slint-lsp"
+command = "slint-lsp"
+install-hint = "cargo install slint-lsp (https://github.com/slint-ui/slint/releases)"

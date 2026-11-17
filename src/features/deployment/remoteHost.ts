@@ -1,13 +1,13 @@
 /** Remote Host tool window operations: list, open, create, rename, delete and download remote files. */
-import { txTemplate } from "@/platform/i18n";
+import { tx, txTemplate } from "@/platform/i18n";
 import { call, commands, type RemoteEntry } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
+import { deploymentConnection, deploymentSecretKey, type DeploymentServerValid } from "@/platform/remoteSettings";
 import { copyText } from "@/ui";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, projectViewSelection } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
-import { downloadPaths } from "./actions";
+import { downloadPaths, downloadRemoteInto } from "./actions";
 import { joinRemote, localPathForRemote, remoteName, remoteParent } from "./model";
 import { withSsh } from "./ssh";
 import { EMPTY_TREE, patchTree, useDeployment } from "./store";
@@ -30,7 +30,7 @@ function fail(title: string, e: unknown) {
 export async function loadFolder(server: DeploymentServerValid, path: string) {
   const source = sourceKey(server);
   try {
-    const entries = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+    const entries = await withSsh(deploymentSecretKey(server), () =>
       call(commands.remoteList(deploymentConnection(server), path)),
     );
     if (tree(server.id).source !== source) return;
@@ -58,9 +58,7 @@ export async function ensureRoot(server: DeploymentServerValid, force = false) {
     const resolved =
       current.root && !force
         ? { root: current.root, mappings: current.mappings }
-        : await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
-            call(commands.deployServerRoot(server.id)),
-          );
+        : await withSsh(deploymentSecretKey(server), () => call(commands.deployServerRoot(server.id)));
     if (tree(server.id).source !== source) return;
     patchTree(server.id, resolved);
     await loadFolder(server, resolved.root);
@@ -81,7 +79,7 @@ export async function refreshAll(server: DeploymentServerValid) {
 
 export async function openRemote(server: DeploymentServerValid, entry: RemoteEntry) {
   try {
-    const local = await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+    const local = await withSsh(deploymentSecretKey(server), () =>
       call(commands.remoteOpen(deploymentConnection(server), entry.path)),
     );
     await editorService().openFile(local, { focus: true });
@@ -98,7 +96,7 @@ export async function newFolder(server: DeploymentServerValid, parent: string) {
   });
   if (!name) return;
   try {
-    await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+    await withSsh(deploymentSecretKey(server), () =>
       call(commands.remoteMkdir(deploymentConnection(server), joinRemote(parent, name))),
     );
     patchTree(server.id, (t) => ({ expanded: new Set([...t.expanded, parent]) }));
@@ -118,7 +116,7 @@ export async function renameEntry(server: DeploymentServerValid, entry: RemoteEn
   if (!name || name === entry.name) return;
   const parent = remoteParent(entry.path);
   try {
-    await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+    await withSsh(deploymentSecretKey(server), () =>
       call(commands.remoteRename(deploymentConnection(server), entry.path, joinRemote(parent, name))),
     );
     await loadFolder(server, parent);
@@ -145,7 +143,7 @@ export async function deleteEntries(server: DeploymentServerValid, entries: Remo
   const parents = new Set<string>();
   for (const entry of entries) {
     try {
-      await withSsh(server.kind === "sftp" ? server.sshConfig : "", () =>
+      await withSsh(deploymentSecretKey(server), () =>
         call(commands.remoteDelete(deploymentConnection(server), entry.path)),
       );
       parents.add(remoteParent(entry.path));
@@ -179,6 +177,35 @@ export async function downloadToProject(server: DeploymentServerValid, entries: 
       key: "deployment.unmapped",
     });
   if (locals.length) await downloadPaths(server, locals);
+}
+
+/** Download to…: the entries into a chosen local folder (the Project view's selected folder, or
+ *  the project root, preselected), without the server path above them. */
+export async function downloadTo(server: DeploymentServerValid, entries: RemoteEntry[]) {
+  if (!entries.length) return;
+  const { open } = await import("@/platform/dialog");
+  const target = await open({
+    directory: true,
+    multiple: false,
+    title: tx("Download to"),
+    defaultPath: (await defaultDownloadFolder()) ?? undefined,
+  });
+  if (typeof target !== "string") return;
+  await downloadRemoteInto(
+    server,
+    entries.map((e) => e.path),
+    target,
+  );
+}
+
+async function defaultDownloadFolder(): Promise<string | null> {
+  const selected = projectViewSelection()[0];
+  if (selected) {
+    const kind = await call(commands.fsEntryKind(selected)).catch(() => null);
+    if (kind === "dir") return selected;
+    if (kind === "file") return selected.replace(/[\\/][^\\/]*$/, "");
+  }
+  return useProject.getState().project?.root ?? null;
 }
 
 export const copyRemotePath = (entry: RemoteEntry) => void copyText(entry.path);

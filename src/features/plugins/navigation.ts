@@ -22,9 +22,12 @@ export function startPluginNavigation(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let pending = new Set<string>();
   const dirty = new Set<string>();
+  /** Paths whose last index batch failed: retried on the next usages or refactoring. */
+  const failed = new Set<string>();
   const views = new Map<EditorView, string>();
   let discovered = false;
   let discovering = false;
+  let discoveryFailed = false;
   const known = new Set<string>();
   let signature = "";
   let reportedError = false;
@@ -79,13 +82,22 @@ export function startPluginNavigation(): () => void {
       await call(commands.pluginNavigationIndex(paths, id));
       if (at === generation) {
         paths.forEach((p) => {
+          failed.delete(p);
           if (!pending.has(p)) dirty.delete(p);
         });
         notify();
       }
     } catch (error) {
       if (at === generation && isCancelled(error)) paths.forEach((p) => pending.add(p));
-      else if (at === generation) report(error);
+      else if (at === generation) {
+        // Not "still updating": the batch is done, its paths just have no fresh index.
+        paths.forEach((p) => {
+          if (pending.has(p)) return;
+          dirty.delete(p);
+          failed.add(p);
+        });
+        report(error);
+      }
     } finally {
       request = null;
       running = false;
@@ -120,12 +132,14 @@ export function startPluginNavigation(): () => void {
       if (at !== generation) return;
       fileExtensions = new Set(inventory.extensions);
       discovered = !inventory.indexing;
+      discoveryFailed = false;
       const fresh = inventory.paths.filter((p) => !known.has(p));
       inventory.paths.forEach((p) => known.add(p));
       queue(fresh);
       queue([...views.values()], true);
     } catch (error) {
       discovered = false;
+      discoveryFailed = true;
       report(error);
     } finally {
       if (at === generation) discovering = false;
@@ -139,9 +153,11 @@ export function startPluginNavigation(): () => void {
     clearTimeout(timer);
     pending.clear();
     dirty.clear();
+    failed.clear();
     known.clear();
     discovered = false;
     discovering = false;
+    discoveryFailed = false;
     discovery = null;
     reportedError = false;
     notify();
@@ -151,32 +167,41 @@ export function startPluginNavigation(): () => void {
         .catch(() => {});
   }
   const offs = [
-    registerDocumentIndexSync(async (path) => {
+    registerDocumentIndexSync(async (path, purpose) => {
       if (!ready()) return;
       const root = useProject.getState().project!.root;
       if (!path.startsWith(root.endsWith("/") ? root : `${root}/`)) return;
       const at = generation;
       await discover();
       if (!eligible(path)) return;
+      if (failed.size) queue([...failed]);
       while (ready() && at === generation && (pending.size || flushing)) {
         clearTimeout(timer);
         await flush();
       }
-      if (at !== generation || !discovered || dirty.size) {
-        throw new Error(tx`Plugin indexes are still updating; try again shortly`);
+      const complete = at === generation && discovered && !dirty.size && !failed.size;
+      if (complete) return true;
+      if (purpose === "usages") return false;
+      if (at === generation && (failed.size || discoveryFailed)) {
+        throw new Error(tx`Plugin indexes could not be updated; see the plugin notification`);
       }
+      throw new Error(tx`Plugin indexes are still updating; try again shortly`);
     }),
     pluginsBackend().onEvent((event) => {
       if (event.type === "documentIndexesChanged") reset();
     }),
     registerNavigationProvider(async (view, offset) => {
       const doc = docOf(view);
-      if (!ready() || !doc || doc.virtual || !eligible(doc.path) || dirty.has(doc.path)) return null;
+      if (!ready() || !doc || doc.virtual || !eligible(doc.path) || dirty.has(doc.path) || failed.has(doc.path))
+        return null;
       const before = view.state.doc;
       await whenSynced(view);
       const result = await call(commands.pluginNavigationGoto(doc.doc, offsetToPos(before, offset)));
       if (!result || view.state.doc !== before) return null;
-      return { ...rangeToOffsets(before, result.range), targets: result.targets.filter((t) => !dirty.has(t.path)) };
+      return {
+        ...rangeToOffsets(before, result.range),
+        targets: result.targets.filter((t) => !dirty.has(t.path) && !failed.has(t.path)),
+      };
     }),
     registerEditorContribution({
       id: "plugins.navigation",

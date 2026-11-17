@@ -174,12 +174,36 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
 });
 
-test("Markdown preview highlights ⌘F matches and selected word occurrences", async ({ workbench: page }) => {
+test("Markdown preview highlights ⌘F matches, selected words and scales diagrams with font zoom", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96"><!-- svg-source:excalidraw --><rect width="320" height="96"/></svg>';
+    const url = `data:image/svg+xml;base64,${btoa(svg)}`;
+    const routeModule = "/src/platform/tauriCore.ts";
+    const { setInvokeRoute } = await import(/* @vite-ignore */ routeModule);
+    setInvokeRoute((cmd: string) => (cmd === "fs_read_image" ? Promise.resolve(url) : null));
+  });
+
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
   await content.click();
   await page.keyboard.press("Meta+a");
-  await page.keyboard.insertText("# Order Service\n\nManage **Order** items and `Order` status.\n");
+  await page.keyboard.insertText(
+    [
+      "# Order Service",
+      "",
+      "Manage **Order** items and `Order` status.",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      "  A --> B",
+      "```",
+      "",
+      "![Diagram](./arch.excalidraw.svg)",
+    ].join("\n"),
+  );
 
   const preview = page.getByRole("document", { name: "Markdown preview" });
   await expect(preview).toContainText("Manage Order items");
@@ -209,4 +233,206 @@ test("Markdown preview highlights ⌘F matches and selected word occurrences", a
       })),
     )
     .toEqual({ current: ["Order"], other: ["Order", "Order"] });
+
+  const mermaidSvg = preview.locator(".mermaid-output svg");
+  const excalidrawImg = preview.locator('img[alt="Diagram"]');
+  await expect(mermaidSvg).toBeVisible();
+  await expect(excalidrawImg).toHaveAttribute("src", /^data:image\/svg\+xml/);
+
+  const widths = async () => ({
+    mermaid: (await mermaidSvg.boundingBox())!.width,
+    excalidraw: (await excalidrawImg.boundingBox())!.width,
+  });
+  const base = await widths();
+  expect(base.mermaid).toBeGreaterThan(50);
+  expect(base.excalidraw).toBeCloseTo(320, 0);
+
+  const runAction = (id: string, times = 1) =>
+    page.evaluate(
+      async ({ id, times }) => {
+        const actionsModule = "/src/platform/actions.ts";
+        const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+        for (let i = 0; i < times; i++) await executeAction(id);
+      },
+      { id, times },
+    );
+
+  await runAction("editor.increaseFontSize", 4);
+  const zoomedIn = await widths();
+  expect(zoomedIn.mermaid / base.mermaid).toBeCloseTo(17 / 13, 2);
+  expect(zoomedIn.excalidraw / base.excalidraw).toBeCloseTo(17 / 13, 2);
+
+  await runAction("editor.decreaseFontSize", 6);
+  const zoomedOut = await widths();
+  expect(zoomedOut.mermaid / base.mermaid).toBeCloseTo(11 / 13, 2);
+  expect(zoomedOut.excalidraw / base.excalidraw).toBeCloseTo(11 / 13, 2);
+
+  await runAction("editor.resetFontSize");
+  const reset = await widths();
+  expect(reset.mermaid).toBeCloseTo(base.mermaid, 1);
+  expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
+});
+
+test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await page.keyboard.insertText(
+    [
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const outputs = preview.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
+});
+
+test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const column = editor.locator(".cm-gutter.cm-openidea-bookmarks");
+  const width = () => column.evaluate((el) => el.getBoundingClientRect().width);
+  await expect.poll(width).toBe(0);
+
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("F3");
+  await expect(column.locator(".cm-openidea-bookmark")).toBeVisible();
+  await expect.poll(width).toBeGreaterThan(0);
+});
+
+test("single-line selection stays on its own row when font glyphs exceed line height", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, fontSize: 20, lineHeight: 22 } },
+    });
+    await document.fonts.ready;
+  });
+
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- Build desktop bundle\n- Run integration suite\n---");
+
+  const targetLine = editor.locator(".cm-line", { hasText: "Run integration suite" });
+  await expect(targetLine).toBeVisible();
+  await targetLine.dblclick();
+
+  const sel = editor.locator(".cm-openidea-selectionLayer .cm-selectionBackground");
+  await expect(sel).toHaveCount(1);
+  const [lineBox, selBox] = await Promise.all([targetLine.boundingBox(), sel.boundingBox()]);
+  expect(lineBox).not.toBeNull();
+  expect(selBox).not.toBeNull();
+  expect(Math.abs(selBox!.y - lineBox!.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(selBox!.height - lineBox!.height)).toBeLessThanOrEqual(1);
+});
+
+test("vertical tabs leave a narrow editor group most of its width", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 900, height: 600 });
+  await openFromTree(page, "settings.gradle.kts");
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const controllerModule = "/src/editor/core/controller.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }, { editorController, useTabs }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+      import(/* @vite-ignore */ controllerModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+    });
+    editorController().split(useTabs.getState().activePane, "row");
+  });
+
+  const panes = page.locator("[data-pane-id]");
+  await expect(panes).toHaveCount(2);
+  for (const pane of await panes.all()) {
+    const strip = pane.getByRole("tablist", { name: "Editor tabs" });
+    await expect(strip).toHaveAttribute("aria-orientation", "vertical");
+    const [paneBox, contentBox] = await Promise.all([pane.boundingBox(), pane.getByRole("tabpanel").boundingBox()]);
+    expect(contentBox!.width).toBeGreaterThanOrEqual(paneBox!.width * 0.6 - 1);
+  }
+});
+
+test("dragging the vertical tab column's edge resizes it and the width is kept", async ({ workbench: page }) => {
+  await openFromTree(page, "settings.gradle.kts");
+  const placeLeft = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+      useProject.setState({
+        settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+      });
+    });
+  await placeLeft();
+
+  const strip = page.getByRole("tablist", { name: "Editor tabs" });
+  const handle = page.getByRole("separator", { name: "Resize editor tabs" });
+  const before = (await strip.boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 60, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await strip.boundingBox())!.width).toBeLessThan(before - 40);
+  const narrowed = (await strip.boundingBox())!.width;
+
+  // The next session starts with the dragged width.
+  await page.reload();
+  await openFromTree(page, "settings.gradle.kts");
+  await placeLeft();
+  await expect.poll(async () => Math.round((await strip.boundingBox())!.width)).toBe(Math.round(narrowed));
 });

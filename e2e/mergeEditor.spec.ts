@@ -122,6 +122,23 @@ test("Apply writes and stages unresolved text only after confirmation", async ({
   expect((await writes(page))[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: BASE }] });
 });
 
+test("footer buttons work when a click doesn't focus them, as in WebKit", async ({ page }) => {
+  await mountMerge(page);
+  await result(page).locator(".cm-content").click();
+  // WebKit focuses the clicked button's nearest focusable ancestor, not the button.
+  await page
+    .locator("#merge-host")
+    .getByRole("button", { name: "Apply", exact: true })
+    .evaluate((button) => {
+      let target = button.parentElement;
+      while (target && !target.hasAttribute("tabindex")) target = target.parentElement;
+      if (target) target.focus();
+      else (document.activeElement as HTMLElement | null)?.blur();
+      (button as HTMLButtonElement).click();
+    });
+  await expect(page.getByRole("dialog")).toContainText("Save and mark the file as resolved anyway?");
+});
+
 test("binary and unreadable versions show an error with no Apply controls", async ({ page }) => {
   await mountMerge(page, ["\0base", "\0ours", "\0theirs"]);
   await expect(page.locator("#merge-host")).toContainText("Binary files cannot be resolved in the merge editor.");
@@ -153,6 +170,20 @@ test("accepting a deleted version removes the file before staging", async ({ pag
     { command: "fsDelete", args: ["/project/demo.ts"] },
     { command: "vcsStage", args: [["/project/demo.ts"]] },
   ]);
+});
+
+test("a long side shows only the lines it changed against the base", async ({ page }) => {
+  // Edits spread over a long file make the default diff give up and mark everything between them.
+  const base = Array.from({ length: 2000 }, (_, i) => `"node_modules/pkg-${i}": "1.0.${i}",`);
+  const bump = (at: number) => lines(...base.map((l, i) => (i % 100 === at ? l.replace('"1.0.', '"2.0.') : l)));
+  await mountMerge(page, [lines(...base), bump(3), bump(50)]);
+  for (const [name, line] of [
+    ["Your version", 3],
+    ["Their version", 50],
+  ] as const) {
+    const deleted = page.getByRole("region", { name }).locator(".cm-deletedChunk").first().locator(".cm-deletedLine");
+    await expect(deleted).toHaveText([base[line]!]);
+  }
 });
 
 test("the result starts as the base and every change waits for a decision", async ({ page }) => {

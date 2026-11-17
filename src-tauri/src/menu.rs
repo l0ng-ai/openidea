@@ -217,14 +217,19 @@ pub fn spec(os: Os) -> Vec<Entry> {
     }
 
     let mut file = vec![
-        act("file.newProject", "New Project…"),
-        act("workspace.create", "New Workspace…"),
-        act("workspace.open", "Open Workspace…"),
-        act("workspace.manage", "Manage Workspace…"),
-        act("file.new", "New…"),
-        act("file.newScratchFile", "New Scratch File…"),
+        sub(
+            "new",
+            "New",
+            vec![
+                act("file.newProject", "Project…"),
+                act("workspace.create", "Workspace…"),
+                SEP,
+                act("file.new", "File…"),
+                act("file.newScratchFile", "Scratch File"),
+                act("file.newUntitled", "Untitled File"),
+            ],
+        ),
         act("file.openProject", "Open…"),
-        act("project.attach", "Attach Project…"),
         act("file.openFile", "Open File…"),
         act("file.openInNewWindow", "Open in New Window…"),
         sub(
@@ -232,6 +237,11 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "Open Recent",
             vec![Entry::RecentProjects, SEP, act("welcome.recentProjects", "Manage Projects…")],
         ),
+        act("project.attach", "Attach Project…"),
+        SEP,
+        act("workspace.open", "Open Workspace…"),
+        act("workspace.manage", "Manage Workspace…"),
+        SEP,
         act("file.closeProject", "Close Project"),
         act("file.renameProject", "Rename Project…"),
         SEP,
@@ -409,7 +419,14 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)]),
                 ],
             ),
-            sub("activeEditor", "Active Editor", vec![act("editor.toggleSoftWrap", "Soft-Wrap")]),
+            sub(
+                "activeEditor",
+                "Active Editor",
+                vec![
+                    act("editor.toggleSoftWrap", "Soft-Wrap"),
+                    act("editor.toggleRenderedDocs", "Render Documentation Comments"),
+                ],
+            ),
             SEP,
             act("code.quickDefinition", "Quick Definition"),
             act("code.quickTypeDefinition", "Quick Type Definition"),
@@ -422,7 +439,8 @@ pub fn spec(os: Os) -> Vec<Entry> {
             SEP,
             act("view.quickSwitchScheme", "Quick Switch Scheme…"),
             SEP,
-            act("editor.resetFontSize", "Reset Font Size in All Editors"),
+            act("editor.resetFontSize", "Reset Font Size"),
+            act("editor.resetFontSizeAll", "Reset Font Size in All Editors"),
             SEP,
             act("view.notifications", "Notifications"),
         ],
@@ -448,6 +466,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("navigate.typeDeclaration", "Type Declaration"),
             act("navigate.superMethod", "Super Method"),
             act("navigate.gotoTest", "Test"),
+            act("navigate.relatedSymbol", "Related Symbol…"),
             SEP,
             act("navigate.fileStructure", "File Structure"),
             act("navigate.showFilePath", "File Path"),
@@ -575,6 +594,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("refactor.extractField", "Introduce Field…"),
             act("refactor.extractParameter", "Introduce Parameter…"),
             act("refactor.extractMethod", "Extract Method…"),
+            act("refactor.extractInterface", "Extract Interface…"),
             act("refactor.inline", "Inline…"),
             SEP,
             act("refactor.pullMembersUp", "Pull Members Up…"),
@@ -783,6 +803,9 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "toolWindowLayouts",
             "Tool Window Layouts",
             vec![
+                act("layout.saveCurrent", "Save Changes in Current Layout"),
+                act("layout.restoreCurrent", "Restore Current Layout"),
+                SEP,
                 act("layout.save", "Save Current Layout as…"),
                 act("layout.restoreDefault", "Restore Default Layout"),
                 SEP,
@@ -865,6 +888,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("navigate.findAction", "Find Action…"),
         act("help.keymapReference", "Keymap Reference"),
         SEP,
+        act("app.whatsNew", "What's New"),
         act("help.showLog", show_log),
     ];
     if !mac {
@@ -880,6 +904,17 @@ pub fn spec(os: Os) -> Vec<Entry> {
 pub struct MenuRoute {
     pub action: String,
     pub arg: Option<String>,
+}
+
+/// Payload of [`MENU_EVENT`]: the route, and the window that was in front when the item was
+/// chosen if the action runs in another one (a Settings window's project window).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MenuEvent<'a> {
+    #[serde(flatten)]
+    pub route: &'a MenuRoute,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_to: Option<&'a str>,
 }
 
 /// Maps a clicked item id to the action to run. `None` for ids that are not
@@ -1604,7 +1639,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashSet};
 
     const ALL_OS: [Os; 3] = [Os::Mac, Os::Windows, Os::Linux];
 
@@ -1965,12 +2000,63 @@ mod tests {
     }
 
     #[test]
+    fn file_menu_starts_with_a_new_submenu() {
+        for os in ALL_OS {
+            let menus = spec(os);
+            let Some(Entry::Submenu { children: file, .. }) =
+                menus.iter().find(|e| matches!(e, Entry::Submenu { id: "file", .. }))
+            else {
+                panic!("File menu missing on {os:?}")
+            };
+            let Some(Entry::Submenu { id: "new", children: new, .. }) = file.first() else {
+                panic!("File menu does not start with New on {os:?}")
+            };
+            assert_eq!(
+                action_ids(new),
+                ["file.newProject", "workspace.create", "file.new", "file.newScratchFile", "file.newUntitled"],
+                "{os:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_menu_item_has_a_catalog_label() {
+        fn walk(entries: &[Entry], out: &mut BTreeSet<&'static str>) {
+            for e in entries {
+                match e {
+                    Entry::Submenu { id, children, .. } => {
+                        out.insert(id);
+                        walk(children, out);
+                    }
+                    Entry::Action { id, .. } => {
+                        out.insert(id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for os in ALL_OS {
+            walk(&spec(os), &mut ids);
+        }
+        for (locale, catalog) in [
+            ("en", include_str!("../../src/platform/locales/en.json")),
+            ("zh", include_str!("../../src/platform/locales/zh.json")),
+        ] {
+            let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(catalog).unwrap();
+            let missing: Vec<_> = ids.iter().filter(|id| !catalog.contains_key(&format!("menu.{id}"))).collect();
+            assert!(missing.is_empty(), "{locale}.json lacks menu labels for {missing:?}");
+        }
+    }
+
+    #[test]
     fn recent_labels_tildify_home() {
         let recent = vec![ide_workspace::RecentProject {
             path: "/home/me/code/openidea".into(),
             name: "openidea".into(),
             opened_at_ms: 0.0,
             branch: None,
+            missing: false,
         }];
         let items = recent_items(&recent, Some(Path::new("/home/me")));
         assert_eq!(items[0].label, "openidea  —  ~/code/openidea");
@@ -2251,6 +2337,8 @@ mod tests {
                 "view.quickSwitchScheme",
                 "code.cleanup",
                 "runAnything.show",
+                "layout.saveCurrent",
+                "layout.restoreCurrent",
                 "layout.save",
                 "layout.restoreDefault",
                 "layout.rename",

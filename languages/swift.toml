@@ -16,4 +16,4 @@ install-hint = "Ships with the Swift toolchain / Xcode (xcrun sourcekit-lsp); ht
 [debugger]
 adapter = "lldb-dap"
 command = "lldb-dap"
-install-hint = "Ships with the Swift toolchain (swift 6+) or LLVM; on macOS `xcrun -f lldb-dap`"
+install-hint = "Ships with the Swift toolchain (swift 6+) or LLVM; on macOS it is found by xcrun -f lldb-dap"

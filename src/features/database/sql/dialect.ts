@@ -20,8 +20,18 @@ const RESERVED = new Set(
   ).split(" "),
 );
 
-export function isReserved(word: string): boolean {
-  return RESERVED.has(word.toUpperCase());
+/** Snowflake's reserved words, and the keywords that end a FROM item there (never an implicit alias). */
+const SNOWFLAKE_RESERVED = new Set(
+  (
+    "ACCOUNT ALTER ASOF CONNECT CONNECTION CURRENT CURRENT_USER DATABASE FOLLOWING GSCLUSTER ILIKE INCREMENT ISSUE " +
+    "LATERAL LOCALTIME LOCALTIMESTAMP MATCH_RECOGNIZE MINUS OF ORGANIZATION PIVOT QUALIFY REGEXP REVOKE RLIKE ROW " +
+    "ROWS SAMPLE SCHEMA SOME START TABLESAMPLE TRIGGER TRY_CAST UNPIVOT VIEW WHENEVER"
+  ).split(" "),
+);
+
+export function isReserved(word: string, driver?: DbDriver): boolean {
+  const upper = word.toUpperCase();
+  return RESERVED.has(upper) || (driver === "snowflake" && SNOWFLAKE_RESERVED.has(upper));
 }
 
 export const nameMatcher = (driver: DbDriver) => (a: string | null | undefined, b: string | null | undefined) =>
@@ -60,6 +70,59 @@ export function statementStarters(driver: DbDriver): string[] {
       "USE",
       "SET",
       "OPTIMIZE TABLE",
+    ];
+  if (driver === "snowflake")
+    return [
+      "SELECT",
+      "INSERT INTO",
+      "UPDATE",
+      "DELETE FROM",
+      "MERGE INTO",
+      "WITH",
+      "CREATE TABLE",
+      "CREATE OR REPLACE TABLE",
+      "CREATE OR REPLACE VIEW",
+      "CREATE VIEW",
+      "CREATE SCHEMA",
+      "CREATE DATABASE",
+      "CREATE STAGE",
+      "CREATE FILE FORMAT",
+      "CREATE SEQUENCE",
+      "CREATE OR REPLACE FUNCTION",
+      "CREATE OR REPLACE PROCEDURE",
+      "ALTER TABLE",
+      "ALTER SESSION SET",
+      "ALTER WAREHOUSE",
+      "DROP TABLE",
+      "DROP VIEW",
+      "UNDROP TABLE",
+      "TRUNCATE TABLE",
+      "COPY INTO",
+      "PUT",
+      "GET",
+      "LIST",
+      "REMOVE",
+      "CALL",
+      "EXECUTE IMMEDIATE",
+      "USE DATABASE",
+      "USE SCHEMA",
+      "USE WAREHOUSE",
+      "USE ROLE",
+      "SHOW TABLES",
+      "SHOW VIEWS",
+      "SHOW SCHEMAS",
+      "SHOW DATABASES",
+      "SHOW WAREHOUSES",
+      "SHOW PARAMETERS",
+      "DESCRIBE TABLE",
+      "EXPLAIN",
+      "GRANT",
+      "REVOKE",
+      "SET",
+      "UNSET",
+      "BEGIN",
+      "COMMIT",
+      "ROLLBACK",
     ];
   const common = [
     "SELECT",
@@ -124,6 +187,7 @@ export function joinKeywords(driver: DbDriver): string[] {
   if (driver !== "mysql") j.push("FULL JOIN");
   if (driver === "postgres") j.push("JOIN LATERAL", "LEFT JOIN LATERAL");
   if (driver === "oracle") j.push("JOIN", "(+)");
+  if (driver === "snowflake") j.push("NATURAL JOIN", "ASOF JOIN", "LATERAL FLATTEN");
   return j;
 }
 
@@ -148,10 +212,42 @@ export function predicateKeywords(driver: DbDriver): string[] {
   if (driver === "mysql") k.push("REGEXP");
   if (driver === "sqlite") k.push("GLOB", "REGEXP");
   if (driver === "oracle") k.push("CONNECT BY PRIOR", "START WITH", "NOT IN", "IS NOT NULL");
+  if (driver === "snowflake") k.push("ILIKE", "RLIKE", "REGEXP", "IS DISTINCT FROM", "ANY");
   return k;
 }
 
 export const DATA_TYPES: Record<DbDriver, string[]> = {
+  snowflake: [
+    "NUMBER",
+    "INTEGER",
+    "BIGINT",
+    "FLOAT",
+    "DOUBLE",
+    "VARCHAR",
+    "STRING",
+    "TEXT",
+    "BOOLEAN",
+    "DATE",
+    "TIME",
+    "TIMESTAMP",
+    "TIMESTAMP_NTZ",
+    "TIMESTAMP_LTZ",
+    "TIMESTAMP_TZ",
+    "VARIANT",
+    "OBJECT",
+    "ARRAY",
+    "BINARY",
+    "GEOGRAPHY",
+    "GEOMETRY",
+    "VECTOR",
+    "DECIMAL",
+    "NUMERIC",
+    "SMALLINT",
+    "REAL",
+    "CHAR",
+    "DATETIME",
+    "DECFLOAT",
+  ],
   sqlite: ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC", "BOOLEAN", "DATETIME"],
   postgres: [
     "integer",
@@ -301,6 +397,102 @@ const COMMON: SqlFunction[] = [
 ];
 
 const FUNCTIONS: Record<DbDriver, SqlFunction[]> = {
+  snowflake: [
+    ...COMMON,
+    f("listagg", "expr, delimiter", "varchar", true),
+    f("array_agg", "expr", "array", true),
+    f("object_agg", "key, value", "object", true),
+    f("count_if", "condition", "number", true),
+    f("approx_count_distinct", "expr", "number", true),
+    f("any_value", "expr", undefined, true),
+    f("median", "expr", undefined, true),
+    f("iff", "condition, then, else"),
+    f("ifnull", "a, b"),
+    f("nvl", "a, b"),
+    f("nvl2", "expr, not_null, null"),
+    f("zeroifnull", "expr"),
+    f("decode", "expr, search, result, ..."),
+    f("try_cast", "expr AS type"),
+    f("to_varchar", "expr, format", "varchar"),
+    f("to_number", "expr, format", "number"),
+    f("to_date", "expr, format", "date"),
+    f("to_timestamp", "expr, format", "timestamp"),
+    f("try_to_number", "expr", "number"),
+    f("try_to_date", "expr", "date"),
+    f("current_date", "", "date"),
+    f("current_timestamp", "", "timestamp_ltz"),
+    f("current_user", "", "varchar"),
+    f("current_role", "", "varchar"),
+    f("current_warehouse", "", "varchar"),
+    f("current_database", "", "varchar"),
+    f("current_schema", "", "varchar"),
+    f("dateadd", "part, value, date"),
+    f("datediff", "part, start, end", "number"),
+    f("date_trunc", "part, date"),
+    f("date_part", "part, date", "number"),
+    f("last_day", "date, part", "date"),
+    f("convert_timezone", "source_tz, target_tz, timestamp"),
+    f("concat", "value, ...", "varchar"),
+    f("concat_ws", "separator, value, ...", "varchar"),
+    f("split", "text, separator", "array"),
+    f("split_part", "text, delimiter, part", "varchar"),
+    f("regexp_replace", "subject, pattern, replacement", "varchar"),
+    f("regexp_substr", "subject, pattern", "varchar"),
+    f("regexp_like", "subject, pattern", "boolean"),
+    f("startswith", "text, prefix", "boolean"),
+    f("contains", "text, search", "boolean"),
+    f("ilike", "subject, pattern", "boolean"),
+    f("parse_json", "text", "variant"),
+    f("try_parse_json", "text", "variant"),
+    f("to_json", "variant", "varchar"),
+    f("object_construct", "key, value, ...", "object"),
+    f("array_construct", "value, ...", "array"),
+    f("array_size", "array", "number"),
+    f("array_contains", "value, array", "boolean"),
+    f("get", "variant, key_or_index", "variant"),
+    f("get_path", "variant, path", "variant"),
+    f("flatten", "input => expr"),
+    f("typeof", "variant", "varchar"),
+    f("row_number", "", "number"),
+    f("rank", "", "number"),
+    f("dense_rank", "", "number"),
+    f("lag", "expr, offset, default"),
+    f("lead", "expr, offset, default"),
+    f("first_value", "expr"),
+    f("last_value", "expr"),
+    f("hash", "expr, ...", "number"),
+    f("md5", "text", "varchar"),
+    f("sha2", "text, digest_size", "varchar"),
+    f("uuid_string", "", "varchar"),
+    f("seq4", "", "number"),
+    f("uniform", "min, max, gen"),
+    f("random", "", "number"),
+    f("generator", "rowcount => n"),
+    f("result_scan", "query_id"),
+    f("last_query_id", "", "varchar"),
+    f("get_ddl", "object_type, name", "varchar"),
+    f("system$wait", "amount, unit", "varchar"),
+    f("to_variant", "expr", "variant"),
+    f("to_array", "expr", "array"),
+    f("to_object", "expr", "object"),
+    f("to_boolean", "expr", "boolean"),
+    f("to_double", "expr", "float"),
+    f("to_time", "expr, format", "time"),
+    f("try_to_timestamp", "expr", "timestamp"),
+    f("object_keys", "object", "array"),
+    f("array_to_string", "array, separator", "varchar"),
+    f("array_distinct", "array", "array"),
+    f("endswith", "text, suffix", "boolean"),
+    f("charindex", "search, text", "number"),
+    f("equal_null", "a, b", "boolean"),
+    f("div0", "dividend, divisor", "number"),
+    f("ratio_to_report", "expr", "number"),
+    f("conditional_true_event", "condition", "number"),
+    f("sysdate", "", "timestamp_ntz"),
+    f("current_account", "", "varchar"),
+    f("current_region", "", "varchar"),
+    f("current_session", "", "varchar"),
+  ],
   sqlite: [
     ...COMMON,
     f("group_concat", "expr, separator", "text", true),

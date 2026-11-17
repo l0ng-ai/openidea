@@ -29,6 +29,7 @@ const session: DebugSession = {
   frames: [{ id: 7, name: "run", path: "/p/App.java", line: 11, column: 0, presentationHint: null }],
   selectedFrame: 7,
   hits: 1,
+  stops: 0,
   exitCode: null,
   caps: null,
 };

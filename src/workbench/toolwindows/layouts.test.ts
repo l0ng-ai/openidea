@@ -18,8 +18,10 @@ import {
   loadToolWindowLayout,
   resetToolWindowLayout,
   setToolWindowSize,
+  setToolWindowViewMode,
   showToolWindow,
   useToolWindowLayout,
+  viewModeOf,
 } from "./store";
 
 const Empty = () => null;
@@ -41,6 +43,32 @@ beforeEach(() => {
 afterEach(() => disposers.forEach((d) => d()));
 
 describe("tool window layouts", () => {
+  it("restores the current layout, and saves changes into it", async () => {
+    setContext("projectOpen", true);
+    setToolWindowSize("bottom", 400);
+    saveLayout("Custom 1");
+    setToolWindowSize("bottom", 200);
+    await executeAction("layout.restoreCurrent");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(400);
+
+    expect(getContext().toolWindowLayoutActive).toBe(true);
+    setToolWindowSize("bottom", 300);
+    await executeAction("layout.saveCurrent");
+    setToolWindowSize("bottom", 200);
+    await executeAction("layout.restoreCurrent");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(300);
+    expect(layoutNames()).toEqual(["Custom 1"]);
+
+    // With no active layout it is the default one.
+    restoreDefaultLayout();
+    expect(getContext().toolWindowLayoutActive).toBe(false);
+    const defaultBottom = useToolWindowLayout.getState().sizes.bottom;
+    setToolWindowSize("bottom", 350);
+    await executeAction("layout.restoreCurrent");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(defaultBottom);
+    setContext("projectOpen", false);
+  });
+
   it("saves and restores visible windows and sizes by name", () => {
     showToolWindow("structure");
     showToolWindow("terminal");
@@ -62,6 +90,16 @@ describe("tool window layouts", () => {
     restoreDefaultLayout();
     expect(isToolWindowVisible("terminal")).toBe(false);
     expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("saves view modes with a layout; the default layout docks and pins every window", () => {
+    setToolWindowViewMode("project", "undock");
+    saveLayout("Sliding");
+    setToolWindowViewMode("project", "dockUnpinned");
+    expect(restoreLayout("Sliding")).toBe(true);
+    expect(viewModeOf("project")).toBe("undock");
+    restoreDefaultLayout();
+    expect(viewModeOf("project")).toBe("dockPinned");
   });
 
   it("replaces a layout of the same name, renames and deletes", () => {

@@ -144,6 +144,8 @@ Add tasks under **Modify options › Add before launch task**. They run in order
 
 For Java, Maven and Gradle configurations, the **Build** option picks how the project is built first: **Automatic (incremental)**, **Build (Make)**, **Rebuild**, **No build** or **Build, no error check**.
 
+Maven modules are built by jdtls (ECJ) for **Automatic** and **Build (Make)**, and by Maven for **Rebuild**. Turn on **Settings › Build, Execution, Deployment › Maven › Delegate IDE build/run actions to Maven** to build them with Maven (the project's `javac`) every time; editor **Problems** still come from jdtls.
+
 ### Compound configurations
 
 A **Compound** configuration starts several configurations at once. Run it to start all of them, or Debug it to debug each of them. Stop from the run widget stops them all.
@@ -154,6 +156,7 @@ Each launch opens a tab in the **Run** tool window (bottom). The toolbar has **R
 
 - File paths and stack trace frames in the output are links.
 - Repeated lines can be folded; configure the patterns in **Settings › Build, Execution, Deployment › Console**, along with the buffer size and the console encoding.
+- Log lines can take the colour of their level (`ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`); colours the program prints itself are kept. Turn it on and pick the colours in **Settings › Build, Execution, Deployment › Console**.
 - For test runs the tab shows a test tree next to the output. See [Testing](/en/guide/testing).
 
 **Settings › Build, Execution, Deployment › Run/Debug** controls whether the tool window opens when a process starts, whether rerun and closing a running tab ask first, and the time limit for a process to exit after Stop.

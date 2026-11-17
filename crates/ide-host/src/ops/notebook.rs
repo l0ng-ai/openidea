@@ -19,6 +19,13 @@ pub fn get(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot>
     host.project(window)?.notebooks.get(&id)
 }
 
+/// The language-server documents of the notebook's code cells (empty when no server syncs notebooks).
+pub fn cell_docs(host: &Host, window: &str, id: String) -> IdeResult<Vec<ide_lsp::NotebookCellDoc>> {
+    let project = host.project(window)?;
+    let path = project.notebooks.path_of(&id)?;
+    Ok(project.lsp.notebook_cells(&path))
+}
+
 pub async fn edit(
     host: &Host,
     window: &str,
@@ -132,6 +139,7 @@ impl Drop for RequestGuard<'_> {
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("notebook_open", |c| async move { open(&c.host, &c.window, c.arg("path")?).await });
     d.add("notebook_get", |c| async move { get(&c.host, &c.window, c.arg("id")?) });
+    d.add("notebook_cell_docs", |c| async move { cell_docs(&c.host, &c.window, c.arg("id")?) });
     d.add("notebook_edit", |c| async move {
         edit(&c.host, &c.window, c.arg("id")?, c.arg("version")?, c.arg("edit")?).await
     });

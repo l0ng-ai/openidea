@@ -1,0 +1,11 @@
+{
+  "$comment": "Human-owned: agents don't change this file or evals/*/golden/ (a PR that does is labelled needs-decision). `*Ms` are upper bounds on medians (the user's view: input → first painted frame), `recall` / `precision` lower bounds vs the golden. Keys: `<scenario>` or `<scenario>@<condition>`. Regressions vs target/eval/baseline.json need both the relative tolerance and the absolute floor.",
+  "regressionTolerance": 0.2,
+  "regressionFloorMs": 200,
+  "defaults": {
+    "feedbackMs": 100,
+    "recall": 1,
+    "precision": 1
+  },
+  "scenarios": {}
+}

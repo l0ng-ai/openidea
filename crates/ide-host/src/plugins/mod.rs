@@ -17,6 +17,8 @@
 
 mod api;
 mod auth;
+mod build_graph;
+pub mod commands;
 pub mod commit;
 mod database;
 mod dependencies;
@@ -36,10 +38,12 @@ mod inlay_hints;
 mod install;
 pub mod intellij;
 mod ipc;
+mod java_agents;
 pub mod language_features;
 mod market;
 mod mcp;
 pub mod navigation;
+mod network_inbox;
 mod points;
 mod providers;
 pub mod remote;
@@ -53,8 +57,10 @@ mod types;
 pub mod ui_points;
 pub mod views;
 pub mod web;
+mod websocket;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub use build_graph::{BuildGraph, GradleModule};
 pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
@@ -62,7 +68,7 @@ pub use icons::{
 pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
-    read_url as read_market_url, resolve as resolve_market_href,
+    reachable_from as market_href_reachable_from, read_url as read_market_url, resolve as resolve_market_href,
 };
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub use providers::{ProviderKind, set_editor_providers};
@@ -375,6 +381,8 @@ pub struct PluginHost {
     ui: Arc<UiStore>,
     languages: Arc<PluginLanguages>,
     run_detectors: Arc<run_detectors::RunDetectors>,
+    /// `[[contributes.javaAgents]]` of enabled plugins.
+    java_agents: Arc<java_agents::JavaAgents>,
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
@@ -454,7 +462,9 @@ impl PluginHost {
         let languages = PluginLanguages::new();
         let run_detectors: Arc<run_detectors::RunDetectors> = Arc::default();
         let providers: Arc<providers::Providers> = Arc::default();
-        register_builtin_points(&registry, &ui, &languages, &run_detectors, &providers).map_err(IdeError::internal)?;
+        let java_agents: Arc<java_agents::JavaAgents> = Arc::default();
+        register_builtin_points(&registry, &ui, &languages, &run_detectors, &java_agents, &providers)
+            .map_err(IdeError::internal)?;
         let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
         let policy_pins = pins.clone();
         languages.set_process_policy(Arc::new(move |plugin, cap| {
@@ -488,6 +498,7 @@ impl PluginHost {
             ui,
             languages,
             run_detectors,
+            java_agents,
             providers,
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
@@ -988,8 +999,8 @@ impl PluginHost {
         };
         // Consent covers what the install page showed.
         let request = request_for(&subject, &pkg.manifest, &hash, &set.capabilities);
-        self.record_consent(&request, consent);
         let dir = install::active_dir(&root).ok_or_else(|| IdeError::internal("the installed version is missing"))?;
+        self.record_consent(&request, consent, agent_jar_grant(&pkg.manifest, &dir));
         self.load_dir(&dir, PluginSource::Installed, None);
         if let Some(previous) = previous {
             let failed = self
@@ -1107,7 +1118,7 @@ impl PluginHost {
         let hash = self.package_hash_of(&plugin);
         let extra = plugin.meta.lock().declared_extra.clone();
         let request = request_for(&plugin.subject(), plugin.manifest(), &hash, &extra);
-        self.record_consent(&request, consent);
+        self.record_consent(&request, consent, agent_jar_grant(plugin.manifest(), plugin.dir()));
         self.stop(&plugin);
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
@@ -1157,6 +1168,12 @@ impl PluginHost {
                 return Err(IdeError::invalid(format!("plugin {id:?} has not been confirmed yet")));
             }
             ledger.set(&subject, &cap, granted);
+            if granted
+                && cap == Capability::JavaAgent
+                && let Some(jar) = agent_jar_grant(plugin.manifest(), plugin.dir())
+            {
+                ledger.set_binary(&subject, &cap, jar);
+            }
             if granted
                 && let Capability::Process(program) = &cap
                 && let Some(bin) = ledger
@@ -1368,8 +1385,33 @@ impl PluginHost {
         arg: Option<&str>,
         invocation: Invocation,
     ) -> IdeResult<Option<String>> {
+        self.run_command_with_cancel(id, command, arg, invocation, None)
+    }
+
+    /// Runs a command with request-scoped cancellation, without cancelling other queued calls.
+    pub fn run_command_with_cancel(
+        &self,
+        id: &str,
+        command: &str,
+        arg: Option<&str>,
+        invocation: Invocation,
+        cancel: Option<&ide_core::CancellationToken>,
+    ) -> IdeResult<Option<String>> {
+        // Queued behind a prompt open in another window, the command would sit there with no
+        // sign of life until that prompt is answered: point the user at it instead.
+        if let Some(client) = invocation.client.as_deref()
+            && let Some(waiting) = self.shared.waiting_elsewhere(id, client)
+        {
+            self.sink.emit(Some(&waiting), PluginEvent::PromptWaiting { plugin_id: id.to_owned() });
+            let name = self.get(id).map(|p| p.manifest().name.clone()).unwrap_or_else(|_| id.to_owned());
+            return Err(IdeError::invalid(format!(
+                "{name} is waiting for your answer in another window. Answer or close it there, then try again."
+            )));
+        }
         let (cmd, arg) = (command.to_owned(), arg.map(str::to_owned));
-        self.code_call(id, invocation, "running the command", move |rt, inv| rt.run_command(&cmd, arg.as_deref(), inv))
+        self.code_call_cancellable(id, invocation, "running the command", cancel, move |rt, inv| {
+            rt.run_command(&cmd, arg.as_deref(), inv)
+        })
     }
 
     /// Content of a declared view, or of a custom editor (`invocation.editor`
@@ -1461,9 +1503,8 @@ impl PluginHost {
     }
 
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        let declared = [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
-            .iter()
-            .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
+        let declared =
+            ui_points::WEB_POINTS.iter().any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
     }
 
@@ -1513,6 +1554,9 @@ impl PluginHost {
         budget: Option<Duration>,
         f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> IdeResult<R> {
+        if cancel.is_some_and(|token| token.is_cancelled()) {
+            return Err(IdeError::cancelled());
+        }
         let deadline = budget.map(|budget| Instant::now() + budget);
         let fallback = ide_core::CancellationToken::new();
         let plugin = self.get(id)?;
@@ -1549,6 +1593,9 @@ impl PluginHost {
         }
         // Twice at most: the instance may be reclaimed between picking it and queueing the call.
         for attempt in 0..2 {
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                return Err(IdeError::cancelled());
+            }
             let (actor, activated) = self.ensure_active(&plugin, client.as_deref())?;
             if activated {
                 self.changed();
@@ -1567,6 +1614,10 @@ impl PluginHost {
                 }
                 (None, None) => actor.call(None, move |rt| call(rt, inv)),
             };
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::cancelled());
+            }
             if deadline.is_some() && matches!(result, Err(ActorError::SoftTimeout)) {
                 self.reap(&plugin, &actor, client.as_deref());
                 return Err(IdeError::new(
@@ -1657,6 +1708,11 @@ impl PluginHost {
             pins: self.pins.clone(),
             project_pins: self.shared.project_pins.clone(),
         })
+    }
+
+    /// Plugins' `javaAgents`, for [`ide_run::java_agent::set_java_agent_source`].
+    pub fn java_agents(&self) -> Arc<dyn ide_run::java_agent::JavaAgentSource> {
+        Arc::new(java_agents::PluginJavaAgents { store: self.java_agents.clone(), pins: self.pins.clone() })
     }
 
     /// The syntax of plugin languages, for [`ide_language::set_external_syntax`].
@@ -1885,6 +1941,7 @@ impl PluginHost {
         for p in plugins {
             let wanted: Vec<WorkbenchEvent> = events
                 .iter()
+                .filter(|event| !matches!(event, WorkbenchEvent::WebsocketReady(ready) if ready.plugin_id != p.id()))
                 .filter(|e| Self::wants(&p, e.kind(), subs.kinds.get(p.id())))
                 .filter(|e| {
                     !matches!(e, WorkbenchEvent::FilesChanged(_))
@@ -2895,7 +2952,7 @@ impl PluginHost {
             }
             let declared =
                 plugin.manifest().capabilities.all().cloned().chain(plugin.meta.lock().declared_extra.clone());
-            for cap in declared.filter(|c| matches!(c, Capability::Process(_))) {
+            for cap in declared.filter(|c| matches!(c, Capability::Process(_) | Capability::JavaAgent)) {
                 if let Some(bin) = ledger.pinned_binary(&subject, &cap) {
                     pins.insert(
                         (plugin.id().to_owned(), cap.to_string()),
@@ -2956,7 +3013,9 @@ impl PluginHost {
         self.save_ledger(&ledger);
     }
 
-    fn record_consent(&self, request: &Request<'_>, consent: &Consent) {
+    /// `agent_jar`: the jar of the plugin's `javaAgents` declaration, recorded when
+    /// `java.agent` is accepted.
+    fn record_consent(&self, request: &Request<'_>, consent: &Consent, agent_jar: Option<BinaryGrant>) {
         let accepted: Vec<Capability> = request.optional.iter().filter(|c| consent.accepts(c)).cloned().collect();
         let choices: BTreeMap<_, _> = {
             let ledger = self.ledger.lock();
@@ -2978,6 +3037,7 @@ impl PluginHost {
                     .get(&c.to_string())
                     .map_or_else(|| self.resolve_binary(program), |path| ledger::approve_program(path).ok())
                     .map(|b| (c.to_string(), b)),
+                Capability::JavaAgent => agent_jar.clone().map(|jar| (c.to_string(), jar)),
                 _ => None,
             })
             .collect();
@@ -3054,6 +3114,13 @@ impl Drop for PluginHost {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+/// The jar of a package's `javaAgents` declaration with its hash now, for a `java.agent` grant.
+fn agent_jar_grant(manifest: &Manifest, dir: &Path) -> Option<BinaryGrant> {
+    let path = java_agents::declared_jar(manifest, dir)?;
+    let hash = ledger::file_hash(&path).map_err(|e| tracing::info!("java.agent: {}: {e}", path.display())).ok()?;
+    Some(BinaryGrant { path, hash })
 }
 
 fn request_for<'a>(subject: &Subject, m: &'a Manifest, hash: &'a str, declared: &[Capability]) -> Request<'a> {

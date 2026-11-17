@@ -11,6 +11,17 @@
   min-width: min(120px, 100%);
   max-width: 180px;
 }
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
 .matched {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
@@ -30,14 +41,11 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 28px;
   padding: 2px 6px;
   margin: 0 -6px;
   border-radius: var(--radius-row);
-}
-.fontInput {
-  width: 220px;
 }
 /* Custom font block (IDEA Appearance): labels share one column, so the UI font,
    fallback and Size controls all start at the same x. */
@@ -45,8 +53,8 @@
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
-  column-gap: 8px;
-  row-gap: 4px;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
   min-height: 28px;
   padding: 2px 6px;
   margin: 0 -6px;
@@ -72,6 +80,13 @@
 }
 .pathInput {
   width: 320px;
+}
+.backgroundPreview {
+  height: var(--h-control);
+  max-width: 64px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
 }
 .patternInput {
   width: 160px;
@@ -103,14 +118,14 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .radio {
   display: inline-flex;
   flex: none;
   white-space: nowrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .radio input {
   margin: 0;
@@ -145,7 +160,7 @@
 .iconPacks {
   display: grid;
   grid-template-columns: repeat(var(--icon-pack-columns, 1), minmax(0, 1fr));
-  gap: 6px 24px;
+  gap: var(--space-1-5) 24px;
   padding: 2px 0;
 }
 

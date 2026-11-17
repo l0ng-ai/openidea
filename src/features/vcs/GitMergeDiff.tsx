@@ -4,7 +4,7 @@ import { Decoration, EditorView } from "@codemirror/view";
 import { Chunk } from "@codemirror/merge";
 import { call, commands } from "@/platform/ipc";
 import type { EditorInput } from "@/workbench/contributions";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
 import { repositoryPath } from "./repositoryPaths";
 import styles from "./GitLog.module.css";
 import { syncMergeScroll } from "./mergeScroll";
@@ -24,10 +24,9 @@ export function GitMergeDiff({ input }: { input: EditorInput }) {
     const views: EditorView[] = [];
     let stopScroll: (() => void) | undefined;
     const sides = [data.parents[0]!, { rev: data.revision, path: data.path }, data.parents[1]!];
-    void Promise.all([
-      Promise.all(sides.map((s) => call(commands.vcsFileAt(repositoryPath(data.repo, s.path), s.rev)))),
-      languageFor(data.path),
-    ])
+    const path = repositoryPath(data.repo, data.path);
+    void Promise.all(sides.map((s) => call(commands.vcsFileAt(repositoryPath(data.repo, s.path), s.rev))))
+      .then(async (texts) => [texts, await languageFor(path, texts[1] == null ? null : firstLineOf(texts[1]))] as const)
       .then(([texts, language]) => {
         if (!alive || !host.current) return;
         const docs = texts.map((text) => Text.of((text ?? "").split("\n")));
@@ -51,10 +50,7 @@ export function GitMergeDiff({ input }: { input: EditorInput }) {
           }
         for (const [i, text] of texts.entries()) {
           const pane = document.createElement("div");
-          pane.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column";
-          const label = document.createElement("div");
-          label.textContent = `${sides[i]!.rev.slice(0, 8)} · ${sides[i]!.path}`;
-          pane.append(label);
+          pane.className = styles.mergeDiffPane!;
           host.current.append(pane);
           const view = new EditorView({
             parent: pane,
@@ -86,10 +82,16 @@ export function GitMergeDiff({ input }: { input: EditorInput }) {
       element?.replaceChildren();
     };
   }, [data]);
+  const labels = [data.parents[0]!, { rev: data.revision, path: data.path }, data.parents[1]!];
   return (
-    <>
-      <div role={error ? "alert" : undefined}>{error}</div>
-      <div className={styles.revisionSource} style={{ display: "flex" }} ref={host} />
-    </>
+    <div className={styles.mergeDiff}>
+      {error && <div role="alert">{error}</div>}
+      <div className={styles.mergeDiffLabels}>
+        {labels.map((side, i) => (
+          <span key={i}>{`${side.rev.slice(0, 8)} · ${side.path}`}</span>
+        ))}
+      </div>
+      <div className={styles.mergeDiffPanes} ref={host} />
+    </div>
   );
 }

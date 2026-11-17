@@ -13,6 +13,8 @@ import { classHighlighter, highlightTree } from "@lezer/highlight";
 import type { Markup } from "@/bindings";
 import { maybeEditorService } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
+import { onOtherShare } from "@/platform/paths";
+import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { selectableText } from "@/ui/selectableText";
 
@@ -203,9 +205,12 @@ export function sourceLink(href: string): { path: string; line: number; col: num
     } catch {
       return null;
     }
+    const path = decodeURIComponent(url.pathname);
+    // Documentation is text someone else wrote.
+    if (onOtherShare(path, useProject.getState().project?.root ?? "")) return null;
     const m = /^#?L?(\d+)(?:[,:](\d+))?/.exec(url.hash.slice(1));
     return {
-      path: decodeURIComponent(url.pathname),
+      path,
       line: m ? Math.max(0, Number(m[1]) - 1) : 0,
       col: m?.[2] ? Math.max(0, Number(m[2]) - 1) : 0,
     };

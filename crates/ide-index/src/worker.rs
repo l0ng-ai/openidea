@@ -1,8 +1,8 @@
 //! The background indexing thread: initial load + full scan, then incremental
 //! updates queued by the watcher.
 
-use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
-use crate::filter::{Found, PathFilter};
+use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol, safe_rel};
+use crate::filter::{Found, PathFilter, mtime_of};
 use crate::store::Store;
 use ide_core::{IdeEvent, SharedSink, TaskId};
 use ide_language::{LanguageRegistry, Syntax};
@@ -11,13 +11,31 @@ use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+
+/// Dedicated pool for background indexing and snapshot hydration: queries hold
+/// `IndexData::read` while scanning on the global Rayon pool, so indexing work
+/// (which may block on channel backpressure while the index thread waits for
+/// `IndexData::write`) must never compete for the same workers.
+static INDEX_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("openidea-index-{i}"))
+        .build()
+        .expect("cannot build index thread pool")
+});
 
 /// Files larger than this are listed but not parsed for symbols.
 pub const MAX_SYMBOL_FILE: u64 = 2 * 1024 * 1024;
 const CHUNK: usize = 512;
+/// Insert/persist batch of the initial scan's streaming pass.
+const SCAN_BATCH: usize = 2048;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+#[cfg(not(test))]
+const SNAPSHOT_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SNAPSHOT_DELAY: Duration = Duration::from_millis(50);
 pub(crate) const MAX_RECENT: usize = 50;
 
 pub(crate) enum Job {
@@ -55,6 +73,11 @@ pub(crate) struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
     idle: Condvar,
+    /// Coalesced post-update snapshot refresh.
+    snapshot_due: Mutex<Option<Instant>>,
+    /// Directories whose watcher events still need reconciliation before a
+    /// refreshed snapshot can be trusted.
+    pending_dirs: Mutex<HashSet<PathBuf>>,
 }
 
 impl Shared {
@@ -79,6 +102,8 @@ impl Shared {
             queue: Mutex::default(),
             wake: Condvar::new(),
             idle: Condvar::new(),
+            snapshot_due: Mutex::default(),
+            pending_dirs: Mutex::default(),
         }
     }
 
@@ -135,8 +160,15 @@ impl Shared {
             q.busy = true;
         }
         if scan {
-            self.load_persisted();
-            self.full_scan();
+            // A warm start can trust the snapshot when neither the scope nor any
+            // directory/file metadata changed. Rebuilding the walk's file list is
+            // the expensive part; validate the flat manifest first.
+            if !self.try_fast_start() {
+                let snapshot_guard = SystemTime::now();
+                let found = self.walk_roots(None);
+                self.load_persisted(&found);
+                self.full_scan(Some(found), snapshot_guard);
+            }
         } else {
             self.indexing.store(false, Ordering::SeqCst);
         }
@@ -147,17 +179,38 @@ impl Shared {
             self.idle.notify_all();
         }
         loop {
+            let mut save_due = false;
             let jobs: Vec<Job> = {
                 let mut q = self.queue.lock();
-                while q.jobs.is_empty() && !self.is_cancelled() {
-                    self.wake.wait(&mut q);
+                loop {
+                    if self.is_cancelled() {
+                        return;
+                    }
+                    if !q.jobs.is_empty() {
+                        break;
+                    }
+                    let due = *self.snapshot_due.lock();
+                    if let Some(due) = due {
+                        if Instant::now() >= due {
+                            save_due = true;
+                            break;
+                        }
+                        self.wake.wait_until(&mut q, due);
+                    } else {
+                        self.wake.wait(&mut q);
+                    }
                 }
-                if self.is_cancelled() {
-                    return;
+                if save_due {
+                    Vec::new()
+                } else {
+                    q.busy = true;
+                    q.jobs.drain(..).collect()
                 }
-                q.busy = true;
-                q.jobs.drain(..).collect()
             };
+            if save_due {
+                self.save_snapshot_now();
+                continue;
+            }
             self.process(jobs);
             let mut q = self.queue.lock();
             q.busy = false;
@@ -167,27 +220,116 @@ impl Shared {
         }
     }
 
-    fn load_persisted(&self) {
-        let Some(store) = &self.store else { return };
+    /// Warm start: validate the snapshot's flat directory/file manifest and hydrate
+    /// without walking the tree. A changed scope, symlink, directory mtime, file
+    /// mtime or file size falls back to the full walk.
+    fn try_fast_start(&self) -> bool {
+        let started = Instant::now();
+        let Some(store) = &self.store else { return false };
+        let load_started = Instant::now();
+        let Some(snapshot) = store.load_snapshot() else { return false };
+        let loaded = load_started.elapsed();
         let filter = self.filter();
-        let root = filter.root().to_owned();
-        match store.load() {
-            Ok(records) => {
-                let entries: Vec<FileEntry> = records
-                    .into_par_iter()
-                    .filter(|(rel, _)| {
-                        let path = root.join(rel);
-                        !filter.is_excluded(&path, false) && dunce::canonicalize(&path).is_ok_and(|real| real == path)
-                    })
-                    .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
-                    .collect();
-                let mut d = self.data.write();
-                for e in entries {
-                    d.insert(e);
-                }
-            }
-            Err(e) => tracing::warn!("index cache load failed: {e}"),
+        if filter.has_extra_roots() || snapshot.filter() != filter.stamp() {
+            return false;
         }
+        let root = filter.root();
+        for i in 0..snapshot.dirs_len() {
+            let rel = snapshot.dir(i);
+            let path = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { return false };
+            if !meta.is_dir() || mtime_of(&meta) != snapshot.dir_mtime(i) {
+                return false;
+            }
+        }
+        let external = crate::store::external_ignore_candidates(root);
+        let saved_external: Vec<&str> = (0..snapshot.ignore_len())
+            .filter(|&i| snapshot.ignore_external(i))
+            .map(|i| snapshot.ignore_path(i))
+            .collect();
+        if external.len() != saved_external.len()
+            || external.iter().zip(&saved_external).any(|(path, saved)| path.to_string_lossy() != **saved)
+        {
+            return false;
+        }
+        for i in 0..snapshot.ignore_len() {
+            let path = Path::new(snapshot.ignore_path(i));
+            let meta = std::fs::metadata(path).ok();
+            let present = meta.is_some();
+            if present != snapshot.ignore_present(i) {
+                return false;
+            }
+            if let Some(meta) = meta
+                && (mtime_of(&meta) != snapshot.ignore_mtime(i) || meta.len() != snapshot.ignore_size(i))
+            {
+                return false;
+            }
+        }
+        let build_started = Instant::now();
+        let entries: Vec<Option<(FileEntry, Vec<StoredSymbol>)>> = INDEX_POOL.install(|| {
+            (0..snapshot.len())
+                .into_par_iter()
+                .map(|i| {
+                    let path = root.join(snapshot.rel(i));
+                    let meta = std::fs::symlink_metadata(&path).ok()?;
+                    if !meta.is_file() || mtime_of(&meta) != snapshot.mtime(i) || meta.len() != snapshot.size(i) {
+                        return None;
+                    }
+                    Some(snapshot.entry(i, root))
+                })
+                .collect()
+        });
+        let built = build_started.elapsed();
+        if entries.iter().any(Option::is_none) {
+            return false;
+        }
+        let validated = entries;
+        let mut entries = Vec::with_capacity(validated.len());
+        for entry in validated {
+            entries.push(entry.expect("validated above"));
+        }
+        let dirs: Vec<(Box<str>, PathBuf, u32)> = (0..snapshot.dirs_len())
+            .filter_map(|i| {
+                let rel = snapshot.dir(i);
+                (!rel.is_empty() && snapshot.dir_count(i) > 0).then(|| {
+                    let key = format!("{rel}/");
+                    (key.into_boxed_str(), root.join(rel), snapshot.dir_count(i))
+                })
+            })
+            .collect();
+        let insert_started = Instant::now();
+        let mut d = self.data.write();
+        d.load_bulk(entries, dirs);
+        drop(d);
+        tracing::info!(
+            "index snapshot: warm start in {:?} (load {loaded:?}, validate/build {built:?}, insert {:?})",
+            started.elapsed(),
+            insert_started.elapsed()
+        );
+        #[cfg(test)]
+        eprintln!(
+            "index snapshot: warm start load {loaded:?}, validate/build {built:?}, insert {:?}, total {:?}",
+            insert_started.elapsed(),
+            started.elapsed()
+        );
+        self.indexing.store(false, Ordering::SeqCst);
+        self.emit_state();
+        let recent = store.load_recent_file().unwrap_or_else(|| {
+            let recent = store.load_recent();
+            let _ = store.save_recent_file(&recent);
+            recent
+        });
+        let mut r = self.recent.lock();
+        for p in recent.into_iter().map(|rel| root.join(rel)) {
+            if !r.contains(&p) {
+                r.push(p);
+            }
+        }
+        r.truncate(MAX_RECENT);
+        true
+    }
+
+    fn load_recent(&self, store: &Store, root: &Path) {
         let recent: Vec<PathBuf> = store.load_recent().into_iter().map(|rel| root.join(rel)).collect();
         let mut r = self.recent.lock();
         for p in recent {
@@ -196,6 +338,76 @@ impl Shared {
             }
         }
         r.truncate(MAX_RECENT);
+    }
+
+    fn load_persisted(&self, found: &[Found]) {
+        let Some(store) = &self.store else { return };
+        let root = self.filter().root().to_owned();
+        let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
+        let started = Instant::now();
+        match store.load_snapshot() {
+            Some(snapshot) => {
+                let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = INDEX_POOL.install(|| {
+                    (0..snapshot.len())
+                        .into_par_iter()
+                        .filter_map(|i| {
+                            let rel = snapshot.rel(i);
+                            if !safe_rel(rel) {
+                                return None;
+                            }
+                            let path = root.join(rel);
+                            seen.contains(path.as_path()).then(|| snapshot.entry(i, &root))
+                        })
+                        .collect()
+                });
+                let mut d = self.data.write();
+                let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+                d.reserve(entries.len(), symbols, 0);
+                for (e, symbols) in entries {
+                    d.insert(e, symbols);
+                }
+                tracing::info!(
+                    "index snapshot: hydrated {} files, {} symbols in {:?}",
+                    d.file_count,
+                    d.symbol_count,
+                    started.elapsed()
+                );
+                #[cfg(test)]
+                eprintln!("index snapshot: hydrated {} files in {:?}", d.file_count, started.elapsed());
+            }
+            None => match store.load() {
+                Ok(records) => {
+                    // Fallback for an index that changed since the snapshot: redb
+                    // records are decoded one file at a time and filtered by the walk.
+                    let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = INDEX_POOL.install(|| {
+                        records
+                            .into_par_iter()
+                            .filter(|(rel, _)| {
+                                safe_rel(rel) && {
+                                    let path = root.join(rel);
+                                    seen.contains(path.as_path())
+                                }
+                            })
+                            .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
+                            .collect()
+                    });
+                    let mut d = self.data.write();
+                    let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+                    d.reserve(entries.len(), symbols, 0);
+                    for (e, symbols) in entries {
+                        d.insert(e, symbols);
+                    }
+                    tracing::info!(
+                        "index cache: hydrated {} files, {} symbols in {:?}",
+                        d.file_count,
+                        d.symbol_count,
+                        started.elapsed()
+                    );
+                }
+                Err(e) => tracing::warn!("index cache load failed: {e}"),
+            },
+        }
+        self.load_recent(store, &root);
     }
 
     /// A cancelled scan (project closed) still ends its progress task and the indexing state.
@@ -212,11 +424,24 @@ impl Shared {
         self.emit_state();
     }
 
-    fn full_scan(&self) {
-        self.scan(None);
+    fn walk_roots(&self, dirs: Option<&[PathBuf]>) -> Vec<Found> {
+        let filter = self.filter();
+        let roots: Vec<&Path> = match dirs {
+            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
+            None => filter.roots().collect(),
+        };
+        let mut found = Vec::new();
+        for root in roots {
+            found.extend(filter.walk(root, &self.cancelled));
+        }
+        found
     }
 
-    fn scan(&self, dirs: Option<&[PathBuf]>) {
+    fn full_scan(&self, found: Option<Vec<Found>>, guard: SystemTime) {
+        self.scan(None, found, guard);
+    }
+
+    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) {
         let started = Instant::now();
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
@@ -231,22 +456,19 @@ impl Shared {
         });
 
         let filter = self.filter();
-        let mut found = Vec::new();
-        let roots: Vec<&Path> = match dirs {
-            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
-            None => filter.roots().collect(),
-        };
-        for root in roots {
-            found.extend(filter.walk(root, &self.cancelled));
-        }
+        let walk_started = Instant::now();
+        let found = prewalked.unwrap_or_else(|| self.walk_roots(dirs));
+        let walk = walk_started.elapsed();
         if self.is_cancelled() {
             return self.end_scan(task);
         }
+        let classify_started = Instant::now();
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
-        let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
+        let (todo, stale) = {
             let d = self.data.read();
-            let todo = found.iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect();
-            let stale = d
+            let todo: Vec<(&Found, Option<ContentHash>)> =
+                found.iter().filter_map(|f| prev_hash_if_stale(&d, f).map(|h| (f, h))).collect();
+            let stale: Vec<PathBuf> = d
                 .paths()
                 .filter(|p| dirs.is_none_or(|dirs| dirs.iter().any(|dir| p.starts_with(dir))))
                 .filter(|p| !seen.contains(p.as_path()))
@@ -254,6 +476,7 @@ impl Shared {
                 .collect();
             (todo, stale)
         };
+        let classify = classify_started.elapsed();
         if !stale.is_empty() {
             let mut d = self.data.write();
             for path in &stale {
@@ -264,27 +487,83 @@ impl Shared {
         self.persist(&[], &stale, false);
 
         let total = todo.len();
-        let mut done = 0usize;
-        let mut last_progress = Instant::now();
-        for chunk in todo.chunks(CHUNK) {
-            if self.is_cancelled() {
-                return self.end_scan(task);
-            }
-            self.index_files(chunk.iter().copied(), false);
-            done += chunk.len();
-            if last_progress.elapsed() >= PROGRESS_EVERY {
-                last_progress = Instant::now();
-                self.sink.emit(IdeEvent::Task {
-                    id: task,
-                    title: "Indexing".into(),
-                    message: Some(format!("{done} / {total} files")),
-                    fraction: Some(done as f32 / total.max(1) as f32),
-                    done: false,
-                    cancellable: false,
+        let mut laps = ChunkLaps::default();
+        {
+            // One streaming parallel pass: parse on `INDEX_POOL` without
+            // per-chunk joins (a straggler file at a join's tail idles every
+            // other core), while parsed files flow to this thread to be
+            // inserted and persisted in batches. `filter` moves into the
+            // parse thread; this thread keeps the outer one.
+            let filter = self.filter();
+            // Bounded: when inserting and persisting fall behind, the parse waits instead
+            // of holding the whole project's records (and their bytes) in the channel.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedFile>(2 * SCAN_BATCH);
+            let cancelled = &self.cancelled;
+            let mut done = 0usize;
+            let mut last_progress = Instant::now();
+            let pass_started = Instant::now();
+            std::thread::scope(|scope| -> () {
+                scope.spawn(move || {
+                    INDEX_POOL.install(|| {
+                        todo.par_iter().for_each(|&(f, prev_hash)| {
+                            if cancelled.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            let Some(out) = self.parse_found(f, prev_hash, &filter) else { return };
+                            let _ = tx.send(out);
+                        });
+                    });
+                    // `tx` drops here: the consumer's loop ends with the channel.
                 });
+                let mut batch: Vec<ParsedFile> = Vec::with_capacity(SCAN_BATCH);
+                for out in rx {
+                    if self.is_cancelled() {
+                        break;
+                    }
+                    batch.push(out);
+                    if batch.len() < SCAN_BATCH {
+                        continue;
+                    }
+                    done += batch.len();
+                    laps.add(self.publish(batch.drain(..)));
+                    if last_progress.elapsed() >= PROGRESS_EVERY {
+                        last_progress = Instant::now();
+                        self.sink.emit(IdeEvent::Task {
+                            id: task,
+                            title: "Indexing".into(),
+                            message: Some(format!("{done} / {total} files")),
+                            fraction: Some(done as f32 / total.max(1) as f32),
+                            done: false,
+                            cancellable: false,
+                        });
+                    }
+                }
+                if !batch.is_empty() && !self.is_cancelled() {
+                    done += batch.len();
+                    laps.add(self.publish(batch.drain(..)));
+                }
+            });
+            laps.extract = pass_started.elapsed();
+        }
+        if self.is_cancelled() {
+            return self.end_scan(task);
+        }
+        let durable_started = Instant::now();
+        self.persist(&[], &[], true);
+        let durable = durable_started.elapsed();
+        if let Some(store) = &self.store {
+            let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
+            let d = self.data.read();
+            let snapshot_started = Instant::now();
+            if let Err(e) = store.save_snapshot(&d, &filter, guard) {
+                tracing::warn!("index snapshot: {e}");
+            }
+            tracing::info!("index snapshot: written in {:?}", snapshot_started.elapsed());
+            if let Err(e) = store.save_recent_file(&recent) {
+                tracing::warn!("index recent snapshot: {e}");
             }
         }
-        self.persist(&[], &[], true);
+        *self.snapshot_due.lock() = None;
         self.indexing.store(false, Ordering::SeqCst);
         self.sink.emit(IdeEvent::Task {
             id: task,
@@ -297,60 +576,149 @@ impl Shared {
         self.emit_state();
         let d = self.data.read();
         tracing::info!(
-            "indexed {} files ({} parsed, {} symbols) in {:?}",
+            "indexed {} files ({} parsed, {} symbols) in {:?} (walk {:?}, classify {:?}, extract {:?}, insert {:?}, persist {:?}, durable {:?})",
             d.file_count,
             total,
             d.symbol_count,
-            started.elapsed()
+            started.elapsed(),
+            walk,
+            classify,
+            laps.extract,
+            laps.insert,
+            laps.persist,
+            durable
         );
     }
 
     /// Extracts records in parallel, then publishes them to memory and disk.
-    /// `force` re-parses files whose content is unchanged (their language changed).
-    fn index_files<'a>(&self, files: impl Iterator<Item = &'a Found>, force: bool) {
-        let files: Vec<&Found> = files.collect();
+    fn index_files(&self, files: &[(Found, Option<ContentHash>)]) -> ChunkLaps {
+        let mut laps = ChunkLaps::default();
         let filter = self.filter();
-        let extracted: Vec<(String, FileRecord, PathBuf)> = files
-            .par_iter()
-            .filter_map(|f| {
-                if self.is_cancelled() {
-                    return None;
-                }
-                let rel = filter.rel(&f.path)?;
-                let prev_hash = if force { None } else { self.data.read().get(&f.path).map(|e| e.hash) };
-                match self.extract(f, prev_hash) {
-                    Extracted::Unchanged => {
-                        // Same content, new mtime: keep the symbols, refresh metadata.
-                        let d = self.data.read();
-                        let mut rec = d.get(&f.path)?.record();
-                        rec.mtime = f.mtime;
-                        rec.size = f.size;
-                        rec.ignored = f.ignored;
-                        Some((rel, rec, f.path.clone()))
-                    }
-                    Extracted::New(rec) => Some((rel, rec, f.path.clone())),
-                }
-            })
-            .collect();
+        let started = Instant::now();
+        let extracted: Vec<ParsedFile> = INDEX_POOL.install(|| {
+            files.par_iter().filter_map(|(f, prev_hash)| self.parse_found(f, *prev_hash, &filter)).collect()
+        });
+        laps.extract = started.elapsed();
         if extracted.is_empty() {
-            return;
+            return laps;
         }
-        let puts: Vec<(String, FileRecord)> =
-            extracted.iter().filter_map(|(_, rec, path)| Some((filter.store_key(path)?, rec.clone()))).collect();
-        {
-            let entries: Vec<FileEntry> =
-                extracted.into_iter().map(|(rel, rec, path)| FileEntry::new(path, rel, rec)).collect();
-            let mut d = self.data.write();
-            for e in entries {
-                d.insert(e);
+        laps.add(self.publish(extracted.into_iter()));
+        laps
+    }
+
+    /// Reads and parses one file on `INDEX_POOL` without locking `self.data`,
+    /// serializing new records for the cache alongside the parse. `None` when
+    /// the file is outside the scope or the scan was cancelled.
+    fn parse_found(
+        &self,
+        f: &Found,
+        prev_hash: Option<ContentHash>,
+        filter: &std::sync::Arc<PathFilter>,
+    ) -> Option<ParsedFile> {
+        if self.is_cancelled() {
+            return None;
+        }
+        let rel = filter.rel(&f.path)?;
+        let key = filter.store_key(&f.path);
+        let outcome = match self.extract(f, prev_hash) {
+            Extracted::Unchanged => ParsedOutcome::Unchanged { mtime: f.mtime, size: f.size, ignored: f.ignored },
+            Extracted::New(rec) => {
+                let bytes = key.as_ref().and_then(|_| postcard::to_allocvec(&rec).ok());
+                ParsedOutcome::New { rec, bytes }
+            }
+        };
+        Some(ParsedFile { rel, key, outcome, path: f.path.clone() })
+    }
+
+    /// Inserts a parsed batch into the in-memory index and persists the records.
+    fn publish(&self, batch: impl Iterator<Item = ParsedFile>) -> ChunkLaps {
+        let mut laps = ChunkLaps::default();
+        let started = Instant::now();
+        let mut inserts: Vec<(FileEntry, Vec<StoredSymbol>)> = Vec::new();
+        let mut refreshes: Vec<MetadataRefresh> = Vec::new();
+        let mut puts: Vec<(String, Vec<u8>)> = Vec::new();
+        for out in batch {
+            let ParsedFile { rel, key, outcome, path } = out;
+            match outcome {
+                ParsedOutcome::New { rec, bytes } => {
+                    if let (Some(key), Some(bytes)) = (key, bytes) {
+                        puts.push((key, bytes));
+                    }
+                    inserts.push(FileEntry::new(path, rel, rec));
+                }
+                ParsedOutcome::Unchanged { mtime, size, ignored } => {
+                    refreshes.push(MetadataRefresh { path, key, mtime, size, ignored });
+                }
             }
         }
-        self.persist(&puts, &[], false);
+        let mut refreshed_records: Vec<(String, FileRecord)> = Vec::new();
+        {
+            let mut d = self.data.write();
+            for (e, symbols) in inserts {
+                d.insert(e, symbols);
+            }
+            for r in refreshes {
+                if let Some(rec) = d.refresh_metadata(&r.path, r.mtime, r.size, r.ignored)
+                    && let Some(key) = r.key
+                {
+                    refreshed_records.push((key, rec));
+                }
+            }
+        }
+        for (key, rec) in refreshed_records {
+            if let Ok(bytes) = postcard::to_allocvec(&rec) {
+                puts.push((key, bytes));
+            }
+        }
+        laps.insert = started.elapsed();
+        let started = Instant::now();
+        self.persist_raw(&puts, &[], false);
+        laps.persist = started.elapsed();
+        laps
+    }
+
+    fn schedule_snapshot(&self) {
+        if self.store.is_none() {
+            return;
+        }
+        let mut due = self.snapshot_due.lock();
+        if due.is_none() {
+            *due = Some(Instant::now() + SNAPSHOT_DELAY);
+        }
+    }
+
+    fn save_snapshot_now(&self) {
+        let dirs: Vec<PathBuf> = self.pending_dirs.lock().drain().collect();
+        if !dirs.is_empty() {
+            // Reconcile the directories touched since the last scan before
+            // recording their mtimes; otherwise a missed watcher event could be
+            // blessed into the manifest.
+            self.scan(Some(&dirs), None, SystemTime::now());
+            return;
+        }
+        if let Some(store) = &self.store {
+            let filter = self.filter();
+            let guard = SystemTime::now();
+            let d = self.data.read();
+            if let Err(e) = store.save_snapshot(&d, &filter, guard) {
+                tracing::warn!("index snapshot: {e}");
+            }
+        }
+        *self.snapshot_due.lock() = None;
     }
 
     fn persist(&self, puts: &[(String, FileRecord)], deletes: &[String], durable: bool) {
         if let Some(store) = &self.store
             && let Err(e) = store.apply(puts, deletes, durable)
+        {
+            tracing::warn!("index cache write failed: {e}");
+        }
+    }
+
+    /// [`Self::persist`] for records already serialized by the parse pool.
+    fn persist_raw(&self, puts: &[(String, Vec<u8>)], deletes: &[String], durable: bool) {
+        if let Some(store) = &self.store
+            && let Err(e) = store.apply_raw(puts, deletes, durable)
         {
             tracing::warn!("index cache write failed: {e}");
         }
@@ -384,7 +752,13 @@ impl Shared {
                 .syntax
                 .tags(&lang, &text)
                 .into_iter()
-                .map(|t| StoredSymbol { name: t.name, kind: t.kind, container: t.container, range: t.range })
+                .map(|t| StoredSymbol {
+                    name: t.name,
+                    kind: t.kind,
+                    container: t.container,
+                    range: t.range,
+                    bases: t.bases,
+                })
                 .collect();
         }
         Extracted::New(rec)
@@ -407,6 +781,17 @@ impl Shared {
                 Job::Reparse(before) => reparse.push(before),
             }
         }
+        {
+            let mut pending = self.pending_dirs.lock();
+            for path in changed.iter().chain(removed.iter()) {
+                let dir = if path.is_dir() {
+                    path.clone()
+                } else {
+                    path.parent().map_or_else(|| path.clone(), Path::to_owned)
+                };
+                pending.insert(dir);
+            }
+        }
         if !rule_dirs.is_empty() {
             {
                 let mut filter = self.filter.write();
@@ -421,14 +806,14 @@ impl Shared {
                 }
             }
             if !rescan {
-                self.scan(Some(&roots));
+                self.scan(Some(&roots), None, SystemTime::now());
                 changed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
                 removed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
             }
         }
         if rescan {
             // The scan also picks up whatever `changed` / `removed` reported.
-            self.full_scan();
+            self.full_scan(None, SystemTime::now());
             changed.clear();
             removed.clear();
         }
@@ -480,9 +865,9 @@ impl Shared {
         for (dir, wanted) in by_dir {
             files.extend(filter.list_dir(&dir).into_iter().filter(|f| wanted.contains(&f.path)));
         }
-        let files: Vec<Found> = {
+        let files: Vec<(Found, Option<ContentHash>)> = {
             let d = self.data.read();
-            files.into_iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect()
+            files.into_iter().filter_map(|f| prev_hash_if_stale(&d, &f).map(|h| (f, h))).collect()
         };
         if !files.is_empty() {
             touched = true;
@@ -490,17 +875,17 @@ impl Shared {
                 if self.is_cancelled() {
                     return;
                 }
-                self.index_files(chunk.iter(), false);
+                self.index_files(chunk);
             }
         }
         for before in reparse {
-            let affected: Vec<Found> = {
+            let affected: Vec<(Found, Option<ContentHash>)> = {
                 let d = self.data.read();
                 d.paths()
                     .filter(|p| before.detect(p, None) != self.languages.detect(p, None))
                     .filter_map(|p| {
                         let e = d.get(p)?;
-                        Some(Found { path: p.clone(), mtime: e.mtime, size: e.size, ignored: e.ignored })
+                        Some((Found { path: p.clone(), mtime: e.mtime, size: e.size, ignored: e.ignored }, None))
                     })
                     .collect()
             };
@@ -510,7 +895,7 @@ impl Shared {
                     if self.is_cancelled() {
                         return;
                     }
-                    self.index_files(chunk.iter(), true);
+                    self.index_files(chunk);
                 }
             }
         }
@@ -523,7 +908,20 @@ impl Shared {
         if touched {
             self.persist(&[], &[], true);
             self.emit_state();
+            self.schedule_snapshot();
         }
+    }
+}
+
+type ContentHash = [u8; 32];
+
+/// `Some(prev_hash)` when `f` is missing or stale in `d` (`None` inner hash when
+/// the file must be parsed fresh); `None` when `d` is already current for `f`.
+fn prev_hash_if_stale(d: &IndexData, f: &Found) -> Option<Option<ContentHash>> {
+    match d.get(&f.path) {
+        None => Some(None),
+        Some(e) if e.stale_for(f) => Some((!e.ignored).then_some(e.hash)),
+        Some(_) => None,
     }
 }
 
@@ -541,4 +939,57 @@ enum Extracted {
     /// Content hash matches the indexed version.
     Unchanged,
     New(FileRecord),
+}
+
+/// Wall-time laps of one `index_files` chunk, accumulated by the scan.
+#[derive(Default)]
+struct ChunkLaps {
+    extract: Duration,
+    insert: Duration,
+    persist: Duration,
+}
+
+impl ChunkLaps {
+    fn add(&mut self, other: ChunkLaps) {
+        self.extract += other.extract;
+        self.insert += other.insert;
+        self.persist += other.persist;
+    }
+}
+
+struct MetadataRefresh {
+    path: PathBuf,
+    key: Option<String>,
+    mtime: u64,
+    size: u64,
+    ignored: bool,
+}
+
+enum ParsedOutcome {
+    Unchanged { mtime: u64, size: u64, ignored: bool },
+    New { rec: FileRecord, bytes: Option<Vec<u8>> },
+}
+
+/// One file parsed off the index thread: its outcome ready to publish, with new
+/// records already serialized for the cache in parallel with the parse.
+struct ParsedFile {
+    rel: String,
+    /// Cache key; `None` when outside the persisted root.
+    key: Option<String>,
+    outcome: ParsedOutcome,
+    path: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::safe_rel;
+
+    #[test]
+    fn cache_keys_stay_below_the_root() {
+        assert!(safe_rel("src/main.rs"));
+        assert!(safe_rel("a/b/c.rs"));
+        for bad in ["", "/etc/passwd", "../out.rs", "a/../../b.rs", "./a.rs"] {
+            assert!(!safe_rel(bad), "{bad:?}");
+        }
+    }
 }

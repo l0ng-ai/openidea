@@ -13,7 +13,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: 36px;
   padding: 0 8px;
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));

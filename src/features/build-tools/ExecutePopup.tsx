@@ -2,7 +2,8 @@
  * "Execute Maven Goal" / "Execute Gradle Task" (IDEA's Run Anything popup for a
  * build tool): a command line with completion of lifecycle phases and plugin
  * goals (Maven) or task names / paths (Gradle), plus recent command lines.
- * Tab or a click accepts a completion; Enter runs the line in the chosen project.
+ * Tab completes the word. Selecting a row (click or arrows) shows its command line in the input;
+ * Enter or a double-click runs it (or the typed line) in the chosen project.
  */
 import { useMemo, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
@@ -89,8 +90,11 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
 
   const close = () => useBuild.setState({ executeOpen: null });
 
-  const execute = () => {
-    const text = line.trim();
+  const selectedRow = active >= 0 ? rows[active] : undefined;
+  const selected = selectedRow?.kind === "completion" ? selectedRow.completion : null;
+
+  const execute = (command = selected?.line ?? line) => {
+    const text = command.trim();
     if (text && executeBuildLine(tool, text, project)) close();
   };
 
@@ -115,8 +119,7 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
       accept(rows[active < 0 ? firstCompletion : active]);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (active >= 0) accept(rows[active]);
-      else execute();
+      execute();
     }
   };
 
@@ -147,7 +150,7 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
             data-autofocus
             variant="bare"
             className={styles.input}
-            value={line}
+            value={selected?.line ?? line}
             placeholder={tool === "maven" ? "clean install -DskipTests" : "build --info"}
             aria-label={tool === "maven" ? "Maven command line" : "Gradle command line"}
             onChange={(e) => {
@@ -166,7 +169,11 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
           )}
           activeIndex={active}
           onActiveChange={setActive}
-          onActivate={(c) => accept(c)}
+          onActivate={(row, index, e) => {
+            if (row.kind !== "completion") return;
+            setActive(index);
+            if (e.detail >= 2) execute(row.completion.line);
+          }}
           focusable={false}
           hoverSelects={false}
           rowHeight={24}

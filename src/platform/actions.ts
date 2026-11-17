@@ -49,6 +49,8 @@ export interface Action {
   verbatim?: boolean;
   /** Hidden from Search Everywhere (internal / parameterised actions). */
   hidden?: boolean;
+  /** Listed in Settings › Keymap although `hidden`, so it can get a shortcut (Cut / Copy / Paste). */
+  keymap?: boolean;
   /**
    * Marks a toggle action (IDEA's ToggleAction): returns the current state.
    * Search Everywhere shows an ON/OFF switch and keeps the popup open.
@@ -116,10 +118,9 @@ useI18n.subscribe((s, prev) => {
   useActions.setState({ actions: new Map([...sources].map(([id, a]) => [id, localize(a)])) });
 });
 
-/** Registers an action; returns a disposer. Re-registering an id replaces it. */
-export function registerAction(action: Action): () => void {
+/** Adds `action` to the written sources; returns a disposer that removes it. */
+function addSource(action: Action): () => void {
   sources.set(action.id, action);
-  useActions.setState((s) => ({ actions: new Map(s.actions).set(action.id, localize(action)) }));
   return () => {
     if (sources.get(action.id) !== action) return;
     sources.delete(action.id);
@@ -131,8 +132,24 @@ export function registerAction(action: Action): () => void {
   };
 }
 
+/** Registers an action; returns a disposer. Re-registering an id replaces it. */
+export function registerAction(action: Action): () => void {
+  const dispose = addSource(action);
+  useActions.setState((s) => ({ actions: new Map(s.actions).set(action.id, localize(action)) }));
+  return dispose;
+}
+
 export function registerActions(actions: Action[]): () => void {
-  const disposers = actions.map(registerAction);
+  const disposers = actions.map(addSource);
+  // One state update for the batch: features register dozens of actions at start-up,
+  // and cloning the whole map per action made that O(n²).
+  if (actions.length) {
+    useActions.setState((s) => {
+      const next = new Map(s.actions);
+      for (const action of actions) next.set(action.id, localize(action));
+      return { actions: next };
+    });
+  }
   return () => disposers.forEach((d) => d());
 }
 

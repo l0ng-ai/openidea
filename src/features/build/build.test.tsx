@@ -30,7 +30,16 @@ import {
   rootNode,
   MAX_CONSOLE_LINES,
 } from "./model";
-import { BUILD_TASK_ID, setBuildBackend, startBuild, stopBuild, useBuildRun, type BuildBackend } from "./store";
+import {
+  BUILD_TASK_ID,
+  rerunBuild,
+  setBuildBackend,
+  startBuild,
+  startCompileFile,
+  stopBuild,
+  useBuildRun,
+  type BuildBackend,
+} from "./store";
 
 const err = (path: string | null, line: number, text = "cannot find symbol"): BuildMessage => ({
   severity: "error",
@@ -101,6 +110,14 @@ class FakeBackend implements BuildBackend {
     cmake: string | null,
   ) {
     this.calls.push({ kind, file, clear, ...(cmake ? { cmake } : {}) });
+    this.emit = onEvent;
+    return new Promise<BuildResult>((resolve, reject) => {
+      this.finish = resolve;
+      this.fail = reject;
+    });
+  }
+  compileFile(file: string, _request: number, clear: string[], onEvent: (e: BuildEvent) => void) {
+    this.calls.push({ kind: "compileFile", file, clear });
     this.emit = onEvent;
     return new Promise<BuildResult>((resolve, reject) => {
       this.finish = resolve;
@@ -391,5 +408,39 @@ describe("build feature", () => {
     });
     expect(useBuildRun.getState().status).toBe("cancelled");
     expect(notes).toHaveLength(0);
+  });
+
+  it("compiles one file without its module and reruns it from the tool window", async () => {
+    const run = startCompileFile("/p/core/src/A.java");
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "compileFile", file: "/p/core/src/A.java" });
+    expect(useBuildRun.getState().title).toBe("Compile File");
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(useBuildRun.getState().status).toBe("success");
+    // Rerun repeats the single-file compilation, not a module build.
+    const rerun = rerunBuild();
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "compileFile", file: "/p/core/src/A.java" });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await rerun;
+    });
+    expect(useBuildRun.getState().status).toBe("success");
+  });
+
+  it("runs Compile File for the active Java file", async () => {
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => "/p/core/src/A.java",
+    } as unknown as EditorService);
+    await executeAction("build.compileFile", { activate: false });
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "compileFile", file: "/p/core/src/A.java" });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
   });
 });

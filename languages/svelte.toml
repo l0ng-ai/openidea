@@ -7,6 +7,10 @@ indent = { tab-size = 2, insert-spaces = true }
 # parses <script> as TypeScript and <style> as CSS, so components get highlighted.
 ui-mode = "HTML"
 
+# Rainbow brackets › angle: editor syntax nodes of markup tags, whose `<` `>` pair up.
+[rainbow-brackets]
+tags = ["OpenTag", "CloseTag", "SelfClosingTag"]
+
 [[language-servers]]
 name = "svelte-language-server"
 command = "svelteserver"
@@ -43,3 +47,14 @@ nodePath = ""
 problems = { shortenToSingleLine = false }
 workingDirectory = { mode = "auto" }
 codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }
+# vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
+# No `rules`: an empty list there means no rule gets fixed.
+codeActionOnSave = { mode = "all" }
+
+# Components run in the browser: breakpoints in them are hit by a JavaScript Debug configuration.
+[debugger]
+adapter = "js-debug"
+command = "js-debug-adapter"
+args = ["${port}", "127.0.0.1"]
+transport = "tcp"
+install-hint = "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers"

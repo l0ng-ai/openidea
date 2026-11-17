@@ -7,11 +7,29 @@
  * several times a second while only one or two actually changed; the window then falls
  * behind on keystrokes. Rows are still built (cheap); only identical ones are left in place.
  *
- * Remove once xterm's DomRenderer does this itself (xterm 6.0.0 does not).
+ * Rows are also where wide icons get lifted over the next cell ([`ICON_SPAN_CLASS`]): a Nerd
+ * Font icon is often drawn wider than one cell, and the DOM renderer paints the next span's
+ * background over its right part (powerline prompts showed half icons).
+ *
+ * Remove the cache once xterm's DomRenderer does this itself (xterm 6.0.0 does not).
  */
 import type { Terminal } from "@xterm/xterm";
 
 const MARKUP = Symbol("rowMarkup");
+
+/**
+ * Glyphs whose ink can extend past one cell even when their font advance equals the cell:
+ * Nerd Font / Powerline Private Use Area icons plus Nerd Font's non-PUA patched symbols.
+ */
+const ICON = /[\u23FB-\u23FE\u2630\u2665\u26A1\u2B58\uE000-\uF8FF]|[\u{F0000}-\u{10FFFD}]/u;
+/** Lifts a span holding an overhanging glyph over the next one, so the next cell's background doesn't cover it. */
+export const ICON_SPAN_CLASS = "openidea-terminal-icon";
+
+function overhangsCell(span: HTMLElement, maxSpacing: number): boolean {
+  const { letterSpacing } = span.style;
+  if (letterSpacing && Number.parseFloat(letterSpacing) < maxSpacing) return true;
+  return ICON.test(span.textContent ?? "");
+}
 
 type RowElement = HTMLElement & { [MARKUP]?: string };
 
@@ -21,6 +39,7 @@ type BufferLine = unknown;
 interface DomRenderer {
   _rowElements: RowElement[];
   _rowFactory: {
+    defaultSpacing?: number;
     createRow(
       line: BufferLine,
       row: number,
@@ -73,6 +92,7 @@ function renderRows(this: DomRenderer, start: number, end: number) {
   const options = this._optionsService.rawOptions;
   const cursorBlink = modes.cursorBlink ?? options.cursorBlink;
   const cursorStyle = modes.cursorStyle ?? options.cursorStyle;
+  const maxSpacing = Math.min(0, this._rowFactory.defaultSpacing ?? 0) - 0.5;
   for (let y = start; y <= end; y++) {
     const row = y + buffer.ydisp;
     const element = this._rowElements[y];
@@ -92,7 +112,10 @@ function renderRows(this: DomRenderer, start: number, end: number) {
       -1,
     );
     let markup = "";
-    for (const span of spans) markup += span.outerHTML;
+    for (const span of spans) {
+      if (overhangsCell(span, maxSpacing)) span.classList.add(ICON_SPAN_CLASS);
+      markup += span.outerHTML;
+    }
     if (element[MARKUP] === markup) continue;
     element[MARKUP] = markup;
     element.replaceChildren(...spans);
@@ -120,5 +143,11 @@ export function installDomRowCache(term: Terminal) {
   proto._setCellUnderline = function (this: DomRenderer, ...args: unknown[]) {
     forget(this);
     _setCellUnderline.apply(this, args);
+    const maxSpacing = Math.min(0, this._rowFactory.defaultSpacing ?? 0) - 0.5;
+    for (const row of this._rowElements) {
+      for (const child of row.children) {
+        if (overhangsCell(child as HTMLElement, maxSpacing)) child.classList.add(ICON_SPAN_CLASS);
+      }
+    }
   };
 }

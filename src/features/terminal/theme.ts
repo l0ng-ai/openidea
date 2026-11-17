@@ -6,8 +6,8 @@
  */
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { fontWeightOf } from "@/platform/editorSettings";
-import { BUNDLED_MONO_FAMILY, familyFaces, fontsLoaded, monoFontFamily, monoStack } from "@/platform/fonts";
-import { parseColor, type Rgba } from "@/platform/cssColor";
+import { fontsLoaded, monoStack, nerdFontFaces, resolveMonoFont } from "@/platform/fonts";
+import { computedTokenColor, parseColor, type Rgba } from "@/platform/cssColor";
 
 export { parseColor, type Rgba };
 
@@ -43,12 +43,14 @@ export function buildTheme(read: TokenReader): ITheme {
   const color = (name: string, fallback = FALLBACK[name] ?? "#808080"): Rgba =>
     parseColor(read(name)) ?? parseColor(fallback)!;
 
-  const bg = color("--bg-island", read("--bg-app") || FALLBACK["--bg-app"]);
+  // Console Colors edits `--bg-console`; fall back to the island / app surface.
+  const bg = color("--bg-console", read("--bg-island") || read("--bg-app") || FALLBACK["--bg-app"]);
   const fg = color("--fg-editor", read("--fg") || FALLBACK["--fg"]);
   const strong = color("--fg-strong");
   const accent = color("--accent");
   const caret = color("--caret", toHex(accent));
   const selection = parseColor(read("--bg-editor-selection"));
+  // Theme `--terminal-ansi-*` first; Settings/import mirror `--ansi-*` into those names.
   const ansi = (name: string, derived: () => Rgba): Rgba =>
     parseColor(read(`--terminal-ansi-${name}`)) ?? parseColor(read(`--ansi-${name}`)) ?? derived();
 
@@ -96,15 +98,17 @@ export function buildTheme(read: TokenReader): ITheme {
 export function buildSearchDecorations(read: TokenReader) {
   const color = (name: string, fallback: string): Rgba => parseColor(read(name)) ?? parseColor(fallback)!;
   const bg = color("--bg-island", read("--bg-app") || FALLBACK["--bg-app"]!);
-  const match = parseColor(read("--bg-text-search-result"));
-  const active = parseColor(read("--bg-text-search-result-current"));
+  const match = parseColor(read("--bg-search-match")) ?? parseColor(read("--bg-text-search-result"));
+  const active = parseColor(read("--bg-search-match-current")) ?? parseColor(read("--bg-text-search-result-current"));
   if (match && active) {
+    const m = toHex(mix(bg, match, match[3]));
+    const a = toHex(mix(bg, active, active[3]));
     return {
-      matchBackground: toHex(match),
-      matchOverviewRuler: toHex(match),
-      activeMatchBackground: toHex(active),
-      activeMatchBorder: toHex(active),
-      activeMatchColorOverviewRuler: toHex(active),
+      matchBackground: m,
+      matchOverviewRuler: m,
+      activeMatchBackground: a,
+      activeMatchBorder: a,
+      activeMatchColorOverviewRuler: a,
     };
   }
   const legacyMatch = color("--match", FALLBACK["--accent"]!);
@@ -118,6 +122,15 @@ export function buildSearchDecorations(read: TokenReader) {
   };
 }
 
+/** Terminal URL colour (`#rrggbb` for xterm decorations): the theme's `--link`, else the accent. */
+export function buildLinkColor(read: TokenReader): string {
+  return toHex(parseColor(read("--link")) ?? parseColor(read("--accent")) ?? parseColor(FALLBACK["--accent"]!)!);
+}
+
+export function readLinkColor() {
+  return buildLinkColor(documentTokenReader());
+}
+
 export function readSearchDecorations() {
   return buildSearchDecorations(documentTokenReader());
 }
@@ -129,30 +142,13 @@ export function documentTokenReader(): TokenReader {
   return (name) => {
     const raw = style.getPropertyValue(name).trim();
     if (!raw || parseColor(raw)) return raw;
-    const probe = Object.assign(document.createElement("span"), { hidden: true });
-    probe.style.color = `var(${name})`;
-    root.appendChild(probe);
-    const resolved = getComputedStyle(probe).color;
-    probe.remove();
-    return resolved;
+    return computedTokenColor(name, root);
   };
 }
 
 export function readTerminalTheme(): ITheme {
   return buildTheme(documentTokenReader());
 }
-
-const NERD_FONT_FALLBACKS = [
-  "Symbols Nerd Font Mono",
-  "JetBrainsMono Nerd Font Mono",
-  "JetBrainsMono Nerd Font",
-  "MesloLGS NF",
-  "MesloLGS Nerd Font",
-  "Hack Nerd Font",
-  "FiraCode Nerd Font",
-  "Hasklug Nerd Font",
-  "CaskaydiaCove Nerd Font",
-];
 
 export interface TerminalFontSettings {
   useEditorFont: boolean;
@@ -182,18 +178,9 @@ export interface TerminalFont {
   boldWeight: number;
 }
 
-/**
- * Prompt themes (powerlevel10k, starship) use Nerd Font private-use glyphs; list
- * common installs before the generic family so per-glyph fallback finds them.
- */
+/** Nerd Fonts before the generic family, so per-glyph fallback finds prompt icons. */
 function withNerdFonts(family: string): string {
-  const fallbacks = NERD_FONT_FALLBACKS.flatMap(familyFaces).join(", ");
-  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${fallbacks}, monospace`;
-}
-
-function cssNumber(name: string): number {
-  if (typeof document === "undefined") return NaN;
-  return parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+  return `${family.replace(/,\s*monospace\s*$/i, "")}, ${nerdFontFaces().join(", ")}, monospace`;
 }
 
 /**
@@ -211,23 +198,17 @@ export function terminalFont(
   editor: EditorFont | undefined,
   base = monoStack(),
 ): TerminalFont {
-  let family: string, fallback: string, size: number;
   let weight = 400,
     boldWeight = 700;
-  if (!t.useEditorFont) {
-    family = t.fontFamily;
-    fallback = t.fallbackFontFamily;
-    size = t.fontSize;
-  } else {
-    family = editor?.fontFamily || BUNDLED_MONO_FAMILY;
-    fallback = t.fallbackFontFamily.trim() || editor?.fallbackFont || "";
-    size = editor?.fontSize || cssNumber("--fs-code") || 13;
+  const chosen = resolveMonoFont(t, editor, base);
+  if (t.useEditorFont) {
     weight = fontWeightOf(editor?.fontWeight, weight);
     boldWeight = fontWeightOf(editor?.boldFontWeight, boldWeight);
   }
+  const size = chosen.size;
   const letterSpacing = Math.round((t.columnWidth - 1) * size * 0.6 * 10) / 10;
   return {
-    family: withNerdFonts(monoFontFamily(family, fallback, base)),
+    family: withNerdFonts(chosen.family),
     size,
     lineHeight: t.lineHeight,
     letterSpacing,

@@ -65,6 +65,43 @@ pub(super) fn restore_size(saved: Size, scale: f64, limits: Limits) -> Size {
     Size(dimension(saved.0, limits.min.0, limits.max.0), dimension(saved.1, limits.min.1, limits.max.1))
 }
 
+/// The share of the work area whose excess maximizes a window on its first map
+/// (Mutter `window-private.h`, `MAX_UNMAXIMIZED_WINDOW_AREA`).
+pub(super) const MAX_UNMAXIMIZED_AREA: f64 = 0.8;
+
+/// The first-map size hint and the scale to request it at, for a window whose
+/// output the compositor picks (Wayland has no primary monitor and assigns the
+/// output, and its scale, only after mapping). Mutter maximizes a window whose
+/// first mapped area exceeds `MAX_UNMAXIMIZED_AREA` of its work area, so convert
+/// the saved pixels with the largest output scale — the fewest logical points —
+/// and shrink them proportionally when their mapped area would exceed the
+/// tightest output's share. The whole logical points keep the mapped area at or
+/// under the share once GTK maps its integer size (rounding could tip a shrunk
+/// hint back over it). `None` when no output is known: mapped geometry is
+/// authoritative and the caller keeps its configured size.
+pub(super) fn compositor_first_map_hint(saved: Size, limits: Limits, outputs: &[(f64, Size)]) -> Option<(Size, f64)> {
+    let scale = outputs.iter().map(|output| output.0).reduce(f64::max)?;
+    // The share compares areas, which are scale-free: one budget covers every output.
+    let budget = outputs
+        .iter()
+        .filter(|(_, area)| area.0 > 0 && area.1 > 0)
+        .map(|(output_scale, area)| {
+            MAX_UNMAXIMIZED_AREA * (f64::from(area.0) / output_scale) * (f64::from(area.1) / output_scale)
+        })
+        .reduce(f64::min);
+    let (mut width, mut height) = (f64::from(saved.0) / scale, f64::from(saved.1) / scale);
+    let area = width * height;
+    if let Some(budget) = budget
+        && area > budget
+    {
+        let shrink = (budget / area).sqrt();
+        (width, height) = (width * shrink, height * shrink);
+    }
+    let (width, height) = (width.floor(), height.floor());
+    let hinted = Size((width * scale).round() as u32, (height * scale).round() as u32);
+    Some((restore_size(hinted, scale, limits), scale))
+}
+
 pub(super) fn remember_size(previous: Size, current: Size, restoring: bool, mode: Mode) -> Size {
     if restoring || !mode.normal() || current.0 == 0 || current.1 == 0 { previous } else { current }
 }
@@ -160,6 +197,21 @@ mod tests {
     }
 
     #[test]
+    fn a_hidpi_saved_size_maps_without_crossing_the_auto_maximize_share() {
+        // Issue #2400: 2468×1356 physical saved on one 3840×2160 output at scale 2.
+        // Requesting it as logical (the old scale-1 fallback) maps 4936×2712 — over
+        // the work area, so Mutter maximizes the window before the restore runs.
+        let outputs = [(2.0, Size(3840, 2160))];
+        let (hint, scale) = compositor_first_map_hint(Size(2468, 1356), Limits::default(), &outputs).unwrap();
+        assert_eq!((hint, scale), (Size(2468, 1356), 2.0));
+        let work_area = 3840.0 * 2160.0;
+        let mapped = f64::from(hint.0) * f64::from(hint.1);
+        assert!(mapped / work_area <= MAX_UNMAXIMIZED_AREA);
+        let fallback_mapped = 2468.0 * 2.0 * 1356.0 * 2.0;
+        assert!(fallback_mapped / work_area > MAX_UNMAXIMIZED_AREA);
+    }
+
+    #[test]
     fn damaged_sizes_are_bounded_in_the_actual_outputs_units() {
         let limits = Limits { min: (800.0, 500.0), ..Default::default() };
         for scale in [1.0, 2.0] {
@@ -167,6 +219,65 @@ mod tests {
             assert_eq!(restore_size(Size(45068, 30000), scale, bounded), Size(3840, 2160));
             assert_eq!(restore_size(Size(2468, 1356), scale, bounded), Size(2468, 1356));
         }
+    }
+
+    #[test]
+    fn a_saved_size_over_the_share_is_shrunk_proportionally_to_the_tightest_output() {
+        // 2560×1440 at scale 2 allows 1152×640 logical (80% of the area exactly);
+        // 2304×1280 physical is twice that, so the hint halves to stay under it.
+        let outputs = [(2.0, Size(2560, 1440))];
+        let (hint, scale) = compositor_first_map_hint(Size(4608, 2560), Limits::default(), &outputs).unwrap();
+        assert_eq!((hint, scale), (Size(2304, 1280), 2.0));
+        assert!(f64::from(hint.0) * f64::from(hint.1) / (2560.0 * 1440.0) <= MAX_UNMAXIMIZED_AREA);
+        // A large output does not relax the smallest one's budget.
+        let outputs = [(1.0, Size(3840, 2160)), (2.0, Size(2560, 1440))];
+        let (hint, scale) = compositor_first_map_hint(Size(4608, 2560), Limits::default(), &outputs).unwrap();
+        assert_eq!((hint, scale), (Size(2304, 1280), 2.0));
+    }
+
+    #[test]
+    fn an_area_exactly_at_the_share_is_left_alone() {
+        // Mutter maximizes only windows over the share (`window_area > work_area * 0.8`).
+        let outputs = [(2.0, Size(2560, 1440))];
+        let (hint, _) = compositor_first_map_hint(Size(2304, 1280), Limits::default(), &outputs).unwrap();
+        assert_eq!(hint, Size(2304, 1280));
+    }
+
+    #[test]
+    fn a_fractional_logical_hint_does_not_round_up_over_the_share() {
+        // 2305×1279 physical is 1152.5×639.5 logical, under the share — but mapped
+        // as whole GTK points that rounds to 1153×640, over it. The whole logical
+        // points keep the hint at or under the share, so the exact hint matters.
+        let outputs = [(2.0, Size(2560, 1440))];
+        let (hint, scale) = compositor_first_map_hint(Size(2305, 1279), Limits::default(), &outputs).unwrap();
+        assert_eq!((hint, scale), (Size(2304, 1278), 2.0));
+        assert!(f64::from(hint.0) * f64::from(hint.1) / (2560.0 * 1440.0) <= MAX_UNMAXIMIZED_AREA);
+    }
+
+    #[test]
+    fn the_hint_preserves_physical_pixels_across_scales() {
+        // Saved at scale 1, mapped on scale 2: like restore_size, the largest scale
+        // keeps the physical pixels instead of doubling them.
+        let outputs = [(1.0, Size(1920, 1080)), (2.0, Size(1920, 1080))];
+        let (hint, scale) = compositor_first_map_hint(Size(1234, 678), Limits::default(), &outputs).unwrap();
+        assert_eq!((hint, scale), (Size(1234, 678), 2.0));
+    }
+
+    #[test]
+    fn the_hint_keeps_the_configured_minimum() {
+        // min_size is a GTK constraint; it wins over the share, as in the mapped restore.
+        let limits = Limits { min: (800.0, 500.0), ..Default::default() };
+        let (hint, scale) = compositor_first_map_hint(Size(400, 200), limits, &[(2.0, Size(3840, 2160))]).unwrap();
+        assert_eq!((hint, scale), (Size(1600, 1000), 2.0));
+    }
+
+    #[test]
+    fn without_output_information_the_hint_is_not_set() {
+        assert!(compositor_first_map_hint(Size(2468, 1356), Limits::default(), &[]).is_none());
+        // Outputs without a usable work area still give the conversion scale.
+        let (hint, scale) =
+            compositor_first_map_hint(Size(2468, 1356), Limits::default(), &[(2.0, Size(0, 0))]).unwrap();
+        assert_eq!((hint, scale), (Size(2468, 1356), 2.0));
     }
 
     #[test]

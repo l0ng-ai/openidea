@@ -536,6 +536,7 @@ mod tests {
                         crate::maven::LOCAL_REPO_TRACKING_ARG,
                         "-o",
                         "-Peditor",
+                        "-Djacoco.skip=true",
                         "test-compile"
                     ]
                 );

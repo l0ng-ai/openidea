@@ -18,6 +18,15 @@ pub struct TrustStore {
     state: Mutex<IdeResult<TrustDecisions>>,
     /// Folders trusted for this process only, by the client that started it ([`TRUSTED_ROOT_ENV`]).
     inherited: Mutex<Vec<PathBuf>>,
+    remote_file: PathBuf,
+    remote: Mutex<IdeResult<RemoteDecisions>>,
+}
+
+/// This machine's decisions about remote projects, by location (see [`TrustStore::remote_decision`]).
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct RemoteDecisions {
+    trusted: Vec<String>,
+    restricted: Vec<String>,
 }
 
 /// Set by the desktop when it starts the server in a dev container of a folder the user trusts
@@ -40,7 +49,37 @@ impl TrustStore {
             }
             Err(e) => Err(e.into()),
         };
-        Self { file, state: Mutex::new(state), inherited: Mutex::default() }
+        let remote_file = data.join("remote-project-trust.json");
+        let remote = match std::fs::read(&remote_file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| IdeError::invalid(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RemoteDecisions::default()),
+            Err(e) => Err(e.into()),
+        };
+        Self { file, state: Mutex::new(state), inherited: Mutex::default(), remote_file, remote: Mutex::new(remote) }
+    }
+
+    /// The decision made on this machine for the remote project at `location` (`None`: none yet).
+    /// Commands a remote window runs here follow it, not the server's own trust.
+    pub fn remote_decision(&self, location: &str) -> IdeResult<Option<bool>> {
+        let remote = self.remote.lock().clone()?;
+        Ok(if remote.restricted.iter().any(|l| l == location) {
+            Some(false)
+        } else if remote.trusted.iter().any(|l| l == location) {
+            Some(true)
+        } else {
+            None
+        })
+    }
+
+    pub fn decide_remote(&self, location: &str, trusted: bool) -> IdeResult<()> {
+        let mut state = self.remote.lock();
+        let mut next = state.clone()?;
+        next.trusted.retain(|l| l != location);
+        next.restricted.retain(|l| l != location);
+        if trusted { &mut next.trusted } else { &mut next.restricted }.push(location.to_owned());
+        persist(&self.remote_file, &next)?;
+        *state = Ok(next);
+        Ok(())
     }
 
     pub fn decisions(&self) -> IdeResult<TrustDecisions> {
@@ -133,13 +172,68 @@ impl TrustStore {
     }
 }
 
-fn persist(file: &Path, state: &TrustDecisions) -> IdeResult<()> {
+fn persist<T: Serialize>(file: &Path, state: &T) -> IdeResult<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec_pretty(state).map_err(|e| IdeError::internal(e.to_string()))?;
     ide_vfs::write_atomic(file, &bytes)?;
     Ok(())
+}
+
+type McpServers = std::collections::BTreeMap<String, ide_core::settings::AgentMcpServer>;
+
+/// Workspace MCP servers (a project's `agents.mcpServers`) the user turned on in Settings, by a
+/// fingerprint of the project and the server's definition. Agents start a workspace server only
+/// while its definition is one the user turned on, so a server added or changed in the project's
+/// file stays off until then.
+pub struct McpServerApprovals {
+    file: PathBuf,
+    approved: Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl McpServerApprovals {
+    pub fn load(data: &Path) -> Self {
+        let file = data.join("mcp-server-approvals.json");
+        let approved = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { file, approved: Mutex::new(approved) }
+    }
+
+    fn fingerprint(root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> String {
+        // Turning a server off and on again doesn't change what it runs.
+        let server = ide_core::settings::AgentMcpServer { enabled: true, ..server.clone() };
+        let bytes = serde_json::to_vec(&(root, name, server)).expect("MCP server serializes");
+        blake3::hash(&bytes).to_hex().to_string()
+    }
+
+    pub fn approved(&self, root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> bool {
+        self.approved.lock().contains(&Self::fingerprint(root, name, server))
+    }
+
+    pub fn approve(&self, root: &Path, name: &str, server: &ide_core::settings::AgentMcpServer) -> IdeResult<()> {
+        let fingerprint = Self::fingerprint(root, name, server);
+        let mut approved = self.approved.lock();
+        if approved.contains(&fingerprint) {
+            return Ok(());
+        }
+        let mut next = approved.clone();
+        next.insert(fingerprint);
+        if let Some(parent) = self.file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(&next).map_err(|e| IdeError::internal(e.to_string()))?;
+        ide_vfs::write_atomic(&self.file, &bytes)?;
+        *approved = next;
+        Ok(())
+    }
+
+    /// `workspace` with the servers the user hasn't turned on switched off.
+    pub fn apply(&self, root: &Path, mut workspace: McpServers) -> McpServers {
+        for (name, server) in &mut workspace {
+            server.enabled &= self.approved(root, name, server);
+        }
+        workspace
+    }
 }
 
 impl crate::Host {
@@ -151,9 +245,17 @@ impl crate::Host {
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
         for project in self.projects().into_iter().filter(|p| !p.light) {
             let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
+            let roots = project.content_roots();
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;
+            }
+            // Maven reactor modules outside the project are content roots of a trusted project only.
+            if project.content_roots() != roots {
+                project.refresh_index_scope();
+                let p = project.clone();
+                tokio::task::spawn_blocking(move || p.refresh_repositories());
+                project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
             }
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.schedule();
@@ -195,43 +297,152 @@ impl crate::Host {
                 }
             }
             project.lsp.reconfigure().await;
+            crate::ops::sdk::container_python::ensure(self, &project);
             project.sink.emit(ide_core::IdeEvent::ProjectTrustChanged { root: project.root.clone().into(), trusted });
         }
         Ok(())
     }
 }
 
-/// Commands which only inspect/edit source or operate user-owned application state.
-/// New execution commands are denied until deliberately classified here.
+/// Commands allowed in Restricted Mode, by exact name: those which only inspect/edit source or
+/// operate user-owned application state. A new command is denied until deliberately listed here.
 pub fn restricted_command_allowed(cmd: &str) -> bool {
-    if [
-        "fs_",
-        "doc_",
-        "syntax_",
-        "search_",
-        "nav_",
-        "history_",
-        "spell_",
-        "analysis_",
-        "structural_",
-        "refactor_",
-        "bytes_",
-        "window_",
-        "window_group_",
-        "term_",
-        "settings_",
-        "project_trust_",
-        "ssh_",
-        "git_credential",
-    ]
-    .iter()
-    .any(|p| cmd.starts_with(p))
-    {
-        return true;
-    }
     matches!(
         cmd,
-        "app_info"
+        "fs_compare_directories"
+            | "fs_copy"
+            | "fs_copy_merge"
+            | "fs_create_dir"
+            | "fs_create_file"
+            | "fs_create_file_bytes"
+            | "fs_delete"
+            | "fs_entry_kind"
+            | "fs_open_with_system"
+            // The user's own diff program (global settings) on the diff's two sides.
+            | "diff_external_tool"
+            | "fs_probe"
+            | "fs_read_dir"
+            | "fs_read_image"
+            | "fs_read_range"
+            | "fs_read_text"
+            | "fs_rename"
+            | "fs_resolve_reference"
+            | "fs_set_writable"
+            | "doc_close"
+            | "doc_edit"
+            | "doc_folding"
+            | "doc_highlights"
+            | "doc_language"
+            | "doc_open"
+            | "doc_open_untitled"
+            | "doc_open_virtual"
+            | "doc_outline"
+            | "doc_python_facts"
+            | "doc_save"
+            | "doc_save_as"
+            | "doc_save_all"
+            | "doc_selection_ranges"
+            | "doc_set_bom"
+            | "doc_set_encoding"
+            | "doc_set_line_ending"
+            | "doc_snapshot"
+            | "doc_sync_from_disk"
+            | "syntax_errors"
+            | "syntax_expression_at"
+            | "syntax_identifiers"
+            | "syntax_identifiers_in_files"
+            | "syntax_locals"
+            | "syntax_node_at"
+            | "syntax_structural_ranges"
+            | "syntax_support"
+            | "search_start"
+            | "search_validate"
+            | "nav_index_definitions"
+            | "nav_inheritance"
+            | "nav_resolve_module"
+            | "history_content"
+            | "history_list"
+            | "history_list_dir"
+            | "history_put_label"
+            | "history_restore"
+            | "spell_check"
+            | "spell_suggest"
+            | "analysis_locate_duplicates"
+            | "structural_languages"
+            | "structural_search"
+            | "structural_validate"
+            | "refactor_can_undo_file_move"
+            | "refactor_file_move_edits"
+            | "refactor_file_move_text_edits"
+            | "refactor_move_files"
+            | "refactor_undo_file_move"
+            | "window_close_context"
+            | "window_complete_launch"
+            | "window_cycle"
+            | "window_flash_taskbar"
+            | "window_group_cancel_close"
+            | "window_group_close"
+            | "window_group_close_tabs"
+            | "window_group_current"
+            | "window_group_detach"
+            | "window_group_merge"
+            | "window_group_reorder"
+            | "window_group_restore"
+            | "window_group_select"
+            | "window_is_fullscreen"
+            | "window_new"
+            | "window_open_comparison"
+            | "window_open_deployment"
+            | "window_open_diff"
+            | "window_open_file_in_new_window"
+            | "window_open_files"
+            | "window_open_project"
+            | "window_open_projects"
+            | "window_open_remote"
+            | "window_open_settings"
+            | "window_set_titlebar_height"
+            | "window_start_drag"
+            | "window_take_launch"
+            | "window_toggle_fullscreen"
+            | "window_toggle_zoom"
+            | "term_available_shells"
+            | "term_default_shell"
+            | "term_is_busy"
+            | "term_kill"
+            | "term_resize"
+            | "term_spawn"
+            | "term_store_image"
+            | "term_write"
+            | "settings_export"
+            | "settings_get"
+            | "settings_get_global"
+            | "settings_removed_theme"
+            | "settings_import"
+            | "settings_list_jetbrains_ides"
+            | "settings_read_jetbrains"
+            | "settings_set"
+            | "project_trust_add_location"
+            | "project_trust_list"
+            | "project_trust_remove_location"
+            | "project_trust_set"
+            | "project_trust_status"
+            // New Project writes only where the user chose and runs no code of an open project.
+            | "scaffold_catalog"
+            | "scaffold_create"
+            | "scaffold_options"
+            | "scaffold_requirements"
+            | "ssh_askpass_answer"
+            | "ssh_connected"
+            | "ssh_disconnect"
+            | "ssh_needs_secret"
+            | "ssh_open_terminal"
+            | "ssh_password_saved"
+            | "ssh_set_secret"
+            | "ssh_test"
+            | "ssh_trust_host"
+            | "git_credential_forget"
+            | "git_credentials"
+            | "app_info"
             | "app_build_info"
             | "app_cli_install"
             | "app_cli_uninstall"
@@ -245,6 +456,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "clear_caches"
             | "clipboard_file_list"
             | "clipboard_has_files"
+            | "clipboard_has_image"
             | "clipboard_image"
             | "clipboard_set_file_list"
             | "clipboard_write_text"
@@ -252,6 +464,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "jdk_download_releases"
             | "jdk_download_location"
             | "jdk_download"
+            | "jdtls_required_java"
             | "run_system_env"
             | "run_gradle_jvm_args_script"
             | "proxy_check_connection"
@@ -260,6 +473,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "docker_set_registry_password"
             | "docker_run_env"
             | "db_console_path"
+            | "db_consoles"
             | "db_export_file"
             | "vcs_write_patch"
             | "app_metrics"
@@ -294,6 +508,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "find_files_named"
             | "find_dirs"
             | "find_symbols"
+            | "find_symbols_named"
             | "mark_recent"
             | "remove_recent"
             | "recent_files"
@@ -302,6 +517,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "web_unresolved_references"
             | "project_rename"
             | "light_edit_open"
+            | "light_edit_open_untitled"
             | "workspace_create"
             | "workspace_discover_projects"
             | "workspace_update"
@@ -314,6 +530,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_current"
             | "remote_disconnect"
             | "remote_connect"
+            | "remote_trust_status"
+            | "remote_trust_set"
             | "remote_bootstrap_list"
             | "wsl_distros"
             | "wsl_resolve"
@@ -337,9 +555,13 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_registry_remove"
             | "agent_mcp_list"
             | "agent_mcp_save"
+            | "agent_mcp_save_json"
             | "agent_mcp_set_enabled"
             | "agent_mcp_remove"
             | "agent_mcp_import"
+            | "agent_mcp_discover_sources"
+            | "agent_mcp_import_selected"
+            | "agent_set_mcp_overrides"
             | "coverage_import"
             | "system_font_families"
             | "user_font_data"
@@ -376,6 +598,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_clone"
             | "vcs_init"
             | "vcs_status"
+            | "vcs_status_paths"
             | "vcs_roots"
             | "vcs_branch_info"
             | "vcs_line_hunks"
@@ -467,5 +690,27 @@ mod tests {
     #[test]
     fn restricted_mode_allows_clipboard_write_text() {
         assert!(super::restricted_command_allowed("clipboard_write_text"));
+    }
+
+    #[test]
+    fn restricted_mode_denies_new_commands_whatever_their_name() {
+        for cmd in ["fs_new_command", "term_new_command", "ssh_new_command", "settings_new_command", "git_credential_x"]
+        {
+            assert!(!super::restricted_command_allowed(cmd), "{cmd} is allowed without being listed");
+        }
+    }
+
+    #[test]
+    fn remote_project_decisions_are_kept_on_this_machine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load = || super::TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
+        let store = load();
+        let here = r#"[{"kind":"ssh","config":"box"},"/srv/app"]"#;
+        assert_eq!(store.remote_decision(here).unwrap(), None);
+        store.decide_remote(here, true).unwrap();
+        assert_eq!(store.remote_decision(here).unwrap(), Some(true));
+        assert_eq!(store.remote_decision(r#"[{"kind":"ssh","config":"box"},"/srv/other"]"#).unwrap(), None);
+        store.decide_remote(here, false).unwrap();
+        assert_eq!(load().remote_decision(here).unwrap(), Some(false));
     }
 }

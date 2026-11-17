@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerId, ServerInfo } from "@/bindings";
+import type { ServerEntry } from "./servers";
 
 const pending = vi.hoisted(() => [] as ((data: ServerInfo[]) => void)[]);
 
@@ -14,17 +15,31 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         new Promise((resolve) => {
           pending.push((data) => resolve({ status: "ok", data }));
         }),
+      lspRestart: () => Promise.resolve({ status: "error", error: { kind: "unavailable", message: "not found" } }),
     },
   };
 });
 
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { useProject } = await import("@/platform/project");
-const { installServerEvents, serversSummary, useServers } = await import("./servers");
+const { provideNotificationService } = await import("@/workbench/contributions");
+const { BUSY_SHOW_DELAY_MS, eslintCovers, installServerEvents, restartServer, serversSummary, useServers } =
+  await import("./servers");
 
 describe("server status", () => {
   let dispose = () => {};
   afterEach(() => dispose());
+
+  it("says a missing server is still not installed when checking again finds nothing", async () => {
+    const id = 7 as ServerId;
+    const entry: ServerEntry = { id, name: "sqls", status: "missing", languages: ["sql"], root: null, message: null };
+    useServers.setState({ servers: new Map([[id, entry]]) });
+    const notify = vi.fn();
+    provideNotificationService({ notify } as never);
+    await restartServer(id);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "sqls is still not installed" }));
+    useServers.setState({ servers: new Map() });
+  });
 
   it("keeps a status that arrived after the snapshot was requested", async () => {
     useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never });
@@ -56,6 +71,7 @@ describe("server status", () => {
       root: "/p",
       status: "ready",
       pid: null,
+      label: null,
     });
     pending.splice(0).forEach((resolve) => resolve([info(11, "basedpyright"), info(12, "pyright")]));
     await vi.waitFor(() => expect(useServers.getState().servers.size).toBe(2));
@@ -63,7 +79,7 @@ describe("server status", () => {
 
     // The fallback stops and leaves the list; a snapshot taken before that answers late.
     const status = (id: number, name: string, status: ServerInfo["status"]) =>
-      emitLocalIdeEvent({ type: "languageServer", server: id as ServerId, name, status, message: null });
+      emitLocalIdeEvent({ type: "languageServer", server: id as ServerId, name, label: null, status, message: null });
     status(13, "ty", "starting");
     status(12, "pyright", "stopped");
     emitLocalIdeEvent({ type: "languageServerRemoved", server: 12 as ServerId });
@@ -74,6 +90,67 @@ describe("server status", () => {
 
     emitLocalIdeEvent({ type: "languageServerRemoved", server: 13 as ServerId });
     expect(serversSummary([...useServers.getState().servers.values()])?.text).toBe("basedpyright");
+  });
+
+  it("names a server by the program that serves in its place", () => {
+    useServers.setState({ servers: new Map() });
+    dispose = installServerEvents();
+    const id = 21 as ServerId;
+    emitLocalIdeEvent({
+      type: "languageServer",
+      server: id,
+      name: "vtsls",
+      label: null,
+      status: "starting",
+      message: null,
+    });
+    emitLocalIdeEvent({
+      type: "languageServer",
+      server: id,
+      name: "vtsls",
+      label: "TypeScript 7",
+      status: "ready",
+      message: null,
+    });
+    expect(useServers.getState().servers.get(id)).toMatchObject({ name: "vtsls", label: "TypeScript 7" });
+    expect(serversSummary([...useServers.getState().servers.values()])?.text).toBe("TypeScript 7");
+  });
+
+  it("shows a running server busy only once it stays busy", async () => {
+    vi.useFakeTimers();
+    try {
+      useProject.setState({ project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never });
+      dispose = installServerEvents();
+      const id = 21 as ServerId;
+      const status = (status: ServerInfo["status"]) =>
+        emitLocalIdeEvent({ type: "languageServer", server: id, name: "jdtls", status, message: null });
+      const shown = () => useServers.getState().servers.get(id)?.status;
+      status("starting");
+      expect(shown()).toBe("starting");
+      status("ready");
+      // A task of a few milliseconds, as jdtls reports on every edit: nothing changes.
+      status("busy");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS - 1);
+      status("ready");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS);
+      expect(shown()).toBe("ready");
+      // Work that goes on shows.
+      status("busy");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS - 1);
+      expect(shown()).toBe("ready");
+      vi.advanceTimersByTime(1);
+      expect(shown()).toBe("busy");
+      status("ready");
+      expect(shown()).toBe("ready");
+      // Anything else shows at once, and replaces a pending busy.
+      status("busy");
+      status("crashed");
+      expect(shown()).toBe("crashed");
+      vi.advanceTimersByTime(BUSY_SHOW_DELAY_MS);
+      expect(shown()).toBe("crashed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -97,5 +174,28 @@ describe("serversSummary", () => {
     expect(text(entry(1, "basedpyright", "ready"), entry(2, "pyright", "stopped"))).toBe("basedpyright");
     expect(text(entry(1, "basedpyright", "ready"), entry(2, "ty", "starting"))).toBe("basedpyright +1");
     expect(serversSummary([entry(2, "pyright", "stopped")])).toMatchObject({ text: "pyright", tone: "idle" });
+  });
+});
+
+describe("ESLint coverage", () => {
+  afterEach(() => useServers.setState({ servers: new Map() }));
+
+  it("covers files of its languages below its configuration while it runs", () => {
+    const eslint = (status: "ready" | "starting", root: string | null) =>
+      useServers.setState({
+        servers: new Map([
+          [1, { id: 1, name: "eslint", status, message: null, languages: ["javascript", "typescript"], root }],
+        ]),
+      });
+    eslint("ready", "/p/web");
+    expect(eslintCovers("/p/web/src/a.ts", "typescript")).toBe(true);
+    expect(eslintCovers("/p/web/src/a.ts", "rust")).toBe(false);
+    expect(eslintCovers("/p/api/a.ts", "typescript")).toBe(false);
+    expect(eslintCovers("/p/webapp/a.ts", "typescript")).toBe(false);
+    expect(eslintCovers("/p/web/src/a.ts", null)).toBe(false);
+    eslint("starting", "/p/web");
+    expect(eslintCovers("/p/web/src/a.ts", "typescript")).toBe(false);
+    eslint("ready", "C:\\p\\web");
+    expect(eslintCovers("C:\\p\\web\\a.js", "javascript")).toBe(true);
   });
 });

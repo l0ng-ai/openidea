@@ -1,3 +1,4 @@
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { ICON_NAMES, type IconName } from "@/ui";
 import { pluginsBackend } from "../backend";
@@ -31,8 +32,9 @@ export interface PluginContentEditorData {
 }
 
 export interface ContentTabDiff {
-  left: string;
-  right: string;
+  /** `null`: the file doesn't exist on this side (added or deleted). */
+  left: string | null;
+  right: string | null;
   leftLabel?: string;
   rightLabel?: string;
   title?: string;
@@ -152,13 +154,23 @@ export function registerContentTabSender(pluginId: string, view: string, send: (
   };
 }
 
+/** Largest side of a plugin diff, as the host checks it (`MAX_DIFF_SIDE`). */
+const MAX_DIFF_SIDE = 8 << 20;
+
 function validDiff(v: unknown): ContentTabDiff | undefined {
   if (v === undefined) return undefined;
   if (!v || typeof v !== "object") throw new Error(tx("Invalid content editor configuration"));
   const d = v as Record<string, unknown>;
+  for (const side of [d.left, d.right]) {
+    if (typeof side === "string" && side.length > MAX_DIFF_SIDE) {
+      throw new Error(tx`Diff too large: a side is over ${MAX_DIFF_SIDE >> 20} MiB`);
+    }
+  }
+  const validSide = (v: unknown): v is string | null => v === null || bodyText(v, MAX_DIFF_SIDE);
   if (
-    !bodyText(d.left, 1 << 20) ||
-    !bodyText(d.right, 1 << 20) ||
+    !validSide(d.left) ||
+    !validSide(d.right) ||
+    (d.left === null && d.right === null) ||
     (d.leftLabel !== undefined && !text(d.leftLabel, 128)) ||
     (d.rightLabel !== undefined && !text(d.rightLabel, 128)) ||
     (d.title !== undefined && !text(d.title, 256))
@@ -172,6 +184,51 @@ function validDiff(v: unknown): ContentTabDiff | undefined {
     rightLabel: d.rightLabel as string | undefined,
     title: d.title as string | undefined,
   };
+}
+
+/** Opens a plugin's two texts in the diff viewer; `path` picks the syntax highlighting. */
+/**
+ * A plugin diff's path: the file name only picks the syntax highlighting. It is virtual, so the
+ * diff viewer never probes or opens a file of that name (a plugin may lack file system access).
+ */
+export function pluginDiffPath(name: string): string {
+  const base =
+    name
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/[\u0000-\u001f:]/g, "") || "diff";
+  return `plugin-diff:/${base}`;
+}
+
+export function openPluginDiff(diff: ContentTabDiff, name: string, title: string) {
+  // A missing side is the IDE's own added / deleted file side: the diff viewer shows the other one alone.
+  const side = (text: string | null, label: string) =>
+    text === null ? { type: "text", text: "", label, absent: true } : { type: "text", text, label };
+  void executeAction("vcs.openDiff", {
+    path: pluginDiffPath(name),
+    title: diff.title ?? title,
+    left: side(diff.left, diff.leftLabel ?? tx("Before")),
+    right: side(diff.right, diff.rightLabel ?? tx("After")),
+  });
+}
+
+/** `open-diff` from a plugin web view, or the `views.open-diff` host call. */
+export function openPluginDiffRequest(value: object, length: number) {
+  const m = value as Record<string, unknown>;
+  // Both sides as JSON (escapes included), with room for the labels.
+  if (length > 4 * MAX_DIFF_SIDE + (1 << 20) || (m.fileName !== undefined && !text(m.fileName, 256))) {
+    throw new Error(tx("Invalid content editor configuration"));
+  }
+  const fileName = m.fileName as string | undefined;
+  const diff = validDiff({
+    left: m.left,
+    right: m.right,
+    leftLabel: m.leftLabel,
+    rightLabel: m.rightLabel,
+    title: m.title,
+  });
+  if (!diff) throw new Error(tx("Invalid content editor configuration"));
+  openPluginDiff(diff, fileName ?? diff.title ?? "", fileName ?? tx("Diff"));
 }
 
 export function handleContentTabReplyText(pluginId: string, rawText: string): boolean {

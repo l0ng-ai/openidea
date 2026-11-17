@@ -1,5 +1,5 @@
 /**
- * Settings › Project Structure (File › Project Structure…, ⌘; / Ctrl+Alt+Shift+S):
+ * File › Project Structure… (⌘; / Ctrl+Alt+Shift+S):
  * IntelliJ IDEA-style Project Structure configuration across Project, Modules
  * (Sources, Paths, Dependencies), Libraries, Facets, Artifacts, and SDKs.
  */
@@ -16,6 +16,7 @@ import {
   Select,
   Tree,
   folderIconName,
+  showContextMenu,
   type DialogButton,
   type FolderKind,
   type IconName,
@@ -27,7 +28,7 @@ import { call, commands, isTauri, nextRequestId, type FileEntry } from "@/platfo
 import { mergeLibraryGroups } from "@/platform/libraries";
 import type { BuildModel, LibraryGroup, WebArtifact } from "@/bindings";
 import { relativePath, useProject } from "@/platform/project";
-import { PageContext, useSettingsFormFor } from "../components/context";
+import { PageContext, useSetting, useSettingsFormFor } from "../components/context";
 import {
   applySettings,
   closeProjectStructure,
@@ -60,10 +61,12 @@ import {
 } from "@/platform/languageSettings";
 import { initProjectRoots, useDetectedRoots } from "@/platform/projectRoots";
 import { Row, Section } from "../components/Form";
-import { choosePath, detectSdks, useSdks, type SdkKind } from "./api";
+import { detectSdks, forgetSdk, rememberSdk, useSdks, type SdkKind } from "./api";
+import { choosePath } from "@/platform/choosePath";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
-import { SdkField, tildify, useDetected, useProjectSetting } from "./components";
+import { SdkField, tildify, useDetected, useJdtlsJdk, useProjectSetting } from "./components";
 import styles from "./Sdk.module.css";
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 
 export type ProjectStructureSectionId =
@@ -98,16 +101,6 @@ const ROLES: Array<{ role: FolderRole; label: string; title: string; kind: Folde
     cls: styles.testResourcesTitle!,
   },
   { role: "excluded", label: "Excluded", title: "Excluded Folders", kind: "excluded", cls: styles.excludedTitle! },
-];
-
-const SECTION_TABS: Array<{ id: ProjectStructureSectionId; label: string; icon: IconName }> = [
-  { id: "project", label: "Project", icon: "folder" },
-  { id: "modules", label: "Modules", icon: "module" },
-  { id: "dependencies", label: "Dependencies", icon: "build-dependencies" },
-  { id: "libraries", label: "Libraries", icon: "folder-library" },
-  { id: "facets", label: "Facets", icon: "file-config" },
-  { id: "artifacts", label: "Artifacts", icon: "file-archive" },
-  { id: "sdks", label: "SDKs", icon: "settings" },
 ];
 
 const PROJECT_JAVA_LEVEL_OPTIONS: SelectOption[] = JAVA_LANGUAGE_LEVELS.map((level) =>
@@ -314,6 +307,10 @@ function ProjectSection() {
   const [languageLevel, setLanguageLevel] = useProjectSetting<string>("languages.java.languageLevel");
   const [compilerOutput, setCompilerOutput] = useProjectSetting<string>("projectStructure.compilerOutput");
   const [jdtlsJdk, setJdtlsJdk] = useProjectSetting<string>("languages.java.jdtlsJdk");
+  const jdtls = useJdtlsJdk(
+    "JDK used to run the Eclipse JDT Language Server, independent of the target Project SDK.",
+    jdtlsJdk ?? "",
+  );
   const outId = useId();
 
   return (
@@ -379,10 +376,7 @@ function ProjectSection() {
         </Row>
       </Section>
       <Section title="Language Server">
-        <Row
-          label="JDK"
-          hint="JDK used to run the Eclipse JDT Language Server (jdtls 21+), independent of the target Project SDK."
-        >
+        <Row label="JDK" hint={jdtls.hint}>
           <SdkField
             kind="jdk"
             value={jdtlsJdk ?? ""}
@@ -392,6 +386,7 @@ function ProjectSection() {
             directory
             browseTitle="Select JDK Home Directory"
             aria-label="Language server JDK"
+            minJava={jdtls.minJava}
           />
         </Row>
       </Section>
@@ -622,7 +617,7 @@ export function dependencyCandidates(root: string | null, dependencies: readonly
   return out;
 }
 
-/** Settings › Project Structure › Modules › Dependencies. */
+/** Project Structure › Dependencies. */
 function ModuleDependenciesTab() {
   const workspaceProjects = useProject((s) => s.project?.workspace?.projects ?? null);
   // A workspace: every member is an equal root that picks the roots it depends on.
@@ -869,16 +864,31 @@ function ModulesSection() {
     <div className={styles.page}>
       {moduleError && (
         <div role="status" className={styles.note}>
-          <T>Select a module directory inside the project.</T>
+          <T>
+            Module overrides only apply to a directory inside the opened project. To import an existing module from
+            outside it, use Import Module from Existing Sources.
+          </T>
         </div>
       )}
       <div className={styles.splitLayout}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
-            <Button size="small" variant="ghost" icon="plus" onClick={() => void addModule()}>
-              <T>Add Module Overrides</T>
-            </Button>
-            <span className={styles.spacer} />
+            <IconButton
+              icon="plus"
+              size="small"
+              title="Add"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: tx("Add Module Overrides…"), icon: "module", run: () => void addModule() },
+                  {
+                    label: tx("Import Module from Existing Sources…"),
+                    icon: "folder-open",
+                    run: () => void executeAction("maven.importExternal"),
+                  },
+                ]);
+              }}
+            />
             <IconButton
               icon="minus"
               size="small"
@@ -1111,6 +1121,17 @@ function LibrariesSection() {
     setSelectedIdx(next.length - 1);
   };
 
+  /** IDEA's Copy: a duplicate named "<name> (copy)", selected for editing. */
+  const copySelectedLibrary = () => {
+    if (!current) return;
+    const names = new Set(libs.map((l) => l.name));
+    let name = tx`${current.name} (copy)`;
+    for (let n = 2; names.has(name); n++) name = tx`${current.name} (copy ${n})`;
+    const next = [...libs, { ...current, name }];
+    setRawLibs(next);
+    setSelectedIdx(next.length - 1);
+  };
+
   const removeSelectedLibrary = () => {
     if (activeIdx < 0) return;
     const next = libs.filter((_, idx) => idx !== activeIdx);
@@ -1136,14 +1157,14 @@ function LibrariesSection() {
             <IconButton
               icon="plus"
               size="small"
-              title="Add JAR or Directory…"
-              onClick={() => void addLibraryFromJar(false)}
-            />
-            <IconButton
-              icon="folder-open"
-              size="small"
-              title="Add Classes Folder…"
-              onClick={() => void addLibraryFromJar(true)}
+              title="New Project Library"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: tx("JAR or Directory…"), icon: "file-archive", run: () => void addLibraryFromJar(false) },
+                  { label: tx("Classes Folder…"), icon: "folder-open", run: () => void addLibraryFromJar(true) },
+                ]);
+              }}
             />
             <IconButton
               icon="minus"
@@ -1151,6 +1172,13 @@ function LibrariesSection() {
               title="Remove Library"
               disabled={activeIdx < 0}
               onClick={removeSelectedLibrary}
+            />
+            <IconButton
+              icon="copy"
+              size="small"
+              title="Copy Library"
+              disabled={activeIdx < 0}
+              onClick={copySelectedLibrary}
             />
           </div>
           <div className={styles.sideItems}>
@@ -1548,7 +1576,8 @@ function ArtifactsSection() {
     if (!root || !isTauri()) return;
     let live = true;
     call(commands.runTomcatArtifacts())
-      .then((list) => live && setWebArtifacts(list))
+      // Artifacts the IDE builds itself are the ones this page configures.
+      .then((list) => live && setWebArtifacts(list.filter((a) => a.tool !== "project")))
       .catch(() => {});
     return () => {
       live = false;
@@ -1761,7 +1790,30 @@ function SdksSection() {
   const [downloading, setDownloading] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string>("");
   const [projectJdk, setProjectJdk] = useProjectSetting<string>("languages.java.jdk");
+  const [addedJdks, setAddedJdks] = useSetting<string[] | undefined>("languages.java.addedJdks", "global");
+  const [addError, setAddError] = useState<string | null>(null);
   useDetected("jdk");
+
+  const addJdkFromDisk = async () => {
+    setAddError(null);
+    const picked = await choosePath({ directory: true, title: tx("Select Home Directory for JDK") });
+    if (!picked) return;
+    const sdk = await call(commands.sdkJdkAt(picked)).catch(() => null);
+    if (!sdk) {
+      setAddError(tx`The selected directory is not a valid home for JDK: ${tildify(picked)}`);
+      return;
+    }
+    const added = addedJdks ?? [];
+    if (!added.includes(sdk.path)) setAddedJdks([...added, sdk.path]);
+    rememberSdk("jdk", { ...sdk, source: "added" });
+    setSelectedKey(`jdk:${sdk.path}`);
+  };
+
+  const removeAddedJdk = (path: string) => {
+    setAddedJdks((addedJdks ?? []).filter((p) => p !== path));
+    forgetSdk("jdk", path);
+    setSelectedKey("");
+  };
 
   useEffect(() => {
     for (const { kind } of SDK_KINDS) {
@@ -1776,8 +1828,15 @@ function SdksSection() {
   };
 
   const rows = useMemo(() => {
-    const out: Array<{ key: string; kind: SdkKind; kindLabel: string; name: string; version: string; path: string }> =
-      [];
+    const out: Array<{
+      key: string;
+      kind: SdkKind;
+      kindLabel: string;
+      name: string;
+      version: string;
+      path: string;
+      added: boolean;
+    }> = [];
     for (const { kind, label } of SDK_KINDS) {
       for (const sdk of byKind[kind] ?? []) {
         out.push({
@@ -1787,11 +1846,12 @@ function SdksSection() {
           name: sdk.name,
           version: sdk.version ?? "",
           path: sdk.path,
+          added: kind === "jdk" && (sdk.source === "added" || (addedJdks ?? []).includes(sdk.path)),
         });
       }
     }
     return out;
-  }, [byKind]);
+  }, [byKind, addedJdks]);
 
   const activeSdk = rows.find((r) => r.key === selectedKey) ?? rows[0];
 
@@ -1800,12 +1860,33 @@ function SdksSection() {
       <div className={styles.splitLayout}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
-            <Button size="small" variant="ghost" icon="plus" onClick={() => setDownloading(true)}>
-              <T>Download JDK…</T>
-            </Button>
+            <IconButton
+              icon="plus"
+              size="small"
+              title="Add SDK"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: tx("Download JDK…"), icon: "download", run: () => setDownloading(true) },
+                  { label: tx("Add JDK from Disk…"), icon: "folder-open", run: () => void addJdkFromDisk() },
+                ]);
+              }}
+            />
+            <IconButton
+              icon="minus"
+              size="small"
+              title="Remove SDK"
+              disabled={!activeSdk?.added}
+              onClick={() => activeSdk && removeAddedJdk(activeSdk.path)}
+            />
             <span className={styles.spacer} />
             <IconButton icon="refresh" size="small" title="Detect again" onClick={refreshAll} />
           </div>
+          {addError && (
+            <div className={styles.error} role="alert">
+              {addError}
+            </div>
+          )}
           <div className={styles.sideItems} role="listbox" aria-label={tx("SDKs")}>
             {rows.length === 0 && (
               <div className={styles.empty}>
@@ -1936,6 +2017,8 @@ const NAV_GROUPS: Array<{
   },
 ];
 
+const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+
 export function ProjectStructureDialog() {
   const open = useSettingsDialog((s) => s.projectStructureOpen);
   if (!open) return null;
@@ -1981,9 +2064,9 @@ function ProjectStructureDialogInner() {
   const onNavKeyDown = (e: React.KeyboardEvent) => {
     if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || e.altKey || e.metaKey || e.ctrlKey) return;
     e.preventDefault();
-    const idx = SECTION_TABS.findIndex((t) => t.id === section);
-    const nextIdx = e.key === "ArrowDown" ? Math.min(SECTION_TABS.length - 1, idx + 1) : Math.max(0, idx - 1);
-    const next = SECTION_TABS[nextIdx];
+    const idx = NAV_ITEMS.findIndex((t) => t.id === section);
+    const nextIdx = e.key === "ArrowDown" ? Math.min(NAV_ITEMS.length - 1, idx + 1) : Math.max(0, idx - 1);
+    const next = NAV_ITEMS[nextIdx];
     if (next) selectProjectStructureSection(next.id);
   };
 
@@ -2058,36 +2141,5 @@ function ProjectStructureDialogInner() {
         </SettingsFormContext.Provider>
       </PageContext.Provider>
     </Dialog>
-  );
-}
-
-export function ProjectStructurePage({ initialSection = "modules" }: { initialSection?: ProjectStructureSectionId }) {
-  const [section, setSection] = useState<ProjectStructureSectionId>(initialSection);
-
-  return (
-    <div className={styles.page}>
-      <div className={styles.sectionTabs} role="tablist" aria-label={tx("Project Structure sections")}>
-        {SECTION_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            className={styles.sectionTab}
-            aria-selected={section === tab.id}
-            onClick={() => setSection(tab.id)}
-          >
-            <Icon name={tab.icon} size={14} />
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      {section === "project" && <ProjectSection />}
-      {section === "modules" && <ModulesSection />}
-      {section === "dependencies" && <ModuleDependenciesTab />}
-      {section === "libraries" && <LibrariesSection />}
-      {section === "facets" && <FacetsSection />}
-      {section === "artifacts" && <ArtifactsSection />}
-      {section === "sdks" && <SdksSection />}
-    </div>
   );
 }

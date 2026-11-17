@@ -52,6 +52,10 @@ export function capabilityDescription(cap: CapabilityInfo): string {
     const path = cap.id.slice(4);
     return tx`Connect to local socket ${path} — equivalent to running arbitrary code on the project machine`;
   }
+  if (cap.id.startsWith("lsp:")) {
+    const server = cap.id.slice(4);
+    return tx`Send requests to the ${server} language server, which reads and changes the project's files`;
+  }
   return tx(cap.description);
 }
 

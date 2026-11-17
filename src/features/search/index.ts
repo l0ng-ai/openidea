@@ -185,6 +185,7 @@ export function activate(): void | (() => void) {
       icon: "toolwindow-find",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 5,
       component: lazyComponent(() => import("./find/FindToolWindow").then((m) => m.FindToolWindow)),
       headerContent: lazyComponent(() => import("./find/FindToolWindow").then((m) => m.FindTabs)),

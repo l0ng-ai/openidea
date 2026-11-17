@@ -61,30 +61,28 @@ describe("built-in palettes", () => {
     expect(schemeTokens("solarized-dark").get("--bg-editor")).toBe("#002b36");
     expect(schemeTokens("solarized-dark").get("--syn-string")).toBe("#2aa198");
     expect(schemeTokens("solarized-light").get("--ansi-bright-blue")).toBe("#839496");
-    expect(schemeTokens("one-light").get("--syn-keyword")).toBe("hsl(301, 63%, 40%)");
-    expect(schemeTokens("one-dark").get("--syn-string")).toBe("hsl(95, 38%, 62%)");
   });
 
   it("keeps explicit editor schemes and per-scheme edits independent of UI palettes", () => {
     applyThemeAttributes("solarized-light");
-    expect(schemeCss("one-dark", undefined)).toContain("--bg-editor: hsl(220, 13%, 18%) !important");
+    expect(schemeCss("solarized-dark", undefined)).toContain("--bg-editor: #002b36 !important");
     expect(schemeCss("theme-default", { "solarized-light": { keyword: { foreground: "#123456" } } })).toContain(
       "--syn-keyword: #123456 !important",
     );
-    applyThemeAttributes("one-light");
+    applyThemeAttributes("solarized-dark");
     expect(schemeCss("theme-default", { "solarized-light": { keyword: { foreground: "#123456" } } })).toBe("");
   });
 
   it("clears the palette for plugins and restores it when the plugin is removed", () => {
     const root = document.documentElement;
-    applyThemeAttributes("one-dark", root);
+    applyThemeAttributes("solarized-dark", root);
     root.dataset.pluginThemeKind = "light";
-    applyThemeAttributes("one-dark", root);
+    applyThemeAttributes("solarized-dark", root);
     expect(root.dataset.colorTheme).toBeUndefined();
     expect(root.dataset.theme).toBe("light");
     delete root.dataset.pluginThemeKind;
-    applyThemeAttributes("one-dark", root);
-    expect(root.dataset.colorTheme).toBe("one-dark");
+    applyThemeAttributes("solarized-dark", root);
+    expect(root.dataset.colorTheme).toBe("solarized-dark");
     applyThemeAttributes("dark-hc", root);
     expect(root.dataset.colorTheme).toBeUndefined();
     expect(root.dataset.contrast).toBe("high");

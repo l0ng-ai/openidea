@@ -1,5 +1,6 @@
 package ai.openidea.usages;
 
+import ai.openidea.Documents;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +30,7 @@ import org.eclipse.lsp4j.*;
 public final class UsagesCommand implements IDelegateCommandHandler {
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
+        Documents.awaitChanges(monitor);
         String uri = (String) arguments.get(0);
         int line = ((Number) arguments.get(1)).intValue();
         int column = ((Number) arguments.get(2)).intValue();

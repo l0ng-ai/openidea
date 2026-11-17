@@ -20,10 +20,13 @@ struct LogAccess {
 }
 
 /// Immutable Git objects exposed through the editor's ordinary read-only VFS.
+/// `encoding` re-decodes the blob with it ("Reload with Encoding") instead of
+/// the project's detection.
 pub async fn revision_virtual_document(
     host: &Host,
     window: &str,
     uri: &str,
+    encoding: Option<&str>,
 ) -> IdeResult<ide_lsp::types::VirtualDocument> {
     #[derive(Deserialize)]
     struct Target {
@@ -47,7 +50,7 @@ pub async fn revision_virtual_document(
         .collect::<IdeResult<Vec<_>>>()?;
     let target: Target = serde_json::from_slice(&bytes).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let path = target.repo.join(&target.path);
-    let text = vcs_file_at(host, window, path, Some(target.revision.clone()))
+    let (text, charset, has_bom) = revision_text(host, window, &path, &target.revision, encoding)
         .await?
         .ok_or_else(|| ide_core::IdeError::not_found("file is absent at this revision"))?;
     Ok(ide_lsp::types::VirtualDocument {
@@ -57,7 +60,62 @@ pub async fn revision_virtual_document(
         title: target.path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
         description: Some(format!("{} · {}", target.repo.display(), target.revision)),
         decompiled: false,
+        encoding: charset.name().to_ascii_lowercase(),
+        has_bom,
+        can_reload_encoding: true,
     })
+}
+
+/// Revision text with the charset it was decoded with and whether a matching
+/// BOM was stripped; `None` when the file is absent at the revision.
+async fn revision_text(
+    host: &Host,
+    window: &str,
+    path: &Path,
+    rev: &str,
+    encoding: Option<&str>,
+) -> IdeResult<Option<(String, &'static encoding_rs::Encoding, bool)>> {
+    let project = host.project(window).ok();
+    let external = host.external_logs.read().get(host.owner_window(window)).and_then(|rs| {
+        rs.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
+    });
+    let (path, rev, encoding) = (path.to_path_buf(), rev.to_owned(), encoding.map(str::to_owned));
+    blocking(move || {
+        fn with_repo<T>(
+            project: &Option<std::sync::Arc<Project>>,
+            external: &Option<std::sync::Arc<ide_vcs::Repo>>,
+            path: &Path,
+            f: impl FnOnce(&ide_vcs::Repo) -> IdeResult<T>,
+        ) -> IdeResult<T> {
+            match project {
+                Some(project) => project.with_log_repo_of(path, f),
+                None => f(external
+                    .as_ref()
+                    .ok_or_else(|| ide_core::IdeError::unavailable("external Git log is not open"))?),
+            }
+        }
+        let (text_encoding, charset) = match &encoding {
+            Some(label) => {
+                let charset = encoding_rs::Encoding::for_label(label.trim().as_bytes())
+                    .ok_or_else(|| ide_core::IdeError::invalid(format!("unknown encoding {label:?}")))?;
+                (ide_vcs::TextEncoding::from(charset), charset)
+            }
+            None => match &project {
+                Some(project) => {
+                    let text_encoding = project.vcs_encoding(&path, Some(&rev))?;
+                    (text_encoding, text_encoding.charset)
+                }
+                None => (ide_vcs::TextEncoding::from(encoding_rs::UTF_8), encoding_rs::UTF_8),
+            },
+        };
+        let bytes = with_repo(&project, &external, &path, |r| r.file_bytes_at(&path, Some(&rev)))?;
+        let Some(bytes) = bytes else { return Ok(None) };
+        let has_bom = encoding_rs::Encoding::for_bom(&bytes).is_some_and(|(enc, _)| enc == charset);
+        let text =
+            with_repo(&project, &external, &path, |r| r.file_at(&path, Some(&rev), text_encoding))?.unwrap_or_default();
+        Ok(Some((text, charset, has_bom)))
+    })
+    .await
 }
 impl LogAccess {
     fn new(host: &Host, window: &str, at: Option<&Path>) -> Self {
@@ -79,6 +137,11 @@ impl LogAccess {
             .as_ref()
             .ok_or_else(|| ide_core::IdeError::unavailable("external Git log is not open"))?
             .with_log_repo_at(at, f)
+    }
+
+    /// `with_log_repo_at` through the backend-agnostic Changes-view surface.
+    fn with_log_backend_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_log_repo_at(at, |r| f(r as &dyn Backend))
     }
 }
 
@@ -222,6 +285,16 @@ fn per_repo(
     Ok(())
 }
 
+/// `per_repo` through the backend-agnostic Changes-view surface.
+fn per_backend(
+    project: &Project,
+    paths: &[PathBuf],
+    recorded: Option<&str>,
+    f: impl Fn(&dyn Backend, &[PathBuf]) -> IdeResult<()>,
+) -> IdeResult<()> {
+    per_repo(project, paths, recorded, |r, paths| f(r as &dyn Backend, paths))
+}
+
 /// A shelf is one patch for one owning repository. Validate the whole selection before reverting files.
 fn shelf_repository(project: &Project, paths: &[PathBuf]) -> IdeResult<PathBuf> {
     let repos = project.repos();
@@ -290,7 +363,7 @@ pub async fn vcs_line_hunks(host: &Host, window: &str, path: PathBuf) -> IdeResu
     let project = host.project(window)?;
     blocking(move || {
         let text = project.text_of(&path)?;
-        project.with_repo_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
+        project.with_backend_of(&path, |r| r.line_hunks(&path, &text, false, project.vcs_encoding(&path, None)?))
     })
     .await
 }
@@ -302,7 +375,7 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
     });
     blocking(move || {
         if let Some(project) = project {
-            return project.with_log_repo_of(&path, |r| {
+            return project.with_log_backend_of(&path, |r| {
                 r.file_at(&path, rev.as_deref(), project.vcs_encoding(&path, rev.as_deref())?)
             });
         }
@@ -311,6 +384,25 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
             rev.as_deref(),
             encoding_rs::UTF_8,
         )
+    })
+    .await
+}
+
+/// The file's git mode at `rev` (`100644`, `100755`, `120000`…); `"WT"` reads the
+/// worktree's. `None` when the path is absent on that side. The diff viewer shows
+/// "File mode changed" when the texts compare equal but the modes differ.
+pub async fn vcs_file_mode(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
+    let project = host.project(window).ok();
+    let external = host.external_logs.read().get(host.owner_window(window)).and_then(|rs| {
+        rs.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
+    });
+    blocking(move || {
+        if let Some(project) = project {
+            return project.with_log_backend_of(&path, |r| r.file_mode_at(&path, rev.as_deref()));
+        }
+        external
+            .ok_or_else(|| ide_core::IdeError::unavailable("external Git log is not open"))?
+            .file_mode_at(&path, rev.as_deref())
     })
     .await
 }
@@ -326,7 +418,7 @@ pub async fn vcs_blame(
     // An explicit text wins (merge view annotates its side panes, not the worktree).
     blocking(move || {
         let text = text.or_else(|| project.documents.text_of(&path));
-        project.with_repo_of(&path, |r| {
+        project.with_backend_of(&path, |r| {
             r.blame(&path, text.as_deref(), revision.as_deref(), project.vcs_encoding(&path, revision.as_deref())?)
         })
     })
@@ -347,7 +439,7 @@ pub async fn vcs_block_history(
     let cancel = host.begin_request(request);
     let result = blocking(move || {
         let text = text.or_else(|| project.documents.text_of(&path));
-        project.with_repo_of(&path, |r| {
+        project.with_backend_of(&path, |r| {
             r.block_history(&path, text.as_deref(), lines, project.vcs_encoding(&path, None)?, &cancel)
         })
     })
@@ -364,7 +456,7 @@ pub async fn vcs_log(host: &Host, window: &str, repo: Option<PathBuf>, query: Lo
     let result = blocking(move || {
         project.with_log_repo_at(repo.as_deref(), |r| {
             r.enable_log_index(&project.cache);
-            r.log_cancellable(&query, &cancel)
+            (r as &dyn Backend).log(&query, &cancel)
         })
     })
     .await;
@@ -463,7 +555,7 @@ pub async fn vcs_commit_files(
     commit: String,
 ) -> IdeResult<Vec<ChangedFile>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.commit_files(&commit))).await
+    blocking(move || project.with_log_backend_at(repo.as_deref(), |r| r.commit_files(&commit))).await
 }
 
 /// Combined changes of several commits, `commits` oldest first.
@@ -474,7 +566,7 @@ pub async fn vcs_commits_changes(
     commits: Vec<String>,
 ) -> IdeResult<Vec<RevisionChange>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.commits_changes(&commits))).await
+    blocking(move || project.with_log_backend_at(repo.as_deref(), |r| r.commits_changes(&commits))).await
 }
 
 pub async fn vcs_branches(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<Branch>> {
@@ -490,7 +582,22 @@ pub async fn vcs_stashes(host: &Host, window: &str, repo: Option<PathBuf>) -> Id
 pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || per_repo(&project, &paths, None, |r, paths| r.stage(paths))).await
+    blocking(move || per_backend(&project, &paths, None, |r, paths| r.stage(paths))).await
+}
+
+/// Adds `commit` to annotate's ignore list in `path`'s repository (the file `blame.ignoreRevsFile`
+/// names, else `.git-blame-ignore-revs`, which the local config then names).
+pub async fn vcs_ignore_blame_revision(host: &Host, window: &str, path: PathBuf, commit: String) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        let result = project.with_disk_sync(|| project.with_repo_of(&path, |r| r.ignore_blame_revision(&commit)));
+        if result.is_ok() {
+            project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
+        }
+        result
+    })
+    .await
 }
 
 /// Project-host operation (also registered with the remote dispatcher).
@@ -525,7 +632,7 @@ pub async fn vcs_add_to_ignore(
 pub async fn vcs_unstage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || per_repo(&project, &paths, None, |r, paths| r.unstage(paths))).await
+    blocking(move || per_backend(&project, &paths, None, |r, paths| r.unstage(paths))).await
 }
 
 pub async fn vcs_stage_patch(host: &Host, window: &str, patch: String) -> IdeResult<()> {
@@ -537,7 +644,7 @@ pub async fn vcs_stage_patch(host: &Host, window: &str, patch: String) -> IdeRes
 pub async fn vcs_discard(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    blocking(move || per_repo(&project, &paths, Some("Rollback"), |r, paths| r.discard(paths))).await
+    blocking(move || per_backend(&project, &paths, Some("Rollback"), |r, paths| r.discard(paths))).await
 }
 
 pub async fn vcs_commit(
@@ -551,8 +658,8 @@ pub async fn vcs_commit(
     // Commit hooks may run for a long time.
     let project = host.project(window)?;
     blocking(move || {
-        project.with_repo_recorded(repo.as_deref(), None, |r| {
-            r.commit_with(&message, &options, &|path| project.vcs_encoding(path, None))
+        project.with_backend_recorded(repo.as_deref(), None, |r| {
+            r.commit(&message, &options, &|path| project.vcs_encoding(path, None))
         })
     })
     .await
@@ -700,12 +807,19 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
+    let paths = paths.unwrap_or_default();
     blocking(move || {
-        project.with_repo_recorded(repo.as_deref(), Some("Git stash"), |r| {
-            r.stash_push(message.as_deref(), include_untracked, keep_index)
+        if paths.is_empty() {
+            return project.with_repo_recorded(repo.as_deref(), Some("Git stash"), |r| {
+                r.stash_push(message.as_deref(), include_untracked, keep_index, &[])
+            });
+        }
+        per_repo(&project, &paths, Some("Git stash"), |r, paths| {
+            r.stash_push(message.as_deref(), include_untracked, keep_index, paths)
         })
     })
     .await
@@ -809,7 +923,7 @@ pub async fn vcs_conflict_versions(host: &Host, window: &str, path: PathBuf) -> 
 
 pub async fn vcs_diff_text(host: &Host, window: &str, path: PathBuf, staged: bool) -> IdeResult<String> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_of(&path, |r| r.diff_text(&path, staged, project.vcs_encoding(&path, None)?)))
+    blocking(move || project.with_backend_of(&path, |r| r.diff_text(&path, staged, project.vcs_encoding(&path, None)?)))
         .await
 }
 
@@ -1124,7 +1238,7 @@ pub async fn vcs_diff_with_worktree(
     rev: String,
 ) -> IdeResult<Vec<ChangedFile>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.diff_with_worktree(&rev))).await
+    blocking(move || project.with_log_backend_at(repo.as_deref(), |r| r.diff_with_worktree(&rev))).await
 }
 
 /// Files that differ between two revisions (the "N files updated" of Update Project).
@@ -1136,7 +1250,7 @@ pub async fn vcs_diff_revisions(
     to: String,
 ) -> IdeResult<Vec<ChangedFile>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.diff_revisions(&from, &to))).await
+    blocking(move || project.with_log_backend_at(repo.as_deref(), |r| r.diff_revisions(&from, &to))).await
 }
 
 /// Added and deleted lines between two revisions. `paths` limits the diff; empty diffs every file.
@@ -1185,6 +1299,25 @@ pub async fn vcs_create_patch(
                 r.create_patch(&paths, reverse)
             }
             PatchSource::Commits { commits, reverse } => r.create_commits_patch(&commits, reverse),
+        })
+    })
+    .await
+}
+
+/// The changes a commit with `options` would make in `repo`, as one patch (what Commit
+/// commits: the index with the selection applied, partial files' chosen hunks only).
+pub async fn vcs_pending_patch(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    options: CommitOptions,
+) -> IdeResult<String> {
+    const MAX_PATCH: usize = 1 << 20;
+    let project = host.project(window)?;
+    blocking(move || {
+        project.with_repo_at(repo.as_deref(), |r| {
+            let changes = r.pending_changes(&options, MAX_PATCH, &|path| project.vcs_encoding(path, None))?;
+            Ok(changes.into_iter().filter_map(|c| c.diff).collect())
         })
     })
     .await
@@ -1334,6 +1467,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
+    d.add("vcs_file_mode", |c| async move { vcs_file_mode(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });
     d.add("vcs_blame", |c| async move {
         vcs_blame(&c.host, &c.window, c.arg("path")?, c.arg("text")?, c.arg("revision")?).await
     });
@@ -1368,6 +1502,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_stage", |c| async move { vcs_stage(&c.host, &c.window, c.arg("paths")?).await });
     d.add("vcs_add_to_ignore", |c| async move {
         vcs_add_to_ignore(&c.host, &c.window, c.arg("paths")?, c.arg("destination")?).await
+    });
+    d.add("vcs_ignore_blame_revision", |c| async move {
+        vcs_ignore_blame_revision(&c.host, &c.window, c.arg("path")?, c.arg("commit")?).await
     });
     d.add("vcs_unstage", |c| async move { vcs_unstage(&c.host, &c.window, c.arg("paths")?).await });
     d.add("vcs_stage_patch", |c| async move { vcs_stage_patch(&c.host, &c.window, c.arg("patch")?).await });
@@ -1414,7 +1551,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         vcs_restore_branch(&c.host, &c.window, c.arg("repo")?, c.arg("deleted")?).await
     });
     d.add("vcs_rename_branch", |c| async move {
-        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("unset_upstream")?)
+        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("unsetUpstream")?)
             .await
     });
     d.add("vcs_merge", |c| async move { vcs_merge(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?).await });
@@ -1427,6 +1564,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("message")?,
             c.arg("includeUntracked")?,
             c.arg("keepIndex")?,
+            c.arg("paths")?,
         )
         .await
     });
@@ -1543,6 +1681,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("vcs_create_patch", |c| async move {
         vcs_create_patch(&c.host, &c.window, c.arg("repo")?, c.arg("source")?).await
+    });
+    d.add("vcs_pending_patch", |c| async move {
+        vcs_pending_patch(&c.host, &c.window, c.arg("repo")?, c.arg("options")?).await
     });
     d.add("vcs_patch_preview", |c| async move {
         vcs_patch_preview(&c.host, &c.window, c.arg("repo")?, c.arg("patch")?).await

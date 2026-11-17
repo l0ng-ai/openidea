@@ -5,9 +5,9 @@ wit_bindgen::generate!({
     inline: "
         package fixture:misbehave;
         world misbehave {
-            include openidea:plugin/plugin-syntax@1.5.0;
-            export openidea:plugin/providers@1.5.0;
-            export openidea:plugin/file-actions@1.5.0;
+            include openidea:plugin/plugin-syntax@1.10.0;
+            export openidea:plugin/providers@1.10.0;
+            export openidea:plugin/file-actions@1.10.0;
         }
     ",
     path: "../../../../../wit",
@@ -180,8 +180,14 @@ impl commands::Guest for Misbehave {
                     env: Vec::new(),
                 };
                 let child = process::start(&cmd, None)?;
+                // CPU work per step (loop iterations), for fuel budget tests.
+                let work: u64 = arg.as_deref().and_then(|a| a.parse().ok()).unwrap_or(0);
                 for step in 0..25 {
                     task.report(step, Some(25), Some("waiting"));
+                    let mut x: u64 = 0;
+                    for _ in 0..work {
+                        x = std::hint::black_box(x.wrapping_add(1));
+                    }
                     // Waiting blocks in the host for 100 ms: wall time passes
                     // while the plugin itself is not running.
                     let _ = child.wait(100);

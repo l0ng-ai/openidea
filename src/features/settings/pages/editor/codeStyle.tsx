@@ -254,7 +254,7 @@ function JavaFormatter({
 }) {
   const id = useId();
   const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const path = await open({
       multiple: false,
       title: tx("Eclipse formatter XML"),

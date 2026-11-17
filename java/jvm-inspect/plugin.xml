@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin>
+  <extension point="org.eclipse.jdt.ls.core.delegateCommandHandler">
+    <delegateCommandHandler class="ai.openidea.jvminspect.InspectCommand">
+      <command id="openidea.jvm.vms"/>
+      <command id="openidea.jvm.classes"/>
+      <command id="openidea.jvm.instances"/>
+      <command id="openidea.jvm.fields"/>
+      <command id="openidea.jvm.referrers"/>
+    </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.jvminspect.StreamCommand">
+      <command id="openidea.jvm.stream.arm"/>
+      <command id="openidea.jvm.stream.wait"/>
+      <command id="openidea.jvm.stream.stop"/>
+      <command id="openidea.jvm.stream.abort"/>
+      <command id="openidea.jvm.stream.collect"/>
+      <command id="openidea.jvm.stream.release"/>
+    </delegateCommandHandler>
+  </extension>
+</plugin>

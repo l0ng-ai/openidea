@@ -7,6 +7,7 @@ use crate::types::*;
 #[cfg(target_arch = "wasm32")]
 mod imp {
     //! Calls through the `openidea:plugin@1.0.0` world.
+    use super::{WebSocketBatch, WebSocketRequest};
     use crate::bindings::openidea::plugin as wit;
     use crate::types::*;
 
@@ -256,6 +257,23 @@ mod imp {
         p.write_file(path, text).map_err(error)
     }
 
+    pub fn project_document(p: &ProjectRes, path: &str) -> Result<Document, Error> {
+        wit::editor::document_at(p, path).map(|d| Document { version: d.version, text: d.text }).map_err(error)
+    }
+
+    pub fn project_apply_document_edits(
+        p: &ProjectRes,
+        path: &str,
+        version: u64,
+        edits: &[TextEdit],
+    ) -> Result<u64, Error> {
+        let edits: Vec<wit::types::TextEdit> = edits
+            .iter()
+            .map(|edit| wit::types::TextEdit { range: range_out(edit.range), text: edit.text.clone() })
+            .collect();
+        wit::editor::apply_edits_at(p, path, version, &edits).map_err(error)
+    }
+
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
         i.project()
     }
@@ -397,6 +415,15 @@ mod imp {
     }
     pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear_file(set).map_err(error)
+    }
+    pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        wit::decorations::set_file_note(path, set, note, tooltip).map_err(error)
+    }
+    pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        wit::decorations::set_file_icon(path, set, icon, tooltip).map_err(error)
+    }
+    pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+        wit::decorations::set_file_icons(set, items).map_err(error)
     }
     pub fn vcs_log(p: &ProjectRes, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
         wit::vcs::log(p, path, limit)
@@ -637,6 +664,40 @@ mod imp {
             .map_err(error)
     }
 
+    pub type WebSocketRes = wit::net::Websocket;
+
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
+        let request = wit::net::WebsocketRequest {
+            url: req.url.clone(),
+            headers: req
+                .headers
+                .iter()
+                .map(|(name, value)| wit::net::Header { name: name.clone(), value: value.clone() })
+                .collect(),
+            subprotocol: req.subprotocol.clone(),
+        };
+        wit::net::websocket_connect(project, &request).map_err(error)
+    }
+
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        connection.id()
+    }
+
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
+        connection.send(bytes).map_err(error)
+    }
+
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
+        connection
+            .drain(limit)
+            .map(|batch| WebSocketBatch { messages: batch.messages, closed: batch.closed })
+            .map_err(error)
+    }
+
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
+        connection.close().map_err(error)
+    }
+
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
         wit::secrets::set(name, value).map_err(error)
     }
@@ -706,6 +767,16 @@ mod imp {
         }
     }
 
+    fn file_diff_to(v: &crate::FileDiff) -> wit::views::FileDiff {
+        wit::views::FileDiff {
+            left: v.left.clone(),
+            right: v.right.clone(),
+            left_label: v.left_label.clone(),
+            right_label: v.right_label.clone(),
+            title: v.title.clone(),
+        }
+    }
+
     fn content_tab_reply_to(v: &crate::ContentTabReply) -> wit::views::ContentTabReply {
         wit::views::ContentTabReply {
             content: v.content.clone(),
@@ -745,6 +816,41 @@ mod imp {
     }
     pub fn database_connect(project: &ProjectRes, id: &str) -> Result<(), Error> {
         wit::database::connect(project, id).map_err(error)
+    }
+    pub fn lsp_request(
+        project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        wit::language_servers::request(project, server, method, params).map_err(error)
+    }
+    pub fn lsp_notify(project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        wit::language_servers::notify(project, server, method, params).map_err(error)
+    }
+    pub fn build_dependencies(project: &ProjectRes, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        use wit::build::DependencyStatus as S;
+        wit::build::dependencies(project, module)
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .map(|n| DependencyNode {
+                        group: n.group,
+                        artifact: n.artifact,
+                        version: n.version,
+                        scope: n.scope,
+                        status: match n.status {
+                            S::Resolved => DependencyStatus::Resolved,
+                            S::OmittedForConflict => DependencyStatus::OmittedForConflict,
+                            S::OmittedForDuplicate => DependencyStatus::OmittedForDuplicate,
+                            S::VersionManaged => DependencyStatus::VersionManaged,
+                        },
+                        requested_version: n.requested_version,
+                        parent: n.parent,
+                    })
+                    .collect()
+            })
+            .map_err(error)
     }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         wit::mcp::stdio_command()
@@ -813,6 +919,12 @@ mod imp {
     }
     pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
         wit::views::reply_content_tab(request, &content_tab_reply_to(reply)).map_err(error)
+    }
+    pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+        wit::views::open_diff(&content_diff_to(diff), file_name).map_err(error)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        wit::views::open_file_diff(&file_diff_to(diff), file_name).map_err(error)
     }
 
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
@@ -979,6 +1091,31 @@ impl Project {
         imp::database_connect(&self.inner, id)
     }
 
+    /// Sends `method` to the language server named `server` (its name in the language
+    /// definition, e.g. `phoxite`) running for this project and returns the result as
+    /// JSON (API 1.9). `params` is JSON. Requires `lsp:<server>` and a trusted project.
+    ///
+    /// Only the server's own methods pass (`phoxite/laravel/routes`); LSP's own
+    /// (`textDocument/…`, `workspace/…`, `initialize`, `$/…`) are [`Error::Invalid`].
+    /// [`Error::NotFound`] when the server is not running: the call never starts one.
+    pub fn language_server_request(&self, server: &str, method: &str, params: Option<&str>) -> Result<String, Error> {
+        imp::lsp_request(&self.inner, server, method, params)
+    }
+    /// The same for a notification: no answer is awaited.
+    pub fn language_server_notify(&self, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        imp::lsp_notify(&self.inner, server, method, params)
+    }
+
+    /// The Maven / Gradle dependency graph of `module` (a Maven `groupId:artifactId` or a
+    /// Gradle project path such as `:app`), or of every module with `None` (API 1.10), as
+    /// the IDE last resolved it: no build tool runs. A flat list, each module a root; see
+    /// [`DependencyNode`]. Gradle configurations appear once the Dependency Analyzer has
+    /// read them. An unknown module is [`Error::NotFound`]. Requires `build.read` and a
+    /// trusted project.
+    pub fn build_dependencies(&self, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        imp::build_dependencies(&self.inner, module)
+    }
+
     /// Find in Files with unsaved text, project excludes, cancellation and a 10,000 match cap.
     /// Requires project.read; locations use zero-based lines and UTF-16 columns.
     pub fn search_text(&self, query: &TextQuery, limit: u32) -> Result<TextSearch, Error> {
@@ -1029,6 +1166,18 @@ impl Project {
     /// `Error::NotFound`. Needs `project.read`.
     pub fn read_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
         imp::project_read_bytes(&self.inner, path)
+    }
+
+    /// Versioned text of an explicitly named open document. This works from
+    /// background events and requires `project.read` plus `editor.read`.
+    pub fn document(&self, path: &str) -> Result<Document, Error> {
+        imp::project_document(&self.inner, path)
+    }
+
+    /// Applies versioned edits to an explicitly named open document. Returns
+    /// [`Error::Stale`] without writing when its version changed.
+    pub fn apply_document_edits(&self, path: &str, version: u64, edits: &[TextEdit]) -> Result<u64, Error> {
+        imp::project_apply_document_edits(&self.inner, path, version, edits)
     }
 
     /// Replaces the text of a file inside the project (absolute or
@@ -1123,6 +1272,51 @@ pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error
 /// `secrets`). `Error::Cancelled` when the call was superseded.
 pub fn fetch(request: &HttpRequest) -> Result<HttpResponse, Error> {
     imp::fetch(request)
+}
+
+/// A host-owned background WebSocket. Dropping it closes the connection.
+pub struct WebSocket {
+    inner: imp::WebSocketRes,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
+impl WebSocket {
+    pub fn connect(project: &Project, request: &WebSocketRequest) -> Result<Self, Error> {
+        imp::websocket_connect(&project.inner, request).map(|inner| Self { inner })
+    }
+    pub fn id(&self) -> u64 {
+        imp::websocket_id(&self.inner)
+    }
+    pub fn send(&self, bytes: &[u8]) -> Result<(), Error> {
+        imp::websocket_send(&self.inner, bytes)
+    }
+    pub fn drain(&self, limit: u32) -> Result<WebSocketBatch, Error> {
+        imp::websocket_drain(&self.inner, limit)
+    }
+    pub fn close(&self) -> Result<(), Error> {
+        imp::websocket_close(&self.inner)
+    }
+}
+
+impl Drop for WebSocket {
+    fn drop(&mut self) {
+        // The WIT resource also closes on its own drop. Calling close here
+        // keeps the native mock faithful to that lifecycle; host close is
+        // intentionally idempotent.
+        let _ = imp::websocket_close(&self.inner);
+    }
 }
 
 /// Whether the user stored secret `name` (declared under `[[contributes.secrets]]`).
@@ -1730,6 +1924,21 @@ pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Resu
 pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
     imp::clear_file_decorations(set)
 }
+/// Set a note shown after a file's name in the project tree, replacing this tree set's
+/// annotation for the file (API 1.7). One line of at most 200 characters. Requires project.read.
+pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+    imp::set_file_note(path, set, note, tooltip)
+}
+/// Set a `[[contributes.fileIcons]]` icon for a file or folder in the project tree, replacing
+/// this tree set's annotation for the path (API 1.8). Requires project.read.
+pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+    imp::set_file_icon(path, set, icon, tooltip)
+}
+/// Replace all `(path, icon)` entries of a tree icon set at once (API 1.8; at most 10,000 entries).
+/// Requires project.read.
+pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+    imp::set_file_icons(set, items)
+}
 
 /// Starts an owned run configuration in the invoking window. Its id receives run-exited.
 pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
@@ -1750,6 +1959,16 @@ pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
 /// Replies to a content-tab-action event in its originating window.
 pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
     imp::reply_content_tab(request, reply)
+}
+/// API 1.7: opens two texts in the invoking window's diff viewer; `file_name` picks the
+/// syntax highlighting.
+pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+    imp::open_diff(diff, file_name)
+}
+/// API 1.10: like [`open_diff`] for a file missing on one side (`None`: added or deleted); the
+/// diff viewer shows the other side alone. Both sides `None` is `Error::Invalid`.
+pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+    imp::open_file_diff(diff, file_name)
 }
 
 /// Registers/replaces a read-only project target. Requires the program's process grant.

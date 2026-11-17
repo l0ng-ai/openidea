@@ -8,12 +8,15 @@
   flex-direction: column;
   background: var(--bg-app);
 }
+.toolbar[hidden] {
+  display: none;
+}
 .toolbar {
   flex: none;
   height: var(--h-header);
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
   border-bottom: 1px solid var(--border);
 }
@@ -61,7 +64,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -70,6 +73,17 @@
 }
 .label + .label {
   border-left: 1px solid var(--border);
+}
+/* Side by side, the right label starts at the right pane (`--diff-b-start`, set by the viewer). */
+.labels > .label:first-child:not(:only-child) {
+  flex: 0 0 var(--diff-b-start, 50%);
+}
+.labelFile {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+  font-family: var(--font-ui);
 }
 .badge {
   padding: 0 5px;
@@ -93,13 +107,14 @@
   border-bottom: none;
 }
 .findRowSplit > div {
-  flex: 0 0 50%;
+  flex: 0 0 var(--diff-b-start, 50%);
   border-right: 1px solid var(--border);
 }
 .findRowRight {
   justify-content: flex-end;
 }
 .findRowRight > div {
+  flex-basis: calc(100% - var(--diff-b-start, 50%));
   border-right: none;
   border-left: 1px solid var(--border);
 }
@@ -320,7 +335,7 @@
 .notes {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 4px 8px 6px 8px;
   padding: 6px 10px;
   border: 1px solid var(--border-strong);
@@ -337,7 +352,7 @@
 }
 .noteHead {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-small);
   color: var(--fg-subtle);
 }
@@ -380,4 +395,23 @@
   .host:not([hidden]) {
     animation: none;
   }
+}
+
+/* A block of the all-in-one diff: as tall as its content, the tab scrolls. */
+.fit {
+  flex: none;
+  height: auto;
+}
+.fit .host {
+  flex: none;
+}
+.fit .host > :global(.cm-editor) {
+  flex: none;
+}
+.fit .host :global(.cm-mergeView) {
+  flex: none;
+  overflow-y: visible;
+}
+.fit .host :global(.cm-mergeViewEditors) {
+  min-height: 0;
 }

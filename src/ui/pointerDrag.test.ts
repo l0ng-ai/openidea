@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dropZoneAt, isOutsideWindow, startPointerDrag } from "./pointerDrag";
+import { beginDrag, dropZoneAt, isOutsideWindow, startPointerDrag } from "./pointerDrag";
 
 const fire = (type: string, buttons: number, x = 0, y = 0) =>
   window.dispatchEvent(new MouseEvent(type, { bubbles: true, buttons, clientX: x, clientY: y }));
@@ -47,6 +47,23 @@ describe("startPointerDrag with a reordered macOS tap", () => {
     fire("pointerup", 0, 60, 0);
     expect(onEnd).toHaveBeenCalledWith(true, expect.objectContaining({ x: 60 }));
   });
+
+  it("clears a text selection that began before the drag threshold (#3334)", () => {
+    const text = document.body.appendChild(document.createElement("p"));
+    text.textContent = "dragging a file must not select this";
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const { onStart } = start();
+    fire("pointermove", 1, 40, 0);
+    fire("pointerup", 0, 40, 0);
+
+    expect(onStart).toHaveBeenCalledOnce();
+    expect(window.getSelection()?.rangeCount).toBe(0);
+  });
 });
 
 const viewport = { left: 0, top: 0, right: 1280, bottom: 800 };
@@ -74,5 +91,19 @@ describe("isOutsideWindow", () => {
     expect(isOutsideWindow(viewport, 1280, 400)).toBe(true);
     expect(isOutsideWindow(viewport, 640, -1)).toBe(true);
     expect(isOutsideWindow(viewport, 640, 800)).toBe(true);
+  });
+});
+
+describe("beginDrag", () => {
+  it("clears the selection and marks the drag until it ends (#3334)", () => {
+    const text = document.body.appendChild(document.createElement("p"));
+    text.textContent = "selected before the drag";
+    window.getSelection()!.selectAllChildren(text);
+    const end = beginDrag();
+    expect(window.getSelection()?.rangeCount).toBe(0);
+    expect(document.documentElement.classList.length).toBe(1);
+    end();
+    expect(document.documentElement.classList.length).toBe(0);
+    text.remove();
   });
 });

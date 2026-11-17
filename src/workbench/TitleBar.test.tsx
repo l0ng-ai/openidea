@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./WindowControls", () => ({ WindowControls: () => null }));
+vi.mock("./WindowControls", () => ({
+  WindowControls: ({ side, dialog }: { side: string; dialog?: boolean }) => (
+    <div data-captions={side} data-dialog={dialog ? "" : undefined} />
+  ),
+}));
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
 import { commands, type Settings } from "@/platform/ipc";
@@ -135,6 +139,29 @@ describe("expanded main menu in a frameless title bar", () => {
   });
 });
 
+describe("caption buttons in a frameless title bar", () => {
+  it.each([false, true])("lead the bar on the left and close it on the right (dialog: %s)", async (dialog) => {
+    const platform = usePlatform.getState();
+    const menuModel = vi.spyOn(commands, "menuModel").mockResolvedValue([]);
+    usePlatform.setState({ os: "linux", framelessTitleBar: true, overlayTitleBar: false });
+    try {
+      const { container } = render(dialog ? <TitleBar minimal dialog title="Settings" /> : <TitleBar />);
+      await act(async () => {});
+      const header = container.querySelector("header")!;
+      expect(header.firstElementChild?.getAttribute("data-captions")).toBe("left");
+      expect(header.lastElementChild?.getAttribute("data-captions")).toBe("right");
+      expect(header.querySelectorAll("[data-dialog]")).toHaveLength(dialog ? 2 : 0);
+      if (!dialog) {
+        const menu = screen.getByRole("button", { name: "Main Menu" });
+        expect(header.firstElementChild!.compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    } finally {
+      menuModel.mockRestore();
+      usePlatform.setState(platform);
+    }
+  });
+});
+
 describe("merged title bar menu", () => {
   it.each(["windows", "linux", "macos"])(
     "%s keeps toolbar controls available and uses the menu only when frameless",
@@ -162,6 +189,29 @@ describe("merged title bar menu", () => {
       }
     },
   );
+});
+
+it("puts the main menu in its own row below the title bar with the Separate toolbar style", async () => {
+  const savedPlatform = usePlatform.getState();
+  const savedProject = useProject.getState();
+  const model = vi
+    .spyOn(commands, "menuModel")
+    .mockResolvedValue([{ kind: "submenu", id: "file", label: "File", children: [] }]);
+  usePlatform.setState({ os: "windows", framelessTitleBar: true, overlayTitleBar: false });
+  useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings });
+  try {
+    const { container } = render(<TitleBar />);
+    await act(async () => {});
+    const header = container.querySelector("header")!;
+    const menubar = screen.getByRole("menubar");
+    expect(header.contains(menubar)).toBe(false);
+    expect(header.nextElementSibling?.contains(menubar)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+  } finally {
+    usePlatform.setState(savedPlatform);
+    useProject.setState(savedProject);
+    model.mockRestore();
+  }
 });
 
 describe("compact window header", () => {

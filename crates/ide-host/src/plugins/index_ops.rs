@@ -27,8 +27,12 @@ pub async fn plugin_navigation_files(
         if files.len() > 20_000 {
             return Err(IdeError::unavailable("plugin navigation supports up to 20,000 matching files"));
         }
+        // A project window group's members are project scope: their files are
+        // in the group's index (the group root holds none of them).
+        let members = crate::project::workspace_member_roots(&project.root);
+        let in_scope = |p: &PathBuf| p.starts_with(&project.root) || members.iter().any(|m| p.starts_with(m));
         Ok(NavigationFiles {
-            paths: files.into_iter().filter(|p| p.starts_with(&project.root)).map(Into::into).collect(),
+            paths: files.into_iter().filter(in_scope).map(Into::into).collect(),
             indexing,
             extensions,
         })
@@ -64,11 +68,14 @@ pub async fn plugin_navigation_index(
         if !project.is_trusted() {
             return Err(IdeError::unavailable("project is not trusted"));
         }
+        // A project window group's members are project scope.
+        let mut roots = vec![project.root.clone()];
+        roots.extend(crate::project::workspace_member_roots(&project.root));
         for path in paths {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
-            let Ok(path) = ide_plugin::resolve_in_root(&project.root, &path.to_string_lossy()) else {
+            let Ok(path) = ide_plugin::resolve_in_roots(&roots, &path.to_string_lossy()) else {
                 continue;
             };
             let extensions = plugins.navigation_extensions(&project.root);

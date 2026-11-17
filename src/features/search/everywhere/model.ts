@@ -8,6 +8,7 @@ import type { SettingsSearchEntry } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { basename, isTypeKind, relDir, symbolDisplayName } from "../common/open";
 import { byScore, matchText } from "../common/rank";
+import { wordMatch } from "@/ui";
 
 export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text";
 export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "endpoints" | "actions" | "text";
@@ -76,6 +77,8 @@ export interface FileItem {
   nameIndices: number[];
   line: number | null;
   col: number | null;
+  /** A directory: choosing it selects it in the Project view. */
+  folder?: boolean;
 }
 
 export interface SymbolItem {
@@ -167,6 +170,57 @@ export function fileItem(
     line,
     col,
   };
+}
+
+/** File outside the project index (a scratch file); `relPath` is shown under its root label. */
+export interface OutsideFile {
+  path: string;
+  relPath: string;
+}
+
+// The project index's file scores (`ide-index` matching.rs): a name match ranks in a tier
+// above path-only matches, with exact / exact-stem / prefix boosts.
+const NAME_TIER = 1 << 20;
+
+function nameBoost(name: string, q: string): number {
+  const n = name.toLowerCase();
+  if (n === q) return 4000;
+  const dot = n.indexOf(".");
+  if (dot >= 0 && n.slice(0, dot) === q) return 3000;
+  return n.startsWith(q) ? 600 : 0;
+}
+
+/** Files outside the index matching a Files query by name (or by path for `dir/name`), scored like the index's. */
+export function matchOutsideFiles(files: readonly OutsideFile[], query: string): FileMatch[] {
+  const q = query
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.?\/+/, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+  if (!q) return [];
+  const byPath = q.includes("/");
+  const out: FileMatch[] = [];
+  for (const f of files) {
+    const name = basename(f.relPath);
+    const nameStart = f.relPath.length - name.length;
+    const m = byPath ? wordMatch(f.relPath, q) : wordMatch(name, q);
+    if (!m) continue;
+    const boost = nameBoost(name, byPath ? q.slice(q.lastIndexOf("/") + 1) : q);
+    out.push({
+      path: f.path,
+      relPath: f.relPath,
+      score: (byPath ? 0 : NAME_TIER) + boost,
+      indices: byPath ? m : m.map((i) => i + nameStart),
+    });
+  }
+  return out;
+}
+
+/** A directory match (`relPath` ends in `/`), listed with the files as IDEA's Go to File does. */
+export function folderItem(m: Pick<FileMatch, "path" | "relPath" | "indices">): FileItem {
+  const rel = m.relPath.replace(/\/$/, "");
+  return { ...fileItem({ ...m, relPath: rel }), key: `d:${m.path}`, folder: true };
 }
 
 export function symbolItem(m: SymbolMatch): SymbolItem {

@@ -40,6 +40,7 @@ CLAUDE.local.md
 .claude/skills/*
 !.claude/skills/verify
 !.claude/skills/issue-fix
+!.claude/skills/eval
 
 # Local reference screenshots
 pycharm-screenshots/

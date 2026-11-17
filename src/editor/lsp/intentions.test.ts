@@ -146,6 +146,63 @@ describe("silent code actions", () => {
   });
 });
 
+describe("fix-all from every server", () => {
+  const fixAll = (server: number, title: string): CodeAction => ({
+    ...resolved,
+    title,
+    kind: "source.fixAll",
+    server,
+    edit: null,
+    data: "{}",
+  });
+  const editor = () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "const a = 'x';",
+        extensions: [lspDoc.of({ doc: 1, path: "/p/a.ts", language: "typescript", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    return view;
+  };
+
+  it("applies each server's source.fixAll in turn, asking the next one again after an edit", async () => {
+    const view = editor();
+    const ts = fixAll(1, "Fix all fixable JS/TS issues");
+    const eslint = fixAll(2, "Fix all fixable ESLint issues");
+    const eslintAfter = { ...eslint, data: '{"version":2}' };
+    lspCodeActions
+      .mockResolvedValueOnce({ status: "ok", data: [ts, eslint] })
+      .mockResolvedValueOnce({ status: "ok", data: [{ ...ts, data: '{"again":true}' }, eslintAfter] });
+    lspApplyCodeAction.mockResolvedValue({ status: "ok", data: null });
+    expect(await applyKindSilently(view, "source.fixAll")).toBe(true);
+    expect(lspCodeActions).toHaveBeenCalledTimes(2);
+    expect(lspApplyCodeAction.mock.calls.map((c) => (c as unknown[])[1])).toEqual([ts, eslintAfter]);
+  });
+
+  it("goes on with the next server when one server's action fails", async () => {
+    const view = editor();
+    const ts = fixAll(1, "Fix all fixable JS/TS issues");
+    const eslint = fixAll(2, "Fix all fixable ESLint issues");
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [ts, eslint] });
+    lspApplyCodeAction
+      .mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "boom" } })
+      .mockResolvedValueOnce({ status: "ok", data: null });
+    expect(await applyKindSilently(view, "source.fixAll")).toBe(true);
+    expect(lspApplyCodeAction.mock.calls.map((c) => ((c as unknown[])[1] as CodeAction).server)).toEqual([1, 2]);
+  });
+
+  it("applies a single organize-imports action", async () => {
+    const view = editor();
+    const a = { ...fixAll(1, "Organize Imports"), kind: "source.organizeImports" };
+    const b = { ...fixAll(2, "Organize Imports"), kind: "source.organizeImports" };
+    lspCodeActions.mockResolvedValueOnce({ status: "ok", data: [a, b] });
+    lspApplyCodeAction.mockResolvedValue({ status: "ok", data: null });
+    expect(await applyKindSilently(view, "source.organizeImports")).toBe(true);
+    expect(lspApplyCodeAction).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("intention preview", () => {
   it("does not resolve lazy plugin actions while previewing", async () => {
     const view = new EditorView({

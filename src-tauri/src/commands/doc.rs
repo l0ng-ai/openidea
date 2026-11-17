@@ -6,7 +6,7 @@ use ide_core::{ChangeSet, DocId, IdeResult, OutlineItem, Range};
 pub use ide_host::ops::doc::*;
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
 use std::path::PathBuf;
 use tauri::{Manager, State, Window};
 
@@ -24,6 +24,31 @@ pub async fn doc_close(window: Window, state: State<'_, AppState>, doc: DocId) -
     let host = state.host.clone();
     let window = window.label().to_owned();
     blocking(move || ide_host::ops::doc::close(&host, &window, doc)).await
+}
+
+/// Opens an editable untitled buffer (a new-file tab); it reaches the disk
+/// through `doc_save_as`, which turns it into a regular file document.
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_open_untitled(
+    window: Window,
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> IdeResult<DocumentInfo> {
+    ide_host::ops::doc::open_untitled(&state.host, window.label(), name).await
+}
+
+/// Save As for an untitled buffer: writes it to `path` and re-keys the buffer
+/// (undo history and version are kept; the language is re-detected).
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_save_as(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    path: PathBuf,
+) -> IdeResult<DocumentInfo> {
+    ide_host::ops::doc::save_as(&state.host, window.label(), doc, path).await
 }
 
 /// Applies a CodeMirror change set; returns the new version. Rejects with
@@ -79,15 +104,21 @@ pub async fn doc_open_virtual(window: Window, state: State<'_, AppState>, uri: S
     ide_host::ops::doc::doc_open_virtual(&state.host, window.label(), uri).await
 }
 
-/// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
-/// without opening it: previews of closed files.
+/// The language and CodeMirror mode `path` is shown with in an editor, without opening
+/// it: previews of closed files and diffs. `first_line` is the shown text's (a revision's)
+/// for hashbang detection; without it the file's on disk counts.
 #[tauri::command]
 #[specta::specta]
-pub async fn doc_ui_mode(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Option<String>> {
-    ide_host::ops::doc::doc_ui_mode(&state.host, window.label(), path).await
+pub async fn doc_language(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    first_line: Option<String>,
+) -> IdeResult<DocumentLanguage> {
+    ide_host::ops::doc::doc_language(&state.host, window.label(), path, first_line).await
 }
 
-/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
+/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_set_encoding(
@@ -96,8 +127,19 @@ pub async fn doc_set_encoding(
     doc: DocId,
     encoding: String,
     reload: bool,
-) -> IdeResult<String> {
+) -> IdeResult<DocumentEncoding> {
     ide_host::ops::doc::doc_set_encoding(&state.host, window.label(), doc, encoding, reload).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_set_bom(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    has_bom: bool,
+) -> IdeResult<DocumentEncoding> {
+    ide_host::ops::doc::doc_set_bom(&state.host, window.label(), doc, has_bom).await
 }
 
 #[tauri::command]
@@ -121,6 +163,17 @@ pub async fn doc_set_line_ending(
 #[specta::specta]
 pub async fn doc_outline(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<Vec<OutlineItem>> {
     ide_host::ops::doc::doc_outline(&state.host, window.label(), doc).await
+}
+
+/// Python class facts for the inheritance inspections: tree-sitter, no language server.
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_python_facts(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+) -> IdeResult<ide_language::PythonFacts> {
+    ide_host::ops::doc::doc_python_facts(&state.host, window.label(), doc).await
 }
 
 #[tauri::command]
@@ -152,12 +205,14 @@ pub async fn doc_selection_ranges(
 
 #[tauri::command]
 #[specta::specta]
-pub fn history_list(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
-    ide_host::ops::doc::history_list(&state.host, window.label(), path)
+pub async fn history_list(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::doc::history_list(&host, &label, path)).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn history_content(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
-    ide_host::ops::doc::history_content(&state.host, window.label(), id)
+pub async fn history_content(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
+    let (host, label) = (state.host.clone(), window.label().to_owned());
+    blocking(move || ide_host::ops::doc::history_content(&host, &label, id)).await
 }

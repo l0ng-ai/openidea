@@ -12,7 +12,7 @@
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .label {
@@ -26,13 +26,13 @@
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .bpTitle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-emphasis);
   font-weight: 500;
 }
@@ -71,14 +71,14 @@
 .bpFooter {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-top: 2px;
 }
 
 .link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--accent);
   font-size: var(--fs-ui);
   cursor: pointer;
@@ -108,7 +108,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border-popup);
 }
@@ -122,7 +122,7 @@
 .chooserRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   width: 100%;
   padding: 0 8px;
@@ -181,6 +181,13 @@
   gap: 10px;
 }
 
+.evalImport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
 /* Grows with the dialog when it is resized. */
 .evalResult {
   flex: 1;
@@ -204,7 +211,7 @@
   padding: 6px 12px 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .exceptionsTitle {
   font-size: var(--fs-small);
@@ -219,7 +226,7 @@
 .exceptionGroup {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .exceptionAdapter {
   font-size: var(--fs-small);
@@ -230,6 +237,11 @@
   display: flex;
   align-items: center;
   min-height: 22px;
+}
+.exceptionHint {
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding: 0 0 4px 22px;
 }
 
 .attachList {
@@ -248,7 +260,7 @@
 .evalInputRow {
   display: flex;
   align-items: flex-start;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .evalInput {
   flex: 1;

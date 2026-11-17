@@ -61,16 +61,17 @@ When you edit a POM in the editor, the tool window shows **Build files changed s
 
 **Settings › Build, Execution, Deployment › Maven**:
 
-| Setting                     | What it does                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **JRE**                     | JDK for Maven sync, builds, goals and tests                                                                               |
-| **Maven home path**         | A Maven installation to use instead of the project's `mvnw`                                                               |
-| **User settings file**      | Passed as `-s`                                                                                                            |
-| **Toolchains file**         | Passed as `-t`                                                                                                            |
-| **Local repository**        | Passed as `-Dmaven.repo.local`                                                                                            |
-| **Active profiles**         | Comma-separated profiles (`-P`); `!id` excludes one                                                                       |
-| **Thread count**            | Passed as `-T` (for example `4` or `2C`)                                                                                  |
-| **Use Maven Daemon (mvnd)** | Runs builds, sync and run configurations through `mvnd`; falls back to `mvn` if it is missing or the JDK is older than 17 |
+| Setting                                     | What it does                                                                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Delegate IDE build/run actions to Maven** | Run and Debug build Maven modules with Maven (`javac`) instead of jdtls                                                   |
+| **JRE**                                     | JDK for Maven sync, builds, goals and tests                                                                               |
+| **Maven home path**                         | A Maven installation to use instead of the project's `mvnw`                                                               |
+| **User settings file**                      | Passed as `-s`                                                                                                            |
+| **Toolchains file**                         | Passed as `-t`                                                                                                            |
+| **Local repository**                        | Passed as `-Dmaven.repo.local`                                                                                            |
+| **Active profiles**                         | Comma-separated profiles (`-P`); `!id` excludes one                                                                       |
+| **Thread count**                            | Passed as `-T` (for example `4` or `2C`)                                                                                  |
+| **Use Maven Daemon (mvnd)**                 | Runs builds, sync and run configurations through `mvnd`; falls back to `mvn` if it is missing or the JDK is older than 17 |
 
 ## Gradle
 

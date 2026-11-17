@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEntry } from "@/bindings";
-import { currentTool, foldedTurns, summarizeWork, workParts } from "./timeline";
+import { foldedTurns, summarizeWork, workParts } from "./timeline";
 
 const user = (text: string, extra: Partial<Extract<AgentEntry, { type: "user" }>> = {}): AgentEntry => ({
   type: "user",
@@ -44,11 +44,6 @@ describe("summarizeWork", () => {
       { text: "Searched once", count: 1 },
       { text: "1 other tool call", count: 1 },
     ]);
-  });
-
-  it("finds the call in progress", () => {
-    expect(currentTool([tool("read", { status: "running" }), tool("search")])?.kind).toBe("read");
-    expect(currentTool([tool("read")])).toBeNull();
   });
 });
 

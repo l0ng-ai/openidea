@@ -16,7 +16,7 @@ pub fn quote_ident(driver: DbDriver, name: &str) -> String {
 
 pub fn quote_literal(driver: DbDriver, value: &str) -> String {
     let mut s = value.replace('\'', "''");
-    if matches!(driver, DbDriver::Mysql | DbDriver::Clickhouse) {
+    if matches!(driver, DbDriver::Mysql | DbDriver::Clickhouse | DbDriver::Snowflake) {
         s = s.replace('\\', "\\\\");
     }
     format!("'{s}'")
@@ -75,12 +75,19 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
         DbDriver::Clickhouse => {
             "SELECT name FROM system.databases WHERE lower(name) NOT IN ('system', 'information_schema') ORDER BY name"
         }
+        // `information_schema.schemata` lists only owned schemas before PostgreSQL 10 (and on servers
+        // built on such a core): a read-only account would see none. Any schema it may use is listed.
         DbDriver::Postgres if system => {
-            "SELECT schema_name FROM information_schema.schemata \
-             WHERE schema_name NOT LIKE 'pg\\_toast%' AND schema_name NOT LIKE 'pg\\_temp%' ORDER BY 1"
+            "SELECT nspname FROM pg_catalog.pg_namespace \
+             WHERE nspname NOT LIKE 'pg\\_toast%' AND nspname NOT LIKE 'pg\\_temp%' \
+             AND has_schema_privilege(nspname, 'USAGE') ORDER BY 1"
         }
         DbDriver::Mysql if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
         DbDriver::SqlServer if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
+        DbDriver::Snowflake if system => "SELECT schema_name FROM information_schema.schemata ORDER BY 1",
+        DbDriver::Snowflake => {
+            "SELECT schema_name FROM information_schema.schemata WHERE schema_name <> 'INFORMATION_SCHEMA' ORDER BY 1"
+        }
         DbDriver::Oracle if system => "SELECT username FROM all_users ORDER BY username",
         DbDriver::Oracle => {
             "SELECT username FROM all_users WHERE username NOT IN \
@@ -88,9 +95,10 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
              'OUTLN', 'SYS', 'SYSTEM', 'XDB', 'XS$NULL') ORDER BY username"
         }
         DbDriver::Postgres => {
-            "SELECT schema_name FROM information_schema.schemata \
-             WHERE schema_name NOT IN ('pg_catalog', 'information_schema') \
-             AND schema_name NOT LIKE 'pg\\_toast%' AND schema_name NOT LIKE 'pg\\_temp%' ORDER BY 1"
+            "SELECT nspname FROM pg_catalog.pg_namespace \
+             WHERE nspname NOT IN ('pg_catalog', 'information_schema') \
+             AND nspname NOT LIKE 'pg\\_toast%' AND nspname NOT LIKE 'pg\\_temp%' \
+             AND has_schema_privilege(nspname, 'USAGE') ORDER BY 1"
         }
         DbDriver::Mysql => {
             "SELECT schema_name FROM information_schema.schemata \
@@ -117,6 +125,11 @@ pub fn tables(driver: DbDriver, schema: &str) -> String {
              AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
             quote_ident(driver, schema)
         ),
+        DbDriver::Snowflake => format!(
+            "SELECT table_name, CASE table_type WHEN 'VIEW' THEN 'view' WHEN 'MATERIALIZED VIEW' THEN 'materialized view' \
+             ELSE 'table' END FROM information_schema.tables WHERE table_schema = {} ORDER BY 1",
+            quote_literal(driver, schema)
+        ),
         DbDriver::Oracle => format!(
             "SELECT table_name, 'table' FROM all_tables WHERE owner = {} \
              UNION ALL SELECT view_name, 'view' FROM all_views WHERE owner = {} ORDER BY 1",
@@ -141,6 +154,11 @@ pub fn tables(driver: DbDriver, schema: &str) -> String {
         ),
     }
 }
+
+/// A Snowflake column type with its size, from `information_schema.columns`.
+const SNOWFLAKE_TYPE: &str = "CASE WHEN data_type = 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' \
+     WHEN data_type = 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' \
+     WHEN data_type LIKE 'TIME%' THEN data_type || '(' || datetime_precision || ')' ELSE data_type END";
 
 /// Rows: `name, type, nullable (YES/NO or 0/1), default, is_pk (0/1)`.
 pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
@@ -182,6 +200,10 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
              FROM information_schema.columns c WHERE c.table_schema = {s} AND c.table_name = {t} \
              ORDER BY c.ordinal_position"
         ),
+        DbDriver::Snowflake => format!(
+            "SELECT column_name, {SNOWFLAKE_TYPE}, is_nullable, column_default, 0 \
+             FROM information_schema.columns WHERE table_schema = {s} AND table_name = {t} ORDER BY ordinal_position"
+        ),
         DbDriver::Oracle => format!(
             "SELECT c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), c.data_default, \
              CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END \
@@ -197,6 +219,9 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
 }
 
 /// Rows: `index name, unique (0/1), column` (one row per indexed column, in order).
+// Key columns are paired from one series up to `max_index_keys` (the server's INDEX_MAX_KEYS, the
+// most columns an index or key has): unlike a series per catalog row, it lets the planner find the
+// table's rows through the catalog's index first.
 pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
@@ -214,8 +239,8 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
             "SELECT i.relname, CASE WHEN ix.indisunique THEN 1 ELSE 0 END, a.attname \
              FROM pg_index ix JOIN pg_class t ON t.oid = ix.indrelid JOIN pg_class i ON i.oid = ix.indexrelid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
-             JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON true \
-             JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum \
+             JOIN generate_series(0, current_setting('max_index_keys')::int - 1) AS k(ord) ON k.ord < ix.indnatts \
+             JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ix.indkey[k.ord] \
              WHERE n.nspname = {s} AND t.relname = {t} ORDER BY i.relname, k.ord"
         ),
         DbDriver::Mysql => format!(
@@ -230,6 +255,7 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
              WHERE OBJECT_SCHEMA_NAME(i.object_id) = {s} AND OBJECT_NAME(i.object_id) = {t} AND i.name IS NOT NULL \
              ORDER BY i.name, ic.key_ordinal"
         ),
+        DbDriver::Snowflake => "SELECT '', 0, '' WHERE 1 = 0".to_owned(),
         DbDriver::Oracle => format!(
             "SELECT i.index_name, CASE WHEN i.uniqueness = 'UNIQUE' THEN 1 ELSE 0 END, ic.column_name \
              FROM all_indexes i JOIN all_ind_columns ic \
@@ -261,12 +287,15 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              FROM sqlite_master m JOIN pragma_table_info(m.name) p \
              WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY m.name, p.cid"
         }
+        // Identity columns own their sequence through an internal dependency (`attidentity` is PostgreSQL 10+).
         DbDriver::Postgres => {
             "SELECT n.nspname, c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END, a.attname, \
              format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, \
              CASE WHEN EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary \
                AND a.attnum = ANY(i.indkey)) THEN 1 ELSE 0 END, \
-             CASE WHEN a.atthasdef OR a.attidentity <> '' THEN 1 ELSE 0 END \
+             CASE WHEN a.atthasdef OR EXISTS (SELECT 1 FROM pg_depend d WHERE d.refclassid = 'pg_class'::regclass \
+               AND d.refobjid = c.oid AND d.refobjsubid = a.attnum AND d.classid = 'pg_class'::regclass \
+               AND d.deptype = 'i') THEN 1 ELSE 0 END \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid \
              WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f') AND a.attnum > 0 AND NOT a.attisdropped \
              AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
@@ -296,6 +325,15 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              WHERE c.table_schema NOT IN ('sys', 'information_schema') \
              ORDER BY c.table_schema, c.table_name, c.ordinal_position"
         }
+        DbDriver::Snowflake => {
+            "SELECT c.table_schema, c.table_name, CASE t.table_type WHEN 'VIEW' THEN 'view' \
+             WHEN 'MATERIALIZED VIEW' THEN 'materialized view' ELSE 'table' END, c.column_name, c.data_type, \
+             c.is_nullable, 0, CASE WHEN c.column_default IS NOT NULL THEN 1 ELSE 0 END \
+             FROM information_schema.columns c JOIN information_schema.tables t \
+             ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+             WHERE c.table_schema <> 'INFORMATION_SCHEMA' \
+             ORDER BY c.table_schema, c.table_name, c.ordinal_position LIMIT 50000"
+        }
         DbDriver::Oracle => {
             "SELECT c.owner, c.table_name, CASE WHEN v.view_name IS NOT NULL THEN 'view' ELSE 'table' END, \
              c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), \
@@ -320,6 +358,7 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
 pub fn foreign_keys(driver: DbDriver) -> &'static str {
     match driver {
         DbDriver::Clickhouse => "SELECT '', '', '', '', '', '', '' WHERE 0",
+        DbDriver::Snowflake => "SELECT '', '', '', '', '', '', '' WHERE 1 = 0",
         DbDriver::Sqlite => {
             "SELECT 'main', m.name, f.id, f.\"from\", 'main', f.\"table\", f.\"to\" \
              FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f \
@@ -330,9 +369,9 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
              FROM pg_constraint con \
              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace \
              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace \
-             CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(s, t, ord) \
-             JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = k.s \
-             JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = k.t \
+             JOIN generate_series(1, current_setting('max_index_keys')::int) AS k(ord) ON k.ord <= array_upper(con.conkey, 1) \
+             JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord] \
+             JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord] \
              WHERE con.contype = 'f' AND sn.nspname NOT IN ('pg_catalog', 'information_schema') \
              ORDER BY 1, 2, 3, k.ord LIMIT 20000"
         }
@@ -370,12 +409,12 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
 pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
-        DbDriver::Clickhouse => foreign_keys(driver).to_owned(),
+        DbDriver::Clickhouse | DbDriver::Snowflake => foreign_keys(driver).to_owned(),
         DbDriver::Sqlite => format!(
             "SELECT {s}, {t}, f.id, f.\"from\", {s}, f.\"table\", f.\"to\"              FROM pragma_foreign_key_list({t}, {s}) f ORDER BY f.id, f.seq"
         ),
         DbDriver::Postgres => format!(
-            "SELECT sn.nspname, sc.relname, con.conname, sa.attname, tn.nspname, tc.relname, ta.attname              FROM pg_constraint con              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace              CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(s, t, ord)              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = k.s              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = k.t              WHERE con.contype = 'f' AND sn.nspname = {s} AND sc.relname = {t} ORDER BY 3, k.ord"
+            "SELECT sn.nspname, sc.relname, con.conname, sa.attname, tn.nspname, tc.relname, ta.attname              FROM pg_constraint con              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace              JOIN generate_series(1, current_setting('max_index_keys')::int) AS k(ord) ON k.ord <= array_upper(con.conkey, 1)              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord]              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord]              WHERE con.contype = 'f' AND sn.nspname = {s} AND sc.relname = {t} ORDER BY 3, k.ord"
         ),
         DbDriver::Mysql => format!(
             "SELECT table_schema, table_name, constraint_name, column_name,              referenced_table_schema, referenced_table_name, referenced_column_name              FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL              AND table_schema = {s} AND table_name = {t} ORDER BY constraint_name, ordinal_position"
@@ -398,6 +437,7 @@ pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
         DbDriver::Mysql => Some("SELECT DATABASE()"),
         DbDriver::SqlServer => Some("SELECT DB_NAME()"),
         DbDriver::Oracle => Some("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL"),
+        DbDriver::Snowflake => Some("SELECT CURRENT_SCHEMA()"),
     }
 }
 
@@ -410,6 +450,7 @@ pub fn use_schema(driver: DbDriver, schema: &str) -> Option<String> {
         DbDriver::Postgres => Some(format!("SET search_path TO {}", quote_ident(driver, schema))),
         DbDriver::Mysql | DbDriver::SqlServer => Some(format!("USE {}", quote_ident(driver, schema))),
         DbDriver::Oracle => Some(format!("ALTER SESSION SET CURRENT_SCHEMA = {}", quote_ident(driver, schema))),
+        DbDriver::Snowflake => Some(format!("USE SCHEMA {}", quote_ident(driver, schema))),
     }
 }
 
@@ -520,6 +561,9 @@ pub fn edit_statement(driver: DbDriver, schema: &str, table: &str, edit: &DbRowE
                     DbDriver::Mysql => format!("INSERT INTO {target} () VALUES ()"),
                     // Oracle has no DEFAULT VALUES; without columns there is nothing to insert.
                     DbDriver::Oracle => return Err("Oracle needs at least one column value to insert".into()),
+                    DbDriver::Snowflake => {
+                        return Err("Snowflake needs at least one column value to insert".into());
+                    }
                     _ => format!("INSERT INTO {target} DEFAULT VALUES"),
                 });
             }
@@ -588,6 +632,7 @@ pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
         DbDriver::Clickhouse => "SELECT '', '', '' WHERE 0".to_owned(),
+        DbDriver::Snowflake => "SELECT '', '', '' WHERE 1 = 0".to_owned(),
         DbDriver::Sqlite => format!(
             "SELECT name, sql FROM {}.sqlite_master WHERE type = 'trigger' AND tbl_name = {t} ORDER BY name",
             quote_ident(driver, schema)
@@ -632,6 +677,16 @@ pub fn sqlite_trigger_event(sql: &str) -> (String, String) {
     (timing.to_owned(), event.to_ascii_lowercase())
 }
 
+/// PostgreSQL catalog query `sql` of this module for servers whose catalog predates a column
+/// it reads: PostgreSQL before 11 (`prokind`), and the servers built on an older PostgreSQL
+/// (openGauss, GaussDB). `None` when it reads none.
+pub fn postgres_legacy(sql: &str) -> Option<String> {
+    let legacy = sql
+        .replace("CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END", "'function'")
+        .replace("p.prokind IN ('f', 'p')", "NOT p.proisagg AND NOT p.proiswindow");
+    (legacy != sql).then_some(legacy)
+}
+
 /// Rows: `name, kind (function/procedure), arguments, result` of a schema's routines (none in SQLite).
 pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
     let s = quote_literal(driver, schema);
@@ -655,6 +710,12 @@ pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
         DbDriver::SqlServer => Some(format!(
             "SELECT r.routine_name, lower(r.routine_type), '', r.data_type \
              FROM information_schema.routines r WHERE r.routine_schema = {s} ORDER BY 1"
+        )),
+        DbDriver::Snowflake => Some(format!(
+            "SELECT function_name, 'function', argument_signature, data_type FROM information_schema.functions \
+             WHERE function_schema = {s} UNION ALL \
+             SELECT procedure_name, 'procedure', argument_signature, data_type FROM information_schema.procedures \
+             WHERE procedure_schema = {s} ORDER BY 1, 3"
         )),
         DbDriver::Oracle => Some(format!(
             "SELECT object_name, CASE object_type WHEN 'PROCEDURE' THEN 'procedure' ELSE 'function' END, '', NULL \
@@ -694,6 +755,10 @@ pub fn package_ddl(driver: DbDriver, schema: &str, name: &str, body: bool) -> Op
 pub fn sequences(driver: DbDriver, schema: &str) -> Option<String> {
     match driver {
         DbDriver::Postgres => Some(format!(
+            "SELECT sequence_name, data_type FROM information_schema.sequences WHERE sequence_schema = {} ORDER BY 1",
+            quote_literal(driver, schema)
+        )),
+        DbDriver::Snowflake => Some(format!(
             "SELECT sequence_name, data_type FROM information_schema.sequences WHERE sequence_schema = {} ORDER BY 1",
             quote_literal(driver, schema)
         )),
@@ -931,6 +996,17 @@ mod tests {
     }
 
     #[test]
+    fn postgres_lists_the_schemas_the_user_may_use() {
+        for system in [false, true] {
+            let sql = schemas(DbDriver::Postgres, system);
+            assert!(sql.contains("FROM pg_catalog.pg_namespace"), "{sql}");
+            assert!(sql.contains("has_schema_privilege(nspname, 'USAGE')"), "{sql}");
+            assert!(sql.contains("NOT LIKE 'pg\\_toast%'"), "{sql}");
+            assert_eq!(sql.contains("NOT IN ('pg_catalog', 'information_schema')"), !system, "{sql}");
+        }
+    }
+
+    #[test]
     fn sqlserver_quoting_and_schema() {
         assert_eq!(quote_ident(DbDriver::SqlServer, "a]b"), "[a]]b]");
         assert_eq!(qualified(DbDriver::SqlServer, "dbo", "t"), "[dbo].[t]");
@@ -1085,5 +1161,59 @@ mod tests {
             ),
             "create table \"public\".\"t\"\n(\n    \"id\" integer not null,\n    \"name\" character varying(40) default 'x'::character varying,\n    constraint \"t_pkey\" PRIMARY KEY (id)\n);\n\nCREATE INDEX t_name ON public.t USING btree (name);\n"
         );
+    }
+
+    #[test]
+    fn snowflake_quotes_names_and_reads_its_information_schema() {
+        let driver = DbDriver::Snowflake;
+        assert_eq!(quote_ident(driver, "My \"Table\""), "\"My \"\"Table\"\"\"");
+        assert_eq!(quote_literal(driver, "it's a \\ path"), "'it''s a \\\\ path'");
+        assert_eq!(qualified(driver, "PUBLIC", "ORDERS"), "\"PUBLIC\".\"ORDERS\"");
+        assert_eq!(current_schema(driver), Some("SELECT CURRENT_SCHEMA()"));
+        assert_eq!(use_schema(driver, "Sales"), Some("USE SCHEMA \"Sales\"".into()));
+        assert!(schemas(driver, true).contains("information_schema.schemata"));
+        assert!(schemas(driver, false).contains("<> 'INFORMATION_SCHEMA'"));
+        assert!(tables(driver, "PUBLIC").contains("table_schema = 'PUBLIC'"));
+        let columns = columns(driver, "PUBLIC", "ORDERS");
+        assert!(columns.contains("'NUMBER(' || numeric_precision"), "{columns}");
+        assert!(columns.contains("table_name = 'ORDERS' ORDER BY ordinal_position"), "{columns}");
+        assert!(completion_columns(driver).contains("LIMIT 50000"));
+        assert!(routines(driver, "PUBLIC").unwrap().contains("information_schema.procedures"));
+        assert!(sequences(driver, "PUBLIC").unwrap().contains("information_schema.sequences"));
+        assert_eq!(
+            table_page(driver, "PUBLIC", "ORDERS", None, &[], 50, 25),
+            "SELECT * FROM \"PUBLIC\".\"ORDERS\" LIMIT 26 OFFSET 50"
+        );
+        assert!(edit_statement(driver, "PUBLIC", "T", &DbRowEdit::Insert { values: vec![] }).is_err());
+        assert_eq!(crate::conn::begin_statement(driver), "BEGIN");
+        assert_eq!(crate::plan::explain_statement(driver, "select 1;"), "EXPLAIN USING TABULAR select 1");
+    }
+
+    #[test]
+    fn postgres_catalog_queries_run_on_older_servers() {
+        let pg = DbDriver::Postgres;
+        // Neither LATERAL (9.3), WITH ORDINALITY (9.4) nor attidentity (10) in any metadata query:
+        // openGauss / GaussDB parse 9.2's grammar and catalog. `prokind` (11) has its legacy rerun.
+        let queries = [
+            schemas(pg, false).to_owned(),
+            schemas(pg, true).to_owned(),
+            tables(pg, "s"),
+            columns(pg, "s", "t"),
+            indexes(pg, "s", "t"),
+            completion_columns(pg).to_owned(),
+            foreign_keys(pg).to_owned(),
+            table_foreign_keys(pg, "s", "t"),
+            triggers(pg, "s", "t"),
+            routines(pg, "s").unwrap(),
+            sequences(pg, "s").unwrap(),
+        ];
+        for q in queries {
+            let upper = q.to_uppercase();
+            assert!(!["LATERAL", "ORDINALITY", "ATTIDENTITY"].iter().any(|w| upper.contains(w)), "{q}");
+        }
+        assert_eq!(postgres_legacy(completion_columns(pg)), None);
+        let routines = postgres_legacy(&routines(pg, "s").unwrap()).unwrap();
+        assert!(!routines.contains("prokind") && routines.contains("NOT p.proisagg"));
+        assert_eq!(postgres_legacy(&indexes(pg, "s", "t")), None);
     }
 }

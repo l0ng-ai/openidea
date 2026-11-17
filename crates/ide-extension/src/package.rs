@@ -352,6 +352,22 @@ pub struct IndexEntry {
     /// the IDE before showing it.
     #[serde(default)]
     pub icon: Option<PluginIcon>,
+    /// Where to read more: the manifest's homepage, else the registry's source repository.
+    #[serde(default)]
+    pub homepage: Option<String>,
+    /// This version's release notes (the manifest's `change-notes`).
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Downloads of the plugin's packages, as counted by whoever serves them.
+    #[serde(default)]
+    pub downloads: Option<u64>,
+    /// Picked by the marketplace's maintainers.
+    #[serde(default)]
+    pub featured: bool,
+    /// Project-relative paths whose presence makes the plugin worth suggesting
+    /// (`pom.xml`, `config/routes.rb`).
+    #[serde(default)]
+    pub suggest: Vec<String>,
 }
 
 impl IndexEntry {
@@ -389,10 +405,31 @@ impl Index {
     /// revocations, publisher keys (revoked ones) and `moved` — and lists no
     /// plugins ([`Index::is_newer`]): the IDE needs updating to install from it.
     pub fn parse(text: &str) -> Result<Self, String> {
+        let (index, dropped) = Self::parse_dropping(text)?;
+        if let Some(first) = dropped.first() {
+            // One line per index, and a bounded one: whoever wrote the index chose the text.
+            let id: String = first.id.chars().take(80).collect();
+            tracing::warn!(
+                "index: {} entries are not offered, their id or version is not one a manifest may carry (first: {id:?})",
+                dropped.len()
+            );
+        }
+        Ok(index)
+    }
+
+    /// [`Index::parse`], with the entries it does not offer: those whose id or
+    /// version no manifest may carry, so no IDE could install them.
+    pub fn parse_dropping(text: &str) -> Result<(Self, Vec<IndexEntry>), String> {
         let value: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("index: {e}"))?;
         let format = value.get("format").and_then(serde_json::Value::as_u64).ok_or("index: `format` is missing")?;
         if format == u64::from(INDEX_FORMAT) {
-            return serde_json::from_value(value).map_err(|e| format!("index: {e}"));
+            let mut index: Index = serde_json::from_value(value).map_err(|e| format!("index: {e}"))?;
+            // What no manifest may carry is not offered: the id and version also name files on disk.
+            let (offered, dropped) = std::mem::take(&mut index.plugins)
+                .into_iter()
+                .partition(|e| crate::validate_plugin_id(&e.id).is_ok() && e.semver().is_some());
+            index.plugins = offered;
+            return Ok((index, dropped));
         }
         if format < u64::from(INDEX_FORMAT) {
             return Err(format!("index format {format} is not supported (this IDE reads {INDEX_FORMAT})"));
@@ -401,13 +438,14 @@ impl Index {
             let items = value.get(field).and_then(serde_json::Value::as_array);
             items.into_iter().flatten().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect()
         }
-        Ok(Index {
+        let index = Index {
             format: u32::try_from(format).unwrap_or(u32::MAX),
             publishers: each(&value, "publishers"),
             plugins: Vec::new(),
             revoked: each(&value, "revoked"),
             moved: value.get("moved").and_then(serde_json::Value::as_str).map(str::to_owned),
-        })
+        };
+        Ok((index, Vec::new()))
     }
 
     /// Written in a format newer than this IDE reads: it lists no plugins.
@@ -685,7 +723,31 @@ mod tests {
             engine: "^1.0".into(),
             categories: Vec::new(),
             icon: None,
+            homepage: None,
+            notes: None,
+            downloads: None,
+            featured: false,
+            suggest: Vec::new(),
         }
+    }
+
+    #[test]
+    fn listing_details_are_optional() {
+        let mut json = serde_json::to_value(entry("acme.a", "acme")).unwrap();
+        for key in ["homepage", "notes", "downloads", "featured", "suggest"] {
+            json.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(serde_json::from_value::<IndexEntry>(json).unwrap(), entry("acme.a", "acme"));
+        let full = IndexEntry {
+            homepage: Some("https://example.com".into()),
+            notes: Some("Fixes".into()),
+            downloads: Some(42),
+            featured: true,
+            suggest: vec!["pom.xml".into()],
+            ..entry("acme.a", "acme")
+        };
+        let back: IndexEntry = serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+        assert_eq!(back, full);
     }
 
     fn version(id: &str, version: &str, engine: &str) -> IndexEntry {
@@ -866,6 +928,51 @@ mod tests {
             let err = unpack(&path, &tmp.path().join(name).with_extension("out")).unwrap_err();
             assert!(err.contains("is not an OpenIDEA plugin"), "{name}: {err}");
         }
+    }
+
+    #[test]
+    fn an_index_offers_only_the_ids_and_versions_a_manifest_may_carry() {
+        let invalid_ids = [
+            "../x",
+            "../../escape",
+            "acme/../x",
+            r"acme.\..\x",
+            "acme./../../../escape",
+            "/abs",
+            r"C:\x",
+            "ACME.x",
+            "acme.",
+            "acme..x",
+            "acme.x y",
+            "",
+        ];
+        let invalid_versions =
+            ["../1.0.0", "1.0.0/../../../escape", r"1.0.0\..\x", "1.0.0-..", " 1.0.0", "1.0", "latest", ""];
+        let valid = [("acme.x", "1.0.0"), ("acme.tools-2_b", "1.0.0-rc.1+b.2")];
+        let mut listed: Vec<(&str, &str)> = valid.to_vec();
+        listed.extend(invalid_ids.iter().map(|id| (*id, "1.0.0")));
+        listed.extend(invalid_versions.iter().map(|version| ("acme.x", *version)));
+        let plugins: Vec<serde_json::Value> = listed
+            .iter()
+            .map(|(id, version)| {
+                serde_json::json!({
+                    "id": id, "name": "X", "version": version, "publisher": "acme",
+                    "download": "x.oiplugin", "digest": "d", "engine": "^1.0",
+                })
+            })
+            .collect();
+        let text = serde_json::json!({ "format": INDEX_FORMAT, "plugins": plugins }).to_string();
+        let pairs = |entries: &[IndexEntry]| -> Vec<(String, String)> {
+            entries.iter().map(|e| (e.id.clone(), e.version.clone())).collect()
+        };
+        let owned = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(id, version)| ((*id).to_owned(), (*version).to_owned())).collect()
+        };
+
+        assert_eq!(pairs(&Index::parse(&text).unwrap().plugins), owned(&valid));
+        let (index, dropped) = Index::parse_dropping(&text).unwrap();
+        assert_eq!(pairs(&index.plugins), owned(&valid));
+        assert_eq!(pairs(&dropped), owned(&listed[valid.len()..]));
     }
 
     #[test]

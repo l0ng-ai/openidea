@@ -1,0 +1,50 @@
+id = "astro"
+name = "Astro"
+group = "JavaScript"
+icon = "project-astro"
+order = 6
+description = "A content site on Astro from create-astro."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "template"
+label = "Template:"
+type = "choice"
+segmented = true
+options = [{ value = "minimal", label = "Minimal" }, { value = "basics", label = "Basics" }, { value = "blog", label = "Blog" }]
+default = "basics"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running create-astro"
+package = "create-astro@latest"
+cwd = "parent"
+args = ["{{name}}", "--template", "{{template}}", "--no-install", "--no-git", "--skip-houston", "--yes"]
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

@@ -3,10 +3,11 @@
  * files (`services:` → up all, each service → up it). As in IDEA they start
  * temporary Dockerfile / Docker Compose run configurations through `run.runConfig`.
  */
-import { Compartment, RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource, mapLineStart, type EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
+import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
 import {
@@ -35,7 +36,7 @@ const targetsField = StateField.define<Placed[]>({
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setTargets)) return e.value;
     if (!tr.docChanged) return value;
-    return value.map((p) => ({ ...p, pos: tr.state.doc.lineAt(tr.changes.mapPos(p.pos, -1)).from }));
+    return value.map((p) => ({ ...p, pos: mapLineStart(tr, p.pos) }));
   },
 });
 
@@ -101,25 +102,15 @@ class Marker extends GutterMarker {
   }
 }
 
-function makeGutter(path: string): Extension {
-  return gutter({
-    // Shares the run gutter's class so "Show run icons" hides these too.
-    class: `${styles.gutter} cm-openidea-gutter-run`,
-    markers: (view) =>
-      RangeSet.of(
-        view.state.field(targetsField).map((p) => new Marker(p.target, path).range(p.pos)),
-        true,
-      ),
-    initialSpacer: () => new Marker({ kind: "composeAll", line: 0 }, path),
-  });
+/** Settings › Editor › General › Gutter Icons › Run icons (on with the gutter icons). */
+function runIconsShown(): boolean {
+  const prefs = editorPrefs();
+  return prefs.showGutterIcons && !prefs.gutterIconsDisabled.includes("run");
 }
 
 export function dockerGutter(ctx: EditorDocContext): Extension {
   const path = ctx.path;
   if (ctx.virtual || !(isDockerfile(path) || isYamlFile(path))) return [];
-  const gutterSlot = new Compartment();
-  const gutterExt = makeGutter(path);
-  let hasGutter = false;
   const detector = ViewPlugin.fromClass(
     class {
       timer: ReturnType<typeof setTimeout> | undefined;
@@ -136,14 +127,7 @@ export function dockerGutter(ctx: EditorDocContext): Extension {
       schedule(delay: number) {
         clearTimeout(this.timer);
         this.timer = setTimeout(() => {
-          const placed = place(this.view.state, path);
-          const wantGutter = placed.length > 0;
-          const effects: StateEffect<unknown>[] = [setTargets.of(placed)];
-          if (wantGutter !== hasGutter) {
-            hasGutter = wantGutter;
-            effects.push(gutterSlot.reconfigure(wantGutter ? gutterExt : []));
-          }
-          this.view.dispatch({ effects });
+          this.view.dispatch({ effects: setTargets.of(place(this.view.state, path)) });
         }, delay);
       }
       destroy() {
@@ -152,5 +136,20 @@ export function dockerGutter(ctx: EditorDocContext): Extension {
       }
     },
   );
-  return [targetsField, gutterSlot.of([]), detector];
+  return [
+    targetsField,
+    detector,
+    // In the shared icon area with the other run icons; hidden with them.
+    iconAreaSource.of({
+      order: 10,
+      markers: (view) =>
+        runIconsShown()
+          ? RangeSet.of(
+              view.state.field(targetsField).map((p) => new Marker(p.target, path).range(p.pos)),
+              true,
+            )
+          : RangeSet.empty,
+      reserve: (state) => runIconsShown() && state.field(targetsField).length > 0,
+    }),
+  ];
 }

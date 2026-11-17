@@ -28,6 +28,8 @@ Style components with CSS Modules: `Thing.module.css` next to `Thing.tsx`, impor
 
 Build from the primitives in `src/ui/` before writing your own: `Button`, `BarButton`, `Input`, `Checkbox`, `Select`, `Dialog`, `Popup`, `Menu`, `Tooltip`, `List`, `Tree`, `Tabs`, `Splitter`, `Scrollbar`, `Spinner`, `Kbd`, and `T` for translated text. They already handle focus, keyboard navigation, theming and translation of their labels. Workbench-level pieces (tool windows, status items, overlays) come from [contributions](/en/contribute/architecture/frontend#contributions), not from custom layout.
 
+Toolbar icon actions use `IconButton`: its full hit target uses `--bg-toolbar-hover` on hover, while pressed and selected states use their corresponding toolbar tokens. Keep semantic icon colours and the keyboard focus ring intact.
+
 ## Accessibility
 
 - Use real `<button>` and `<input>` elements (or the primitives that render them), never clickable `<div>`s.
@@ -41,7 +43,7 @@ User-visible text is written in English at the call site and goes through the te
 
 ## WebKit compatibility
 
-On macOS and Linux the app runs in WebKit, and the supported floor is Safari 16 (macOS 11 can update to it). `pnpm build` runs `scripts/check-webkit.ts` on the bundle, and `src/platform/webkitCompatibility.test.ts` checks application regexes. Avoid:
+On macOS and Linux the app runs in WebKit, and the supported floor is Safari 15.4, the engine of macOS 12 (the app's minimum). On macOS 11 and on macOS 12 before 12.3, `src-tauri/src/macos_webview.rs` loads the newer WebKit staged by a Safari update, provided that update is installed. `pnpm build` runs `scripts/check-webkit.ts` on the bundle, and `src/platform/webkitCompatibility.test.ts` checks application regexes. Avoid:
 
 - regex lookbehind (`(?<=…)`, `(?<!…)`), which needs Safari 16.4, and the regex `v` flag;
 - import attributes;

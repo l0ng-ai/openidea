@@ -1,0 +1,33 @@
+id = "go"
+name = "Go"
+group = "Go"
+icon = "project-go"
+description = "A Go module with a main package."
+
+[[requires]]
+program = "go"
+version-args = ["version"]
+hint = "Install Go: https://go.dev/dl/"
+
+[[fields]]
+id = "module"
+label = "Module path:"
+type = "text"
+default = "example.com/{{name|kebab}}"
+
+[[steps]]
+label = "Running go mod init"
+program = "go"
+args = ["mod", "init", "{{module}}"]
+
+[[files]]
+path = "main.go"
+content = '''
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello, World!")
+}
+'''

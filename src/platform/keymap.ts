@@ -12,7 +12,7 @@
  */
 import { create } from "zustand";
 import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
-import { getContext } from "./context";
+import { evaluateWhen, getContext } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
 import { eclipseMacos } from "./keymaps/eclipse-macos";
@@ -199,11 +199,31 @@ export function bindingsFor(actionId: string): string[] {
   return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? usableExtensionBindings(extensions)[actionId] ?? [];
 }
 
+let bindingsCache: {
+  preset: string;
+  overrides: Keymap;
+  extensions: Keymap;
+  pairs: Array<[string, string]>;
+} | null = null;
+
 /** Every (binding, actionId) pair of the effective keymap. */
 export function effectiveBindings(): Array<[string, string]> {
   const { preset, overrides, extensions } = useKeymap.getState();
+  // The dispatcher asks for these on every keystroke; merging and normalizing
+  // the whole keymap each time costs more than handling the key. The store
+  // replaces `overrides` / `extensions` wholesale, so identity tracks changes.
+  if (
+    bindingsCache?.preset === preset &&
+    bindingsCache.overrides === overrides &&
+    bindingsCache.extensions === extensions
+  )
+    return bindingsCache.pairs;
   const merged: Keymap = { ...usableExtensionBindings(extensions), ...PRESETS[preset], ...overrides };
-  return Object.entries(merged).flatMap(([id, keys]) => keys.map((k) => [normalizeBinding(k), id] as [string, string]));
+  const pairs = Object.entries(merged).flatMap(([id, keys]) =>
+    keys.map((k) => [normalizeBinding(k), id] as [string, string]),
+  );
+  bindingsCache = { preset, overrides, extensions, pairs };
+  return pairs;
 }
 
 let extensionCache: { source: Keymap; preset: string; overrides: Keymap; usable: Keymap } | null = null;
@@ -477,6 +497,92 @@ export function dispatchMouseShortcut(e: MouseEvent, prepare?: (id: string) => b
 }
 
 /**
+ * Actions a shortcut passed on by a plugin's frame may run (`dispatchForwardedKey`) when the plugin
+ * does not hold `ide.commands`: saving, closing the editor tab, settings, and those that only move
+ * the caret or focus, or show a popup or tool window. The frame's page may send any key at any time,
+ * so nothing that runs, changes or sends something is listed: not themes, schemes, zoom or
+ * bookmarks, nor opening, merging or closing windows and tabs, nor the terminal (showing it starts
+ * a shell). Exact ids, never prefixes; a test checks that each one is still registered.
+ */
+export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
+  "file.save",
+  "file.settings",
+  "editor.closeTab",
+  "navigate.back",
+  "navigate.forward",
+  "navigate.lastEditLocation",
+  "navigate.nextEditLocation",
+  "navigate.gotoLine",
+  "navigate.gotoClass",
+  "navigate.gotoFile",
+  "navigate.gotoSymbol",
+  "navigate.searchEverywhere",
+  "navigate.findAction",
+  "navigate.searchText",
+  "navigate.recentFiles",
+  "navigate.recentLocations",
+  "navigate.switcher",
+  "navigate.switcherBack",
+  "navigate.fileStructure",
+  "navigate.navigationBar",
+  "navigate.selectIn",
+  "navigate.selectInProjectView",
+  "navigate.showFilePath",
+  "navigate.showBookmarks",
+  ...Array.from({ length: 10 }, (_, d) => `navigate.gotoBookmark${d}`),
+  "navigate.declaration",
+  "navigate.typeDeclaration",
+  "navigate.implementation",
+  "navigate.superMethod",
+  "navigate.callHierarchy",
+  "navigate.typeHierarchy",
+  "navigate.nextError",
+  "navigate.prevError",
+  "navigate.nextMethod",
+  "navigate.previousMethod",
+  "navigate.nextOccurrence",
+  "navigate.prevOccurrence",
+  "navigate.nextHighlightedUsage",
+  "navigate.prevHighlightedUsage",
+  "toolwindow.project",
+  "toolwindow.structure",
+  "toolwindow.problems",
+  "toolwindow.find",
+  "toolwindow.bookmarks",
+  "toolwindow.git",
+  "toolwindow.commit",
+  "toolwindow.run",
+  "toolwindow.debug",
+  "toolwindow.hideActive",
+  "toolwindow.hideAll",
+  "toolwindow.jumpToLast",
+  "toolwindow.focusEditor",
+  "toolwindow.maximize",
+  "toolwindow.resizeUp",
+  "toolwindow.resizeDown",
+  "toolwindow.resizeLeft",
+  "toolwindow.resizeRight",
+  "window.next",
+  "window.previous",
+  "window.nextTab",
+  "window.previousTab",
+]);
+
+const restrictedKeys = new WeakSet<Event>();
+
+/**
+ * Dispatches on `target` a shortcut that a plugin's sandboxed frame says was pressed in it and left
+ * alone, for the keymap. The page can post one at any time, so unless the plugin may run any IDE
+ * action (`anyAction`: it holds `ide.commands`), the keymap runs only `FORWARDABLE_ACTIONS` from it,
+ * and it neither starts nor finishes a chord and takes no part in a double-modifier gesture.
+ */
+export function dispatchForwardedKey(target: EventTarget, init: KeyboardEventInit, anyAction = false): void {
+  const e = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+  if (!anyAction) restrictedKeys.add(e);
+  target.dispatchEvent(e);
+}
+
+/**
  * Installs the global keydown dispatcher (capture phase, so IDE shortcuts win
  * over CodeMirror defaults). Returns an uninstall function. `now` is the clock
  * for the double-modifier gestures.
@@ -541,9 +647,11 @@ export function installKeyboardDispatcher(
       resetTap();
       return;
     }
+    const restricted = restrictedKeys.has(e);
+    if (restricted) reset();
     const modifier = KEY_MODIFIER[e.key];
-    if (modifier) return onModifierDown(e, modifier);
-    if (runHeldGesture(e)) return reset();
+    if (modifier) return restricted ? undefined : onModifierDown(e, modifier);
+    if (!restricted && runHeldGesture(e)) return reset();
     resetTap();
     otherKeyAt = e.key === "Escape" || e.key === "Tab" ? -Infinity : now();
     if (isImeKey(e)) return;
@@ -553,7 +661,12 @@ export function installKeyboardDispatcher(
     if (!chord) {
       if (isAltGrTyping(e)) return;
       const hasCommandMod = e.metaKey || e.ctrlKey || e.altKey;
-      if (!hasCommandMod && isPlainTextField(e.target) && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
+      if (isPlainTextField(e.target)) {
+        // Native deletion stays in the field; Shift bindings and terminal keys keep their own routing.
+        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(e.target as Element).closest?.(".xterm"))
+          return;
+        if (!hasCommandMod && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
+      }
       if (isClaimed(e, stroke)) return;
     }
 
@@ -571,10 +684,27 @@ export function installKeyboardDispatcher(
       : physicalSeq.replace(/Numpad(Add|Subtract|Multiply|Divide)/g, (key) => keypadAliases[key]!);
     const ctx = getContext();
     const exact = bindings.filter(([b]) => b === seq).map(([, id]) => id);
-    // Later presets/overrides win; the first enabled match runs.
-    for (const id of exact.reverse()) {
+    // Later presets/overrides win; the first enabled match runs. When several
+    // actions share the sequence, a binding whose `keyWhen` matches the current
+    // context runs before one without it: the context-specific claim beats the
+    // context-free one at equal specificity, so Eclipse's Alt+Shift+R renames
+    // in the project view instead of reaching the Git log's Edit Commit
+    // Message. An unmatching `keyWhen` fails the enablement check below, and
+    // when no `keyWhen` matches, the preset/override order decides as before.
+    const keyWhenMatches = (id: string) => {
       const action = getAction(id);
-      if (action && isActionKeyEnabled(action, ctx)) {
+      return !!action?.keyWhen && evaluateWhen(action.keyWhen, ctx);
+    };
+    const ordered = exact.reverse();
+    const preferred: string[] = [];
+    const fallback: string[] = [];
+    for (const id of ordered) {
+      if (keyWhenMatches(id)) preferred.push(id);
+      else fallback.push(id);
+    }
+    for (const id of [...preferred, ...fallback]) {
+      const action = getAction(id);
+      if (action && isActionKeyEnabled(action, ctx) && (!restricted || FORWARDABLE_ACTIONS.has(id))) {
         e.preventDefault();
         e.stopPropagation();
         reset();
@@ -582,7 +712,7 @@ export function installKeyboardDispatcher(
         return;
       }
     }
-    if (bindings.some(([b]) => b.startsWith(seq + " "))) {
+    if (!restricted && bindings.some(([b]) => b.startsWith(seq + " "))) {
       e.preventDefault();
       e.stopPropagation();
       pending.push(stroke);
@@ -619,7 +749,10 @@ export function installKeyboardDispatcher(
   const onMouseDown = (e: MouseEvent) => {
     // Shift+click (extend a selection) is not half of a double Shift.
     resetTap();
-    if (suspended > 0) return;
+    if (suspended > 0) {
+      reset();
+      return;
+    }
     const stroke = mouseStrokeOf(e);
     if (!stroke) return;
     if (e.button === 0) {
@@ -684,4 +817,44 @@ export function installKeyboardDispatcher(
     target.removeEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);
     target.removeEventListener("blur", onBlur);
   };
+}
+
+/** A keymap being edited: a bundled preset and the overrides on top of it. */
+export interface KeymapDraft {
+  preset: string;
+  overrides: Keymap;
+}
+
+/**
+ * The defaults of `id`: the preset's, or for an action the preset leaves out,
+ * the shortcut its plugin declares (`keymaps`). Removing or changing one is an
+ * override like any other.
+ */
+export function presetBindings(preset: string, id: string): string[] {
+  const own = PRESETS[preset];
+  const keys = own && id in own ? own[id] : useKeymap.getState().extensions?.[id];
+  return (keys ?? []).map(normalizeBinding);
+}
+
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** Sets the full binding list of `id`; drops the override when it equals the preset. */
+export function withBindings(draft: KeymapDraft, id: string, bindings: readonly string[]): Keymap {
+  const list = [...new Set(bindings.map(normalizeBinding))];
+  const overrides = { ...draft.overrides };
+  if (sameList(list, presetBindings(draft.preset, id))) delete overrides[id];
+  else overrides[id] = list;
+  return overrides;
+}
+
+/** A free id for a user keymap called `name`. */
+export function customKeymapId(name: string, customs: Record<string, unknown>): string {
+  const slug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "keymap";
+  let id = `custom.${slug}`;
+  for (let i = 2; customs[id] || PRESETS[id]; i++) id = `custom.${slug}-${i}`;
+  return id;
 }

@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useProject } from "@/platform/project";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const adapterData = vi.hoisted(() => ({
+  /** Value of a `library` variable the adapter computes asynchronously; null leaves it out. */
+  library: null as string | null,
+  scopes: vi.fn(),
+  memoryClasses: vi.fn(),
+  /** Value the adapter answers a watch with. */
+  watch: "Collecting data…",
+}));
 
 const debugEvaluateIn = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (..._args: unknown[]) => ({
     status: "ok" as const,
-    data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+    data: { name: "result", value: "4", typeName: "int" as string | null, variablesReference: 0, evaluateName: null },
   })),
 );
 
@@ -15,10 +25,30 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
+      debugJvmMemoryClasses: () => {
+        adapterData.memoryClasses();
+        return ok({ status: "unavailable", reason: { kind: "programExited" } });
+      },
       debugEvaluateIn,
-      debugScopes: () => ok([{ name: "Locals", variablesReference: 1, expensive: false }]),
+      debugSetVariable: () =>
+        ok({ name: "count", value: "4", typeName: "int", variablesReference: 0, evaluateName: "count" }),
+      debugScopes: () => {
+        adapterData.scopes();
+        return ok([{ name: "Locals", variablesReference: 1, expensive: false }]);
+      },
       debugVariables: () =>
         ok([
+          ...(adapterData.library == null
+            ? []
+            : [
+                {
+                  name: "library",
+                  value: adapterData.library,
+                  typeName: "Library",
+                  variablesReference: 0,
+                  evaluateName: "library",
+                },
+              ]),
           { name: "count", value: "3", typeName: "int", variablesReference: 0, evaluateName: "count" },
           { name: "label", value: "'hi'", typeName: "str", variablesReference: 0, evaluateName: "label" },
           {
@@ -37,8 +67,11 @@ const confirmTerminate = vi.hoisted(() => vi.fn(async () => false));
 vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 
 import type { RunConfig } from "@/platform/ipc";
-import { useDebug, type DebugSession } from "../state";
+import { setLocale } from "@/platform/i18n";
+import { ToolWindowShownProvider } from "@/workbench/contributions";
+import { handleDebugEvent, setVariableValue, useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
+import { hideContextMenu, useContextMenuStore } from "@/ui/Menu";
 import { DebuggerOverlays } from "../ui/Overlays";
 import { useOverlays } from "../ui/popoverStore";
 
@@ -58,6 +91,7 @@ const session: DebugSession = {
   frames: [{ id: 7, name: "main", path: "/p/app/main.py", line: 11, column: 0, presentationHint: null }],
   selectedFrame: 7,
   hits: 1,
+  stops: 0,
   exitCode: null,
   caps: null,
 };
@@ -92,6 +126,72 @@ describe("debug tool window", () => {
     useDebug.setState({ sessions: { 1: { ...session, adapter: "dart", status: "running" } }, active: 1 });
     render(<DebugToolWindow />);
     expect(hot()).toEqual([true, true]);
+  });
+
+  it("shows the Memory tab only for sessions with jvmMemory", async () => {
+    const withCaps = (jvmMemory: boolean) => ({ ...session, caps: { jvmMemory } as DebugSession["caps"] });
+    useDebug.setState({ sessions: { 1: withCaps(false) }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+    unmount();
+    useDebug.setState({ sessions: { 1: withCaps(true) }, active: 1 });
+    render(<DebugToolWindow />);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    expect(memory.getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    // Switching to a session without the capability leaves the tab it no longer has.
+    act(() => useDebug.setState({ sessions: { 1: withCaps(false) } }));
+    expect(screen.queryByText("The program has exited.")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Threads & Variables" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("shows the Memory tab for a java-debug attach session", () => {
+    const attach = {
+      ...session,
+      adapter: "java-debug",
+      launch: { request: "attach" } as DebugSession["launch"],
+      caps: { jvmMemory: true } as DebugSession["caps"],
+    };
+    useDebug.setState({ sessions: { 1: attach }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+  });
+
+  it("shows the Memory tab of a JVM session while it starts, before its capabilities arrive", () => {
+    const starting = { ...session, adapter: "java-debug", status: "starting" as const, caps: null };
+    useDebug.setState({ sessions: { 1: starting }, active: 1 });
+    render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(screen.getByText("The Memory view is available once the program has started.")).toBeTruthy();
+    act(() => useDebug.setState({ sessions: { 1: { ...starting, adapter: "debugpy" } } }));
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+  });
+
+  it("keeps the Memory tab selected when the session pauses", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps, status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    act(() => useDebug.setState({ sessions: { 1: { ...session, caps, status: "paused" } } }));
+    expect(memory.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("The program has exited.")).toBeTruthy();
+  });
+
+  it("renames the view tabs when the locale switches to Chinese", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps } }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+    try {
+      await act(() => setLocale("zh"));
+      const tabs = screen.getAllByRole("tab").map((t) => t.textContent);
+      expect(tabs).toEqual(["线程和变量", "控制台", "内存"]);
+    } finally {
+      await act(() => setLocale("en"));
+    }
   });
 
   it("says a PHP Remote Debug session listens for Xdebug while nothing is suspended", () => {
@@ -139,6 +239,46 @@ describe("debug tool window", () => {
     act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
     act(() => useDebug.setState({ sessions: { 1: { ...session, stopReason: "step" } } }));
     expect(console.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps the chosen tab on a breakpoint hit when Focus On Breakpoint is off", () => {
+    const settings = useProject.getState().settings;
+    useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    const variables = screen.getByRole("tab", { name: "Threads & Variables" });
+    fireEvent.contextMenu(variables);
+    const item = useContextMenuStore.getState().menu?.items[0];
+    expect(item).toMatchObject({ label: "Focus On Breakpoint", checked: true });
+    act(() => hideContextMenu());
+    try {
+      act(() =>
+        useProject.setState({
+          settings: { debugger: { variablesOnBreakpoint: false } } as ReturnType<
+            typeof useProject.getState
+          >["settings"],
+        }),
+      );
+      const console = screen.getByRole("tab", { name: "Console" });
+      fireEvent.click(console);
+      act(() => useDebug.setState({ sessions: { 1: session } }));
+      expect(console.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      act(() => useProject.setState({ settings }));
+    }
+  });
+
+  it("opens on Console for a running session, and on the view last picked when shown again", () => {
+    useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });
+    const first = render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Console" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    first.unmount();
+    const again = render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Threads & Variables" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "Console" }));
+    again.unmount();
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Console" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("renders session tabs, views, frames and typed variables", async () => {
@@ -203,5 +343,122 @@ describe("debug tool window", () => {
     await act(async () => fireEvent.click(screen.getAllByRole("button", { name: "Close Tab" })[0]!));
     expect(useDebug.getState().active).toBeNull();
     expect(useDebug.getState().sessions).toEqual({});
+  });
+});
+
+describe("variables the adapter computes after the stop", () => {
+  const tick = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  const setup = () => {
+    adapterData.library = "Collecting data…";
+    adapterData.scopes.mockClear();
+    useDebug.setState({ sessions: { 1: session }, active: 1, stopSeq: 1, variablesEpoch: 0 });
+    return render(<DebugToolWindow />);
+  };
+
+  it("shows the value sent after an invalidation, unmarked as changed", async () => {
+    setup();
+    expect(await screen.findByText("Collecting data…")).toBeTruthy();
+    adapterData.library = "com.example.library.Library@1";
+    act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+    const value = await screen.findByText("{Library@1}");
+    expect(screen.queryByText("Collecting data…")).toBeNull();
+    expect(value.closest("[role=treeitem]")?.querySelector("[class*=changed]")).toBeNull();
+  });
+
+  it("shows the watch value the adapter computes after an invalidation", async () => {
+    adapterData.watch = "Collecting data…";
+    const answer = async (...args: unknown[]) => ({
+      status: "ok" as const,
+      data: {
+        name: String(args[2]),
+        value: adapterData.watch,
+        typeName: null as string | null,
+        variablesReference: 0,
+        evaluateName: null,
+      },
+    });
+    debugEvaluateIn.mockImplementation(answer);
+    useDebug.setState({ watches: ['library.search("java").size'] });
+    try {
+      setup();
+      const watch = () => screen.getByText('library.search("java").size').closest("[role=treeitem]")!;
+      await waitFor(() => expect(watch().textContent).toContain("Collecting data…"));
+      adapterData.watch = "1";
+      act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+      await waitFor(() => expect(watch().textContent).not.toContain("Collecting data…"));
+      expect(watch().textContent).toContain("1");
+    } finally {
+      debugEvaluateIn.mockImplementation(async () => ({
+        status: "ok" as const,
+        data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+      }));
+      useDebug.setState({ watches: [] });
+    }
+  });
+
+  it("reloads after Set Value", async () => {
+    setup();
+    await screen.findByText("Collecting data…");
+    adapterData.library = "Library@2";
+    await act(() => setVariableValue({ container: 1, name: "count", evaluateName: "count" }, "4", session));
+    expect(await screen.findByText("{Library@2}")).toBeTruthy();
+  });
+
+  it("does nothing for an invalidation while the program runs", async () => {
+    setup();
+    await screen.findByText("Collecting data…");
+    act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
+    adapterData.scopes.mockClear();
+    adapterData.library = "Library@3";
+    act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+    await tick();
+    expect(adapterData.scopes).not.toHaveBeenCalled();
+    expect(useDebug.getState().variablesEpoch).toBe(0);
+  });
+
+  it("does not ask the Memory view again", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps } }, active: 1, variablesEpoch: 0 });
+    render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    adapterData.memoryClasses.mockClear();
+    act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+    await tick();
+    expect(useDebug.getState().variablesEpoch).toBe(1);
+    expect(adapterData.memoryClasses).not.toHaveBeenCalled();
+  });
+
+  it("evaluates the watches of a running program only while the tool window is shown", async () => {
+    const caps = { liveEvaluate: true } as DebugSession["caps"];
+    const running: DebugSession = { ...session, id: 5, status: "running", frames: [], selectedFrame: null, caps };
+    useDebug.setState({ sessions: { 5: running }, active: 5, watches: ["count"] });
+    const settings = useProject.getState().settings;
+    useProject.setState({
+      settings: { debugger: { liveWatches: true } } as ReturnType<typeof useProject.getState>["settings"],
+    });
+    const watched = () => debugEvaluateIn.mock.calls.filter((c) => c[0] === 5 && c[3] === "watch");
+    const shown = (value: boolean) => {
+      const view = render(
+        <ToolWindowShownProvider value={value}>
+          <DebugToolWindow />
+        </ToolWindowShownProvider>,
+      );
+      fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+      return view;
+    };
+    try {
+      debugEvaluateIn.mockClear();
+      // A hidden tool window stays mounted.
+      const hidden = shown(false);
+      await tick();
+      expect(watched()).toEqual([]);
+      hidden.unmount();
+      shown(true);
+      await waitFor(() => expect(watched()).toEqual([[5, null, "count", "watch"]]));
+    } finally {
+      useDebug.setState({ watches: [] });
+      useProject.setState({ settings });
+    }
   });
 });

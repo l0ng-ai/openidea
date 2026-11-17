@@ -16,70 +16,76 @@
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
-/* A file or folder dragged over it from the Project view. */
+/* A file or folder dragged over it from the Project view or the OS. */
 .fileOver {
   box-shadow:
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
+/* The CodeMirror text field: the UI font, wrapping, growing with the text up to a limit. */
 .field {
   position: relative;
+  min-width: 0;
 }
-/* Tags under the transparent textarea: same font, metrics and padding, so the caret
-   and selection of the real textarea line up with the painted text. */
-.mirror {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  padding: 10px 12px 2px;
-  font: inherit;
-  font-size: var(--fs-ui);
+.field :global(.cm-editor) {
+  background: transparent;
+  color: var(--fg-strong);
+  font-size: var(--agent-fs-ui, var(--fs-ui));
+}
+.field :global(.cm-editor.cm-focused) {
+  outline: none;
+}
+.field :global(.cm-scroller) {
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: inherit;
   line-height: 1.5;
+}
+/* The minimum height goes on the text itself, not the scroller: clicks below the last line
+   must land in the editable text, or they focus the bare scroller and no caret appears. */
+.field :global(.cm-content) {
+  min-height: 44px;
+  padding: 10px 12px 2px;
+  caret-color: var(--fg-strong);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--fg-strong);
-  pointer-events: none;
-  -webkit-user-select: none;
-  user-select: none;
 }
-.textarea {
-  position: relative;
-  z-index: 1;
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  resize: none;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: transparent;
-  caret-color: var(--fg-strong);
-  font: inherit;
-  font-size: var(--fs-ui);
-  line-height: 1.5;
-  padding: 10px 12px 2px;
-  overflow-wrap: anywhere;
-  -webkit-user-select: text;
-  user-select: text;
+.field :global(.cm-line) {
+  padding: 0;
 }
-.textarea:focus-visible {
-  outline: none;
+/* A wide card (a ``` block) takes the text's width, its code scrolling inside, rather than
+   widening the text past the box. */
+.field :global(.cm-content) {
+  min-width: 0;
 }
-.textarea::placeholder {
+.field :global(.cm-placeholder) {
   color: var(--fg-faint);
 }
-/* The textarea's own glyphs are transparent so the mirror above shows the tags; the
-   selection would then paint an empty highlight. Paint the selected glyphs here instead —
-   the opaque selection background covers the mirror underneath. */
-.textarea::selection {
+.field :global(.cm-cursor) {
+  border-left-color: var(--fg-strong);
+}
+.field ::selection {
   background: var(--bg-editor-selection);
+}
+/* A dragged file over the box: what dropping does. */
+.dropOverlay {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg-popup) 82%, transparent);
   color: var(--fg-strong);
+  pointer-events: none;
 }
 .bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 6px 6px;
   cursor: default;
 }
@@ -89,13 +95,13 @@
   flex-wrap: wrap;
   align-items: center;
   min-width: 0;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .actions {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-left: auto;
 }
 /* Attach/reference buttons share the send button's 24px footprint and chrome. */
@@ -129,7 +135,7 @@
   display: grid;
   grid-template-columns: minmax(0, 80px) minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   margin-top: 8px;
 }
 .settingsLabel {
@@ -141,7 +147,7 @@
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-control);
   min-width: 0;
   padding: 0 4px 0 6px;
@@ -167,82 +173,162 @@
 .chipDetail > span {
   grid-area: 1 / 1;
 }
-.chipSizer {
-  visibility: hidden;
-}
 .chipChevron {
   flex: none;
   color: var(--fg-muted);
 }
 .modelEffortPopup {
-  width: min(340px, calc(100vw - 24px));
-  padding: 12px 0 6px;
-}
-.effortBlock {
-  padding: 0 12px 8px;
+  width: min(356px, calc(100vw - 24px));
+  padding: 6px 0;
 }
 /* The list takes the height of its models; with many it scrolls inside the popup. */
 .modelEffortPopup .modelList {
-  max-height: 216px;
+  max-height: 240px;
 }
-.effortHeader {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+.catalogFooter {
+  margin-top: 6px;
+  padding: 8px 12px 2px;
+  border-top: 1px solid var(--border);
 }
-.effortValue {
+.catalogNote,
+.catalogError {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.catalogError {
+  color: var(--danger);
+}
+.catalogFooter .catalogError {
+  padding: 0 0 8px;
+}
+.refreshModels {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.refreshModels:hover:not(:disabled) {
   color: var(--fg-strong);
 }
-.effortSlider {
-  --thumb: 14px;
-  margin-top: 8px;
+.refreshModels:disabled {
+  color: var(--fg-muted);
+  cursor: default;
 }
-.effortSlider input {
-  display: block;
-  width: 100%;
-  height: var(--thumb);
-  margin: 0;
-  appearance: none;
-  background: transparent;
-}
-.effortSlider input::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(to right, var(--accent) var(--fill), var(--control-off) var(--fill));
-}
-.effortSlider input::-webkit-slider-thumb {
-  width: var(--thumb);
-  height: var(--thumb);
-  margin-top: calc((4px - var(--thumb)) / 2);
-  border-radius: 50%;
-  appearance: none;
-  background: var(--fg-on-accent);
-  box-shadow:
-    0 0 0 1px var(--border-button),
-    var(--shadow-tooltip);
-}
-.effortSlider input:focus-visible {
-  outline: none;
-}
-.effortSlider input:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-/* One dot per level, centred under the thumb's positions. */
-.effortTicks {
+/* The model popup's top: effort (and context size) as segmented controls. */
+.quickSettings {
   display: flex;
-  justify-content: space-between;
-  padding: 0 calc(var(--thumb) / 2 - 2px);
-  margin-top: 4px;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  padding: 4px 10px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
-.effortTicks > span {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--control-off);
+.quickRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
-.effortTicks > .effortTickActive {
-  background: var(--accent);
+.quickRow > .segmented {
+  flex: 1;
+  min-width: 0;
+}
+.quickLabel {
+  flex: none;
+  width: 52px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+/* A model's configure button shows on its row's hover only. */
+.modelEffortPopup [role="option"] .modelRowConfigure {
+  opacity: 0;
+}
+.modelEffortPopup [role="option"]:hover .modelRowConfigure,
+.modelEffortPopup [role="option"][aria-selected="true"] .modelRowConfigure,
+.modelEffortPopup .modelRowConfigure:focus-visible {
+  opacity: 1;
+}
+.modelRowConfigure {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.modelRowConfigure:hover,
+.modelRowConfigure:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.costBadge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-popup);
+  background: var(--bg-floating-toolbar);
+  color: var(--fg-secondary);
+  font-size: var(--fs-tiny);
+  white-space: nowrap;
+}
+.costBadgeLow {
+  background: color-mix(in srgb, var(--success) 18%, var(--bg-elev));
+  color: var(--success);
+}
+.costBadgeHigh {
+  background: color-mix(in srgb, var(--warning) 20%, var(--bg-elev));
+  color: var(--warning);
+}
+
+.pinnedButton {
+  color: var(--accent);
+}
+.segmented {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-0-5);
+  padding: 2px;
+  border-radius: var(--radius-popup);
+  background: var(--bg-input);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.segment {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.segment:hover {
+  color: var(--fg-strong);
+}
+.segment:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.segmentActive {
+  background: var(--bg-floating-toolbar);
+  color: var(--fg-strong);
+  font-weight: 600;
 }
 .modePopup {
   min-width: 200px;
@@ -255,7 +341,7 @@
 .modeOption {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 24px;
   margin: 0 6px;
   padding: 0 8px;
@@ -278,7 +364,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   margin-top: 6px;
   padding: 8px 14px 2px;
   border-top: 1px solid var(--border);
@@ -289,7 +375,7 @@
   .bar {
     flex-direction: row;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-1-5);
   }
   .toolbar {
     flex-wrap: nowrap;
@@ -343,21 +429,20 @@
   gap: 5px;
   white-space: nowrap;
 }
-.pickerName {
-  color: var(--fg-subtle);
-}
 
-.images {
+/* Above the text: the current file to reference, attached files and images. */
+.context {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: var(--space-1-5);
   padding: 8px 10px 0;
   cursor: default;
 }
 .image {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
   overflow: hidden;
@@ -397,17 +482,71 @@
   opacity: 1;
 }
 
-/* `@` / `/` completion; Popup keeps the list within the viewport. */
-.caretMirror {
-  position: fixed;
-  top: 0;
-  left: 0;
-  box-sizing: border-box;
-  visibility: hidden;
-  pointer-events: none;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+/* Attached files and the current-file suggestion: one height, like the chips in the text. */
+.attachment,
+.suggestion {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  height: 24px;
+  padding: 0 4px 0 7px;
+  border-radius: var(--radius-control);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: var(--fs-small);
+  color: var(--fg-strong);
 }
+.suggestion {
+  padding-right: 8px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  outline: 1px dashed var(--border-strong);
+  outline-offset: -1px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.suggestion:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.suggestion:focus-visible {
+  outline: 2px solid var(--focus-ring);
+}
+/* The file name truncates first; the hint stays on one line. */
+.suggestionHint {
+  flex: none;
+  white-space: nowrap;
+  color: var(--fg-faint);
+}
+.removeChip {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.removeChip:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.attachmentName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `@` / `/` completion; Popup keeps the list within the viewport. */
 .popup {
   display: flex;
   flex-direction: column;
@@ -434,4 +573,31 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
+}
+.match {
+  background: none;
+  color: var(--fg-completion-match, var(--accent));
+  font-weight: 600;
+}
+.popupFooter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) 14px;
+  padding: 5px 12px 6px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.popupFooter kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  margin-right: 2px;
+  padding: 0 3px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-family: var(--font-keys, inherit);
+  font-size: var(--fs-tiny, 11px);
 }

@@ -8,6 +8,10 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "JSX"
 tree-sitter = "javascript"
 
+# Rainbow brackets › angle: editor syntax nodes of markup tags, whose `<` `>` pair up.
+[rainbow-brackets]
+tags = ["JSXOpenTag", "JSXCloseTag", "JSXSelfClosingTag", "JSXFragmentTag"]
+
 [[language-servers]]
 name = "vtsls"
 tsserver-project = true
@@ -74,6 +78,9 @@ nodePath = ""
 problems = { shortenToSingleLine = false }
 workingDirectory = { mode = "auto" }
 codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }
+# vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
+# No `rules`: an empty list there means no rule gets fixed.
+codeActionOnSave = { mode = "all" }
 
 [debugger]
 adapter = "js-debug"

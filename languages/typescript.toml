@@ -8,6 +8,10 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "TypeScript"
 tree-sitter = "typescript"
 
+# Rainbow brackets › angle: editor syntax nodes whose `<` `>` pair up (never comparisons).
+[rainbow-brackets]
+angle = ["TypeArgList", "TypeParamList"]
+
 [[framework-ui-modes]]
 ui-mode = "Angular TypeScript"
 root-markers = ["angular.json", "node_modules/@angular/core"]
@@ -89,6 +93,9 @@ nodePath = ""
 problems = { shortenToSingleLine = false }
 workingDirectory = { mode = "auto" }
 codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }
+# vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
+# No `rules`: an empty list there means no rule gets fixed.
+codeActionOnSave = { mode = "all" }
 
 [debugger]
 adapter = "js-debug"

@@ -77,6 +77,113 @@ describe("Windows PTY metadata", () => {
   });
 });
 
+describe("terminal clear output", () => {
+  const write = (session: TerminalSession, data: string) =>
+    new Promise<void>((resolve) => session.term.write(data, resolve));
+  const create = () => {
+    const session = new TerminalSession({ key: "clear", cwd: "/repo", onChange() {}, onFocus() {} });
+    session.term.resize(20, 4);
+    return session;
+  };
+  const start = async (session: TerminalSession) => {
+    let onmessage: ((chunk: string) => void) | null = null;
+    ipc.commands.termSpawn.mockImplementationOnce(
+      async (_options: unknown, channel: { onmessage: typeof onmessage }) => {
+        onmessage = (chunk) => channel.onmessage?.(chunk);
+        return { id: 42, title: "pwsh" };
+      },
+    );
+    await session.start();
+    return async (chunk: string) => {
+      onmessage?.(chunk);
+      await write(session, "");
+    };
+  };
+
+  it.each(["\x1b[H\x1b[2J", "\x1b[H\x1b[J"])(
+    "keeps scrollback when a program erases the viewport with %s",
+    async (erase) => {
+      const session = create();
+      try {
+        await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+        expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+        await write(session, `${erase}new prompt`);
+        await write(session, "");
+        expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+        expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("old-1");
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
+  it("keeps scrollback after ConPTY's full-screen row repaint", async () => {
+    const session = create();
+    try {
+      const output = await start(session);
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      session.term.resize(20, 5);
+      await output("\x1b[Hrepaint\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K");
+      expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+      expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("old-1");
+      await output("\x1b]133;OpenIDEA;ClearScrollback\x07\x1b[H\x1b[2Jnew prompt");
+      expect(session.term.buffer.active.baseY).toBe(0);
+      expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("new prompt");
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("removes prompts left in the viewport after empty commands and cls", async () => {
+    const session = create();
+    try {
+      const output = await start(session);
+      await output(Array.from({ length: 8 }, () => "PS /repo> \r\n").join(""));
+      await output("\x1b]133;OpenIDEA;ClearScrollback\x07\x1b[HPS /repo> \x1b[K");
+      const lines = Array.from({ length: session.term.buffer.active.length }, (_, i) =>
+        session.term.buffer.active.getLine(i)?.translateToString(true),
+      );
+      expect(lines).toEqual(["PS /repo> ", "", "", ""]);
+      expect(session.term.buffer.active.baseY).toBe(0);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("clears old history in order and retains multi-screen output after a split marker", async () => {
+    const session = create();
+    try {
+      const output = await start(session);
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      await output("\x1b[H\x1b]133;OpenIDEA;Clear");
+      await output("Scrollback\x07\x1b[2J" + Array.from({ length: 12 }, (_, i) => `new-${i}\r\n`).join(""));
+      const lines = Array.from({ length: session.term.buffer.active.length }, (_, i) =>
+        session.term.buffer.active.getLine(i)?.translateToString(true),
+      );
+      expect(lines).not.toContain("old-1");
+      expect(lines).toContain("new-0");
+      expect(lines).toContain("new-11");
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("keeps scrollback for partial row erases and alternate-screen redraws", async () => {
+    const session = create();
+    try {
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      const baseY = session.term.buffer.active.baseY;
+      await write(session, "\x1b[Hnew prompt\x1b[K");
+      expect(session.term.buffer.active.baseY).toBe(baseY);
+      await write(session, "\x1b[?1049h\x1b[H\x1b[2J");
+      await write(session, "\x1b[?1049l");
+      expect(session.term.buffer.active.baseY).toBe(baseY);
+    } finally {
+      session.dispose();
+    }
+  });
+});
+
 describe("openFileLink", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -107,6 +214,24 @@ describe("openFileLink", () => {
       selection: { line: 1, col: 0 },
       focus: true,
     });
+  });
+
+  it("opens the file a Windows path names, not a same-named one", async () => {
+    ipc.commands.fsReadDir.mockResolvedValue([]);
+    ipc.commands.findFiles.mockImplementation(async (q: string) =>
+      q === "a/main.php"
+        ? [{ path: "C:/p/a/main.php", relPath: "a/main.php" }]
+        : [{ path: "C:/p/c/main.php", relPath: "c/main.php" }],
+    );
+    await openFileLink(fileLink("PHP Warning in a\\main.php:2"), "C:\\p");
+    expect(ipc.commands.fsReadDir).toHaveBeenCalledWith("C:/p/a");
+    expect(workbench.openFile).toHaveBeenCalledWith("C:/p/a/main.php", { selection: { line: 1, col: 0 }, focus: true });
+
+    vi.clearAllMocks();
+    ipc.commands.fsReadDir.mockResolvedValue([{ name: "index.js", kind: "file" }]);
+    await openFileLink(fileLink("at run (D:\\lib\\index.js:3:7)"), "C:\\p");
+    expect(ipc.commands.fsReadDir).toHaveBeenCalledWith("D:/lib");
+    expect(workbench.openFile).toHaveBeenCalledWith("D:/lib/index.js", { selection: { line: 2, col: 6 }, focus: true });
   });
 
   it("falls back to the bare name for a basename-only link", async () => {
@@ -276,6 +401,40 @@ describe("terminal font zoom", () => {
     useProject.setState({ settings: null });
   });
 
+  const wheel = (host: HTMLElement, init: WheelEventInit) => {
+    const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
+    host.dispatchEvent(event);
+    return event;
+  };
+
+  it("changes the font size with Ctrl+wheel when the editor's wheel zoom is on", () => {
+    useProject.setState({
+      settings: { terminal: { useEditorFont: false, fontSize: 14 }, editor: { general: { wheelZoom: true } } },
+    } as never);
+    syncTerminalProject("/wheel-zoom");
+    const session = getSession(newTab("/wheel-zoom").session)!;
+    const up = wheel(session.host, { ctrlKey: true, deltaY: -100 });
+    expect(up.defaultPrevented).toBe(true);
+    expect(session.term.options.fontSize).toBe(15);
+    wheel(session.host, { metaKey: true, deltaY: 100 });
+    wheel(session.host, { ctrlKey: true, deltaY: 100 });
+    expect(session.term.options.fontSize).toBe(13);
+    const plain = wheel(session.host, { deltaY: -100 });
+    expect(plain.defaultPrevented).toBe(false);
+    expect(session.term.options.fontSize).toBe(13);
+    syncTerminalProject(null);
+  });
+
+  it("leaves Ctrl+wheel to the terminal when the editor's wheel zoom is off", () => {
+    useProject.setState({ settings: { terminal: { useEditorFont: false, fontSize: 14 } } } as never);
+    syncTerminalProject("/wheel-off");
+    const session = getSession(newTab("/wheel-off").session)!;
+    const event = wheel(session.host, { ctrlKey: true, deltaY: -100 });
+    expect(event.defaultPrevented).toBe(false);
+    expect(session.term.options.fontSize).toBe(14);
+    syncTerminalProject(null);
+  });
+
   it("keeps the offset through settings, refit and moving splits; fresh splits and restores start at the base", () => {
     const settings = (fontSize: number) => {
       useProject.setState({ settings: { terminal: { useEditorFont: false, fontSize } } } as never);
@@ -309,5 +468,96 @@ describe("terminal font zoom", () => {
     syncTerminalProject(null);
     syncTerminalProject("/font-zoom");
     for (const tab of useTerminals.getState().tabs) expect(getSession(tab.session)!.term.options.fontSize).toBe(18);
+  });
+});
+
+describe("terminal tab spinner state (#3831)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const feed = async (session: TerminalSession, ...chunks: string[]) => {
+    for (const chunk of chunks) {
+      await new Promise<void>((resolve) => session.term.write(chunk, resolve));
+    }
+  };
+
+  it("lets a program's OSC 9;4 progress decide the spinner over the OSC 133 boundaries", async () => {
+    const session = new TerminalSession({ key: "s-progress", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      // An agent CLI is one command to the shell: C at launch, D only at exit.
+      await feed(session, "\x1b]133;C\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: null });
+      // The agent works on a turn (indeterminate progress), then sits idle at its
+      // own input prompt: the report clears while the command is still running.
+      await feed(session, "\x1b]9;4;3\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: "active" });
+      await feed(session, "\x1b]9;4;0\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: "cleared" });
+      // The next turn reports again, with a progress value attached.
+      await feed(session, "\x1b]9;4;1;75\x07");
+      expect(session.state).toMatchObject({ progress: "active" });
+      // The CLI exits: the command boundary clears the stale report too.
+      await feed(session, "\x1b]133;D;0\x07");
+      expect(session.state).toMatchObject({ commandRunning: false, progress: null });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("starts each command without the previous program's progress report", async () => {
+    const session = new TerminalSession({ key: "s-progress-reset", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      await feed(session, "\x1b]133;C\x07", "\x1b]9;4;0\x07");
+      expect(session.state.progress).toBe("cleared");
+      await feed(session, "\x1b]133;D;0\x07", "\x1b]133;C\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: null });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("leaves the spinner decision to OSC 133 for programs that never report progress", async () => {
+    const session = new TerminalSession({ key: "s-progress-none", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      // OSC 9 payloads that are not progress reports (iTerm2 notifications, …)
+      // and a malformed report change nothing.
+      await feed(session, "\x1b]133;C\x07", "\x1b]9;notify: done\x07", "\x1b]9;4;\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: null });
+      await feed(session, "\x1b]133;D\x07");
+      expect(session.state).toMatchObject({ commandRunning: false, progress: null });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("stops the spinner of a non-shell command tab when the process exits", async () => {
+    ipc.commands.fsEntryKind.mockResolvedValue("dir");
+    ipc.commands.termSpawn.mockResolvedValue({ id: 11, title: "claude" });
+    const session = new TerminalSession({
+      key: "s-custom-exit",
+      cwd: "/repo",
+      onChange() {},
+      onFocus() {},
+      command: { program: "claude", args: [] },
+    });
+    await session.start();
+    expect(session.state).toMatchObject({ status: "running", commandRunning: true, progress: null });
+    session.exited(0);
+    expect(session.state).toMatchObject({ status: "exited", commandRunning: false, progress: null });
+    session.dispose();
+  });
+
+  it("stops the spinner of a non-shell command tab that fails to start", async () => {
+    ipc.commands.fsEntryKind.mockResolvedValue("dir");
+    ipc.commands.termSpawn.mockRejectedValue(new Error("no claude"));
+    const session = new TerminalSession({
+      key: "s-custom-error",
+      cwd: "/repo",
+      onChange() {},
+      onFocus() {},
+      command: { program: "claude", args: [] },
+    });
+    await session.start();
+    expect(session.state).toMatchObject({ status: "error", commandRunning: false, progress: null });
+    session.dispose();
   });
 });

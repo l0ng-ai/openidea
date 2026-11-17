@@ -29,6 +29,7 @@ import {
   containersUsingImage,
   containersUsingVolume,
   findImageForContainer,
+  imageKey,
   imageTagsForId,
   isDevContainer,
   isRunning,
@@ -772,7 +773,7 @@ export function ContainerDashboard({
                 className={styles.link}
                 onClick={() => {
                   selectServicesTreeKey(
-                    treeKey(conn, { kind: "image", key: `image:${matchedImage.id}`, image: matchedImage }),
+                    treeKey(conn, { kind: "image", key: imageKey(matchedImage), image: matchedImage }),
                   );
                   showDetail("dashboard");
                 }}
@@ -1142,7 +1143,7 @@ export function ImageDashboard({
   snapshot: DockerSnapshot;
   inspectText: string | null;
 }) {
-  const target: DockerTarget = { conn, node: { kind: "image", key: `image:${image.id}`, image } };
+  const target: DockerTarget = { conn, node: { kind: "image", key: imageKey(image), image } };
   const inspect = useMemo(() => parseImageInspect(inspectText), [inspectText]);
   const tags = useMemo(() => {
     const fromSnap = imageTagsForId(snapshot, image);

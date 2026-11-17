@@ -26,6 +26,8 @@ export interface ListPopupItem {
   /** Disabled reason; disabled rows are shown but not activatable. */
   disabled?: string | null;
   shortcut?: string;
+  /** The place the row goes to (`data-path` / `data-line`, 0-based, on the row). */
+  location?: { path: string; line: number };
   run: () => void | Promise<void>;
   /** IDEA's right-arrow menu of the row (inspection options of a fix). */
   submenu?: MenuItem[];
@@ -94,6 +96,8 @@ export type LspPopup =
       items: ListPopupItem[];
       /** Rows 1-9 get a number; typing it runs the row (IDEA's numbered popups). */
       numbered?: boolean;
+      /** More rows are still being looked for (`aria-busy`). */
+      busy?: boolean;
       /** Header pin button (e.g. "Open in Find Tool Window"). */
       pin?: { label: string; run: () => void };
       /** Side panel for the selected row, fetched lazily; `signal` aborts when the selection moves. */

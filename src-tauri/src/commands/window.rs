@@ -6,6 +6,7 @@ use crate::windows::{self, Launch, OpenOutcome, WindowsState};
 use ide_core::{IdeError, IdeResult, RequestId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
@@ -100,6 +101,19 @@ pub async fn window_open_comparison(
     windows::open_comparison_window(&app, &window, comparison, background)
 }
 
+/// Opens a window showing `diff` next to this window ("Show Diff in New Window").
+/// `background` (`#rrggbb`) paints it until its page has loaded.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_diff(
+    app: AppHandle,
+    window: WebviewWindow,
+    diff: windows::DiffLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_diff_window(&app, &window, diff, background)
+}
+
 /// Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 /// to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
 #[tauri::command]
@@ -185,6 +199,8 @@ pub struct OpenProject {
     pub root: PathBuf,
     /// Open in the calling window.
     pub current: bool,
+    /// Where the project lives when the window is connected to a remote host (`root` is then a path there).
+    pub remote: Option<crate::remote_dev::RemoteTarget>,
 }
 
 /// Projects open in project windows, in window order (title bar project widget).
@@ -198,11 +214,19 @@ pub fn window_open_projects(
     Ok(windows::project_window_labels(&app)
         .into_iter()
         .filter_map(|label| {
+            let current = label == window.label();
+            // A remote window's project lives on the server: it has no local project here.
+            if let Some(c) = state.remote_dev.get(&label) {
+                let root = PathBuf::from(&c.root);
+                let name = c.root.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_owned();
+                return Some(OpenProject { name, root, current, remote: Some(c.target.clone()) });
+            }
             let project = state.project(&label).ok().filter(|p| !p.light)?;
             Some(OpenProject {
                 name: project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 root: project.root.clone(),
-                current: label == window.label(),
+                current,
+                remote: None,
             })
         })
         .collect())
@@ -316,7 +340,13 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
 /// disabled in place (no rebuild).
 #[tauri::command]
 #[specta::specta]
-pub fn menu_set_disabled(app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
+pub fn menu_set_disabled(window: WebviewWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
+    // The window whose menu runs: a project window also while its Settings window is focused.
+    if menu::native_menu_bar()
+        && windows::target_window(&app).is_some_and(|target| !owns_menu_config(window.label(), target.label()))
+    {
+        return;
+    }
     let disabled: std::collections::HashSet<String> = ids.into_iter().collect();
     if *menu_state.disabled.lock() == disabled {
         return;
@@ -451,7 +481,15 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
         .map(|u| u.parse().map_err(|e| IdeError::invalid(format!("update endpoint {u}: {e}"))))
         .collect::<IdeResult<Vec<_>>>()?;
     let proxy = ide_core::proxy_settings::proxy();
-    app.updater_builder()
+    let mut builder = app.updater_builder();
+    if let Some(target) = crate::updates::portable_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tauri::utils::platform::bundle_type(),
+    ) {
+        builder = builder.target(target);
+    }
+    builder
         .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
         .endpoints(endpoints)
         .map_err(|e| IdeError::invalid(e.to_string()))?
@@ -598,18 +636,116 @@ pub async fn app_install_update(
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?
-            .map_err(|e| IdeError::internal(e.to_string()))
+        tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(windows)]
+            if update.target.ends_with("-portable") {
+                let exe = tauri::utils::platform::current_exe()?;
+                return ide_tools::portable_update::install(&exe, &bytes);
+            }
+            update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
     }
     .await;
     state.host.end_request(request);
     result
 }
 
+/// Release notes of `version` from the update manifest (`latest.json`), read
+/// through the configured source: the `notes` text under `"en"` plus any
+/// `notes.<lang>` translations keyed by their base language code, so the page
+/// can show the UI's language and fall back to English. An install records the
+/// notes it saw, so this is only for an update installed outside the app.
+/// `Ok(None)` when the manifest covers another version or carries no notes.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_release_notes(
+    app: AppHandle,
+    version: String,
+    source: UpdateSource,
+) -> IdeResult<Option<BTreeMap<String, String>>> {
+    let endpoints = match update_endpoint_env() {
+        Some(url) => vec![url],
+        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
+    };
+    let client = ide_http::client::shared()?;
+    for endpoint in endpoints {
+        // A hanging endpoint must not leave the page on "Fetching release notes…".
+        let fetched = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let Ok(response) = client.get(&endpoint).send().await else {
+                return None;
+            };
+            if !response.status().is_success() {
+                return None;
+            }
+            response.text().await.ok()
+        })
+        .await;
+        let Ok(Some(text)) = fetched else { continue };
+        if let Some(notes) = notes_for(&text, &version) {
+            return Ok(Some(notes));
+        }
+    }
+    Ok(None)
+}
+
+/// The notes of `version` in a manifest, when that is the entry it lists: the
+/// `notes` text as English and each `notes.<lang>` entry under its base language
+/// code (`notes.zh-CN` → `zh`), the way the UI's locales are keyed.
+fn notes_for(manifest: &str, version: &str) -> Option<BTreeMap<String, String>> {
+    let value: serde_json::Value = serde_json::from_str(manifest).ok()?;
+    if value.get("version")?.as_str()? != version {
+        return None;
+    }
+    let mut notes = BTreeMap::new();
+    let entry =
+        |text: &serde_json::Value| text.as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
+    if let Some(text) = value.get("notes").and_then(entry) {
+        notes.insert("en".to_owned(), text);
+    }
+    for (key, text) in value.as_object().into_iter().flatten() {
+        let Some(tag) = key.strip_prefix("notes.").and_then(|tag| tag.split(['-', '_']).next()) else {
+            continue;
+        };
+        if tag.is_empty() {
+            continue;
+        }
+        if let Some(text) = entry(text) {
+            notes.insert(tag.to_ascii_lowercase(), text);
+        }
+    }
+    (!notes.is_empty()).then_some(notes)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_notes_come_from_the_manifest_of_that_version() {
+        let manifest = serde_json::json!({
+            "version": "0.1.40",
+            "notes": "## What's new\n\n- dev containers",
+            "notes.zh": "## 新变化\n\n- 开发容器",
+            "notes.ko-KR": "## 새 소식",
+            "notes.pl": "  ",
+            "pub_date": "2026-11-01T00:00:00Z",
+        })
+        .to_string();
+        assert_eq!(
+            notes_for(&manifest, "0.1.40"),
+            Some(BTreeMap::from([
+                ("en".to_owned(), "## What's new\n\n- dev containers".to_owned()),
+                ("zh".to_owned(), "## 新变化\n\n- 开发容器".to_owned()),
+                ("ko".to_owned(), "## 새 소식".to_owned()),
+            ]))
+        );
+        // Another version, empty notes, or not JSON: nothing to show.
+        assert_eq!(notes_for(&manifest, "0.1.41"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40", "notes": "  " }"#, "0.1.40"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40" }"#, "0.1.40"), None);
+        assert_eq!(notes_for("not json", "0.1.40"), None);
+    }
+
     #[test]
     fn menu_configuration_follows_the_active_window_or_its_settings_parent() {
         for (source, target, allowed) in [

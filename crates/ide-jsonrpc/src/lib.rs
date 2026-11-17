@@ -194,6 +194,9 @@ pub mod codes {
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL_ERROR: i64 = -32603;
+    /// LSP `RequestFailed`: the request was understood and could not be carried out; the
+    /// message says why.
+    pub const REQUEST_FAILED: i64 = -32803;
     /// LSP `ServerCancelled`.
     pub const SERVER_CANCELLED: i64 = -32802;
     /// LSP `ContentModified`.
@@ -215,14 +218,24 @@ pub trait Handler: Send + Sync + 'static {
     /// Respond to a server→client request (e.g. `workspace/configuration`).
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)>;
 
-    /// [`on_request`](Self::on_request) for handlers whose errors carry `data`. This is the
-    /// one the connection calls.
+    /// [`on_request`](Self::on_request) for handlers whose errors carry `data`.
     fn on_request_with_data(&self, method: &str, params: Value) -> Result<Value, (i64, String, Option<Value>)> {
         self.on_request(method, params).map_err(|(code, message)| (code, message, None))
     }
 
+    /// [`on_request_with_data`](Self::on_request_with_data) with the request as received, for
+    /// handlers that need what `Value` drops, such as the order of an object's keys. This is the
+    /// one the connection calls.
+    fn on_request_raw(&self, method: &str, params: Value, _raw: &[u8]) -> Result<Value, (i64, String, Option<Value>)> {
+        self.on_request_with_data(method, params)
+    }
+
     /// Called once the response to a `method` request is queued: what it sends follows the response.
     fn after_response(&self, _method: &str) {}
+
+    /// Adjusts every message from the peer (responses included) before it is dispatched, e.g.
+    /// to repair values the peer spells more loosely than the types that read them accept.
+    fn normalize_incoming(&self, _message: &mut Value) {}
 }
 
 /// A [`Handler`] that ignores notifications and rejects requests.
@@ -573,8 +586,8 @@ impl Peer {
                                     tracing::error!("jsonrpc notification handler panicked on {method}");
                                 }
                             }
-                            Incoming::Request(id, method, params) => {
-                                runtime.spawn(handle_request(inner.clone(), handler.clone(), id, method, params));
+                            Incoming::Request(id, method, params, raw) => {
+                                runtime.spawn(handle_request(inner.clone(), handler.clone(), id, method, params, raw));
                             }
                             Incoming::Response(tx, result) => {
                                 let _ = tx.send(result);
@@ -585,9 +598,10 @@ impl Peer {
                 .expect("spawn jsonrpc notification thread");
         }
 
-        // Reader: parses and dispatches; never runs handler code itself.
+        // Reader: parses and dispatches; runs no handler code beyond `normalize_incoming`.
         {
             let inner = inner.clone();
+            let handler = handler.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(reader);
                 let seen_message = AtomicBool::new(false);
@@ -610,7 +624,7 @@ impl Peer {
                     match msg {
                         Ok(Some(body)) => {
                             seen_message.store(true, Ordering::Relaxed);
-                            dispatch(&inner, &notif_tx, &body);
+                            dispatch(&inner, &*handler, &notif_tx, &body);
                         }
                         Ok(None) => break,
                         Err(e) => {
@@ -756,14 +770,21 @@ fn parse_id(id: &Value) -> Option<i64> {
 
 enum Incoming {
     Notification(String, Value),
-    Request(Value, String, Value),
+    Request(Value, String, Value, Arc<[u8]>),
     Response(oneshot::Sender<Result<Value, RpcError>>, Result<Value, RpcError>),
 }
 
-async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {
+async fn handle_request(
+    inner: Arc<Inner>,
+    handler: Arc<dyn Handler>,
+    id: Value,
+    method: String,
+    params: Value,
+    raw: Arc<[u8]>,
+) {
     let m = method.clone();
     let h = handler.clone();
-    let result = tokio::task::spawn_blocking(move || h.on_request_with_data(&m, params)).await;
+    let result = tokio::task::spawn_blocking(move || h.on_request_raw(&m, params, &raw)).await;
     let reply = match result {
         Ok(Ok(result)) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Ok(Err((code, message, data))) => {
@@ -783,15 +804,16 @@ async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value,
     }
 }
 
-fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {
+fn dispatch(inner: &Arc<Inner>, handler: &dyn Handler, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_jsonrpc::wire", "<-- {}", String::from_utf8_lossy(body));
-    let msg: Value = match serde_json::from_slice(body) {
+    let mut msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("jsonrpc: unparsable message: {e}");
             return;
         }
     };
+    handler.normalize_incoming(&mut msg);
     let Value::Object(mut obj) = msg else {
         tracing::warn!("jsonrpc: ignoring non-object message");
         return;
@@ -802,7 +824,7 @@ fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, bo
             let params = obj.remove("params").unwrap_or(Value::Null);
             match id {
                 Some(id) if !id.is_null() => {
-                    let _ = notif_tx.send(Incoming::Request(id, method, params));
+                    let _ = notif_tx.send(Incoming::Request(id, method, params, Arc::from(body)));
                 }
                 _ => {
                     let _ = notif_tx.send(Incoming::Notification(method, params));

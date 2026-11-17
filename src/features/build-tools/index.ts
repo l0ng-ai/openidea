@@ -1,5 +1,5 @@
 /**
- * Maven and Gradle tool windows (right stripe), registered only while the open
+ * Maven, Gradle and sbt tool windows (right stripe), registered only while the open
  * project has that build system, like IDEA. The model is re-read when build
  * files change; running goals / tasks goes through the run feature's actions.
  */
@@ -19,7 +19,9 @@ import {
 } from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
+import { SbtView, sbtExpandableKeys, useSbtTree } from "./SbtView";
 import { ExecutePopupHost } from "./ExecutePopup";
+import { pomCompletionExtension } from "./pomCompletion";
 import { pomNavigationExtension } from "./pomNavigation";
 import { buildToolsRunAnything } from "./runAnything";
 import { versionCatalogExtension } from "./versionCatalog";
@@ -35,6 +37,7 @@ import {
 import {
   ANALYZER_KIND,
   addProjects,
+  importModuleFromExistingSources,
   linkGradleProjects,
   unlinkGradleProjects,
   requestSync,
@@ -51,6 +54,7 @@ import {
   generateSources,
   syncTool,
   toggleGradleOffline,
+  toggleGradleSkipTests,
   toggleMavenOffline,
   toggleSkipTests,
   useBuild,
@@ -58,10 +62,12 @@ import {
 
 export const MAVEN_WHEN = "projectOpen && build.maven";
 export const GRADLE_WHEN = "projectOpen && build.gradle";
+const SBT_WHEN = "projectOpen && build.sbt";
 
 /** Build files whose creation / change / removal re-reads the model. */
 const isBuildFile = (path: string) =>
-  isGradleBuildInput(path) || /(?:^|[\\/])(?:pom\.xml|mvnw(?:\.cmd)?|gradlew(?:\.bat)?)$/.test(path);
+  isGradleBuildInput(path) ||
+  /(?:^|[\\/])(?:pom\.xml|mvnw(?:\.cmd)?|gradlew(?:\.bat)?|build\.sbt|project[\\/]build\.properties)$/.test(path);
 
 function expandAll(tool: BuildTool) {
   const { model, configs } = useBuild.getState();
@@ -121,7 +127,9 @@ function analyzerGradle(arg: unknown): string | null {
 const synced = new Set<string>();
 
 /** Registers / unregisters the tool windows to match the model; first sync of a never-synced build. */
-function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, () => void>>) {
+type Registered = Partial<Record<BuildTool | "sbt", () => void>>;
+
+function apply(model: BuildModel | null, registered: Registered) {
   const has: Record<BuildTool, boolean> = { maven: !!model?.maven, gradle: !!model?.gradle?.length };
   setContext("build.maven", has.maven);
   setContext("build.gradle", has.gradle);
@@ -151,6 +159,21 @@ function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, (
       delete registered[tool];
     }
   }
+  const sbt = !!model?.sbt?.length;
+  setContext("build.sbt", sbt);
+  if (sbt && !registered.sbt)
+    registered.sbt = registerToolWindow({
+      id: "sbt",
+      title: "sbt",
+      icon: "toolwindow-sbt",
+      anchor: "right",
+      order: 12,
+      component: SbtView,
+    });
+  else if (!sbt && registered.sbt) {
+    registered.sbt();
+    delete registered.sbt;
+  }
   // Import each independent build once; linking another build must not be hidden by the first sync.
   const root = useBuild.getState().root;
   for (const member of new Set(model?.maven?.projects.map((p) => p.projectRoot ?? null))) {
@@ -170,7 +193,7 @@ function apply(model: BuildModel | null, registered: Partial<Record<BuildTool, (
 }
 
 export function activate(): () => void {
-  const registered: Partial<Record<BuildTool, () => void>> = {};
+  const registered: Registered = {};
   const showGradle = () => {
     registered.gradle ??= registerToolWindow({
       id: "gradle",
@@ -191,6 +214,7 @@ export function activate(): () => void {
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
     registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
     registerEditorContribution({ id: "build-tools.pomNavigation", extensions: pomNavigationExtension }),
+    registerEditorContribution({ id: "build-tools.pomCompletion", extensions: pomCompletionExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,
@@ -233,6 +257,7 @@ export function activate(): () => void {
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       synced.clear();
       resetBuild();
+      useSbtTree.setState({ expanded: null });
       if (s.project) void loadModel();
     }),
     onEditorEvent((e) => {
@@ -279,10 +304,23 @@ export function activate(): () => void {
       {
         id: "maven.addProjects",
         title: "Add Maven Projects",
+        description:
+          "Choose one or more pom.xml files inside or outside the opened project. The opened folder stays the project root.",
         category: "Maven",
         icon: "plus",
         when: "projectOpen && !workspaceOpen",
         run: () => addProjects(),
+      },
+      {
+        id: "maven.importExternal",
+        title: "Import Module from Existing Sources",
+        description:
+          "Choose a module directory outside the opened project. If it contains pom.xml, that Maven project is attached. The opened folder stays the project root, and neither POM is edited.",
+        category: "Maven",
+        icon: "plus",
+        when: "projectOpen && !workspaceOpen",
+        keywords: ["import", "module", "existing", "sources", "external", "maven", "pom"],
+        run: () => importModuleFromExistingSources(),
       },
       {
         id: "maven.unlinkProjects",
@@ -452,6 +490,17 @@ export function activate(): () => void {
         run: () => toggleGradleOffline(),
       },
       {
+        id: "gradle.toggleSkipTests",
+        title: "Toggle 'Skip Tests' Mode",
+        description: "Runs Gradle with -x test",
+        category: "Gradle",
+        icon: "skip-tests",
+        when: GRADLE_WHEN,
+        keywords: ["gradle", "skip tests"],
+        toggled: () => useBuild.getState().settings.gradle.skipTests,
+        run: () => toggleGradleSkipTests(),
+      },
+      {
         id: "gradle.expandAll",
         title: "Expand All",
         category: "Gradle",
@@ -469,6 +518,34 @@ export function activate(): () => void {
         when: GRADLE_WHEN,
         run: () => setExpanded("gradle", new Set()),
       },
+      {
+        id: "sbt.reload",
+        title: "Reload sbt Projects",
+        description: "Re-reads the projects of build.sbt",
+        category: "sbt",
+        icon: "refresh",
+        when: SBT_WHEN,
+        keywords: ["sbt", "scala", "refresh"],
+        run: () => loadModel(),
+      },
+      {
+        id: "sbt.expandAll",
+        title: "Expand All",
+        category: "sbt",
+        icon: "expand-all",
+        hidden: true,
+        when: SBT_WHEN,
+        run: () => useSbtTree.setState({ expanded: sbtExpandableKeys(useBuild.getState().model?.sbt ?? []) }),
+      },
+      {
+        id: "sbt.collapseAll",
+        title: "Collapse All",
+        category: "sbt",
+        icon: "collapse-all",
+        hidden: true,
+        when: SBT_WHEN,
+        run: () => useSbtTree.setState({ expanded: new Set() }),
+      },
     ]),
   ];
   if (useProject.getState().project) void loadModel();
@@ -478,6 +555,8 @@ export function activate(): () => void {
     for (const d of Object.values(registered)) d?.();
     setContext("build.maven", false);
     setContext("build.gradle", false);
+    setContext("build.sbt", false);
+    useSbtTree.setState({ expanded: null });
     synced.clear();
     resetBuild();
   };

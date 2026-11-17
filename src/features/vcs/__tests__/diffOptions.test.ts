@@ -275,6 +275,34 @@ describe("diff options", () => {
     parent.remove();
   });
 
+  it("puts the left pane's line numbers next to the divider, as IDEA's mirrored editor", () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const mv = new MergeView({
+      a: {
+        doc: "keep\nlet x = 1;\nend\n",
+        extensions: [viewerBase({ readOnly: true, lineNumbers: "after" }), changedLineGutters],
+      },
+      b: { doc: "keep\nlet x = 2;\nend\n", extensions: [viewerBase({ readOnly: true }), changedLineGutters] },
+      parent,
+      gutter: false,
+      diffConfig: ideaDiffConfig("none", "words"),
+    });
+    const numbers = (v: typeof mv.a, side: "before" | "after") =>
+      [...v.dom.querySelectorAll(`.cm-gutters-${side} .cm-lineNumbers .cm-gutterElement:not([style*='hidden'])`)]
+        .map((e) => e.textContent)
+        .filter(Boolean);
+    expect(numbers(mv.a, "after")).toEqual(["1", "2", "3", "4"]);
+    expect(numbers(mv.a, "before")).toEqual([]);
+    expect(numbers(mv.b, "before")).toEqual(["1", "2", "3", "4"]);
+    // The change background still reaches the moved numbers.
+    expect(
+      [...mv.a.dom.querySelectorAll(".cm-gutters-after .cm-diffGutter-modified")].map((e) => e.textContent),
+    ).toEqual(["2"]);
+    mv.destroy();
+    parent.remove();
+  });
+
   it("shows a final line break added as an inserted empty line, gutter included", () => {
     const parent = document.createElement("div");
     document.body.appendChild(parent);

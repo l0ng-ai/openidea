@@ -43,6 +43,10 @@ impl Default for VcsSettings {
 pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
+    /// A click (or Enter / Space) on the inline blame label opens its commit; off, the
+    /// label is plain text and a click on it places the caret as past the line end.
+    pub inline_blame_clickable: bool,
+    pub show_branch_in_project_view: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -53,6 +57,8 @@ pub struct GitSettings {
     pub warn_detached_head: bool,
     /// Background check for incoming commits: `auto` | `always` | `never`.
     pub incoming_check: String,
+    /// Minutes between background checks for incoming commits.
+    pub incoming_check_interval: u32,
     /// Branch name globs, `;`/`,`-separated; force push to them is prohibited.
     pub protected_branches: String,
     /// Initial state of Commit Options › Sign-off Commit.
@@ -68,18 +74,24 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// The non-modal Commit tool window works on the index: Staged / Unstaged groups,
+    /// stage and unstage instead of inclusion checkboxes, and no change lists.
+    pub staging_area: bool,
 }
 
 impl Default for GitSettings {
     fn default() -> Self {
         Self {
             inline_blame: false,
+            inline_blame_clickable: true,
+            show_branch_in_project_view: false,
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
             warn_detached_head: true,
             incoming_check: "auto".into(),
+            incoming_check_interval: 15,
             protected_branches: "master; main".into(),
             sign_off: false,
             warn_large_files: true,
@@ -88,6 +100,7 @@ impl Default for GitSettings {
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            staging_area: false,
         }
     }
 }
@@ -173,6 +186,24 @@ impl Default for VcsConfirmationSettings {
     }
 }
 
+/// Tools › Diff & Merge › External Diff Tools: a program that shows two files' differences.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExternalDiffSettings {
+    /// Offer Show Diff in External Tool in diff viewers.
+    pub enabled: bool,
+    /// The program to start.
+    pub path: String,
+    /// Its arguments: `%1` the left file, `%2` the right file, `%3` the diff's title.
+    pub parameters: String,
+}
+
+impl Default for ExternalDiffSettings {
+    fn default() -> Self {
+        Self { enabled: false, path: String::new(), parameters: "%1 %2 %3".into() }
+    }
+}
+
 /// Version Control › Shelf.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -190,6 +221,57 @@ pub struct IssueLink {
     pub link: String,
 }
 
+/// Per-level colours for console log lines: a line whose level is detected
+/// (`ERROR`, `WARN`, …) takes the level's colour; ANSI colours the program
+/// prints itself win over it. Values are CSS colours, usually scheme tokens.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LogLevelColors {
+    pub enabled: bool,
+    pub error: String,
+    pub warn: String,
+    pub info: String,
+    pub debug: String,
+    pub trace: String,
+}
+
+impl Default for LogLevelColors {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            error: "var(--ansi-red)".into(),
+            warn: "var(--ansi-yellow)".into(),
+            info: "var(--ansi-green)".into(),
+            debug: "var(--ansi-cyan)".into(),
+            trace: "var(--ansi-magenta)".into(),
+        }
+    }
+}
+
+/// Database settings: Query Execution and SQL Resolution Scopes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DatabaseSettings {
+    /// A console's result sets show under the statements that produced them, in the editor,
+    /// instead of in the Services view's result tabs.
+    pub in_editor_results: bool,
+    /// Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
+    /// resolves against (completion, inspections, navigation), most specific path first.
+    pub resolution_scopes: Vec<SqlResolutionScope>,
+}
+
+/// One row of SQL Resolution Scopes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SqlResolutionScope {
+    /// Project-relative file or folder, `/`-separated; empty for the whole project.
+    pub path: String,
+    /// Data source id.
+    pub data_source: String,
+    /// Schema unqualified names resolve in; empty for the data source's default.
+    pub schema: String,
+}
+
 /// Build, Execution, Deployment › Console.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -201,6 +283,8 @@ pub struct ConsoleSettings {
     pub encoding: String,
     /// Consecutive lines containing any of these are folded.
     pub fold_patterns: Vec<String>,
+    /// Log lines take the colour of their level (Run/Debug consoles).
+    pub log_colors: LogLevelColors,
 }
 
 impl Default for ConsoleSettings {
@@ -217,6 +301,7 @@ impl Default for ConsoleSettings {
                 "at node:internal/".into(),
                 "<frozen importlib._bootstrap".into(),
             ],
+            log_colors: LogLevelColors::default(),
         }
     }
 }
@@ -228,18 +313,24 @@ pub struct DebuggerSettings {
     pub show_on_breakpoint: bool,
     pub focus_app_on_breakpoint: bool,
     pub hide_on_termination: bool,
+    /// A breakpoint or exception hit brings the Debug tool window's Threads & Variables tab to the front.
+    pub variables_on_breakpoint: bool,
     pub breakpoints_any_file: bool,
     /// While suspended, hovering the start of a line shows a Run to Cursor button.
     pub run_to_cursor_inlay: bool,
     pub inline_values: bool,
     /// Data Views: list variables by name instead of the adapter's order.
     pub sort_values: bool,
+    /// Data Views: evaluate watches while the program runs, where the debugger can (JavaScript).
+    pub live_watches: bool,
     pub value_tooltip: bool,
     /// While suspended, selecting an expression shows its value.
     pub value_tooltip_on_selection: bool,
     pub value_tooltip_delay: u32,
     /// Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`).
     pub skip_library_code: bool,
+    /// JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session.
+    pub debug_server_page: bool,
     pub python: PythonDebuggerSettings,
 }
 
@@ -249,14 +340,17 @@ impl Default for DebuggerSettings {
             show_on_breakpoint: true,
             focus_app_on_breakpoint: false,
             hide_on_termination: false,
+            variables_on_breakpoint: true,
             breakpoints_any_file: false,
             run_to_cursor_inlay: true,
             inline_values: true,
             sort_values: false,
+            live_watches: false,
             value_tooltip: true,
             value_tooltip_on_selection: true,
             value_tooltip_delay: 700,
             skip_library_code: true,
+            debug_server_page: false,
             python: PythonDebuggerSettings::default(),
         }
     }
@@ -286,6 +380,8 @@ pub struct RunSettings {
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
     pub show_on_start: bool,
+    /// New Run/Debug tabs start pinned: a later run doesn't take their place once finished.
+    pub pin_tabs: bool,
     /// Grace period between interrupt and kill when stopping a process.
     pub termination_timeout_ms: u32,
 }
@@ -297,6 +393,7 @@ impl Default for RunSettings {
             confirm_rerun: true,
             confirm_terminate: true,
             show_on_start: true,
+            pin_tabs: false,
             termination_timeout_ms: 3000,
         }
     }
@@ -320,6 +417,7 @@ pub struct TerminalSettings {
     pub override_ide_shortcuts: bool,
     pub shell_integration: bool,
     pub highlight_hyperlinks: bool,
+    pub highlight_selection: bool,
     pub option_as_meta: bool,
     /// Escape moves focus to the editor instead of reaching the shell.
     pub escape_to_editor: bool,
@@ -352,6 +450,7 @@ impl Default for TerminalSettings {
             override_ide_shortcuts: true,
             shell_integration: true,
             highlight_hyperlinks: true,
+            highlight_selection: true,
             option_as_meta: false,
             escape_to_editor: false,
             cursor_shape: "block".into(),
@@ -405,6 +504,33 @@ impl Default for ExternalTool {
             working_directory: "$ProjectFileDir$".into(),
             synchronize_after: true,
             open_console: true,
+        }
+    }
+}
+
+/// Tools › Agents: Command Execution Policy (whitelist and blacklist patterns).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSecuritySettings {
+    /// Commands or patterns (`git status*`, `pwd`) automatically approved without prompting.
+    pub allowed_commands: Vec<String>,
+    /// Commands or patterns (`rm -rf *`, `mkfs*`) automatically rejected.
+    pub blocked_commands: Vec<String>,
+}
+
+impl Default for AgentSecuritySettings {
+    fn default() -> Self {
+        Self {
+            allowed_commands: Vec::new(),
+            blocked_commands: vec![
+                "rm -rf *".into(),
+                "rm -rf /".into(),
+                "mkfs*".into(),
+                "dd *".into(),
+                ":(){ :|:& };:".into(),
+                "shutdown*".into(),
+                "reboot*".into(),
+            ],
         }
     }
 }

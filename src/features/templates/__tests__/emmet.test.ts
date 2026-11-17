@@ -16,6 +16,17 @@ describe("emmet context", () => {
     expect(syntaxAt("typescript", "div")).toBeNull();
   });
 
+  it("expands markup in Django templates, not inside template tags, variables or comments", () => {
+    expect(syntaxAt("django-html", "{% block content %}\n  ul>li")).toEqual({ type: "markup", syntax: "html" });
+    expect(syntaxAt("django-html", "{% if user")).toBeNull();
+    expect(syntaxAt("django-html", "{{ value|date")).toBeNull();
+    expect(syntaxAt("django-html", "{# note")).toBeNull();
+    expect(syntaxAt("django-html", '<a href="{% url "home" %}">x</a>\nnav')).toEqual({
+      type: "markup",
+      syntax: "html",
+    });
+  });
+
   it("uses stylesheet syntax inside rules and <style>", () => {
     expect(syntaxAt("css", ".a {\n  m10")).toEqual({ type: "stylesheet", syntax: "css" });
     expect(syntaxAt("css", "m10")).toBeNull();

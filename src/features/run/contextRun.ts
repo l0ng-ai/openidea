@@ -26,17 +26,20 @@ import {
   produceContextChoices,
   produceDirectory,
   produceFile,
+  produceFuzz,
   scriptLanguage,
   type ContextInput,
   type Produced,
   hasRelativeImports,
 } from "./producers";
 import { runWithExecutor } from "./executors";
+import { jdwpLaunch } from "./javaDebug";
 import { goModulePath, loadGoModules } from "./goModules";
 import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
 import { toolEnv } from "./runtimes";
-import { adoptTemporary, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
+import { adoptTemporary, debugSingleInstance, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
+import { zigTargets } from "./targets";
 import { tx } from "@/platform/i18n";
 
 const CONTENT_LIMIT = 400_000;
@@ -138,6 +141,14 @@ async function buildFirst(build: RunConfig, show?: boolean): Promise<boolean> {
   });
 }
 
+/**
+ * Like IDEA, Debug is offered only where a debugger can run it: a debug plan, a debug adapter, or a
+ * Maven / Gradle configuration whose JVM gets a JDWP agent (a JUnit test run through Surefire).
+ */
+export function canDebugProduced(p: Produced): boolean {
+  return !!(p.debug || p.config?.debugAdapter || p.missing || (p.config && jdwpLaunch(p.config)));
+}
+
 /** Runs or debugs a production (adopting it as the selected temporary configuration). */
 export async function launchProduced(p: Produced, debug: boolean, show?: boolean): Promise<void> {
   if (p.missing || !p.config) {
@@ -150,29 +161,42 @@ export async function launchProduced(p: Produced, debug: boolean, show?: boolean
     return;
   }
   if (remoteDebugBlocked(config)) return;
-  if (p.debug) {
-    if (!getAction("debug.startConfig")) {
-      notifications().notify({
-        group: "run",
-        level: "warning",
-        title: "Debugger is not available",
-        key: "run-no-debugger",
-      });
-      return;
-    }
-    if (!(await buildFirst(p.debug.build, show))) return;
-    await executeAction("debug.startConfig", { config: p.debug.config, origin: config, show });
+  const plan = p.debug;
+  if (plan) {
+    await debugSingleInstance(config, () => debugBinary(plan, config, show));
     return;
   }
   await executeAction("run.debugConfig", show === false ? { config, show: false } : config);
 }
 
 /**
- * The debug plan of a compiled single-file configuration (kinds `rustc` / `cc`)
+ * A compiled single file's debug plan: builds the binary with debug info, then debugs it as
+ * `origin` (the session's configuration). The caller stops `origin`'s other instances first.
+ */
+export async function debugBinary(
+  plan: NonNullable<Produced["debug"]>,
+  origin: RunConfig,
+  show?: boolean,
+): Promise<void> {
+  if (!getAction("debug.startConfig")) {
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      title: "Debugger is not available",
+      key: "run-no-debugger",
+    });
+    return;
+  }
+  if (!(await buildFirst(plan.build, show))) return;
+  await executeAction("debug.startConfig", { config: plan.config, origin, show });
+}
+
+/**
+ * The debug plan of a compiled single-file configuration (kinds `rustc` / `cc` / `zig`)
  * picked from the Run widget: re-produced from the source file in its id.
  */
 export async function compiledDebugPlan(config: RunConfig): Promise<Produced | null> {
-  if (config.kind !== "rustc" && config.kind !== "cc") return null;
+  if (config.kind !== "rustc" && config.kind !== "cc" && config.kind !== "zig") return null;
   const m = /^context:file:(.+?)(?:#(.+))?$/.exec(config.id);
   if (!m) return null;
   const root = useProject.getState().project?.root ?? null;
@@ -186,7 +210,11 @@ export async function compiledDebugPlan(config: RunConfig): Promise<Produced | n
   const input: ContextInput = { ...projectContext(), root, path, content };
   const env = await toolEnv(neededTools(input), path, root, false);
   if (m[2]) {
-    // A test: find the target by name again.
+    // A test: find the target by name again (targets and the id carry the unescaped name).
+    if (config.kind === "zig") {
+      const test = zigTargets(content ?? "").find((t) => t.name === m[2]);
+      return test ? produceContext({ ...input, line: test.line }, env) : null;
+    }
     const lines = (content ?? "").split("\n");
     const line = lines.findIndex((l) =>
       new RegExp(`\\bfn\\s+${m[2]!.split("::").pop()}\\b|\\bmod\\s+${m[2]}\\b`).test(l),
@@ -279,6 +307,21 @@ export function executorItems(config: RunConfig | null | undefined, name: string
     }));
 }
 
+/** "Run '<FuzzXxx>' with Fuzzing" at a Go fuzz target: `go test -fuzz` until it is stopped or fails. */
+export function fuzzItems(input: ContextInput, context: ContextArg): MenuItem[] {
+  const p = produceFuzz(input, OPTIMISTIC);
+  return p ? [{ label: tx`Run '${p.name}' with Fuzzing`, icon: "run", run: () => void fuzzContext(context) }] : [];
+}
+
+async function fuzzContext(arg: ContextArg): Promise<void> {
+  await ensureConfigs();
+  const input = await withArgContent(arg);
+  if (!input) return;
+  await loadGoModules(input.root, useRun.getState().configs);
+  const p = produceFuzz({ ...input, configs: useRun.getState().configs, goModule: goModulePath }, OPTIMISTIC);
+  if (p) await launchProduced(p, false);
+}
+
 export interface ContextArg {
   path: string;
   line?: number;
@@ -335,7 +378,7 @@ function peekContent(path: string): string | undefined {
 /** Whether the file's runnability depends on its text (`package main`, `fn main`, `#!`…). */
 function needsContent(path: string): boolean {
   const name = path.slice(path.lastIndexOf("/") + 1);
-  return /\.(go|rs|java|kt|c|cpp|cc|cxx)$/.test(name) || !name.includes(".");
+  return /\.(go|rs|java|kt|c|cpp|cc|cxx|zig)$/.test(name) || !name.includes(".");
 }
 
 export async function prepareMenu(_menu: ContextMenuId, ctx: MenuGroupContext): Promise<void> {
@@ -371,8 +414,7 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
   const arg: ContextArg = { path, line, dir, content: dir ? undefined : input.content };
   return [
     { kind: "action", action: "run.runContext", arg, label: tx`Run '${p.name}'`, icon: "run" },
-    // Like IDEA, Debug only where a debugger can run it.
-    ...(p.debug || p.config?.debugAdapter || p.missing
+    ...(canDebugProduced(p)
       ? ([
           { kind: "action", action: "run.debugContext", arg, label: tx`Debug '${p.name}'`, icon: "debug" },
         ] as MenuItem[])
@@ -381,6 +423,7 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
       label: "More Run/Debug",
       submenu: [
         ...executorItems(p.config, p.name, arg),
+        ...fuzzItems(input, arg),
         { kind: "action", action: "run.modifyContext", arg, label: "Modify Run Configuration…", icon: "edit" },
       ],
     },

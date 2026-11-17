@@ -17,11 +17,21 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { EditorState, Facet, Prec, RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
+import {
+  Compartment,
+  EditorState,
+  Facet,
+  Prec,
+  RangeSet,
+  StateEffect,
+  StateField,
+  type Extension,
+} from "@codemirror/state";
 import {
   Decoration,
   EditorView,
   GutterMarker,
+  ViewPlugin,
   WidgetType,
   gutter,
   showPanel,
@@ -29,20 +39,32 @@ import {
   type Panel,
   type Tooltip,
 } from "@codemirror/view";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import type { EditorDocContext } from "@/editor/api";
-import { iconNode } from "@/editor/lsp/iconMarkup";
-import type { DbDriver, DbStatementOutcome } from "@/platform/ipc";
+import { iconNode } from "@/ui/iconNode";
+import { call, commands, type DbDriver, type DbSessionContext, type DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
-import { IconButton, Select } from "@/ui";
+import { IconButton, Select, lazyComponent } from "@/ui";
+import { useProject } from "@/platform/project";
 import { activeSchema, schemaSwitchable, sourceLabel, splitTarget, targetOf } from "./model";
+import { loadSavedCatalog, offerIntrospection } from "./introspection";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
-import { shouldAutoCompleteSql, sqlCandidates, type CandidateKind, type SqlCandidate } from "./sql/complete";
-import { sqlSupport } from "./sqlSupport";
+import {
+  shouldAutoCompleteSql,
+  sqlCandidates,
+  type CandidateKind,
+  type SqlCandidate,
+  type SqlCatalog,
+} from "./sql/complete";
+import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
+import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
   bindConsole,
   cancelConsole,
+  closeInlineResults,
+  inEditorResults,
+  setInEditorResults,
   consoleSchema,
   consoleSource,
   executeConsole,
@@ -50,10 +72,13 @@ import {
   finishTransaction,
   openHistory,
   loadCompletion,
+  runSql,
   listsDatabases,
   loadDatabases,
   loadSchemas,
   loadSources,
+  loadTables,
+  tablesKey,
   setConsoleSchema,
   setManualCommit,
   sourceById,
@@ -62,6 +87,8 @@ import {
 } from "./store";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { databaseRequest, projectRequest } from "./requests";
+import type { ResultTab } from "./store";
 
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
@@ -216,6 +243,12 @@ export async function executeInView(view: EditorView, path: string) {
   if (outcomes.length) markOutcomes(view, outcomes);
 }
 
+/** Runs every statement of `view`, in order (stops at the first that fails). */
+export async function executeScriptInView(view: EditorView, path: string) {
+  const outcomes = await executeConsole(path, view.state.doc.toString(), 0, view.state.doc.length);
+  if (outcomes.length) markOutcomes(view, outcomes);
+}
+
 /** Explain Plan of the statement at the caret (or the first selected one) of `view`. */
 export async function explainInView(view: EditorView, path: string) {
   const sel = view.state.selection.main;
@@ -223,6 +256,213 @@ export async function explainInView(view: EditorView, path: string) {
 }
 
 const consolePath = Facet.define<string, string>({ combine: (v) => v[0] ?? "" });
+
+/** An in-editor result and the statement it shows under (mapped through edits). */
+interface InlineAnchor {
+  id: number;
+  from: number;
+  to: number;
+}
+
+/**
+ * Where each in-editor result's statement is now and how tall the result is, by result id:
+ * a console's view can be rebuilt (closed and reopened), and its results go back where they were.
+ */
+const anchors = new Map<number, { from: number; to: number }>();
+const heights = new Map<number, number>();
+const MAX_FIT_HEIGHT = 320;
+const MIN_HEIGHT = 96;
+
+/** Toolbar, notice, header row, the rows and room for the floating pager, up to `MAX_FIT_HEIGHT`. */
+function fitHeight(tab: ResultTab | undefined): number {
+  const rows = tab?.outcome.result?.rows.length ?? 0;
+  return Math.max(MIN_HEIGHT, Math.min(MAX_FIT_HEIGHT, 40 + 24 + 24 + Math.max(rows, 1) * 24 + 56));
+}
+
+const setInline = StateEffect.define<InlineAnchor[]>();
+/** An in-editor result was resized: its widget is redrawn so the editor measures it again. */
+const resized = StateEffect.define<null>();
+
+function anchorOf(tab: ResultTab): InlineAnchor {
+  return { id: tab.id, ...(anchors.get(tab.id) ?? { from: tab.outcome.statement.from, to: tab.outcome.statement.to }) };
+}
+
+const inlineField = StateField.define<readonly InlineAnchor[]>({
+  create: (state) => {
+    const path = state.facet(consolePath);
+    return useDatabase
+      .getState()
+      .inline.filter((t) => t.path === path)
+      .map(anchorOf)
+      .filter((a) => a.to <= state.doc.length);
+  },
+  update(value, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setInline)) value = e.value;
+      else if (e.is(resized)) value = [...value];
+    }
+    if (!tr.docChanged) return value;
+    const next: InlineAnchor[] = [];
+    for (const a of value) {
+      const from = tr.changes.mapPos(a.from, 1);
+      const to = tr.changes.mapPos(a.to, -1);
+      // The statement was deleted: so is its result (the store drops it in `syncInline`).
+      if (to <= from) continue;
+      anchors.set(a.id, { from, to });
+      next.push({ id: a.id, from, to });
+    }
+    return next;
+  },
+  // Under the statement's last line.
+  provide: (f) =>
+    EditorView.decorations.compute([f], (state) =>
+      Decoration.set(
+        state
+          .field(f)
+          .map((a) =>
+            Decoration.widget({ widget: new InlineResultWidget(a.id, heightOf(a.id)), block: true, side: 1 }).range(
+              state.doc.lineAt(a.to).to,
+            ),
+          ),
+        true,
+      ),
+    ),
+});
+
+/**
+ * Keeps the view's in-editor results in step with the store: a run's new results show under
+ * their statements (replacing what those statements showed before), closed ones go away.
+ */
+const syncInline = ViewPlugin.define((view) => {
+  const path = view.state.facet(consolePath);
+  let destroyed = false;
+  const sync = () => {
+    if (destroyed) return;
+    const current = view.state.field(inlineField);
+    const tabs = useDatabase.getState().inline.filter((t) => t.path === path);
+    const ids = new Set(tabs.map((t) => t.id));
+    const known = new Set(current.map((a) => a.id));
+    const len = view.state.doc.length;
+    const added = tabs
+      .filter((t) => !known.has(t.id))
+      .map(anchorOf)
+      .filter((a) => a.to <= len);
+    const overlaps = (a: InlineAnchor) => added.some((b) => b.from < a.to && a.from < b.to);
+    const replaced = current.filter((a) => ids.has(a.id) && overlaps(a)).map((a) => a.id);
+    const kept = current.filter((a) => ids.has(a.id) && !replaced.includes(a.id));
+    for (const a of current)
+      if (!ids.has(a.id)) {
+        anchors.delete(a.id);
+        heights.delete(a.id);
+      }
+    if (!added.length && kept.length === current.length) return;
+    for (const a of added) anchors.set(a.id, { from: a.from, to: a.to });
+    view.dispatch({ effects: setInline.of([...kept, ...added].sort((a, b) => a.to - b.to || a.id - b.id)) });
+    if (replaced.length) closeInlineResults(replaced);
+  };
+  let shown = view.state.field(inlineField);
+  const stop = useDatabase.subscribe((s, prev) => {
+    if (s.inline !== prev.inline) queueMicrotask(sync);
+  });
+  queueMicrotask(sync);
+  return {
+    // Results whose statements were deleted go too.
+    update(u) {
+      const next = u.state.field(inlineField);
+      if (next === shown) return;
+      const gone = shown.filter((a) => !next.some((b) => b.id === a.id)).map((a) => a.id);
+      shown = next;
+      if (gone.length && u.docChanged) queueMicrotask(() => closeInlineResults(gone));
+    },
+    destroy: () => {
+      destroyed = true;
+      stop();
+    },
+  };
+});
+
+function heightOf(id: number): number {
+  return heights.get(id) ?? fitHeight(useDatabase.getState().inline.find((r) => r.id === id));
+}
+
+const InlineGrid = lazyComponent(() => import("./ResultsView").then((m) => m.Result));
+
+function InlineResult({ id, view }: { id: number; view: EditorView }) {
+  const tab = useDatabase((s) => s.inline.find((r) => r.id === id));
+  const [height, setHeight] = useState(() => heightOf(id));
+  const drag = useRef<{ y: number; height: number } | null>(null);
+  const measured = useRef(height);
+  useEffect(() => {
+    if (measured.current === height) return;
+    measured.current = height;
+    view.dispatch({ effects: resized.of(null) });
+  }, [height, view]);
+  if (!tab) return null;
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { y: e.clientY, height };
+  };
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!drag.current) return;
+    const next = Math.max(MIN_HEIGHT, Math.round(drag.current.height + e.clientY - drag.current.y));
+    heights.set(id, next);
+    setHeight(next);
+  };
+  return (
+    <div className={styles.inlineResult} style={{ height }}>
+      <InlineGrid tab={tab} onClose={() => closeInlineResults([id])} />
+      <div
+        className={styles.inlineResize}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label={tx("Resize")}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={() => (drag.current = null)}
+      />
+    </div>
+  );
+}
+
+const inlineRoots = new WeakMap<HTMLElement, ReturnType<typeof createRoot>>();
+
+class InlineResultWidget extends WidgetType {
+  constructor(
+    readonly id: number,
+    readonly height: number,
+  ) {
+    super();
+  }
+  eq(other: InlineResultWidget) {
+    return other.id === this.id && other.height === this.height;
+  }
+  /** A resized result keeps its DOM (and grid state); only the editor's measurement changes. */
+  updateDOM(dom: HTMLElement) {
+    return dom.dataset.result === String(this.id);
+  }
+  get estimatedHeight() {
+    return this.height + 12;
+  }
+  toDOM(view: EditorView) {
+    const dom = document.createElement("div");
+    dom.className = "cm-openidea-db-inline";
+    dom.contentEditable = "false";
+    dom.dataset.result = String(this.id);
+    const root = createRoot(dom);
+    inlineRoots.set(dom, root);
+    root.render(<InlineResult id={this.id} view={view} />);
+    return dom;
+  }
+  destroy(dom: HTMLElement) {
+    const root = inlineRoots.get(dom);
+    inlineRoots.delete(dom);
+    queueMicrotask(() => root?.unmount());
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
 
 function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const sources = useDatabase((s) => s.sources);
@@ -233,6 +473,9 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const manual = useDatabase((s) => !!bound && s.manualCommit.has(bound));
   const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
   const databases = useDatabase((s) => s.databases);
+  const inEditor = useProject((s) => inEditorResults(s.settings));
+  // SQL resolution scopes in the settings can move the console to another data source.
+  useProject((s) => s.settings);
   const boundId = bound ? splitTarget(bound).id : null;
   const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
   const sqlServer = sourceById(boundId)?.driver === "sqlServer";
@@ -301,6 +544,12 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         onClick={() => void executeInView(view, path)}
       />
       <IconButton
+        icon="gutter-run-all"
+        title="Execute Script"
+        disabled={!bound || running}
+        onClick={() => void executeScriptInView(view, path)}
+      />
+      <IconButton
         icon="db-plan"
         title="Explain Plan"
         disabled={!bound || running}
@@ -314,8 +563,15 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       />
       <span className={styles.toolbarSeparator} />
       <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
+      <IconButton
+        icon="db-in-editor-results"
+        title="In-Editor Results"
+        aria-pressed={inEditor}
+        onClick={() => void setInEditorResults(!inEditor)}
+      />
       <span className={styles.toolbarSeparator} />
       <Select
+        variant="ghost"
         aria-label="Row limit"
         value={String(maxRows)}
         options={ROW_LIMITS.map((v) => ({ value: v, label: tx`${Number(v).toLocaleString("en")} rows` }))}
@@ -325,6 +581,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         <>
           <span className={styles.toolbarSeparator} />
           <Select
+            variant="ghost"
             aria-label="Transaction mode"
             value={manual ? "manual" : "auto"}
             options={[
@@ -353,8 +610,10 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         </>
       )}
       <span className={styles.spacer} />
+      {bound && sourceById(boundId)?.driver === "snowflake" && <SnowflakeSession target={bound} idle={!running} />}
       {switchable && (
         <Select
+          variant="ghost"
           aria-label={sqlServer ? "Database" : "Schema"}
           value={schema || null}
           placeholder="<schema>"
@@ -365,6 +624,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         />
       )}
       <Select
+        variant="ghost"
         aria-label="Data source"
         value={bound ?? null}
         placeholder={sources.length ? "<data source>" : "None configured"}
@@ -373,6 +633,71 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         disabled={!sources.length}
       />
     </div>
+  );
+}
+
+const quoted = (name: string) => `"${name.replace(/"/g, '""')}"`;
+
+/**
+ * Warehouse and role of a Snowflake data source's session (its consoles share them). Read
+ * once connected and after each run, since `USE WAREHOUSE` / `USE ROLE` in a console moves them too.
+ */
+function SnowflakeSession({ target, idle }: { target: string; idle: boolean }) {
+  const connected = useDatabase((s) => s.connected.has(target));
+  const [state, setState] = useState<DbSessionContext>({
+    warehouse: "",
+    role: "",
+    warehouses: [],
+    roles: [],
+  });
+  useEffect(() => {
+    // Completion has the saved catalog before the first connect; a stale one is read again after it.
+    void loadSavedCatalog(target);
+    if (connected) void offerIntrospection(target);
+  }, [connected, target]);
+  useEffect(() => {
+    if (!connected || !idle) return;
+    let stale = false;
+    call(commands.dbSessionContext(target))
+      .then((context) => {
+        if (!stale) setState(context);
+      })
+      // Not connected any more, or no privilege: the pickers keep what they showed.
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [target, connected, idle]);
+  if (!connected) return null;
+  const use = async (what: "WAREHOUSE" | "ROLE", name: string) => {
+    if (await runSql(target, [`USE ${what} ${quoted(name)}`]))
+      setState((s) => (what === "WAREHOUSE" ? { ...s, warehouse: name } : { ...s, role: name }));
+  };
+  const options = (names: string[], current: string) =>
+    [...new Set(current ? [current, ...names] : names)].map((n) => ({ value: n, label: n }));
+  return (
+    <>
+      <Select
+        variant="ghost"
+        aria-label="Warehouse"
+        value={state.warehouse || null}
+        placeholder="<warehouse>"
+        options={options(state.warehouses, state.warehouse)}
+        searchable={state.warehouses.length > 10}
+        onChange={(v) => void use("WAREHOUSE", v)}
+        disabled={!idle}
+      />
+      <Select
+        variant="ghost"
+        aria-label="Role"
+        value={state.role || null}
+        placeholder="<role>"
+        options={options(state.roles, state.role)}
+        searchable={state.roles.length > 10}
+        onChange={(v) => void use("ROLE", v)}
+        disabled={!idle}
+      />
+    </>
   );
 }
 
@@ -410,7 +735,7 @@ function docNode(text: string): Node {
   return pre;
 }
 
-function applyCandidate(c: SqlCandidate, driver: DbDriver) {
+function applyCandidate(c: SqlCandidate, driver: DbDriver, sql: SqlText) {
   return (view: EditorView, completion: Completion, from: number, to: number) => {
     // A selected template placeholder is replaced, as CodeMirror's own string completions do.
     const sel = view.state.selection.main;
@@ -433,7 +758,7 @@ function applyCandidate(c: SqlCandidate, driver: DbDriver) {
     }
     const changes: Array<{ from: number; to?: number; insert: string }> = [{ from, to, insert: text }];
     // Re-read the statement as it is now: the user may have typed on since the popup opened.
-    const a = analyze(view.state.doc.toString(), to, driver);
+    const a = analyze(sql.text(view.state), to, driver);
     if (a.fromInsert !== null) {
       const clause = ` ${a.lowerKeywords ? "from" : "FROM"} ${c.addFrom}`;
       if (a.fromInsert <= to) changes[0]!.insert += clause;
@@ -458,9 +783,88 @@ function finishTemplateField(view: EditorView) {
  * Context-aware SQL completion against the bound data source's schema (see
  * `sql/analyze` and `sql/complete`); keywords and functions without one.
  */
-function completionSource(path: string): CompletionSource {
-  return (ctx: CompletionContext): CompletionResult | null => {
+/**
+ * The databases of Snowflake data source `id` with their loaded schemas and tables, so
+ * completion can follow `database.schema.table` beyond the console's own database.
+ */
+function catalogOf(id: string): SqlCatalog | undefined {
+  const st = useDatabase.getState();
+  const { id: sourceId, database: bound } = splitTarget(id);
+  const listed = st.databases[sourceId];
+  const dbs = listed?.status === "ok" ? listed.value : null;
+  // What introspection read comes first (it is there before connecting); a database it has not
+  // reached falls back to what the tree loaded.
+  const read = st.catalogs[sourceId]?.databases ?? {};
+  if (!dbs && !Object.keys(read).length) return undefined;
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const target = (database: string) => (dbs ? targetOf(sourceId, database, dbs.current) : null);
+  const schemas = (database: string) => {
+    if (read[database]) return read[database].map((s) => s.name);
+    const at = target(database);
+    const list = at ? st.schemas[at] : undefined;
+    return list?.status === "ok" ? list.value : null;
+  };
+  const current = bound ?? dbs?.current ?? "";
+  return {
+    databases: dbs?.names ?? Object.keys(read),
+    schemas,
+    tables: (database, schema) => {
+      const known = read[database]?.find((s) => same(s.name, schema));
+      if (known) return known.tables.map((t) => ({ name: t.name, view: t.kind !== "table" }));
+      const exact = schemas(database)?.find((s) => same(s, schema));
+      const at = target(database);
+      const list = exact && at ? st.tables[tablesKey(at, exact)] : undefined;
+      return list?.status === "ok" ? list.value.map((t) => ({ name: t.name, view: t.kind !== "table" })) : null;
+    },
+    search: (prefix, limit) => {
+      const wanted = prefix.toLowerCase();
+      const found: Array<{ database: string; schema: string; name: string; view: boolean }> = [];
+      for (const [database, list] of Object.entries(read)) {
+        // The console's own database is in the schema model already.
+        if (same(database, current)) continue;
+        for (const schema of list)
+          for (const t of schema.tables) {
+            if (!t.name.toLowerCase().startsWith(wanted)) continue;
+            found.push({ database, schema: schema.name, name: t.name, view: t.kind !== "table" });
+            if (found.length >= limit) return found;
+          }
+      }
+      return found;
+    },
+  };
+}
+
+/** Loads what `database.` / `database.schema.` at the caret needs before it is completed. */
+async function loadQualified(id: string, qualifier: readonly string[]): Promise<void> {
+  const current = databaseRequest(id);
+  const sourceId = splitTarget(id).id;
+  // Introspection has it: nothing to load (and no reason to connect for it).
+  const wanted = (qualifier[0] ?? "").toLowerCase();
+  const read = useDatabase.getState().catalogs[sourceId]?.databases ?? {};
+  if (Object.keys(read).some((d) => d.toLowerCase() === wanted)) return;
+  if (!useDatabase.getState().databases[sourceId]) await loadDatabases(sourceId);
+  if (!current()) return;
+  const dbs = useDatabase.getState().databases[sourceId];
+  if (dbs?.status !== "ok") return;
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const database = dbs.value.names.find((d) => same(d, qualifier[0] ?? ""));
+  if (!database) return;
+  if (useDatabase.getState().catalogs[sourceId]?.databases[database]) return;
+  const target = targetOf(sourceId, database, dbs.value.current);
+  if (!useDatabase.getState().schemas[target]) await loadSchemas(target);
+  if (!current()) return;
+  if (qualifier.length < 2) return;
+  const list = useDatabase.getState().schemas[target];
+  const schema = list?.status === "ok" ? list.value.find((s) => same(s, qualifier[1]!)) : undefined;
+  if (schema && !useDatabase.getState().tables[tablesKey(target, schema)]) await loadTables(target, schema);
+}
+
+/** SQL completion in `path`, where `sql` says the SQL is (the whole file, or a mapper's statements). */
+export function completionSource(path: string, sql: SqlText = WHOLE_FILE): CompletionSource {
+  return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
+    if (sql.at && !sql.at(ctx.state, ctx.pos)) return null;
     const id = consoleSource(path);
+    const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
     const driver: DbDriver = source?.driver ?? "sqlite";
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
@@ -471,12 +875,23 @@ function completionSource(path: string): CompletionSource {
     // A selected template placeholder (`alias`) is about to be replaced: analyze without it.
     const sel = ctx.state.selection.main;
     const placeholder = !sel.empty && (ctx.pos === sel.from || ctx.pos === sel.to);
-    const doc = ctx.state.doc.toString();
+    const doc = sql.text(ctx.state);
     const analysis = placeholder
       ? analyze(doc.slice(0, sel.from) + doc.slice(sel.to), sel.from, driver)
       : analyze(doc, ctx.pos, driver);
     if (!ctx.explicit && !shouldAutoCompleteSql(analysis)) return null;
-    const candidates = sqlCandidates({ model: scoped, analysis, driver, sourceName: source?.name ?? undefined });
+    const cataloged = driver === "snowflake" && !!id;
+    if (cataloged && analysis.qualifier?.length) {
+      await loadQualified(id, analysis.qualifier).catch(() => {});
+      if (ctx.aborted || !current()) return null;
+    }
+    const candidates = sqlCandidates({
+      model: scoped,
+      analysis,
+      driver,
+      sourceName: source?.name ?? undefined,
+      catalog: cataloged ? catalogOf(id) : undefined,
+    });
     if (!candidates.length) return null;
     return {
       from: analysis.prefix.from,
@@ -488,7 +903,7 @@ function completionSource(path: string): CompletionSource {
         type: c.kind === "keyword" ? "keyword" : c.kind,
         boost: Math.max(-99, Math.min(99, c.boost)),
         info: c.doc ? () => docNode(c.doc!) : undefined,
-        apply: applyCandidate(c, driver),
+        apply: applyCandidate(c, driver, sql),
       })),
       validFor: /^[\p{L}\p{N}_$]*$/u,
     };
@@ -499,6 +914,30 @@ const noKeywords: CompletionSource = (ctx) => ({ from: ctx.pos, options: [] });
 
 function driverOf(path: string): DbDriver {
   return sourceById(consoleSource(path))?.driver ?? "sqlite";
+}
+
+/**
+ * Syntax colours of the bound data source's dialect, over the editor's standard SQL mode.
+ * Follows the binding: a console moved to another data source is coloured for that one.
+ */
+function dialectColours(path: string): Extension {
+  const slot = new Compartment();
+  const colours = (driver: DbDriver): Extension =>
+    driver === "snowflake" ? Prec.high(snowflakeLanguage().extension) : [];
+  const initial = driverOf(path);
+  return [
+    slot.of(colours(initial)),
+    ViewPlugin.define((view) => {
+      let shown = initial;
+      const stop = useDatabase.subscribe(() => {
+        const driver = driverOf(path);
+        if (driver === shown) return;
+        shown = driver;
+        view.dispatch({ effects: slot.reconfigure(colours(driver)) });
+      });
+      return { destroy: stop };
+    }),
+  ];
 }
 
 /** Live template contexts at a position (`sql-statement` / `sql-query` / `sql-code`). */
@@ -569,6 +1008,8 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     consolePath.of(ctx.path),
     runField,
     runGutter,
+    inlineField,
+    syncInline,
     showPanel.of(consolePanel(ctx.path)),
     EditorState.languageData.of(() => [
       { openideaCompletion: completionSource(ctx.path), [TEMPLATE_CONTEXT_KEY]: templateContextsAt(ctx.path) },
@@ -576,6 +1017,7 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     completeAfterTemplate,
     valuesInfo(ctx.path),
     sqlSupport(ctx.path),
+    dialectColours(ctx.path),
     // The grammar's keyword list would duplicate ours (it is the fallback without a language server).
     Prec.highest(EditorState.languageData.of(() => [{ autocomplete: noKeywords }])),
   ];

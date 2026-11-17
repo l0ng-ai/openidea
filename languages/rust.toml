@@ -12,6 +12,10 @@ fn main() {
 }
 '''
 
+# Rainbow brackets › angle: editor syntax nodes whose `<` `>` pair up (never comparisons).
+[rainbow-brackets]
+angle = ["TypeArgList", "TypeParamList"]
+
 [[language-servers]]
 name = "rust-analyzer"
 command = "rust-analyzer"

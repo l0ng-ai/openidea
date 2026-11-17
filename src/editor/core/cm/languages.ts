@@ -18,9 +18,11 @@ import {
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
-import { _languageMode } from "@/editor/api";
+import type { BracketSyntax } from "./rainbowBrackets";
+import { _languageMode, editorsFor } from "@/editor/api";
 import { JS_TAGS } from "./jsTags";
 import { docCommentTags } from "./docCommentTags";
+import type { FencedCodeMode } from "./markdown";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -40,6 +42,24 @@ export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, Lang
 
 export function languageInfo(id: string): LanguageInfo | undefined {
   return infos?.get(id);
+}
+
+let syntaxOf: { infos: Map<string, LanguageInfo> | null; syntax: BracketSyntax } | null = null;
+
+/**
+ * Rainbow brackets' angle syntax: the `[rainbow-brackets]` node names of every language
+ * definition, so embedded code (TypeScript in Vue, HTML in Markdown) is covered too.
+ */
+export function bracketSyntax(): BracketSyntax {
+  if (syntaxOf && syntaxOf.infos === infos) return syntaxOf.syntax;
+  const angle = new Set<string>();
+  const tags = new Set<string>();
+  for (const info of infos?.values() ?? []) {
+    for (const name of info.rainbowBrackets?.angle ?? []) angle.add(name);
+    for (const name of info.rainbowBrackets?.tags ?? []) tags.add(name);
+  }
+  syntaxOf = { infos, syntax: { angle: [...angle].sort(), tags: [...tags].sort() } };
+  return syntaxOf.syntax;
 }
 
 /**
@@ -93,6 +113,11 @@ const OWN_MODES = [
     load: () => import("./restructuredtext").then((m) => new LanguageSupport(m.restructuredtextLanguage)),
   }),
   LanguageDescription.of({
+    name: "Gherkin",
+    extensions: ["feature"],
+    load: () => import("./gherkin").then((m) => m.gherkinSupport()),
+  }),
+  LanguageDescription.of({
     name: "Log",
     extensions: ["log"],
     load: () => import("./log").then((m) => new LanguageSupport(m.logLanguage)),
@@ -124,6 +149,7 @@ const OWN_MODES = [
     load: () => import("./angular/inline").then((m) => m.angularTypescript()),
   }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
+  LanguageDescription.of({ name: "Thymeleaf", load: () => import("./thymeleaf").then((m) => m.thymeleafSupport()) }),
   LanguageDescription.of({
     name: "ERB",
     alias: ["erb", "rhtml"],
@@ -131,6 +157,18 @@ const OWN_MODES = [
     load: () => import("./erb").then((m) => m.erb()),
   }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
+  LanguageDescription.of({
+    name: "Django Template",
+    alias: ["django-html", "djhtml"],
+    extensions: ["djhtml"],
+    load: () => import("./django").then((m) => m.django()),
+  }),
+  LanguageDescription.of({
+    name: "Helm Template",
+    alias: ["helm-template", "gotmpl"],
+    extensions: ["gotmpl"],
+    load: () => import("./helm").then((m) => m.helmTemplate()),
+  }),
   LanguageDescription.of({
     name: "Astro",
     extensions: ["astro"],
@@ -156,6 +194,11 @@ const OWN_MODES = [
         support.support,
       );
     },
+  }),
+  LanguageDescription.of({
+    name: "Markdown",
+    extensions: ["md", "markdown", "mkd"],
+    load: () => import("./markdown").then((m) => m.markdownSupport(fencedCodeMode)),
   }),
   LanguageDescription.of({
     name: "GoMod",
@@ -254,6 +297,64 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
   return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }
 
+/**
+ * The language `path` is shown with outside its editor tab (previews, diffs), resolved as
+ * the editor's: an open editor's mode, else the backend's detection on opening (Override
+ * File Type, File Types patterns, the hashbang of `firstLine` or of the file, framework
+ * modes), else the extension.
+ */
+export async function languageDescriptionFor(
+  path: string,
+  firstLine?: string,
+  backend: DocBackend | null = infosBackend,
+): Promise<LanguageDescription | null> {
+  const open = editorsFor(path)[0]?.ctx;
+  if (open) return findLanguageDescription(open.uiMode, path);
+  const detected = await backend?.languageOf?.(path, firstLine).catch(() => null);
+  const uiMode = detected
+    ? (detected.uiMode ?? languageInfo(detected.language)?.uiMode ?? null)
+    : (uiModeForPath(path) ?? null);
+  return findLanguageDescription(uiMode, path);
+}
+
+/** Supports `patchSupport` produced; `desc.support` is the unpatched one when its `load()` ran elsewhere. */
+const patched = new WeakMap<LanguageDescription, LanguageSupport>();
+const fencedProxies = new WeakMap<LanguageDescription, LanguageDescription>();
+
+/**
+ * The mode for a Markdown fenced block's info string: a mode name or alias (`shell`, `bash`,
+ * `json`, `yml`), else a backend language id or file extension (`shellscript`, `py`, `kt`).
+ * The block gets the same mode and tag patches as a file of that language; a language without
+ * a mode (`text`) stays plain.
+ */
+export function fencedCodeMode(info: string): FencedCodeMode | null {
+  const name = info.toLowerCase();
+  if (!name) return null;
+  let desc = findLanguageDescription(name, "");
+  if (!desc) {
+    const uiMode = infos?.has(name) ? infos.get(name)!.uiMode : uiModeForPath(`.${name}`);
+    desc = uiMode ? findLanguageDescription(uiMode, "") : null;
+  }
+  if (!desc) return null;
+  const ready = patched.get(desc);
+  if (ready) return { name: desc.name, language: ready.language };
+  // Markdown parses the block once the proxy has loaded the patched support.
+  let proxy = fencedProxies.get(desc);
+  if (!proxy)
+    fencedProxies.set(
+      desc,
+      (proxy = LanguageDescription.of({
+        name: desc.name,
+        load: async () => {
+          const support = await loadSupport(desc);
+          if (!support) throw new Error(`failed to load language ${desc.name}`);
+          return support;
+        },
+      })),
+    );
+  return { name: desc.name, language: proxy };
+}
+
 /** Loads (once) the CodeMirror language for `desc`. */
 export function loadSupport(desc: LanguageDescription): Promise<LanguageSupport | null> {
   let p = supports.get(desc.name);
@@ -281,9 +382,11 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
-// @lezer/java tags annotations as plain identifiers.
+// @lezer/java tags annotations as plain identifiers, and `this` as `self` (Python's `self` colour);
+// IntelliJ colours `this` as a keyword.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
+  this: t.keyword,
 };
 
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
@@ -294,6 +397,9 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
+  // CLion colours `this` as a keyword, RustRover `self`.
+  "C++": { this: t.keyword },
+  Rust: { self: t.keyword },
   PHP: {
     "; ,": t.separator,
     "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,
@@ -313,14 +419,15 @@ function patchSupport(desc: LanguageDescription, support: LanguageSupport): Lang
     extra && support.language instanceof LRLanguage
       ? support.language.configure({ props: [styleTags(extra)] })
       : support.language;
-  const patched = new LanguageSupport(language, [
+  const result = new LanguageSupport(language, [
     support.support,
     docCommentTags(desc.name),
     EditorView.editorAttributes.of({ "data-language": desc.name }),
   ]);
   // `loadedSupport` reads `desc.support` synchronously; keep it on the patched instance.
-  (desc as { support: LanguageSupport | undefined }).support = patched;
-  return patched;
+  (desc as { support: LanguageSupport | undefined }).support = result;
+  patched.set(desc, result);
+  return result;
 }
 
 /** Already-loaded support (synchronous), so reopening a file paints highlighted at once. */

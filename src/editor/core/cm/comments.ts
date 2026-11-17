@@ -81,7 +81,10 @@ export const commentLine: Command = (view) => {
     lineToken(state, doc.line(b.startLine).from + leadingWs(doc.line(b.startLine).text)),
   );
   // Languages without line comments (CSS, HTML…): block comments.
-  if (tokens.some((t) => !t)) return blockCommentLines(view);
+  if (tokens.some((t) => !t)) {
+    const first = doc.line(blocks[0]!.startLine);
+    return lineBound(state, first.from + leadingWs(first.text)) ? commentEachLine(view) : blockCommentLines(view);
+  }
 
   let allCommented = true;
   let commentedNonEmpty = false;
@@ -348,14 +351,115 @@ function uncommentBlock(view: EditorView, ranges: { from: number; to: number }[]
 
 /** ⌘⇧/: block comments the selection, or takes the block comment back out. */
 export const commentBlock: Command = (view) => {
-  if (view.state.readOnly) return false;
-  const ranges = view.state.selection.ranges.map((r) => ({ from: r.from, to: r.to }));
-  return uncommentBlock(view, ranges) || toggleBlockComment(view);
+  const { state } = view;
+  if (state.readOnly) return false;
+  const ranges = state.selection.ranges.map((r) => ({ from: r.from, to: r.to }));
+  if (uncommentBlock(view, ranges)) return true;
+  const multiline = state.selection.ranges.some(
+    (r) => state.doc.lineAt(r.from).number != state.doc.lineAt(r.to).number,
+  );
+  const bound = multiline ? lineBound(state, state.selection.main.from) : null;
+  if (!bound) return toggleBlockComment(view);
+  const { open, close } = bound.multiline;
+  view.dispatch(
+    state.changeByRange((r) => ({
+      changes: [
+        { from: r.from, insert: open },
+        { from: r.to, insert: close },
+      ],
+      range: EditorSelection.range(r.from + open.length, r.to + open.length),
+    })),
+    { scrollIntoView: true, userEvent: "input.comment" },
+  );
+  return true;
 };
+
+/**
+ * Language data `lineBoundComments` of a language whose block comment can't span lines
+ * (Django's `{# #}`): `multiline` is the comment to use across lines.
+ */
+interface LineBoundComments {
+  multiline: CommentPair;
+}
+
+function lineBound(state: EditorState, pos: number): LineBoundComments | null {
+  return state.languageDataAt<LineBoundComments>("lineBoundComments", pos)[0] ?? null;
+}
+
+/**
+ * ⌘/ where a block comment can't span lines: each non-blank line gets its own, or loses it
+ * when every one has one. A caret alone moves down, as with line comments.
+ */
+function commentEachLine(view: EditorView): boolean {
+  const { state } = view;
+  const doc = state.doc;
+  const lines = new Set<number>();
+  for (const r of state.selection.ranges) {
+    const first = doc.lineAt(r.from).number;
+    let last = doc.lineAt(r.to).number;
+    if (last > first && doc.line(last).from === r.to) last--;
+    for (let n = first; n <= last; n++) lines.add(n);
+  }
+  const targets = [...lines]
+    .sort((a, b) => a - b)
+    .map((n) => doc.line(n))
+    .filter((line) => line.text.trim());
+  const pairs = targets.map((line) => commentPairs(state, line.from + leadingWs(line.text))[0]);
+  if (!targets.length || pairs.some((p) => !p)) return blockCommentLines(view);
+  const commented = targets.every((line, i) => {
+    const text = line.text.trim();
+    return text.startsWith(pairs[i]!.open) && text.endsWith(pairs[i]!.close);
+  });
+  const changes: ChangeSpec[] = targets.map((line, i) => {
+    const { open, close } = pairs[i]!;
+    const start = line.from + leadingWs(line.text);
+    const end = line.from + line.text.trimEnd().length;
+    if (!commented)
+      return [
+        { from: start, insert: `${open} ` },
+        { from: end, insert: ` ${close}` },
+      ];
+    const inner = state.sliceDoc(start + open.length, end - close.length);
+    return { from: start, to: end, insert: inner.replace(/^ /, "").replace(/ $/, "") };
+  });
+  const caret = state.selection.ranges.length === 1 && state.selection.main.empty;
+  const changeSet = state.changes(changes);
+  const next = caret ? doc.lineAt(state.selection.main.head).number + 1 : 0;
+  view.dispatch({
+    changes: changeSet,
+    selection:
+      caret && next <= doc.lines
+        ? EditorSelection.cursor(changeSet.mapPos(doc.line(next).from + leadingWs(doc.line(next).text)))
+        : state.selection.map(changeSet),
+    scrollIntoView: true,
+    userEvent: commented ? "delete.uncomment" : "input.comment",
+  });
+  return true;
+}
 
 /** ⌘/ in a language without line comments (CSS, HTML…): the block comment of the lines. */
 function blockCommentLines(view: EditorView): boolean {
-  return uncommentBlock(view, selectedLines(view.state)) || toggleComment(view);
+  const ranges = selectedLines(view.state);
+  if (uncommentBlock(view, ranges)) return true;
+  const { state } = view;
+  if (
+    ranges.every(
+      (r) =>
+        state.sliceDoc(r.from, r.from + 1) === "{" &&
+        commentPairs(state, state.doc.lineAt(r.from).from)[0]?.open === "{/*",
+    )
+  ) {
+    view.dispatch({
+      changes: ranges.flatMap((r) => [
+        { from: r.from, insert: "{/* " },
+        { from: r.to, insert: " */}" },
+      ]),
+      scrollIntoView: true,
+      userEvent: "input.comment",
+    });
+    return true;
+  }
+  return toggleComment(view);
 }
 
 // --- Enter in a line comment ------------------------------------------------------

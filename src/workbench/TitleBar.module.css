@@ -3,7 +3,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 8px 0 10px;
   white-space: nowrap;
   -webkit-user-select: none;
@@ -62,11 +62,12 @@
 .item {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 /* Main toolbar dropdown widgets. */
 .widget {
+  min-width: 0;
   height: 30px;
   margin: 0;
   padding: 0 8px;
@@ -75,7 +76,7 @@
   font-size: var(--fs-ui);
 }
 .widget {
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .widget:hover,
 .widget[aria-expanded="true"] {
@@ -113,7 +114,7 @@
 .tools {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-left: 12px;
 }
 .tool {
@@ -130,6 +131,14 @@
      stripe's own padding does and the two share a centre line. */
   padding-left: var(--stripe-outer-padding);
 }
+/* The desktop puts caption buttons on the left (GTK decoration layout): they take the left
+   edge, and the right keeps the bar's own padding when no buttons are left there. */
+.frameless.captionsAtLeft {
+  padding-left: 0;
+}
+.frameless.noCaptionsAtRight {
+  padding-right: 8px;
+}
 /* The button heads the tool window stripe below it, so it takes the stripe's
    size: both shrink in compact mode. */
 .mainMenuButton {
@@ -144,6 +153,10 @@
   border-radius: var(--radius-popup);
   background: transparent;
   color: var(--fg-secondary);
+}
+.mainMenuButton:hover,
+.mainMenuButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
 }
 .mainMenuButton:focus-visible,
 .menuTitle:focus-visible,
@@ -161,7 +174,6 @@
   height: var(--stripe-icon-button);
   overflow: hidden;
 }
-.mainMenuSlot ~ .item,
 .mainMenuSlot ~ .tools {
   flex-shrink: 0;
 }
@@ -178,12 +190,22 @@
   display: flex;
   align-items: center;
 }
+/* Main menu › Separate toolbar: the titles in their own row below the title bar. */
+.menuRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
 /* The main menu titles. */
 .menuBar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 .menuTitle {
@@ -203,6 +225,10 @@
   align-self: stretch;
   display: flex;
   margin-left: 8px;
+}
+.captionsLeft {
+  margin-left: 0;
+  margin-right: 8px;
 }
 .caption {
   width: 46px;
@@ -225,4 +251,32 @@
 .captionClose:active {
   background: var(--caption-close-pressed);
   color: var(--fg-caption-close-hover);
+}
+
+/* A narrow window: tighter spacing, and the widgets give way (ellipsis) before anything overlaps. */
+@media (max-width: 560px) {
+  .bar {
+    gap: var(--space-0-5);
+  }
+  .widget {
+    padding: 0 4px;
+  }
+  .tools {
+    margin-left: 2px;
+  }
+  .drag {
+    min-width: 0;
+  }
+  .mainMenuButton {
+    margin-right: 0;
+  }
+  .captions {
+    margin-left: 0;
+  }
+  .captionsLeft {
+    margin-right: 0;
+  }
+  .caption {
+    width: 28px;
+  }
 }

@@ -12,6 +12,32 @@
   background: none;
 }
 
+/* Archived agent tabs (`run_command`), after the run tabs. */
+.agentArchive {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  height: 22px;
+  margin: 0 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.agentArchive:hover {
+  background: var(--bg-hover);
+}
+.agentArchive[data-active] {
+  color: var(--accent);
+}
+.agentArchiveCount {
+  font-size: var(--fs-small);
+}
+
 .panel {
   flex: 1;
   display: flex;
@@ -31,9 +57,17 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 0;
   border-right: 1px solid var(--border);
+  min-height: 0;
+  /* A pane shorter than the buttons (the Services detail) scrolls them with the wheel
+     instead of growing the pane and adding a second scrollbar. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar {
+  display: none;
 }
 .toolbarSep {
   width: 16px;
@@ -95,14 +129,14 @@
   border: none;
   border-radius: 4px;
   color: var(--fg-secondary);
-  background: var(--bg-toolbar);
+  background: var(--bg-elev);
   opacity: 0.6;
 }
 
 .consoleFindOpen:hover,
 .consoleFindOpen:focus-visible {
   opacity: 1;
-  color: var(--fg-primary);
+  color: var(--fg-strong);
 }
 
 .consoleWrap {
@@ -151,7 +185,7 @@
   left: 0;
   min-width: 100%;
   padding: 0 12px;
-  line-height: 20px;
+  line-height: inherit;
   white-space: pre;
   tab-size: 4;
 }
@@ -197,7 +231,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: 28px;
   padding: 0 4px 0 10px;
   border-bottom: 1px solid var(--border);
@@ -218,7 +252,7 @@
 .testRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
 }
@@ -267,12 +301,14 @@
 .widget {
   display: flex;
   align-items: center;
-  gap: 4px;
+  min-width: 0;
+  gap: var(--space-1);
 }
 .widgetChooser {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 260px;
   height: 30px;
   border-radius: 6px;
@@ -342,9 +378,10 @@
   flex: none;
 }
 .widgetButtons {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .widgetRun:not(:disabled) {
   color: var(--success);
@@ -365,7 +402,7 @@
 .chooserRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   min-width: 0;
 }
@@ -442,6 +479,17 @@
   display: flex;
   margin-right: -4px;
 }
+.chooserSeparator {
+  flex: 1;
+  height: 1px;
+  margin: 0 4px;
+  background: var(--border-popup);
+}
+/* IDEA: the number of configurations after "All Configurations". */
+.chooserCount {
+  margin-left: 6px;
+  color: var(--fg-faint);
+}
 .badge {
   flex: none;
   padding: 0 5px;
@@ -481,7 +529,7 @@
 .editToolbar {
   flex: none;
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 6px;
   border-bottom: 1px solid var(--border-popup);
 }
@@ -499,7 +547,7 @@
 .editItem {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   height: var(--h-row);
   padding: 0 12px 0 20px;
@@ -522,7 +570,7 @@
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .configFields {
   display: grid;
@@ -586,7 +634,7 @@
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
   align-items: start;
   column-gap: var(--space-3);
-  row-gap: 4px;
+  row-gap: var(--space-1);
   min-width: 0;
 }
 .fieldTop {
@@ -604,7 +652,7 @@
 .fieldControl {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .fieldControl > * {
@@ -626,7 +674,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 24px 12px;
   color: var(--fg-subtle);
   text-align: center;
@@ -654,7 +702,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-popup);
 }
@@ -682,13 +730,13 @@
 .storeProjectGroup {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .formSection {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .formSectionTitle {
   flex: 1;
@@ -699,12 +747,12 @@
 .formSection .noticeLink {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .inputWithButton {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .inputWithButton > :first-child {
@@ -737,7 +785,7 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .taskList > button:last-of-type {
   align-self: flex-start;
@@ -746,7 +794,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-height: var(--h-row);
 }
 .taskRow > :first-child {
@@ -755,7 +803,7 @@
 .taskActions {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .taskLabel {
   overflow: hidden;
@@ -765,12 +813,12 @@
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 4px 2px 10px;
   border-radius: 999px;
   background: var(--bg-elev);
@@ -795,7 +843,7 @@
 .envDialog {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px 16px;
 }
 .envPanel {
@@ -815,7 +863,7 @@
 .envGridRow {
   display: grid;
   grid-template-columns: 2fr 3fr;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: center;
   padding: 0 8px;
   min-height: var(--h-row);
@@ -823,7 +871,7 @@
 .envHeader {
   position: sticky;
   top: 0;
-  background: var(--bg-popup, var(--bg));
+  background: var(--bg-popup);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   border-bottom: 1px solid var(--border-popup);
@@ -844,7 +892,7 @@
 .editPreview {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   margin-top: 8px;
   padding: 8px 10px;
   border-radius: var(--radius-small);
@@ -859,7 +907,7 @@
 .footerError {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--danger);
   font-size: var(--fs-ui);
   min-width: 0;
@@ -896,7 +944,7 @@
 .dialogBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px 16px;
 }
 
@@ -984,7 +1032,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 0 8px;
   border-bottom: 1px solid var(--border-popup);
   margin-bottom: 6px;
@@ -1013,13 +1061,13 @@
 .tomcatSection {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 2px;
 }
 .tomcatSectionHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-weight: 500;
@@ -1033,7 +1081,7 @@
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: var(--space-2);
   padding-left: 14px;
 }
 .tomcatBrowserSelect {
@@ -1062,7 +1110,7 @@
   display: grid;
   grid-template-columns: 40px 1fr;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding-left: 34px;
 }
 .tomcatUrlLabel {
@@ -1121,20 +1169,20 @@
 .tomcatServerSettingsGrid {
   display: grid;
   grid-template-columns: minmax(220px, 260px) 1fr;
-  gap: 16px 24px;
+  gap: var(--space-4) 24px;
   align-items: start;
   padding-left: 14px;
 }
 .tomcatPortsCol {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .tomcatPortField {
   display: grid;
   grid-template-columns: 90px 1fr;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .tomcatFlagsCol {
   display: flex;
@@ -1147,7 +1195,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 8px 4px 2px;
   margin-top: 4px;
   border-top: 1px solid var(--border-popup);
@@ -1156,7 +1204,7 @@
 .tomcatWarningText {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--warning, var(--fg-strong));
   font-size: var(--fs-ui);
   font-weight: 500;
@@ -1176,14 +1224,14 @@
 .appServersToolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 6px;
   border-bottom: 1px solid var(--border-popup);
 }
 .appServersToolbarPlain {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 0;
 }
 .appServersList {
@@ -1198,7 +1246,7 @@
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .appServerFieldRow {
   display: grid;
@@ -1227,7 +1275,7 @@
 .appServersLibHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 8px;
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
@@ -1235,7 +1283,7 @@
 .appServersLibRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   padding: 2px 8px 2px 24px;
   font-family: var(--font-mono);
@@ -1297,7 +1345,7 @@
   display: grid;
   grid-template-columns: 72px 1fr 90px;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: var(--h-row);
   padding: 0 10px;
   font-size: var(--fs-ui);
@@ -1328,7 +1376,7 @@
   display: grid;
   grid-template-columns: 1fr 2fr;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: var(--h-row);
   padding: 0 10px;
   font-size: var(--fs-ui);
@@ -1362,13 +1410,13 @@
 .tomcatDebugConnectionSection {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 2px;
 }
 .tomcatDebugTransportRow {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .tomcatDebugPortRow {
   display: flex;
@@ -1384,7 +1432,7 @@
 .tomcatRadioLabel {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-ui);
 }
@@ -1398,13 +1446,13 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: var(--space-4);
   margin-top: 4px;
 }
 .tomcatSectionToggle {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-weight: 500;
@@ -1425,7 +1473,7 @@
 .addServerErrorRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg);
   font-size: var(--fs-ui);
 }

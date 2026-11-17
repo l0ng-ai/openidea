@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
-// macOS 11 can update to Safari 16. Keep this floor in sync with vite.config.ts.
+// Safari 15.4 is the bundle's floor, macOS 12's engine (the app's minimum). On macOS 11 the app loads the newer WebKit staged by a Safari update (src-tauri/src/macos_webview.rs). Keep this floor in sync with vite.config.ts.
 // Syntax lowering does not replace newer runtime APIs in dependencies.
 const newerStatics = new Set([
   "Promise.withResolvers",
@@ -15,7 +15,16 @@ const newerStatics = new Set([
   "Uint8Array.fromBase64",
   "Uint8Array.fromHex",
 ]);
-const newerMethods = new Set(["isWellFormed", "toWellFormed"]);
+const newerMethods = new Set([
+  "isWellFormed",
+  "toWellFormed",
+  // Safari 16 / 16.4 APIs above the floor.
+  "showPicker",
+  "supportedValuesOf",
+  "toSorted",
+  "toReversed",
+  "toSpliced",
+]);
 
 export function checkSource(source: string, startup: boolean): string[] {
   const tree = ts.createSourceFile("bundle.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -84,6 +93,6 @@ export function checkBuild(dir: string): string[] {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const errors = checkBuild(resolve("dist"));
-  if (errors.length) throw new Error(`Safari 16 compatibility check failed:\n${errors.join("\n")}`);
-  console.log("Safari 16 startup API and bundle syntax checks passed");
+  if (errors.length) throw new Error(`Safari 15.4 compatibility check failed:\n${errors.join("\n")}`);
+  console.log("Safari 15.4 startup API and bundle syntax checks passed");
 }

@@ -6,14 +6,46 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { Profile } from "@/platform/ipc";
-import { EmptyState, IconButton, Input, Tabs, Tree, T } from "@/ui";
+import { EmptyState, Icon, IconButton, Input, Tabs, Tree, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
 import { colorSlot, flameLayout, formatWeight, frameLocation, matchingFrames, share } from "./model";
 import { activeSnapshot, closeSnapshot, useProfiler, type ProfilerTab } from "./store";
 import styles from "./Profiler.module.css";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 
 const ROW = 18;
+
+/** Names the allocation modes for the snapshot tabs; CPU profiles keep the plain run name. */
+function useModeLabel(): (profile: Profile) => string | null {
+  const tx = useTx();
+  return (profile) =>
+    profile.mode === "allocations" ? tx("Allocations") : profile.mode === "liveObjects" ? tx("Live Objects") : null;
+}
+
+/** Faint mark after the name of a frame that is an allocated type rather than code. */
+function TypeMark({ profile, frame }: { profile: Profile; frame: number }) {
+  if (profile.frames[frame]!.kind !== "allocatedType") return null;
+  return (
+    <span className={styles.typeMark}>
+      <T>allocated</T>
+    </span>
+  );
+}
+
+/** `async-profiler · 612.4 MB allocated`; what the weight counts depends on the mode. */
+function profileSummary(profile: Profile, tx: ReturnType<typeof useTx>): string {
+  const total = profile.total ?? 0;
+  if (profile.mode === "allocations") {
+    const size = formatWeight(total, profile.unit);
+    return `${profile.profiler} · ${tx`${size} allocated`}`;
+  }
+  if (profile.mode === "liveObjects") {
+    const count = Math.round(total);
+    const live = count === 1 ? tx("1 live sample (≈ 512 KB)") : tx`${count} live samples (≈ 512 KB each)`;
+    return `${profile.profiler} · ${live}`;
+  }
+  return `${profile.profiler} · ${formatWeight(total, profile.unit)}`;
+}
 
 function openFrame(profile: Profile, frame: number) {
   const f = profile.frames[frame];
@@ -27,6 +59,7 @@ function openFrame(profile: Profile, frame: number) {
 export function ProfilerTabs() {
   const snapshots = useProfiler((s) => s.snapshots);
   const activeId = useProfiler((s) => s.activeId);
+  const modeLabel = useModeLabel();
   if (!snapshots.length) return null;
   return (
     <Tabs
@@ -36,17 +69,21 @@ export function ProfilerTabs() {
       activeId={activeId}
       onSelect={(id) => useProfiler.setState({ activeId: id })}
       onClose={closeSnapshot}
-      items={snapshots.map((s) => ({
-        id: s.id,
-        label: s.name,
-        closable: true,
-        tooltip: `${s.profile.profiler}, ${new Date(s.createdAt).toLocaleTimeString()}`,
-      }))}
+      items={snapshots.map((s) => {
+        const mode = modeLabel(s.profile);
+        return {
+          id: s.id,
+          label: mode ? `${s.name} · ${mode}` : s.name,
+          closable: true,
+          tooltip: `${s.profile.profiler}, ${mode ? `${mode}, ` : ""}${new Date(s.createdAt).toLocaleTimeString()}`,
+        };
+      })}
     />
   );
 }
 
 function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
+  const tx = useTx();
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [focus, setFocus] = useState(0);
@@ -88,10 +125,11 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
                   className={clsx(
                     styles.frame,
                     styles[`c${colorSlot(frame.name)}`],
+                    frame.kind === "allocatedType" && styles.typeFrame,
                     matches && (matches.has(node.frame) ? styles.match : styles.dim),
                   )}
                   style={{ left: r.x * width, width: Math.max(w - 1, 1), bottom: r.depth * ROW }}
-                  title={`${frame.name}${location ? ` (${location})` : ""}\nTotal: ${formatWeight(node.total ?? 0, unit)} (${share(node.total ?? 0, total)})\nSelf: ${formatWeight(node.selfWeight ?? 0, unit)}`}
+                  title={`${frame.kind === "allocatedType" ? `${tx("Allocated type")}\n` : ""}${frame.name}${location ? ` (${location})` : ""}\nTotal: ${formatWeight(node.total ?? 0, unit)} (${share(node.total ?? 0, total)})\nSelf: ${formatWeight(node.selfWeight ?? 0, unit)}`}
                   onClick={() => setFocus(r.node)}
                   onDoubleClick={() => openFrame(profile, node.frame)}
                 >
@@ -139,6 +177,7 @@ function CallTree({ profile }: { profile: Profile }) {
           <span className={styles.treeRow}>
             <span className={styles.share}>{share(node.total ?? 0, total)}</span>
             <span className={styles.name}>{profile.frames[node.frame]!.name}</span>
+            <TypeMark profile={profile} frame={node.frame} />
             {location && <span className={styles.muted}>{location}</span>}
             <span className={styles.weight}>
               {formatWeight(node.total ?? 0, profile.unit)}
@@ -155,6 +194,7 @@ type MethodSort = "self" | "total" | "name";
 const MAX_METHODS = 2000;
 
 function MethodList({ profile, query }: { profile: Profile; query: string }) {
+  const tx = useTx();
   const [sort, setSort] = useState<MethodSort>("self");
   const total = profile.total ?? 0;
   const rows = useMemo(() => {
@@ -189,6 +229,7 @@ function MethodList({ profile, query }: { profile: Profile; query: string }) {
               <tr key={m.frame} onDoubleClick={() => openFrame(profile, m.frame)}>
                 <td className={styles.methodCell}>
                   <span className={styles.name}>{profile.frames[m.frame]!.name}</span>
+                  <TypeMark profile={profile} frame={m.frame} />
                   {location && <span className={styles.muted}>{location}</span>}
                 </td>
                 <td className={styles.num}>
@@ -209,6 +250,7 @@ function MethodList({ profile, query }: { profile: Profile; query: string }) {
 }
 
 export function ProfilerView() {
+  const tx = useTx();
   const snapshot = useProfiler((s) => activeSnapshot(s));
   const tab = useProfiler((s) => s.tab);
   const query = useProfiler((s) => s.query);
@@ -237,9 +279,7 @@ export function ProfilerView() {
             { id: "methods", label: "Method List" },
           ]}
         />
-        <span className={styles.muted}>
-          {profile.profiler} · {formatWeight(profile.total ?? 0, profile.unit)}
-        </span>
+        <span className={styles.muted}>{profileSummary(profile, tx)}</span>
         {tab !== "tree" && (
           <Input
             className={styles.search}
@@ -250,6 +290,12 @@ export function ProfilerView() {
           />
         )}
       </div>
+      {snapshot.notice && (
+        <div className={styles.notice} role="status">
+          <Icon name="warning" size={13} className={styles.noticeIcon} />
+          <span>{tx(snapshot.notice)}</span>
+        </div>
+      )}
       <div className={styles.body}>
         {tab === "flame" && <FlameGraph key={snapshot.id} profile={profile} query={query} />}
         {tab === "tree" && <CallTree key={snapshot.id} profile={profile} />}

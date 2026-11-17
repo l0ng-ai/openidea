@@ -67,9 +67,10 @@ export function navigationWord(view: EditorView, offset: number): { from: number
   return from < to ? { from: line.from + from, to: line.from + to } : null;
 }
 
-/** Indexing/refresh can be progress from this very lookup. Do not cancel an
- * explicit click when its own server task finishes; simply don't retain that
- * answer. Source edits/restarts still invalidate the request generation. */
+/** Indexing/refresh can be progress from this very lookup, and file changes the
+ * build writing its output after an edit. Do not cancel an explicit click for
+ * them; simply don't retain that answer. Source edits/restarts still invalidate
+ * the request generation. */
 function refreshConfigurationNavigation() {
   for (const [key, entry] of results) {
     entry.retain = false;
@@ -147,8 +148,8 @@ export function requestNavigation(view: EditorView, offset: number, kind: GotoKi
 export function installConfigurationNavigationEvents(): () => void {
   const clear = invalidateConfigurationNavigation;
   const off = [
-    onIdeEvent("fsChanged", clear),
-    onIdeEvent("excludedDirsChanged", clear),
+    onIdeEvent("fsChanged", refreshConfigurationNavigation),
+    onIdeEvent("excludedDirsChanged", refreshConfigurationNavigation),
     onIdeEvent("docPatched", clear),
     onIdeEvent("docLanguage", clear),
     onIdeEvent("workspaceEditApplied", clear),

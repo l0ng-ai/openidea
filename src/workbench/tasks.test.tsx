@@ -141,6 +141,23 @@ describe("cancelling", () => {
     expect(off.parentElement).toHaveAttribute("data-tooltip", "This step can't be cancelled");
   });
 
+  it("cancelling the last task from the popup closes it", () => {
+    const cancel = vi.fn(() => upsertTask({ id: "dl", title: "Installing", message: null, fraction: 1, done: true }));
+    upsertTask({ id: "dl", title: "Installing", message: null, fraction: null, done: false, cancel });
+    render(
+      <>
+        <TaskStatus />
+        <BackgroundTasksHost />
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Background tasks/ }));
+    expect(screen.getByRole("dialog", { name: "Background tasks" })).toBeVisible();
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Cancel Installing" })));
+    expect(useTasks.getState().tasks).toEqual([]);
+    expect(screen.queryByRole("dialog", { name: "Background tasks" })).toBeNull();
+    expect(screen.queryByText("No background tasks")).toBeNull();
+  });
+
   it("indexing says why it can't be stopped", () => {
     setIndexing(true, 10, 20);
     expect(task("indexing")).toMatchObject({ uncancellable: expect.any(String) });

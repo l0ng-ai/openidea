@@ -2,8 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { installRepeatedDoubleClick } from "@/platform/doubleClick";
-import { getContext } from "@/platform/context";
-import { provideEditorService, registerProjectViewRoot, type EditorService } from "@/workbench/contributions";
+import { getContext, setContext } from "@/platform/context";
+import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
+import {
+  provideEditorService,
+  registerProjectViewRoot,
+  setFileDecorations,
+  type EditorService,
+} from "@/workbench/contributions";
 import { activate } from "./index";
 import { setOsClipboardForTests } from "./clipboard";
 import { MemoryFs, setProjectFsForTests } from "./fs";
@@ -49,6 +56,19 @@ let fs: MemoryFs;
 let openFile: ReturnType<typeof vi.fn>;
 let dispose: () => void;
 
+const initialPlatform = usePlatform.getState();
+const initialKeymap = useKeymap.getState();
+let uninstallDispatcher: (() => void) | null = null;
+
+/** Presses the presets' shortcuts: the global dispatcher runs the keymap's actions. */
+function dispatchViaKeymap() {
+  usePlatform.setState({ os: "macos" });
+  useKeymap.setState({ preset: "intellij-macos", overrides: {} });
+  // The workbench activation that publishes this in the app does not run here.
+  setContext("projectOpen", true);
+  uninstallDispatcher = installKeyboardDispatcher(window);
+}
+
 beforeEach(() => {
   localStorage.clear();
   fs = new MemoryFs(
@@ -73,6 +93,10 @@ beforeEach(() => {
 afterEach(() => {
   dispose();
   setProjectFsForTests(null);
+  uninstallDispatcher?.();
+  uninstallDispatcher = null;
+  usePlatform.setState(initialPlatform);
+  useKeymap.setState(initialKeymap);
 });
 
 function setup() {
@@ -147,7 +171,29 @@ describe("ProjectView", () => {
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "App.kt", "Util.kt", "README.md"]));
   });
 
+  it("opens the selected file in the right split with ⇧Enter; a folder still expands", async () => {
+    dispatchViaKeymap();
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Enter", code: "Enter", shiftKey: true });
+    await waitFor(() =>
+      expect(openFile).toHaveBeenLastCalledWith(
+        "/w/acme/README.md",
+        expect.objectContaining({ side: true, focus: true }),
+      ),
+    );
+    openFile.mockClear();
+    fireEvent.mouseDown(row("src"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Enter", code: "Enter", shiftKey: true });
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
   it("pastes the files Explorer copied into the selected folder, as copies", async () => {
+    dispatchViaKeymap();
     // What Explorer leaves on the clipboard: a path outside the project.
     fs.nodes.set("/elsewhere/Photo.png", { kind: "file", size: 3 });
     setOsClipboardForTests({
@@ -171,6 +217,7 @@ describe("ProjectView", () => {
   });
 
   it("clears cut dimming and disables Paste on focus after the OS clipboard becomes text", async () => {
+    dispatchViaKeymap();
     let files: string[] = [];
     setOsClipboardForTests({
       files: async () => files,
@@ -407,6 +454,7 @@ describe("ProjectView", () => {
   });
 
   it("renames in IDEA's Rename dialog with Shift+F6, validating conflicts, and undoes with ⌘Z", async () => {
+    dispatchViaKeymap();
     const { tree, row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
@@ -434,7 +482,34 @@ describe("ProjectView", () => {
     expect(fs.nodes.has("/w/acme/GUIDE.md")).toBe(false);
   });
 
+  it("stops renaming with Shift+F6 once Rename File is unbound, following the keymap", async () => {
+    dispatchViaKeymap();
+    // Unbinding used to leave the component's hardcoded Shift+F6 in place (issue #2801).
+    applyKeymapSettings("intellij-macos", { "project.rename": [] });
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "F6", code: "F6", shiftKey: true });
+    expect(screen.queryByRole("dialog", { name: "Rename" })).toBeNull();
+  });
+
+  it("renames with the shortcut the keymap rebinds Rename File to", async () => {
+    dispatchViaKeymap();
+    applyKeymapSettings("intellij-macos", { "project.rename": ["F2"] });
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "F6", code: "F6", shiftKey: true });
+    expect(screen.queryByRole("dialog", { name: "Rename" })).toBeNull();
+    fireEvent.keyDown(tree, { key: "F2", code: "F2" });
+    const dialog = await screen.findByRole("dialog", { name: "Rename" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  });
+
   it("moves with F6 through the Move dialog", async () => {
+    dispatchViaKeymap();
     const { tree, row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
@@ -453,6 +528,7 @@ describe("ProjectView", () => {
   });
 
   it("deletes the selection after confirmation", async () => {
+    dispatchViaKeymap();
     const { tree, row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
@@ -557,6 +633,20 @@ describe("Show Members", () => {
       expect(ipc.docOutline).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("autoscrolls to source without handing files to another application", async () => {
+    const { rows, row } = setup();
+    act(() => {
+      setViewOption("autoscrollToSource", true);
+      setViewOption("singleClickOpen", false);
+      setViewOption("previewTab", false);
+    });
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    await waitFor(() =>
+      expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", expect.objectContaining({ external: false })),
+    );
+  });
 
   it("honours member single-click options and double-click focus", async () => {
     ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
@@ -735,4 +825,64 @@ it("hides the path beside workspace roots when Show Root Paths is off, keeping i
   const root = document.querySelector('[data-project-path="/a/service"]');
   expect(root?.getAttribute("title")).toBe("/a/service");
   act(() => setViewOption("showRootPaths", true));
+});
+
+it("shows a decoration's suffix after the root name, with icons and struck-out segments", async () => {
+  const { row } = setup();
+  await waitFor(() => expect(row("acme")).toBeTruthy());
+  act(() =>
+    setFileDecorations(
+      "test-suffix",
+      new Map([
+        [
+          ROOT,
+          {
+            suffixColor: "var(--accent)",
+            suffix: [
+              { text: "main" },
+              { text: "/" },
+              { text: "0", strike: true, label: "Up to date with origin/main" },
+              { text: "2", icon: "vcs-outgoing", label: "2 outgoing commits" },
+            ],
+          },
+        ],
+      ]),
+    ),
+  );
+  await waitFor(() => expect(row("acme").textContent).toContain("main/02"));
+  const root = row("acme");
+  expect(root.querySelector("s")?.textContent).toBe("0");
+  expect(root.querySelector("s")?.closest("[style]")?.getAttribute("style")).toContain("var(--accent)");
+  expect(within(root).getByLabelText("2 outgoing commits").querySelector("svg")).not.toBeNull();
+  expect(within(root).getByLabelText("Up to date with origin/main").textContent).toBe("0");
+  act(() => setFileDecorations("test-suffix", new Map()));
+  await waitFor(() => expect(row("acme").textContent).not.toContain("main/"));
+});
+
+it("marks file and folder symlinks with the link arrow, leaving real folders and files alone", async () => {
+  fs = new MemoryFs(
+    {
+      "/w/acme/dir1/keep.txt": "x",
+      "/w/acme/dir2/keep.txt": "x",
+      "/w/acme/note.txt": "x",
+    },
+    ROOT,
+    // `ln -s dir1 link1` on macOS/Linux; the backend reports kind "symlink", size 0.
+    { "/w/acme/link1": "/w/acme/dir1", "/w/acme/note-link.txt": "/w/acme/note.txt" },
+  );
+  setProjectFsForTests(fs, ROOT);
+  initProjectTree(ROOT, "acme");
+  const { row } = setup();
+  const iconAt = (label: string) => row(label).querySelector("[data-project-path]")?.getAttribute("data-project-icon");
+  await waitFor(() => expect(row("link1")).toBeTruthy());
+  // The link to a folder carries the arrow (IDEA's symlink badge)…
+  expect(within(row("link1")).getByLabelText("Symbolic link").tagName).toBe("svg");
+  expect(iconAt("link1")).toBe("folder");
+  expect(iconAt("dir1")).toBe("folder");
+  // …so does a link to a file, as in IDEA; real folders and files do not.
+  expect(within(row("note-link.txt")).getByLabelText("Symbolic link").tagName).toBe("svg");
+  expect(iconAt("note-link.txt")).toBe("file-text");
+  expect(within(row("dir1")).queryByLabelText("Symbolic link")).toBeNull();
+  expect(within(row("dir2")).queryByLabelText("Symbolic link")).toBeNull();
+  expect(within(row("note.txt")).queryByLabelText("Symbolic link")).toBeNull();
 });

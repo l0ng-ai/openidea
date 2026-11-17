@@ -4,7 +4,7 @@ import { EditorView } from "@codemirror/view";
 import type { Commit } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
+import { notifications, type EditorInput } from "@/workbench/contributions";
 import {
   Dialog,
   EmptyState,
@@ -22,25 +22,17 @@ import {
 import { openDialog } from "./dialogs";
 
 import { commitRepo, type RepoCommit } from "./multiRoot";
-import { currentRepoRoot, useVcs } from "./store";
+import { currentRepoRoot } from "./store";
 import { repositoryPath } from "./repositoryPaths";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
 import styles from "./GitLog.module.css";
-import { choosePath } from "@/features/settings/languages/api";
+import { choosePath } from "@/platform/choosePath";
 import { openLogTab } from "./logStore";
-
-interface RevisionData {
-  repo: string;
-  revision: string;
-  path: string;
-  external?: boolean;
-}
+import { openRevisionFile, type RevisionData } from "./revisionInput";
 
 export async function openExternalLog() {
   const picked = isTauri()
-    ? await (
-        await import("@tauri-apps/plugin-dialog")
-      ).open({ title: tx("Open Git Log"), directory: true, multiple: true })
+    ? await (await import("@/platform/dialog")).open({ title: tx("Open Git Log"), directory: true, multiple: true })
     : await choosePath({ title: "Open Git Log", directory: true });
   const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
   if (!paths.length) return;
@@ -120,20 +112,7 @@ function RevisionBrowser({
     const children = await call(commands.vcsRevisionChildren(repo, revision, path.replace(/\/$/, "")));
     setDirectories((current) => ({ ...current, [path]: children }));
   };
-  const open = (path: string) => {
-    if (useVcs.getState().root) {
-      const bytes = new TextEncoder().encode(JSON.stringify({ repo, revision, path }));
-      const encoded = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-      void editorService().openFile(`git-revision:${encoded}/${encodeURIComponent(path.split("/").at(-1)!)}`, {
-        focus: true,
-      });
-    } else
-      void editorService().openInput({
-        kind: "git-revision",
-        key: `git-revision:${repo}\0${revision}\0${path}`,
-        data: { repo, revision, path, external } satisfies RevisionData,
-      });
-  };
+  const open = (path: string) => openRevisionFile(repo, revision, path, external);
   return (
     <Dialog open title={tx`Repository at ${revision.slice(0, 8)}`} onClose={onClose} width={1000}>
       <div style={{ height: "min(70vh, 640px)", display: "flex", flexDirection: "column" }}>
@@ -148,7 +127,7 @@ function RevisionBrowser({
         ) : !files ? (
           <Spinner />
         ) : (
-          <SplitGroup orientation="horizontal" id="git-revision-browser">
+          <SplitGroup orientation="horizontal" id="git-revision-browser" storageKey="openidea.vcs.revisionBrowserSplit">
             <SplitPanel id="files" defaultSize="30%" minSize="20%">
               <Tree
                 roots={tree}
@@ -217,7 +196,8 @@ function RevisionSource({ repo, revision, path, external }: RevisionData) {
       if (external) await call(commands.vcsOpenExternalLog(repo));
       return call(commands.vcsFileAt(absolute, revision));
     };
-    void Promise.all([content(), languageFor(path)])
+    void content()
+      .then(async (text) => [text, await languageFor(absolute, text == null ? null : firstLineOf(text))] as const)
       .then(([text, language]) => {
         if (!alive || !host.current) return;
         view = new EditorView({

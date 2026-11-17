@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getContext } from "@/platform/context";
-import { executeAction, getAction } from "@/platform/actions";
+import { actionToggled, executeAction, getAction } from "@/platform/actions";
 import { registerToolWindow } from "../contributions";
 import { installToolWindowActions } from "./actions";
 import {
   activateToolWindow,
+  applyToolWindowLayout,
+  collapseSidesForNarrowWindow,
+  enterDistractionFreeLayout,
+  exitDistractionFreeLayout,
+  toolWindowLayoutSnapshot,
+  restoreSidesAfterNarrowWindow,
   hideActiveToolWindow,
   hideAllToolWindows,
   hideToolWindow,
@@ -26,10 +32,12 @@ import {
   restoreMaximizedToolWindow,
   setFocusedToolWindow,
   setToolWindowSize,
+  setToolWindowViewMode,
   showToolWindow,
   toggleToolWindow,
   toolWindowServiceImpl,
   useToolWindowLayout,
+  viewModeOf,
 } from "./store";
 
 const Empty = () => null;
@@ -202,6 +210,29 @@ describe("tool window persistence", () => {
     expect(isToolWindowVisible("structure")).toBe(true);
     expect(isToolWindowVisible("terminal")).toBe(true);
     expect(useToolWindowLayout.getState().sizes.bottom).toBe(333);
+  });
+
+  it("doesn't reopen windows whose content ends with the session (Debug)", () => {
+    disposers.push(
+      registerToolWindow({
+        id: "debug",
+        title: "Debug",
+        icon: "debug",
+        anchor: "bottom",
+        sessionContent: true,
+        component: Empty,
+      }),
+    );
+    showToolWindow("structure");
+    showToolWindow("debug");
+    expect(isToolWindowVisible("debug")).toBe(true);
+    loadToolWindowLayout("/work/a");
+    expect(isToolWindowVisible("debug")).toBe(false);
+    expect(isToolWindowVisible("structure")).toBe(true);
+    // A layout saved before the window was marked.
+    localStorage.setItem("openidea.layout.v1:/work/d", JSON.stringify({ v: 2, visible: { bottom: "debug" } }));
+    loadToolWindowLayout("/work/d");
+    expect(isToolWindowVisible("debug")).toBe(false);
   });
 
   it("survives corrupt storage", () => {
@@ -389,6 +420,34 @@ describe("split areas", () => {
     expect(getContext()["toolWindow.late.visible"]).toBe(true);
     sync();
   });
+
+  it("clears maximized and restores other tool windows when a maximized plugin window unregisters", () => {
+    const sync = installToolWindowLayoutSync();
+    const disposeK8s = registerToolWindow({
+      id: "plugin.k8s.view:kubernetes",
+      title: "Kubernetes",
+      icon: "cloud",
+      anchor: "right",
+      secondary: true,
+      component: Empty,
+    });
+    showToolWindow("plugin.k8s.view:kubernetes", true);
+    setFocusedToolWindow("plugin.k8s.view:kubernetes");
+    toggleMaximizeToolWindow("plugin.k8s.view:kubernetes");
+    expect(useToolWindowLayout.getState().maximized).toBe("right");
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(getContext()["toolWindow.project.visible"]).toBe(false);
+
+    disposeK8s();
+
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    expect(useToolWindowLayout.getState().focused).toBeNull();
+    expect(useToolWindowLayout.getState().lastActive).toBeNull();
+    expect(isToolWindowVisible("project")).toBe(true);
+    expect(getContext()["toolWindow.project.visible"]).toBe(true);
+    expect(getContext().toolWindowFocus).toBe(false);
+    sync();
+  });
 });
 
 describe("stripe buttons", () => {
@@ -416,5 +475,190 @@ describe("stripe buttons", () => {
     expect(buttons()).toEqual({ find: false, terminal: false });
     resetToolWindowPlacements();
     expect(buttons()).toEqual({});
+  });
+
+  it("drops the button of a window that lost its last tab until new content opens it", () => {
+    disposers.push(registerToolWindow(find));
+    showToolWindow("find");
+    toolWindowServiceImpl.hide("find");
+    expect(hasStripeButton(find, buttons())).toBe(true);
+    showToolWindow("find");
+    toolWindowServiceImpl.hide("find", { removeFromStripe: true });
+    expect(isToolWindowVisible("find")).toBe(false);
+    expect(hasStripeButton(find, buttons())).toBe(false);
+    showToolWindow("find");
+    expect(hasStripeButton(find, buttons())).toBe(true);
+  });
+});
+
+describe("view modes", () => {
+  it("are remembered per window and project; Restore Default Layout docks and pins every window", () => {
+    expect(viewModeOf("project")).toBe("dockPinned");
+    setToolWindowViewMode("project", "undock");
+    setToolWindowViewMode("terminal", "dockUnpinned");
+    loadToolWindowLayout("/work/b");
+    expect(viewModeOf("project")).toBe("dockPinned");
+    loadToolWindowLayout("/work/a");
+    expect(viewModeOf("project")).toBe("undock");
+    expect(viewModeOf("terminal")).toBe("dockUnpinned");
+    resetToolWindowPlacements();
+    expect(useToolWindowLayout.getState().viewModes).toEqual({});
+  });
+
+  it("ignores unknown stored modes", () => {
+    localStorage.setItem(
+      "openidea.layout.v1:/work/c",
+      JSON.stringify({ v: 2, viewModes: { project: "float", terminal: "undock", problems: 3 } }),
+    );
+    loadToolWindowLayout("/work/c");
+    expect(useToolWindowLayout.getState().viewModes).toEqual({ terminal: "undock" });
+  });
+
+  it("unpinned and undocked windows hide when focus moves to the editor or another tool window", () => {
+    setToolWindowViewMode("project", "dockUnpinned");
+    setToolWindowViewMode("terminal", "undock");
+    showToolWindow("terminal");
+    setFocusedToolWindow("project");
+    expect(isToolWindowVisible("project")).toBe(true);
+    expect(isToolWindowVisible("terminal")).toBe(false);
+
+    showToolWindow("terminal");
+    setFocusedToolWindow("terminal");
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("terminal")).toBe(false);
+  });
+
+  it("stay when focus goes to a popup or dialog; pinned windows never hide on focus", () => {
+    setToolWindowViewMode("project", "dockUnpinned");
+    showToolWindow("terminal");
+    setFocusedToolWindow("project");
+    setFocusedToolWindow(null);
+    expect(isToolWindowVisible("project")).toBe(true);
+    setFocusedToolWindow(null, true);
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+
+  it("toolwindow.viewMode.* set the mode of the window an Options menu names, else of the active one", async () => {
+    const dispose = installToolWindowActions();
+    await executeAction("toolwindow.viewMode.undock", "terminal");
+    expect(viewModeOf("terminal")).toBe("undock");
+
+    setFocusedToolWindow("project");
+    expect(actionToggled(getAction("toolwindow.viewMode.dockPinned"))).toBe(true);
+    await executeAction("toolwindow.viewMode.dockUnpinned");
+    expect(viewModeOf("project")).toBe("dockUnpinned");
+    expect(actionToggled(getAction("toolwindow.viewMode.dockUnpinned"))).toBe(true);
+    expect(actionToggled(getAction("toolwindow.viewMode.dockPinned"))).toBe(false);
+
+    await executeAction("toolwindow.viewMode.dockPinned", "terminal");
+    expect(useToolWindowLayout.getState().viewModes).toEqual({ project: "dockUnpinned" });
+    dispose();
+  });
+});
+
+describe("narrow window", () => {
+  const saved = () => JSON.parse(localStorage.getItem("openidea.layout.v1:/work/a") ?? "{}").visible;
+
+  it("hides the side windows, keeps the bottom one, and puts the sides back", () => {
+    showToolWindow("terminal");
+    collapseSidesForNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    expect(useToolWindowLayout.getState().stripeButtons.project).not.toBe(false);
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+  });
+
+  it("reopens a window from its stripe button while narrow", () => {
+    collapseSidesForNarrowWindow();
+    toggleToolWindow("project");
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("does not save the collapse, but does save changes made meanwhile", () => {
+    showToolWindow("terminal");
+    collapseSidesForNarrowWindow();
+    expect(saved().left).toBe("project");
+    showToolWindow("problems");
+    expect(saved()).toMatchObject({ left: "project", bottom: "problems" });
+  });
+
+  it("keeps a side window the user opened while narrow over the remembered one", () => {
+    collapseSidesForNarrowWindow();
+    showToolWindow("structure");
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("structure")).toBe(true);
+    expect(isToolWindowVisible("project")).toBe(false);
+  });
+
+  it("collapses once, ignores a layout without sides or a project, and clears a maximized side", () => {
+    toggleMaximizeToolWindow("project");
+    collapseSidesForNarrowWindow();
+    const stash = useToolWindowLayout.getState().narrowStash;
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().narrowStash).toBe(stash);
+
+    resetToolWindowLayout();
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    loadToolWindowLayout("/work/a");
+    hideToolWindow("project");
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+  });
+
+  it("saves what the user does to a side area while narrow, not the remembered window", () => {
+    collapseSidesForNarrowWindow();
+    toggleToolWindow("project");
+    hideToolWindow("project");
+    expect(saved().left).toBeNull();
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(false);
+  });
+
+  it("keeps the hidden sides in the saved layout through Distraction Free Mode", () => {
+    collapseSidesForNarrowWindow();
+    enterDistractionFreeLayout();
+    expect(saved().left).toBe("project");
+    exitDistractionFreeLayout();
+    expect(saved().left).toBe("project");
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("includes the hidden sides in a saved layout snapshot and drops them when a layout is applied", () => {
+    collapseSidesForNarrowWindow();
+    const snapshot = toolWindowLayoutSnapshot();
+    expect(snapshot.visible.left).toBe("project");
+    applyToolWindowLayout({ ...snapshot, visible: { ...snapshot.visible, left: "structure" } });
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("structure")).toBe(true);
+    expect(saved().left).toBe("structure");
+  });
+
+  it("forgets the hidden sides when another project's layout loads", () => {
+    collapseSidesForNarrowWindow();
+    loadToolWindowLayout("/work/b");
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    expect(isToolWindowVisible("project")).toBe(true);
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("leaves a maximized bottom window maximized", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().maximized).toBe("bottom");
+    expect(isToolWindowVisible("terminal")).toBe(true);
   });
 });

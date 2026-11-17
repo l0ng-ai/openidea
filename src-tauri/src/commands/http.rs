@@ -135,3 +135,19 @@ pub async fn http_environment_file(
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
+
+/// Where `{{name}}` is defined in the environment files that apply to request file `path`
+/// (Navigate › Declaration on a variable), private file first.
+#[tauri::command]
+#[specta::specta]
+pub async fn http_variable_definitions(
+    window: Window,
+    state: State<'_, AppState>,
+    path: IpcPath,
+    name: String,
+) -> IdeResult<Vec<ide_core::Location>> {
+    let root = state.project(window.label()).ok().map(|p| p.root.clone());
+    tauri::async_runtime::spawn_blocking(move || ide_http::env::variable_definitions(&path, root.as_deref(), &name))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))
+}

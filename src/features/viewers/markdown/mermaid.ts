@@ -9,7 +9,9 @@ import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { themeKey } from "@/platform/themeWatch";
 import { attachPanZoom } from "../panZoom";
 import { attachDiagramTools, TOOLS_ATTR } from "./mermaidTools";
+import { localSvg } from "./localSvg";
 import { reid } from "./svgIds";
+import { svgElementSize } from "@/ui/svgSize";
 
 export const MERMAID_SELECTOR = "[data-mermaid]";
 const OUTPUT_CLASS = "mermaid-output";
@@ -180,6 +182,8 @@ function configure(mermaid: Mermaid, key: string) {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
+    // These go into the diagram's stylesheet as written: a diagram setting them could fetch from any host.
+    secure: ["themeCSS", "fontFamily", "altFontFamily"],
     suppressErrorRendering: true,
     theme: "base",
     // Each diagram type defaults to "neo": the start state is hard-coded
@@ -229,7 +233,7 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
   const out = document.createElement("div");
   out.className = OUTPUT_CLASS;
   if (result && "svg" in result) {
-    out.innerHTML = reid(result.svg);
+    out.append(localSvg(reid(result.svg)));
     block.setAttribute(RENDERED_ATTR, "ok");
   } else if (result) {
     out.setAttribute("role", "alert");
@@ -247,7 +251,15 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
   if (block.getAttribute(RENDERED_ATTR) === "ok") {
     attachPanZoom(out);
     const svg = out.querySelector("svg");
-    if (svg) attachDiagramTools(block, svg);
+    if (svg) {
+      const size = svgElementSize(svg);
+      if (size) {
+        svg.dataset.naturalWidth = "";
+        svg.style.setProperty("--diagram-width", `${Number(size.w.toFixed(2))}px`);
+        svg.style.maxWidth = "calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1))";
+      }
+      attachDiagramTools(block, svg);
+    }
   }
 }
 

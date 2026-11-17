@@ -1,0 +1,46 @@
+.start {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+}
+
+.startInner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 560px;
+}
+
+.heading {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+
+.command {
+  margin: 0;
+  padding: 8px 12px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  color: var(--fg);
+  background: var(--bg-island);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  text-align: center;
+}

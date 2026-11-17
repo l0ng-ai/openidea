@@ -93,6 +93,10 @@ function model() {
       document = snapshot();
       return structuredClone(document);
     },
+    cellDocs: async () =>
+      document.cells
+        .filter((cell) => cell.cellType === "code")
+        .map((cell, i) => ({ cell: cell.id, doc: 100 + i, uri: `vscode-notebook-cell:/p/a.ipynb#${cell.id}` })),
   };
   return {
     backend,
@@ -104,6 +108,40 @@ function model() {
 }
 
 describe("shared notebook mutation session", () => {
+  it("fetches the code cells' language-server documents when the code cells change", async () => {
+    const m = model();
+    const cellDocs = vi.fn(m.backend.cellDocs);
+    m.backend.cellDocs = cellDocs;
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    await vi.waitFor(() => expect(session.getState().cellDocs.get("cell-a")?.doc).toBe(100));
+    expect(session.cellOfUri("vscode-notebook-cell:/p/a.ipynb#cell-a")).toBe("cell-a");
+    expect(session.cellOfUri("vscode-notebook-cell:/p/a.ipynb#other")).toBeNull();
+
+    // Typing keeps the same cells: no refetch.
+    session.edit({ type: "setSource", cell: "cell-a", source: "changed" });
+    await session.settled();
+    expect(m.read().cells[0]!.source).toBe("changed");
+    expect(cellDocs).toHaveBeenCalledTimes(1);
+
+    const added = { ...m.read().cells[0]!, id: "cell-b", source: "" };
+    m.replace({ ...m.read(), version: m.read().version + 1, cells: [...m.read().cells, added] });
+    session.edit({ type: "setSource", cell: "cell-a", source: "again" });
+    await session.settled();
+    await vi.waitFor(() => expect(session.getState().cellDocs.get("cell-b")?.doc).toBe(101));
+    expect(cellDocs).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks the editor to show a revealed location", () => {
+    const session = new NotebookSession("/p/a.ipynb", model().backend, true);
+    session.reveal("cell-a", { line: 1, col: 2 });
+    const first = session.getState().reveal!;
+    expect(first).toMatchObject({ cell: "cell-a", selection: { line: 1, col: 2 } });
+    expect(session.selectedCell).toBe("cell-a");
+    session.reveal("cell-a");
+    expect(session.getState().reveal!.seq).toBeGreaterThan(first.seq);
+  });
+
   it("retires event listeners even when the backend project disappears during close", async () => {
     const m = model();
     const session = new NotebookSession("/p/a.ipynb", m.backend, true);

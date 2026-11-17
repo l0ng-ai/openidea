@@ -1,0 +1,4 @@
+<!-- Not in a templates folder: the editor offers Django Template from its tags. -->
+{% load static %}
+<p>Two cappuccini for <strong>{{ price|default:"€3" }}</strong></p>
+<img src="{% static 'promo.png' %}" alt="">

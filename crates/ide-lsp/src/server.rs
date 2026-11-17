@@ -74,6 +74,22 @@ pub struct Progress {
     pub message: Option<String>,
     /// Set while the server accepts `window/workDoneProgress/cancel` for it.
     pub cancel: Option<ide_core::task::CancelHandle>,
+    /// When the server last reported on this token; a task that stops reporting is stuck.
+    pub last: tokio::time::Instant,
+    /// Last percentage, so a stalled task does not lose its bar.
+    pub fraction: Option<f32>,
+    /// Marked after the stale window of silence. The task stays visible, but no longer
+    /// counts as busy: the work may resume and finish in the same task.
+    pub stalled: bool,
+}
+
+impl Progress {
+    /// Nothing came for `stale` and the task is not already marked: the work behind it is
+    /// blocked on something that never answers (an HTTP read with no response header, Maven
+    /// waiting for a repository). Its task must not hold the IDE while that lasts.
+    pub fn silent(&self, stale: Duration) -> bool {
+        !self.stalled && tokio::time::Instant::now() >= self.last + stale
+    }
 }
 
 pub struct Server {
@@ -96,8 +112,11 @@ pub struct Server {
     status: Mutex<(ServerStatus, Option<String>)>,
     /// Consecutive crashes of short-lived instances.
     crashes: Mutex<usize>,
-    /// When the current instance was launched.
+    /// When the current instance became ready: only time spent running counts as uptime,
+    /// not the time spent starting (an `initialize` that hangs for minutes is not a stable run).
     started: Mutex<Option<Instant>>,
+    /// Why the current instance's `initialize` failed, for the crash report.
+    start_error: Mutex<Option<(u64, String)>>,
     stderr: Mutex<VecDeque<String>>,
     pub progress: Mutex<HashMap<String, Progress>>,
     /// What the editor shows per path: the pushed and the pulled diagnostics together.
@@ -111,7 +130,7 @@ pub struct Server {
     published: Mutex<HashMap<PathBuf, Instant>>,
     /// Woken on every `publishDiagnostics` (Inspect Code waits on it).
     pub published_notify: Notify,
-    /// Woken when the last `$/progress` task ends.
+    /// Woken when an empty answer stops being suspect (see [`Server::indexing`]).
     idle_notify: Notify,
     /// `experimental/serverStatus` (rust-analyzer): `None` until the server sends
     /// one, then whether it is still loading the project.
@@ -132,6 +151,10 @@ pub struct Server {
     /// The instance whose just registered external project is loading, until an open file's
     /// diagnostics arrive (0: none).
     pub external_loading: std::sync::atomic::AtomicU64,
+    /// jdtls sent `ServiceReady` on this instance: the project is imported.
+    java_ready: std::sync::atomic::AtomicBool,
+    /// kotlin-lsp's project import as the current instance last reported it.
+    pub(crate) import_state: watch::Sender<Option<crate::kotlin_lsp::ImportState>>,
 }
 
 impl Server {
@@ -157,6 +180,7 @@ impl Server {
             status: Mutex::new((ServerStatus::Stopped, None)),
             crashes: Mutex::new(0),
             started: Mutex::new(None),
+            start_error: Mutex::new(None),
             stderr: Mutex::new(VecDeque::new()),
             progress: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
@@ -177,6 +201,8 @@ impl Server {
             external_diagnostics: std::sync::atomic::AtomicBool::new(false),
             external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
             external_loading: std::sync::atomic::AtomicU64::new(0),
+            java_ready: std::sync::atomic::AtomicBool::new(false),
+            import_state: watch::channel(None).0,
         }
     }
 
@@ -189,6 +215,11 @@ impl Server {
             config.settings = Some(settings);
         }
         config
+    }
+
+    /// The configured server's display name for the current (or last) instance.
+    pub fn display_name(&self) -> Option<String> {
+        self.effective.lock().as_ref().and_then(|c| c.display_name.clone())
     }
 
     pub fn set_effective_config(&self, generation: u64, config: LanguageServerConfig) {
@@ -230,9 +261,22 @@ impl Server {
         st.conn = Conn::Starting;
         st.restarting = false;
         *self.start_cancel.lock() = CancellationToken::new();
-        *self.started.lock() = Some(Instant::now());
+        *self.started.lock() = None;
+        *self.start_error.lock() = None;
+        // A crash report quotes only this instance's output, not its predecessors'.
+        self.stderr.lock().clear();
+        self.import_state.send_replace(None);
         self.phase.send_replace(Phase::Starting);
         Some(st.generation)
+    }
+
+    /// Publishes instance `generation`'s import state unless a newer start replaced it; checked
+    /// under the state lock so it cannot land after [`Self::begin_start`]'s reset.
+    pub(crate) fn set_import_state(&self, generation: u64, state: crate::kotlin_lsp::ImportState) {
+        let st = self.state.lock();
+        if st.generation == generation {
+            self.import_state.send_replace(Some(state));
+        }
     }
 
     /// Starting → Missing/Failed, publishing the status the failed start reports
@@ -266,7 +310,13 @@ impl Server {
         }
         st.conn = Conn::Ready(run);
         *self.initializing.lock() = None;
+        *self.started.lock() = Some(Instant::now());
         true
+    }
+
+    /// Records why instance `generation` failed to initialize, so its crash report says so.
+    pub fn set_start_error(&self, generation: u64, reason: String) {
+        *self.start_error.lock() = Some((generation, reason));
     }
 
     /// Wakes requests waiting for the instance (after status and documents are in place).
@@ -286,6 +336,13 @@ impl Server {
 
     pub fn is_starting(&self) -> bool {
         matches!(self.state.lock().conn, Conn::Starting)
+    }
+
+    /// The server will not run until something changes: its binary is missing, its
+    /// configuration can't launch it, or it crashed too often (or its build expired).
+    /// Servers that crashed and are about to restart are not given up on.
+    pub fn gave_up(&self) -> bool {
+        matches!(self.state.lock().conn, Conn::Missing | Conn::Failed)
     }
 
     /// The instance told `initialized`, ready or not.
@@ -310,6 +367,13 @@ impl Server {
     /// The running instance if it is still generation `generation`.
     pub fn running_gen(&self, generation: u64) -> Option<Running> {
         self.running().filter(|r| r.generation == generation)
+    }
+
+    /// Instance `generation` is starting or running: not stopped, crashed or replaced.
+    /// Work it reports before it is ready (a Gradle import answers `initialize` late) still counts.
+    pub fn is_live(&self, generation: u64) -> bool {
+        let st = self.state.lock();
+        st.generation == generation && matches!(st.conn, Conn::Starting | Conn::Ready(_))
     }
 
     /// Waits through startup or a planned restart; returns the instance once ready.
@@ -402,17 +466,23 @@ impl Server {
         }
         let tail = self.stderr_tail(5);
         let cfg = self.effective_config();
-        let mut message = match (code, &cfg.connect) {
-            (Some(c), _) => format!("{} exited with code {c}", self.name),
-            (None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", self.name),
-            (None, None) => format!("{} terminated unexpectedly", self.name),
+        let start_error = self.start_error.lock().take().filter(|(g, _)| *g == generation).map(|(_, r)| r);
+        let mut message = match (&start_error, code, &cfg.connect) {
+            (Some(reason), _, _) => format!("{} failed to start: {reason}", self.name),
+            (None, Some(c), _) => format!("{} exited with code {c}", self.name),
+            (None, None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", self.name),
+            (None, None, None) => format!("{} terminated unexpectedly", self.name),
         };
         if !tail.is_empty() {
             message.push_str(":\n");
             message.push_str(&tail);
         }
-        let delay = self.record_crash();
-        message.push_str(if delay.is_some() {
+        // Starting the same build again can't help: only an update can.
+        let expired = self.reported_expired_build();
+        let delay = if expired { None } else { self.record_crash() };
+        message.push_str(if expired {
+            "\nThis build has expired; update it to start it again."
+        } else if delay.is_some() {
             "\nRestarting…"
         } else {
             "\nCrashed repeatedly; restart it manually."
@@ -434,6 +504,7 @@ impl Server {
     /// Records a crash; returns the backoff before restarting, or `None` once
     /// [`MAX_RESTARTS`] instances in a row died before running [`STABLE_UPTIME`]
     /// (a server that crashes on every start, however slowly, is not restarted forever).
+    /// An instance that never became ready has run for no time at all.
     pub fn record_crash(&self) -> Option<Duration> {
         let uptime = self.started.lock().map(|t| t.elapsed()).unwrap_or_default();
         let mut crashes = self.crashes.lock();
@@ -469,7 +540,13 @@ impl Server {
             return;
         }
         *cur = (status, message.clone());
-        st.events.push_back(IdeEvent::LanguageServer { server: self.id, name: self.name.clone(), status, message });
+        st.events.push_back(IdeEvent::LanguageServer {
+            server: self.id,
+            name: self.name.clone(),
+            label: self.display_name(),
+            status,
+            message,
+        });
     }
 
     fn queue_cleanup(&self, st: &mut State) {
@@ -542,9 +619,10 @@ impl Server {
         self.publish(sink);
     }
 
-    /// Whether the server reports work in progress (indexing, analysis).
+    /// Whether the server reports work in progress (indexing, analysis). A task marked
+    /// stuck stays visible but no longer holds the server busy.
     pub fn is_busy(&self) -> bool {
-        !self.progress.lock().is_empty() || *self.loading.lock() == Some(true)
+        self.progress.lock().values().any(|p| !p.stalled) || *self.loading.lock() == Some(true)
     }
 
     /// Whether the server says it is still loading the project, so an empty
@@ -564,6 +642,32 @@ impl Server {
         self.phase_ended();
     }
 
+    /// Whether an empty search answer may only mean the server has not indexed the project
+    /// yet. jdtls' searches wait for its index themselves, and the progress it reports once
+    /// the project is imported is background work (builds, validation): only the import counts.
+    pub fn indexing(&self) -> bool {
+        if self.name == "jdtls" {
+            return self.is_busy() && !self.java_ready.load(std::sync::atomic::Ordering::Acquire);
+        }
+        self.is_busy()
+    }
+
+    /// Records jdtls' `ServiceReady`.
+    pub fn set_java_ready(&self) {
+        self.java_ready.store(true, std::sync::atomic::Ordering::Release);
+        self.phase_ended();
+    }
+
+    /// Whether progress token `token` is still running on this instance.
+    pub fn has_progress(&self, token: &str) -> bool {
+        self.progress.lock().contains_key(token)
+    }
+
+    /// Whether token `token` has reported nothing for `stale`.
+    pub fn progress_silent(&self, token: &str, stale: Duration) -> bool {
+        self.progress.lock().get(token).is_some_and(|p| p.silent(stale))
+    }
+
     /// Called after a `$/progress` task ended.
     pub fn progress_ended(&self) {
         self.phase_ended();
@@ -571,7 +675,7 @@ impl Server {
 
     fn phase_ended(&self) {
         self.phase_notify.notify_waiters();
-        if !self.is_busy() {
+        if !self.indexing() {
             self.idle_notify.notify_waiters();
         }
     }
@@ -581,11 +685,29 @@ impl Server {
         self.phase_notify.notified()
     }
 
-    /// Waits until no `$/progress` task is active; false on timeout or cancellation.
-    pub async fn wait_idle(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
+    /// Waits until [`Server::indexing`] ends; false on timeout or cancellation.
+    pub async fn wait_indexed(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notified = self.idle_notify.notified();
+            if !self.indexing() || self.running().is_none() {
+                return !self.indexing();
+            }
+            tokio::select! {
+                () = notified => {}
+                () = tokio::time::sleep_until(deadline) => return !self.indexing(),
+                () = cancel.cancelled() => return false,
+            }
+        }
+    }
+
+    /// Waits until no `$/progress` task is active, background work included (jdtls' builds,
+    /// rust-analyzer's `cargo check`), unlike [`Server::wait_indexed`]; false on timeout or
+    /// cancellation.
+    pub async fn wait_idle(&self, timeout: Duration, cancel: &CancellationToken) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.phase_notify.notified();
             if !self.is_busy() || self.running().is_none() {
                 return !self.is_busy();
             }
@@ -669,7 +791,7 @@ impl Server {
         if buf.len() == STDERR_LINES {
             buf.pop_front();
         }
-        buf.push_back(line);
+        buf.push_back(ide_core::output_encoding::strip_ansi(&line));
     }
 
     pub fn stderr_tail(&self, n: usize) -> String {
@@ -678,9 +800,16 @@ impl Server {
         crash_excerpt(&lines, n)
     }
 
+    /// JetBrains preview builds (kotlin-lsp) refuse to run past their expiry date and
+    /// exit with "This build of kotlin-server has expired".
+    fn reported_expired_build(&self) -> bool {
+        self.stderr.lock().iter().any(|l| is_expired_build_line(l))
+    }
+
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
         *self.loading.lock() = None;
         self.external_loading.store(0, std::sync::atomic::Ordering::Release);
+        self.java_ready.store(false, std::sync::atomic::Ordering::Release);
         self.progress.lock().drain().map(|(_, p)| (p.task, p.title)).collect()
     }
 
@@ -688,6 +817,20 @@ impl Server {
     pub fn set_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
         set_or_remove(&mut self.pushed.lock(), path.clone(), items);
         self.combine(path)
+    }
+
+    /// [`Server::set_diagnostics`] for a publication tagged with a document version older than
+    /// the text the server has now: shown, but not an answer for the current text, so
+    /// [`Server::last_published`] keeps its time.
+    pub fn set_obsolete_diagnostics(&self, path: PathBuf, items: Vec<lsp::Diagnostic>) -> Vec<lsp::Diagnostic> {
+        let before = self.last_published(&path);
+        let shown = self.set_diagnostics(path.clone(), items);
+        let mut published = self.published.lock();
+        match before {
+            Some(at) => published.insert(path, at),
+            None => published.remove(&path),
+        };
+        shown
     }
 
     /// Records a pulled report for `path` (`None` items: unchanged since `result_id`'s
@@ -817,6 +960,10 @@ fn is_error_headline(line: &str) -> bool {
     named || l.starts_with("Exception in thread") || l.starts_with("thread '") && l.contains("panicked")
 }
 
+fn is_expired_build_line(line: &str) -> bool {
+    line.contains("This build of ") && line.contains(" has expired")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -830,7 +977,15 @@ mod tests {
             s.set_diagnostics(path.clone(), vec![lsp::Diagnostic::default()]);
             s.progress.lock().insert(
                 "old".into(),
-                Progress { task: TaskId::next(), title: "Old work".into(), message: None, cancel: None },
+                Progress {
+                    task: TaskId::next(),
+                    title: "Old work".into(),
+                    message: None,
+                    cancel: None,
+                    last: tokio::time::Instant::now(),
+                    fraction: None,
+                    stalled: false,
+                },
             );
             let seen = Arc::new(Mutex::new(Vec::new()));
             let manager = Arc::new(Mutex::new(std::sync::Weak::<crate::LspManager>::new()));
@@ -867,6 +1022,81 @@ mod tests {
     fn server() -> Server {
         let cfg: LanguageServerConfig = toml::from_str("name = \"s\"\ncommand = \"s\"").unwrap();
         Server::new(cfg, PathBuf::from("/p"), LanguageId::new("vue"))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_progress_task_turns_silent_once_its_reports_stop() {
+        let stale = Duration::from_secs(180);
+        let mut p = Progress {
+            task: TaskId::next(),
+            title: "Importing Maven project(s)".into(),
+            message: Some("https://maven.example/".into()),
+            cancel: None,
+            last: tokio::time::Instant::now(),
+            fraction: Some(0.44),
+            stalled: false,
+        };
+        assert!(!p.silent(stale));
+        tokio::time::advance(stale).await;
+        assert!(p.silent(stale), "no report for the whole window");
+        // A report puts the task back to work, whatever it was doing.
+        p.last = tokio::time::Instant::now();
+        p.stalled = true;
+        assert!(!p.silent(stale));
+        p.stalled = false;
+        assert!(!p.silent(stale));
+    }
+
+    #[test]
+    fn a_stalled_progress_task_does_not_keep_the_server_busy() {
+        let s = server();
+        s.progress.lock().insert(
+            "p".into(),
+            Progress {
+                task: TaskId::next(),
+                title: "Importing Maven project(s)".into(),
+                message: None,
+                cancel: None,
+                last: tokio::time::Instant::now(),
+                fraction: None,
+                stalled: true,
+            },
+        );
+        assert!(!s.is_busy(), "a stuck task must not hold wait_indexed or ReferencesIncomplete::Indexing");
+        s.progress.lock().get_mut("p").unwrap().stalled = false;
+        assert!(s.is_busy(), "a reporting task keeps the server busy");
+    }
+
+    #[test]
+    fn only_time_spent_ready_counts_as_uptime() {
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let s = server();
+        for n in 1..=MAX_RESTARTS + 1 {
+            // Never ready: crashes after a slow start count however long the start took.
+            let generation = s.begin_start().unwrap();
+            assert!(s.started.lock().is_none());
+            s.set_start_error(generation, "it did not answer initialize within 300 s".into());
+            let delay = s.on_closed(generation, &sink, None).unwrap();
+            assert_eq!(delay.is_some(), n <= MAX_RESTARTS, "crash {n}");
+            let message = s.status_message().unwrap();
+            assert!(
+                message.starts_with(&format!("{} failed to start: it did not answer initialize", s.name)),
+                "{message}"
+            );
+            s.state.lock().conn = Conn::Idle;
+        }
+        assert!(matches!(s.state.lock().conn, Conn::Idle));
+    }
+
+    #[test]
+    fn an_instance_is_live_from_its_start_until_it_is_retired() {
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        assert!(s.is_live(generation), "still starting: its progress (an import) is being watched");
+        assert!(!s.is_live(generation + 1));
+        assert!(s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, None));
+        assert!(!s.is_live(generation));
     }
 
     #[test]
@@ -924,6 +1154,31 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
         assert_eq!(waiter.await.unwrap(), (true, ServerStatus::Crashed));
+    }
+
+    #[test]
+    fn an_expired_build_is_not_restarted() {
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        s.push_stderr(generation, "idea.system.path=/tmp/idea-system".into());
+        s.push_stderr(
+            generation,
+            "This build of kotlin-server has expired. The IDE will now close. Please download a new build".into(),
+        );
+        assert_eq!(s.on_closed(generation, &sink, Some(7)), Some(None));
+        assert_eq!(s.status(), ServerStatus::Crashed);
+        assert!(s.status_message().unwrap().ends_with("This build has expired; update it to start it again."));
+        assert!(matches!(s.state.lock().conn, Conn::Failed));
+        // A manual restart (after an update) starts it again.
+        s.reset_for_restart();
+        assert!(s.begin_start().is_some());
+
+        // Any other crash is restarted.
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        s.push_stderr(generation, "Exception in thread main".into());
+        assert_eq!(s.on_closed(generation, &sink, Some(1)), Some(Some(Duration::from_millis(500))));
     }
 
     #[test]
@@ -1077,6 +1332,19 @@ mod tests {
         assert_eq!(s.effective_config().command, "successor");
         assert_eq!(*s.resolved_binary.read(), Some(PathBuf::from("successor")));
         assert_eq!(s.stderr_tail(5), "successor output");
+    }
+
+    #[test]
+    fn crash_report_quotes_only_the_crashed_instance_without_colour_codes() {
+        let s = server();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let first = s.begin_start().unwrap();
+        s.push_stderr(first, "\x1b[31;1mfirst failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "first failure");
+        assert!(s.on_closed(first, &sink, Some(1)).is_some());
+        let second = s.begin_start().unwrap();
+        s.push_stderr(second, "\x1b[31;1m\x1b[31;1msecond failure\x1b[0m".into());
+        assert_eq!(s.stderr_tail(5), "second failure");
     }
 
     #[test]

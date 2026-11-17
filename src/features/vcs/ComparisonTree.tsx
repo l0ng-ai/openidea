@@ -17,6 +17,7 @@ export function ComparisonTree<F>({
   openOnActivate = false,
   getColor,
   onOpen,
+  inlineDiff = true,
 }: {
   tree: FileTreeNode<F>[];
   current: F | null;
@@ -27,10 +28,12 @@ export function ComparisonTree<F>({
   openOnActivate?: boolean;
   getColor?: (entry: F) => string | undefined;
   onOpen?: () => void;
+  /** Show the selected file's diff beside the tree; off where there is no room (a sidebar). */
+  inlineDiff?: boolean;
 }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null);
-  const data = current && diffFor(current);
+  const data = inlineDiff && current && diffFor(current);
   const input = data ? diffInput(data) : null;
   return (
     <div className={`${styles.comparison} ${input ? styles.comparisonWithDiff : ""}`}>

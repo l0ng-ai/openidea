@@ -5,7 +5,7 @@ import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
-import { contextMenuItems, revealLabel } from "./contextMenu";
+import { contextMenuItems, keyLabel, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
 
@@ -89,6 +89,16 @@ describe("project view context menu", () => {
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
   });
 
+  it("shows Compare With…'s shortcut on every comparison it runs (#3806)", () => {
+    const shortcut = (nodes: ProjectNode[], label: string) =>
+      resolveMenuItems(contextMenuItems(nodes)).find((r) => r.label === label)?.shortcut;
+    const expected = keyLabel("project.compareWith");
+    expect(expected).toBeTruthy();
+    expect(shortcut([node("/p/a.txt"), node("/p/b.txt")], "Compare Files")).toBe(expected);
+    expect(shortcut([node("/p/left", true), node("/p/right", true)], "Compare Directories")).toBe(expected);
+    expect(shortcut([node("/p/left", true)], "Compare With…")).toBe(expected);
+  });
+
   it("offers Git for repositories found below a non-Git project root", () => {
     useProject.setState({ project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
     expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toBeUndefined();
@@ -98,6 +108,25 @@ describe("project view context menu", () => {
     } finally {
       clearContext("vcsAvailable");
     }
+  });
+
+  it("lists contributed links in Copy Path/Reference…", () => {
+    disposers.push(
+      registerMenuGroup({
+        id: "test.link",
+        menus: ["copyPath"],
+        items: (_menu, ctx) => [
+          { label: `Link ${ctx.paths.join()} ${ctx.dirs?.join()}`, verbatim: true, run: () => undefined },
+        ],
+      }),
+    );
+    expect(sub(contextMenuItems([node("/p/src", true)]), "Copy Path/Reference…")).toEqual([
+      "Absolute Path",
+      "File Name",
+      "Path From Content Root",
+      "-",
+      "Link /p/src true",
+    ]);
   });
 
   it("follows IDEA's order for a file", () => {
@@ -123,6 +152,7 @@ describe("project view context menu", () => {
       "-",
       "Run 'a'",
       "-",
+      "Open in Right Split",
       "Open In",
       "-",
       "Local History",
@@ -131,8 +161,20 @@ describe("project view context menu", () => {
       "Git",
       "-",
       "Compare With…",
+      "File Color",
     ]);
     expect(sub(items, "Refactor")).toEqual(["Rename…", "Move File…", "Copy File…", "-", "Safe Delete…"]);
+    expect(sub(items, "File Color")).toEqual([
+      "Blue",
+      "Green",
+      "Orange",
+      "Rose",
+      "Violet",
+      "Yellow",
+      "Gray",
+      "-",
+      "Edit File Colors…",
+    ]);
     expect(sub(items, "Open In")).toEqual([revealLabel(), "Terminal"]);
     expect(sub(items, "Git")?.slice(0, 4)).toEqual(["Commit File…", "Add", "-", "Annotate with Git Blame"]);
   });
@@ -209,8 +251,51 @@ describe("project view context menu", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
-    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'"])
+    for (const fileOnly of ["Find Usages", "Optimize Imports", "Run 'a'", "Open in Right Split"])
       expect(l).not.toContain(fileOnly);
+  });
+
+  it("offers Reformat Code for a directory and a multiple selection, through the Reformat Code dialog", () => {
+    const calls: Array<[string, unknown]> = [];
+    disposers.push(
+      registerActions(
+        ["code.reformatFile", "code.reformatFiles"].map((id) => ({
+          id,
+          title: id,
+          run: ({ arg }) => void calls.push([id, arg]),
+        })),
+      ),
+    );
+    const reformat = (nodes: ProjectNode[]) => {
+      const item = resolveMenuItems(contextMenuItems(nodes)).find((r) => r.label === "Reformat Code");
+      item?.run?.();
+      return calls.pop();
+    };
+    expect(reformat([node("/p/a.py")])).toEqual(["code.reformatFile", { path: "/p/a.py" }]);
+    expect(reformat([node("/p/bin", true)])).toEqual(["code.reformatFiles", { files: [], directories: ["/p/bin"] }]);
+    expect(reformat([node("/p/a.sh"), node("/p/b.sh")])).toEqual([
+      "code.reformatFiles",
+      { files: ["/p/a.sh", "/p/b.sh"], directories: [] },
+    ]);
+    expect(reformat([node("/p/a.sh"), node("/p/lib", true)])).toEqual([
+      "code.reformatFiles",
+      { files: ["/p/a.sh"], directories: ["/p/lib"] },
+    ]);
+    expect(reformat([node(ROOT, true, true)])).toEqual(["code.reformatFiles", { files: [], directories: [ROOT] }]);
+  });
+
+  it("offers Import Module from Existing Sources on the project root only", () => {
+    const off = registerActions([
+      { id: "maven.importExternal", title: "Import Module from Existing Sources", run: () => undefined },
+    ]);
+    try {
+      expect(labels(contextMenuItems([node(ROOT, true, true)]))).toContain("Import Module from Existing Sources");
+      expect(labels(contextMenuItems([node(`${ROOT}/src`, true)]))).not.toContain(
+        "Import Module from Existing Sources",
+      );
+    } finally {
+      off();
+    }
   });
 
   it("keeps the project root menu short and disables what cannot apply", () => {
@@ -285,6 +370,32 @@ it("offers workspace removal for every member root", () => {
   expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(
     expect.objectContaining({ action: "workspace.removeProject" }),
   );
+});
+
+it("offers Git and Find Usages in workspace members outside the workspace folder", () => {
+  useProject.setState({
+    project: {
+      root: "/work/workspaces/demo",
+      name: "demo",
+      settings: {},
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "demo", projects: ["/work/repos/a", "/work/repos/b"] },
+    },
+  });
+  setContext("vcsAvailable", true);
+  try {
+    for (const target of [node("/work/repos/a", true, true), node("/work/repos/a/src", true)])
+      expect(sub(contextMenuItems([target]), "Git")).toContain("Commit…");
+    expect(sub(contextMenuItems([node("/work/repos/a/x.py")]), "Git")).toContain("Annotate with Git Blame");
+    expect(labels(contextMenuItems([node("/work/repos/a/x.py")]))).toContain("Find Usages");
+    // Project structure is the workspace folder's: its roots can't name a folder outside it.
+    expect(labels(contextMenuItems([node("/work/repos/a/src", true)]))).not.toContain("Mark Directory as");
+    // Scratches stay outside.
+    expect(sub(contextMenuItems([node("/config/scratches/s.py")]), "Git")).toBeUndefined();
+  } finally {
+    clearContext("vcsAvailable");
+  }
 });
 
 it("does not offer removal on the attached primary", () => {

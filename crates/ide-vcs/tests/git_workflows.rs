@@ -69,7 +69,8 @@ impl Fixture {
     fn push_from_other(&self, bare: &Path, rel: &str, content: &str) {
         let other = self.tmp.path().join(format!("other-{}", rel.replace('/', "_")));
         if !other.exists() {
-            git_in(self.tmp.path(), &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
+            let (bare, other_dir) = (bare.to_str().unwrap(), other.to_str().unwrap());
+            git_in(self.tmp.path(), &["clone", "-q", "-c", "core.autocrlf=false", bare, other_dir]);
             configure(&other);
         }
         git_in(&other, &["pull", "-q", "--rebase"]);
@@ -103,8 +104,11 @@ impl Fixture {
     fn subjects(&self) -> Vec<String> {
         self.git(&["log", "--format=%s"]).lines().map(str::to_string).collect()
     }
+    /// The repository of a trusted project.
     fn repo(&self) -> Repo {
-        Repo::discover(&self.dir).unwrap().expect("repository found")
+        let repo = Repo::discover(&self.dir).unwrap().expect("repository found");
+        repo.set_execution_allowed(true);
+        repo
     }
     fn path(&self, rel: &str) -> PathBuf {
         self.dir.join(rel)
@@ -633,6 +637,73 @@ fn update_with_rebase_keeps_a_file_added_then_deleted_added_to_the_index() {
     assert!(fx.git(&["status", "--porcelain", "--", "ad.txt"]).starts_with('A'), "still added");
 }
 
+/// Submodules `dirty` and `moved` (each with commits "one" and "two", at "two") committed in
+/// the clone of [`Fixture::with_origin`] and pushed; then `dirty` gets an uncommitted edit of a
+/// tracked file plus an untracked file, and `moved` is checked out at "one". Returns the commit
+/// the superproject records for `moved`.
+fn with_changed_submodules(fx: &Fixture) -> String {
+    for name in ["dirty", "moved"] {
+        let lib = fx.tmp.path().join(format!("lib-{name}"));
+        std::fs::create_dir(&lib).unwrap();
+        git_in(&lib, &["init", "-q"]);
+        configure(&lib);
+        std::fs::write(lib.join("f.txt"), "one\n").unwrap();
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-q", "-m", "one"]);
+        std::fs::write(lib.join("f.txt"), "two\n").unwrap();
+        git_in(&lib, &["commit", "-q", "-am", "two"]);
+        let url = lib.to_str().unwrap();
+        fx.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "add", "-q", url, name]);
+        configure(&fx.path(name));
+    }
+    fx.commit_all("submodules");
+    fx.git(&["push", "-q", "origin", "main"]);
+    let recorded = git_in(&fx.path("moved"), &["rev-parse", "HEAD"]);
+    fx.write("dirty/f.txt", "edited\n");
+    fx.write("dirty/untracked.txt", "u\n");
+    git_in(&fx.path("moved"), &["checkout", "-q", "HEAD~1"]);
+    recorded
+}
+
+/// git lists submodules at another commit or with changes inside among the superproject's
+/// changes, but its stash leaves them in place, so Update Project has nothing to put aside (#3632).
+#[test]
+fn update_with_changed_submodules_and_no_other_local_changes() {
+    for (rebase, earlier_stash) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (fx, bare) = Fixture::with_origin();
+        let recorded = with_changed_submodules(&fx);
+        if earlier_stash {
+            fx.write("a.txt", "stashed\n");
+            fx.git(&["stash", "push", "-q", "-m", "earlier"]);
+        }
+        fx.push_from_other(&bare, "remote.txt", "r\n");
+        let repo = fx.repo();
+        let (cancel, out) = quiet();
+        repo.pull(rebase, &cancel, &out).unwrap_or_else(|e| panic!("rebase={rebase} stash={earlier_stash}: {e}"));
+        assert!(fx.exists("remote.txt"));
+        assert_eq!(fx.read("dirty/f.txt"), "edited\n");
+        assert_ne!(git_in(&fx.path("moved"), &["rev-parse", "HEAD"]), recorded);
+        let stashes = fx.git(&["stash", "list"]);
+        assert_eq!(stashes.lines().count(), usize::from(earlier_stash), "{stashes}");
+        assert!(!fx.dir.join(".git/openidea-saved-changes").exists());
+    }
+}
+
+#[test]
+fn rollback_changed_submodules_restores_the_recorded_commit_and_tracked_files() {
+    for whole_root in [false, true] {
+        let (fx, _bare) = Fixture::with_origin();
+        let recorded = with_changed_submodules(&fx);
+        let repo = fx.repo();
+        let paths = if whole_root { vec![fx.dir.clone()] } else { vec![fx.path("dirty"), fx.path("moved")] };
+        repo.discard(&paths).unwrap();
+        assert_eq!(fx.read("dirty/f.txt"), "two\n", "whole_root={whole_root}");
+        assert_eq!(git_in(&fx.path("moved"), &["rev-parse", "HEAD"]), recorded);
+        assert_eq!(fx.read("dirty/untracked.txt"), "u\n", "untracked files of a submodule are kept");
+        assert_eq!(fx.git(&["status", "--porcelain", "--ignore-submodules=untracked"]), "");
+    }
+}
+
 #[test]
 fn reset_to_the_remote_branch_drops_local_commits_and_keeps_local_changes() {
     let (fx, bare) = Fixture::with_origin();
@@ -774,12 +845,18 @@ fn fetch_prunes_deleted_remote_branches() {
     let (fx, bare) = Fixture::with_origin();
     fx.git(&["push", "-q", "origin", "main:gone"]);
     fx.git(&["fetch", "-q"]);
+    fx.git(&["checkout", "-q", "-b", "feature", "--track", "origin/gone"]);
     let repo = fx.repo();
+    let upstream = || repo.branches().unwrap().into_iter().find(|b| b.name == "feature").and_then(|b| b.upstream);
     assert!(repo.branches().unwrap().iter().any(|b| b.name == "origin/gone"));
+    assert_eq!(upstream().as_deref(), Some("origin/gone"));
     git_in(&bare, &["branch", "-D", "gone"]);
     let (cancel, out) = quiet();
     repo.fetch(&cancel, &out).unwrap();
     assert!(!repo.branches().unwrap().iter().any(|b| b.name == "origin/gone"));
+    // The branch that tracked it no longer counts as tracking, as in IDEA.
+    assert_eq!(upstream(), None);
+    assert_eq!(repo.branch_info().unwrap().upstream, None);
 }
 
 #[test]
@@ -981,15 +1058,41 @@ fn branch_overwrite_preserves_the_ref_if_checkout_fails() {
 }
 
 #[test]
-fn new_branch_from_remote_branch_tracks_it() {
-    let (fx, _bare) = Fixture::with_origin();
+fn new_branch_from_remote_branch_tracks_it_only_under_the_same_name() {
+    let (fx, bare) = Fixture::with_origin();
     fx.git(&["push", "-q", "origin", "main:release"]);
     fx.git(&["fetch", "-q"]);
     let repo = fx.repo();
+    let upstream = |name: &str| {
+        repo.branches().unwrap().into_iter().find(|b| b.name == name && !b.remote).and_then(|b| b.upstream)
+    };
+
+    repo.create_branch("release", Some("origin/release"), false).unwrap();
+    assert_eq!(upstream("release").as_deref(), Some("origin/release"));
+
+    // Another name: no upstream, whether switched to or not, created plainly or overwritten.
+    repo.create_branch("other", Some("origin/release"), false).unwrap();
+    assert_eq!(upstream("other"), None);
+    repo.create_branch_with_overwrite("other", Some("origin/main"), false, true).unwrap();
+    assert_eq!(upstream("other"), None);
     repo.create_branch("my-release", Some("origin/release"), true).unwrap();
     let info = repo.branch_info().unwrap();
     assert_eq!(info.head.as_deref(), Some("my-release"));
-    assert_eq!(info.upstream.as_deref(), Some("origin/release"));
+    assert_eq!(info.upstream, None);
+
+    // The first push then goes to a branch of its own name and tracks it.
+    fx.write("a.txt", "mine\n");
+    let tip = fx.commit_all("mine");
+    let (cancel, out) = quiet();
+    repo.push(false, true, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "my-release"]), tip);
+    assert_ne!(git_in(&bare, &["rev-parse", "release"]), tip);
+    assert_eq!(fx.git(&["config", "branch.my-release.merge"]), "refs/heads/my-release");
+
+    // New worktree on a new branch from a remote branch: the same rule.
+    let wt = fx.tmp.path().join("wt");
+    repo.add_worktree(&wt, "origin/release", Some("wt-branch")).unwrap();
+    assert_eq!(upstream("wt-branch"), None);
 }
 
 #[test]

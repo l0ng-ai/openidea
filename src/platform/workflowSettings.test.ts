@@ -9,6 +9,14 @@ describe("validateWorkflow", () => {
     expect(validateWorkflow({ vcs: { git: { inlineBlame: "true" } } }).vcs.git.inlineBlame).toBe(false);
   });
 
+  it("keeps the inline blame label clickable unless switched off", () => {
+    const clickable = (inlineBlameClickable: unknown) =>
+      validateWorkflow({ vcs: { git: { inlineBlameClickable } } }).vcs.git.inlineBlameClickable;
+    expect(DEFAULT_WORKFLOW.vcs.git.inlineBlameClickable).toBe(true);
+    expect(clickable(false)).toBe(false);
+    expect(clickable("no")).toBe(true);
+  });
+
   it("keeps the double-click choice unset until it is made", () => {
     expect(DEFAULT_WORKFLOW.vcs.commit.doubleClickOpensDiff).toBeNull();
     expect(validateWorkflow(undefined).vcs.commit.doubleClickOpensDiff).toBeNull();
@@ -24,17 +32,22 @@ describe("validateWorkflow", () => {
     const v = validateWorkflow({
       vcs: {
         historyLimit: -5,
-        git: { updateMethod: "squash", incomingCheck: "never", largeFileMb: 0 },
+        git: { updateMethod: "squash", incomingCheck: "never", incomingCheckInterval: 0, largeFileMb: 0 },
         confirmation: { onPatchCreated: "always" },
         issueNavigation: [{ pattern: "" }, { pattern: "#(\\d+)", link: "x/$1" }],
       },
-      console: { bufferKb: 1e12, foldPatterns: ["a", 3, ""] },
+      console: {
+        bufferKb: 1e12,
+        foldPatterns: ["a", 3, ""],
+        logColors: { enabled: false, error: "#ff0000", warn: 123 },
+      },
       terminal: { cursorShape: "bar", env: { A: "1", B: 2 }, tabName: "  " },
       externalTools: [{ name: "Lint", id: "x" }, { name: "" }, { name: "Again", id: "x" }],
     });
     expect(v.vcs.historyLimit).toBe(10);
     expect(v.vcs.git.updateMethod).toBe("merge");
     expect(v.vcs.git.incomingCheck).toBe("never");
+    expect(v.vcs.git.incomingCheckInterval).toBe(1);
     expect(v.vcs.git.largeFileMb).toBe(1);
     expect(v.vcs.issueNavigation).toEqual([{ pattern: "#(\\d+)", link: "x/$1" }]);
     expect(v.vcs.commit.nonModal).toBe(true);
@@ -42,6 +55,14 @@ describe("validateWorkflow", () => {
     expect(v.vcs.shelf.removeApplied).toBe(false);
     expect(v.console.bufferKb).toBe(1_048_576);
     expect(v.console.foldPatterns).toEqual(["a"]);
+    expect(v.console.logColors).toEqual({
+      enabled: false,
+      error: "#ff0000",
+      warn: "var(--ansi-yellow)",
+      info: "var(--ansi-green)",
+      debug: "var(--ansi-cyan)",
+      trace: "var(--ansi-magenta)",
+    });
     expect(v.terminal).toMatchObject({ cursorShape: "bar", env: { A: "1" }, tabName: "Local" });
     expect(v.externalTools.map((t) => [t.id, t.name])).toEqual([
       ["x", "Lint"],

@@ -34,6 +34,7 @@ import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
 import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
 import { evaluateWhen, getContext } from "@/platform/context";
+import { SettingsPageFocusContext } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
@@ -316,6 +317,25 @@ describe("store", () => {
     } finally {
       stop.forEach((s) => s());
       useThemeOverride.setState({ theme: null });
+      useProject.setState({ settings: null as never });
+    }
+  });
+
+  it("leaves a theme another window selected alone until this window's settings change", async () => {
+    const stop = [syncProjection(), followThemeSetting()];
+    try {
+      useProject.setState({ settings: { appearance: { theme: "plugin:theme-harbor-night/harbor-night" } } as never });
+      await refreshPlugins();
+      await waitFor(() => expect(usePlugins.getState().activeTheme?.theme.id).toBe("harbor-night"));
+      const setTheme = vi.spyOn(backend, "setTheme");
+      // Another window picked a built-in theme; this window's settings still name the plugin's.
+      act(() => usePlugins.setState({ activeTheme: null }));
+      await Promise.resolve();
+      expect(setTheme).not.toHaveBeenCalled();
+      act(() => useProject.setState({ settings: { appearance: { theme: "dark" } } as never }));
+      expect(setTheme).not.toHaveBeenCalled();
+    } finally {
+      stop.forEach((s) => s());
       useProject.setState({ settings: null as never });
     }
   });
@@ -813,7 +833,7 @@ describe("plugin prompts", () => {
 describe("PluginsPage", () => {
   it("lists plugins, shows details, toggles and applies themes", async () => {
     const user = userEvent.setup();
-    render(<PluginsPage />);
+    render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Installed plugins" });
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(3));
 
@@ -837,11 +857,68 @@ describe("PluginsPage", () => {
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
   });
 
+  it("lists installed and marketplace plugins together, each group foldable", async () => {
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    const installed = await screen.findByRole("list", { name: "Installed plugins" });
+    await waitFor(() => expect(within(installed).getAllByRole("listitem")).toHaveLength(3));
+    expect(screen.queryByRole("tab", { name: /Available/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Available plugins" })).toBeInTheDocument();
+    const toggle = within(installed).getByRole("button", { name: /^Installed/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(installed).queryAllByRole("listitem")).toHaveLength(0);
+    await user.click(toggle);
+    expect(within(installed).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("opens on the marketplace's themes when Settings asks for `plugins#themes`", async () => {
+    const base = createMemoryPluginsBackend([], sampleCatalog());
+    const marketEntry = (id: string, name: string, categories?: string[]): MarketPlugin => ({
+      id,
+      name,
+      version: "1.0.0",
+      description: `From the marketplace: ${name}`,
+      authors: [],
+      publisher: "acme",
+      download: `${id}.oiplugin`,
+      digest: "x",
+      capabilities: [],
+      engine: "^1.0",
+      installed: null,
+      compatible: true,
+      categories,
+    });
+    setPluginsBackend({
+      ...base,
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [marketEntry("dark-pro", "One Dark Pro", ["themes"]), marketEntry("toy-mkt", "Toy Tool")],
+    });
+    const consume = vi.fn();
+    const page = (focus: string | null) => (
+      <SettingsPageFocusContext.Provider value={{ focus, consume }}>
+        <PluginsPage />
+      </SettingsPageFocusContext.Provider>
+    );
+    const { rerender } = render(page(null));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("One Dark Pro")).toBeInTheDocument());
+
+    // What the Appearance link does: the page is shown as `plugins#themes`.
+    rerender(page("themes"));
+    await waitFor(() => expect(screen.getByLabelText("Category")).toHaveTextContent("Themes"));
+    expect(within(list).getByText("One Dark Pro")).toBeInTheDocument();
+    expect(within(list).queryByText("Toy Tool")).not.toBeInTheDocument();
+    // The request is consumed, so showing the page again does not filter again.
+    expect(consume).toHaveBeenCalled();
+  });
+
   it("offers the IntelliJ theme imports only in a trusted project's window", async () => {
     const user = userEvent.setup();
     render(
       <>
-        <PluginsPage />
+        <PluginsPage initialTab="installed" />
         <ContextMenuHost />
       </>,
     );
@@ -866,7 +943,7 @@ describe("PluginsPage", () => {
   it("shows a plugin's own icon in its row and details", async () => {
     const icon = { light: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>', dark: null };
     setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "iconic", name: "Iconic", icon })]));
-    render(<PluginsPage />);
+    render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Installed plugins" });
     await waitFor(() => expect(within(list).getByText("Iconic")).toBeInTheDocument());
     expect(list.querySelector("circle")).not.toBeNull();
@@ -879,8 +956,7 @@ describe("PluginsPage", () => {
       const catalog = { ...sampleCatalog()[0]!, id: entry.id, name: entry.name, homepage };
       setPluginsBackend(createMemoryPluginsBackend(source === "installed" ? [entry] : [], [catalog]));
       const user = userEvent.setup();
-      render(<PluginsPage />);
-      if (source === "catalog") await user.click(screen.getByRole("tab", { name: /Available/ }));
+      render(<PluginsPage initialTab="installed" />);
       await screen.findByRole("heading", { level: 2, name: entry.name });
       return user;
     }
@@ -925,14 +1001,14 @@ describe("PluginsPage", () => {
   it("restarts a failed plugin instead of disabling it", async () => {
     setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "broken", status: "failed", error: "trap" })]));
     const user = userEvent.setup();
-    render(<PluginsPage />);
+    render(<PluginsPage initialTab="installed" />);
     await user.click(await screen.findByRole("button", { name: "Restart" }));
     await waitFor(() => expect(usePlugins.getState().plugins[0]).toMatchObject({ enabled: true, status: "inactive" }));
   });
 
   it("uninstalls after confirmation", async () => {
     const user = userEvent.setup();
-    render(<PluginsPage />);
+    render(<PluginsPage initialTab="installed" />);
     await screen.findByRole("heading", { level: 2 });
     await user.click(screen.getByRole("button", { name: "Uninstall…" }));
     await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
@@ -961,7 +1037,7 @@ describe("PluginsPage", () => {
       await uninstall(id);
     });
     const user = userEvent.setup();
-    render(<PluginsPage />);
+    render(<PluginsPage initialTab="installed" />);
     await screen.findByRole("heading", { level: 2 });
     await user.click(screen.getByRole("button", { name: "Uninstall…" }));
     await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
@@ -983,7 +1059,7 @@ describe("PluginsPage", () => {
     setPluginsBackend(
       createMemoryPluginsBackend([plugin({ id: "hello", name: "Hello", changeNotes: "Added word count." })]),
     );
-    render(<PluginsPage />);
+    render(<PluginsPage initialTab="installed" />);
     await screen.findByRole("heading", { level: 2 });
     expect(screen.queryByText("Added word count.")).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: "What's New" }));
@@ -994,8 +1070,7 @@ describe("PluginsPage", () => {
     const user = userEvent.setup();
     const catalog = sampleCatalog();
     setPluginsBackend(createMemoryPluginsBackend([], catalog));
-    render(<PluginsPage />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Toy Language")).toBeInTheDocument());
     await user.click(within(list).getByText("Toy Language"));
@@ -1012,9 +1087,7 @@ describe("PluginsPage", () => {
       ...createMemoryPluginsBackend([], sampleCatalog()),
       marketUrl: () => Promise.reject({ kind: "unavailable", message: "Index unreachable", data: null }),
     });
-    const user = userEvent.setup();
-    render(<PluginsPage />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     expect(await within(list).findByText("Index unreachable")).toBeInTheDocument();
     expect(within(list).queryByText("[object Object]")).not.toBeInTheDocument();
@@ -1035,6 +1108,17 @@ describe("secrets", () => {
     await user.click(screen.getByRole("button", { name: "Remove API key" }));
     await waitFor(() => expect(screen.getByText("Not set")).toBeInTheDocument());
     expect(await backend.secrets("ai")).toEqual([]);
+  });
+  it("shows a declared secret on the plugin's details page", async () => {
+    const ai = plugin({ id: "ai", name: "AI Commit", contributions: [{ point: "secrets", label: "API key" }] });
+    const snapshot = {
+      plugins: [ai],
+      activeTheme: null,
+      ui: [{ pluginId: "ai", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } }],
+    };
+    setPluginsBackend({ ...createMemoryPluginsBackend([ai]), list: async () => snapshot });
+    render(<PluginsPage initialTab="installed" />);
+    expect(await screen.findByLabelText("Value of API key")).toBeInTheDocument();
   });
 });
 
@@ -1111,10 +1195,9 @@ describe("marketplace", () => {
       },
     });
     const user = userEvent.setup();
-    render(<PluginsPage />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
-    await waitFor(() => expect(within(list).getByText("Marketplace")).toBeInTheDocument());
+    await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     await user.click(within(list).getAllByText("Hello")[0]!);
     expect(screen.getByText("Signed by acme")).toBeInTheDocument();
@@ -1124,15 +1207,61 @@ describe("marketplace", () => {
     expect(asked[0]).toMatchObject({ pluginId: "hello", kind: "install" });
   });
 
+  it("lists community plugins before the examples, selects the first and installs from a row", async () => {
+    setConsentPrompt(async () => ({ optional: [] }));
+    const entry = (id: string, name: string, more: object = {}) => ({
+      id,
+      name,
+      version: "1.0.0",
+      description: `${name} does things`,
+      authors: [],
+      publisher: id.split(".")[0]!,
+      download: `${id}.oiplugin`,
+      digest: "x",
+      capabilities: [],
+      engine: "^1.0",
+      installed: null,
+      compatible: true,
+      ...more,
+    });
+    const downloads: string[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend([], sampleCatalog()),
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        entry("openidea.sample", "Sample"),
+        entry("acme.rare", "Rare", { downloads: 2 }),
+        entry("acme.popular", "Popular", { downloads: 1500, featured: true, publisherName: "Acme Inc." }),
+      ],
+      marketDownload: async (id) => {
+        downloads.push(id);
+        return "plugins/hello";
+      },
+    });
+    const user = userEvent.setup();
+    render(<PluginsPage initialTab="installed" />);
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("Examples")).toBeInTheDocument());
+    const headers = within(list)
+      .getAllByText(/^(Featured|All Plugins|Examples|Local)$/)
+      .map((h) => h.textContent);
+    expect(headers).toEqual(["Featured", "All Plugins", "Examples", "Local"]);
+    // The first listed plugin is shown without a click.
+    expect(screen.getByRole("heading", { name: "Popular" })).toBeInTheDocument();
+    expect(screen.getByText("Signed by Acme Inc.")).toBeInTheDocument();
+    await user.click(within(list).getByText("Sample"));
+    expect(screen.getByRole("note")).toHaveTextContent("not maintained as a product");
+    await user.click(within(list).getByRole("button", { name: "Install Rare" }));
+    await waitFor(() => expect(downloads).toEqual(["acme.rare"]));
+  });
+
   it("doesn't claim there is no repository while one is configured", async () => {
     setPluginsBackend({
       ...createMemoryPluginsBackend([], []),
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [],
     });
-    const user = userEvent.setup();
-    render(<PluginsPage />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    render(<PluginsPage initialTab="installed" />);
     expect(await screen.findByText("No plugin selected")).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Filter plugins" })).toHaveAttribute("placeholder", "Search plugins");
@@ -1150,12 +1279,11 @@ describe("marketplace", () => {
     const user = userEvent.setup();
     render(
       <>
-        <PluginsPage />
+        <PluginsPage initialTab="installed" />
         <ContextMenuHost />
         <InputDialogsHost />
       </>,
     );
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     expect(screen.queryByRole("textbox", { name: /Marketplace index URL/ })).not.toBeInTheDocument();
     const edit = async (value: string) => {
       await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
@@ -1197,11 +1325,10 @@ describe("marketplace", () => {
       ],
     });
     const user = userEvent.setup();
-    render(<PluginsPage />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Dusk")).toBeInTheDocument());
-    await user.click(within(list).getByRole("button", { name: "Category" }));
+    await user.click(screen.getByRole("button", { name: "Category" }));
     const options = within(screen.getByRole("listbox"))
       .getAllByRole("option")
       .map((o) => o.textContent);
@@ -1235,8 +1362,7 @@ describe("marketplace", () => {
       ],
     });
     const user = userEvent.setup();
-    render(<PluginsPage />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
+    render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Incompatible")).toBeInTheDocument());
     await user.click(within(list).getByText("Next"));
@@ -1344,7 +1470,7 @@ describe("marketplace", () => {
       const user = userEvent.setup();
       render(
         <>
-          <PluginsPage />
+          <PluginsPage initialTab="installed" />
           <ContextMenuHost />
         </>,
       );
@@ -1352,6 +1478,31 @@ describe("marketplace", () => {
       await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
       await user.click(screen.getByRole("menuitem", { name: "Update All Plugins (2)" }));
       await waitFor(() => expect(consents.map(([id]) => id)).toEqual(["a", "b"]));
+    });
+
+    it("links an installed plugin without its own homepage to its marketplace repository", async () => {
+      const repository = "https://github.com/acme/a";
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([plugin({ id: "a", name: "A Plugin", version: "1.0.0" })]),
+        marketUrl: async () => "https://plugins.example/index.json",
+        market: async () => [{ ...offered("a", "1.0.0", "1.0.0"), homepage: repository }],
+      });
+      render(<PluginsPage initialTab="installed" />);
+      await screen.findByRole("heading", { level: 2, name: "A Plugin" });
+      expect(await screen.findByRole("link", { name: repository })).toHaveAttribute("href", repository);
+    });
+
+    it("marks installed plugins with updates and updates one from its details", async () => {
+      setConsentPrompt(async () => ({ optional: [] }));
+      const consents = updatesBackend({ a: preview("a", "1.1.0"), b: preview("b", "2.0.0") });
+      const user = userEvent.setup();
+      render(<PluginsPage initialTab="installed" />);
+      await waitFor(() => expect(usePlugins.getState().market).toHaveLength(3));
+      const list = screen.getByRole("list", { name: "Installed plugins" });
+      expect(within(list).getAllByText("Update")).toHaveLength(2);
+      await user.click(within(list).getAllByRole("button", { name: /^b/i })[0]!);
+      await user.click(await screen.findByRole("button", { name: "Update to 2.0.0" }));
+      await waitFor(() => expect(consents.map(([id]) => id)).toEqual(["b"]));
     });
 
     it("announces updates with actions to install them or show the plugins", async () => {
@@ -1387,7 +1538,7 @@ describe("marketplace", () => {
       ]);
       const revokeNetHost = vi.fn((id: string, host: string) => base.revokeNetHost(id, host));
       setPluginsBackend({ ...base, revokeNetHost });
-      render(<PluginsPage />);
+      render(<PluginsPage initialTab="installed" />);
       await screen.findByText("net:relay.example.org");
       expect(screen.getAllByText(`net:${host}`)).toHaveLength(host === "ask" ? 2 : 1);
       expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
@@ -1398,6 +1549,33 @@ describe("marketplace", () => {
       expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
     },
   );
+
+  it("shows the Java agent next to the java.agent permission", async () => {
+    setPluginsBackend(
+      createMemoryPluginsBackend([
+        plugin({
+          id: "spring",
+          name: "Spring",
+          hasCode: false,
+          status: "static",
+          capabilities: [
+            {
+              id: "java.agent",
+              risk: "high",
+              description: "Run code inside the Java applications you start",
+              optional: true,
+              granted: true,
+            },
+          ],
+          contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
+        }),
+      ]),
+    );
+    render(<PluginsPage initialTab="installed" />);
+    const permissions = await screen.findByRole("list", { name: "Permissions" });
+    expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
+    expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+  });
 
   it("offers to roll back an update", async () => {
     const base = createMemoryPluginsBackend([
@@ -1412,7 +1590,7 @@ describe("marketplace", () => {
       },
     });
     const user = userEvent.setup();
-    render(<PluginsPage />);
+    render(<PluginsPage initialTab="installed" />);
     expect(await screen.findByText("Unsigned")).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Roll Back to 1.0.0" }));
     await waitFor(() => expect(rolled).toEqual(["p"]));
@@ -1442,7 +1620,7 @@ describe("marketplace", () => {
           }),
         ]),
       );
-      render(<PluginsPage />);
+      render(<PluginsPage initialTab="installed" />);
       expect(await screen.findByText("Blocked")).toBeInTheDocument();
       expect(screen.getByRole("alert")).toHaveTextContent("Requires base ^1.0, but version 2.0.0 is installed");
 
@@ -1471,7 +1649,7 @@ describe("marketplace", () => {
       const user = userEvent.setup();
       render(
         <>
-          <PluginsPage />
+          <PluginsPage initialTab="installed" />
           <MessagesHost />
         </>,
       );
@@ -1502,7 +1680,7 @@ describe("marketplace", () => {
       const user = userEvent.setup();
       render(
         <>
-          <PluginsPage />
+          <PluginsPage initialTab="installed" />
           <MessagesHost />
         </>,
       );
@@ -1523,7 +1701,7 @@ describe("marketplace", () => {
       const user = userEvent.setup();
       render(
         <>
-          <PluginsPage />
+          <PluginsPage initialTab="installed" />
           <MessagesHost />
         </>,
       );

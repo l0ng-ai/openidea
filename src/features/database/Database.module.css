@@ -31,7 +31,7 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 6px;
   border-right: 1px solid var(--border);
   overflow: hidden;
@@ -47,7 +47,6 @@
 .headerName {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 600;
 }
 .headerIcon {
   flex: none;
@@ -58,6 +57,7 @@
   margin-left: auto;
   color: var(--fg-muted);
 }
+
 .cellNumber {
   justify-content: flex-end;
 }
@@ -133,10 +133,13 @@
   flex-direction: column;
   min-height: 0;
 }
+.resultTabs {
+  padding-inline: var(--space-2);
+}
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: var(--h-header);
   padding: 0 6px;
   flex: none;
@@ -234,7 +237,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
 }
 .dbToolbarSep {
@@ -243,17 +246,13 @@
   margin: 0 4px;
   background: var(--border);
 }
-.treeFilter {
-  flex: 1;
-  min-width: 80px;
-  max-width: 280px;
-  margin-left: 4px;
-}
 .treeHost {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Data source colours are stronger than file colours. */
+  --row-tint-strength: var(--tint-strength);
 }
 .treeHost > * {
   flex: 1;
@@ -262,15 +261,8 @@
 .nodeRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
-}
-.tinted {
-  flex: 1;
-  margin: 0 -4px;
-  padding: 0 4px;
-  border-radius: var(--radius-control, 4px);
-  background: color-mix(in srgb, var(--db-tint) var(--tint-strength), transparent);
 }
 .nodeLabel {
   overflow: hidden;
@@ -294,7 +286,7 @@
 .consoleBar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   height: var(--h-header);
   padding: 0 8px;
   background: var(--bg-editor);
@@ -325,7 +317,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 8px;
   color: var(--fg-muted);
 }
@@ -339,7 +331,7 @@
 .pager {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   color: var(--fg-secondary);
   font-size: var(--fs-small);
   white-space: nowrap;
@@ -357,7 +349,7 @@
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
   align-items: center;
-  gap: 8px 12px;
+  gap: var(--space-2) var(--space-3);
   min-width: 0;
   padding: 14px;
   overflow-wrap: anywhere;
@@ -384,15 +376,19 @@
 }
 .formRow {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
+}
+.formRow[hidden],
+.formLabel[hidden] {
+  display: none;
 }
 /* Data source dialog. */
 .formSection {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-strong);
 }
 .formSection::after {
@@ -473,7 +469,7 @@
 .colorValue {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .colorSwatch {
   width: 12px;
@@ -483,12 +479,12 @@
 .namePicker {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .nameList {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   max-height: 180px;
   overflow: auto;
   padding-left: 22px;
@@ -496,14 +492,14 @@
 .propertyTable {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .propertyHead,
 .propertyRow {
   display: grid;
   grid-template-columns: 1fr 1fr 24px;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .propertyHead {
   color: var(--fg-secondary);
@@ -603,7 +599,7 @@
 :global(.cm-openidea-db-banner) {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 28px;
   padding: 0 6px 0 10px;
   background: color-mix(in srgb, var(--danger) 10%, var(--bg-editor));
@@ -665,7 +661,7 @@
 .previewBlock {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .previewTitle {
@@ -717,7 +713,7 @@
 }
 .modifyToolbar {
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 4px;
   border-bottom: 1px solid var(--border);
 }
@@ -729,7 +725,7 @@
 .modifyItem {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 24px;
   padding: 0 8px;
   cursor: default;
@@ -750,7 +746,7 @@
   grid-template-columns: max-content 1fr;
   align-content: start;
   align-items: center;
-  gap: 8px 12px;
+  gap: var(--space-2) var(--space-3);
   padding: 12px;
   overflow: auto;
 }
@@ -760,17 +756,17 @@
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .quickDocRows {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .quickDocRows > div {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .quickDocRows dt {
   font-weight: 600;
@@ -820,7 +816,7 @@
   right: 12px;
   bottom: 12px;
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   padding: 3px 10px;
   border: 1px solid var(--border);
@@ -842,7 +838,7 @@
 .columnsPopup {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 320px;
   padding: 8px;
 }
@@ -853,14 +849,14 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   white-space: nowrap;
 }
 .filterPopup {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 280px;
   padding: 8px;
 }
@@ -871,7 +867,7 @@
 .filterValue {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: var(--h-row);
 }
 .filterValue > :first-child {
@@ -893,7 +889,7 @@
 .filterButtons {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .sidePanel {
   flex: none;
@@ -917,24 +913,24 @@
 .recordFields {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 8px;
 }
 .recordField {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .recordLabel {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--fg-secondary);
 }
 .valueView {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 100%;
   padding: 8px;
   box-sizing: border-box;
@@ -981,7 +977,7 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  gap: 6px;
+  gap: var(--space-1-5);
   overflow: hidden;
 }
 .valueWindowBody .valueEditor {
@@ -1023,7 +1019,7 @@
 .chartBar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-header);
   padding: 0 8px;
   flex: none;
@@ -1085,7 +1081,7 @@
 .planRow {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) 1fr;
-  gap: 12px;
+  gap: var(--space-3);
   width: 100%;
 }
 .planHeader {
@@ -1096,7 +1092,7 @@
 .planOperation {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1127,14 +1123,14 @@
 /* Export / history / import dialogs. */
 .exportDialog {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   height: 420px;
   padding: 14px;
 }
 .exportOptions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: 300px;
   flex: none;
 }
@@ -1147,7 +1143,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .exportPreviewText,
 .historyPreview {
@@ -1189,21 +1185,21 @@
 }
 .historyDialog {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   height: 440px;
   padding: 14px;
 }
 .historyList {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 300px;
   flex: none;
   min-height: 0;
 }
 .historyItem {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: baseline;
   width: 100%;
   min-width: 0;
@@ -1246,7 +1242,7 @@
 }
 .sqlCompletionOption {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
   width: 100%;
   padding: 4px 8px;
@@ -1329,7 +1325,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 4px 8px;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
@@ -1365,10 +1361,10 @@
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 4px;
   border: 1px solid var(--border-popup, var(--border));
-  border-radius: var(--radius-small);
+  border-radius: var(--radius-popup);
   background: var(--bg-popup, var(--bg-elev));
   color: var(--fg-secondary);
   font-size: var(--fs-small);
@@ -1389,4 +1385,93 @@
 .resultPagerCount:disabled {
   color: inherit;
   cursor: default;
+}
+
+/* In-Editor Results: a result set under its statement in the console. */
+:global(.cm-openidea-db-inline) {
+  padding: var(--space-1) 0 var(--space-2);
+  cursor: default;
+}
+.inlineResult {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  background: var(--bg-editor);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: normal;
+  white-space: normal;
+}
+.inlineResult > :first-child {
+  flex: 1;
+  min-height: 0;
+}
+.inlineResize {
+  position: absolute;
+  inset: auto 0 0;
+  height: 5px;
+  cursor: row-resize;
+}
+
+/* Export with pg_dump / Restore with pg_restore or psql. */
+.dumpChecks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-1-5) var(--space-4);
+}
+.dumpPreview {
+  grid-column: 1 / -1;
+  max-height: 96px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-editor);
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dumpRun {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 14px;
+}
+.dumpLog {
+  height: 320px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-editor);
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dumpPath {
+  flex: 1;
+  min-width: 0;
+}
+.dumpStatus {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+.dumpRoute {
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dumpError {
+  color: var(--danger);
 }

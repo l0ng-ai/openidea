@@ -331,7 +331,7 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
             FileEdit::Rename { from, to } => vec![from, to],
         };
         for p in paths {
-            if let Err(e) = super::super::tool::ensure_inside(call.root(), p) {
+            if let Err(e) = call.ensure_writable_place(p) {
                 let hint = format!(
                     "{}. Nothing was renamed. A rename that must change a file outside the project cannot run here.",
                     e.message
@@ -385,7 +385,7 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
         _ => None,
     });
     let (h, w) = (host.clone(), window.to_owned());
-    let written = crate::ops::lsp::apply_workspace_edit(&h, &w, edit).await;
+    let written = crate::ops::lsp::apply_agent_workspace_edit(&h, &w, edit).await;
     if let Err(e) = written {
         let hint = format!("The rename stopped while it wrote. {} Read the files again before you retry.", e.message);
         return Ok(RenameResult::failed("write_failed", hint).with_symbol(symbol));

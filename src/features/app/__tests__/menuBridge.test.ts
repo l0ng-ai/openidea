@@ -15,6 +15,7 @@ import {
   installMenuBridge,
   menuAccelerator,
   menuActionIds,
+  returnFocusAfterMenu,
   routeMenuEvent,
 } from "../menuBridge";
 
@@ -49,6 +50,84 @@ describe("menu state from the frontend", () => {
       dispose();
       offAction();
       clearContext("testMenuFocusNoise");
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("pushes enablement once when the window loses focus, for its Settings window (#3625)", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(ipc, "isTauri").mockReturnValue(true);
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(ipc.commands, "appBuildInfo").mockRejectedValue(new Error("No build info in tests"));
+    vi.spyOn(ipc.commands, "menuConfigure").mockResolvedValue();
+    vi.spyOn(ipc.commands, "menuModel").mockResolvedValue([
+      { kind: "action", id: "test.menuBlur", label: "Test", hint: null, arg: null, checked: null },
+    ]);
+    const pushDisabled = vi.spyOn(ipc.commands, "menuSetDisabled").mockResolvedValue();
+    const offAction = registerAction({ id: "test.menuBlur", title: "Test", when: "testMenuBlurEditor", run: () => {} });
+    setContext("testMenuBlurEditor", true);
+    const dispose = installMenuBridge();
+    try {
+      await vi.advanceTimersByTimeAsync(120);
+      expect(pushDisabled).toHaveBeenCalledExactlyOnceWith([]);
+      pushDisabled.mockClear();
+
+      // Focus moves to the Settings window: the editor loses focus, then the window blurs.
+      hasFocus.mockReturnValue(false);
+      setContext("testMenuBlurEditor", false);
+      window.dispatchEvent(new Event("blur"));
+      await vi.advanceTimersByTimeAsync(120);
+      expect(pushDisabled).toHaveBeenCalledExactlyOnceWith(["test.menuBlur"]);
+      pushDisabled.mockClear();
+
+      // Later changes in a background window are not pushed.
+      setContext("testMenuBlurEditor", true);
+      await vi.advanceTimersByTimeAsync(120);
+      expect(pushDisabled).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+      offAction();
+      clearContext("testMenuBlurEditor");
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("brings Settings back once the dialog opened from its menu closes (#3625)", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const focusSettings = vi.fn(async () => {});
+    try {
+      // About opens a dialog: Settings waits under it.
+      const about = returnFocusAfterMenu(
+        Promise.resolve(true)
+          .then(() => setContext("popupOpen", true))
+          .then(() => true),
+        focusSettings,
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(focusSettings).not.toHaveBeenCalled();
+      setContext("popupOpen", false);
+      await about;
+      expect(focusSettings).toHaveBeenCalledOnce();
+
+      // An action that opens nothing: Settings comes back right away.
+      focusSettings.mockClear();
+      const saveAll = returnFocusAfterMenu(Promise.resolve(true), focusSettings);
+      await vi.advanceTimersByTimeAsync(300);
+      await saveAll;
+      expect(focusSettings).toHaveBeenCalledOnce();
+
+      // Focus moved on (a new window or a native dialog): Settings stays where it is.
+      focusSettings.mockClear();
+      vi.mocked(document.hasFocus).mockReturnValue(false);
+      const open = returnFocusAfterMenu(Promise.resolve(true), focusSettings);
+      await vi.advanceTimersByTimeAsync(300);
+      await open;
+      expect(focusSettings).not.toHaveBeenCalled();
+    } finally {
+      clearContext("popupOpen");
       vi.useRealTimers();
       vi.restoreAllMocks();
     }

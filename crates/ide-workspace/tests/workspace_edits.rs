@@ -163,6 +163,21 @@ fn undo_id(events: &Mutex<Vec<IdeEvent>>) -> u32 {
 }
 
 #[test]
+fn undo_keeps_the_encoding_chosen_for_a_file_opened_after_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("legacy.txt");
+    std::fs::write(&path, b"abc\xC3\xA9").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let info = docs.open(&path).unwrap();
+    docs.set_encoding(info.id, "windows-1252", true).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "newÃ©");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snapshot = docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("abcÃ©", "windows-1252"));
+}
+
+#[test]
 fn stale_document_version_rejects_the_whole_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let a = tmp.path().join("a.txt");
@@ -513,6 +528,18 @@ fn duplicate_edits_keep_versions_and_apply_one_replacement() {
     assert_eq!(workspace.files.len(), 2, "deduplication must not discard incompatible versions");
     assert_eq!(docs.apply_workspace_edit(&workspace).unwrap_err().kind, ErrorKind::OutOfSync);
     assert_eq!(std::fs::read_to_string(path).unwrap(), "new_long");
+}
+
+#[test]
+fn repeated_inserts_at_one_position_all_apply_once_per_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.ts");
+    std::fs::write(&path, "f(").unwrap();
+    let docs = documents();
+    let close = TextEdit { range: Range::new(Pos::new(0, 2), Pos::new(0, 2)), new_text: ")".into() };
+    let entry = FileEdit::Edit { path: path.clone().into(), version: None, edits: vec![close.clone(), close] };
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![entry.clone(), entry], ..Default::default() }).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "f())");
 }
 
 #[test]

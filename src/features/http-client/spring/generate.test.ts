@@ -4,9 +4,10 @@ import { provideEditorService, provideNotificationService } from "@/workbench/co
 import { springControllers } from "./endpoints";
 import { generateRequests } from "./editor";
 
-// `appDataDir()` is a native path: `\`-separated on Windows.
-vi.mock("@tauri-apps/api/path", () => ({
-  appDataDir: async () => String.raw`C:\Users\me\AppData\Roaming\ai.l0ng.openidea`,
+// The backend reports the user data directory `/`-separated on every OS.
+vi.mock("@/platform/platformInfo", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/platformInfo")>()),
+  appDataDir: async () => "C:/Users/me/AppData/Roaming/ai.l0ng.openidea",
 }));
 
 // No backend here: the file commands answer like a project without Spring

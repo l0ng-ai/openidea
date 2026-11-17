@@ -11,17 +11,28 @@ use std::time::Duration;
 
 pub(crate) const SERVER: &str = "vue-language-server";
 const PACKAGE: &str = "@vue/language-server";
-const PLUGIN: &str = "@vue/typescript-plugin";
+pub(crate) const PLUGIN: &str = "@vue/typescript-plugin";
+/// The companion plugin's package name under the IDE's data dir.
+pub(crate) const MODULE_RESOLUTION_PLUGIN: &str = "openidea-vue-module-resolution";
+/// The TS plugin shipped as an asset: retries extension-less relative imports with `.vue`.
+const MODULE_RESOLUTION_JS: &str = include_str!("vue-module-resolution.js");
 /// The file extension the plugin adds to tsserver.
 pub(crate) const EXTENSION: &str = "vue";
 const CLI_SERVICE: &str = "@vue/cli-service";
 const CLI_CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
 const ALIASES_MARKER: &str = "openidea-webpack-aliases:";
-/// Prints the `resolve.alias` of the webpack configuration module `argv[1]`, after whatever
-/// the configuration itself prints.
-const PRINT_ALIASES: &str = "const c = require(process.argv[1]); const a = (c.resolve && c.resolve.alias) || {}; \
+/// Prints the `resolve.alias` of the webpack configuration module `argv[1]` (an object, an
+/// ES module's default, a function of the environment, or a list of configurations), after
+/// whatever the configuration itself prints.
+const PRINT_ALIASES: &str = "let c = require(process.argv[1]); if (c && c.__esModule) c = c.default; \
+    if (typeof c === 'function') c = c({}, { mode: 'development' }); if (Array.isArray(c)) c = c[0]; \
+    const a = (c && c.resolve && c.resolve.alias) || {}; \
     const e = Array.isArray(a) ? a.map((x) => [x.name, x.alias]) : Object.entries(a); \
     process.stdout.write('\\n' + process.argv[2] + JSON.stringify(e));";
+/// Webpack configurations of Vue projects without Vue CLI: the project's own, and the
+/// `vue init webpack` (Vue CLI 2) template's.
+const WEBPACK_CONFIGS: &[&str] =
+    &["webpack.config.js", "webpack.config.cjs", "build/webpack.base.conf.js", "build/webpack.dev.conf.js"];
 
 type Paths = BTreeMap<String, Vec<String>>;
 static CLI_PATHS: LazyLock<Mutex<HashMap<PathBuf, (Stamp, Paths)>>> = LazyLock::new(Default::default);
@@ -42,24 +53,52 @@ pub(crate) fn tsserver_plugin(package: &Path) -> serde_json::Value {
     })
 }
 
-/// `compilerOptions.paths` for the webpack aliases of a Vue CLI project at `root` (`@/*` →
+/// The companion module-resolution plugin (`vue-module-resolution.js`) written under
+/// `<data_dir>/tsplugins`, as one more tsserver global plugin. `location` is the directory
+/// holding its `node_modules`, the layout a plugin probe path resolves. Idempotent: the file
+/// is only rewritten when its content changed. `None` when the data dir cannot be written.
+pub(crate) fn module_resolution_plugin(data_dir: &Path) -> Option<serde_json::Value> {
+    let root = data_dir.join("tsplugins");
+    let dir = root.join("node_modules").join(MODULE_RESOLUTION_PLUGIN);
+    if std::fs::read(dir.join("index.js")).ok().as_deref() != Some(MODULE_RESOLUTION_JS.as_bytes()) {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(dir.join("index.js"), MODULE_RESOLUTION_JS).ok()?;
+    }
+    Some(serde_json::json!({
+        "name": MODULE_RESOLUTION_PLUGIN,
+        "location": root.to_string_lossy(),
+        "languages": ["vue"],
+        "enableForWorkspaceTypeScriptVersions": true,
+    }))
+}
+
+/// `compilerOptions.paths` for the webpack aliases of a Vue project at `root` (`@/*` →
 /// `<root>/src/*`), for its tsserver project when it has no `jsconfig.json`: tsserver can't
 /// read webpack configurations, so `@/` imports resolve to nothing, and a mixin imported
-/// that way makes the component's whole `this` `any`. Like IntelliJ, evaluates the
-/// configuration `@vue/cli-service` resolves with the project's `vue.config.js` (the project
-/// is trusted: language servers only run then); else the alias Vue CLI always adds.
-/// Empty for other projects.
+/// that way makes the component's whole `this` `any`. Like IntelliJ, evaluates the webpack
+/// configuration (the project is trusted: language servers only run then): the one
+/// `@vue/cli-service` resolves with the project's `vue.config.js`, else the project's own
+/// (`webpack.config.js`, Vue CLI 2's `build/webpack.base.conf.js`). Without one (Vite, or
+/// no Node), the `@` → `src` alias every Vue template sets up. Empty for other projects.
 pub(crate) fn cli_paths(root: &Path, node: Option<&Path>) -> Paths {
     let Ok(manifest) = std::fs::read_to_string(root.join("package.json")) else { return Paths::new() };
-    if !package_dependencies(&manifest).iter().any(|d| d == CLI_SERVICE) {
+    let dependencies = package_dependencies(&manifest);
+    let cli = dependencies.iter().any(|d| d == CLI_SERVICE);
+    if !cli && !dependencies.iter().any(|d| d == "vue") {
         return Paths::new();
     }
-    let config = root
-        .ancestors()
-        .map(|dir| dir.join("node_modules").join(CLI_SERVICE).join("webpack.config.js"))
-        .find(|f| f.is_file());
-    let mut inputs: Vec<PathBuf> =
-        ["package.json", "vue.config.js", "vue.config.cjs", "vue.config.mjs"].iter().map(|f| root.join(f)).collect();
+    let config = if cli {
+        root.ancestors()
+            .map(|dir| dir.join("node_modules").join(CLI_SERVICE).join("webpack.config.js"))
+            .find(|f| f.is_file())
+    } else {
+        WEBPACK_CONFIGS.iter().map(|f| root.join(f)).find(|f| f.is_file())
+    };
+    let mut inputs: Vec<PathBuf> = ["package.json", "vue.config.js", "vue.config.cjs", "vue.config.mjs"]
+        .iter()
+        .chain(WEBPACK_CONFIGS)
+        .map(|f| root.join(f))
+        .collect();
     inputs.extend(config.iter().cloned());
     inputs.extend(node.map(Path::to_path_buf));
     let now = stamp(&inputs);
@@ -71,6 +110,7 @@ pub(crate) fn cli_paths(root: &Path, node: Option<&Path>) -> Paths {
     let aliases = config
         .zip(node)
         .and_then(|(config, node)| webpack_aliases(root, &config, node))
+        .filter(|aliases| !aliases.is_empty())
         .unwrap_or_else(|| vec![("@".into(), root.join("src").to_string_lossy().into_owned())]);
     let paths = alias_paths(&aliases);
     CLI_PATHS.lock().unwrap_or_else(|e| e.into_inner()).insert(root.to_path_buf(), (now, paths.clone()));
@@ -182,6 +222,43 @@ mod tests {
     }
 
     #[test]
+    fn other_vue_projects_get_their_webpack_aliases_else_the_at_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        // As `__dirname` sees it (macOS: /private/var).
+        let t = &dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(t.join("package.json"), r#"{"dependencies":{"react":"^18.0.0"}}"#).unwrap();
+        std::fs::create_dir_all(t.join("src/views")).unwrap();
+        assert!(cli_paths(t, None).is_empty(), "not a Vue project");
+        std::fs::write(t.join("package.json"), r#"{"dependencies":{"vue":"^2.6.14"}}"#).unwrap();
+        let slash = |p: PathBuf| p.to_string_lossy().replace('\\', "/");
+        let (src, views) = (slash(t.join("src")), slash(t.join("src/views")));
+        let at = Paths::from([("@".into(), vec![src.clone()]), ("@/*".into(), vec![format!("{src}/*")])]);
+        assert_eq!(cli_paths(t, None), at, "Vite or no Node: the template alias");
+        let Some(node) = crate::exec::which("node") else { return };
+        // `vue init webpack`: a function of the environment is called, its aliases taken.
+        std::fs::create_dir_all(t.join("build")).unwrap();
+        std::fs::write(
+            t.join("build/webpack.base.conf.js"),
+            r#"const path = require('path');
+const resolve = (dir) => path.join(__dirname, '..', dir);
+module.exports = (env) => ({ resolve: { alias: { vue$: 'vue/dist/vue.esm.js', '@': resolve('src'), views: resolve('src/views') } } });"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cli_paths(t, Some(&node)),
+            Paths::from([
+                ("@".into(), vec![src.clone()]),
+                ("@/*".into(), vec![format!("{src}/*")]),
+                ("views".into(), vec![views.clone()]),
+                ("views/*".into(), vec![format!("{views}/*")]),
+            ])
+        );
+        // A configuration that can't be loaded (dependencies not installed): the template alias.
+        std::fs::write(t.join("build/webpack.base.conf.js"), "require('not-installed-plugin');").unwrap();
+        assert_eq!(cli_paths(t, Some(&node)), at);
+    }
+
+    #[test]
     fn vue_cli_aliases_come_from_the_resolved_webpack_configuration() {
         let Some(node) = crate::exec::which("node") else { return };
         let tmp = tempfile::tempdir().unwrap();
@@ -225,5 +302,42 @@ module.exports = { resolve: { alias: {
         assert_eq!(own_typescript(&pkg), None);
         touch(&tmp.path().join("node_modules/typescript/lib/typescript.js"));
         assert_eq!(own_typescript(&pkg), Some(tmp.path().join("node_modules/typescript/lib")));
+    }
+
+    #[test]
+    fn the_module_resolution_plugin_is_written_where_a_probe_path_finds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let plugin = module_resolution_plugin(t).unwrap();
+        assert_eq!(plugin["name"], MODULE_RESOLUTION_PLUGIN);
+        assert_eq!(plugin["location"], t.join("tsplugins").to_string_lossy().as_ref());
+        assert_eq!(plugin["enableForWorkspaceTypeScriptVersions"], true);
+        let index = t.join("tsplugins/node_modules").join(MODULE_RESOLUTION_PLUGIN).join("index.js");
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), MODULE_RESOLUTION_JS);
+        // A stale file from an older release is replaced.
+        std::fs::write(&index, "outdated").unwrap();
+        module_resolution_plugin(t).unwrap();
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), MODULE_RESOLUTION_JS);
+    }
+
+    #[test]
+    fn the_module_resolution_plugin_loads_as_a_tsserver_plugin() {
+        let Some(node) = crate::exec::which("node") else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        module_resolution_plugin(tmp.path()).unwrap();
+        let index = tmp.path().join("tsplugins/node_modules").join(MODULE_RESOLUTION_PLUGIN).join("index.js");
+        // tsserver requires the package and calls the factory with `{ typescript }`.
+        let out = crate::exec::query_in(
+            &node,
+            &[
+                "-e",
+                "const p = require(process.argv[1]); if (typeof p !== 'function') process.exit(1); process.stdout.write('factory');",
+                &index.to_string_lossy(),
+            ],
+            None,
+            &[],
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(out.as_deref(), Some("factory"));
     }
 }

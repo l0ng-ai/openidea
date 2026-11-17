@@ -83,10 +83,10 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     };
     let original_metadata = "fileFormatVersion: 2\nguid: 11111111111111111111111111111111\n";
     std::fs::write(meta(&original), original_metadata).unwrap();
-    ops::fs::rename(&host, original.clone(), renamed.clone()).await.unwrap();
+    ops::fs::rename(&host, "main", original.clone(), renamed.clone()).await.unwrap();
     assert!(!original.exists() && !meta(&original).exists());
     assert_eq!(std::fs::read_to_string(meta(&renamed)).unwrap(), original_metadata);
-    ops::fs::copy(&host, renamed.clone(), copied.clone()).await.unwrap();
+    ops::fs::copy(&host, "main", renamed.clone(), copied.clone()).await.unwrap();
     assert!(copied.exists());
     assert_ne!(std::fs::read_to_string(meta(&copied)).unwrap(), original_metadata);
     assert_eq!(std::fs::read_to_string(meta(&renamed)).unwrap(), original_metadata);

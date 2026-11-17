@@ -32,6 +32,7 @@ import {
   nodeLabel,
   profileChecked,
   withGradleOptions,
+  gradleHasTestTask,
   type BuildNode,
 } from "./model";
 import {
@@ -64,7 +65,9 @@ export function nodeConfig(
   const first = nodes[0];
   if (!first) return null;
   if (first.kind === "runConfig")
-    return first.config.kind === "gradle" ? withGradleOptions(first.config, settings.gradle) : first.config;
+    return first.config.kind === "gradle"
+      ? withGradleOptions(first.config, settings.gradle, gradleHasTestTask(model.gradle ?? []))
+      : first.config;
   if ((first.kind === "phase" || first.kind === "goal") && model.maven) {
     const same = nodes.filter(
       (n): n is Extract<BuildNode, { kind: "phase" | "goal" }> =>
@@ -168,15 +171,13 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
         iconSize={16}
         action={maven ? "maven.analyzeDependencies" : "gradle.analyzeDependencies"}
       />
-      {maven && (
-        <IconButton
-          icon="skip-tests"
-          size="small"
-          iconSize={16}
-          action="maven.toggleSkipTests"
-          pressed={settings.maven.skipTests}
-        />
-      )}
+      <IconButton
+        icon="skip-tests"
+        size="small"
+        iconSize={16}
+        action={`${tool}.toggleSkipTests`}
+        pressed={maven ? settings.maven.skipTests : settings.gradle.skipTests}
+      />
       <span className={styles.sep} />
       <IconButton icon="expand-all" size="small" iconSize={16} action={`${tool}.expandAll`} />
       <IconButton icon="collapse-all" size="small" iconSize={16} action={`${tool}.collapseAll`} />
@@ -234,7 +235,9 @@ function BuildBanner({ info, tool }: { info: MavenModel | GradleModel; tool: Bui
 
 function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
   const choices = useBuild((s) => s.settings.maven.profiles);
-  const skipTests = useBuild((s) => s.settings.maven.skipTests);
+  // Each toggle strikes through only its own tool's tree: the Maven `test` phase, or the Gradle `test` task.
+  const mavenSkipTests = useBuild((s) => s.settings.maven.skipTests);
+  const gradleSkipTests = useBuild((s) => s.settings.gradle.skipTests);
   if (node.kind === "profile") {
     return (
       <span className={styles.row} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
@@ -257,16 +260,13 @@ function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
           : node.kind === "task"
             ? node.task.description
             : null;
+  const skipped =
+    (mavenSkipTests && node.kind === "phase" && node.phase === "test") ||
+    (gradleSkipTests && node.kind === "task" && node.task.name === "test");
   return (
     <span className={styles.row} title={node.kind === "task" ? (node.task.description ?? undefined) : undefined}>
       <Icon name={nodeIcon(node)} size={16} className={styles.icon} />
-      <span
-        className={clsx(
-          styles.label,
-          state.selected && styles.selectedLabel,
-          skipTests && node.kind === "phase" && node.phase === "test" && styles.skippedGoal,
-        )}
-      >
+      <span className={clsx(styles.label, state.selected && styles.selectedLabel, skipped && styles.skippedGoal)}>
         {nodeLabel(node)}
       </span>
       {detail && <span className={styles.detail}>{detail}</span>}

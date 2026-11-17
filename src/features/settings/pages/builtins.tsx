@@ -2,7 +2,7 @@
 import { GlobListEditor, Row } from "../components/Form";
 import { useSetting } from "../components/context";
 import { KeymapPage, keymapSearchLabels } from "../keymap/KeymapPage";
-import { RecognizedFileTypes } from "./FileTypes";
+import { AssociatedApplicationsRow, RecognizedFileTypes } from "./FileTypes";
 import type { PageSpec } from "./spec";
 export const EDITOR_GROUP = "Editor";
 
@@ -57,6 +57,17 @@ export const BUILTIN_PAGES: PageSpec[] = [
             label: "File name patterns",
             keywords: ["Hashbang patterns", "file type", "language"],
             component: RecognizedFileTypes,
+          },
+        ],
+      },
+      {
+        title: "Files opened in associated applications",
+        options: [
+          {
+            kind: "custom",
+            label: "File name patterns",
+            keywords: ["associated application", "external", "default application", "open with"],
+            component: AssociatedApplicationsRow,
           },
         ],
       },

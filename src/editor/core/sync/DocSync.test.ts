@@ -28,6 +28,8 @@ class FakeServer {
   edits: Array<{ base: number; changes: TextChange[] }> = [];
   private queue: Array<() => void> = [];
   snapshots = 0;
+  /** Snapshots still to reject (a transient IPC or remote-host failure). */
+  failSnapshots = 0;
   failNext: unknown = null;
   constructor(public text: string) {}
 
@@ -52,6 +54,10 @@ class FakeServer {
       }),
     snapshot: async () => {
       this.snapshots++;
+      if (this.failSnapshots > 0) {
+        this.failSnapshots--;
+        throw { kind: "unavailable", message: "snapshot failed" };
+      }
       return { text: this.text, version: this.version };
     },
   };
@@ -210,6 +216,76 @@ describe("DocSync", () => {
       await server.processAll();
       await flushMicrotasks();
       expect(server.snapshots).toBe(1);
+      expect(server.text).toBe("#ONE\ntwo\nthree\n");
+      expect(view.text.toString()).toBe(server.text);
+      expect(sync.idle).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps syncing when the snapshot of a rebase fails once", async () => {
+    vi.useFakeTimers();
+    try {
+      const { server, view, sync, type, frame, host } = setup("one\ntwo\n");
+      type(8, 8, "three\n");
+      frame();
+      server.patch([{ from: 0, to: 3, insert: "ONE" }]); // event lost
+      server.failSnapshots = 1;
+      let idle = false;
+      void sync.whenIdle().then(() => (idle = true));
+      for (let i = 0; i < 4; i++) {
+        await server.processAll();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(server.snapshots).toBe(2);
+      expect(host.onError).toHaveBeenCalledWith(expect.objectContaining({ kind: "unavailable" }));
+      expect(server.text).toBe("ONE\ntwo\nthree\n");
+      expect(view.text.toString()).toBe(server.text);
+      expect(sync.idle).toBe(true);
+      expect(idle).toBe(true);
+      expect(host.onDiscarded).not.toHaveBeenCalled();
+
+      // Later typing still reaches the backend.
+      type(0, 0, "#");
+      frame();
+      await server.processAll();
+      expect(server.text).toBe("#ONE\ntwo\nthree\n");
+      expect(sync.idle).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops retrying when every snapshot fails, and keeps the local text to send later", async () => {
+    vi.useFakeTimers();
+    try {
+      const { server, view, sync, type, frame, host } = setup("one\ntwo\n");
+      type(8, 8, "three\n");
+      frame();
+      server.patch([{ from: 0, to: 3, insert: "ONE" }]); // event lost
+      server.failSnapshots = Infinity;
+      let idle = false;
+      void sync.whenIdle().then(() => (idle = true));
+      for (let i = 0; i < 20 && !idle; i++) {
+        await server.processAll();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      // A save waiting on the document is released instead of hanging, and nothing is in flight.
+      expect(idle).toBe(true);
+      expect(sync.inflight).toBeNull();
+      expect(server.pending()).toBe(0);
+      expect(host.onError).toHaveBeenCalled();
+      expect(view.text.toString()).toBe("one\ntwo\nthree\n");
+
+      // Once the backend answers again, the local text and new typing land where they belong.
+      server.failSnapshots = 0;
+      type(0, 0, "#");
+      frame();
+      for (let i = 0; i < 4; i++) {
+        await server.processAll();
+        await vi.advanceTimersByTimeAsync(100);
+      }
       expect(server.text).toBe("#ONE\ntwo\nthree\n");
       expect(view.text.toString()).toBe(server.text);
       expect(sync.idle).toBe(true);

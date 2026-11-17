@@ -7,12 +7,16 @@ import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
-import { lazyComponent } from "@/ui";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { call, commands } from "@/platform/ipc";
 import {
+  registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
+  registerMenuSlotItem,
+  registerOverlay,
   registerSettingsPage,
   registerStatusItem,
   registerToolWindow,
@@ -23,20 +27,33 @@ import {
   AGENTS_GROUP,
   HOME_KIND,
   MCP_PAGE,
+  POLICY_PAGE,
   REGISTRY_PAGE,
   SESSION_KIND,
   TASK_DRAG,
   TOOL_WINDOW,
+  WORKING_STATUS_PAGE,
   providerIcon,
 } from "./model";
-import { sendPaths, sendSelection } from "./references";
+import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { connect, disconnect, openHome, useAgents } from "./store";
+import { cycleFocusedEffort } from "./effortFocus";
+import { clearAgentTabFontZoom } from "./fontZoom";
+import {
+  closeActiveTask,
+  closeAndNewTask,
+  connect,
+  disconnect,
+  openHome,
+  refreshModels,
+  refreshProviders,
+  useAgents,
+} from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › Model Context Protocol (MCP) (also used by the Settings window). */
+/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   const disposers = [
     registerSettingsPage({
@@ -49,15 +66,32 @@ export function activateSettingsPages(): () => void {
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
     }),
     registerSettingsPage({
+      id: WORKING_STATUS_PAGE,
+      title: "Working Status",
+      group: AGENTS_GROUP,
+      // After Chat.
+      order: 465,
+      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
+      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
+    }),
+    registerSettingsPage({
       id: MCP_PAGE,
-      title: "Model Context Protocol (MCP)",
+      title: "External MCP Servers",
       group: AGENTS_GROUP,
       order: 475,
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
     }),
+    registerSettingsPage({
+      id: POLICY_PAGE,
+      title: "Command Permissions",
+      group: AGENTS_GROUP,
+      order: 490,
+      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
+      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
+    }),
   ];
-  return () => disposers.forEach((d) => d());
+  return () => disposers.reverse().forEach((d) => d());
 }
 
 export function activate(): () => void {
@@ -68,6 +102,17 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateSettingsPages(),
+    trackEditorCopies(),
+    registerAgentContextSource({
+      id: "changes",
+      title: "Changes",
+      description: "Files with uncommitted changes",
+      icon: "diff",
+      resolve: async () => {
+        const changed = await call(commands.vcsStatus());
+        return changed.length ? { kind: "files", paths: changed.map((f) => f.path) } : null;
+      },
+    }),
     // The performance harness (`perf/`): long conversations to switch between and scroll.
     import.meta.env.DEV || import.meta.env.MODE === "perf"
       ? registerActions([
@@ -86,6 +131,9 @@ export function activate(): () => void {
       : () => {},
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) sync(s.project?.root);
+      // What new tasks start with comes from the agents' list.
+      else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
+        void refreshProviders();
     }),
     registerToolWindow({
       id: TOOL_WINDOW,
@@ -104,6 +152,13 @@ export function activate(): () => void {
         return n || null;
       },
     }),
+    registerOverlay({
+      id: "agents.importSessions",
+      component: lazyWhen(
+        () => useAgents((s) => s.importOpen),
+        () => import("./ImportSessionsDialog").then((m) => m.ImportSessionsOverlay),
+      ),
+    }),
     registerEditorKind({
       kind: SESSION_KIND,
       component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
@@ -119,6 +174,7 @@ export function activate(): () => void {
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
@@ -130,12 +186,22 @@ export function activate(): () => void {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
         return task ? providerIcon(task.provider) : "toolwindow-agents";
       },
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       restorable: true,
+      // Mounting it again on every switch rebuilds the composer and refetches the agent, models and branches.
+      keepAlive: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.
     registerEditorDropHandler({
       accepts: (type) => type === TASK_DRAG,
       drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
+    }),
+    // The button above the commit message (the Commit tool window and dialog).
+    registerMenuSlotItem("commitMessage", {
+      action: "agents.generateCommitMessage",
+      label: "Generate Commit Message with Agent",
+      icon: "toolwindow-agents",
+      when: "projectOpen && vcsAvailable",
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
@@ -159,6 +225,24 @@ export function activate(): () => void {
         run: () => focusedSession()?.openFind(),
       },
       {
+        id: "agents.focusInput",
+        title: "Focus Agent Input",
+        description: "Focuses the message input of the current agent task without moving the caret.",
+        category: "Agents",
+        when: "agentSessionFocus && agentInputAvailable",
+        keyWhen: "agentSessionFocus && !popupOpen",
+        run: () => focusedSession()?.focusInput?.(),
+      },
+      {
+        id: "agents.cycleEffort",
+        title: "Cycle Agent Effort",
+        description: "Cycles the current model's supported effort levels without changing the message.",
+        category: "Agents",
+        when: "agentEffortAvailable",
+        keyWhen: "agentEffortAvailable && !popupOpen",
+        run: cycleFocusedEffort,
+      },
+      {
         id: "agents.newTask",
         title: "New Agent Task",
         description: "Opens the New Task page; a string `arg` pre-fills the task description.",
@@ -167,6 +251,33 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["agent", "claude", "codex", "gemini", "ai"],
         run: ({ arg }) => openHome(typeof arg === "string" ? arg : undefined),
+      },
+      {
+        id: "agents.refreshModels",
+        title: "Refresh models",
+        category: "Agents",
+        when: "projectOpen",
+        run: () => refreshModels(),
+      },
+      {
+        id: "agents.closeTask",
+        title: "Close Agent Task",
+        description: "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: async () => {
+          await closeActiveTask();
+        },
+      },
+      {
+        id: "agents.closeAndNewTask",
+        title: "Close and New Agent Task",
+        description: "Closes the agent task tab in the editor, then opens the New Task page.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: () => closeAndNewTask(),
       },
       {
         id: "agents.addAgent",
@@ -179,9 +290,9 @@ export function activate(): () => void {
       },
       {
         id: "agents.mcpServers",
-        title: "Model Context Protocol (MCP)…",
+        title: "External MCP Servers…",
         description:
-          "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.",
+          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
         category: "Agents",
         icon: "settings",
         keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
@@ -199,6 +310,21 @@ export function activate(): () => void {
         run: ({ arg }) => {
           if (Array.isArray(arg)) sendPaths(arg.filter((p): p is string => typeof p === "string"));
           else sendSelection();
+        },
+      },
+      {
+        id: "agents.generateCommitMessage",
+        title: "Generate Commit Message with Agent",
+        description:
+          "Has the coding agent you work with review the changes about to be committed and write the commit message.",
+        category: "Agents",
+        icon: "toolwindow-agents",
+        when: "projectOpen && vcsAvailable",
+        keywords: ["agent", "commit", "message", "ai", "copilot", "generate"],
+        indicatesRunning: true,
+        run: async () => {
+          const { generateCommitMessage } = await import("./commitMessage");
+          await generateCommitMessage();
         },
       },
       {

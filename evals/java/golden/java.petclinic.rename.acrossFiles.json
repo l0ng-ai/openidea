@@ -1,0 +1,13 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "changes": [
+      "src/main/java/org/springframework/samples/petclinic/owner/Owner.java:176",
+      "src/main/java/org/springframework/samples/petclinic/owner/VisitController.java:108",
+      "src/test/java/org/springframework/samples/petclinic/service/ClinicServiceTests.java:229"
+    ]
+  }
+}

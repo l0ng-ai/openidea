@@ -12,6 +12,7 @@ use ide_db::{
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::path::PathBuf;
 
 /// One statement of a console run.
 #[derive(Clone, Serialize, Deserialize, Type)]
@@ -42,6 +43,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
         );
         test(&c.host, &c.window, source, password, ssh_secret).await
     });
+    d.add("db_test_tunnel", |c| async move {
+        let (source, ssh_secret) = (c.arg::<DataSource>("source")?, c.arg::<Option<String>>("sshSecret")?);
+        test_tunnel(&c.host, &c.window, source, ssh_secret).await
+    });
     d.add("db_set_ssh_secret", |c| async move {
         let (id, secret, save) = (c.arg::<String>("id")?, c.arg::<Option<String>>("secret")?, c.arg::<bool>("save")?);
         set_ssh_secret(&c.host, &c.window, &id, secret, save).await
@@ -70,6 +75,22 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("db_databases", |c| async move {
         let id = c.arg::<String>("id")?;
         databases(&c.host, &c.window, &id).await
+    });
+    d.add("db_database_catalog", |c| async move {
+        let (id, database) = (c.arg::<String>("id")?, c.arg::<String>("database")?);
+        database_catalog(&c.host, &c.window, &id, &database).await
+    });
+    d.add("db_saved_catalog", |c| async move {
+        let id = c.arg::<String>("id")?;
+        saved_catalog(&c.host, &c.window, &id).await
+    });
+    d.add("db_retain_catalog", |c| async move {
+        let (id, databases) = (c.arg::<String>("id")?, c.arg::<Vec<String>>("databases")?);
+        retain_catalog(&c.host, &c.window, &id, databases).await
+    });
+    d.add("db_session_context", |c| async move {
+        let id = c.arg::<String>("id")?;
+        session_context(&c.host, &c.window, &id).await
     });
     d.add("db_schemas", |c| async move {
         let id = c.arg::<String>("id")?;
@@ -159,6 +180,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         apply_edits(&c.host, &c.window, &id, &schema, &table, edits).await
     });
     d.add("db_console_path", |c| async move { console_path(&c.host, &c.arg::<String>("id")?) });
+    d.add("db_consoles", |c| async move { consoles(&c.host, &c.arg::<String>("id")?, c.arg("create")?) });
 }
 
 /// The data sources configured for the project (the tree's roots).
@@ -194,6 +216,17 @@ pub async fn test(
 ) -> IdeResult<String> {
     let db = host.project(window)?.db.clone();
     db.test(&source, password, ssh_secret).await
+}
+
+/// Checks the SSH tunnel of `source` alone: SSH login and the SSH host reaching the database.
+pub async fn test_tunnel(
+    host: &Host,
+    window: &str,
+    source: DataSource,
+    ssh_secret: Option<String>,
+) -> IdeResult<String> {
+    let db = host.project(window)?.db.clone();
+    db.test_tunnel(&source, ssh_secret).await
 }
 
 /// Remembers the SSH password / key passphrase of a data source (see `set_password`).
@@ -244,6 +277,35 @@ pub async fn disconnect(host: &Host, window: &str, id: &str) -> IdeResult<()> {
 pub async fn databases(host: &Host, window: &str, id: &str) -> IdeResult<Databases> {
     let db = host.project(window)?.db.clone();
     db.databases(id).await
+}
+
+/// The schemas of `database` of Snowflake data source `id` with their tables and views.
+pub async fn database_catalog(
+    host: &Host,
+    window: &str,
+    id: &str,
+    database: &str,
+) -> IdeResult<Vec<ide_db::CatalogSchema>> {
+    let db = host.project(window)?.db.clone();
+    db.database_catalog(id, database).await
+}
+
+/// What earlier introspection of data source `id` saved; the data source is not connected to.
+pub async fn saved_catalog(host: &Host, window: &str, id: &str) -> IdeResult<Option<ide_db::SourceCatalog>> {
+    let db = host.project(window)?.db.clone();
+    db.saved_catalog(id).await
+}
+
+/// Drops the saved databases of data source `id` that are not in `databases` any more.
+pub async fn retain_catalog(host: &Host, window: &str, id: &str, databases: Vec<String>) -> IdeResult<()> {
+    let db = host.project(window)?.db.clone();
+    db.retain_catalog(id, databases).await
+}
+
+/// The warehouse and role of the Snowflake session of data source `id`, and what it may switch to.
+pub async fn session_context(host: &Host, window: &str, id: &str) -> IdeResult<ide_db::SessionContext> {
+    let db = host.project(window)?.db.clone();
+    db.session_context(id).await
 }
 
 /// The schemas of data source `id`.
@@ -412,11 +474,52 @@ pub async fn apply_edits(
 /// created on first use. Consoles are files of the project, so a remote
 /// window resolves it on the host the project runs on.
 pub fn console_path(host: &Host, id: &str) -> IdeResult<IpcPath> {
+    let file = console_dir(host, id)?.join("console.sql");
+    if !file.exists() {
+        std::fs::write(&file, "")?;
+    }
+    Ok(file.into())
+}
+
+/// The query consoles of data source `id`: the default `console.sql`, then
+/// `console_1.sql`, `console_2.sql`… in order. `create` adds the next one first
+/// (DataGrip's New › Query Console).
+pub fn consoles(host: &Host, id: &str, create: bool) -> IdeResult<Vec<IpcPath>> {
+    let dir = console_dir(host, id)?;
+    let default = dir.join("console.sql");
+    let mut numbered: Vec<(u32, PathBuf)> = std::fs::read_dir(&dir)?
+        .filter_map(|e| {
+            let path = e.ok()?.path();
+            let n = path.file_name()?.to_str()?.strip_prefix("console_")?.strip_suffix(".sql")?.parse().ok()?;
+            Some((n, path))
+        })
+        .collect();
+    numbered.sort();
+    if create {
+        // The default console comes first; once it exists, the next number.
+        if !default.exists() {
+            std::fs::write(&default, "")?;
+        } else {
+            let n = numbered.last().map_or(1, |(n, _)| n + 1);
+            let file = dir.join(format!("console_{n}.sql"));
+            std::fs::write(&file, "")?;
+            numbered.push((n, file));
+        }
+    }
+    let mut out: Vec<IpcPath> = Vec::new();
+    if default.exists() {
+        out.push(default.into());
+    }
+    out.extend(numbered.into_iter().map(|(_, p)| p.into()));
+    Ok(out)
+}
+
+/// `<dataDir>/consoles/db/<id>`: `<id>` for the default database, `<id>.<database>` for the others.
+fn console_dir(host: &Host, id: &str) -> IdeResult<PathBuf> {
     let (source, database) = ide_db::split_target(id);
     if source.is_empty() || !source.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(IdeError::invalid("invalid data source id"));
     }
-    // One console per database: `<id>` for the default one, `<id>.<database>` for the others.
     let name = match database {
         Some(db) => {
             let safe: String =
@@ -427,9 +530,37 @@ pub fn console_path(host: &Host, id: &str) -> IdeResult<IpcPath> {
     };
     let dir = host.data_dir.join("consoles").join("db").join(&name);
     std::fs::create_dir_all(&dir)?;
-    let file = dir.join("console.sql");
-    if !file.exists() {
-        std::fs::write(&file, "")?;
-    }
-    Ok(file.into())
+    Ok(dir)
+}
+
+/// Runs a client tool against target `id` until it exits or the request is cancelled.
+/// Desktop only: the file paths come from local dialogs.
+pub async fn run_tool(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: &str,
+    executable: &std::path::Path,
+    job: &ide_db::tools::DbToolJob,
+    on_output: impl FnMut(Vec<ide_db::tools::ToolLine>),
+) -> IdeResult<Option<i32>> {
+    let db = host.project(window)?.db.clone();
+    let cancel = host.begin_request(request);
+    let result = db.run_tool(id, executable, job, &cancel, on_output).await;
+    host.end_request(request);
+    result
+}
+
+pub fn tool_preview(
+    host: &Host,
+    window: &str,
+    id: &str,
+    executable: &std::path::Path,
+    job: &ide_db::tools::DbToolJob,
+) -> IdeResult<String> {
+    host.project(window)?.db.tool_preview(id, executable, job)
+}
+
+pub async fn server_version(host: &Host, window: &str, id: &str) -> IdeResult<u32> {
+    host.project(window)?.db.server_version(id).await
 }

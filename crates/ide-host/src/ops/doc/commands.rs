@@ -5,7 +5,7 @@ use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
 use std::path::PathBuf;
 
 /// Runs blocking work (disk I/O, parsing, large copies) on the blocking pool,
@@ -19,26 +19,61 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send
 pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResult<DocumentInfo> {
     let project = host.project(window)?;
     let vd = crate::ops::lsp::lsp_virtual_document(host, window, uri).await?;
-    blocking(move || project.documents.open_virtual(&vd.uri, vd.language_id, &vd.text)).await
+    blocking(move || {
+        project.documents.open_virtual(
+            &vd.uri,
+            vd.language_id,
+            &vd.text,
+            &vd.encoding,
+            vd.has_bom,
+            vd.can_reload_encoding,
+        )
+    })
+    .await
 }
 
-/// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
-/// without opening it: previews of closed files.
-pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<String>> {
+/// The language and CodeMirror mode `path` is shown with in an editor, without opening
+/// it: previews of closed files and diffs. `first_line` is the shown text's (a revision's)
+/// for hashbang detection; without it the file's on disk counts.
+pub async fn doc_language(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    first_line: Option<String>,
+) -> IdeResult<DocumentLanguage> {
     let project = host.project(window)?;
-    blocking(move || Ok(project.documents.ui_mode_of(&path))).await
+    blocking(move || Ok(project.documents.language_of(&path, first_line.as_deref()))).await
 }
 
-/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding label.
+/// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
+/// Virtual documents re-read their origin (archive, language server, Git blob)
+/// instead of a disk file; converting them would write to it, so it stays refused.
 pub async fn doc_set_encoding(
     host: &Host,
     window: &str,
     doc: DocId,
     encoding: String,
     reload: bool,
-) -> IdeResult<String> {
+) -> IdeResult<DocumentEncoding> {
     let project = host.project(window)?;
+    if reload
+        && !project.documents.is_untitled(doc)?
+        && let Some(uri) = project.documents.virtual_uri(doc)?
+    {
+        let vd = if uri.starts_with("git-revision:") {
+            crate::ops::vcs::revision_virtual_document(host, window, &uri, Some(&encoding)).await?
+        } else {
+            project.lsp.reload_virtual(&uri, &encoding).await?
+        };
+        return host.blocking(move || project.documents.replace_virtual(doc, &vd.text, &vd.encoding, vd.has_bom)).await;
+    }
     host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
+}
+
+/// Adds or removes the BOM on a UTF-8 document; the change is written on save.
+pub async fn doc_set_bom(host: &Host, window: &str, doc: DocId, has_bom: bool) -> IdeResult<DocumentEncoding> {
+    let project = host.project(window)?;
+    host.blocking(move || project.documents.set_bom(doc, has_bom)).await
 }
 
 pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
@@ -133,6 +168,15 @@ pub async fn doc_highlights(host: &Host, window: &str, doc: DocId) -> IdeResult<
     .await
 }
 
+/// Python class facts the inheritance inspections read: base names as written, a method's
+/// parameters, decorator semantics and its body shape. Tree-sitter answers; no LSP.
+pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResult<ide_language::PythonFacts> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    let snap = project.documents.text_snapshot(doc)?;
+    blocking(move || Ok(syntax.python_facts(&snap.language, &snap.text))).await
+}
+
 /// Extend Selection (⌥↑): syntax ranges around `offset`, innermost first.
 /// Large documents fall back to word / line / document ranges.
 pub async fn doc_selection_ranges(host: &Host, window: &str, doc: DocId, offset: u32) -> IdeResult<Vec<Range>> {
@@ -171,16 +215,21 @@ pub fn history_content(host: &Host, window: &str, id: String) -> IdeResult<Strin
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_open_virtual", |c| async move { doc_open_virtual(&c.host, &c.window, c.arg("uri")?).await });
-    d.add("doc_ui_mode", |c| async move { doc_ui_mode(&c.host, &c.window, c.arg("path")?).await });
+    d.add(
+        "doc_language",
+        |c| async move { doc_language(&c.host, &c.window, c.arg("path")?, c.arg("firstLine")?).await },
+    );
     d.add("doc_set_encoding", |c| async move {
         doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });
+    d.add("doc_set_bom", |c| async move { doc_set_bom(&c.host, &c.window, c.arg("doc")?, c.arg("hasBom")?).await });
     d.add("doc_set_line_ending", |c| async move {
         blocking(move || doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)).await
     });
     d.add("doc_outline", |c| async move { doc_outline(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_folding", |c| async move { doc_folding(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_highlights", |c| async move { doc_highlights(&c.host, &c.window, c.arg("doc")?).await });
+    d.add("doc_python_facts", |c| async move { doc_python_facts(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_selection_ranges", |c| async move {
         doc_selection_ranges(&c.host, &c.window, c.arg("doc")?, c.arg("offset")?).await
     });

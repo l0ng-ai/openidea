@@ -2,7 +2,7 @@
  * ANSI escape handling for process output (Run and Debug consoles): one stateful
  * parser per stream turns text with SGR colours into styled spans, keeping a style
  * across chunks and dropping the other escapes. Colours are the `--ansi-*` palette
- * (`ansi.module.css`).
+ * of the color scheme (`tokens.css`, Color Scheme › Console Colors).
  */
 /* eslint-disable no-control-regex -- escape-sequence parsing matches control characters by design */
 import type { CSSProperties } from "react";
@@ -157,4 +157,13 @@ export function appendSpans(into: Span[], spans: readonly Span[]): Span[] {
     else out.push(span);
   }
   return out;
+}
+
+/** `text` without its escape sequences: for places that show process output as plain text. */
+export function stripAnsi(text: string): string {
+  // `clean` keeps a cut-off sequence at the end for the next chunk; there is none, so it is dropped.
+  return new AnsiStream()
+    .clean(text)
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/\r(?!\n)/g, "");
 }

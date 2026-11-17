@@ -8,6 +8,7 @@
 use ide_core::error::ErrorKind;
 use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
+use ide_host::{Host, HostConfig};
 use ide_plugin::{EditorContext, HostError, Invocation, Limits};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,8 @@ struct TestWorkspace {
     /// plugin → its settings as the user set them.
     settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
     global_settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+    /// What plugins sent the language server `mock`: (method, params, whether a notification).
+    server_messages: Mutex<Vec<(String, Option<serde_json::Value>, bool)>>,
 }
 
 impl TestWorkspace {
@@ -48,6 +51,7 @@ impl TestWorkspace {
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
             global_settings: Mutex::default(),
+            server_messages: Mutex::default(),
         })
     }
 
@@ -153,9 +157,20 @@ impl PluginWorkspace for TestWorkspace {
         let snap = self.documents.snapshot(self.documents.by_path(path)?).ok()?;
         Some((u64::from(snap.version), snap.text))
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
         let doc = self.documents.by_path(path).ok_or_else(|| HostError::NotFound("not open".into()))?;
-        match self.documents.apply_edits_at(doc, version as u32, edits) {
+        let applied = if background {
+            self.documents.apply_background_edits_at(doc, version as u32, edits)
+        } else {
+            self.documents.apply_edits_at(doc, version as u32, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) => Err(HostError::Failed(e.message)),
@@ -163,6 +178,58 @@ impl PluginWorkspace for TestWorkspace {
     }
     fn trusted(&self, _root: &Path) -> bool {
         self.trusted
+    }
+    /// One language server runs for the project, `mock`: it answers with what it was sent.
+    fn lsp_request(
+        &self,
+        _root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+        notify: bool,
+        _cancel: &ide_core::CancellationToken,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        if server != "mock" {
+            return Err(HostError::NotFound(format!("no language server `{server}` is running for this project")));
+        }
+        self.server_messages.lock().push((method.into(), params.clone(), notify));
+        Ok(if notify { serde_json::Value::Null } else { serde_json::json!({ "method": method, "params": params }) })
+    }
+    /// A Maven module with a lost version conflict, and a Gradle project with one report.
+    fn build_graph(&self, _root: &Path) -> Result<BuildGraph, HostError> {
+        let dep = |artifact: &str, version: &str| ide_build::MavenDependency {
+            group_id: "org.apache.commons".into(),
+            artifact_id: artifact.into(),
+            version: Some(version.into()),
+            scope: "compile".into(),
+            ..Default::default()
+        };
+        let mut text = dep("commons-text", "1.11.0");
+        text.children = vec![ide_build::MavenDependency {
+            omitted: Some(ide_build::Omission::Conflict),
+            conflict_with: Some("3.14.0".into()),
+            ..dep("commons-lang3", "3.12.0")
+        }];
+        let app = ide_build::MavenProject {
+            group_id: "com.example".into(),
+            artifact_id: "app".into(),
+            version: "1.0".into(),
+            dependencies: vec![text],
+            ..Default::default()
+        };
+        let snakeyaml = ide_build::GradleDependency {
+            group: "org.yaml".into(),
+            name: "snakeyaml".into(),
+            requested: Some("2.2".into()),
+            ..Default::default()
+        };
+        let report = ide_build::GradleReport {
+            project: ":web".into(),
+            configuration: "runtimeClasspath".into(),
+            dependencies: vec![snakeyaml],
+        };
+        Ok(BuildGraph { maven: vec![app], gradle: vec![GradleModule { path: ":web".into(), reports: vec![report] }] })
     }
     fn project_windows(&self, root: &Path) -> Vec<String> {
         // `main` shows the fixture project; other open roots have no window left.
@@ -454,10 +521,10 @@ fn edits_are_refused_when_the_document_changed() {
         range: ide_core::Range::new(ide_core::Pos::new(0, 0), ide_core::Pos::new(0, 3)),
         new_text: "ONE".into(),
     };
-    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit)), Err(HostError::Stale));
+    assert_eq!(f.workspace.apply_edits(&editor.path, doc.0, std::slice::from_ref(&edit), false), Err(HostError::Stale));
     assert_eq!(f.workspace.text("src/notes.txt"), "typed one two three\nfour five\n");
     let now = f.workspace.document(&editor.path).unwrap().0;
-    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit]), Ok(now + 1));
+    assert_eq!(f.workspace.apply_edits(&editor.path, now, &[edit], false), Ok(now + 1));
     assert_eq!(f.workspace.text("src/notes.txt"), "ONEed one two three\nfour five\n");
     let _ = (
         std::any::type_name::<Runtime>(),
@@ -805,6 +872,31 @@ fn a_reporting_task_outlives_its_background_budget() {
 
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[test]
+fn background_tasks_scale_and_renew_cpu_fuel_budget() {
+    // Room for activation (about 3_100 on macOS, more on Windows). A background task gets ten
+    // times it (5 s / 500 ms): enough for each step of `patient` with its CPU work (32_000 to
+    // 80_000), not for the whole run without the refill on each report.
+    let f = fixture(Limits {
+        fuel: 40_000,
+        timeout: Duration::from_millis(500),
+        background: Duration::from_millis(5_000),
+        ..Limits::default()
+    });
+    f.install(&misbehave_pkg());
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+    // Warm up activation in its own call so `patient` starts with a fresh budget.
+    assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
+
+    let out = f.run("misbehave", "patient", Some("4000")).expect("background task succeeds").expect("output");
+    assert_eq!(out, "still here");
+
+    let err = f.run("misbehave", "spin", None).unwrap_err();
+    assert!(err.contains("exceeded its CPU budget (40000 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -2094,6 +2186,60 @@ fn run_detectors_offer_granted_commands_in_marked_projects() {
     assert!(detection.launch(config).unwrap_err().contains("no longer enabled"));
 }
 
+/// A plugin's Java agent (`[[contributes.javaAgents]]`, the `java-agent` fixture): an optional
+/// high-risk `java.agent` capability; refusing or revoking it keeps the plugin working and the
+/// launch gets no agent; granting it pins the jar, which may not change afterwards.
+#[test]
+fn java_agent_loads_only_while_granted_and_unchanged() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("java-agent");
+    copy_dir(&sample("java-agent"), &pkg);
+    let preview = f.host.preview_install(&pkg).unwrap();
+    let cap = preview.capabilities.iter().find(|c| c.id == "java.agent").expect("derived from the declaration");
+    assert!(cap.optional && cap.risk == ide_extension::Risk::High && !cap.granted);
+    assert_eq!(cap.description, "Run code inside the Java applications you start");
+
+    // Refused on install: the plugin is on, Java launches get no agent.
+    let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert!(info.contributions.iter().any(|c| c.point == "javaAgents" && c.label == "fixture agent.jar=mode=test"));
+    let source = f.host.java_agents();
+    let launch = || {
+        let agents = ide_run::java_agent::approved(&source.agents());
+        let mut args: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+        ide_run::java_agent::add_to_args(&mut args, &agents.options);
+        (args, agents.notes)
+    };
+    let plain: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+    assert_eq!(launch(), (plain.clone(), vec![]));
+
+    // Granted: the installed jar with its arguments, one argument after the VM options.
+    let info = f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "java.agent" && c.granted));
+    let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
+    let option = format!("-javaagent:{}=mode=test", jar.display());
+    let mut with_agent = plain.clone();
+    with_agent.insert(3, option.clone());
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // The jar changed since it was granted: left out, with a reason, until approved again.
+    std::fs::write(&jar, "swapped").unwrap();
+    let (args, notes) = launch();
+    assert_eq!(args, plain);
+    assert!(notes.len() == 1 && notes[0].contains("changed since it was approved"), "{notes:?}");
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // Revoked, then the plugin disabled: no agent either way.
+    f.host.set_capability("java-agent", "java.agent", false).unwrap();
+    assert_eq!(f.status("java-agent"), PluginStatus::Static);
+    assert_eq!(launch(), (plain.clone(), vec![]));
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    f.host.set_enabled("java-agent", false).unwrap();
+    assert_eq!(launch(), (plain, vec![]));
+}
+
 /// Compiled components are cached across runs (keyed by module and
 /// engine), so a cold activation only deserializes.
 #[test]
@@ -2520,7 +2666,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
     f.install(&official("git-toolbox"));
     // Focusing an editor wakes it to show the branch (nothing fetched yet).
     let now = Instant::now();
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some("src/notes.txt".into()))]);
+    let focused = f.project.join("src/notes.txt").to_string_lossy().into_owned();
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some(focused))]);
     f.host.flush_events_at(now + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(10)));
     let item = |host: &PluginHost| {
@@ -2569,10 +2716,87 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
         diagnostics: Mutex::default(),
         settings: Mutex::default(),
         global_settings: Mutex::default(),
+        server_messages: Mutex::default(),
     });
     f.host.set_workspace(Some(untrusted));
     let err = f.run("openidea.git-toolbox", "fetch", None).unwrap_err();
     assert!(err.contains("Restricted Mode"), "{err}");
+}
+
+/// Git Toolbox in a workspace window whose container folder is not a
+/// repository (every member is its own clone): the status bar follows the
+/// focused file's repository, and the scheduled fetch covers every member.
+#[test]
+fn official_git_toolbox_follows_members_in_a_workspace() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+    let tmp = tempfile::tempdir().unwrap();
+    // A remote with `main`, cloned by member `a` (at `main`) and member `b`
+    // (on its own branch, to tell the two apart in the status bar).
+    let remote = tmp.path().join("remote.git");
+    std::fs::create_dir(&remote).unwrap();
+    git(&remote, &["init", "--bare", "-b", "main"]);
+    let seed = tmp.path().join("seed");
+    std::fs::create_dir(&seed).unwrap();
+    git(&seed, &["init", "-b", "main"]);
+    std::fs::write(seed.join("seed.txt"), "seed\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-m", "one"]);
+    git(&seed, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&seed, &["push", "-u", "origin", "main"]);
+    let member_a = tmp.path().join("member-a");
+    git(tmp.path(), &["clone", remote.to_str().unwrap(), member_a.to_str().unwrap()]);
+    let member_a = dunce::canonicalize(member_a).unwrap();
+    let member_b = tmp.path().join("member-b");
+    git(tmp.path(), &["clone", remote.to_str().unwrap(), member_b.to_str().unwrap()]);
+    let member_b = dunce::canonicalize(member_b).unwrap();
+    git(&member_b, &["checkout", "-b", "feature"]);
+    git(&member_b, &["push", "-u", "origin", "feature"]);
+    // The window's project is the container; the members are attached to it.
+    f.workspace.other_roots.lock().extend([member_a.clone(), member_b.clone()]);
+
+    f.install(&official("git-toolbox"));
+    let item = |host: &PluginHost| {
+        host.status_items().into_iter().find(|(p, id, _)| p == "openidea.git-toolbox" && id == "branch")
+    };
+    let now = Instant::now();
+    let focus = |path: &Path| {
+        f.host
+            .post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some(path.to_string_lossy().into_owned()))]);
+        f.host.flush_events_at(now + Duration::from_secs(3));
+        f.host.wait_events(Duration::from_secs(10));
+    };
+    // Focusing a file of member `a` shows that member's branch: the window's
+    // project is the container, which is no repository.
+    focus(&member_a.join("seed.txt"));
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("main".into()));
+    // Fetch Now fetches the shown member; the container is not a repository.
+    f.run("openidea.git-toolbox", "fetch", None).unwrap();
+    let fetched = stored(&f, "openidea.git-toolbox");
+    assert!(
+        fetched.iter().any(|(key, _)| key == &format!("last-fetch:{}", to_ipc(&member_a))),
+        "{member_a:?}: {fetched:?}"
+    );
+    assert_eq!(fetched.iter().filter(|(key, _)| key.starts_with("last-fetch:")).count(), 1, "{fetched:?}");
+    // Switching to the other member follows it.
+    focus(&member_b.join("seed.txt"));
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()));
+
+    // Idle: reclaimed; the schedule then wakes it to fetch every member (the
+    // container is skipped: it has no repository).
+    std::thread::sleep(Duration::from_millis(100));
+    f.host.tick();
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()), "the item stays while it sleeps");
+    f.take_events();
+    f.host.tick_at(Instant::now() + Duration::from_secs(301));
+    assert!(f.host.wait_events(Duration::from_secs(30)));
+    let fetched = stored(&f, "openidea.git-toolbox");
+    for member in [&member_a, &member_b] {
+        assert!(
+            fetched.iter().any(|(key, _)| key == &format!("last-fetch:{}", to_ipc(member))),
+            "{member:?}: {fetched:?}"
+        );
+    }
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()));
 }
 
 /// A tiny HTTP server: each request is answered after `delay(n)` (n counts
@@ -2882,13 +3106,18 @@ fn official_csv_editor_edits_the_shared_document() {
     f.host.view_event("openidea.csv-editor", "table", cell, inv.clone()).unwrap();
     assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n");
 
+    // Add Row appends, also on wasm32 (where its row index used to wrap to the header).
+    let add = ide_plugin::ViewEvent::Button { id: "add-row".into() };
+    f.host.view_event("openidea.csv-editor", "table", add, inv.clone()).unwrap();
+    assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n,\n");
+
     // Settings: without a header row every record is a row.
     let mut values = serde_json::Map::new();
     values.insert("firstRowIsHeader".into(), serde_json::Value::Bool(false));
     f.workspace.settings.lock().insert("openidea.csv-editor".into(), values);
     let view = f.host.render_view("openidea.csv-editor", "table", None, inv.clone()).unwrap();
     let ide_plugin::ViewBody::Table(t) = &view.body else { panic!("{view:?}") };
-    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 3));
+    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 4));
 
     // Undeclared views are refused before any code runs.
     let err = f.host.render_view("openidea.csv-editor", "other", None, inv).unwrap_err();
@@ -3645,6 +3874,43 @@ path = "templates/new.draw"
 }
 
 #[test]
+fn file_icons_without_patterns_require_api_1_8_and_project_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("dynamic-icons");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    std::fs::write(pkg.join("icons/helm-dir.svg"), r#"<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>"#)
+        .unwrap();
+    let write_manifest = |api: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "dynamic-icons"
+name = "Dynamic Icons"
+version = "0.1.0"
+engines.openidea = "{api}"
+
+[[contributes.fileIcons]]
+id = "helm-dir"
+icon = "icons/helm-dir.svg"
+"#
+            ),
+        )
+        .unwrap();
+    };
+    write_manifest("^1.7");
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("1.8"), "{err:?}");
+
+    write_manifest("^1.8");
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("dynamic-icons", "fileIcon/helm-dir/").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("<circle"));
+}
+
+#[test]
 fn file_templates_fixture_installs_without_write_capabilities() {
     let f = fixture(Limits::default());
     let info = f.install(&sample("file-templates"));
@@ -4154,6 +4420,35 @@ fn code_action_resolution_prompts_in_the_editor_window_under_the_command_budget(
     let doc = ide_plugin::ProviderDocument { text: "prompt-provider".into(), ..doc };
     assert!(eventually(|| !f.host.provide_completion(&doc, ide_core::Pos::new(0, 0), None).is_empty()));
     assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+}
+
+#[test]
+fn a_command_from_another_window_is_refused_while_the_plugin_waits_for_an_answer() {
+    let (f, doc) = interactive_actions_fixture();
+    let action = f
+        .host
+        .provide_code_actions(&doc, ide_core::Range::default())
+        .into_iter()
+        .find(|(_, action)| action.data.as_deref() == Some("pick"))
+        .unwrap()
+        .1;
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+        let (id, _) = action_prompt(&f);
+        // Queued behind the open prompt it would not run until the prompt is answered.
+        let other = Invocation { client: Some("other-window".into()), ..Default::default() };
+        let err = f.host.run_command("misbehave", "anything", None, other).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert!(err.message.contains("waiting for your answer in another window"), "{}", err.message);
+        let events = f.take_events();
+        assert!(
+            events.iter().any(|(client, e)| client.as_deref() == Some("editor-window")
+                && matches!(e, PluginEvent::PromptWaiting { plugin_id } if plugin_id == "misbehave")),
+            "the prompting window is brought forward: {events:?}"
+        );
+        assert!(f.host.answer_prompt(&id, Some(vec!["b".into()])));
+        running.join().unwrap().unwrap();
+    });
 }
 
 #[test]
@@ -4777,8 +5072,14 @@ impl PluginWorkspace for EndpointWorkspace {
     fn project_of(&self, _: &str) -> Option<PathBuf> {
         self.roots.lock().first().cloned()
     }
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
-        self.inner.apply_edits(path, version, edits)
+    fn apply_edits(
+        &self,
+        path: &Path,
+        version: u64,
+        edits: &[ide_core::TextEdit],
+        background: bool,
+    ) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits, background)
     }
     fn publish_diagnostics(
         &self,
@@ -6059,10 +6360,15 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert!(f.host.wait_events(Duration::from_secs(5)));
     let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
-    assert_eq!(events.len(), 3, "{received}");
+    assert_eq!(events.len(), 4, "{received}");
+    // The first synthetic post hands over the current keys ("enabled": false);
+    // the second is a real diff to true. Keys come from the recomputed
+    // snapshot, never from the event payload ("another-plugin-key").
     assert_eq!(events[0]["kind"], "settings-changed");
     assert_eq!(events[0]["data"], "[\"enabled\"]");
-    assert_eq!(events[2]["kind"], "input-mode-changed");
+    assert_eq!(events[1]["kind"], "settings-changed");
+    assert_eq!(events[1]["data"], "[\"enabled\"]");
+    assert_eq!(events[3]["kind"], "input-mode-changed");
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
 }
@@ -6260,7 +6566,13 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
     let configs = f.host.run_detection().detect(&f.project);
     assert!(configs.iter().any(|c| c.id == "plugin:execution:dynamic"
         && c.is_test
-        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")));
+        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")
+        && c.env.get("OPENIDEA_EXECUTION_FIXTURE").map(String::as_str) == Some("1")
+        && c.extras.params.get("debugLanguage").map(String::as_str) == Some("python")));
+    let worker = configs.iter().find(|c| c.id == "plugin:execution:worker").unwrap();
+    assert_eq!(worker.extras.params.get("debugAttach").map(String::as_str), Some("dotnet"));
+    assert_eq!(worker.extras.params.get("debugAttachContains").map(String::as_str), Some("Worker.dll"));
+    assert!(worker.env.is_empty() && !worker.is_test);
     assert_eq!(
         f.host.parse_test_results("main", "plugin:execution:dynamic", "batch".into()).unwrap().unwrap().len(),
         3
@@ -6281,6 +6593,26 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
         f.events.lock().iter().any(|(client, event)| client.as_deref() == Some("main") && matches!(event, PluginEvent::ContentTabReply { request_id, reply, .. } if request_id == "ct-1" && reply.saved == Some(true)))
     }));
     assert!(f.host.parse_test_results("main", "plugin:execution:dynamic", "trap".into()).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_plugin_command_opens_a_diff_in_its_window() {
+    let f = execution_fixture();
+    f.take_events();
+    f.run("execution", "diff", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(eventually(|| {
+        f.events.lock().iter().any(|(client, event)| {
+            client.as_deref() == Some("main")
+                && matches!(event, PluginEvent::OpenDiff { plugin_id, diff, file_name }
+                    if plugin_id == "execution"
+                        && diff.left.as_deref() == Some("before\n")
+                        && diff.right.as_deref() == Some("after\n")
+                        && diff.title.as_deref() == Some("Review")
+                        && file_name.as_deref() == Some("src/review.rs"))
+        })
+    }));
 }
 
 #[test]
@@ -6334,4 +6666,519 @@ fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
     let f = execution_fixture();
     f.host.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
+}
+
+// ─── Project window groups ────────────────────────────────────────────────────
+// A group's container root holds only `.openidea` metadata; the files live in
+// the member projects. The plugin surface reaches them like the editor and the
+// language servers do.
+
+/// A real host over a project window group with the members `alpha` (holding a
+/// nested `inner` member, for deepest resolution) and `beta`.
+struct GroupFixture {
+    base: PathBuf,
+    host: Arc<Host>,
+    plugins: Arc<PluginHost>,
+    root: PathBuf,
+    alpha: PathBuf,
+    inner: PathBuf,
+    beta: PathBuf,
+    _runtime: tokio::runtime::Runtime,
+    _tmp: tempfile::TempDir,
+}
+
+impl GroupFixture {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, alpha, beta) = (base.join("workspace"), base.join("alpha"), base.join("beta"));
+        let inner = alpha.join("inner");
+        for dir in [alpha.join("src"), inner.join("mappers"), beta.join("src")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        ide_workspace::workspace::Workspace::save(
+            &root,
+            "Group",
+            vec![alpha.clone(), inner.clone(), beta.clone()],
+            true,
+        )
+        .unwrap();
+        std::fs::write(alpha.join("src/needle.php"), "alpha needle\n").unwrap();
+        std::fs::write(inner.join("mappers/route.idx"), "def route:item\nref route:item\n").unwrap();
+        std::fs::write(beta.join("src/Notes.txt"), "beta needle\n").unwrap();
+        std::fs::write(base.join("secret.txt"), "top secret").unwrap();
+
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let host = Arc::new(Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: runtime.handle().clone(),
+            project_environment: false,
+        }));
+        for dir in [&root, &alpha, &beta] {
+            host.trust.decide(dir, true, false).unwrap();
+        }
+        {
+            let _guard = runtime.enter();
+            let project = host.open_project("main", &root).unwrap();
+            assert!(project.index.wait_idle(Duration::from_secs(30)));
+        }
+        let plugins = Arc::new(
+            PluginHost::new(base.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap(),
+        );
+        plugins.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
+        plugins.set_project_policy(Arc::new(|_| true));
+        Self { base, host, plugins, root, alpha, inner, beta, _runtime: runtime, _tmp: tmp }
+    }
+
+    /// Runs an installed plugin's `command` with `root` (default: the group
+    /// container) as the invoking project.
+    fn run(&self, id: &str, command: &str, arg: Option<&str>, root: Option<&Path>) -> Result<Option<String>, String> {
+        let inv = Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(dunce::canonicalize(root.unwrap_or(&self.root)).unwrap()),
+            ..Default::default()
+        };
+        self.plugins.run_command(id, command, arg, inv).map_err(|e| e.message)
+    }
+
+    /// Installs `dir` with everything granted.
+    fn install(&self, dir: &Path) {
+        self.plugins.install_from_dir(dir, &Consent::all()).unwrap();
+    }
+
+    /// The roots the plugin surface lists, sorted and deduplicated.
+    fn listed_roots(&self) -> Vec<PathBuf> {
+        HostWorkspace(Arc::downgrade(&self.host)).projects()
+    }
+}
+
+impl Drop for GroupFixture {
+    fn drop(&mut self) {
+        self.host.close_project("main");
+    }
+}
+
+/// `projects()` lists the members with their own roots, and the member roots of
+/// the container are exactly the workspace manifest's.
+#[test]
+fn projects_list_the_workspace_members() {
+    let f = GroupFixture::new();
+    assert_eq!(
+        f.listed_roots(),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone(), f.root.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.root),
+        [f.alpha.clone(), f.inner.clone(), f.beta.clone()]
+            .iter()
+            .map(|p| dunce::canonicalize(p).unwrap())
+            .collect::<Vec<_>>()
+    );
+    // A member has no members of its own.
+    assert!(HostWorkspace(Arc::downgrade(&f.host)).member_roots(&f.alpha).is_empty());
+}
+
+/// `project-of(path)` resolves to the deepest member project containing the
+/// path, where the container and every member appear.
+#[test]
+fn project_of_resolves_to_the_deepest_workspace_member() {
+    let f = GroupFixture::new();
+    f.install(&sample("path-events"));
+    let project =
+        |path: &Path| f.run("test.path-events", "project", Some(path.to_str().unwrap()), None).unwrap().unwrap();
+    assert_eq!(project(&f.alpha.join("src/needle.php")), to_ipc(&f.alpha));
+    // The nested member, not its containing member.
+    assert_eq!(project(&f.inner.join("mappers/route.idx")), to_ipc(&f.inner));
+    assert_eq!(project(&f.beta.join("src/Notes.txt")), to_ipc(&f.beta));
+    // The container itself is still a project.
+    assert_eq!(project(&f.root), to_ipc(&f.root));
+    // And a path in no project resolves to none.
+    assert!(
+        f.run("test.path-events", "project", Some(f.base.join("secret.txt").to_str().unwrap()), None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// `project.read` and `project.write` reach the member files through the
+/// group's project, and never leave the group's roots.
+#[test]
+fn project_reads_and_writes_reach_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-group-writer", "project.write"));
+    let notes = f.beta.join("src/Notes.txt");
+    assert_eq!(f.run("misbehave", "read", Some(notes.to_str().unwrap()), None).unwrap().unwrap(), "beta needle\n");
+    // Writing into a member creates its missing parent directories.
+    let fresh = f.beta.join("src/generated/mapper.xml");
+    f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap()), None).unwrap();
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // `ctx.project()` is still the group's project.
+    assert_eq!(f.run("misbehave", "root", None, None).unwrap().unwrap(), to_ipc(&f.root));
+    // What is outside every root of the group stays refused, unwritten.
+    let outside = f.base.join("secret.txt");
+    let err = f.run("misbehave", "read", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let err = f.run("misbehave", "projwrite", Some(outside.to_str().unwrap()), None).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "top secret");
+    // A member-scoped project reads its own files only: its root is the member.
+    assert_eq!(f.run("misbehave", "read", Some("src/Notes.txt"), Some(&f.beta)).unwrap().unwrap(), "beta needle\n");
+}
+
+/// Find in Files covers the members: search from the container finds member
+/// matches, a member-scoped project sees only its own.
+#[test]
+fn project_search_reaches_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("api14"));
+    let search = |root: &Path, needle: &str| f.run("api14", "search-text", Some(needle), Some(root)).unwrap().unwrap();
+    // From the container: matches in the members come through.
+    let all = search(&f.root, "needle");
+    assert!(all.contains("needle.php"), "{all}");
+    assert!(all.contains("Notes.txt"), "{all}");
+    // The container holds no sources: `.openidea` metadata never matches.
+    assert!(!all.contains("workspace.json"), "{all}");
+    // From a member: only that member's matches.
+    let own = search(&f.beta, "needle");
+    assert!(own.contains("Notes.txt"), "{own}");
+    assert!(!own.contains("needle.php"), "{own}");
+    // What is outside every root is never found.
+    assert!(!search(&f.root, "top secret").contains("secret.txt"));
+}
+
+/// The document-indexer covers member files: discovery offers them, indexing
+/// one publishes its navigation, and files outside the group stay out.
+#[test]
+fn document_indexer_covers_workspace_members() {
+    let f = GroupFixture::new();
+    f.install(&sample("indexer"));
+    let mapping = f.inner.join("mappers/route.idx");
+    // Discovery: the member file is in the window's project scope.
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(files.paths.iter().any(|p| p.0 == mapping), "{:?}", files.paths);
+    // Indexing the member file through the window's project publishes it: the
+    // open document is indexed at its version, like an editor click resolves.
+    let project = f.host.project("main").unwrap();
+    let doc = project.documents.open(&mapping).unwrap();
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![mapping.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    let result = f
+        .plugins
+        .navigation_at(&f.root, &mapping, doc.version, ide_core::Pos::new(1, 5), Some("main"), |_| None)
+        .unwrap();
+    assert_eq!(result.targets[0].path.0, mapping);
+    // A file outside the group is never offered, and indexing skips it.
+    let outside = f.base.join("escape.idx");
+    std::fs::write(&outside, "def outside:item\n").unwrap();
+    let files = f
+        ._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .unwrap();
+    assert!(!files.paths.iter().any(|p| p.0 == outside), "{:?}", files.paths);
+    f._runtime
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
+            &f.host,
+            f.plugins.clone(),
+            "main",
+            vec![outside.clone()],
+            ide_core::RequestId::next(),
+        ))
+        .unwrap();
+    assert!(f.plugins.navigation_at(&f.root, &outside, 1, ide_core::Pos::new(0, 4), Some("main"), |_| None).is_none());
+}
+
+/// Advisory #4: `project.write` (Medium) must not reach VCS metadata such as `.git/hooks` or
+/// `.git/config`, which git runs as code; the `.git` is inside the project root, so root
+/// confinement alone does not stop it.
+#[test]
+fn project_write_cannot_reach_git_metadata() {
+    let f = fixture(Limits::default());
+    let init = std::process::Command::new("git").current_dir(&f.project).args(["init", "-q"]).output().unwrap();
+    assert!(init.status.success(), "git init");
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+    // The grant works for an ordinary path, so each refusal below is the `.git` rule and nothing else.
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/fresh.txt")).unwrap(), None);
+    for rel in [".git/hooks/pre-commit", ".git/config", ".GIT/config", "src/../.git/config"] {
+        let before = std::fs::read(f.project.join(rel)).ok();
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read(f.project.join(rel)).ok(), before, "{rel}");
+    }
+}
+
+/// In a linked worktree or a submodule `.git` is a file naming the real git folder. Replacing it,
+/// under any name that opens it, would point git at a folder of the plugin's choosing or leave the
+/// checkout without a repository.
+#[test]
+fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
+    let f = fixture(Limits::default());
+    let pointer = f.project.join(".git");
+    let gitdir = "gitdir: /elsewhere/.git/worktrees/project\n";
+    std::fs::write(&pointer, gitdir).unwrap();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/fresh.txt")).unwrap(), None);
+    let mut spellings = vec![".git", ".GIT", ".git.", ".git ", ".git::$DATA"];
+    // Windows opens a file by its short name too, on a volume that keeps them.
+    if cfg!(windows) && f.project.join("GIT~1").exists() {
+        spellings.extend(["GIT~1", "git~1", "GIT~1.", "GIT~1 ", "GIT~1::$DATA"]);
+    } else {
+        eprintln!("short name not tried: this volume keeps none");
+    }
+    for rel in spellings {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        // On Windows a stream name is refused before the path is looked at at all; elsewhere a colon
+        // is an ordinary character and the `.git` rule applies.
+        let refused =
+            if cfg!(windows) && rel.contains(':') { "file streams are not allowed" } else { "git's own files" };
+        assert!(err.contains(refused), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&pointer).unwrap(), gitdir, "{rel}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn process_timeout_returns_guest_error_without_disabling_plugin() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits {
+        timeout: Duration::from_millis(120),
+        max_failures: 3,
+        restart_backoff: Duration::ZERO,
+        ..Limits::default()
+    });
+    let package = f._tmp.path().join("api14-slow-proc");
+    copy_dir(&sample("api14"), &package);
+    let manifest = package.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(&manifest).unwrap().replace("optional = [", "optional = [\"process:api14-tool\", ");
+    std::fs::write(manifest, text).unwrap();
+    f.install(&package);
+
+    let slow = f._tmp.path().join("slow-tool");
+    std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let slow = slow.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&slow)).unwrap();
+
+    // Even past `max_failures` (3), external subprocess timeouts unwind as guest errors
+    // instead of poisoning the Wasm instance and disabling the plugin for the session.
+    for _ in 0..4 {
+        let err = f.run("api14", "process-run", None).unwrap_err();
+        assert!(err.contains("api14-tool timed out"), "{err}");
+    }
+    let info = f.host.info_of("api14").unwrap();
+    assert_eq!(info.status, PluginStatus::Active);
+    assert_eq!(info.stats.crashes, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn process_stdout_accepts_large_payloads_and_reports_overflow_explicitly() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits { timeout: Duration::from_secs(10), ..Limits::default() });
+    let package = f._tmp.path().join("api14-large-proc");
+    copy_dir(&sample("api14"), &package);
+    let manifest = package.join("plugin.toml");
+    let text =
+        std::fs::read_to_string(&manifest).unwrap().replace("optional = [", "optional = [\"process:api14-tool\", ");
+    std::fs::write(manifest, text).unwrap();
+    f.install(&package);
+
+    let medium_bytes = 5 * 1024 * 1024;
+    let medium = f._tmp.path().join("medium-tool");
+    std::fs::write(&medium, "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\0' 'x'\n").unwrap();
+    std::fs::set_permissions(&medium, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let medium = medium.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&medium)).unwrap();
+    let out = f.run("api14", "process-run", None).unwrap().unwrap();
+    assert_eq!(out.len(), medium_bytes);
+
+    let huge = f._tmp.path().join("huge-tool");
+    std::fs::write(&huge, "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=17 2>/dev/null | tr '\\0' 'x'\n").unwrap();
+    std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let huge = huge.canonicalize().unwrap();
+    f.host.choose_program("api14", "process:api14-tool", Some(&f.project), Some(&huge)).unwrap();
+    let err = f.run("api14", "process-run", None).unwrap_err();
+    assert!(err.contains("stdout exceeded 16 MiB limit"), "{err}");
+    assert_eq!(f.host.info_of("api14").unwrap().stats.crashes, 0);
+}
+
+/// A link already in the project is written through, so it is judged by where it points.
+#[cfg(unix)]
+#[test]
+fn project_write_judges_a_link_by_its_target() {
+    let f = fixture(Limits::default());
+    let config = f.project.join(".git").join("config");
+    std::fs::create_dir(f.project.join(".git")).unwrap();
+    std::fs::write(&config, "[core]\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    std::os::unix::fs::symlink(&config, f.project.join("alias")).unwrap();
+    std::os::unix::fs::symlink(&secret, f.project.join("escape")).unwrap();
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+
+    // A folder that is not there, in front of the link, does not keep it from being followed.
+    for rel in ["alias", "missing/../alias"] {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("git's own files"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[core]\n", "{rel}");
+    }
+    for rel in ["escape", "missing/../escape"] {
+        let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
+        assert!(err.contains("outside the project root"), "{rel}: {err}");
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "top secret", "{rel}");
+    }
+}
+
+/// A plugin reaches a running language server only with `lsp:<server>`, in a trusted
+/// project, and only with the server's own methods (API 1.9).
+#[test]
+fn language_server_requests_need_the_servers_grant_and_its_own_methods() {
+    use serde_json::json;
+    let f = fixture(Limits::default());
+    let pkg = repo().join("crates/ide-plugin/tests/fixtures/lsp-requests");
+    let id = "test.lsp-requests";
+    let info = f.install(&pkg);
+    assert!(info.capabilities.iter().any(|c| c.id == "lsp:mock" && c.granted && c.risk == ide_extension::Risk::High));
+
+    // The request and its JSON params reach the server; its answer comes back as JSON.
+    let answer = f.run(id, "request", Some(r#"{"verb":"GET"}"#)).unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap(),
+        json!({ "method": "mock/routes", "params": { "verb": "GET" } })
+    );
+    assert_eq!(f.run(id, "notify", None).unwrap(), None);
+    assert_eq!(
+        *f.workspace.server_messages.lock(),
+        [("mock/routes".to_owned(), Some(json!({ "verb": "GET" })), false), ("mock/changed".to_owned(), None, true)]
+    );
+
+    // Params that are not JSON and LSP's own methods stop at the host.
+    assert!(f.run(id, "request", Some("{")).unwrap_err().contains("params are not JSON"));
+    assert!(f.run(id, "standard", None).unwrap_err().contains("not one of the server's own methods"));
+    assert_eq!(f.workspace.server_messages.lock().len(), 2);
+
+    // The grant names one server: another one is denied, not merely absent.
+    let err = f.host.run_command(id, "ungranted", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("lsp:other"), "{err:?}");
+
+    // Without the grant the call is denied and nothing is sent.
+    f.host.set_capability(id, "lsp:mock", false).unwrap();
+    let err = f.host.run_command(id, "request", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("lsp:mock"), "{err:?}");
+    f.host.set_capability(id, "lsp:mock", true).unwrap();
+    f.run(id, "request", None).unwrap();
+
+    // A server acts on the project's files: not in an untrusted project.
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted.clone()));
+    let err = f.host.run_command(id, "request", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(untrusted.server_messages.lock().is_empty());
+    assert_eq!(f.host.info_of(id).unwrap().stats.crashes, 0);
+}
+
+/// The grant is new in API 1.9: an older `engines.openidea` can't ask for it.
+#[test]
+fn the_language_server_grant_needs_api_1_9() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("lsp-requests");
+    copy_dir(&repo().join("crates/ide-plugin/tests/fixtures/lsp-requests"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.9\"", "\"^1.8\"")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.9"), "{err:?}");
+}
+
+/// `build.dependencies` hands a plugin the resolved Maven / Gradle graph as a flat list, each
+/// module a root, with `build.read` in a trusted project (API 1.10).
+#[test]
+fn build_dependencies_need_the_grant_and_a_trusted_project() {
+    let f = fixture(Limits::default());
+    let id = "test.build-graph";
+    let info = f.install(&sample("build-graph"));
+    assert!(info.capabilities.iter().any(|c| c.id == "build.read" && c.granted && c.risk == ide_extension::Risk::Low));
+
+    // `parent group:artifact:version scope status requested`, as the fixture prints them.
+    assert_eq!(
+        f.run(id, "dependencies", None).unwrap().unwrap(),
+        "- com.example:app:1.0  resolved -\n\
+         0 org.apache.commons:commons-text:1.11.0 compile resolved -\n\
+         1 org.apache.commons:commons-lang3:3.14.0 compile conflict 3.12.0\n\
+         - ::web:  resolved -\n\
+         3 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    assert_eq!(
+        f.run(id, "dependencies", Some(":web")).unwrap().unwrap(),
+        "- ::web:  resolved -\n0 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    let err = f.host.run_command(id, "dependencies", Some("app"), f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
+
+    f.host.set_capability(id, "build.read", false).unwrap();
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("build.read"), "{err:?}");
+    f.host.set_capability(id, "build.read", true).unwrap();
+
+    // The graph comes from running the project's build: not in an untrusted project.
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted));
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert_eq!(f.host.info_of(id).unwrap().stats.crashes, 0);
+}
+
+/// The grant is new in API 1.10: an older `engines.openidea` can't ask for it.
+#[test]
+fn the_build_grant_needs_api_1_10() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("build-graph");
+    copy_dir(&sample("build-graph"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.10\"", "\"^1.9\"")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.10"), "{err:?}");
+}
+
+/// The UI's synthetic post-install `SettingsChanged([])` reaches a plugin that
+/// subscribes to `on-event:settings-changed`, though it carries no keys.
+#[test]
+fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    use ide_plugin::WorkbenchEvent as E;
+    // What refreshEventKinds() posts right after commandsChanged (install).
+    f.host.post_events(Some("main"), vec![E::SettingsChanged(Vec::new())]);
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(2));
+    assert!(f.host.wait_events(Duration::from_secs(5)));
+    let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
+    let events = received.as_array().unwrap();
+    assert!(
+        events.iter().any(|e| e["kind"] == "settings-changed"),
+        "freshly installed plugin got no post-install event: {received}"
+    );
 }

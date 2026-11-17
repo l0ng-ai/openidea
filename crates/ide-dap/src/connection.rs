@@ -342,4 +342,16 @@ mod tests {
         assert_eq!(error_message(&msg), "cannot find a.py");
         assert_eq!(error_message(&json!({"message": "nope"})), "nope");
     }
+
+    #[test]
+    fn a_failed_launch_response_keeps_delves_too_old_error_verbatim() {
+        // The UI's repair offer keys off this exact wording (`missingAdapter`), so the
+        // conversion to the IPC error must not fold it into a generic message.
+        let message = "Failed to launch /p/api: Version of Delve is too old for Go version go1.27.0 \
+                       (maximum supported version 1.26, suppress this error with --check-go-version=false)";
+        let e = ide_core::IdeError::from(DapError::Failed { command: "launch".into(), message: message.into() });
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+        assert_eq!(e.message, format!("launch failed: {message}"));
+        assert!(e.message.contains("Version of Delve is too old for Go version go1.27.0"));
+    }
 }

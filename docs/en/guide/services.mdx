@@ -17,7 +17,7 @@ The left side is a tree; the right side shows details of the selected item (a co
 
 ### Run configurations
 
-Spring Boot configurations appear by default. Other types appear when you add them with **Add Service › Run Configuration Type**, or once a configuration of that type has run. Each type is a group.
+Only types you add appear here: choose **Add Service › Run Configuration Type**; each type is a group, kept until you remove it with **Remove from Services**. Removing a type or a single configuration takes effect at once, even while it runs: the run moves to the Run tool window, so its console stays reachable. Running a configuration of a type you have not added keeps its output in the Run or Debug tool window too.
 
 - Group actions: **Run All**, **Restart All**, **Stop All**, **Open in Browser**.
 - Configuration actions: **Run** (or **Rerun**), **Debug**, **Stop**, **Open in Browser**, **Update Application** (for configurations that support it).
@@ -31,7 +31,7 @@ OpenIDEA drives Docker through the `docker` CLI, so anything that provides a wor
 
 ### Connections
 
-With nothing configured, Services shows one connection named **Docker** that uses the Docker CLI default (`DOCKER_HOST` or the current context). To add another, choose **Add Service › Docker Connection…**:
+With nothing configured, Services lists no Docker connection. To add one (the first one usually connects to the Docker CLI default: `DOCKER_HOST` or the current context), choose **Add Service › Docker Connection…**:
 
 | Field                              | Options                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

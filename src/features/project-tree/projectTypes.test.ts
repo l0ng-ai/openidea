@@ -45,6 +45,11 @@ describe("automatic project types", () => {
     expect([...useProjectTree.getState().projectTypes.values()]).toEqual(Array(9).fill("go"));
     expect(backend.fsReadDir).toHaveBeenCalledTimes(9);
   });
+  it("detects the type for New menu templates in a single project", async () => {
+    initProjectTree("/app");
+    await waitFor(() => expect(useProjectTree.getState().projectTypes.get("/app")).toBe("node"));
+    expect(backend.fsReadDir).toHaveBeenCalledExactlyOnceWith("/app");
+  });
   it("refreshes only affected markers and clears a removed project type", async () => {
     initProjectTree("/ws", "Workspace", ["/a", "/b"]);
     await waitFor(() => expect(useProjectTree.getState().projectTypes.size).toBe(2));
@@ -66,9 +71,9 @@ describe("automatic project types", () => {
           finish = resolve;
         }),
     );
-    initProjectTree("/old");
+    initProjectTree("/old", "Old", ["/old"]);
     await waitFor(() => expect(finish).toBeDefined());
-    initProjectTree("/new");
+    initProjectTree("/new", "New", ["/new"]);
     await waitFor(() => expect(useProjectTree.getState().projectTypes.get("/new")).toBe("node"));
     finish(ok([entry("pom.xml")]));
     await Promise.resolve();
@@ -85,7 +90,7 @@ describe("automatic project types", () => {
         entry("README.md"),
       ]),
     );
-    initProjectTree("C:/work/app");
+    initProjectTree("C:/work", "Work", ["C:/work/app"]);
     await waitFor(() => expect(useProjectTree.getState().projectTypes.get("C:/work/app")).toBe("gradle"));
     expect(backend.fsReadDir).toHaveBeenCalledExactlyOnceWith("C:/work/app");
     expect(backend.fsReadText).not.toHaveBeenCalled();
@@ -113,7 +118,7 @@ describe("automatic project types", () => {
         { ...entry("package.json", "symlink"), targetKind: "file" },
       ]),
     );
-    initProjectTree("/linked");
+    initProjectTree("/ws", "Workspace", ["/linked"]);
     await waitFor(() => expect(useProjectTree.getState().projectTypes.get("/linked")).toBe("node"));
   });
 });

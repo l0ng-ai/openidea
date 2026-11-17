@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { chainNeighbour, revisionChangeDiffData, withChain, type DiffData } from "../diffInput";
+import type { FileStatus } from "@/bindings";
+import { buildChangeTree, changeFileNodes } from "../changes";
+import {
+  chainNeighbour,
+  changeNodeDiffData,
+  changeTreeDiffData,
+  revisionChangeDiffData,
+  withChain,
+  type DiffData,
+} from "../diffInput";
 
 const diff = (path: string): DiffData => ({ path, left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
 
@@ -21,6 +30,33 @@ describe("diff chain", () => {
     expect(chainNeighbour(withChain(items, 0), -1)).toBeNull();
     expect(chainNeighbour(withChain([diff("/r/a")], 0), 1)).toBeNull();
     expect(chainNeighbour(diff("/r/a"), 1)).toBeNull();
+  });
+});
+
+describe("the changes tree's diff chain", () => {
+  const fs = (rel: string, staged: FileStatus["staged"], unstaged: FileStatus["unstaged"]): FileStatus => ({
+    path: `/r/${rel}`,
+    relPath: rel,
+    staged,
+    unstaged,
+    renamedFrom: null,
+  });
+  const status = [fs("a.ts", null, "modified"), fs("b.ts", "modified", null), fs("new.ts", null, "untracked")];
+
+  it("goes on past the last change into the unversioned files, as IDEA's Commit diff does", () => {
+    const tree = buildChangeTree(status, "/r", false);
+    const last = changeFileNodes(tree).find((n) => n.path === "/r/b.ts")!;
+    const data = changeTreeDiffData(tree, last);
+    expect(data.chain?.map((d) => d.path)).toEqual(["/r/a.ts", "/r/b.ts", "/r/new.ts"]);
+    expect(chainNeighbour(data, 1)).toMatchObject({ path: "/r/new.ts" });
+    // Show Diff keeps to the file's group.
+    expect(chainNeighbour(changeNodeDiffData(tree, last), 1)).toBeNull();
+  });
+
+  it("walks every staging group in tree order", () => {
+    const tree = buildChangeTree(status, "/r", false, undefined, [], true);
+    const staged = changeFileNodes(tree).find((n) => n.group === "staged")!;
+    expect(chainNeighbour(changeTreeDiffData(tree, staged), 1)).toMatchObject({ path: "/r/a.ts" });
   });
 });
 

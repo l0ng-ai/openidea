@@ -1,7 +1,8 @@
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
-import { parseArgs } from "./configs";
+import { formatArgs, parseArgs } from "./configs";
+import { commandName } from "./commandName";
 import { prepareDotnetTest } from "@/platform/dotnet";
 
 function profile(p: Readonly<Record<string, string>>): {
@@ -28,24 +29,45 @@ export function dotnetCommand(p: Readonly<Record<string, string>>, test = false)
   };
 }
 
-/** Build the current project/framework, independently of the run's profile working directory. */
-export function dotnetBuildConfig(config: RunConfig): RunConfig {
-  const p = config.params ?? {};
-  return {
-    ...config,
-    id: `dotnet-build:${config.id}`,
-    name: `dotnet build (${p.project || ""})`,
-    kind: "shell",
-    args: ["build", p.project || "", "--configuration", "Debug", ...(p.framework ? ["--framework", p.framework] : [])],
-    cwd: useProject.getState().project?.root ?? null,
-    env: {},
-    params: {},
-    isTest: false,
-    debugAdapter: null,
-    beforeLaunch: [],
-    emulateTerminal: false,
-    stdinFile: undefined,
+/**
+ * The form fields of a `dotnet run` command line ([`dotnetCommand`] reversed), or `null` when it
+ * uses anything the form can't show. Lets a new configuration, and one typed as a command, open
+ * as the form with its project field.
+ */
+function dotnetRunParams(c: RunConfig): Record<string, string> | null {
+  if (!/^dotnet(\.exe)?$/i.test(commandName(c.command))) return null;
+  const [verb, ...rest] = c.args;
+  if (verb !== "run") return null;
+  const p: Record<string, string> = c.command === "dotnet" ? {} : { executable: c.command };
+  const flags: Record<string, string> = {
+    "--project": "project",
+    "--framework": "framework",
+    "--configuration": "configuration",
+    "--launch-profile": "launchProfile",
   };
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--") {
+      p.programArgs = formatArgs(rest.slice(i + 1));
+      break;
+    }
+    if (arg === "--no-launch-profile") continue;
+    const key = flags[arg];
+    const value = rest[i + 1];
+    if (!key || value === undefined) return null;
+    p[key] = value;
+    i++;
+  }
+  return { project: "", ...p };
+}
+
+/** The configuration's project file as a path the Build tool window builds (its own project, not the profile's cwd). */
+export function dotnetProjectFile(config: RunConfig): string | null {
+  const project = config.params?.project?.trim();
+  if (!project) return null;
+  if (/^(?:[A-Za-z]:[\\/]|\/)/.test(project)) return project;
+  const root = useProject.getState().project?.root;
+  return root ? `${root}/${project}` : null;
 }
 
 export const dotnetProjectType: RunConfigTypeContribution = {
@@ -104,6 +126,7 @@ export const dotnetProjectType: RunConfigTypeContribution = {
     },
   ],
   commandLine: (p) => dotnetCommand(p),
+  paramsFrom: dotnetRunParams,
   async prepareLaunch(config) {
     const resolved = await call(commands.runDotnetResolve(config, false));
     const p = resolved.params ?? {};

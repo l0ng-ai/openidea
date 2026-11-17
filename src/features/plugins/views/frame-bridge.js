@@ -9,12 +9,18 @@
  * The file is one function expression, called with the IDE theme when it is
  * known up front (null otherwise: the workbench posts it once the frame has
  * loaded).
+ *
+ * Editor panels (`[[contributes.editorPanels]]`) load their page with
+ * `?openidea=editor-panel`; only there is `openidea.editor`. The workbench answers
+ * its requests only from the frames of editor panels.
  */
 (initialTheme) => {
   const TAG = "openidea-view";
   const listeners = [];
   const themeListeners = [];
   const documentListeners = [];
+  const editorListeners = { target: [], viewport: [], highlights: [] };
+  const editorPanel = /(?:^|[?&])openidea=editor-panel(?:&|$)/.test(location.search.slice(1));
   const pending = new Map();
   const root = document.documentElement;
   let theme = null;
@@ -92,6 +98,10 @@
       if (p) "error" in m ? p.reject(new Error(String(m.error))) : p.resolve(m.value);
     } else if (m.document) {
       for (const l of documentListeners) safely(l, m.document);
+    } else if (editorPanel && typeof m.editor === "string") {
+      // Only the three lists: not `constructor` and the like.
+      const list = editorListeners[m.editor];
+      if (Array.isArray(list)) for (const l of list) safely(l, m.value);
     } else if (typeof m.text === "string") {
       for (const l of listeners) safely(l, m.text);
     }
@@ -114,6 +124,31 @@
     edit: (version, edits) => call("document.edit", { version, edits }),
     /** Replaces the whole text (sent as the smallest edit). */
     replace: (version, text) => call("document.replace", { version, text: String(text) }),
+  });
+
+  const listen = (list) => (fn) => {
+    if (typeof fn === "function") list.push(fn);
+  };
+  /** The text editor of the editor group the panel is in. */
+  const editorApi = Object.freeze({
+    /** `{ path, language, version, lineCount }` of the group's file, or null. */
+    get: () => call("editor.get"),
+    /** Called with the new `get()` value when the group shows another file, or none. */
+    onTarget: listen(editorListeners.target),
+    /** The group's document, read-only (`edit` / `replace` reject). */
+    document: documentApi,
+    /** `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; 0-based, fractional lines. */
+    viewport: () => call("editor.viewport"),
+    /** Called with `viewport()` after scrolling, resizing and folding, at most once a frame. */
+    onViewport: listen(editorListeners.viewport),
+    /** Scrolls so that (fractional) `line` is at the top of the visible area. */
+    scrollTo: (line) => call("editor.scrollTo", { line: Number(line) }),
+    /** Scrolls the editor by `pixels` (the page's wheel). */
+    scrollBy: (pixels) => call("editor.scrollBy", { pixels: Number(pixels) }),
+    /** Syntax colours of lines `fromLine` up to `toLine` (exclusive), at most 2000: per line `[{ from, to, color }]`. */
+    highlights: (fromLine, toLine) => call("editor.highlights", { fromLine: Number(fromLine), toLine: Number(toLine) }),
+    /** Called with `{ fromLine, toLine }` when those lines' colours may have changed. */
+    onHighlights: listen(editorListeners.highlights),
   });
 
   window.openidea = Object.freeze({
@@ -141,5 +176,6 @@
     },
     /** Asks the user for a file; resolves with `{ name, data }` (bytes), or null when cancelled. */
     openFile: ({ filters } = {}) => call("openFile", { filters }),
+    ...(editorPanel ? { editor: editorApi } : {}),
   });
 };

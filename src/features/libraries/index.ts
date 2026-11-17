@@ -2,9 +2,10 @@
  * External Libraries: the project's SDK / library source folders (the Python
  * interpreter's standard library and site-packages, the JDK, node_modules
  * packages, Cargo crates and the Rust standard library, GOROOT and Go modules,
- * Maven / Gradle dependency jars) as a Project view root. Their files open
- * read-only, like IDEA's library sources. Archives (the JDK's `src.zip`, jars)
- * are browsed through the backend's `<archive>!/<entry>` paths.
+ * the Zig standard library and its fetched build.zig.zon packages, Maven /
+ * Gradle dependency jars) as a Project view root. Their files open read-only,
+ * like IDEA's library sources. Archives (the JDK's `src.zip`, jars, Zig
+ * package tarballs) are browsed through the backend's `<archive>!/<entry>` paths.
  */
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type LibraryGroup, type RequestId } from "@/bindings";
@@ -32,7 +33,12 @@ const GROUP_ICONS: Record<string, string> = {
   classpath: "file-java",
   ruby: "file-ruby",
   gems: "file-ruby",
+  zig: "file-zig",
+  zigPackages: "file-zig",
 };
+
+/** SDK groups, which IDEA writes in angle brackets (`< 21 >`); library groups (`Maven: g:a:v`) go without. */
+const SDK_KINDS = new Set(["jdk", "python", "ruby", "go", "rust", "zig"]);
 
 /** An archive's root (`/jdk/lib/src.zip!`): its entries live below `<archive>!/`. */
 const isArchiveRoot = (path: string) => path.endsWith("!");
@@ -59,6 +65,7 @@ const MANIFESTS = new Set([
   "go.mod",
   "go.sum",
   "go.work",
+  "build.zig.zon",
   ".classpath",
   "pyproject.toml",
   "setup.py",
@@ -80,6 +87,14 @@ export function touchesManifest(paths: readonly string[]): boolean {
   );
 }
 
+/** IDEA's order, whatever order the ecosystems were detected in: SDKs first, then libraries, each by name. */
+function sortedGroups(groups: readonly LibraryGroup[]): LibraryGroup[] {
+  const rank = (g: LibraryGroup) => (SDK_KINDS.has(g.kind) ? 0 : 1);
+  return [...groups].sort(
+    (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }),
+  );
+}
+
 /** The "External Libraries" node for `groups` (`< Python 3.12 (.venv) >` › `python3.12`, `site-packages`). */
 export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootContribution | null {
   if (!groups.length) return null;
@@ -90,8 +105,8 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
     // After the project, before Scratches and Consoles (IDEA's order).
     order: 5,
     readOnly: true,
-    children: groups.map((g) => ({
-      label: `< ${g.name} >`,
+    children: sortedGroups(groups).map((g) => ({
+      label: SDK_KINDS.has(g.kind) ? `< ${g.name} >` : g.name,
       icon: GROUP_ICONS[g.kind] ?? "library",
       children: g.roots.map((r) => ({
         label: r.name,
@@ -118,6 +133,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     l?.go?.goroot,
     l?.go?.gopath,
     l?.go?.modules,
+    l?.zig?.zig,
     s.settings?.projectStructure?.libraries,
     s.settings?.projectStructure?.sourceRoots,
   ]);
@@ -130,12 +146,15 @@ export function activate(): () => void {
   let disposeReadOnly = () => {};
   let seq = 0;
   let shown = "";
+  /** The last complete result: what a refresh shows for ecosystems that haven't reported yet. */
+  let settled: LibraryGroup[] = [];
   let request: RequestId | undefined;
   const clear = () => {
     disposeRoot();
     disposeReadOnly();
     disposeRoot = disposeReadOnly = () => {};
     shown = "";
+    settled = [];
   };
   const refresh = () => {
     const id = ++seq;
@@ -148,25 +167,33 @@ export function activate(): () => void {
       if (id !== seq) return;
       const key = JSON.stringify(groups);
       if (key === shown) return;
-      clear();
+      // The new node replaces the old one in place: removing it first would drop it from the tree
+      // until the new one renders, and collapse it.
+      const [oldRoot, oldReadOnly] = [disposeRoot, disposeReadOnly];
+      disposeRoot = disposeReadOnly = () => {};
       shown = key;
       const root = librariesRoot(groups);
-      if (!root) return;
-      disposeReadOnly = setLibraryRoots(
-        "externalLibraries",
-        groups.flatMap((g) => g.roots.map((r) => r.path)),
-      );
-      disposeRoot = registerProjectViewRoot(root);
+      if (root) {
+        disposeReadOnly = setLibraryRoots(
+          "externalLibraries",
+          groups.flatMap((g) => g.roots.map((r) => r.path)),
+        );
+        disposeRoot = registerProjectViewRoot(root);
+      }
+      oldRoot();
+      oldReadOnly();
     };
     const channel = new Channel<LibraryGroup[]>();
     channel.onmessage = (groups) => {
       collected = mergeLibraryGroups([...collected, ...groups]);
-      show(collected);
+      const reported = new Set(collected.map((g) => g.kind));
+      show(mergeLibraryGroups([...collected, ...settled.filter((g) => !reported.has(g.kind))]));
     };
     const current = (request = nextRequestId());
     call(commands.sdkProjectLibraries(current, channel))
       .then((groups) => {
-        collected = groups;
+        if (id !== seq) return;
+        collected = settled = groups;
         show(groups);
       })
       .catch((e: unknown) => {
@@ -189,12 +216,18 @@ export function activate(): () => void {
     clearTimeout(timer);
     timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
   });
+  // A Maven / Gradle sync changes the dependency versions without touching a manifest.
+  const unsubRoots = onIdeEvent("projectRootsChanged", () => {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
+  });
   return () => {
     seq++;
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     clearTimeout(timer);
     unsub();
     unsubFs();
+    unsubRoots();
     disposeActions();
     clear();
   };

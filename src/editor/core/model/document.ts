@@ -26,7 +26,7 @@ import {
   useEditorRegistry,
   type EditorDocContext,
 } from "@/editor/api";
-import { isVirtualUri } from "@/platform/virtualDocs";
+import { isUntitledUri, isVirtualUri } from "@/platform/virtualDocs";
 import { DocSync, type Scheduler, frameScheduler } from "../sync/DocSync";
 import type { DocBackend, LanguageInfo } from "../backend";
 import {
@@ -82,9 +82,12 @@ export interface DocMeta {
   language: string;
   uiMode: string | null;
   encoding: string;
+  hasBom: boolean;
   lineEnding: LineEnding;
   readOnly: boolean;
   dirty: boolean;
+  /** "Reload with Encoding" can re-decode this document's source bytes. */
+  canReloadEncoding: boolean;
   banner: Banner;
   indent: { tabSize: number; insertSpaces: boolean };
 }
@@ -95,6 +98,11 @@ export const useDocMeta = create<Record<string, DocMeta>>(() => ({}));
 export const useOutline = create<Record<string, OutlineItem[]>>(() => ({}));
 
 const REFRESH_DELAY = 450;
+/**
+ * Languages whose stream mode works from word lists, so the grammar's highlights are drawn
+ * over it: Kotlin declaration roles, Shell commands, function names and `local`.
+ */
+const GRAMMAR_SUPPLEMENTED = new Set(["kotlin", "shellscript"]);
 function bannerFor(info: DocumentInfo): Banner {
   // Virtual documents (library classes) get their own notice from the editor area.
   if (info.uri) return null;
@@ -201,7 +209,7 @@ export function saveCleanupChanges(
 export class DocModel {
   readonly doc: DocId;
   /** File path, or the URI of a virtual (read-only, language-server provided) document. */
-  readonly path: string;
+  path: string;
   readonly virtual: boolean;
   readonly sync: DocSync;
   readonly slots = new Set<EditorSlot>();
@@ -231,7 +239,7 @@ export class DocModel {
   ) {
     this.doc = info.id;
     this.path = info.path;
-    this.virtual = !!info.uri;
+    this.virtual = !!info.uri && !isUntitledUri(info.path);
     this.info = languageInfo(info.language);
     this.editorconfig = info.editorconfig ?? null;
     // `large`: the backend skips LSP and syntax trees for it; heavy UI features follow.
@@ -248,10 +256,12 @@ export class DocModel {
       language: info.language,
       uiMode: uiMode ?? this.desc?.name ?? null,
       encoding: info.encoding,
+      hasBom: info.hasBom,
       lineEnding: info.lineEnding,
       // Library sources (External Libraries) open read-only, like IDEA's.
       readOnly: info.readOnly || (!this.virtual && isLibraryPath(info.path)),
       dirty: info.dirty,
+      canReloadEncoding: info.canReloadEncoding,
       banner: bannerFor(info),
       indent: { tabSize: 4, insertSpaces: true },
     };
@@ -267,6 +277,20 @@ export class DocModel {
       },
       {
         applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
+        onLocalCommitted: (baseVersion, version, changes) => {
+          const eventChanges: Array<{ from: number; to: number; insert: string }> = [];
+          changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+            eventChanges.push({ from, to, insert: inserted.toString() });
+          });
+          _emitEditorEvent({
+            type: "docChanged",
+            doc: this.doc,
+            path: this.path,
+            baseVersion,
+            version,
+            changes: eventChanges,
+          });
+        },
         onDiscarded: (reason) => {
           logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
           manager.notify({
@@ -450,6 +474,18 @@ export class DocModel {
     this.applySettings();
   }
 
+  /** Rendered doc comments toggled for this file (wins over settings until the file is closed). */
+  renderedDocsOverride: boolean | null = null;
+
+  renderedDocsOn(): boolean {
+    return this.renderedDocsOverride ?? prefsOf(this.settings()).appearance.renderDocComments;
+  }
+
+  toggleRenderedDocs() {
+    this.renderedDocsOverride = !this.renderedDocsOn();
+    this.applySettings();
+  }
+
   setIndent(indent: { tabSize: number; insertSpaces: boolean }) {
     this.indentOverride = indent;
     this.applySettings();
@@ -478,6 +514,7 @@ export class DocModel {
           info: this.info,
           readOnly: this.meta.readOnly,
           wrapOverride: this.softWrapOverride,
+          renderedDocsOverride: this.renderedDocsOverride,
         }),
       ),
     ];
@@ -513,6 +550,7 @@ export class DocModel {
             info: this.info,
             readOnly,
             wrapOverride: this.softWrapOverride,
+            renderedDocsOverride: this.renderedDocsOverride,
           }),
         ),
       ]);
@@ -541,8 +579,7 @@ export class DocModel {
     const [folds, outline, highlights] = await Promise.allSettled([
       backend.folding(this.doc),
       backend.outline(this.doc),
-      // Kotlin's stream mode lacks declaration categories; the grammar supplements it.
-      !this.desc || this.meta.language === "kotlin" ? backend.highlights(this.doc) : null,
+      !this.desc || GRAMMAR_SUPPLEMENTED.has(this.meta.language) ? backend.highlights(this.doc) : null,
     ]);
     if (this.closed) return;
     if (counter !== this.changeCounter) {
@@ -635,6 +672,14 @@ export class DocModel {
       }
       await this.sync.whenIdle();
       if (this.closed) return;
+      if (isUntitledUri(this.path)) {
+        // An untitled buffer has no path to write to: autosave is a no-op and
+        // an explicit save asks for one (Save As re-points the buffer, or stays
+        // dirty on Cancel).
+        if (reason === "auto") return;
+        if (await this.manager.saveAs(this)) this.modified.clear();
+        return;
+      }
       await this.manager.backend.save(this.doc);
       this.modified.clear();
       this.setMeta({ dirty: false });
@@ -642,6 +687,31 @@ export class DocModel {
     };
     this.saving = this.saving.then(run, run);
     return this.saving;
+  }
+
+  /** Save As turned this untitled buffer into the file `info` points at. */
+  retarget(info: DocumentInfo) {
+    const old = this.path;
+    this.path = info.path;
+    this.info = languageInfo(info.language);
+    this.editorconfig = info.editorconfig ?? null;
+    this.meta = {
+      ...this.meta,
+      path: info.path,
+      language: info.language,
+      encoding: info.encoding,
+      hasBom: info.hasBom,
+      lineEnding: info.lineEnding,
+      canReloadEncoding: info.canReloadEncoding,
+      dirty: false,
+    };
+    useDocMeta.setState((s) => {
+      const next = { ...s };
+      delete next[old];
+      next[info.path] = this.meta;
+      return next;
+    }, true);
+    _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
   }
 
   dispose() {
@@ -654,6 +724,11 @@ export class DocModel {
 export interface ManagerHost {
   settings(): Settings | null | undefined;
   notify(n: { level: "info" | "warning" | "error"; title: string; body?: string }): void;
+  /**
+   * An untitled buffer's explicit save: asks for a path, writes the buffer
+   * there and re-points the model. `false` = cancelled or failed.
+   */
+  saveAs?(model: DocModel): Promise<boolean>;
 }
 
 export class DocumentManager {
@@ -716,6 +791,29 @@ export class DocumentManager {
     return this.byPath.get(path);
   }
 
+  /** Registers a backend document opened outside `acquire` (a minted untitled buffer). */
+  adopt(info: DocumentInfo): DocModel {
+    const model = new DocModel(this, info);
+    void model.loadLanguage();
+    this.byPath.set(model.path, model);
+    this.byId.set(model.doc, model);
+    _emitEditorEvent({ type: "docOpened", doc: model.doc, path: model.path, language: info.language });
+    return model;
+  }
+
+  /** An untitled buffer's explicit save (Save As); `false` = cancelled or failed. */
+  saveAs(model: DocModel): Promise<boolean> {
+    return this.host.saveAs?.(model) ?? Promise.resolve(false);
+  }
+
+  /** Save As re-pointed `model` from its untitled URI to a real file path. */
+  retarget(model: DocModel, info: DocumentInfo) {
+    if (model.path === info.path) return;
+    this.byPath.delete(model.path);
+    this.byPath.set(info.path, model);
+    model.retarget(info);
+  }
+
   /** Opens (or returns the already open) document model for `path`. */
   acquire(path: string): Promise<DocModel> {
     const existing = this.byPath.get(path);
@@ -731,7 +829,11 @@ export class DocumentManager {
           })
           .catch(() => {});
         const [info] = await Promise.all([
-          isVirtualUri(path) ? this.backend.openVirtual(path) : this.backend.open(path),
+          isUntitledUri(path)
+            ? this.backend.openUntitled(path)
+            : isVirtualUri(path)
+              ? this.backend.openVirtual(path)
+              : this.backend.open(path),
           catalog,
         ]);
         const raced = this.byPath.get(path);
@@ -796,14 +898,16 @@ export class DocumentManager {
   }
 
   /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
-  async saveAll(reason: "explicit" | "auto") {
+  async saveAll(reason: "explicit" | "auto", skipUntitled = false) {
     const errors: unknown[] = [];
     await Promise.all(
-      [...this.byPath.values()].map((m) =>
-        m.save(reason).catch((e) => {
-          errors.push(e);
-        }),
-      ),
+      [...this.byPath.values()]
+        .filter((m) => !(skipUntitled && isUntitledUri(m.path)))
+        .map((m) =>
+          m.save(reason).catch((e) => {
+            errors.push(e);
+          }),
+        ),
     );
     if (errors.length) {
       const e = errors[0];

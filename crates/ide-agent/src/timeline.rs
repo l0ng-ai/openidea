@@ -438,8 +438,10 @@ mod tests {
         t.push(AgentEntry::Permission {
             id: 1,
             title: "Run?".into(),
+            command: None,
             options: vec![],
             questions: vec![],
+            form: None,
             chosen: None,
         });
         assert_eq!(t.end_turn(None), vec![2, 3]);

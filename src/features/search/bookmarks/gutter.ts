@@ -172,8 +172,9 @@ const theme = EditorView.baseTheme({
     alignItems: "center",
     // Spare width stays left of the bookmark, which sits next to the code.
     justifyContent: "flex-end",
-    padding: "0 2px",
   },
+  // Not on the empty spacer, so the column collapses fully in files without bookmarks.
+  ".cm-openidea-bookmarks .cm-gutterElement:not(:empty)": { padding: "0 2px" },
   ".cm-openidea-bookmark": {
     fill: "none",
     stroke: "var(--accent)",

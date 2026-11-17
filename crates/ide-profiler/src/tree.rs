@@ -1,19 +1,25 @@
 //! Building the call tree from stacks.
 
-use crate::{MethodStat, Profile, ProfileFrame, ProfileNode};
+use crate::{MethodStat, Profile, ProfileFrame, ProfileFrameKind, ProfileMode, ProfileNode};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Identity of a frame; `kind` keeps an allocated type apart from a function of the same name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FrameKey {
     pub name: String,
     pub file: Option<PathBuf>,
     pub line: Option<u32>,
+    pub kind: ProfileFrameKind,
 }
 
 impl FrameKey {
     pub fn named(name: impl Into<String>) -> Self {
-        Self { name: name.into(), file: None, line: None }
+        Self { name: name.into(), file: None, line: None, kind: ProfileFrameKind::Code }
+    }
+
+    pub fn allocated(name: impl Into<String>) -> Self {
+        Self { kind: ProfileFrameKind::AllocatedType, ..Self::named(name) }
     }
 }
 
@@ -77,7 +83,7 @@ impl TreeBuilder {
         self.nodes.len() <= 1 && self.nodes[0].self_weight == 0.0
     }
 
-    pub fn finish(self, profiler: &str, unit: &str) -> Profile {
+    pub fn finish(self, profiler: &str, unit: &str, mode: ProfileMode) -> Profile {
         let n = self.nodes.len();
         // Renumber in depth-first order, children by total weight (heaviest first).
         // Children are always created after their parent, so a reverse sweep sums bottom-up.
@@ -112,10 +118,10 @@ impl TreeBuilder {
         let frames: Vec<ProfileFrame> = self
             .frames
             .into_iter()
-            .map(|k| ProfileFrame { name: k.name, file: k.file.map(Into::into), line: k.line })
+            .map(|k| ProfileFrame { name: k.name, file: k.file.map(Into::into), line: k.line, kind: k.kind })
             .collect();
         let methods = methods(&nodes, frames.len());
-        Profile { profiler: profiler.to_owned(), unit: unit.to_owned(), total: totals[0], frames, nodes, methods }
+        Profile { profiler: profiler.to_owned(), unit: unit.to_owned(), mode, total: totals[0], frames, nodes, methods }
     }
 }
 
@@ -165,7 +171,7 @@ mod tests {
         b.add_stack(stack(&["main", "b"]), 3.0);
         b.add_stack(stack(&["main", "b", "b"]), 2.0);
         b.add_stack(stack(&["main"]), 1.0);
-        let p = b.finish("t", "samples");
+        let p = b.finish("t", "samples", crate::ProfileMode::Cpu);
         assert_eq!(p.total, 7.0);
         let name = |n: &ProfileNode| p.frames[n.frame as usize].name.as_str();
         let root = &p.nodes[0];

@@ -36,7 +36,7 @@ import {
   type TreeOptions,
 } from "./model";
 import { projectFs } from "./fs";
-import { PROJECT_TYPES, type ProjectType } from "./projectType";
+import { PROJECT_TYPES, type ProjectType } from "@/ui/projectType";
 import {
   projectViewRoots,
   useProjectViewRoots,
@@ -321,16 +321,25 @@ export function initProjectTree(
   clearTimeout(persistTimer);
   modeExpanded.clear();
   autoExpanded.clear();
-  const previousMode = get().mode;
+  const previous = get();
+  const previousMode = previous.mode;
   const mode =
     unity && previousMode === "project" ? "unity" : !unity && previousMode === "unity" ? "project" : previousMode;
+  // Keep the remaining members' types visible while the workspace is rescanned.
+  const projectTypes = new Map<string, ProjectType>();
+  if (root === previous.root && members) {
+    for (const member of members) {
+      const type = previous.projectTypes.get(member);
+      if (type) projectTypes.set(member, type);
+    }
+  }
   set({
     unity,
     mode,
     root,
     name,
     members,
-    projectTypes: new Map(),
+    projectTypes,
     listings: new Map(),
     expanded: initialExpanded(root, mode, members),
     selected: new Set(),
@@ -554,6 +563,16 @@ export async function applyFsChange(event: {
 export async function reloadLoadedDirs(dirs: readonly string[]) {
   const { listings } = get();
   await Promise.all(dirs.filter((p) => listings.has(p)).map((p) => loadDir(p, true)));
+}
+
+/**
+ * Re-reads the loaded folders inside archives (`<archive>!…`): a build tool sync may have replaced
+ * a library jar in place (a SNAPSHOT installed again), which no file watcher reports.
+ */
+export async function reloadArchiveDirs() {
+  const { listings } = get();
+  const inArchive = (p: string) => p.endsWith("!") || p.includes("!/") || p.includes("!\\");
+  await Promise.all([...listings.keys()].filter(inArchive).map((p) => loadDir(p, true)));
 }
 
 /** Re-reads every loaded folder (View › Reload from Disk). */

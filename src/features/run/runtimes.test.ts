@@ -38,6 +38,15 @@ it("a nested Deno project is discovered under a Node root", async () => {
   expect(await rootMarkers("/repo", "/repo/apps/deno/main.ts")).toEqual({ deno: true, bun: false });
 });
 
+it("the preferred runtime overrides the project's markers", async () => {
+  entries.set("/repo", ["deno.json"]);
+  useProject.setState({ settings: { languages: { node: { runtime: "bun" } } } } as never);
+  expect(await rootMarkers("/repo", "/repo/main.ts")).toEqual({ deno: false, bun: true, preferred: true });
+  expect(await rootMarkers(null, "/tmp/scratch.ts")).toEqual({ deno: false, bun: true, preferred: true });
+  useProject.setState({ settings: { languages: { node: { runtime: "node" } } } } as never);
+  expect(await rootMarkers("/repo", "/repo/main.ts")).toEqual({ deno: false, bun: false, preferred: true });
+});
+
 it("the production Python runtime query includes the source directory", async () => {
   const env = await toolEnv(["python3"], "/repo/apps/python/src/main.py", "/repo", true);
   expect(pythonNear).toHaveBeenCalledWith("/repo/apps/python/src");

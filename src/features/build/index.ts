@@ -14,7 +14,7 @@ import {
 } from "@/workbench/contributions";
 import { BuildTitleItem } from "./BuildTitleItem";
 import { BuildHeaderActions, BuildView } from "./BuildView";
-import { BUILD_RUNNING, resetBuildRun, startBuild, stopBuild, useBuildRun } from "./store";
+import { BUILD_RUNNING, resetBuildRun, startBuild, startCompileFile, stopBuild, useBuildRun } from "./store";
 
 const WHEN = `projectOpen && !${BUILD_RUNNING}`;
 
@@ -87,6 +87,20 @@ export function activate(): () => void {
         },
       },
       {
+        id: "build.compileFile",
+        title: "Compile File",
+        description: "Compiles the current Java file with javac, without building its module",
+        category: "Build",
+        when: WHEN,
+        keywords: ["javac", "single file", "recompile"],
+        run: ({ arg }) => {
+          const options = typeof arg === "object" && arg !== null ? arg : {};
+          const activate = !("activate" in options && options.activate === false);
+          const file = moduleTarget(arg);
+          if (file) void startCompileFile(file, activate);
+        },
+      },
+      {
         id: "build.rebuildProject",
         title: "Rebuild Project",
         description: "Cleans the build outputs, then builds the project",
@@ -130,6 +144,18 @@ export function activate(): () => void {
         ctx.paths.length === 1 && useProject.getState().project
           ? [{ kind: "action", action: "build.buildModule", arg: ctx.paths[0] }]
           : [],
+    }),
+    // One Java file in the editor, its tab or the project view: compile it with
+    // javac instead of building its module.
+    registerMenuGroup({
+      id: "build.compileFile",
+      menus: ["editor", "editorTab", "projectView"],
+      order: 40,
+      items: (_menu, { paths, dirs }) => {
+        const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
+        if (!path || !/\.java$/i.test(path) || !useProject.getState().project) return [];
+        return [{ kind: "action", action: "build.compileFile", arg: path }];
+      },
     }),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetBuildRun();

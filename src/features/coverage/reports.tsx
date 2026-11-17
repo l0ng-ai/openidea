@@ -27,7 +27,7 @@ import styles from "./Coverage.module.css";
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 async function pickReport(): Promise<string | null> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({
     multiple: false,
     directory: false,

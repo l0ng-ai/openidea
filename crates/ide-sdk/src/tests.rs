@@ -1,6 +1,7 @@
 use crate::apply::{
-    apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived,
+    apply_to_run_configs, apply_to_run_configs_in, configure_server, configure_vue_module_resolution, jdtls_jdk,
+    maven_command, maven_options, project_jdk, python_interpreter, ruff_configuration, terminal_activation,
+    tool_install_environment, tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -20,12 +21,13 @@ fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
     py
 }
 
-fn server(name: &str) -> LanguageServerConfig {
+pub(crate) fn server(name: &str) -> LanguageServerConfig {
     LanguageServerConfig {
         name: name.into(),
         command: name.into(),
         args: vec![],
         env: BTreeMap::new(),
+        requires_env: Vec::new(),
         root_markers: vec![],
         require_root_marker: false,
         initialization_options: None,
@@ -33,6 +35,7 @@ fn server(name: &str) -> LanguageServerConfig {
         install_hint: None,
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -40,6 +43,7 @@ fn server(name: &str) -> LanguageServerConfig {
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     }
 }
@@ -61,6 +65,14 @@ fn run(kind: &str, command: &str, args: &[&str]) -> RunConfig {
     }
 }
 
+/// An interpreter executable at `rel` under `root` (resolution skips paths that don't exist).
+fn fake_interpreter(root: &Path, rel: &str) -> std::path::PathBuf {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "").unwrap();
+    path
+}
+
 #[test]
 fn project_venv_is_the_default_interpreter() {
     if cfg!(windows) {
@@ -73,8 +85,10 @@ fn project_venv_is_the_default_interpreter() {
     assert_eq!(python_interpreter(tmp.path(), &s), Some(py.clone()));
     assert_eq!(venv_of(&py), Some(tmp.path().join(".venv")));
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
-    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), Path::new("/opt/py/bin/python3"));
+    // A configured interpreter wins over the virtualenv while its executable exists.
+    let configured = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    s.languages.python.interpreter = configured.to_string_lossy().into_owned();
+    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), configured);
 }
 
 #[test]
@@ -174,6 +188,60 @@ fn pyright_gets_python_path_and_venv_env() {
     assert_eq!(opts["python"]["pythonPath"], py.to_string_lossy().as_ref());
     assert_eq!(cfg.env["VIRTUAL_ENV"], tmp.path().join(".venv").to_string_lossy());
     assert!(cfg.env["PATH"].starts_with(&*tmp.path().join(".venv").join(bin_dir()).to_string_lossy()));
+}
+
+#[test]
+fn djlsp_reads_django_from_the_project_environment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let python = fake_venv(tmp.path(), "venvs/web");
+    let mut s = Settings::default();
+    s.languages.python.interpreter = python.to_string_lossy().into_owned();
+    let mut cfg = server("djlsp");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
+    assert_eq!(opts["env_directories"], serde_json::json!([tmp.path().join("venvs/web").to_string_lossy()]));
+}
+
+#[test]
+fn a_run_target_interpreter_hides_local_pythons() {
+    let tmp = tempfile::tempdir().unwrap();
+    fake_venv(tmp.path(), ".venv");
+    let mut s = Settings::default();
+    s.languages.python.interpreter = "target:web".into();
+    assert_eq!(python_interpreter(tmp.path(), &s), None, "the project virtualenv is not the interpreter");
+    assert_eq!(terminal_activation(tmp.path(), &s, "bash"), None);
+    assert!(!tool_install_environment(tmp.path(), &s).commands.contains_key("python"));
+    let mut cfg = server("basedpyright");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let opts = cfg.initialization_options.map(|o| serde_json::to_value(o).unwrap());
+    assert!(opts.and_then(|o| o.pointer("/python/pythonPath").cloned()).is_none());
+    assert!(!cfg.env.contains_key("VIRTUAL_ENV"));
+}
+
+#[test]
+fn python_configurations_run_on_the_interpreters_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    fake_venv(tmp.path(), ".venv");
+    let mut s = Settings::default();
+    s.languages.python.interpreter = "target:web".into();
+    s.run.default_target = "box".into();
+    let mut own = run("python", "python3", &["main.py"]);
+    own.extras.target = Some(String::new());
+    let mut configs = vec![
+        run("python", "python3", &["manage.py", "runserver"]),
+        run("pytest", "python3", &["-m", "pytest"]),
+        run("npm", "npm", &["run", "dev"]),
+        own,
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].extras.target.as_deref(), Some("web"));
+    assert_eq!(configs[0].command, "python3", "the container resolves the interpreter");
+    assert!(!configs[0].env.contains_key("VIRTUAL_ENV"));
+    assert_eq!(configs[1].extras.target.as_deref(), Some("web"));
+    assert_eq!(configs[2].extras.target.as_deref(), Some("box"), "other languages keep the default target");
+    assert_eq!(configs[3].extras.target.as_deref(), Some(""), "a configuration's own choice wins");
+    let derived = without_derived(&configs[0], tmp.path(), &s);
+    assert_eq!(derived.extras.target, None, "the target is derived from the interpreter");
 }
 
 #[test]
@@ -303,7 +371,9 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
+    let python = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    let python = python.to_string_lossy().into_owned();
+    s.languages.python.interpreter = python.clone();
     s.languages.node.package_manager = "pnpm".into();
     let mut configs = vec![
         run("python", "uv", &["run", "python", "-m", "app"]),
@@ -315,17 +385,17 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
-    assert_eq!(configs[0].command, "/opt/py/bin/python3");
+    assert_eq!(configs[0].command, python);
     assert_eq!(configs[0].args, ["-m", "app"]);
-    assert_eq!(configs[1].command, "/opt/py/bin/python3");
+    assert_eq!(configs[1].command, python);
     assert_eq!(configs[1].args, ["-m", "pytest"]);
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
     // Django tests run on the selected interpreter, like `manage.py runserver`.
-    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].command, python);
     assert_eq!(configs[5].args, ["manage.py", "test"]);
-    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].command, python);
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
@@ -370,6 +440,30 @@ fn fake_jdk(dir: &Path) {
 }
 
 #[test]
+fn jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jdk = tmp.path().join("jbr");
+    fake_jdk(&jdk);
+    let mut s = Settings::default();
+    let mut configs = vec![run("jar-application", "java", &["-jar", "app.jar"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, "java", "java on PATH without a project JDK");
+
+    s.languages.java.jdk = jdk.to_string_lossy().into_owned();
+    let chosen = tmp.path().join("other/bin/java").to_string_lossy().into_owned();
+    let mut configs = vec![
+        run("jar-application", "java", &["-jar", "app.jar"]),
+        run("jar-application", &chosen, &["-jar", "app.jar"]),
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let java = crate::java::java_executable(&project_jdk(tmp.path(), &s).unwrap().home).to_string_lossy().into_owned();
+    assert_eq!(configs[0].command, java);
+    assert_eq!(configs[1].command, chosen, "an explicit JRE stays");
+    // Saved as the default, so it follows a later Project JDK change.
+    assert_eq!(without_derived(&configs[0], tmp.path(), &s).command, "java");
+}
+
+#[test]
 fn project_jdk_and_maven_settings() {
     if cfg!(windows) {
         return; // Unix paths and shells
@@ -409,6 +503,19 @@ fn project_jdk_and_maven_settings() {
     );
     assert_eq!(configs[0].env["JAVA_HOME"], home);
     assert_eq!(configs[1].env["JAVA_HOME"], home);
+    // JUnit runs the build's own command line: the build's JDK, its command and arguments unchanged.
+    let mut junit = vec![
+        run("junit", "./mvnw", &["test", "-Dtest=a.T"]),
+        run("junit", "./gradlew", &[":api:test", "--tests", "a.T"]),
+    ];
+    apply_to_run_configs(&mut junit, tmp.path(), &s);
+    assert_eq!(
+        (junit[0].command.as_str(), junit[0].args.as_slice()),
+        ("./mvnw", &["test".to_owned(), "-Dtest=a.T".to_owned()][..])
+    );
+    assert_eq!(junit[0].env["JAVA_HOME"], home);
+    assert_eq!(junit[1].command, "./gradlew");
+    assert_eq!(junit[1].env["JAVA_HOME"], home);
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].args.len(), 6, "applied once");
 
@@ -1213,6 +1320,59 @@ fn an_existing_conda_environment_is_not_recreated() {
 }
 
 #[test]
+fn conda_creates_named_environments_in_its_envs_directory() {
+    use crate::python::conda_create_args;
+    use std::path::Path;
+    assert_eq!(conda_create_args(Path::new("demo"), Some("3.12.4")), ["create", "-n", "demo", "-y", "python=3.12"]);
+    assert_eq!(conda_create_args(Path::new("/work/app/.conda"), None), ["create", "-p", "/work/app/.conda", "-y"]);
+    for path in [r"C:\envs\demo", "envs/demo", "D:demo", ".."] {
+        assert_eq!(conda_create_args(Path::new(path), None)[1], "-p", "{path}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_named_conda_environment_is_found_where_conda_put_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("miniconda3");
+    let conda = tmp.path().join("conda");
+    // `create -n <name>` makes <root>/envs/<name> with a copy of the base python; `env list` names every env.
+    let python = tmp.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        &conda,
+        format!(
+            "#!/bin/sh\nroot='{root}'\nif [ \"$1\" = env ]; then echo '# conda environments:'; echo \"base  $root\"; \
+             for e in \"$root\"/envs/*/; do [ -d \"$e\" ] && echo \"$(basename \"$e\")  ${{e%/}}\"; done; exit 0; fi\n\
+             [ \"$1 $2\" = 'create -n' ] || exit 2\nmkdir -p \"$root/envs/$3/bin\"\ncp '{python}' \"$root/envs/$3/bin/python\"\necho created\n",
+            root = root.display(),
+            python = python.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&conda, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    let base = python.clone();
+    let which = |tool: &str| (tool == "conda").then(|| conda.clone());
+    let create = || {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Conda,
+            &base,
+            Path::new("ds"),
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let sdk = create().unwrap();
+    assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
+    let again = create().unwrap_err();
+    assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
 fn neutral_dir_is_fresh_and_empty() {
     let a = crate::python::neutral_dir().unwrap();
     let b = crate::python::neutral_dir().unwrap();
@@ -1272,6 +1432,86 @@ fn custom_tool_path_replaces_the_command() {
     let mut cfg = server("zls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
     assert_eq!(cfg.command, "zls");
+}
+
+/// A server picked from a Node.js installation (nvm's `bin/tsc`, `bin/npx`) is a
+/// `#!/usr/bin/env node` script: it runs on that installation's Node, ahead of the
+/// project's Node.js interpreter.
+#[test]
+fn a_server_chosen_from_a_node_installation_runs_on_that_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let v26 = tmp.path().join("nvm/versions/node/v26.4.0/bin");
+    let v20 = tmp.path().join("node20/bin");
+    for dir in [&v26, &v20] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(exe("node")), "").unwrap();
+    }
+    std::fs::write(v26.join("tsc"), "#!/usr/bin/env node\n").unwrap();
+    let mut s = Settings::default();
+    s.languages.node.interpreter = v20.join(exe("node")).to_string_lossy().into_owned();
+    s.tools.insert(
+        "typescript-language-server".into(),
+        ide_core::settings::ToolSettings { path: v26.join("tsc").to_string_lossy().into_owned() },
+    );
+    let mut cfg = server("typescript-language-server");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let path: Vec<std::path::PathBuf> = std::env::split_paths(&cfg.env["PATH"]).collect();
+    assert_eq!(path[..2], [v26.clone(), v20.clone()]);
+
+    // Elsewhere, the project's Node.js interpreter comes first.
+    s.tools.insert(
+        "typescript-language-server".into(),
+        ide_core::settings::ToolSettings { path: tmp.path().join("tools/tsc").to_string_lossy().into_owned() },
+    );
+    let mut cfg = server("typescript-language-server");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(std::env::split_paths(&cfg.env["PATH"]).next(), Some(v20));
+}
+
+/// TypeScript 7 (`typescript` 7+, `@typescript/native-preview`) has no tsserver: choosing it
+/// runs its native executable's own language server instead of vtsls / typescript-language-server.
+#[test]
+fn typescript_7_runs_its_own_language_server() {
+    let tmp = tempfile::tempdir().unwrap();
+    let modules = tmp.path().join("node_modules");
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        os => os,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        arch => arch,
+    };
+    std::fs::create_dir_all(modules.join("typescript/lib")).unwrap();
+    std::fs::write(modules.join("typescript/package.json"), r#"{"name":"typescript","version":"7.0.2"}"#).unwrap();
+    let native = modules.join(format!("@typescript/typescript-{os}-{arch}/lib")).join(exe("tsc"));
+    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+    std::fs::write(&native, "").unwrap();
+    let mut s = Settings::default();
+    s.languages.typescript.version = "workspace".into();
+    for name in ["vtsls", "typescript-language-server"] {
+        let mut cfg = server(name);
+        configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+        assert_eq!(Path::new(&cfg.command), native, "{name}");
+        assert_eq!(cfg.args, ["--lsp", "--stdio"]);
+        assert_eq!(cfg.display_name.as_deref(), Some("TypeScript 7"));
+        assert!(cfg.initialization_options.is_none());
+    }
+    // Picked as a directory (its `lib`, as for older versions), too.
+    s.languages.typescript.version = modules.join("typescript/lib").to_string_lossy().into_owned();
+    let mut cfg = server("vtsls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(Path::new(&cfg.command), native);
+
+    // TypeScript 6 keeps the tsserver-based server, pointed at it.
+    std::fs::write(modules.join("typescript/lib/typescript.js"), "").unwrap();
+    std::fs::write(modules.join("typescript/lib/tsserver.js"), "").unwrap();
+    s.languages.typescript.version = "workspace".into();
+    let mut cfg = server("vtsls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(cfg.command, "vtsls");
 }
 
 #[test]
@@ -1413,6 +1653,85 @@ fn go_modules_skip_the_main_module_and_missing_downloads() {
             std::path::PathBuf::from("/gopath/pkg/mod/golang.org/x/text@v0.14.0")
         )]
     );
+}
+
+#[test]
+fn build_zig_zon_dependencies_are_parsed() {
+    let zon = r#"// the manifest is a Zig struct literal
+.{
+    .name = .app,
+    .version = "0.1.0",
+    .fingerprint = 0x348e9ddfb4b9e03c,
+    .dependencies = .{
+        .zap = .{ .url = "https://example.com/zap.tar.gz", .hash = "zap-0.1.0-AAA" },
+        .@"weird name" = .{
+            .url = "https://example.com/w.tar.gz",
+            .hash = "weird-2.0.0-BBB",
+            .lazy = true,
+        },
+        .shared = .{ .path = "../shared" },
+    },
+    .paths = .{ "build.zig", "src" },
+}
+"#;
+    assert_eq!(
+        crate::zig::zon_dependencies(zon),
+        [
+            crate::zig::ZonDependency {
+                name: "zap".into(),
+                hash: Some("zap-0.1.0-AAA".into()),
+                path: None,
+                lazy: false
+            },
+            crate::zig::ZonDependency {
+                name: "weird name".into(),
+                hash: Some("weird-2.0.0-BBB".into()),
+                path: None,
+                lazy: true
+            },
+            crate::zig::ZonDependency {
+                name: "shared".into(),
+                hash: None,
+                path: Some("../shared".into()),
+                lazy: false
+            },
+        ]
+    );
+    assert!(crate::zig::zon_dependencies(".{ .name = .app, .dependencies = .{} }").is_empty());
+    assert!(crate::zig::zon_dependencies(".{ .name = .app }").is_empty());
+    assert!(crate::zig::zon_dependencies("{ broken").is_empty());
+    assert_eq!(
+        crate::zig::zon_string_field(".{ .name = .probe_pkg, .version = \"0.1.0\" }", "name").as_deref(),
+        Some("probe_pkg")
+    );
+}
+
+#[test]
+fn zig_env_is_parsed_from_json_and_struct_literals() {
+    let env = crate::zig::parse_zig_env(
+        r#"{"zig_exe":"/opt/zig/zig","lib_dir":"/opt/zig/lib","std_dir":"/opt/zig/lib/std","global_cache_dir":"/home/u/.cache/zig","version":"0.14.1"}"#,
+    )
+    .unwrap();
+    assert_eq!(env.std_sources().as_deref(), Some(std::path::Path::new("/opt/zig/lib/std")));
+    assert_eq!(env.global_cache_dir.as_deref(), Some(std::path::Path::new("/home/u/.cache/zig")));
+
+    // Zig ≥ 0.15 prints a struct literal; a relative std_dir resolves against the install dir.
+    let env = crate::zig::parse_zig_env(
+        r#".{
+    .zig_exe = "/opt/zig/zig",
+    .lib_dir = "/opt/zig/lib",
+    .std_dir = "lib/std",
+    .global_cache_dir = "/home/u/.cache/zig",
+    .version = "0.16.0",
+    .target = "aarch64-macos",
+    .env = .{ .ZIG_GLOBAL_CACHE_DIR = null, .HOME = "/home/u" },
+}"#,
+    )
+    .unwrap();
+    assert_eq!(env.std_sources().as_deref(), Some(std::path::Path::new("/opt/zig/lib/std")));
+    assert_eq!(env.version.as_deref(), Some("0.16.0"));
+    assert_eq!(env.global_cache_dir.as_deref(), Some(std::path::Path::new("/home/u/.cache/zig")));
+    assert!(crate::zig::parse_zig_env("error: nothing").is_none());
 }
 
 #[test]
@@ -1813,6 +2132,37 @@ fn max_java_picks_an_older_jdk() {
     free.env.insert("JAVA_HOME".into(), j25.home.to_string_lossy().into_owned());
     crate::java::cap_java_home(&mut free, &jdks);
     assert_eq!(free.env["JAVA_HOME"], j25.home.to_string_lossy());
+}
+
+/// #3086: `gradle-wrapper.jar` excluded by a `*.jar` rule in `.gitignore`: `gradlew` can't
+/// start, so the distribution the wrapper already unpacked runs instead.
+#[test]
+fn gradle_wrapper_without_its_jar_runs_the_unpacked_distribution() {
+    use crate::apply::gradle_command;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let plain = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    let wrapper = root.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    std::fs::write(&wrapper, "").unwrap();
+    std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+    std::fs::write(
+        root.join("gradle/wrapper/gradle-wrapper.properties"),
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-4.10-bin.zip\n",
+    )
+    .unwrap();
+    let mut settings = Settings::default();
+    settings.languages.java.gradle.user_home = "user-home".into();
+    let hash = root.join("user-home/wrapper/dists/gradle-4.10-bin/7ddd1b3f");
+    let gradle = hash.join("gradle-4.10/bin").join(plain);
+    std::fs::create_dir_all(gradle.parent().unwrap()).unwrap();
+    std::fs::write(&gradle, "").unwrap();
+    // Not marked complete: possibly half unpacked.
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+    std::fs::write(hash.join("gradle-4.10-bin.zip.ok"), "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), gradle);
+    // With its jar the wrapper runs as usual.
+    std::fs::write(root.join("gradle/wrapper/gradle-wrapper.jar"), "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
 }
 
 #[test]
@@ -2217,11 +2567,13 @@ fn nested_python_configs_get_their_own_virtualenv_but_explicit_settings_stay_pro
     apply_to_run_configs(std::slice::from_mut(&mut member), root, &Settings::default());
     assert_eq!(member.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
     let mut settings = Settings::default();
-    settings.languages.python.interpreter = "custom/bin/python".into();
+    settings.languages.python.interpreter = root.join("custom/bin").join(exe("python")).to_string_lossy().into_owned();
+    std::fs::create_dir_all(root.join("custom/bin")).unwrap();
+    std::fs::write(root.join("custom/bin").join(exe("python")), "").unwrap();
     let mut config = run("python", "python3", &["main.py"]);
     config.extras.module = Some("apps/python".into());
     apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
-    assert_eq!(config.command, root.join("custom/bin/python").to_string_lossy());
+    assert_eq!(config.command, root.join("custom/bin").join(exe("python")).to_string_lossy());
 }
 
 #[test]
@@ -2231,11 +2583,97 @@ fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
     let outer = fake_venv(root, ".venv");
     let inner = fake_venv(&root.join("apps/api"), ".venv");
     let near = root.join("apps/api/src/package");
-    let mut settings = Settings::default();
+    let settings = Settings::default();
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(inner));
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&root.join("apps/other")), &settings), Some(outer));
-    settings.languages.python.interpreter = "selected/python".into();
-    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(root.join("selected/python")));
+    let mut settings = Settings::default();
+    let selected = root.join("selected").join(exe("python"));
+    std::fs::create_dir_all(root.join("selected")).unwrap();
+    std::fs::write(&selected, "").unwrap();
+    settings.languages.python.interpreter = selected.to_string_lossy().into_owned();
+    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(selected));
+}
+
+#[test]
+fn an_interpreter_that_no_longer_exists_falls_back_to_the_project_virtualenv() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let venv = fake_venv(root, ".venv");
+    let mut settings = Settings::default();
+    settings.languages.python.interpreter = root.join("gone/python").to_string_lossy().into_owned();
+    // Resolution skips the missing executable like PyCharm's "Invalid" SDKs.
+    assert_eq!(crate::apply::python_interpreter(root, &settings), Some(venv.clone()));
+    assert_eq!(crate::apply::python_interpreter_near(root, None, &settings), Some(venv.clone()));
+    // Run configurations use the fallback instead of the dead path.
+    let mut config = run("python", "python3", &["main.py"]);
+    apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+    assert_eq!(config.command, venv.to_string_lossy());
+    assert_eq!(config.env["VIRTUAL_ENV"], venv.parent().unwrap().parent().unwrap().to_string_lossy());
+    // A configured interpreter that still exists keeps winning over the venv.
+    let real = root.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let real_python = real.join(exe("python"));
+    std::fs::write(&real_python, "").unwrap();
+    settings.languages.python.interpreter = real_python.to_string_lossy().into_owned();
+    assert_eq!(crate::apply::python_interpreter(root, &settings), Some(real_python));
+}
+
+#[test]
+fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let primary = root.join("primary");
+    let bare = root.join("bare");
+    let outer = fake_venv(&primary, ".venv");
+    // An attached member with a venv of its own uses it.
+    let own = fake_venv(&root.join("own"), ".venv");
+    let settings = Settings::default();
+    assert_eq!(crate::apply::python_interpreter_near(&root.join("own"), Some(&own), &settings), Some(own));
+
+    // A run configuration of the bare member runs on the primary project's venv.
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &settings);
+    assert_eq!(config.command, outer.to_string_lossy());
+    assert_eq!(config.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
+    // Saving strips what settings derived, so the fallback keeps following settings.
+    let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
+    assert_eq!(stored.command, "python", "the bare program, also on Windows");
+    assert!(!stored.env.contains_key("VIRTUAL_ENV"));
+
+    // The member's explicit interpreter wins over the primary project's venv —
+    // when it exists (bare names stay bare; a missing path falls back).
+    let mut chosen = Settings::default();
+    chosen.languages.python.interpreter = root.join("bare/python").to_string_lossy().into_owned();
+    std::fs::create_dir_all(&bare).unwrap();
+    let bare_python = bare.join(exe("python"));
+    std::fs::write(&bare_python, "").unwrap();
+    chosen.languages.python.interpreter = bare_python.to_string_lossy().into_owned();
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &chosen);
+    assert_eq!(config.command, bare_python.to_string_lossy());
+    assert!(!config.env.contains_key("VIRTUAL_ENV"));
+
+    // An interpreter inherited from the primary follows a later change of its setting
+    // (the paths are created here: resolution skips missing executables).
+    let mut inherited = Settings::default();
+    for dir in ["primary", "moved"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+        std::fs::write(root.join(dir).join(exe("python")), "").unwrap();
+    }
+    let primary_python = root.join("primary").join(exe("python"));
+    let moved_python = root.join("moved").join(exe("python"));
+    inherited.languages.python.interpreter = primary_python.to_string_lossy().into_owned();
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &inherited);
+    assert_eq!(config.command, primary_python.to_string_lossy());
+    let stored = without_derived_in(&config, &bare, Some(&primary), &inherited);
+    inherited.languages.python.interpreter = moved_python.to_string_lossy().into_owned();
+    let mut reloaded = stored;
+    apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &inherited);
+    assert_eq!(reloaded.command, moved_python.to_string_lossy());
 }
 
 #[test]
@@ -2336,12 +2774,64 @@ fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigu
     assert!(!defaults.env.contains_key("GOROOT"));
     s.languages.go.goroot = "go-sdk".into();
     s.languages.node.interpreter = "node-sdk/bin/node".into();
-    s.languages.python.interpreter = "python-sdk/bin/python3.14".into();
     s.languages.ruby.interpreter = "ruby-sdk/bin/ruby".into();
     let runtime = tool_install_environment(root, &s);
     assert_eq!(runtime.commands["go"], root.join("go-sdk/bin").join(if cfg!(windows) { "go.exe" } else { "go" }));
     assert_eq!(runtime.env["GOROOT"], root.join("go-sdk").to_string_lossy());
     assert_eq!(runtime.commands["node"], root.join("node-sdk/bin/node"));
-    assert_eq!(runtime.commands["python"], root.join("python-sdk/bin/python3.14"));
     assert_eq!(runtime.commands["ruby"], root.join("ruby-sdk/bin/ruby"));
+    // A configured interpreter whose executable is missing is skipped here too:
+    // the tool install environment only names Pythons that can actually run.
+    std::fs::create_dir_all(root.join("python-sdk/bin")).unwrap();
+    let real = root.join("python-sdk/bin").join(exe("python3.14"));
+    std::fs::write(&real, "").unwrap();
+    s.languages.python.interpreter = real.to_string_lossy().into_owned();
+    assert_eq!(tool_install_environment(root, &s).commands["python"], real);
+}
+
+#[test]
+fn vue_module_resolution_plugin_follows_the_vue_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    crate::apply::merge_init_options(
+        &mut cfg,
+        serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [crate::vue::tsserver_plugin(Path::new("/vue"))] } } }),
+    );
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+    assert_eq!(plugins[0]["name"], "@vue/typescript-plugin");
+    assert_eq!(plugins[1]["name"], "openidea-vue-module-resolution");
+    let index = tmp.path().join("tsplugins/node_modules/openidea-vue-module-resolution/index.js");
+    assert_eq!(std::fs::read_to_string(&index).unwrap(), include_str!("vue-module-resolution.js"));
+    // Running again replaces its own entry instead of stacking copies.
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+}
+
+#[test]
+fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    assert!(!configure_vue_module_resolution(&mut cfg, tmp.path()));
+    assert!(cfg.initialization_options.is_none());
 }

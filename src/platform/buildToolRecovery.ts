@@ -4,6 +4,13 @@ import { downloadJdkActions } from "./jdk";
 
 /** Recovery shared by build sync, run configurations and language-server import errors. */
 export function buildToolRecovery(message: string) {
+  if (message.startsWith("tsserver stopped because it reached its memory limit")) {
+    const settings = {
+      label: tx("Language Servers…"),
+      run: () => void executeAction("file.settings", "languages.servers"),
+    };
+    return { body: message, actions: [settings] };
+  }
   const actions = downloadJdkActions(message);
   const incompatible = /Can't use Java .* and Gradle .* to import Gradle project/i.test(message);
   const missing = /command not found: ([^\r\n]+)|cannot start ([^\r\n]+?): [^\r\n]*\(os error [23]\)/i.exec(message);

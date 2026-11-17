@@ -8,7 +8,7 @@ import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { focusedSoftWrapSurface } from "@/workbench/softWrap";
-import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom } from "@/workbench/contributions";
+import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom, stepSurfaceFontZoomIn } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
   addCaretsToLineEnds,
@@ -49,6 +49,7 @@ import {
 } from "./cm/folding";
 import { reverseLines, sortLines } from "./cm/lines";
 import { customRegions } from "./cm/regions";
+import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
 import { enclosingHeaders } from "./cm/stickyScroll";
 import { moveElementLeft, moveElementRight } from "./cm/moveElement";
 import { caretAnchor, openPopup, updatePopup, useLspPopup, type LspPopup } from "@/editor/lsp/popupStore";
@@ -70,12 +71,15 @@ import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOf
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
-import { resetAllEditorsFontZoom, stepAllEditorsFontZoom } from "./cm/prefs";
+import { resetAllEditorsFontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
-import { notifications } from "@/workbench/contributions";
+import { menuGroupItems, notifications } from "@/workbench/contributions";
+import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
+import { codeVisionShown, toggleCodeVision } from "./codeVision";
 import { openNavBarPopup } from "./view/NavBarPopup";
 import {
   cachedStructureQueries,
@@ -92,9 +96,12 @@ import { readFileLines, withDocument } from "@/editor/lsp/files";
 import { pathToCopy } from "@/platform/copyPath";
 import { shortcutLabel } from "@/platform/keymap";
 
-/** Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. */
-export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen";
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+/**
+ * Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. Not a
+ * tool window's speed search: it opens a layer too, but the keys belong to its tree (⌘⌫).
+ */
+export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen && !toolWindowFocus";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 const TABS_WHEN = "editorTabsOpen && !toolWindowFocus";
 
 function activeSlot(): EditorSlot | null {
@@ -111,7 +118,12 @@ function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
   };
 }
 
-/** Routes keyboard font zoom to focus, then the active editor slot. */
+function activePaneEditorFocus(): Element | null {
+  if (typeof document === "undefined") return null;
+  return document.querySelector(`[data-pane-id="${useTabs.getState().activePane}"] [data-editor-focus]`);
+}
+
+/** Routes keyboard font zoom to focus, then the active editor slot or pane surface. */
 function stepSurfaceFontSize(delta: 1 | -1): void {
   const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
   if (activeEl) {
@@ -120,16 +132,53 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
     if (cmEl) {
       const cmView = EditorView.findFromDOM(cmEl);
       if (cmView) {
-        stepAllEditorsFontZoom(cmView, delta);
+        stepConfiguredEditorsFontZoom(cmView, delta);
         return;
       }
     }
   }
 
   const slot = activeSlot();
-  if (!slot?.view) return;
-  stepAllEditorsFontZoom(slot.view, delta);
+  if (!slot?.view) {
+    stepSurfaceFontZoomIn(activePaneEditorFocus(), delta);
+    return;
+  }
+  stepConfiguredEditorsFontZoom(slot.view, delta);
   if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
+}
+
+function resetFontSize(): void {
+  const allScope = editorPrefs().general.wheelZoomScope === "all";
+  const surfaceOpts = allScope ? { isolatedOnly: true } : undefined;
+  const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (activeEl) {
+    if (stepFocusedSurfaceFontZoom(0, surfaceOpts)) return;
+    if (!allScope) {
+      const cmEl = activeEl.closest?.(".cm-editor") as HTMLElement | null;
+      if (cmEl) {
+        const cmView = EditorView.findFromDOM(cmEl);
+        if (cmView) {
+          resetConfiguredEditorsFontZoom(cmView);
+          return;
+        }
+      }
+    }
+  }
+
+  const slot = activeSlot();
+  if (!allScope && slot?.view) {
+    resetConfiguredEditorsFontZoom(slot.view);
+    return;
+  }
+  if (!slot?.view && stepSurfaceFontZoomIn(activePaneEditorFocus(), 0, surfaceOpts)) return;
+  if (allScope) resetAllFontSize();
+}
+
+function resetAllFontSize(): void {
+  resetAllEditorsFontZoom();
+  if (typeof document !== "undefined") {
+    resetSurfaceFontZoom();
+  }
 }
 
 // --- extend / shrink selection ---------------------------------------------------
@@ -523,7 +572,29 @@ function copyReference(reference: Promise<string>) {
 
 function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const path = slot.model.path;
-  const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const { doc, selection } = view.state;
+  const line = doc.lineAt(selection.main.head).number;
+  const { from, to } = selection.main;
+  // The selected lines, leaving out the one a selection ends at the start of.
+  const first = doc.lineAt(from).number;
+  const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
+  const contributed = menuGroupItems("copyPath", {
+    paths: [path],
+    line: first - 1,
+    endLine: last > first ? last - 1 : undefined,
+  }).flatMap((item) =>
+    (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
+      ? [
+          {
+            id: item.id,
+            label: item.verbatim ? item.label : tx(item.label),
+            preview: item.preview,
+            shortcut: shortcutLabel(item.id),
+            run: item.run,
+          },
+        ]
+      : [],
+  );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
     { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
@@ -551,6 +622,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
             void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
           },
         })),
+      ...contributed,
       {
         id: "editor.copyReference",
         label: tx("Reference"),
@@ -663,7 +735,7 @@ export function registerEditorActions(): () => void {
     id,
     title,
     category: "Edit",
-    when: `${TEXT_WHEN} || findBarFocus || findBarOpen && popupOpen`,
+    when: `${TEXT_WHEN} || findBarFocus || findBarOpen && popupOpen && !toolWindowFocus`,
     run: ({ arg, ctx }) => {
       const view = typeof arg === "string" || ctx.findBarFocus ? findPanelTarget(arg)?.view() : null;
       if (view) {
@@ -683,6 +755,14 @@ export function registerEditorActions(): () => void {
       "rainbow parentheses",
       "color scheme",
     ]),
+    {
+      id: "editor.toggleCodeVision",
+      title: "Code Vision",
+      category: "Editor",
+      keywords: ["code lens", "usages", "code author", "git author", "inlay hints", "show", "hide"],
+      toggled: codeVisionShown,
+      run: () => toggleCodeVision(),
+    },
     text("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
     text("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
     text("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
@@ -746,6 +826,19 @@ export function registerEditorActions(): () => void {
         else activeSlot()?.model.toggleSoftWrap();
       },
     },
+    {
+      id: "editor.toggleRenderedDocs",
+      title: "Render Documentation Comments",
+      category: "View",
+      keywords: ["render documentation comments", "javadoc", "rendered doc", "comments"],
+      when: "textEditorActive",
+      toggled: () => activeSlot()?.model.renderedDocsOn() ?? false,
+      run: () => activeSlot()?.model.toggleRenderedDocs(),
+    },
+    text("editor.toggleRenderedView", "Toggle Rendered View", (v) => toggleRenderedViewAtCaret(v), {
+      category: "View",
+      keywords: ["reader mode", "render documentation comment", "javadoc", "edit comment"],
+    }),
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),
     text("code.collapseRecursively", "Collapse Recursively", (v) => collapseRecursively(v), {
@@ -892,16 +985,19 @@ export function registerEditorActions(): () => void {
     },
     {
       id: "editor.resetFontSize",
+      title: "Reset Font Size",
+      category: "View",
+      keywords: ["zoom", "font size", "mouse wheel"],
+      when: "projectOpen",
+      run: resetFontSize,
+    },
+    {
+      id: "editor.resetFontSizeAll",
       title: "Reset Font Size in All Editors",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
-      run: () => {
-        resetAllEditorsFontZoom();
-        if (typeof document !== "undefined") {
-          resetSurfaceFontZoom();
-        }
-      },
+      run: resetAllFontSize,
     },
     {
       id: "editor.increaseFontSize",
@@ -1057,8 +1153,11 @@ export function registerEditorActions(): () => void {
       title: "Pin / Unpin Tab",
       category: "Window",
       icon: "pin",
-      when: TABS_WHEN,
+      // IDEA: in a focused tool window, its selected content tab (Find, Usages).
+      when: "editorTabsOpen || toolWindowFocus",
       run: () => {
+        const tw = useToolWindowLayout.getState().focused;
+        if (tw) return void togglePinSelectedContent(tw);
         const t = activePaneTab();
         if (t) ctrl.togglePin(t.paneId, t.tabId);
       },

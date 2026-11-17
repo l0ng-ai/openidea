@@ -313,6 +313,35 @@ impl PluginHost {
     }
 }
 
+impl PluginHost {
+    /// The plugin command that runs `command`, which one of the language servers
+    /// `servers` handed to the client (`[[contributes.serverCommands]]`): the plugin
+    /// and its command id. A plugin counts while it holds `lsp:<server>`; when several
+    /// claim the same server and command, the first one loaded keeps it.
+    pub(crate) fn server_command(&self, servers: &[String], command: &str) -> Option<(String, String)> {
+        let mut claims = self.ui.items(super::ui_points::SERVER_COMMANDS, None).into_iter().filter_map(|item| {
+            let decl: super::ui_points::ServerCommandDecl = serde_json::from_value(item.decl).ok()?;
+            let claimed = decl.command == command && servers.contains(&decl.server);
+            let grant = ide_extension::Capability::Lsp(decl.server.clone());
+            let granted = claimed
+                && self.get(&item.plugin_id).is_ok_and(|p| p.meta.lock().granted.iter().any(|g| g.covers(&grant)));
+            granted.then_some((item.plugin_id, decl.server, decl.run))
+        });
+        let (plugin, server, run) = claims.next()?;
+        for (other, _, _) in claims.filter(|(other, s, _)| *other != plugin && *s == server) {
+            static LOGGED: parking_lot::Mutex<std::collections::BTreeSet<(String, String, String)>> =
+                parking_lot::Mutex::new(std::collections::BTreeSet::new());
+            if LOGGED.lock().insert((other.clone(), server.clone(), command.to_owned())) {
+                tracing::warn!(
+                    "plugins {plugin} and {other} both claim command `{command}` of language server {server}; \
+                     {plugin} was loaded first and keeps it"
+                );
+            }
+        }
+        Some((plugin, run))
+    }
+}
+
 pub(crate) fn signature_help(h: SignatureHelp) -> ide_lsp::types::SignatureHelp {
     let signatures: Vec<_> = h
         .signatures

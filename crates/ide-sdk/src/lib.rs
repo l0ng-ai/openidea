@@ -9,6 +9,7 @@ mod angular;
 pub mod apply;
 pub mod arduino;
 mod astro;
+pub mod container_python;
 mod discover;
 mod exec;
 pub mod go;
@@ -25,6 +26,7 @@ pub mod pinned;
 pub mod python;
 pub mod ruby;
 mod vue;
+mod zig;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -50,6 +52,8 @@ pub enum SdkKind {
     /// Maven homes.
     Maven,
     Ruby,
+    /// Zig toolchain directories.
+    Zig,
 }
 
 /// One installed interpreter / toolchain.

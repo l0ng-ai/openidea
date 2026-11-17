@@ -1,0 +1,5 @@
+id = "empty"
+name = "Empty Project"
+group = "New Project"
+icon = "folder"
+description = "An empty folder to add files to."

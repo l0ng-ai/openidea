@@ -137,11 +137,25 @@ export const openideaTheme = EditorView.theme({
       "var(--bg-editor-selection-inactive, color-mix(in srgb, var(--accent) 14%, transparent))",
     "--editor-indent-guide": "var(--border-indent-guide, var(--border))",
     "--openidea-guide": "linear-gradient(var(--editor-indent-guide), var(--editor-indent-guide))",
+    // The guide the caret is on (IDEA's Selected indent guide).
+    "--editor-indent-guide-active": "var(--border-indent-guide-active, var(--editor-indent-guide))",
+    "--openidea-guide-active": "linear-gradient(var(--editor-indent-guide-active), var(--editor-indent-guide-active))",
+    // The guide of the block whose braces match at the caret (IDEA's Matched braces indent guide).
+    "--editor-indent-guide-brace":
+      "var(--border-indent-guide-brace, var(--bg-matched-brace, var(--editor-indent-guide-active)))",
+    "--openidea-guide-brace": "linear-gradient(var(--editor-indent-guide-brace), var(--editor-indent-guide-brace))",
     // Rainbow indent guides: one image per depth, so they follow the colour scheme.
     ...Object.fromEntries(
       Array.from({ length: GUIDE_COLORS }, (_, i) => {
         const color = `var(--syn-rainbow-${i + 1}, var(--editor-indent-guide))`;
         return [`--openidea-guide-${i + 1}`, `linear-gradient(${color}, ${color})`];
+      }),
+    ),
+    // A rainbow guide of a bracket block takes its bracket's colour (rainbow brackets).
+    ...Object.fromEntries(
+      Array.from({ length: BRACKET_COLORS }, (_, i) => {
+        const color = `var(--syn-bracket-${i + 1}, var(--editor-indent-guide))`;
+        return [`--openidea-guide-bracket-${i + 1}`, `linear-gradient(${color}, ${color})`];
       }),
     ),
     ...findLocals,
@@ -332,6 +346,8 @@ export const openideaTheme = EditorView.theme({
 
   // Find in file (cm/find.ts)
   ...findStyles,
+  // Find in Files preview matches (search/find/parts.tsx)
+  ".cm-openidea-searchResult": { backgroundColor: "var(--bg-search-result)" },
 
   // Overlays
   ".cm-tooltip": {

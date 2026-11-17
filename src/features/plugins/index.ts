@@ -35,6 +35,7 @@ import { startViewUi } from "./uiPoints";
 import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
 import { startPluginDecorations } from "./decorations";
+import { startOneDarkNotice } from "./oneDarkNotice";
 import { startIndexedMarkers } from "./indexedMarkers";
 import { startRunTargets } from "./runTargets";
 import { startPluginNavigation } from "./navigation";
@@ -154,6 +155,7 @@ export function activate(): () => void {
     ]),
     startPluginBridge(),
     startPluginNavigation(),
+    startOneDarkNotice(),
     startIndexedMarkers(),
     startPluginDecorations(),
     // Plugin custom editors (tab kind) and context menu entries.

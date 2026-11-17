@@ -20,6 +20,8 @@ pub enum ToolKind {
 /// Where release archives come from.
 #[derive(Clone, Copy, Debug)]
 pub enum ReleaseSource {
+    /// One pinned archive, verified against its SHA-256 before extraction.
+    Fixed { version: &'static str, url: &'static str, sha256: &'static str },
     /// Latest GitHub release of `owner/repo`; assets plus links in the release notes.
     GitHub { repo: &'static str },
     /// `api.releases.hashicorp.com` product.
@@ -80,6 +82,7 @@ impl Method {
             Method::Release { source: ReleaseSource::EclipseJdtls, .. } => "Eclipse download",
             Method::Release { source: ReleaseSource::OpenVsx { .. }, .. } => "Open VSX",
             Method::Release { source: ReleaseSource::MavenCentral { .. }, .. } => "Maven Central",
+            Method::Release { source: ReleaseSource::Fixed { .. }, .. } => "Verified download",
             Method::Release { .. } => "GitHub release",
         }
     }
@@ -131,6 +134,29 @@ const fn ver(cmd: &'static str) -> Option<(&'static str, &'static [&'static str]
 pub const TYPESCRIPT: &str = "typescript@6";
 
 pub static TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        name: "unity-debug",
+        display: "Unity Debugger",
+        kind: Debugger,
+        commands: &["unity-debug"],
+        method: Method::Release {
+            source: ReleaseSource::Fixed {
+                version: "3.0.1",
+                url: "https://github.com/Unity-Technologies/vscode-unity-debug/releases/download/Version-3.0.1/unity-debug-3.0.1.vsix",
+                sha256: "4fa00660e0b52b0413726f80962e7d3d6efd41ac6cfd4df39520cae4a8ba5bd0",
+            },
+            assets: &[any_arch(Mac, "*.vsix"), any_arch(Linux, "*.vsix"), any_arch(Windows, "*.vsix")],
+            locate: &["UnityDebug.exe"],
+        },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/Unity-Technologies/vscode-unity-debug",
+        needs: if cfg!(windows) {
+            &[]
+        } else {
+            &[("mono", "Mono is required to run the Unity debugger (https://www.mono-project.com)")]
+        },
+    },
     ToolSpec {
         name: "prettier",
         display: "Prettier",
@@ -264,6 +290,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "pylsp",
+        display: "pylsp-rope (Python refactorings)",
+        kind: LanguageServer,
+        commands: &["pylsp"],
+        method: Method::PipVenv { package: "pylsp-rope" },
+        fallback: None,
+        version: ver("pylsp"),
+        homepage: "https://github.com/python-rope/pylsp-rope",
+        needs: &[],
+    },
+    ToolSpec {
         name: "pyrefly",
         display: "Pyrefly (Python)",
         kind: LanguageServer,
@@ -283,6 +320,17 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: ver("ruff"),
         homepage: "https://docs.astral.sh/ruff/",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "djlsp",
+        display: "Django Template LSP",
+        kind: LanguageServer,
+        commands: &["djlsp"],
+        method: Method::PipVenv { package: "django-template-lsp" },
+        fallback: None,
+        version: ver("djlsp"),
+        homepage: "https://github.com/fourdigits/django-template-lsp",
         needs: &[],
     },
     ToolSpec {
@@ -408,6 +456,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "prisma-language-server",
+        display: "Prisma Language Server",
+        kind: LanguageServer,
+        commands: &["prisma-language-server"],
+        method: Method::Npm { packages: &["@prisma/language-server"] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/prisma/language-tools",
+        needs: &[],
+    },
+    ToolSpec {
         name: "intelephense",
         display: "Intelephense (PHP)",
         kind: LanguageServer,
@@ -417,6 +476,26 @@ pub static TOOLS: &[ToolSpec] = &[
         version: V,
         homepage: "https://intelephense.com",
         needs: &[],
+    },
+    ToolSpec {
+        name: "phpactor",
+        display: "Phpactor (PHP)",
+        kind: LanguageServer,
+        commands: &["phpactor"],
+        // One PHP archive for every platform, run through the project's PHP.
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "phpactor/phpactor" },
+            assets: &[
+                any_arch(Mac, "phpactor.phar"),
+                any_arch(Linux, "phpactor.phar"),
+                any_arch(Windows, "phpactor.phar"),
+            ],
+            locate: &["phpactor.phar"],
+        },
+        fallback: None,
+        version: ver("phpactor"),
+        homepage: "https://phpactor.readthedocs.io",
+        needs: &[("php", "Phpactor runs on PHP")],
     },
     ToolSpec {
         name: "laravel-lsp",
@@ -445,6 +524,38 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: ver("laravel-lsp"),
         homepage: "https://github.com/laravel/lsp",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "phoxite",
+        display: "Phoxite",
+        kind: LanguageServer,
+        commands: &["phoxite-lsp"],
+        // Plain binaries per platform (`phoxite-lsp-<target triple>[.exe]`), each with a
+        // `.sha256` beside it.
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "samehelhawary/phoxite" },
+            assets: &[
+                rule(Mac, Arm64, "phoxite-lsp-aarch64-apple-darwin"),
+                rule(Mac, X64, "phoxite-lsp-x86_64-apple-darwin"),
+                rule(Linux, Arm64, "phoxite-lsp-aarch64-unknown-linux-gnu"),
+                rule(Linux, X64, "phoxite-lsp-x86_64-unknown-linux-gnu"),
+                rule(Windows, Arm64, "phoxite-lsp-aarch64-pc-windows-msvc.exe"),
+                rule(Windows, X64, "phoxite-lsp-x86_64-pc-windows-msvc.exe"),
+            ],
+            locate: &[
+                "phoxite-lsp",
+                "phoxite-lsp-aarch64-apple-darwin",
+                "phoxite-lsp-x86_64-apple-darwin",
+                "phoxite-lsp-aarch64-unknown-linux-gnu",
+                "phoxite-lsp-x86_64-unknown-linux-gnu",
+                "phoxite-lsp-aarch64-pc-windows-msvc",
+                "phoxite-lsp-x86_64-pc-windows-msvc",
+            ],
+        },
+        fallback: None,
+        version: ver("phoxite-lsp"),
+        homepage: "https://github.com/samehelhawary/phoxite",
         needs: &[],
     },
     ToolSpec {
@@ -882,6 +993,27 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "slint-lsp",
+        display: "Slint LSP",
+        kind: LanguageServer,
+        commands: &["slint-lsp"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "slint-ui/slint" },
+            assets: &[
+                any_arch(Mac, "slint-lsp-universal-apple-darwin.tar.gz"),
+                rule(Linux, X64, "slint-lsp-x86_64-unknown-linux-gnu.tar.gz"),
+                rule(Linux, Arm64, "slint-lsp-aarch64-unknown-linux-gnu.tar.gz"),
+                rule(Windows, X64, "slint-lsp-x86_64-pc-windows-msvc.zip"),
+                rule(Windows, Arm64, "slint-lsp-aarch64-pc-windows-msvc.zip"),
+            ],
+            locate: &["slint-lsp"],
+        },
+        fallback: None,
+        version: ver("slint-lsp"),
+        homepage: "https://slint.dev",
+        needs: &[],
+    },
+    ToolSpec {
         name: "neocmakelsp",
         display: "neocmakelsp (CMake)",
         kind: LanguageServer,
@@ -1100,6 +1232,8 @@ mod tests {
     fn registry_names_match_language_configs() {
         let langs = ide_language::LanguageRegistry::load(None).unwrap().all();
         let mut known = std::collections::HashSet::new();
+        // The Unity debugger comes with Unity projects, apart from the C# debugger.
+        known.insert(("unity-debug".to_owned(), "unity-debug".to_owned()));
         for l in &langs {
             for s in &l.language_servers {
                 known.insert((s.name.clone(), s.command.clone()));

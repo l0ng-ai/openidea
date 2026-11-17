@@ -2,7 +2,8 @@
 //! Project view): the folders holding the sources of the project's SDKs and
 //! dependencies — the Python interpreter's standard library and site-packages,
 //! the JDK, `node_modules` packages, Cargo crates and the Rust standard
-//! library, GOROOT and the Go module cache.
+//! library, GOROOT and the Go module cache, the Zig standard library and the
+//! fetched packages of `build.zig.zon`.
 //!
 //! Ecosystems are detected in the project and its modules. SDK and graph probes
 //! are cached until manifests or settings change; Node packages are read on refresh.
@@ -28,7 +29,7 @@ use std::time::{Duration, SystemTime};
 pub struct LibraryGroup {
     /// Display name, e.g. `Python 3.12 (.venv)`.
     pub name: String,
-    /// `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`.
+    /// `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath` | `zig` | `zigPackages`.
     pub kind: String,
     pub roots: Vec<LibraryRoot>,
 }
@@ -56,6 +57,7 @@ const JAVA_MANIFESTS: &[&str] =
 const CARGO_MANIFESTS: &[&str] = &["Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"];
 const GO_MANIFESTS: &[&str] = &["go.mod", "go.sum", "go.work"];
 const RUBY_MANIFESTS: &[&str] = &["Gemfile", "Gemfile.lock", ".ruby-version", ".tool-versions", "mise.toml"];
+const ZIG_MANIFESTS: &[&str] = &["build.zig.zon", "build.zig"];
 
 /// A Maven / Gradle dependency of the project, from the build model.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,7 +85,7 @@ pub fn project_libraries_stream(
     on_groups: &(dyn Fn(Vec<LibraryGroup>) + Sync),
 ) -> Vec<LibraryGroup> {
     type Detect = fn(&Path, &Settings, &CancellationToken) -> Vec<LibraryGroup>;
-    let detectors: [Detect; 5] = [python_groups, jdk_groups, node_groups, go_groups, ruby_groups];
+    let detectors: [Detect; 6] = [python_groups, jdk_groups, node_groups, go_groups, ruby_groups, zig_groups];
     let roots = library_project_roots(root, cancel);
     let settings = module_settings(root, settings);
     std::thread::scope(|s| {
@@ -108,6 +110,7 @@ pub fn project_libraries_stream(
             })
             .collect();
         let rust = s.spawn(|| {
+            let project = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
             let mut seen = std::collections::HashSet::new();
             let mut groups = Vec::new();
             for dir in &roots {
@@ -136,7 +139,11 @@ pub fn project_libraries_stream(
                 if !seen.insert(workspace.clone()) {
                     continue;
                 }
-                let batch = rust_groups(&workspace, &settings, cancel);
+                // Resolving writes a Cargo.lock. A crate outside the project's workspace (one in its
+                // `exclude`) without its own keeps none, as RustRover leaves crates it doesn't attach.
+                let locked = workspace.canonicalize().unwrap_or_else(|_| workspace.clone()) != project
+                    && !workspace.join("Cargo.lock").is_file();
+                let batch = rust_groups(&workspace, &settings, locked, cancel);
                 if !cancel.is_cancelled() && !batch.is_empty() {
                     on_groups(batch.clone());
                     groups.extend(batch);
@@ -188,6 +195,8 @@ fn library_project_roots(root: &Path, cancel: &CancellationToken) -> Vec<PathBuf
             "setup.py",
             "requirements.txt",
             ".python-version",
+            "build.zig",
+            "build.zig.zon",
             ".tool-versions",
             "mise.toml",
         ]
@@ -247,8 +256,13 @@ fn module_settings(root: &Path, settings: &Settings) -> Settings {
         &mut l.rust.stdlib,
         &mut l.go.goroot,
         &mut l.go.gopath,
+        &mut l.zig.zig,
         &mut l.java.jdk,
     ] {
+        // `target:<id>` names a run target, not a path.
+        if value.trim().starts_with(ide_core::settings::PythonSettings::TARGET_PREFIX) {
+            continue;
+        }
         if let Some(path) = crate::apply::setting_path(root, value) {
             *value = path.to_string_lossy().into_owned();
         }
@@ -325,6 +339,12 @@ fn cached_cancellable(
         (!cancel.is_cancelled()).then_some(groups)
     })
     .unwrap_or_default()
+}
+
+/// What `ecosystem` last found under `root` with the same settings, from before its manifests changed.
+fn last_found(root: &Path, ecosystem: &'static str, key: &str) -> Option<Vec<LibraryGroup>> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.get(&(root.to_path_buf(), ecosystem)).filter(|c| c.key == key).map(|c| c.groups.clone())
 }
 
 fn cached_optional(
@@ -441,7 +461,7 @@ fn jdk_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Libr
         Some(files) => files,
         None => {
             let java = [".classpath", ".project"].iter().any(|f| root.join(f).is_file())
-                || root.join(".idea").is_dir()
+                || idea_java_project(root)
                 || !s.languages.java.jdk.trim().is_empty()
                 || !s.project_structure.source_roots.is_empty();
             if !java {
@@ -561,6 +581,27 @@ pub(crate) fn classpath_entries(dir: &Path, text: &str) -> Vec<PathBuf> {
 }
 
 /// The JDK home and its sources (`lib/src.zip`, `src.zip` in JDK 8) as library roots.
+/// An IntelliJ project (`.idea`) that is a Java one: a Java SDK or language level in
+/// `misc.xml`, or a Java module file. GoLand, PyCharm and WebStorm write `.idea` too, so the
+/// folder alone doesn't make a project need the JDK.
+fn idea_java_project(root: &Path) -> bool {
+    let idea = root.join(".idea");
+    if !idea.is_dir() {
+        return false;
+    }
+    let misc = std::fs::read_to_string(idea.join("misc.xml")).unwrap_or_default();
+    if misc.contains("JavaSDK") || misc.contains("languageLevel=\"JDK_") {
+        return true;
+    }
+    let java_module = |dir: &Path| {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+            e.path().extension().is_some_and(|x| x == "iml")
+                && std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("JAVA_MODULE"))
+        })
+    };
+    java_module(root) || java_module(&idea)
+}
+
 pub(crate) fn jdk_library(jdk: &crate::java::Jdk) -> Option<LibraryGroup> {
     let name = jdk_name(&jdk.home).unwrap_or_else(|| format!("JDK {}", jdk.major));
     let mut roots = named_roots(vec![(name.clone(), jdk.home.clone())]);
@@ -747,7 +788,8 @@ pub(crate) fn package_dependencies(package_json: &str) -> Vec<String> {
 
 // ------------------------------------------------------------------ rust
 
-fn rust_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+/// `locked`: `cargo metadata --locked`, which fails instead of writing a Cargo.lock.
+fn rust_groups(root: &Path, s: &Settings, locked: bool, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(files) = manifests(root, CARGO_MANIFESTS) else { return Vec::new() };
     if !root.join("Cargo.toml").is_file() {
         return Vec::new();
@@ -772,17 +814,17 @@ fn rust_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Lib
     });
     if let Some(cargo) = tool(bin, "cargo") {
         let graph = cached_optional(root, "cargo", r.toolchain.clone(), &files, || {
-            let json = query_in_cancellable(
-                &cargo,
-                &["metadata", "--format-version", "1", "--offline"],
-                root,
-                &[],
-                GRAPH_TIMEOUT,
-                cancel,
-            )?;
+            let mut args = vec!["metadata", "--format-version", "1", "--offline"];
+            if locked {
+                args.push("--locked");
+            }
+            let json = query_in_cancellable(&cargo, &args, root, &[], GRAPH_TIMEOUT, cancel)?;
             let roots = parse_cargo_metadata(&json)?;
             Some(group("Cargo dependencies", "cargo", named_roots(roots)).into_iter().collect())
         });
+        // An edited manifest that names crates not downloaded yet fails offline until the next
+        // resolution writes Cargo.lock: the last graph stays meanwhile, as a failed sync keeps the model.
+        let graph = graph.or_else(|| last_found(root, "cargo", &r.toolchain));
         out.extend(graph.unwrap_or_else(|| {
             let home = ide_core::process::host_var_os("CARGO_HOME")
                 .map(PathBuf::from)
@@ -961,6 +1003,80 @@ pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+// ------------------------------------------------------------------ zig
+
+fn zig_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+    let Some(files) = manifests(root, ZIG_MANIFESTS) else { return Vec::new() };
+    let Some(zig) = tool(crate::apply::zig_bin(root, s), "zig") else { return Vec::new() };
+    cached_cancellable(root, "zig", zig.display().to_string(), &files, cancel, || {
+        let Some(env) = query_in_cancellable(&zig, &["env"], root, &[], QUERY_TIMEOUT, cancel)
+            .as_deref()
+            .and_then(crate::zig::parse_zig_env)
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let version =
+            env.version.clone().or_else(|| query_in_cancellable(&zig, &["version"], root, &[], QUERY_TIMEOUT, cancel));
+        let name = match version.as_deref().map(str::trim) {
+            Some(v) if !v.is_empty() => format!("Zig {v}"),
+            _ => "Zig".into(),
+        };
+        out.extend(env.std_sources().and_then(|std| group(name, "zig", library_roots(vec![std]))));
+        if let Some(cache) = env.global_cache_dir.as_deref() {
+            let zon = std::fs::read_to_string(root.join("build.zig.zon")).unwrap_or_default();
+            let deps = crate::zig::zon_dependencies(&zon);
+            out.extend(group("Zig packages", "zigPackages", zig_package_roots(cache, &deps)));
+        }
+        out
+    })
+}
+
+/// The fetched sources of a `build.zig.zon`'s dependencies: `p/<hash>` folders
+/// (Zig ≤ 0.14 unpacks them) or the package root inside `p/<hash>.tar.gz` (Zig
+/// ≥ 0.15 keeps packages as blobs, browsed through the archive VFS). Path
+/// dependencies stay in the project tree; unfetched packages are simply absent —
+/// listing libraries never downloads.
+fn zig_package_roots(cache: &Path, deps: &[crate::zig::ZonDependency]) -> Vec<LibraryRoot> {
+    let mut seen = std::collections::HashSet::new();
+    deps.iter()
+        .filter_map(|d| {
+            let hash = d.hash.as_deref()?;
+            let dir = cache.join("p").join(hash);
+            if dir.is_dir() {
+                let zon = std::fs::read_to_string(dir.join("build.zig.zon")).unwrap_or_default();
+                let name =
+                    match (crate::zig::zon_string_field(&zon, "name"), crate::zig::zon_string_field(&zon, "version")) {
+                        (Some(name), Some(version)) => format!("{name} {version}"),
+                        (Some(name), None) => name,
+                        _ => hash.to_owned(),
+                    };
+                return Some((name, dir));
+            }
+            let blob = cache.join("p").join(format!("{hash}.tar.gz"));
+            blob.is_file().then_some(hash).map(|hash| {
+                // The blob's only top-level folder is the package (`<hash>/`); fall back to
+                // the archive root should that layout ever change.
+                let entry = if ide_vfs::read_archive_dir(&blob, hash).is_ok() { hash } else { "" };
+                (package_label(d, hash), ide_vfs::archive_entry_path(&blob, entry))
+            })
+        })
+        .filter(|(_, path)| seen.insert(path.to_string_lossy().into_owned()))
+        .map(|(name, path)| LibraryRoot { name, path: path.into() })
+        .collect()
+}
+
+/// `probe_pkg 0.1.0` from a Zig ≥ 0.15 package hash (`name-version-<hash>`).
+fn package_label(dep: &crate::zig::ZonDependency, hash: &str) -> String {
+    let Some((rest, _)) = hash.rsplit_once('-') else { return dep.name.clone() };
+    let mut parts: Vec<&str> = rest.split('-').collect();
+    let version = parts.pop().unwrap_or_default();
+    match parts.is_empty() || !version.starts_with(|c: char| c.is_ascii_digit()) || !version.contains('.') {
+        true => dep.name.clone(),
+        false => format!("{} {version}", parts.join("-")),
+    }
+}
+
 #[cfg(test)]
 mod go_cache_tests {
     use super::*;
@@ -1083,6 +1199,64 @@ mod go_cache_tests {
         assert_eq!(groups[0].kind, "cargo");
         assert_eq!(groups[0].roots[0].path, source);
         assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 1);
+
+        // The manifest now names a crate that isn't downloaded: the offline graph fails, the last one stays.
+        std::fs::write(
+            bin.join("cargo"),
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = locate-project ]; then echo '{}'; exit; fi\nexit 101\n",
+                root.join("Cargo.toml").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['members/*']\n# edited\n").unwrap();
+        let groups = project_libraries(root, &settings, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].roots[0].path, source);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_metadata_writes_no_lock_file_for_a_crate_outside_the_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['app']\nexclude=['vendored']\n").unwrap();
+        for name in ["app", "vendored"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("Cargo.toml"), format!("[package]\nname='{name}'\nversion='0.1.0'\n"))
+                .unwrap();
+        }
+        let bin = root.join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let calls = root.join("metadata-calls");
+        // Like cargo: an excluded crate is its own workspace.
+        let cargo = format!(
+            "#!/bin/sh\nif [ \"$1\" = locate-project ]; then case \"$(pwd -P)\" in */vendored) echo \"$(pwd -P)/Cargo.toml\";; *) echo '{}';; esac; exit; fi\necho \"$(pwd -P) $*\" >> '{}'\nexit 1\n",
+            root.join("Cargo.toml").display(),
+            calls.display()
+        );
+        for (name, script) in [("cargo", cargo.as_str()), ("rustc", "#!/bin/sh\nexit 1\n")] {
+            std::fs::write(bin.join(name), script).unwrap();
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "tools".into();
+        let metadata = |dir: &Path| {
+            let prefix = format!("{} metadata ", dir.display());
+            let calls = std::fs::read_to_string(&calls).unwrap();
+            calls.lines().rev().find_map(|l| l.strip_prefix(&prefix).map(str::to_owned))
+        };
+
+        project_libraries(&root, &settings, &[]);
+        // The project's own workspace resolves as before, writing its Cargo.lock if it has none.
+        assert_eq!(metadata(&root).as_deref(), Some("--format-version 1 --offline"));
+        assert_eq!(metadata(&root.join("vendored")).as_deref(), Some("--format-version 1 --offline --locked"));
+
+        // A crate with its own Cargo.lock keeps resolving with it.
+        std::fs::write(root.join("vendored/Cargo.lock"), "version = 4\n").unwrap();
+        project_libraries(&root, &settings, &[]);
+        assert_eq!(metadata(&root.join("vendored")).as_deref(), Some("--format-version 1 --offline"));
     }
 
     #[cfg(unix)]
@@ -1261,5 +1435,158 @@ mod go_cache_tests {
         assert_eq!(groups[0].roots.len(), 1);
         assert!(groups[0].roots[0].path.to_string_lossy().ends_with("a.jar!"));
         assert_eq!(groups[1].roots.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod idea_project_tests {
+    use super::*;
+
+    #[test]
+    fn an_idea_folder_marks_a_java_project_only_when_it_declares_java() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(!idea_java_project(root));
+        // GoLand / PyCharm write `.idea` without any Java in it.
+        std::fs::create_dir_all(root.join(".idea")).unwrap();
+        std::fs::write(root.join(".idea/misc.xml"), r#"<project version="4"><component name="GOROOT" /></project>"#)
+            .unwrap();
+        std::fs::write(root.join(".idea/demo.iml"), r#"<module type="WEB_MODULE" version="4" />"#).unwrap();
+        assert!(!idea_java_project(root));
+        // A Java module file, at the root or in `.idea`.
+        std::fs::write(root.join("app.iml"), r#"<module type="JAVA_MODULE" version="4" />"#).unwrap();
+        assert!(idea_java_project(root));
+        std::fs::remove_file(root.join("app.iml")).unwrap();
+        // The project JDK in misc.xml.
+        std::fs::write(
+            root.join(".idea/misc.xml"),
+            r#"<project version="4"><component name="ProjectRootManager" languageLevel="JDK_17" project-jdk-name="17" project-jdk-type="JavaSDK" /></project>"#,
+        )
+        .unwrap();
+        assert!(idea_java_project(root));
+    }
+}
+
+#[cfg(test)]
+mod zig_tests {
+    use super::*;
+    use crate::zig::ZonDependency;
+
+    /// Writes a Zig package blob (`p/<hash>.tar.gz`) with a `<hash>/` root folder.
+    fn write_package_blob(cache: &Path, hash: &str, files: &[(&str, &str)]) {
+        use flate2::write::GzEncoder;
+        let blob = cache.join("p").join(format!("{hash}.tar.gz"));
+        std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+        let enc = GzEncoder::new(std::fs::File::create(blob).unwrap(), flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        for (name, text) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(text.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, text.as_bytes()).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn zig_packages_come_from_the_global_cache_without_fetching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path();
+        let (hash, old) = ("zap-0.1.0-ISc0DC0BAAD0X6wRO4jcg4yLywsgmBYSlOsNhFDSnwV8", "1220b7c0");
+        write_package_blob(cache, hash, &[(&format!("{hash}/src/lib.zig"), "pub fn hello() {}\n")]);
+        let unpacked = cache.join("p").join(old);
+        std::fs::create_dir_all(&unpacked).unwrap();
+        std::fs::write(unpacked.join("build.zig.zon"), r#".{ .name = .old_pkg, .version = "0.2.0" }"#).unwrap();
+        let deps = [
+            ZonDependency { name: "zap".into(), hash: Some(hash.into()), path: None, lazy: false },
+            ZonDependency { name: "shared".into(), hash: None, path: Some("../shared".into()), lazy: false },
+            ZonDependency { name: "gone".into(), hash: Some("gone-1.0.0-BBBBBBBBBB".into()), path: None, lazy: true },
+            ZonDependency { name: "old".into(), hash: Some(old.into()), path: None, lazy: false },
+        ];
+        let roots = zig_package_roots(cache, &deps);
+        let summary: Vec<(String, String)> =
+            roots.iter().map(|r| (r.name.clone(), r.path.to_string_lossy().into_owned())).collect();
+        let blob = cache.join("p").join(format!("{hash}.tar.gz"));
+        assert_eq!(
+            summary,
+            [
+                ("zap 0.1.0".into(), format!("{}!/{hash}", blob.display())),
+                ("old_pkg 0.2.0".into(), unpacked.to_string_lossy().into_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn zig_package_labels_parse_from_the_hash() {
+        let dep = |name: &str| ZonDependency { name: name.into(), hash: None, path: None, lazy: false };
+        assert_eq!(package_label(&dep("zap"), "zap-0.1.0-ISc0DC0BAAD0X6wRO4jcg4yLywsgmBYSlOsNhFDSnwV8"), "zap 0.1.0");
+        assert_eq!(
+            package_label(&dep("diffz"), "diffz-0.0.1-G2tlISvOAQDORzPTSxDgiKwlHuADKeJMdJrw4kRfLufj"),
+            "diffz 0.0.1"
+        );
+        assert_eq!(
+            package_label(&dep("zig-anytype"), "zig-anytype-0.1.0-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            "zig-anytype 0.1.0"
+        );
+        assert_eq!(package_label(&dep("old"), "1220b7c0"), "old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zig_libraries_list_the_stdlib_and_fetched_packages() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let stdlib = root.join("stdlib");
+        std::fs::create_dir_all(&stdlib).unwrap();
+        std::fs::write(root.join("build.zig"), "").unwrap();
+        let hash = "zap-0.1.0-ISc0DC0BAAD0X6wRO4jcg4yLywsgmBYSlOsNhFDSnwV8";
+        let cache = root.join("zig-cache");
+        write_package_blob(&cache, hash, &[(&format!("{hash}/src/lib.zig"), "pub fn hello() {}\n")]);
+        std::fs::write(
+            root.join("build.zig.zon"),
+            r#".{
+    .name = .app,
+    .dependencies = .{
+        // the package cache holds this one
+        .zap = .{ .url = "https://example.com/zap.tar.gz", .hash = "zap-0.1.0-ISc0DC0BAAD0X6wRO4jcg4yLywsgmBYSlOsNhFDSnwV8" },
+        .local = .{ .path = "../shared" },
+        .gone = .{ .url = "https://example.com/gone.tar.gz", .hash = "gone-1.0.0-BBBBBBBBBB" },
+    },
+}
+"#,
+        )
+        .unwrap();
+        let bin = root.join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let zig = bin.join("zig");
+        std::fs::write(
+            &zig,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n  env) printf '%s\\n' '.{{\n    .zig_exe = \"{}\",\n    .std_dir = \"{}\",\n    .global_cache_dir = \"{}\",\n    .version = \"0.16.0\",\n}}' ;;\n  version) echo 0.16.0 ;;\nesac\n",
+                zig.display(),
+                stdlib.display(),
+                cache.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&zig, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut settings = Settings::default();
+        settings.languages.zig.zig = "tools".into();
+        let groups = zig_groups(root, &settings, &CancellationToken::new());
+        let summary: Vec<(&str, &str, Vec<&str>)> = groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.kind.as_str(), g.roots.iter().map(|r| r.name.as_str()).collect()))
+            .collect();
+        assert_eq!(
+            summary,
+            [("Zig 0.16.0", "zig", vec!["stdlib"]), ("Zig packages", "zigPackages", vec!["zap 0.1.0"])]
+        );
+        let packages = groups.iter().find(|g| g.kind == "zigPackages").unwrap();
+        assert_eq!(
+            packages.roots[0].path.to_string_lossy(),
+            format!("{}!/{hash}", cache.join("p").join(format!("{hash}.tar.gz")).display())
+        );
     }
 }

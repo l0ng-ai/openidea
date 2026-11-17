@@ -9,6 +9,7 @@ import { setContext } from "@/platform/context";
 interface Layer {
   id: number;
   el: () => HTMLElement | null;
+  dismiss?: () => void;
 }
 
 const layers: Layer[] = [];
@@ -20,18 +21,21 @@ function publish() {
 }
 
 export interface LayerHandle {
+  readonly id: number;
   isTop(): boolean;
   /** True when `target` lies inside this layer or any layer stacked above it. */
   containsFromHere(target: Node): boolean;
   release(): void;
 }
 
-export function openLayer(el: () => HTMLElement | null): LayerHandle {
-  const layer = { id: ++seq, el };
+/** `dismiss` closes the layer when a modal dialog opens over it (see `dismissPopups`). */
+export function openLayer(el: () => HTMLElement | null, dismiss?: () => void): LayerHandle {
+  const layer: Layer = { id: ++seq, el, dismiss };
   layers.push(layer);
   publish();
   let released = false;
   return {
+    id: layer.id,
     isTop: () => layers[layers.length - 1]?.id === layer.id,
     containsFromHere(target) {
       const idx = layers.findIndex((l) => l.id === layer.id);
@@ -46,6 +50,14 @@ export function openLayer(el: () => HTMLElement | null): LayerHandle {
       publish();
     },
   };
+}
+
+/**
+ * Closes the popups open when a modal dialog opens, except `keep` (popups the dialog is rendered
+ * inside): popups stack above dialogs, so one left open would cover it. IDEA cancels them too.
+ */
+export function dismissPopups(keep: ReadonlySet<number>): void {
+  for (const layer of layers.slice()) if (layer.dismiss && !keep.has(layer.id)) layer.dismiss();
 }
 
 /** Marks a keyboard-owning UI without a DOM layer (e.g. inline speed search). */

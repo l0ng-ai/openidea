@@ -1,8 +1,7 @@
 import { StreamLanguage, type StreamParser } from "@codemirror/language";
+import { LEVELS } from "@/platform/logLevels";
 import { logWarning } from "./highlight";
 
-const LEVELS =
-  "FATAL|CRITICAL|SEVERE|EMERG|ALERT|ERROR|ERR|WARNING|WARN|NOTICE|INFO|DEBUG|TRACE|VERBOSE|FINEST|FINER|FINE";
 // Upper case anywhere; any case only where a level is unmistakable: `[warn]`, `<Info>`, `level=error`.
 const LEVEL_UPPER = new RegExp(`^(?:${LEVELS})\\b`);
 const LEVEL_MARKED = new RegExp(`^(?:${LEVELS})(?=[\\]>])`, "i");

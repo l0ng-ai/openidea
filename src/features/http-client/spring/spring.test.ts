@@ -252,6 +252,19 @@ describe("server address", () => {
     expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:8001");
     expect(await findHost("/ws/other/A.java", "/ws", fs)).toBe("http://localhost:9000");
   });
+
+  it("reads the active profiles' files over the base ones", async () => {
+    const files: Record<string, string> = {
+      "/ws/api/src/main/resources/application.yml":
+        "server:\n  port: 8001\n  servlet:\n    context-path: /api\nspring:\n  profiles:\n    active: ${PROFILE:local}, dev\n",
+      "/ws/api/src/main/resources/application-local.properties": "server.port=7000\n",
+      "/ws/api/src/main/resources/application-dev.yml": "server:\n  port: 9100\n",
+    };
+    const fs: SourceReader = { read: async (p) => files[p] ?? null };
+    expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:9100/api");
+    delete files["/ws/api/src/main/resources/application-dev.yml"];
+    expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:7000/api");
+  });
 });
 
 describe("body types from other files", () => {
@@ -270,6 +283,41 @@ describe("body types from other files", () => {
     expect(skeleton("Mono<CreateUser>", lookup)).toMatchObject({ name: "" });
     expect(skeleton("List<CreateUser>", lookup)).toEqual([]);
     expect(skeleton("Unknown", lookup)).toEqual({});
+  });
+
+  it("finds a DTO in another module through the index, with its superclass fields", async () => {
+    const files: Record<string, string> = {
+      "/ws/common/src/main/java/com/example/demo/dto/CreateUser.java":
+        "package com.example.demo.dto;\nimport com.example.base.BaseEntity;\n@Data\npublic class CreateUser extends BaseEntity<Long> implements Serializable {\n  private String name;\n  private Address address;\n}\n",
+      "/ws/common/src/main/java/com/example/demo/dto/Address.java":
+        "package com.example.demo.dto;\npublic class Address { private String city; }\n",
+      "/ws/base/src/main/java/com/example/base/BaseEntity.java":
+        "package com.example.base;\npublic abstract class BaseEntity<ID> { private ID id; private LocalDateTime createdAt; }\n",
+      // Same name, other package: not the imported class.
+      "/ws/legacy/src/main/java/com/legacy/CreateUser.java":
+        "package com.legacy;\npublic class CreateUser { int old; }\n",
+    };
+    const fs: SourceReader = {
+      read: async (p) => files[p] ?? null,
+      filesNamed: async (name) => Object.keys(files).filter((p) => p.endsWith(`/${name}`)),
+    };
+    const eps = springControllers(JAVA)[0]!.endpoints;
+    const lookup = await bodyLookup(
+      "/ws/web/src/main/java/com/example/demo/web/UserController.java",
+      parseSource(JAVA),
+      eps,
+      fs,
+    );
+    expect(skeleton("CreateUser", lookup)).toEqual({ id: {}, createdAt: "", name: "", address: { city: "" } });
+  });
+
+  it("reads Java and Kotlin superclasses", () => {
+    const java = parseSource("class A extends com.x.Base<T> implements I { }\ninterface J extends K {}");
+    expect(java.classes.map((c) => c.superclass)).toEqual(["com.x.Base<T>", "K"]);
+    const kotlin = parseSource(
+      "class A(val a: Int) : Base(a), Serializable\nclass B : Serializable, Other()\nclass C : I",
+    );
+    expect(kotlin.classes.map((c) => c.superclass)).toEqual(["Base", "Other", undefined]);
   });
 });
 

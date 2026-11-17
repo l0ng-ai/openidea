@@ -1,0 +1,52 @@
+id = "scala"
+name = "Scala"
+group = "Scala"
+icon = "project-scala"
+description = "A Scala 3 application built with sbt."
+
+[[fields]]
+id = "jdk"
+label = "JDK:"
+type = "sdk"
+sdk = "jdk"
+
+[[files]]
+path = "build.sbt"
+content = '''
+val scala3Version = "3.7.3"
+
+lazy val root = project
+  .in(file("."))
+  .settings(
+    name := "{{name|kebab}}",
+    version := "0.1.0-SNAPSHOT",
+    scalaVersion := scala3Version,
+    libraryDependencies += "org.scalameta" %% "munit" % "1.2.1" % Test
+  )
+'''
+
+[[files]]
+path = "project/build.properties"
+content = '''
+sbt.version=1.11.7
+'''
+
+[[files]]
+path = "src/main/scala/Main.scala"
+content = '''
+@main def hello(): Unit =
+  println("Hello, World!")
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+target/
+.bsp/
+.metals/
+.bloop/
+.idea/
+'''
+
+[settings.java]
+jdk = "{{jdk}}"

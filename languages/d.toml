@@ -10,4 +10,4 @@ ui-mode = "D"
 name = "serve-d"
 command = "serve-d"
 root-markers = ["dub.json", "dub.sdl", "dub.selections.json"]
-install-hint = "Install serve-d (https://github.com/symmetryinvestments/serve-d) and expose it as `serve-d`"
+install-hint = "Install serve-d (https://github.com/symmetryinvestments/serve-d) and put serve-d on PATH"

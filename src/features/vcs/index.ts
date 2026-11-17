@@ -4,6 +4,7 @@
  * merge and Local History editors, remote operations.
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { COMBINED_DIFF_KIND, type CombinedDiffData } from "./allInOneDiff";
 import { editorsFor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
@@ -14,7 +15,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
-import { executeAction } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import { registerVcsActions } from "./actions";
@@ -23,11 +24,14 @@ import { registerHistoryActions, trackOperationContext } from "./historyActions"
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
+import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
+import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
-import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
+import { DIFF_KIND, diffInputAtCaret, diffTitle, type DiffData } from "./diffInput";
+import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
@@ -37,7 +41,7 @@ import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
-import { installDiagnosticsTracking } from "./commitChecks";
+import { installCommitChecks, installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
 import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
@@ -47,7 +51,9 @@ import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
+import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
 function trackMergeRebaseItem(): () => void {
@@ -150,16 +156,29 @@ function conflictsBody(names: string[]): string {
 
 /** Settings › Version Control › Log (also used by the Settings window). */
 export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
+export { activateDiffWindow, DiffWindow } from "./DiffWindow";
 
 /** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
 export function activateDiffViewer(): () => void {
-  return registerEditorKind({
+  const single = registerEditorKind({
     kind: DIFF_KIND,
     standalone: true,
     component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
     title: (input) => diffTitle(input.data as DiffData),
     icon: () => "diff",
+    navigationInput: diffInputAtCaret,
   });
+  const combined = registerEditorKind({
+    kind: COMBINED_DIFF_KIND,
+    standalone: true,
+    component: lazyComponent(() => import("./CombinedDiff").then((m) => m.CombinedDiffTab)),
+    title: (input) => (input.data as CombinedDiffData).title ?? tx("Combined Changes Diff"),
+    icon: () => "diff",
+  });
+  return () => {
+    single();
+    combined();
+  };
 }
 
 export function activateSettingsPages(): () => void {
@@ -213,19 +232,24 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
+    installCommitChecks(),
     installPreparedMessage(),
     installDraftRevision(),
     provideCommit(),
     installIncomingCheck(),
     installFileConfirmations(),
+    installDiffEditorHost(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
     onWorkflowSettingsChange(
       (w) => w.vcs.git.signOff,
       (signOff) => useCommit.setState({ signOff }),
     ),
     registerVcsActions(),
+    registerActions(openOnRemoteActions),
+    registerOpenOnRemote(),
     registerHistoryActions(),
     registerLogPaneActions(),
     activateSettingsPages(),
@@ -239,6 +263,7 @@ export function activate(): () => void {
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
     registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
+    registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
     activateConflictBanner(),
     activateConflictMarkers(),
     trackCommitWindow(),
@@ -280,6 +305,7 @@ export function activate(): () => void {
       restorable: true,
     }),
     activateDiffViewer(),
+    activateRevisionAnnotations(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),

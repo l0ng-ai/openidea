@@ -1,0 +1,79 @@
+---
+source: crates/ide-scaffold/src/engine/tests.rs
+expression: lines
+---
+angular:
+  - npx --yes @angular/cli@latest new my-app --defaults --interactive=false --skip-git --skip-install --style=css --ssr=false --package-manager=npm
+  - npm install
+astro:
+  - npx --yes create-astro@latest my-app --template basics --no-install --no-git --skip-houston --yes
+  - npm install
+dart:
+  - dart create --template console --no-pub my_app
+  - dart pub get
+django:
+  - uv init --bare --name my-app --vcs none --no-workspace
+  - uv add django
+  - uv run django-admin startproject my_app .
+dotnet:
+  - "dotnet new console --name my-app --output . --language C#"
+  - dotnet new gitignore
+elixir:
+  - mix new . --app my_app
+express:
+  - npm install
+fastapi:
+  - uv init --bare --name my-app --vcs none --no-workspace
+  - "uv add fastapi[standard]"
+flask:
+  - uv init --bare --name my-app --vcs none --no-workspace
+  - uv add flask
+flutter:
+  - flutter create --template app --project-name my_app --no-pub --org com.example .
+  - flutter pub get
+go:
+  - go mod init example.com/my-app
+haskell:
+  - cabal init --non-interactive --exe --package-name=my-app --tests
+kotlin:
+  - gradle wrapper --no-daemon -q
+ktor:
+  - gradle wrapper --no-daemon -q
+laravel:
+  - composer create-project laravel/laravel my-app --prefer-dist --no-interaction
+nestjs:
+  - npx --yes @nestjs/cli@latest new my-app --package-manager npm --skip-git --skip-install --language TS --strict
+  - npm install
+nextjs:
+  - npx --yes create-next-app@latest my-app --ts --app --eslint --import-alias @/* --use-npm --disable-git --skip-install --yes --tailwind --no-src-dir
+  - npm install
+nuxt:
+  - npx --yes create-nuxt@latest my-app --template minimal --packageManager npm --no-install --gitInit=false --no-modules
+  - npm install
+phoenix:
+  - mix archive.install hex phx_new --force
+  - mix phx.new my-app --app my_app --no-install --database postgres
+php:
+  - composer dump-autoload --no-interaction
+python:
+  - uv init --app --name my-app --vcs none --no-workspace
+  - uv sync
+rails:
+  - rails new my-app --database=sqlite3 --skip-git
+ruby:
+  - bundle init
+rust:
+  - cargo init --bin --name my-app --vcs none
+sveltekit:
+  - npx --yes sv@latest create my-app --template minimal --types ts --no-add-ons --no-install
+  - npm install
+swift:
+  - swift package init --type executable --name MyApp
+symfony:
+  - composer create-project symfony/skeleton my-app --prefer-dist --no-interaction
+  - composer require webapp --no-interaction
+vite:
+  - npx --yes create-vite@latest my-app --template react-ts --no-interactive
+  - npm install
+zig:
+  - zig init

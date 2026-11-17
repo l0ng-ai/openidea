@@ -45,3 +45,13 @@ it.each([
 ])("leaves unrelated failures alone: %s", (message) => {
   expect(buildToolRecovery(message)).toEqual({ body: message, actions: [] });
 });
+
+it("links tsserver running out of memory to the language server settings", () => {
+  const message =
+    "tsserver stopped because it reached its memory limit and is restarted, so code intelligence may pause or miss results. Raise typescript.tsserver.maxTsServerMemory (in MB) in the server's Workspace Configuration.";
+  const result = buildToolRecovery(message);
+  expect(result.body).toBe(message);
+  expect(result.actions.map((a) => a.label)).toEqual(["Language Servers…"]);
+  result.actions[0]!.run();
+  expect(executeAction).toHaveBeenCalledWith("file.settings", "languages.servers");
+});

@@ -22,11 +22,13 @@ pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root};
 pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
-    CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken,
-    FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion,
-    Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference,
-    WebReferenceKind, merge_visibility, set_external_syntax, shift_pos, shift_range,
+    CSS_CLASS, CSS_ID, CSS_VARIABLE, ClassBases, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax,
+    ExternalToken, FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind,
+    SpellingRegion, Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError,
+    VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_visibility,
+    set_external_syntax, shift_pos, shift_range,
 };
+pub use syntax::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts};
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,6 +57,10 @@ pub struct LanguageConfig {
     /// the first one whose root marker is found applies.
     #[serde(default)]
     pub framework_ui_modes: Vec<FrameworkUiMode>,
+    /// Files of this language in a framework's projects that their extension alone would
+    /// give to another language (Django templates are `.html` files in `templates`).
+    #[serde(default)]
+    pub framework_files: Vec<FrameworkFiles>,
     #[serde(default)]
     pub tree_sitter: Option<String>,
     #[serde(default)]
@@ -67,6 +73,21 @@ pub struct LanguageConfig {
     /// Content of a new scratch file; `$END$` marks where the caret goes.
     #[serde(default)]
     pub scratch_template: Option<String>,
+    /// Syntax nodes of the editor's grammar whose `<` `>` rainbow brackets colour.
+    #[serde(default)]
+    pub rainbow_brackets: RainbowBracketNodes,
+}
+
+/// `[rainbow-brackets]` of a language definition: node names of its editor (Lezer)
+/// grammar, so angle brackets are coloured only where the syntax tree says they
+/// delimit something, never in comparisons or shifts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct RainbowBracketNodes {
+    /// Nodes spanning `<` … `>` whose delimiters pair up: type argument and parameter lists.
+    pub angle: Vec<String>,
+    /// Markup tags (`<a>`, `</a>`, `<a/>`); an element's start and end tags pair up.
+    pub tags: Vec<String>,
 }
 
 /// An external formatting tool and its language-specific parser.
@@ -87,6 +108,18 @@ pub struct FrameworkUiMode {
     /// Files whose presence in a directory above a file, up to the project
     /// folder, marks the framework's project, e.g. `angular.json`; matched like
     /// language servers' `root-markers`.
+    pub root_markers: Vec<String>,
+}
+
+/// Files in a framework's folder: a file with one of `extensions` below a folder named
+/// `folder`, which has a root marker in a directory above it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FrameworkFiles {
+    pub folder: String,
+    /// Without the dot, compared ignoring case.
+    pub extensions: Vec<String>,
+    /// Matched like language servers' `root-markers`, e.g. `manage.py`.
     pub root_markers: Vec<String>,
 }
 
@@ -117,6 +150,10 @@ pub struct LanguageServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Environment variables the server can't start without (PowerShell Editor
+    /// Services' `PSES_BUNDLE_PATH`): while one is unset it counts as missing.
+    #[serde(default)]
+    pub requires_env: Vec<String>,
     /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
     /// `file#table` requires the TOML file to contain that dotted table, e.g.
     /// `pyproject.toml#tool.ruff`.
@@ -148,6 +185,11 @@ pub struct LanguageServerConfig {
     /// basedpyright): only used while none of those is installed.
     #[serde(default)]
     pub fallback: bool,
+    /// Names of servers listed after this one that it makes redundant (a PHP server
+    /// with its own Laravel support replaces `laravel-lsp`): they aren't used while
+    /// this one serves the file.
+    #[serde(default)]
+    pub replaces: Vec<String>,
     /// What the server is used for (`completion`, `code-action`, `diagnostics`,
     /// … `FEATURES` in `ide-lsp/src/caps.rs`); empty means everything. The other
     /// capabilities it announces are ignored, so a refactoring-only server next
@@ -177,6 +219,10 @@ pub struct LanguageServerConfig {
     /// it parses a document.
     #[serde(default)]
     pub resync_on_configuration: bool,
+    /// Set by the settings hook: what the user sees as the server when another program serves
+    /// in its place (TypeScript 7's own `tsc --lsp` for vtsls).
+    #[serde(skip)]
+    pub display_name: Option<String>,
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,
@@ -271,6 +317,10 @@ pub struct LanguageInfo {
     #[serde(default)]
     #[specta(optional)]
     pub scratch_template: Option<String>,
+    /// Syntax nodes whose `<` `>` rainbow brackets colour (Color Scheme › Rainbow brackets).
+    #[serde(default)]
+    #[specta(optional)]
+    pub rainbow_brackets: RainbowBracketNodes,
 }
 
 impl From<&LanguageConfig> for LanguageInfo {
@@ -288,6 +338,7 @@ impl From<&LanguageConfig> for LanguageInfo {
             filenames: c.filenames.clone(),
             first_line: c.first_line.clone(),
             scratch_template: c.scratch_template.clone(),
+            rainbow_brackets: c.rainbow_brackets.clone(),
         }
     }
 }
@@ -316,6 +367,10 @@ pub struct SymbolTag {
     /// Enclosing symbol, e.g. class name for a method.
     pub container: Option<String>,
     pub range: Range,
+    /// Bare base names written in a class definition (`class X(A, B)`); empty for
+    /// every other symbol, and for languages whose classes carry none.
+    #[serde(default)]
+    pub bases: Vec<String>,
 }
 
 /// One inline TS/JS `<script>` block of a Vue SFC / HTML document.

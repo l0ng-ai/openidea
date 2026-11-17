@@ -78,8 +78,6 @@ const settle = (page: Page) =>
   page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 
 async function fileRow(page: Page) {
-  // The start-up splash swallows raw mouse presses until it has faded out.
-  await expect(page.locator("#splash")).toHaveCount(0);
   const file = page.getByRole("tree", { name: "Project" }).getByRole("treeitem", { name: "settings.gradle.kts" });
   await file.scrollIntoViewIfNeeded();
   const content = file.locator("[data-project-path]");

@@ -74,7 +74,7 @@ pub fn list(shelf: &Path) -> IdeResult<Vec<ShelvedChangeList>> {
                 .map(|p| {
                     crate::patch::parse_patch(&p)
                         .into_iter()
-                        .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path })
+                        .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path, link: None })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -87,7 +87,7 @@ pub fn list(shelf: &Path) -> IdeResult<Vec<ShelvedChangeList>> {
             repo: info.repo,
             files: crate::patch::parse_patch(&std::fs::read_to_string(dir.join(PATCH))?)
                 .into_iter()
-                .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path })
+                .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path, link: None })
                 .collect(),
         });
     }
@@ -200,6 +200,7 @@ pub(crate) fn unshelve(r: &Repo, shelf: &Path, id: &str, remove: bool) -> IdeRes
 }
 
 pub fn unshelve_path(r: &Repo, shelf: &Path, id: &str, remove: bool, path: Option<&str>) -> IdeResult<ApplyOutcome> {
+    let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
     let patch = selected_patch(shelf, id, path)?;
     let outcome = crate::patch::apply(r, &patch)?;
     if remove && outcome.conflicts.is_empty() {
@@ -282,7 +283,7 @@ pub fn delete_path(shelf: &Path, id: &str, path: Option<&str>) -> IdeResult<()> 
     let mut info = read_info(&dir).ok_or_else(|| IdeError::invalid("shelf metadata is missing"))?;
     info.files = crate::patch::parse_patch(&remaining)
         .into_iter()
-        .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path })
+        .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path, link: None })
         .collect();
     std::fs::write(dir.join(PATCH), remaining)?;
     std::fs::write(dir.join(INFO), serde_json::to_vec_pretty(&info).map_err(|e| IdeError::internal(e.to_string()))?)?;
@@ -291,6 +292,7 @@ pub fn delete_path(shelf: &Path, id: &str, path: Option<&str>) -> IdeResult<()> 
 
 /// Reconstruct each side in a throwaway index; neither HEAD nor the working files are used.
 pub fn diff_files(r: &Repo, shelf: &Path, id: &str) -> IdeResult<Vec<ShelfDiffFile>> {
+    let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
     let patch = patch_of(shelf, id)?;
     let mut out = Vec::new();
     for (section, file) in sections(&patch) {
@@ -357,7 +359,7 @@ pub fn import_patch(shelf: &Path, name: &str, patch: &str, repo: Option<&Path>) 
         repo: repo.map(|r| r.to_path_buf().into()),
         files: files
             .into_iter()
-            .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path })
+            .map(|f| crate::ChangedFile { path: f.path, kind: f.kind, old_path: f.old_path, link: None })
             .collect(),
     };
     std::fs::write(dir.join(PATCH), patch)?;

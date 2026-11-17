@@ -11,9 +11,9 @@
         copied: "已复制",
         manual: "无法复制。请选择下方详情并手动复制。",
         details: "启动错误详情",
-        timeout: "启动未在 30 秒内完成。",
+        timeout: "启动未在 60 秒内完成。",
         outdatedMac:
-          "这台 Mac 的 Safari 版本过旧：OpenIDEA 的界面使用系统的 Safari 网页引擎，需要 Safari 16 或更高版本。请在「系统偏好设置 › 软件更新」中更新 Safari，然后重新打开 OpenIDEA。",
+          "这台 Mac 的系统网页引擎过旧：OpenIDEA 的界面运行在 macOS 自带的 WebKit 引擎上，需要 macOS 12 Monterey 或更高版本（引擎为 Safari 15.4 或更新）。macOS 11 Big Sur 上请先通过「软件更新」安装最新的 Safari 更新，OpenIDEA 会加载 Apple 随该更新暂存的新版 WebKit；若系统引擎仍低于 Safari 15.4，则无法启动。",
         outdated:
           "系统的 WebKitGTK 版本过旧：OpenIDEA 需要较新的 WebKitGTK（webkit2gtk-4.1）。请通过系统的包管理器更新后重新打开 OpenIDEA。",
       }
@@ -25,22 +25,16 @@
         copied: "Copied",
         manual: "Could not copy. Select the details below and copy them.",
         details: "Startup error details",
-        timeout: "Startup did not finish within 30 seconds.",
+        timeout: "Startup did not finish within 60 seconds.",
         outdatedMac:
-          "Safari on this Mac is too old: OpenIDEA's interface runs on the system's Safari web engine and needs Safari 16 or later. Update Safari in System Preferences › Software Update, then open OpenIDEA again.",
+          "The system web engine on this Mac is too old: OpenIDEA's interface runs on macOS's built-in WebKit and needs macOS 12 Monterey or later (Safari 15.4 or newer). On macOS 11 Big Sur, install the latest Safari update in Software Update; OpenIDEA then loads the newer WebKit Apple stages alongside it. Without that update the system engine is too old to start.",
         outdated:
           "The system's WebKitGTK is too old: OpenIDEA needs a recent WebKitGTK (webkit2gtk-4.1). Update it with your package manager, then open OpenIDEA again.",
       };
-  // The bundle targets Safari 16 (vite.config.ts); an older system web engine can't even
-  // parse it. Container queries came with Safari 16, and WebKit's user agent doesn't name
-  // its version. Unknown (no CSS.supports) counts as current.
-  const outdated = () => {
-    try {
-      return typeof window.CSS?.supports === "function" && !window.CSS.supports("container-type", "inline-size");
-    } catch {
-      return false;
-    }
-  };
+  // The bundle targets Safari 15.4 (vite.config.ts), so an older system web engine can't
+  // even parse it. structuredClone came with Safari 15.4, and WebKit's user agent doesn't
+  // name its version.
+  const outdated = () => typeof structuredClone !== "function";
   let failed = false;
   let ready = false;
   const describe = (reason) => {
@@ -142,11 +136,30 @@
     window.removeEventListener("unhandledrejection", onRejection);
     window.removeEventListener("openidea:boot-error", onBootError);
     window.removeEventListener("openidea:boot-ready", onReady);
+    document.removeEventListener("visibilitychange", onVisibility);
   };
-  const timer = window.setTimeout(
-    () => show(rejection === undefined ? text.timeout : `${text.timeout}\n\nUnhandled rejection: ${rejection}`),
-    30_000,
-  );
+  // The timeout counts only while the window shows: a hidden or covered window gets no
+  // animation frames, and the splash waits for those to finish startup.
+  let remaining = 60_000;
+  let armedAt = 0;
+  let timer;
+  const arm = () => {
+    if (failed || ready || timer !== undefined || document.hidden) return;
+    armedAt = Date.now();
+    timer = window.setTimeout(
+      () => show(rejection === undefined ? text.timeout : `${text.timeout}\n\nUnhandled rejection: ${rejection}`),
+      remaining,
+    );
+  };
+  const onVisibility = () => {
+    if (!document.hidden) return arm();
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    timer = undefined;
+    remaining -= Date.now() - armedAt;
+  };
+  arm();
+  document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("error", onError, true);
   window.addEventListener("unhandledrejection", onRejection);
   window.addEventListener("openidea:boot-error", onBootError);

@@ -126,6 +126,25 @@ describe("resultEditability", () => {
     expect(editable("SELECT ID FROM PUBLIC.USERS").table).toBe("users");
     expect(editable('SELECT "ID" FROM "Users"').table).toBe("Users");
     expect(editable("SELECT id FROM users", "oracle").table).toBe("USERS");
+    expect(editable("SELECT id FROM public.users u", "snowflake")).toMatchObject({
+      schema: "PUBLIC",
+      table: "USERS",
+      alias: "U",
+      items: [{ kind: "column", name: "ID" }],
+    });
+    expect(editable('SELECT "id" FROM "Users"', "snowflake")).toMatchObject({
+      table: "Users",
+      items: [{ kind: "column", name: "id" }],
+    });
+    // Variant paths, stages and other databases stay read-only.
+    expect(resultEditability("SELECT src:a FROM users", "snowflake")).toMatchObject({
+      items: [{ kind: "expression" }],
+    });
+    expect(resultEditability("SELECT $1 FROM @my_stage/path", "snowflake")).toEqual({
+      kind: "readonly",
+      reason: "plain",
+    });
+    expect(resultEditability("SELECT id FROM db.public.users", "snowflake").kind).toBe("readonly");
   });
 
   it("keeps aliased columns and expressions read-only per column", () => {
@@ -289,5 +308,10 @@ describe("editStatements", () => {
     expect(editStatements("postgres", "", "users", [{ kind: "delete", key: [{ column: "id", value: null }] }])).toEqual(
       ["DELETE FROM users WHERE id IS NULL"],
     );
+    expect(
+      editStatements("snowflake", "PUBLIC", "USERS", [
+        { kind: "update", key: [{ column: "ID", value: "1" }], values: [{ column: "path", value: "C:\\it's" }] },
+      ]),
+    ).toEqual([`UPDATE PUBLIC.USERS SET "path" = 'C:\\\\it''s' WHERE ID = '1'`]);
   });
 });

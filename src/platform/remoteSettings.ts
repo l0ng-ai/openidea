@@ -22,19 +22,38 @@ export interface DeploymentMappingValid {
   web: string;
 }
 
+/** Host and login of an FTP / FTPS server; its password is saved under the server's id. */
+export interface FtpConnectionValid {
+  host: string;
+  port: number | null;
+  /** Empty: anonymous login. */
+  user: string;
+  passive: boolean;
+}
+
 export interface DeploymentServerValid {
-  kind: "sftp" | "local";
+  kind: "sftp" | "ftp" | "ftps" | "local";
   id: string;
   name: string;
   sshConfig: string;
+  ftp: FtpConnectionValid;
   rootPath: string;
   webUrl: string;
   mappings: DeploymentMappingValid[];
   excludedPaths: string[];
 }
 
+/** Servers that Upload to… on the group uploads to, one after another. */
+export interface DeploymentGroupValid {
+  id: string;
+  name: string;
+  /** Server ids, in upload order. */
+  servers: string[];
+}
+
 export interface DeploymentSettingsValid {
   servers: DeploymentServerValid[];
+  groups: DeploymentGroupValid[];
   defaultServer: string;
   autoUpload: AutoUploadValid;
   deleteRemote: boolean;
@@ -87,6 +106,7 @@ export const DEFAULT_DEPLOYMENT_SERVER: DeploymentServerValid = {
   id: "",
   name: "",
   sshConfig: "",
+  ftp: { host: "", port: null, user: "", passive: true },
   rootPath: "",
   webUrl: "",
   mappings: [{ local: "", deployment: "", web: "" }],
@@ -95,6 +115,7 @@ export const DEFAULT_DEPLOYMENT_SERVER: DeploymentServerValid = {
 
 export const DEFAULT_DEPLOYMENT: DeploymentSettingsValid = {
   servers: [],
+  groups: [],
   defaultServer: "",
   autoUpload: "never",
   deleteRemote: false,
@@ -176,21 +197,33 @@ function validateMappings(raw: unknown): DeploymentMappingValid[] {
   });
 }
 
+function validateFtp(raw: unknown): FtpConnectionValid {
+  const o = obj(raw);
+  return { host: text(o.host, ""), port: port(o.port), user: text(o.user, ""), passive: bool(o.passive, true) };
+}
+
 export function validateDeployment(raw: unknown): DeploymentSettingsValid {
   const o = obj(raw);
   const d = DEFAULT_DEPLOYMENT;
   const servers = withIds(o.servers, "server", (s) => ({
-    kind: oneOf(s.kind, ["sftp", "local"] as const, "sftp"),
+    kind: oneOf(s.kind, ["sftp", "ftp", "ftps", "local"] as const, "sftp"),
     id: text(s.id, ""),
     name: text(s.name, ""),
     sshConfig: text(s.sshConfig, ""),
+    ftp: validateFtp(s.ftp),
     rootPath: text(s.rootPath, ""),
     webUrl: text(s.webUrl, ""),
     mappings: validateMappings(s.mappings),
     excludedPaths: strings(s.excludedPaths, []),
   }));
+  const groups = withIds(o.groups, "group", (g) => ({
+    id: text(g.id, ""),
+    name: text(g.name, ""),
+    servers: strings(g.servers, []),
+  }));
   return {
     servers,
+    groups,
     defaultServer: text(o.defaultServer, d.defaultServer),
     autoUpload: oneOf(o.autoUpload, ["never", "onExplicitSave", "always"] as const, d.autoUpload),
     deleteRemote: bool(o.deleteRemote, d.deleteRemote),
@@ -245,7 +278,39 @@ export const newRemoteId = (prefix: string) => `${prefix}-${Date.now().toString(
 /** Whether `target` runs configurations in a container (Docker, Compose) rather than over SSH. */
 export const inContainer = (target: { kind: string }) => target.kind === "docker" || target.kind === "compose";
 
+export type DeploymentConnection =
+  | { kind: "local" }
+  | { kind: "sftp"; ssh: string }
+  | { kind: "ftp"; server: string; secure: boolean; ftp: FtpConnectionValid };
+
 /** Backend connection descriptor for deployment and folder browsing. */
-export function deploymentConnection(server: DeploymentServerValid): { kind: "local" } | { kind: "sftp"; ssh: string } {
-  return server.kind === "local" ? { kind: "local" } : { kind: "sftp", ssh: server.sshConfig };
+export function deploymentConnection(server: DeploymentServerValid): DeploymentConnection {
+  switch (server.kind) {
+    case "local":
+      return { kind: "local" };
+    case "sftp":
+      return { kind: "sftp", ssh: server.sshConfig };
+    case "ftp":
+    case "ftps":
+      return { kind: "ftp", server: server.id, secure: server.kind === "ftps", ftp: server.ftp };
+  }
+}
+
+/**
+ * Key of the password a connection may ask for (`sshSetSecret`): the SSH
+ * configuration's id, `ftp:<server id>` for FTP, or empty when there is none.
+ */
+export function connectionSecretKey(connection: { kind: string; ssh?: string; server?: string }): string {
+  if (connection.kind === "sftp") return connection.ssh ?? "";
+  if (connection.kind === "ftp") return `ftp:${connection.server ?? ""}`;
+  return "";
+}
+
+export const deploymentSecretKey = (server: DeploymentServerValid) => connectionSecretKey(deploymentConnection(server));
+
+/** Whether `server` has what it needs to connect (an SSH configuration, an FTP host). */
+export function deploymentConnectable(server: DeploymentServerValid): boolean {
+  if (server.kind === "sftp") return !!server.sshConfig;
+  if (server.kind === "ftp" || server.kind === "ftps") return !!server.ftp.host.trim();
+  return true;
 }

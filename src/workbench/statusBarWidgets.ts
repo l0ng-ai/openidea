@@ -1,4 +1,5 @@
 /** Which status bar widgets are shown: per-widget defaults, overridden in `appearance.statusBarWidgets`. */
+import { create } from "zustand";
 import type { MenuItem } from "@/ui";
 import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -14,6 +15,28 @@ export function isStatusItemVisible(
   return overrides?.[item.id] ?? item.defaultVisible !== false;
 }
 
+/**
+ * Widgets that don't apply to the open project (a language's widget in a project without
+ * that language): neither shown nor listed in the menus until they apply again.
+ */
+const useUnavailable = create<{ ids: ReadonlySet<string> }>(() => ({ ids: new Set() }));
+
+export function setStatusWidgetAvailable(id: string, available: boolean): void {
+  useUnavailable.setState((s) => {
+    if (s.ids.has(id) !== available) return s;
+    const ids = new Set(s.ids);
+    if (available) ids.delete(id);
+    else ids.add(id);
+    return { ids };
+  });
+}
+
+export const isStatusWidgetAvailable = (id: string) => !useUnavailable.getState().ids.has(id);
+
+export function useUnavailableStatusWidgets(): ReadonlySet<string> {
+  return useUnavailable((s) => s.ids);
+}
+
 export interface StatusWidgetRow {
   id: string;
   title: string;
@@ -22,13 +45,13 @@ export interface StatusWidgetRow {
   visible: boolean;
 }
 
-/** Every titled widget of `items` (in bar order) with its visibility: the rows users can switch. */
+/** Every titled widget of `items` that applies (in bar order) with its visibility: the rows users can switch. */
 export function statusWidgetRows(
   items: StatusItemContribution[],
   overrides: WidgetOverrides | undefined,
 ): StatusWidgetRow[] {
   return items
-    .filter((i) => i.title)
+    .filter((i) => i.title && isStatusWidgetAvailable(i.id))
     .map((i) => ({
       id: i.id,
       title: i.title!,

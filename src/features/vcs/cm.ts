@@ -1,8 +1,9 @@
 /**
  * CodeMirror setup for the VCS viewers (diff, merge, local history): token
- * based theme + syntax colours and lazy language loading by file name.
+ * based theme + syntax colours and lazy language loading through the editor's
+ * language pipeline, so colours match the editor.
  */
-import { HighlightStyle, LanguageDescription, syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
+import { syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
 import {
   Compartment,
   EditorState,
@@ -18,10 +19,14 @@ import {
   EditorView,
   GutterMarker,
   ViewPlugin,
+  gutter,
   gutterLineClass,
   highlightActiveLine,
   keymap,
+  lineNumberMarkers,
+  lineNumberWidgetMarker,
   lineNumbers,
+  tooltips,
   WidgetType,
   type DecorationSet,
   type ViewUpdate,
@@ -29,13 +34,14 @@ import {
 import { getChunks, mergeViewSiblings, type Chunk } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
-import { tags as t } from "@lezer/highlight";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
+import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
 import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
 import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
-import { fontExtension } from "@/editor/core/cm/setup";
+import { fontExtension, tooltipBounds } from "@/editor/core/cm/setup";
 import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
@@ -291,26 +297,6 @@ export const diffWords: Extension = [
   EditorView.editorAttributes.of({ class: "cm-diffWords" }),
 ];
 
-export const viewerHighlight = HighlightStyle.define([
-  {
-    tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword],
-    color: "var(--syn-keyword)",
-  },
-  { tag: [t.string, t.special(t.string), t.regexp, t.character], color: "var(--syn-string)" },
-  { tag: [t.typeName, t.className, t.namespace, t.tagName], color: "var(--syn-type)" },
-  { tag: [t.function(t.variableName), t.function(t.propertyName)], color: "var(--syn-function)" },
-  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: "var(--syn-comment)", fontStyle: "italic" },
-  { tag: [t.annotation, t.meta, t.attributeName], color: "var(--syn-annotation)" },
-  { tag: [t.number, t.bool, t.null, t.atom], color: "var(--syn-number)" },
-  { tag: [t.constant(t.variableName), t.standard(t.variableName)], color: "var(--syn-constant)" },
-  { tag: [t.punctuation, t.bracket, t.operator], color: "var(--syn-punct)" },
-  { tag: [t.propertyName], color: "var(--syn-property)" },
-  { tag: [t.variableName], color: "var(--syn-variable)" },
-  { tag: t.invalid, color: "var(--syn-invalid)" },
-  { tag: t.heading, fontWeight: "var(--fw-code-bold, 700)", color: "var(--fg-strong)" },
-  { tag: t.link, color: "var(--link)", textDecoration: "underline" },
-]);
-
 export const viewerTheme = EditorView.theme(
   {
     ...overviewStyles,
@@ -336,12 +322,15 @@ export const viewerTheme = EditorView.theme(
     },
     ".cm-line": { padding: `0 2px 0 ${LINE_INSET}px` },
     ...caretStyles,
-    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection, .cm-openidea-selected, &.cm-focused .cm-openidea-selected":
-      {
-        backgroundColor: "var(--bg-selected-strong)",
-        // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
-        color: "var(--fg-editor-selection)",
-      },
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+      backgroundColor: "var(--bg-selected-strong)",
+      // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
+      color: "var(--fg-editor-selection)",
+    },
+    ".cm-openidea-selected, &.cm-focused .cm-openidea-selected": {
+      "--openidea-selected-bg": "var(--bg-selected-strong)",
+      color: "var(--fg-editor-selection)",
+    },
     ".cm-activeLine": { backgroundColor: "var(--bg-current-line)" },
     ".cm-gutters": {
       backgroundColor: "var(--bg-app)",
@@ -349,6 +338,7 @@ export const viewerTheme = EditorView.theme(
       border: "none",
     },
     ".cm-lineNumbers .cm-gutterElement": { padding: "0 8px 0 12px", minWidth: "32px" },
+    ".cm-gutters-after .cm-lineNumbers .cm-gutterElement": { padding: "0 12px 0 8px" },
     ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--fg-secondary)" },
     // Side-by-side panes colour lines by their chunk's type (changedLines) instead of the library's tint.
     "&.cm-merge-a .cm-changedLine, &.cm-merge-b .cm-changedLine": { backgroundColor: "transparent" },
@@ -462,19 +452,68 @@ function viewerEditorLook(): Extension {
   ];
 }
 
+class LineNumber extends GutterMarker {
+  constructor(readonly number: string) {
+    super();
+  }
+  eq(other: LineNumber) {
+    return this.number === other.number;
+  }
+  toDOM() {
+    return document.createTextNode(this.number);
+  }
+}
+
+function maxLineNumber(lines: number): number {
+  let last = 9;
+  while (last < lines) last = last * 10 + 9;
+  return last;
+}
+
+/**
+ * Line numbers after the text, facing the divider: IDEA mirrors the left editor of a
+ * side-by-side diff (TwosideTextDiffViewer moves its scrollbar to the left, and a mirrored
+ * editor draws its gutter on the right). `lineNumbers()` has no `side`, so this is its gutter.
+ */
+const lineNumbersAfter: Extension = gutter({
+  class: "cm-lineNumbers",
+  side: "after",
+  renderEmptyElements: false,
+  markers: (view) => view.state.facet(lineNumberMarkers),
+  lineMarker: (view, line, others) =>
+    others.some((m) => m.toDOM) ? null : new LineNumber(String(view.state.doc.lineAt(line.from).number)),
+  widgetMarker: (view, widget, block) => {
+    for (const marker of view.state.facet(lineNumberWidgetMarker)) {
+      const result = marker(view, widget, block);
+      if (result) return result;
+    }
+    return null;
+  },
+  initialSpacer: (view) => new LineNumber(String(maxLineNumber(view.state.doc.lines))),
+  updateSpacer: (spacer, update) => {
+    const max = String(maxLineNumber(update.view.state.doc.lines));
+    return (spacer as LineNumber).number === max ? spacer : new LineNumber(max);
+  },
+});
+
 /**
  * Base extensions for a read-only (or editable) viewer pane. `findBar`: the
  * viewer shows the editor's find bar (FindPanel) instead of CodeMirror's panel.
+ * `lineNumbers: "after"` puts them on the right, for the left pane of a side-by-side diff.
  */
-export function viewerBase(opts: { readOnly: boolean; lineNumbers?: boolean; findBar?: boolean }): Extension[] {
+export function viewerBase(opts: {
+  readOnly: boolean;
+  lineNumbers?: boolean | "after";
+  findBar?: boolean;
+}): Extension[] {
   return [
-    opts.lineNumbers === false ? [] : lineNumbers(),
+    opts.lineNumbers === false ? [] : opts.lineNumbers === "after" ? lineNumbersAfter : lineNumbers(),
     viewerEditorLook(),
     highlightActiveLine(),
     opts.findBar
       ? [findExtension(), keymap.of(defaultKeymap)]
       : [search({ top: true }), keymap.of([...searchKeymap, ...defaultKeymap])],
-    syntaxHighlighting(viewerHighlight),
+    syntaxHighlighting(openideaHighlightStyle),
     viewerTheme,
     changedLines,
     EditorState.readOnly.of(opts.readOnly),
@@ -484,19 +523,28 @@ export function viewerBase(opts: { readOnly: boolean; lineNumbers?: boolean; fin
   ];
 }
 
-let languagesPromise: Promise<readonly LanguageDescription[]> | null = null;
-const cache = new Map<string, Promise<LanguageSupport | null>>();
+/**
+ * Tooltips of a pane showing an open document (quick docs, ⌘-hover info), parented to the
+ * body as the editor's are, so the pane neither clips them nor keeps them under the tool
+ * window stripes, and they move left to fit.
+ */
+export const documentTooltips: Extension = tooltips({
+  parent: typeof document === "undefined" ? undefined : document.body,
+  tooltipSpace: tooltipBounds,
+});
 
-/** Loads the language for `fileName` (by extension / name), or null. */
-export function languageFor(fileName: string): Promise<LanguageSupport | null> {
-  const name = fileName.slice(fileName.lastIndexOf("/") + 1);
-  const hit = cache.get(name);
-  if (hit) return hit;
-  languagesPromise ??= import("@codemirror/language-data").then((m) => m.languages);
-  const p = languagesPromise
-    .then((langs) => LanguageDescription.matchFilename(langs, name))
-    .then((desc) => (desc ? desc.load() : null))
+/** The first line of a side's text, which decides hashbang-only scripts' language. */
+export const firstLineOf = (text: string): string => text.slice(0, text.search(/\r?\n|$/));
+
+/**
+ * Loads the language `path` is shown with in the editor (`languageDescriptionFor`: Override
+ * File Type, File Types patterns, hashbangs, framework modes, then the extension) through
+ * the editor's pipeline (`loadSupport`): the same modes, tag patches and `data-language`
+ * attribute, so colours match. `firstLine` is the shown text's (`firstLineOf`); without it
+ * the file's own counts.
+ */
+export function languageFor(path: string, firstLine?: string | null): Promise<LanguageSupport | null> {
+  return languageDescriptionFor(path, firstLine ?? undefined)
+    .then((desc) => (desc ? loadSupport(desc) : null))
     .catch(() => null);
-  cache.set(name, p);
-  return p;
 }

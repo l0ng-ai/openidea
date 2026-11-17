@@ -307,6 +307,20 @@ pub struct ChangedFile {
     pub path: String,
     pub kind: ChangeKind,
     pub old_path: Option<String>,
+    /// Set when the entry is a symbolic link (git mode `120000`); only revision diffs fill it.
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
+}
+
+/// What a symbolic link in a revision points to, resolved inside that revision's tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkTarget {
+    Dir,
+    File,
+    /// Dangling, outside the repository (absolute or above its root), or a link loop.
+    Unresolved,
 }
 
 /// Added and deleted lines of one file between two revisions (`git diff --numstat`).
@@ -334,6 +348,10 @@ pub struct RevisionChange {
     pub before: Option<String>,
     /// Commit holding the new content; `None` when the file was deleted.
     pub after: Option<String>,
+    /// Set when the entry is a symbolic link, resolved at `after` (`before`, for a deletion).
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -496,6 +514,9 @@ pub struct CheckoutOptions {
     /// Required when checking out a remote branch whose local namesake is ahead of it.
     #[serde(default)]
     pub diverged: Option<DivergedLocal>,
+    /// Check the branch out even though another worktree has it checked out.
+    #[serde(default)]
+    pub ignore_other_worktrees: bool,
 }
 
 /// Result of [`Repo::checkout_with`]; the non-`Done` variants other than `Conflicts`
@@ -521,6 +542,12 @@ pub enum CheckoutOutcome {
     /// on conflicts in these files.
     Conflicts {
         files: Vec<String>,
+    },
+    /// Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+    /// changed; the branch can be worked on there.
+    CheckedOutInWorktree {
+        branch: String,
+        path: PathBuf,
     },
 }
 
@@ -610,6 +637,7 @@ pub struct ChangelistState {
     pub files: std::collections::BTreeMap<String, String>,
 }
 
+mod backend;
 mod bek;
 mod blame;
 mod block_history;
@@ -617,6 +645,7 @@ pub mod changelists;
 mod cli;
 mod compare;
 mod diff;
+mod external_diff;
 mod history;
 mod ignore;
 mod index_writes;
@@ -637,11 +666,13 @@ pub use index_writes::is_own_index_write;
 mod text_encoding;
 mod write;
 
+pub use backend::Backend;
 pub use cli::{
-    GitCommandObserver, detected_git_executable, git_version, set_askpass_env, set_git_command_observer,
-    set_git_executable,
+    GitCommandObserver, detected_git_executable, filter_overrides_from, git_version, restrict, set_askpass_env,
+    set_git_command_observer, set_git_executable,
 };
 pub use diff::build_partial_patch;
+pub use external_diff::{ExternalDiffSide, launch_external_diff};
 pub use ignore::{IgnoreDestination, add_to_ignore};
 pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};
 pub use remotes::Remote;
@@ -674,6 +705,8 @@ pub fn clone(
     let dest = dest.to_string_lossy();
     // Cloning must not inherit an enclosing project's executable Git settings.
     let cwd = tempfile::tempdir()?;
+    // No repository's config applies in that empty folder, so the user's git runs as it is.
+    let _scope = ExecutionScope::enter(true);
     let args = clone_args(url, &dest, depth)?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     cli::run_streaming(cwd.path(), &args, cancel, on_output)
@@ -709,6 +742,8 @@ mod clone_tests {
 
 /// Creates an empty repository in `dir` (`git init`).
 pub fn init(dir: &Path) -> IdeResult<()> {
+    // `git init` runs nothing a repository config names, so the configured git runs as it is.
+    let _scope = ExecutionScope::enter(true);
     cli::run(dir, &["init", "-q"], None).map(|_| ())
 }
 
@@ -731,7 +766,8 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// Discovers the repository containing `path`; `Ok(None)` when not under git.
+    /// Discovers the repository containing `path`; `Ok(None)` when not under git. The
+    /// repository is in Restricted Mode until [`Repo::set_execution_allowed`] says otherwise.
     pub fn discover(path: &Path) -> IdeResult<Option<Self>> {
         repo::discover(path)
     }
@@ -739,6 +775,12 @@ impl Repo {
     pub fn root(&self) -> &Path {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         &self.root
+    }
+    /// git's own folders for this worktree: its git dir and the common one (they differ for a
+    /// linked worktree, whose `.git` file points into the main repository).
+    pub fn metadata_dirs(&self) -> IdeResult<[PathBuf; 2]> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok([self.git_dir.clone(), repo::absolute(self.gix()?.common_dir())?])
     }
     /// Untracked files with one of these names (or under such a folder) are not reported.
     pub fn set_ignored_names(&self, names: IgnoredNames) {
@@ -750,6 +792,24 @@ impl Repo {
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         status::status(self)
+    }
+    /// Status of `paths` only (absolute; those outside the repository are ignored), for the
+    /// dirty-scope refresh after a watcher batch. An empty list is the full status.
+    pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        // Restricted Mode starts no program of the repository, and the scoped read is `git status`
+        // with a pathspec: answer with the full gitoxide status instead.
+        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            return status::status(self);
+        }
+        if paths.is_empty() {
+            return status::status_paths(self, &[]);
+        }
+        let rel: Vec<String> = paths.iter().filter_map(|p| self.given_rel_path(p).ok()).collect();
+        if rel.is_empty() {
+            return Ok(Vec::new());
+        }
+        status::status_paths(self, &rel)
     }
     pub fn branch_info(&self) -> IdeResult<BranchInfo> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
@@ -776,14 +836,23 @@ impl Repo {
     ) -> IdeResult<Option<String>> {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        Ok(self.blob_of(path, rev.unwrap_or("HEAD"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
+    }
+    /// The file's git mode at `rev` as printed by git (`100644`, `100755`, `120000`…),
+    /// `None` when absent there. `rev` follows `file_at`'s rules, `WT` reads the worktree.
+    pub fn file_mode_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<String>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if rev == Some("WT") {
+            return repo::worktree_mode(self.root(), &self.rel_path(path)?);
+        }
         let rel = self.rel_path(path)?;
         let repo = self.gix()?;
-        Ok(repo::blob_at(&repo, &rel, rev.unwrap_or("HEAD"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
+        repo::mode_at(&repo, &rel, rev.unwrap_or("HEAD"))
     }
     /// Raw revision bytes, for encoding detection when the working file is absent.
     pub fn file_bytes_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<Vec<u8>>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        repo::blob_at(&self.gix()?, &self.rel_path(path)?, rev.unwrap_or("HEAD"))
+        self.blob_of(path, rev.unwrap_or("HEAD"))
     }
     /// Stage selected decoded hunks, retaining the index encoding, BOM and line endings.
     pub fn stage_hunks(
@@ -843,6 +912,12 @@ impl Repo {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::blame(self, path, current_text, revision, encoding)
+    }
+    /// Adds `commit` to the list `blame.ignoreRevsFile` names, so annotate skips it; with none
+    /// configured, to `.git-blame-ignore-revs` at the worktree root, which the local config then names.
+    pub fn ignore_blame_revision(&self, commit: &str) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::ignore_blame_revision(self, commit)
     }
     /// History for Selection: commits that changed `lines` (0-based, inclusive, of the
     /// current text: `current_text`, or the file on disk), mapped to HEAD's lines first.
@@ -986,6 +1061,7 @@ impl Repo {
 
     /// Lists one immutable revision directory. Directory names end in `/`.
     pub fn revision_children(&self, revision: &str, directory: &str) -> IdeResult<Vec<String>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let repo = self.gix()?;
         let id = repo::resolve(&repo, revision)?.to_string();
         let directory = self.rel_path(std::path::Path::new(directory))?;
@@ -1056,7 +1132,9 @@ impl Repo {
         let rel = path.map(|p| self.rel_path(p)).transpose()?;
         let overrides = cli::filter_overrides(self.root(), cancel)?;
         let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
-        args.extend(["--literal-pathspecs", "--no-pager", "diff", "--no-ext-diff", "--no-textconv", rev, "--"]);
+        args.extend(["--literal-pathspecs", "--no-pager", "diff", "--no-ext-diff", "--no-textconv"]);
+        args.extend_from_slice(cli::submodule_guards());
+        args.extend([rev, "--"]);
         if let Some(rel) = &rel {
             args.push(rel);
         }
@@ -1099,7 +1177,8 @@ impl Repo {
         write::stage_patch(self, patch, &|path| encoding(path).map(Into::into))
     }
     /// Discards unstaged changes: tracked paths are restored from the index (staged
-    /// changes are kept), untracked files and directories are deleted.
+    /// changes are kept), untracked files and directories are deleted. A submodule goes back
+    /// to the commit the index records, with its tracked files restored.
     pub fn discard(&self, paths: &[PathBuf]) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::discard(self, paths)
@@ -1175,11 +1254,13 @@ impl Repo {
     /// Edit Commit Message without touching the index or the working tree; returns HEAD
     /// before and after.
     pub fn reword(&self, commit: &str, message: &str) -> IdeResult<HeadChange> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::reword(self, commit, message).map(|(before, after)| HeadChange { before, after })
     }
 
     /// Undoes a history rewrite: HEAD goes from `after` back to `before`, local changes kept.
     pub fn restore_head(&self, before: &str, after: &str) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::restore_head(self, before, after)
     }
 
@@ -1217,10 +1298,17 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::rebase(self, onto)
     }
+    /// `paths` (absolute) stashes only those files; empty stashes the whole working tree.
     /// `keep_index`: changes already staged stay in the index (and the working tree).
-    pub fn stash_push(&self, message: Option<&str>, include_untracked: bool, keep_index: bool) -> IdeResult<()> {
+    pub fn stash_push(
+        &self,
+        message: Option<&str>,
+        include_untracked: bool,
+        keep_index: bool,
+        paths: &[PathBuf],
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::stash_push(self, message, include_untracked, keep_index)
+        write::stash_push(self, message, include_untracked, keep_index, paths)
     }
     /// `reinstate_index`: also restore what was staged when the stash was made.
     pub fn stash_apply(&self, index: u32, pop: bool, reinstate_index: bool) -> IdeResult<()> {
@@ -1301,6 +1389,7 @@ impl Repo {
     /// Whether the repository has an executable hook `name` (e.g. `pre-push`), wherever
     /// `core.hooksPath` puts it: the Push dialog then offers to skip it.
     pub fn has_hook(&self, name: &str) -> IdeResult<bool> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::has_hook(self, name)
     }
     /// Pushes a local branch, or its history up to `revision`, to its upstream (Git Log
@@ -1551,11 +1640,17 @@ impl Repo {
     }
 }
 
-thread_local! { static EXECUTION_ALLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) }; }
-struct ExecutionScope(bool);
+// `None`: nobody has decided yet. Git started now is restricted, and the first scope entered
+// decides. The flag governs the git CLI only: gitoxide follows the repository's own flag.
+thread_local! { static EXECUTION_ALLOWED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
+struct ExecutionScope(Option<bool>);
 impl ExecutionScope {
+    /// The outermost scope decides; a scope inside it can only restrict.
     fn enter(allowed: bool) -> Self {
-        Self(EXECUTION_ALLOWED.with(|current| current.replace(current.get() && allowed)))
+        Self(
+            EXECUTION_ALLOWED
+                .with(|current| current.replace(Some(current.get().map_or(allowed, |outer| outer && allowed)))),
+        )
     }
 }
 impl Drop for ExecutionScope {
@@ -1564,9 +1659,12 @@ impl Drop for ExecutionScope {
     }
 }
 pub(crate) fn execution_allowed() -> bool {
-    EXECUTION_ALLOWED.with(|current| current.get())
+    EXECUTION_ALLOWED.with(|current| current.get().unwrap_or(false))
 }
 impl Repo {
+    /// Whether git may run what the repository's config names (hooks, filters, the fsmonitor,
+    /// signature verifiers, a promisor) and use the configured git executable. A repository
+    /// starts without it: only a caller that knows the project is trusted grants it.
     pub fn set_execution_allowed(&self, allowed: bool) {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         self.execution_allowed.store(allowed, std::sync::atomic::Ordering::Release);

@@ -1,7 +1,7 @@
 /** Branches popup model: grouping, ordering and filtering (pure). */
 import type { Branch } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { fuzzyMatch } from "@/ui/match";
+import { wordMatch } from "@/ui/match";
 
 export interface PopupAction {
   id: string;
@@ -213,7 +213,7 @@ export function buildBranchRows(
   const q = query.trim();
   const match = (text: string): number[] | null | false => {
     if (!q) return null;
-    return fuzzyMatch(text, q) ?? false;
+    return wordMatch(text, q) ?? false;
   };
   const open = (key: string, byDefault: boolean) => !!q || (expanded.get(key) ?? byDefault);
   const rows: BranchRow[] = actionRows(actions, match, !q);

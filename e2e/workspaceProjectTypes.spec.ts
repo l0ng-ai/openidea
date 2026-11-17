@@ -134,3 +134,68 @@ test("sorts collapsed workspace roots by project type, shows their icons and ref
   ]);
   await expect(tree.getByRole("treeitem", { selected: true })).toContainText("z-web");
 });
+
+test("keeps surviving workspace icons and type order during removal", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const module = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ module);
+    const current = useProject.getState().project;
+    const projects = ["/work/a-go", "/work/b-web", "/work/z-rust"];
+    const project = {
+      ...current,
+      root: "/workspace",
+      name: "Workspace",
+      workspace: { version: 1, name: "Workspace", projects },
+    };
+    const markers: Record<string, string> = {
+      "/work/a-go": "go.mod",
+      "/work/b-web": "package.json",
+      "/work/z-rust": "Cargo.toml",
+    };
+    const rescan = new Promise<void>((resolve) => {
+      window.__ipc.handlers.finish_workspace_rescan = () => resolve();
+    });
+    let removed = false;
+    window.__ipc.handlers.fs_read_dir = async ({ path }) => {
+      if (removed) await rescan;
+      const name = markers[String(path)];
+      return name
+        ? [{ path: `${path}/${name}`, name, kind: "file", size: 0, mtimeMs: 0, ignored: false, excluded: false }]
+        : [];
+    };
+    window.__ipc.handlers.project_roots = () => ({ folders: [] });
+    window.__ipc.handlers.workspace_update = ({ projects }) => {
+      removed = true;
+      return { ...project, workspace: { ...project.workspace, projects } };
+    };
+    useProject.setState({ project });
+  });
+
+  const tree = page.getByRole("tree", { name: "Project" });
+  const rust = tree.locator('[data-project-path="/work/z-rust"]');
+  const go = tree.locator('[data-project-path="/work/a-go"]');
+  const web = tree.locator('[data-project-path="/work/b-web"]');
+  const icons = () =>
+    Promise.all(
+      [rust, go].map((row) =>
+        row.locator("svg path").evaluateAll((paths) => paths.map((path) => path.getAttribute("d"))),
+      ),
+    );
+  const panel = page.getByRole("region", { name: "Project", exact: true });
+  await panel.getByRole("button", { name: "Collapse All", exact: true }).click();
+  await panel.getByRole("button", { name: "Options", exact: true }).click();
+  await page.getByRole("menuitemcheckbox", { name: "Sort by Type", exact: true }).click();
+  const rows = tree.locator('[data-project-path^="/work/"]');
+  await expect(rows).toHaveText(["z-rust/work/z-rust", "a-go/work/a-go", "b-web/work/b-web"]);
+  const before = await icons();
+
+  await web.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Remove from Workspace", exact: true }).click();
+  await expect(web).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath("workspace-removal.png"), animations: "disabled" });
+  expect(await icons()).toEqual(before);
+  await expect(rows).toHaveText(["z-rust/work/z-rust", "a-go/work/a-go"]);
+
+  await page.evaluate(() => window.__ipc.handlers.finish_workspace_rescan!({}));
+});
