@@ -379,6 +379,10 @@ fn ready(
         },
     };
     let mut linked = link_trace(plan, &recording, collected.skipped_breakpoints);
+    // A stream made parallel before the chain's statement, which the bundle found so at run time.
+    if collected.sequentialized && !plan.sequentialize {
+        linked.banners.push(TraceBanner::Sequentialized);
+    }
     if resumed_stops > 0 {
         linked.banners.push(TraceBanner::BreakpointsResumed { count: resumed_stops });
     }

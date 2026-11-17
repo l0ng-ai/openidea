@@ -1624,6 +1624,7 @@ impl DebugManager {
         // DAP: a response without the flag continued every thread.
         let all = body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true);
         session.suspended.resumed(ticket, thread_id, all);
+        stream_trace::release_done(&session);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: all });
         Ok(())
     }
@@ -1672,6 +1673,7 @@ impl DebugManager {
         step_settled(&session, sent)?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
         session.suspended.resumed(ticket, thread_id, false);
+        stream_trace::release_done(&session);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())
     }
@@ -1783,6 +1785,7 @@ impl DebugManager {
             .await;
         step_settled(&session, sent)?;
         session.suspended.resumed(ticket, thread_id, false);
+        stream_trace::release_done(&session);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())
     }

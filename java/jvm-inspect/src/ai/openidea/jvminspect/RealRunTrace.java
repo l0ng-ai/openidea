@@ -6,6 +6,7 @@ import ai.openidea.jvminspect.JavaDebugSessions.HubEvent;
 import ai.openidea.jvminspect.RealRunPlan.StepSpec;
 import com.sun.jdi.AbsentInformationException;
 import com.sun.jdi.ArrayReference;
+import com.sun.jdi.BooleanValue;
 import com.sun.jdi.ClassType;
 import com.sun.jdi.Field;
 import com.sun.jdi.IncompatibleThreadStateException;
@@ -162,6 +163,8 @@ final class RealRunTrace {
     /** Recorder number of the next wrapped op; modifiers take none. */
     private int nextStep;
     private ObjectReference lastWrapped;
+    /** Whether the stream was made sequential: the plan asked, or the stream the chain starts from was parallel. */
+    private volatile boolean sequentialized;
     /** {@code forceEarlyReturn} at a method exit makes that frame exit once more, returning the forced value. */
     private Method echoMethod;
     private Value echoValue;
@@ -240,11 +243,14 @@ final class RealRunTrace {
         subscription = hub.subscribe(this::onEvent, e -> errors.add("event listener: " + e));
         if (held != null) {
             // Not put back: the program consumes the stream right after.
-            lastWrapped = wrap(held, nextStep++, plan.sequentialize());
+            // A stream made parallel before this statement shows no `parallel` in the chain.
+            sequentialized = plan.sequentialize() || isParallel(held);
+            lastWrapped = wrap(held, nextStep++, sequentialized);
             // The invokes resumed the thread, which invalidated the frame read before them.
             thread.frame(0).setValue(local, lastWrapped);
         } else {
             rootSkip = plan.root().skip();
+            sequentialized = plan.sequentialize();
         }
         // Last: with these on, an invoke into the thread would raise the trace's own events inside it.
         // The step out of the frame never fires inside an invoke, which runs above it.
@@ -402,7 +408,8 @@ final class RealRunTrace {
             }
             ObjectReference stream = returned(exit, root);
             setEnabled(false);
-            replace(exit, wrap(stream, nextStep++, plan.sequentialize()));
+            if (!sequentialized && isParallel(stream)) sequentialized = true;
+            replace(exit, wrap(stream, nextStep++, sequentialized));
             return;
         }
         if (method.isStatic() || method.isConstructor() || !calledByUser() || !lastWrapped.equals(thread.frame(0).thisObject())) return;
@@ -595,6 +602,11 @@ final class RealRunTrace {
         ObjectReference rec = keep(RecorderLoader.pin(() -> recorder.newInstance(thread, stepRecorder, List.of(log, vm.mirrorOf(step)), INVOKE)));
         ObjectReference wrapped = invoke(stream, "peek", rec);
         return sequentialize ? invoke(wrapped, "sequential") : wrapped;
+    }
+
+    private boolean isParallel(ObjectReference stream) throws Exception {
+        Method method = streamMethod(stream.referenceType(), "isParallel", 0);
+        return stream.invokeMethod(thread, method, List.of(), INVOKE) instanceof BooleanValue b && b.value();
     }
 
     private ObjectReference invoke(ObjectReference stream, String name, Value... arguments) throws Exception {
@@ -1008,7 +1020,7 @@ final class RealRunTrace {
         };
         int skipped = silencers.stream().mapToInt(Silencer::silencedBreakpoints).sum();
         return Values.json("records", records, "dropped", longOf(fields.get(field("dropped"))), "terminal", terminal,
-                "skippedBreakpoints", skipped, "sequentialized", plan.sequentialize());
+                "skippedBreakpoints", skipped, "sequentialized", sequentialized);
     }
 
     /**
