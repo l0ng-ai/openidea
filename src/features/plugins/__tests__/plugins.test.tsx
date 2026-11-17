@@ -857,13 +857,15 @@ describe("PluginsPage", () => {
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
   });
 
-  it("lists installed and marketplace plugins together, each group foldable", async () => {
+  it("switches between the marketplace and installed plugins; each group folds", async () => {
     const user = userEvent.setup();
     render(<PluginsPage />);
+    expect(await screen.findByRole("list", { name: "Available plugins" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Installed plugins" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Installed/ }));
     const installed = await screen.findByRole("list", { name: "Installed plugins" });
     await waitFor(() => expect(within(installed).getAllByRole("listitem")).toHaveLength(3));
-    expect(screen.queryByRole("tab", { name: /Available/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("list", { name: "Available plugins" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Available plugins" })).not.toBeInTheDocument();
     const toggle = within(installed).getByRole("button", { name: /^Installed/ });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     await user.click(toggle);
@@ -940,14 +942,13 @@ describe("PluginsPage", () => {
     act(() => useProject.setState({ project: null }));
   });
 
-  it("shows a plugin's own icon in its row and details", async () => {
+  it("shows a plugin's own icon in its row", async () => {
     const icon = { light: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>', dark: null };
     setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "iconic", name: "Iconic", icon })]));
     render(<PluginsPage initialTab="installed" />);
     const list = await screen.findByRole("list", { name: "Installed plugins" });
     await waitFor(() => expect(within(list).getByText("Iconic")).toBeInTheDocument());
     expect(list.querySelector("circle")).not.toBeNull();
-    expect(screen.getByLabelText("Iconic details").querySelector("circle")).not.toBeNull();
   });
 
   describe.each(["installed", "catalog"] as const)("%s homepage", (source) => {
@@ -956,7 +957,7 @@ describe("PluginsPage", () => {
       const catalog = { ...sampleCatalog()[0]!, id: entry.id, name: entry.name, homepage };
       setPluginsBackend(createMemoryPluginsBackend(source === "installed" ? [entry] : [], [catalog]));
       const user = userEvent.setup();
-      render(<PluginsPage initialTab="installed" />);
+      render(<PluginsPage initialTab={source === "installed" ? "installed" : "marketplace"} />);
       await screen.findByRole("heading", { level: 2, name: entry.name });
       return user;
     }
@@ -1070,7 +1071,7 @@ describe("PluginsPage", () => {
     const user = userEvent.setup();
     const catalog = sampleCatalog();
     setPluginsBackend(createMemoryPluginsBackend([], catalog));
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Toy Language")).toBeInTheDocument());
     await user.click(within(list).getByText("Toy Language"));
@@ -1087,7 +1088,7 @@ describe("PluginsPage", () => {
       ...createMemoryPluginsBackend([], sampleCatalog()),
       marketUrl: () => Promise.reject({ kind: "unavailable", message: "Index unreachable", data: null }),
     });
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     expect(await within(list).findByText("Index unreachable")).toBeInTheDocument();
     expect(within(list).queryByText("[object Object]")).not.toBeInTheDocument();
@@ -1195,7 +1196,7 @@ describe("marketplace", () => {
       },
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
@@ -1239,7 +1240,7 @@ describe("marketplace", () => {
       },
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Examples")).toBeInTheDocument());
     const headers = within(list)
@@ -1261,7 +1262,7 @@ describe("marketplace", () => {
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [],
     });
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     expect(await screen.findByText("No plugin selected")).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Filter plugins" })).toHaveAttribute("placeholder", "Search plugins");
@@ -1325,7 +1326,7 @@ describe("marketplace", () => {
       ],
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Dusk")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Category" }));
@@ -1362,7 +1363,7 @@ describe("marketplace", () => {
       ],
     });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
+    render(<PluginsPage />);
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Incompatible")).toBeInTheDocument());
     await user.click(within(list).getByText("Next"));
