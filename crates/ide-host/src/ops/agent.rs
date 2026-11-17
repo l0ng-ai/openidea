@@ -251,9 +251,9 @@ pub fn unqueue(host: &Host, window: &str, task: String, queued: String) -> IdeRe
 }
 
 /// Sends a queued message now, interrupting the current turn.
-pub fn send_queued_now(host: &Host, window: &str, task: String, queued: String) -> IdeResult<()> {
+pub async fn send_queued_now(host: &Host, window: &str, task: String, queued: String) -> IdeResult<()> {
     host.require_trust(window)?;
-    host.project(window)?.agents.send_queued_now(&task, &queued)
+    host.project(window)?.agents.send_queued_now(&task, &queued).await
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
@@ -887,10 +887,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         prompt(&c.host, &c.window, c.arg("task")?, c.arg("prompt")?, c.arg("now")?).await
     });
     d.add("agent_unqueue", |c| async move { unqueue(&c.host, &c.window, c.arg("task")?, c.arg("queued")?) });
-    d.add(
-        "agent_send_queued_now",
-        |c| async move { send_queued_now(&c.host, &c.window, c.arg("task")?, c.arg("queued")?) },
-    );
+    d.add("agent_send_queued_now", |c| async move {
+        send_queued_now(&c.host, &c.window, c.arg("task")?, c.arg("queued")?).await
+    });
     d.add("agent_set_config", |c| async move {
         set_config(&c.host, &c.window, c.arg("task")?, c.arg("option")?, c.arg("value")?).await
     });

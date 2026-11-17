@@ -576,6 +576,28 @@ pub(super) fn available_commands(commands_res: Option<&Value>, skills_res: Optio
     out
 }
 
+/// The running entries of a `session.tasks.list` result, in the background-task shape the
+/// app shows (`task_id`, `task_type`, `description`).
+pub(super) fn background_tasks(list: &Value) -> Vec<Value> {
+    let tasks = list.get("tasks").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    tasks
+        .iter()
+        .filter(|t| matches!(str_of(t, "status"), Some("running" | "idle")))
+        .filter_map(|t| {
+            let id = str_of(t, "id")?;
+            let kind = str_of(t, "type").unwrap_or_default();
+            let task_type = match kind {
+                "shell" => "local_bash",
+                "agent" => "local_agent",
+                other => other,
+            };
+            let description =
+                str_of(t, "description").filter(|d| !d.is_empty()).or_else(|| str_of(t, "command")).unwrap_or(kind);
+            Some(json!({ "task_id": id, "task_type": task_type, "description": description }))
+        })
+        .collect()
+}
+
 fn trim_tail(text: &mut String) {
     if text.len() > MAX_OUTPUT {
         let mut cut = text.len() - MAX_OUTPUT;

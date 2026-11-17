@@ -935,29 +935,50 @@ impl AgentManager {
         Ok(item)
     }
 
-    /// Sends queued message `queued` next, cancelling the current turn if there is one.
-    pub fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
+    /// Sends queued message `queued` now: into the running turn when the agent takes
+    /// messages mid-turn, else next, cancelling the current turn if there is one.
+    pub async fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
         let task = self.task(id)?;
-        let idle = {
+        let (item, busy) = {
             let mut s = task.state.lock();
             let i =
                 s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
             let item = s.task.queue.remove(i);
-            if s.busy {
-                s.task.queue.insert(0, item);
-                None
-            } else {
+            let busy = s.busy;
+            if !busy {
                 s.busy = true;
-                Some(item)
             }
+            (item, busy)
         };
         task.persist();
         task.emit_task();
-        match idle {
-            Some(item) => {
-                self.shared.runtime.spawn(async move { task.run(item.prompt).await });
+        if !busy {
+            self.shared.runtime.spawn(async move { task.run(item.prompt).await });
+            return Ok(());
+        }
+        // Out of the queue while it is steered, so the turn ending meanwhile doesn't send it twice.
+        let prompt = match task.steer(item.prompt).await {
+            Ok(()) => return Ok(()),
+            Err(prompt) => prompt,
+        };
+        let start = {
+            let mut s = task.state.lock();
+            if s.busy {
+                s.task.queue.insert(0, AgentQueued { id: item.id, prompt });
+                None
+            } else {
+                // The turn ended while steering was tried: nothing is left to interrupt.
+                s.busy = true;
+                Some(prompt)
+            }
+        };
+        match start {
+            Some(prompt) => {
+                self.shared.runtime.spawn(async move { task.run(prompt).await });
             }
             None => {
+                task.persist();
+                task.emit_task();
                 task.send_now.store(true, Ordering::Release);
                 task.cancel();
             }

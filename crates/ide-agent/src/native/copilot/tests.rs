@@ -6,6 +6,7 @@ use ide_jsonrpc::{Framing, Handler, Peer, codes};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 fn sample_models_list() -> Value {
     json!({
@@ -340,6 +341,12 @@ fn headless_and_acp_args_roundtrip_while_preserving_user_flags() {
 struct FakeCopilotServer {
     peer: OnceLock<Peer>,
     calls: Mutex<Vec<(String, Value)>>,
+    /// `session.send` leaves a shell running: the main loop goes idle but the session doesn't.
+    background_shell: bool,
+}
+
+fn copilot_event(sid: &str, event: Value) -> Value {
+    json!({ "sessionId": sid, "event": event })
 }
 
 impl Handler for FakeCopilotServer {
@@ -362,6 +369,28 @@ impl Handler for FakeCopilotServer {
             "session.permissions.setApproveAll" => {
                 assert!(params.get("enabled").and_then(Value::as_bool).is_some());
                 Ok(json!({ "success": true }))
+            }
+            "session.tasks.list" => Ok(json!({ "tasks": [
+                { "id": "shell-1", "type": "shell", "status": "running", "description": "",
+                  "command": "gh pr checks 3819 --watch", "attachmentMode": "attached" },
+                { "id": "shell-0", "type": "shell", "status": "completed", "description": "ls", "command": "ls" },
+            ] })),
+            "session.tasks.cancel" => Ok(json!({ "cancelled": true })),
+            "session.abort" => Ok(json!({})),
+            "session.send" if self.background_shell => {
+                if let Some(peer) = self.peer.get().cloned() {
+                    let sid = params["sessionId"].as_str().unwrap_or("cop-sess-1").to_owned();
+                    std::thread::spawn(move || {
+                        for event in [
+                            json!({ "id": "b1", "type": "assistant.turn_start", "data": { "turnId": "t1" } }),
+                            json!({ "id": "b2", "type": "assistant.idle", "data": {} }),
+                            json!({ "id": "b3", "type": "session.background_tasks_changed", "data": {} }),
+                        ] {
+                            let _ = peer.notify("session.event", copilot_event(&sid, event));
+                        }
+                    });
+                }
+                Ok(json!({ "messageId": "msg-1" }))
             }
             "session.send" => {
                 if let Some(peer) = self.peer.get().cloned() {
@@ -425,7 +454,8 @@ impl Handler for CollectUpdates {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shim_creates_session_with_copilot_defaults_switches_tiers_and_streams_turns() {
-    let server = Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()) });
+    let server =
+        Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()), background_shell: false });
     let updates = Arc::new(CollectUpdates(Mutex::new(Vec::new())));
     let server_clone = server.clone();
     let client = attach(updates.clone(), move |events| {
