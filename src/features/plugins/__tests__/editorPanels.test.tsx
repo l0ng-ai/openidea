@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import { javascript } from "@codemirror/lang-javascript";
-import { syntaxHighlighting } from "@codemirror/language";
-import { EditorState } from "@codemirror/state";
+import { codeFolding, foldEffect, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
+import { EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Diagnostic, PluginInfo } from "@/bindings";
 import type { TextEditorHandle } from "@/editor/api";
@@ -78,10 +78,13 @@ describe("frame bridge: openidea.editor", () => {
       scrollBy(pixels: number): Promise<unknown>;
       highlights(from: number, to: number): Promise<unknown>;
       problems(): Promise<unknown>;
+      folded(): Promise<unknown>;
+      wrapped(from: number, to: number): Promise<unknown>;
       onTarget(fn: (v: unknown) => void): void;
       onViewport(fn: (v: unknown) => void): void;
       onHighlights(fn: (v: unknown) => void): void;
       onProblems(fn: (v: unknown) => void): void;
+      onLayout(fn: (v: unknown) => void): void;
       document: unknown;
     };
     expect(editor.document).toBe(api.document);
@@ -105,22 +108,29 @@ describe("frame bridge: openidea.editor", () => {
     expect(sent.at(-1)).toMatchObject({ op: "editor.problems" });
     send({ reply: sent.at(-1)!.call, value: [{ line: 2, lastLine: 2, severity: "error" }] });
     await expect(problems).resolves.toEqual([{ line: 2, lastLine: 2, severity: "error" }]);
+    void editor.folded();
+    expect(sent.at(-1)).toMatchObject({ op: "editor.folded" });
+    void editor.wrapped(4, 9);
+    expect(sent.at(-1)).toMatchObject({ op: "editor.wrapped", args: { fromLine: 4, toLine: 9 } });
 
     const events: unknown[] = [];
     editor.onTarget((v) => events.push(["target", v]));
     editor.onViewport((v) => events.push(["viewport", v]));
     editor.onHighlights((v) => events.push(["highlights", v]));
     editor.onProblems((v) => events.push(["problems", v]));
+    editor.onLayout((v) => events.push(["layout", v]));
     send({ editor: "target", value: null });
     send({ editor: "viewport", value: { firstLine: 1.5 } });
     send({ editor: "highlights", value: { fromLine: 0, toLine: 4 } });
     send({ editor: "problems", value: [] });
+    send({ editor: "layout", value: { folded: [], softWrap: true } });
     send({ editor: "constructor", value: 1 });
     expect(events).toEqual([
       ["target", null],
       ["viewport", { firstLine: 1.5 }],
       ["highlights", { fromLine: 0, toLine: 4 }],
       ["problems", []],
+      ["layout", { folded: [], softWrap: true }],
     ]);
   });
 
@@ -147,6 +157,11 @@ describe("WebView as an editor panel", () => {
         return [[{ from: 0, to: 5, color: "rgb(1, 2, 3)" }]];
       },
       problems: () => [{ line: 1, lastLine: 2, severity: "warning" }],
+      folded: () => [{ fromLine: 0, toLine: 2 }],
+      wrapped: (from, to) => {
+        calls.push(["wrapped", from, to]);
+        return [1, 3];
+      },
       subscribe: (l) => {
         listeners.add(l);
         return () => void listeners.delete(l);
@@ -203,6 +218,15 @@ describe("WebView as an editor panel", () => {
     expect((await reply(8)).error).toBeDefined();
     send({ call: 9, op: "editor.problems" });
     expect((await reply(9)).value).toEqual([{ line: 1, lastLine: 2, severity: "warning" }]);
+    send({ call: 10, op: "editor.folded" });
+    expect((await reply(10)).value).toEqual([{ fromLine: 0, toLine: 2 }]);
+    send({ call: 11, op: "editor.wrapped", args: { fromLine: 1, toLine: 3 } });
+    expect((await reply(11)).value).toEqual([1, 3]);
+    send({ call: 12, op: "editor.wrapped", args: { fromLine: 0, toLine: 2001 } });
+    expect(String((await reply(12)).error)).toContain("2000");
+    send({ call: 13, op: "editor.wrapped", args: { fromLine: 0.5, toLine: 2 } });
+    expect((await reply(13)).error).toBeDefined();
+    expect(calls.at(-1)).toEqual(["wrapped", 1, 3]);
 
     editor.fire({ editor: "highlights", value: { fromLine: 0, toLine: 3 } });
     expect(posted.at(-1)).toEqual({ tag: FRAME_TAG, editor: "highlights", value: { fromLine: 0, toLine: 3 } });
@@ -352,6 +376,103 @@ describe("PanelEditor semantic highlights", () => {
     expect(events).toContainEqual({ editor: "highlights", value: { fromLine: 0, toLine: 2 } });
     expect(panel.highlights(0, 1)[0]).toContainEqual({ from: 4, to: 9, color: semantic });
     expect(panel.highlights(1, 2)).toEqual([syntaxOnly[1]]);
+
+    panel.dispose();
+    view.destroy();
+  });
+});
+
+describe("PanelEditor layout", () => {
+  it("reports the folded lines and the rows of wrapped lines, and follows them", async () => {
+    const long = "x".repeat(200);
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: `function f() {\n  a;\n  b;\n}\n${long}\nend`,
+        extensions: [codeFolding(), editorPanelUpdates],
+      }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: "/p/src/a.js", language: "javascript", uiMode: "JavaScript", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    await nextFrame();
+    // Neither: no folds, no rows (switching to a file says so).
+    expect(panel.folded()).toEqual([]);
+    expect(panel.wrapped(0, 6)).toBeNull();
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: [], softWrap: false } },
+    ]);
+
+    // Folding lines 1–2 (the `{` line stays, `}` joins it), and a fold inside it.
+    events.length = 0;
+    const open = view.state.doc.line(1).to;
+    const close = view.state.doc.line(4).from;
+    view.dispatch({
+      effects: [foldEffect.of({ from: open, to: close }), foldEffect.of({ from: open + 3, to: open + 6 })],
+    });
+    await nextFrame();
+    const folds = [{ fromLine: 0, toLine: 3 }];
+    expect(panel.folded()).toEqual(folds);
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: folds, softWrap: false } },
+    ]);
+
+    // Soft wrap on: the long line takes several rows, the folded ones none. jsdom lays nothing
+    // out, so the measured state stands in: wrapping on, the long line's block three rows high.
+    events.length = 0;
+    let wrapping = false;
+    Object.defineProperty(view, "lineWrapping", { get: () => wrapping });
+    const lineBlockAt = view.lineBlockAt.bind(view);
+    vi.spyOn(view, "lineBlockAt").mockImplementation((pos) => {
+      const b = lineBlockAt(pos);
+      return b.from === view.state.doc.line(5).from
+        ? Object.assign(Object.create(b), { height: 3 * view.defaultLineHeight })
+        : b;
+    });
+    wrapping = true;
+    view.dispatch({ effects: StateEffect.appendConfig.of(EditorView.lineWrapping) });
+    await nextFrame();
+    const rows = panel.wrapped(0, 6)!;
+    expect(rows).toEqual([1, 0, 0, 0, 3, 1]);
+    expect(panel.wrapped(4, 99)).toEqual(rows.slice(4));
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: folds, softWrap: true } },
+    ]);
+
+    // The outer fold opened: the lines come back, but for the inner fold's.
+    events.length = 0;
+    view.dispatch({ effects: unfoldEffect.of({ from: open, to: close }) });
+    await nextFrame();
+    const inner = [{ fromLine: 1, toLine: 2 }];
+    expect(panel.folded()).toEqual(inner);
+    expect(panel.wrapped(0, 4)).toEqual([1, 1, 0, 1]);
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: inner, softWrap: true } },
+    ]);
+
+    // Soft wrap off: no rows.
+    events.length = 0;
+    wrapping = false;
+    view.dispatch({ effects: StateEffect.reconfigure.of([codeFolding(), editorPanelUpdates]) });
+    await nextFrame();
+    expect(panel.wrapped(0, 4)).toBeNull();
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: inner, softWrap: false } },
+    ]);
+
+    // Selecting alone says nothing.
+    events.length = 0;
+    view.dispatch({ selection: { anchor: 2 } });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "layout")).toEqual([]);
 
     panel.dispose();
     view.destroy();
