@@ -1,9 +1,12 @@
 /**
  * Open In › GitHub / GitLab / Bitbucket: the file (at the caret line) or directory on the web UI
  * of its repository's remote, at the current branch's upstream (else the HEAD commit).
+ * Copy Path/Reference… › <hosting> Link copies that page's address, with the selected lines.
  */
 import { call, commands } from "@/platform/ipc";
-import type { Action } from "@/platform/actions";
+import { executeAction, type Action } from "@/platform/actions";
+import { writeClipboardText } from "@/platform/clipboard";
+import { tx } from "@/platform/i18n";
 import { notifications, registerMenuGroup } from "@/workbench/contributions";
 import { openUrl } from "./issueLinks";
 import { fileWebUrl, remoteHosting, rootOf } from "./model";
@@ -13,6 +16,7 @@ interface Target {
   path: string;
   dir?: boolean;
   line?: number;
+  endLine?: number;
 }
 
 /** Root → its remote's URL (null: none), read when the repositories change. */
@@ -44,14 +48,40 @@ function targetArg(arg: unknown): Target | null {
   return null;
 }
 
-async function openOnRemote(target: Target) {
+/** The target's page on its remote, from the remote URL read for its root (`url`). */
+function pageFor(target: Target, root: string, url: string | null | undefined): string | null {
+  const rev = revision(root);
+  return url && rev ? fileWebUrl(url, rev, target.path.slice(root.length).replace(/^\/+/, ""), target) : null;
+}
+
+async function remotePage(target: Target): Promise<string | null> {
   const root = rootOf(target.path, useVcs.getState().roots);
-  const url = root ? (remoteUrls.get(root) ?? (await readRemoteUrl(root))) : null;
-  const rev = root ? revision(root) : null;
-  const page =
-    root && url && rev ? fileWebUrl(url, rev, target.path.slice(root.length).replace(/^\/+/, ""), target) : null;
+  return root ? pageFor(target, root, remoteUrls.get(root) ?? (await readRemoteUrl(root))) : null;
+}
+
+function noPage() {
+  notifications().notify({ group: "vcs", level: "warning", title: "This file has no page on a Git remote" });
+}
+
+async function openOnRemote(target: Target) {
+  const page = await remotePage(target);
   if (page) await openUrl(page);
-  else notifications().notify({ group: "vcs", level: "warning", title: "This file has no page on a Git remote" });
+  else noPage();
+}
+
+async function copyRemoteLink(target: Target) {
+  const text = await remotePage(target);
+  if (!text) return noPage();
+  try {
+    await writeClipboardText(text);
+    void executeAction("editor.showHint", { text: tx`Copied ${text}` });
+  } catch (error) {
+    notifications().notify({
+      level: "error",
+      title: tx("Cannot access the clipboard"),
+      body: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 export const openOnRemoteActions: Action[] = [
@@ -68,6 +98,19 @@ export const openOnRemoteActions: Action[] = [
       if (target) void openOnRemote(target);
     },
   },
+  {
+    id: "vcs.copyRemoteLink",
+    title: "Copy Link to Git Remote",
+    description: "Copies the address of the file, its selected lines or the directory on its repository's remote.",
+    category: "Git",
+    icon: "copy",
+    when: "vcsAvailable",
+    hidden: true,
+    run: ({ arg }) => {
+      const target = targetArg(arg);
+      if (target) void copyRemoteLink(target);
+    },
+  },
 ];
 
 /** Open In › <hosting>, for files and directories inside a repository with a web remote. */
@@ -82,15 +125,28 @@ export function registerOpenOnRemote(): () => void {
   });
   const unregister = registerMenuGroup({
     id: "vcs.openOnRemote",
-    menus: ["openIn"],
-    items: (_menu, { paths, dirs, line }) => {
+    menus: ["openIn", "copyPath"],
+    items: (menu, { paths, dirs, line, endLine }) => {
       if (paths.length !== 1) return [];
       const path = paths[0]!;
       const root = rootOf(path, useVcs.getState().roots);
       const url = root ? remoteUrls.get(root) : null;
       const hosting = url ? remoteHosting(url) : null;
-      if (!hosting) return [];
+      if (!root || !hosting) return [];
       const target: Target = { path, dir: dirs?.[0] ?? false, line };
+      if (menu === "copyPath") {
+        const page = pageFor({ ...target, endLine }, root, url);
+        if (!page) return [];
+        return [
+          {
+            id: "vcs.copyRemoteLink",
+            label: tx`${hosting.name} Link`,
+            verbatim: true,
+            preview: page,
+            run: () => void executeAction("vcs.copyRemoteLink", { ...target, endLine }),
+          },
+        ];
+      }
       return [
         {
           id: "vcs.openOnRemote",

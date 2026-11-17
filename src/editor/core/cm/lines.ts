@@ -7,8 +7,6 @@ import {
   type TransactionSpec,
 } from "@codemirror/state";
 
-const collator = new Intl.Collator(undefined, { numeric: false, sensitivity: "variant" });
-
 /** Line blocks the command applies to: one per non-empty selection range, or the document. */
 function blocks(state: EditorState): Array<{ from: number; to: number }> {
   const ranges = state.selection.ranges.filter((r) => !r.empty);
@@ -59,8 +57,11 @@ function rewrite(
   };
 }
 
+/** Plain UTF-16 code-unit order, as IDEA sorts (`String.compareTo`): every uppercase letter before every lowercase one. */
+const byCodeUnit = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
 export function sortLinesSpec(state: EditorState): TransactionSpec | null {
-  return rewrite(state, (lines) => [...lines].sort((a, b) => collator.compare(a, b)), "input.sort");
+  return rewrite(state, (lines) => [...lines].sort(byCodeUnit), "input.sort");
 }
 
 export function reverseLinesSpec(state: EditorState): TransactionSpec | null {

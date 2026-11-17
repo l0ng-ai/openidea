@@ -52,6 +52,7 @@ Language servers that support LSP inline completion show a grey suggestion at th
 | **Go to Type Declaration**            | `⇧⌘B`               | `Ctrl+Shift+B`                     |
 | **Super Method**                      | `⌘U`                | `Ctrl+U`                           |
 | **Navigate › Test**                   | `⇧⌘T`               | `Ctrl+Shift+T`                     |
+| **Navigate › Related Symbol…**        | `⌃⌘↑`               | `Ctrl+Alt+Home`                    |
 | **Back** / **Forward**                | `⌘[` / `⌘]`         | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
 | **Next Method** / **Previous Method** | `⌃⇧↓` / `⌃⇧↑`       | `Alt+Down` / `Alt+Up`              |
 
@@ -59,6 +60,8 @@ Language servers that support LSP inline completion show a grey suggestion at th
 - Hold `⌘` / `Ctrl` and hover over a name to see it underlined as a link, with brief information about it.
 - Gutter icons mark types and methods that are implemented or overridden (↓) and methods that implement or override another (↑). Click one to go there.
 - **Navigate › Test** jumps between a class and its tests by naming convention and offers **Create New Test…** when there is none.
+- **Navigate › Related Symbol…** goes to the files tied to the current one by convention: a C, C++ or Objective-C header and its source file, and in Rails a controller action and its views, a view and its action, a controller and its helper and model, a model and its controller and migrations. With several targets it shows a chooser.
+- In Rails, **Go to Declaration** also follows method symbols in callbacks (`before_action :load_user`, `if: :admin?`) to their `def`, and controller actions in `config/routes.rb` (`to: "users#index"`, `resources :users`) to the controller.
 
 Going to files, classes and symbols by name is covered in [Search and navigation](/en/guide/search).
 

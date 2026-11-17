@@ -31,7 +31,7 @@ import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
-import { detectRunTargets, targetConfig, targetLanguage, zigTargets, type RunTarget } from "./targets";
+import { detectRunTargets, goFuzzConfig, targetConfig, targetLanguage, zigTargets, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
 
 export interface LocatedTool {
@@ -660,7 +660,15 @@ function zigFile(input: ContextInput, env: ToolEnv, s: FileSite, test?: { name: 
     isTest: false,
     debugAdapter: null,
   };
-  const binary: RunConfig = { ...config, kind: "native", command: out, args: [], isTest: false };
+  const binary: RunConfig = {
+    ...config,
+    kind: "native",
+    command: out,
+    args: [],
+    isTest: false,
+    // Marks the debugged program as Zig: CodeLLDB's source mode stays off (see nativeLaunch).
+    params: { language: "zig" },
+  };
   return { name, scope, config, debug: { build: buildConfig, config: binary } };
 }
 
@@ -1132,7 +1140,7 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
   }
   if (/\.zig$/.test(input.path)) {
     // `--test-filter` matches a substring of the test's full name.
-    return zigFile(input, env, s, { name: target.name, filter: target.name.replace(/\\(.)/g, "$1") });
+    return zigFile(input, env, s, { name: target.name, filter: target.name });
   }
   const rust = /\.rs$/.test(input.path);
   if (rust && !(s.inProject && cargoOwner(rel, input.configs).length)) {
@@ -1162,6 +1170,17 @@ export function produceContext(input: ContextInput, env: ToolEnv): Produced | nu
     }
   }
   return produceFile(input, env);
+}
+
+/** GoLand's "Run '<name>' with Fuzzing": the `Fuzz` function at the caret, run with `go test -fuzz`. */
+export function produceFuzz(input: ContextInput, env: ToolEnv): Produced | null {
+  input = scopedInput(input);
+  if (input.content === undefined || input.line === undefined || !/_test\.go$/.test(input.path)) return null;
+  const targets = fileTargets(input, input.content.slice(0, 400_000));
+  const inner = innermostTarget(input.content, targets, input.line);
+  const produced = inner && elementProduction(input, env, inner);
+  const config = inner && produced?.config && goFuzzConfig(produced.config, inner);
+  return produced && config ? { ...produced, config } : null;
 }
 
 /**

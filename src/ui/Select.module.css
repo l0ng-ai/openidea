@@ -2,7 +2,7 @@
 .trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-field, 28px);
   min-width: 0;
   padding: 0 6px 0 9px;
@@ -96,7 +96,7 @@
 /* Mirrors a List row: inset, padding and gap. */
 .sizerRow {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 0 var(--list-inset, 6px);
   padding: 0 8px;
   white-space: nowrap;
@@ -157,4 +157,11 @@
 
 .option {
   display: contents;
+}
+
+.rowAction {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: 2px;
 }

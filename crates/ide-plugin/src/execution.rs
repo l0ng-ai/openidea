@@ -38,6 +38,29 @@ pub struct ContentDiff {
     pub title: Option<String>,
 }
 
+/// A diff opened by a plugin (API 1.10): `None` is a side where the file doesn't exist.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub left_label: Option<String>,
+    pub right_label: Option<String>,
+    pub title: Option<String>,
+}
+
+impl From<ContentDiff> for FileDiff {
+    fn from(v: ContentDiff) -> Self {
+        Self {
+            left: Some(v.left),
+            right: Some(v.right),
+            left_label: v.left_label,
+            right_label: v.right_label,
+            title: v.title,
+        }
+    }
+}
+
 /// ContentTabReply data exchanged with the IDE.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +84,24 @@ pub struct PluginRunConfiguration {
     pub cwd: Option<String>,
     pub test: bool,
     pub framework: Option<String>,
+    /// API 1.9: variables added to the run's environment.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// API 1.9: how Debug starts the configuration.
+    #[serde(default)]
+    pub debugger: Option<PluginDebugger>,
+}
+
+/// How Debug starts a plugin configuration (API 1.9 `launch-configurations.debugger`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum PluginDebugger {
+    /// `program` under the debugger of this language id.
+    #[serde(rename_all = "camelCase")]
+    Launch { language: String },
+    /// Run, then attach to the first matching process the run starts.
+    #[serde(rename_all = "camelCase")]
+    AttachChild { kind: String, command_contains: Option<String> },
 }
 
 /// RunExited data exchanged with the IDE.

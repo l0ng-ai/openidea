@@ -141,6 +141,30 @@ pub fn process_tree(pid: i32) -> Vec<i32> {
     tree
 }
 
+/// Every process `pid` started, directly or not, parents before their children.
+pub fn descendants(pid: u32) -> Vec<u32> {
+    #[cfg(unix)]
+    {
+        let Ok(root) = i32::try_from(pid) else { return Vec::new() };
+        process_tree(root).into_iter().skip(1).filter_map(|p| u32::try_from(p).ok()).collect()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        windows_tree::descendants(pid)
+            .iter()
+            // SAFETY: a live process handle opened with query access.
+            .map(|h| unsafe { windows_sys::Win32::System::Threading::GetProcessId(h.as_raw_handle()) })
+            .filter(|&p| p != 0)
+            .collect()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        Vec::new()
+    }
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,

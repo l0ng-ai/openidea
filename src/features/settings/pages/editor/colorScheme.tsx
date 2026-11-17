@@ -113,9 +113,10 @@ function previewVars(
   o: Record<string, TextAttributesOverride> | undefined,
   customs: CustomColorSchemes,
   language?: string,
+  redGreen = false,
 ): CSSProperties {
   const vars: Record<string, string> = {};
-  const tokens = resolvedSchemeTokens(id, customs);
+  const tokens = resolvedSchemeTokens(id, customs, redGreen);
   for (const [k, v] of tokens)
     if (
       k.startsWith("--syn-") ||
@@ -1341,6 +1342,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides", "global");
   const [weight] = useSetting<number>("editor.fontWeight");
   const [boldFontWeight] = useSetting<number>("editor.boldFontWeight");
+  const [redGreen = false] = useSetting<boolean>("appearance.redGreenVision", "global");
   const [rawCustoms, setCustoms] = useSetting<CustomColorSchemes>("editor.customSchemes", "global");
   const customs = useMemo(() => customSchemes(rawCustoms), [rawCustoms]);
   const [report, setReport] = useState("");
@@ -1404,19 +1406,26 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   }, [mine]);
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const language = attr?.language;
-  const inherited = useMemo(() => (attr ? resolvedAttribute(id, attr.id, customs) : {}), [id, attr, customs]);
+  const inherited = useMemo(
+    () => (attr ? resolvedAttribute(id, attr.id, customs, redGreen) : {}),
+    [id, attr, customs, redGreen],
+  );
   const vars = useMemo(() => {
     const next = {
-      ...previewVars(id, mine, customs, language),
+      ...previewVars(id, mine, customs, language, redGreen),
       ...fontWeightVars(weight, boldFontWeight),
     } as CSSProperties & Record<string, string>;
     // Console preview sits on the console background, not the editor surface.
     if (scopes[0] === "Console Colors" && next["--bg-console"]) next["--bg-editor"] = next["--bg-console"];
     return next;
-  }, [id, mine, customs, language, weight, boldFontWeight, scopes]);
+  }, [id, mine, customs, language, weight, boldFontWeight, scopes, redGreen]);
   const baseVars = useMemo(
-    () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
-    [id, mine, customs, weight, boldFontWeight],
+    () =>
+      ({
+        ...previewVars(id, mine, customs, undefined, redGreen),
+        ...fontWeightVars(weight, boldFontWeight),
+      }) as CSSProperties,
+    [id, mine, customs, weight, boldFontWeight, redGreen],
   );
   const update = (attrId: string, v: TextAttributesOverride | undefined) => {
     const next: Overrides = { ...(overrides ?? {}) };
@@ -1572,6 +1581,14 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
       )}
       {scheme === "theme-default" && (
         <div className={styles.note}>{tx`Follows the IDE theme: currently ${schemeName}.`}</div>
+      )}
+      {redGreen && (id === "dark" || id === "light") && (
+        <div className={styles.note}>
+          <T>Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.</T>{" "}
+          <button type="button" className={styles.schemeLink} onClick={() => selectPage("appearance")}>
+            <T>Appearance settings</T>
+          </button>
+        </div>
       )}
       {landing ? (
         <nav className={styles.schemeLinks} aria-label={tx("Color scheme pages")}>
@@ -1758,6 +1775,18 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
             key: "editor.rainbowBrackets",
             label: "Rainbow brackets",
             hint: "Color (), [] and {} by nesting depth; unmatched brackets use the error color.",
+            children: [
+              { t: "check", key: "editor.rainbowBracketKinds.round", label: "Round brackets ( )" },
+              { t: "check", key: "editor.rainbowBracketKinds.square", label: "Square brackets [ ]" },
+              { t: "check", key: "editor.rainbowBracketKinds.curly", label: "Curly braces { }" },
+              {
+                t: "check",
+                key: "editor.rainbowBracketKinds.angle",
+                label: "Angle brackets and tags < >",
+                hint: "Type arguments and parameters, and HTML, XML and JSX tags, where the syntax tree marks them; comparisons stay uncolored. They count toward the depth of what they enclose: an element's tags take one level, its content the next.",
+              },
+              { t: "number", key: "editor.rainbowBracketColors", label: "Number of colors", min: 2, max: 5 },
+            ],
           },
         ],
       },

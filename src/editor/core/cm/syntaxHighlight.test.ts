@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { highlightingFor, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
-import { openideaHighlightStyle, parameter } from "./highlight";
+import { openideaHighlightStyle, parameter, shellCommand } from "./highlight";
 import { findLanguageDescription, loadSupport } from "./languages";
 import { setSyntaxHighlights, syntaxHighlightField } from "./syntaxHighlight";
 
@@ -44,6 +44,14 @@ describe("syntaxHighlightField", () => {
 
     state = state.update({ changes: { from: 0, insert: "  " } }).state;
     expect(marks(state).map((m) => m.text)).toEqual(["def", "hi", ":ok"]);
+  });
+
+  it("gives shell command names their own class, apart from function calls", () => {
+    const state = create().update({ effects: setSyntaxHighlights.of({ kinds: ["command"], data: [0, 3, 0] }) }).state;
+    const command = highlightingFor(state, [shellCommand]);
+    expect(command).toBeTruthy();
+    expect(command).not.toBe(highlightingFor(state, [t.function(t.variableName)]));
+    expect(marks(state)).toEqual([{ text: "def", cls: command }]);
   });
 
   it("lets Kotlin declaration roles override the stream lexer's generic definition style", async () => {

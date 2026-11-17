@@ -1,7 +1,7 @@
 import { showShelfDiff } from "./shelf";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
-import { registerActions, type Action } from "@/platform/actions";
+import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { Menu, type MenuItem } from "@/ui";
@@ -25,6 +25,7 @@ import {
   showUnstashDialog,
 } from "./changeOps";
 import { setAmend, useCommit } from "./commitStore";
+import { currentPlan } from "./commitSelection";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { showDiffWindow } from "./DiffWindow";
@@ -40,7 +41,7 @@ import {
 import { buildChangeTree, changeFileNodes, changeGroupPaths, type ChangeNode } from "./changes";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
-import { gotoChange, rollbackSelectedLines } from "./gutter";
+import { gotoChange, hunksInSelection, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
@@ -58,13 +59,12 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
+import { currentRepo, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
 import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
-import { compareWithFileRevision } from "./FileRevisionChooser";
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
@@ -74,6 +74,16 @@ function argPath(arg: unknown): string | undefined {
   if (arg && typeof arg === "object" && "path" in arg && typeof (arg as { path: unknown }).path === "string")
     return (arg as { path: string }).path;
   return undefined;
+}
+
+/** Whether Git has no commit of the file: unversioned, ignored, or added and not committed yet. */
+function hasNoCommits(status: { staged: string | null; unstaged: string | null }): boolean {
+  return (
+    status.staged === "added" ||
+    status.unstaged === "untracked" ||
+    status.unstaged === "ignored" ||
+    status.staged === "ignored"
+  );
 }
 
 function argPaths(arg: unknown): string[] | undefined {
@@ -142,6 +152,21 @@ function selectedPaths(arg: unknown): string[] {
   if (changed.length) return changed;
   const project = projectViewSelection();
   return project.length ? project : contextPaths(arg);
+}
+
+/**
+ * The repository a repository-wide dialog (Pull, Merge, Rebase) starts on: the one holding the
+ * action's file, else the Project view's selection while it has focus, else the active editor's
+ * file, else the selected repository.
+ */
+export function operationRepo(arg: unknown): string | null {
+  const roots = useVcs.getState().roots;
+  if (arg && typeof arg === "object" && "repo" in arg) return (arg as { repo: string | null }).repo;
+  const inContext = (paths: readonly string[] | undefined) =>
+    paths?.map((p) => repoOf(p, roots)).find((r) => r != null) ?? null;
+  const fromProject = getContext().activeToolWindow === "project" ? projectViewSelection() : undefined;
+  const active = maybeEditorService()?.activePath();
+  return inContext(argPaths(arg)) ?? inContext(fromProject) ?? inContext(active ? [active] : []) ?? currentRepo();
 }
 
 function showGitWindow() {
@@ -288,7 +313,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "git-pull",
       when: VCS,
-      run: showPullDialog,
+      run: ({ arg }) => showPullDialog(operationRepo(arg)),
     },
     {
       id: "vcs.merge",
@@ -296,7 +321,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["merge branch"],
-      run: showMergeDialog,
+      run: ({ arg }) => showMergeDialog(operationRepo(arg)),
     },
     {
       id: "vcs.rebase",
@@ -304,7 +329,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["rebase branch"],
-      run: showRebaseDialog,
+      run: ({ arg }) => showRebaseDialog(operationRepo(arg)),
     },
     {
       id: "vcs.manageRemotes",
@@ -358,9 +383,20 @@ export function registerVcsActions(): () => void {
         // IDEA: in the editor, with the caret on changed lines, ⌥⌘Z is Rollback Lines.
         const ed = activeEditor();
         if (!explicit?.length && ed?.view.hasFocus && rollbackSelectedLines(ed.view)) return;
+        // The Commit window's subject is its tree selection; when the selection holds
+        // nothing rollbackable (unversioned files, stale paths), the checked changes are
+        // instead — as IDEA's toolbar Rollback acts on the checked changes there.
+        const focused = commitWindowFocused();
         const sel = useCommit.getState().selection;
-        const paths = explicit?.length ? explicit : commitWindowFocused() && sel.length ? sel : undefined;
-        if (paths) {
+        const fromSel = focused && sel.length ? rollbackCandidates(sel) : null;
+        const paths = explicit?.length
+          ? explicit
+          : fromSel?.length
+            ? sel
+            : focused
+              ? currentPlan().included.map((f) => f.path)
+              : undefined;
+        if (paths?.length) {
           const candidates = rollbackCandidates(paths);
           const submodule = paths.find((p) => isNestedRepoEntry(p));
           if (!candidates.length && submodule)
@@ -385,7 +421,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
-      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
@@ -404,6 +440,9 @@ export function registerVcsActions(): () => void {
           useChangelists.getState().state,
           state.roots,
           useCommit.getState().groupByStaging,
+          undefined,
+          useCommit.getState().groupByRepo,
+          useCommit.getState().showUnversionedSeparately,
         );
         // The modal interface has one front diff window (#1863): a file with its group
         // as the F7 chain, or several selected files as the chain.
@@ -467,7 +506,10 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
-      run: ({ arg }) => compareWithFileRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => {
+        const path = argPath(arg) ?? maybeEditorService()?.activePath();
+        void import("./FileRevisionChooser").then((m) => m.compareWithFileRevision(path));
+      },
     },
     {
       id: "vcs.nextChange",
@@ -496,6 +538,27 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      // The diff of the file at the changed lines under the caret or selection (the change marker popup's Show Diff).
+      id: "vcs.showDiffForLines",
+      title: "Show Diff for Lines",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      enabled: () => {
+        const ed = activeEditor();
+        return !!ed && hunksInSelection(ed.view.state).length > 0;
+      },
+      run: () => {
+        const ed = activeEditor();
+        const [hunk] = ed ? hunksInSelection(ed.view.state) : [];
+        if (!ed || !hunk) return;
+        const { state } = ed.view;
+        const head = state.selection.main.head;
+        const line = hunk.from <= head && head <= hunk.to ? state.doc.lineAt(head).number - 1 : hunk.start;
+        return executeAction("vcs.showDiff", { path: ed.ctx.path, line });
+      },
+    },
+    {
       id: "vcs.annotate",
       title: "Annotate with Git Blame",
       category: "Git",
@@ -505,6 +568,15 @@ export function registerVcsActions(): () => void {
       toggled: () => {
         const ed = activeEditor();
         return !!ed && annotationsShown(ed.view);
+      },
+      // As in IDEA, a file Git has no commit of (unversioned, ignored, or added and not yet
+      // committed) has nothing to annotate; shown annotations can always be closed.
+      enabled: ({ arg }) => {
+        const ed = activeEditor();
+        const path = argPath(arg) ?? ed?.ctx.path;
+        if (!path || (ed?.ctx.path === path && annotationsShown(ed.view))) return true;
+        const status = statusOf(path);
+        return !status || !hasNoCommits(status);
       },
       run: ({ arg }) => annotate(arg),
     },

@@ -331,13 +331,22 @@ pub fn env_wrapper(bin_dir: &Path, command: &str, target: &Path, env: &[(&str, &
     #[cfg(not(unix))]
     {
         let link = bin_dir.join(format!("{command}.cmd"));
-        let vars: String = env.iter().map(|(k, v)| format!("set \"{k}={}\"\r\n", v.display())).collect();
-        fs::write(&link, format!("@echo off\r\nsetlocal\r\n{vars}\"{}\" %*\r\n", target.display()))?;
+        let vars: String = env.iter().map(|(k, v)| format!("set \"{k}={}\"\r\n", cmd_path(bin_dir, v))).collect();
+        fs::write(&link, format!("@echo off\r\nsetlocal\r\n{vars}\"{}\" %*\r\n", cmd_path(bin_dir, target)))?;
         Ok(link)
     }
 }
 
 pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResult<PathBuf> {
+    link_executable_with_runtime(bin_dir, command, target, None)
+}
+
+pub fn link_executable_with_runtime(
+    bin_dir: &Path,
+    command: &str,
+    target: &Path,
+    runtime: Option<&str>,
+) -> IdeResult<PathBuf> {
     fs::create_dir_all(bin_dir)?;
     #[cfg(unix)]
     {
@@ -347,7 +356,8 @@ pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResul
         }
         let quoted = target.to_string_lossy().replace('\'', r"'\''");
         // A Node script without a shebang (e.g. js-debug's dapDebugServer.js) runs through `node`.
-        let runner = if target.extension().is_some_and(|e| e == "js") { "node " } else { "" };
+        let runner = runtime.or_else(|| target.extension().is_some_and(|e| e == "js").then_some("node"));
+        let runner = runner.map(|r| format!("{r} ")).unwrap_or_default();
         fs::write(&link, format!("#!/bin/sh\nexec {runner}'{quoted}' \"$@\"\n"))?;
         make_executable(&link)?;
         make_executable(target)?;
@@ -356,9 +366,24 @@ pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResul
     #[cfg(not(unix))]
     {
         let link = bin_dir.join(format!("{command}.cmd"));
-        let runner = if target.extension().is_some_and(|e| e == "js") { "node " } else { "" };
-        fs::write(&link, format!("@echo off\r\n{runner}\"{}\" %*\r\n", target.display()))?;
+        let runner = runtime.or_else(|| target.extension().is_some_and(|e| e == "js").then_some("node"));
+        let runner = runner.map(|r| format!("{r} ")).unwrap_or_default();
+        fs::write(&link, format!("@echo off\r\n{runner}\"{}\" %*\r\n", cmd_path(bin_dir, target)))?;
         Ok(link)
+    }
+}
+
+/// `path` as a `.cmd` shim in `bin_dir` names it: relative to the shim (`%~dp0..\…`) when it
+/// is in the tool's own directory. cmd.exe reads a batch file in the console's code page, so
+/// an absolute path through a non-ASCII user directory, written as UTF-8, isn't found (#3338).
+#[cfg_attr(unix, allow(dead_code))]
+fn cmd_path(bin_dir: &Path, path: &Path) -> String {
+    match bin_dir.parent().and_then(|tool| path.strip_prefix(tool).ok()) {
+        Some(rest) => {
+            let rest: Vec<_> = rest.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+            format!("%~dp0..\\{}", rest.join("\\"))
+        }
+        None => path.display().to_string(),
     }
 }
 
@@ -494,6 +519,35 @@ mod tests {
         extract(&archive, ArchiveKind::Zip, &dest, "x", &CancellationToken::new()).unwrap();
         assert!(!tmp.path().join("escape.txt").exists());
         assert!(dest.join("ok.txt").exists());
+    }
+
+    #[test]
+    fn unity_vsix_wrapper_preserves_managed_assemblies_and_uses_mono_on_unix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("unity.vsix");
+        zip_file(
+            &archive,
+            &[
+                ("extension/bin/UnityDebug.exe", b"adapter", 0o644),
+                ("extension/bin/UnityDebug.exe.config", b"runtime config", 0o644),
+                ("extension/bin/Mono.Debugger.Soft.dll", b"dependency", 0o644),
+            ],
+        );
+        let dest = tmp.path().join("install with spaces");
+        extract(&archive, ArchiveKind::Zip, &dest, "unity-debug", &CancellationToken::new()).unwrap();
+        let target = locate(&dest, &["UnityDebug.exe".into()]).unwrap();
+        let bin = dest.join("bin");
+        let wrapper = link_executable_with_runtime(&bin, "unity-debug", &target, cfg!(unix).then_some("mono")).unwrap();
+        let script = fs::read_to_string(wrapper).unwrap();
+        #[cfg(unix)]
+        assert!(script.contains(&*target.to_string_lossy()));
+        #[cfg(unix)]
+        assert!(script.contains("exec mono '") && script.contains("\"$@\""));
+        // The shim names the adapter relative to itself (see `cmd_path`).
+        #[cfg(windows)]
+        assert!(script.contains(&format!("\"{}\" %*", cmd_path(&bin, &target))) && !script.contains("mono "));
+        assert_eq!(fs::read(target.with_extension("exe.config")).unwrap(), b"runtime config");
+        assert_eq!(fs::read(target.parent().unwrap().join("Mono.Debugger.Soft.dll")).unwrap(), b"dependency");
     }
 
     #[test]
@@ -741,6 +795,17 @@ mod tests {
         fs::write(root.join("extension/package.json"), "").unwrap();
         let found = locate(root, &["com.microsoft.java.debug.plugin-*.jar".into()]).unwrap();
         assert!(found.ends_with("server/com.microsoft.java.debug.plugin-0.53.2.jar"));
+    }
+
+    #[test]
+    fn windows_shims_name_the_tool_relative_to_themselves() {
+        let tool = Path::new("/Users/张三/AppData/Local/ai.l0ng.openidea/tools/taplo");
+        let bin = tool.join("bin");
+        assert_eq!(cmd_path(&bin, &tool.join("taplo.exe")), "%~dp0..\\taplo.exe");
+        assert_eq!(cmd_path(&bin, &tool.join("gems/bin/solargraph")), "%~dp0..\\gems\\bin\\solargraph");
+        // Outside the tool's directory (a system SDK) stays absolute.
+        let sdk = Path::new("/usr/local/share/dotnet");
+        assert_eq!(cmd_path(&bin, sdk), sdk.display().to_string());
     }
 
     #[cfg(unix)]

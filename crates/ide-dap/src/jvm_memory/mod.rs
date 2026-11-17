@@ -23,7 +23,7 @@ use std::time::Duration;
 
 pub use heap::*;
 pub use inspect::{JvmFieldsResult, JvmInspectUnavailable, JvmInstancesResult, JvmObjectRef, JvmReferrersResult};
-pub(crate) use inspect::{fields, instances, referrers, set_inspector, watch_link};
+pub(crate) use inspect::{fields, instances, referrers, set_inspector, vm_target, watch_link};
 #[cfg(all(test, unix))]
 pub(crate) use scan::watch_for_attached_jvm;
 pub(crate) use scan::{JvmFinder, attach_target, find_attached_jvm, find_local_jvm, local_jdwp_port};

@@ -1,6 +1,7 @@
 import { call, commands } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
 import { tx } from "@/platform/i18n";
+import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Session.module.css";
 
 const hasControl = (text: string) => [...text].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
@@ -39,16 +40,41 @@ export function imageTarget(source: string, cwd: string): ImageTarget | null {
 }
 
 /** What one message has loaded: streaming reuses it, later replies read a new QR at the same path and ask again. */
-export type MessageImages = { reads: Map<string, Promise<string>>; asked: Set<string> };
+export type MessageImages = {
+  reads: Map<string, Promise<string>>;
+  asked: Set<string>;
+  onLoaded?: () => void;
+};
 
-export function loadImages(root: HTMLElement, cwd: string, { reads, asked }: MessageImages): () => void {
+export function loadImages(root: HTMLElement, cwd: string, imagesState: MessageImages): () => void {
+  const { reads, asked } = imagesState;
   let alive = true;
   const held: HTMLButtonElement[] = [];
   const images = [...root.querySelectorAll<HTMLImageElement>("img")];
+  const bindUrl = (img: HTMLImageElement, url: string, asyncLoad: boolean) => {
+    const svgSize = svgDataUrlSize(url);
+    if (svgSize && applyImageZoomWidth(img, svgSize) && asyncLoad) imagesState.onLoaded?.();
+    img.onload = () => {
+      if (!alive) return;
+      if (!img.hasAttribute("data-natural-width") && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        if (applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight }) && asyncLoad) {
+          imagesState.onLoaded?.();
+        }
+      } else if (asyncLoad) {
+        imagesState.onLoaded?.();
+      }
+    };
+    img.src = url;
+    if (!img.hasAttribute("data-natural-width") && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight });
+    }
+  };
   for (const img of images) {
+    applyImageZoomWidth(img);
     const source = img.dataset.imageSrc ?? "";
     const fail = () => {
       if (!alive) return;
+      img.onload = null;
       img.onerror = null;
       img.removeAttribute("src");
       img.alt = tx`Unable to load image: ${source}`;
@@ -62,7 +88,7 @@ export function loadImages(root: HTMLElement, cwd: string, { reads, asked }: Mes
       const { url } = target;
       if (/^data:/i.test(url) || asked.has(url)) {
         img.hidden = false;
-        img.src = url;
+        bindUrl(img, url, false);
       } else {
         // A reply can be steered into naming an address that carries data out: the user decides.
         // That holds for this machine too, where a server may pass the request on.
@@ -75,7 +101,7 @@ export function loadImages(root: HTMLElement, cwd: string, { reads, asked }: Mes
           asked.add(url);
           load.remove();
           img.hidden = false;
-          img.src = url;
+          bindUrl(img, url, true);
         };
         img.hidden = true;
         img.before(load);
@@ -89,13 +115,16 @@ export function loadImages(root: HTMLElement, cwd: string, { reads, asked }: Mes
         void pending.catch(() => reads.delete(target.path));
       }
       void pending.then((url) => {
-        if (alive) img.src = url;
+        if (alive) bindUrl(img, url, true);
       }, fail);
     }
   }
   return () => {
     alive = false;
-    for (const img of images) img.onerror = null;
+    for (const img of images) {
+      img.onload = null;
+      img.onerror = null;
+    }
     for (const load of held) load.remove();
   };
 }

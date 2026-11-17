@@ -11,12 +11,26 @@ use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
+
+/// Dedicated pool for background indexing and snapshot hydration: queries hold
+/// `IndexData::read` while scanning on the global Rayon pool, so indexing work
+/// (which may block on channel backpressure while the index thread waits for
+/// `IndexData::write`) must never compete for the same workers.
+static INDEX_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("openidea-index-{i}"))
+        .build()
+        .expect("cannot build index thread pool")
+});
 
 /// Files larger than this are listed but not parsed for symbols.
 pub const MAX_SYMBOL_FILE: u64 = 2 * 1024 * 1024;
 const CHUNK: usize = 512;
+/// Insert/persist batch of the initial scan's streaming pass.
+const SCAN_BATCH: usize = 2048;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const SNAPSHOT_DELAY: Duration = Duration::from_secs(2);
@@ -278,17 +292,19 @@ impl Shared {
         }
         let validation_elapsed = validation_started.elapsed();
         let build_started = Instant::now();
-        let entries: Vec<Option<(FileEntry, Vec<StoredSymbol>)>> = (0..snapshot.len())
-            .into_par_iter()
-            .map(|i| {
-                let path = root.join(snapshot.rel(i));
-                let meta = std::fs::symlink_metadata(&path).ok()?;
-                if !meta.is_file() || mtime_of(&meta) != snapshot.mtime(i) || meta.len() != snapshot.size(i) {
-                    return None;
-                }
-                Some(snapshot.entry(i, root))
-            })
-            .collect();
+        let entries: Vec<Option<(FileEntry, Vec<StoredSymbol>)>> = INDEX_POOL.install(|| {
+            (0..snapshot.len())
+                .into_par_iter()
+                .map(|i| {
+                    let path = root.join(snapshot.rel(i));
+                    let meta = std::fs::symlink_metadata(&path).ok()?;
+                    if !meta.is_file() || mtime_of(&meta) != snapshot.mtime(i) || meta.len() != snapshot.size(i) {
+                        return None;
+                    }
+                    Some(snapshot.entry(i, root))
+                })
+                .collect()
+        });
         let built = build_started.elapsed();
         if entries.iter().any(Option::is_none) {
             return false;
@@ -364,17 +380,19 @@ impl Shared {
         let started = Instant::now();
         match store.load_snapshot() {
             Some(snapshot) => {
-                let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = (0..snapshot.len())
-                    .into_par_iter()
-                    .filter_map(|i| {
-                        let rel = snapshot.rel(i);
-                        if !safe_rel(rel) {
-                            return None;
-                        }
-                        let path = root.join(rel);
-                        seen.contains(path.as_path()).then(|| snapshot.entry(i, &root))
-                    })
-                    .collect();
+                let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = INDEX_POOL.install(|| {
+                    (0..snapshot.len())
+                        .into_par_iter()
+                        .filter_map(|i| {
+                            let rel = snapshot.rel(i);
+                            if !safe_rel(rel) {
+                                return None;
+                            }
+                            let path = root.join(rel);
+                            seen.contains(path.as_path()).then(|| snapshot.entry(i, &root))
+                        })
+                        .collect()
+                });
                 let mut d = self.data.write();
                 let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
                 d.reserve(entries.len(), symbols, 0);
@@ -394,16 +412,18 @@ impl Shared {
                 Ok(records) => {
                     // Fallback for an index that changed since the snapshot: redb
                     // records are decoded one file at a time and filtered by the walk.
-                    let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = records
-                        .into_par_iter()
-                        .filter(|(rel, _)| {
-                            safe_rel(rel) && {
-                                let path = root.join(rel);
-                                seen.contains(path.as_path())
-                            }
-                        })
-                        .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
-                        .collect();
+                    let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = INDEX_POOL.install(|| {
+                        records
+                            .into_par_iter()
+                            .filter(|(rel, _)| {
+                                safe_rel(rel) && {
+                                    let path = root.join(rel);
+                                    seen.contains(path.as_path())
+                                }
+                            })
+                            .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
+                            .collect()
+                    });
                     let mut d = self.data.write();
                     let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
                     d.reserve(entries.len(), symbols, 0);
@@ -469,20 +489,21 @@ impl Shared {
         });
 
         let filter = self.filter();
-        let was_prewalked = prewalked.is_some();
         let walk_started = Instant::now();
+        let was_prewalked = prewalked.is_some();
         let found = prewalked.unwrap_or_else(|| self.walk_roots(dirs));
-        let walk_elapsed = walk_started.elapsed();
+        let walk = walk_started.elapsed();
         if self.is_cancelled() {
             self.end_scan(task);
             return None;
         }
-        let reconcile_started = Instant::now();
+        let classify_started = Instant::now();
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
-        let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
+        let (todo, stale) = {
             let d = self.data.read();
-            let todo = found.iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect();
-            let stale = d
+            let todo: Vec<(&Found, Option<ContentHash>)> =
+                found.iter().filter_map(|f| prev_hash_if_stale(&d, f).map(|h| (f, h))).collect();
+            let stale: Vec<PathBuf> = d
                 .paths()
                 .filter(|p| dirs.is_none_or(|dirs| dirs.iter().any(|dir| p.starts_with(dir))))
                 .filter(|p| !seen.contains(p.as_path()))
@@ -490,6 +511,7 @@ impl Shared {
                 .collect();
             (todo, stale)
         };
+        let classify = classify_started.elapsed();
         if !stale.is_empty() {
             let mut d = self.data.write();
             for path in &stale {
@@ -499,44 +521,83 @@ impl Shared {
         let stale: Vec<String> = stale.iter().filter_map(|p| filter.store_key(p)).collect();
         self.persist(&[], &stale, false);
 
-        let reconcile_elapsed = reconcile_started.elapsed();
-        let update_started = Instant::now();
-        let mut outcomes = ExtractionCounts::default();
         let total = todo.len();
-        let mut done = 0usize;
-        let mut last_progress = Instant::now();
-        for chunk in todo.chunks(CHUNK) {
-            if self.is_cancelled() {
-                self.end_scan(task);
-                return None;
-            }
-            outcomes.add(self.index_files(chunk.iter().copied(), false));
-            done += chunk.len();
-            if last_progress.elapsed() >= PROGRESS_EVERY {
-                last_progress = Instant::now();
-                self.sink.emit(IdeEvent::Task {
-                    id: task,
-                    title: "Indexing".into(),
-                    message: Some(format!("{done} / {total} files")),
-                    fraction: Some(done as f32 / total.max(1) as f32),
-                    done: false,
-                    cancellable: false,
+        let update_started = Instant::now();
+        let mut laps = ChunkLaps::default();
+        {
+            // One streaming parallel pass: parse on `INDEX_POOL` without
+            // per-chunk joins (a straggler file at a join's tail idles every
+            // other core), while parsed files flow to this thread to be
+            // inserted and persisted in batches. `filter` moves into the
+            // parse thread; this thread keeps the outer one.
+            let filter = self.filter();
+            // Bounded: when inserting and persisting fall behind, the parse waits instead
+            // of holding the whole project's records (and their bytes) in the channel.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedFile>(2 * SCAN_BATCH);
+            let cancelled = &self.cancelled;
+            let mut done = 0usize;
+            let mut last_progress = Instant::now();
+            let pass_started = Instant::now();
+            std::thread::scope(|scope| -> () {
+                scope.spawn(move || {
+                    INDEX_POOL.install(|| {
+                        todo.par_iter().for_each(|&(f, prev_hash)| {
+                            if cancelled.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            let Some(out) = self.parse_found(f, prev_hash, &filter) else { return };
+                            let _ = tx.send(out);
+                        });
+                    });
+                    // `tx` drops here: the consumer's loop ends with the channel.
                 });
-            }
+                let mut batch: Vec<ParsedFile> = Vec::with_capacity(SCAN_BATCH);
+                for out in rx {
+                    if self.is_cancelled() {
+                        break;
+                    }
+                    batch.push(out);
+                    if batch.len() < SCAN_BATCH {
+                        continue;
+                    }
+                    done += batch.len();
+                    laps.add(self.publish(batch.drain(..)));
+                    if last_progress.elapsed() >= PROGRESS_EVERY {
+                        last_progress = Instant::now();
+                        self.sink.emit(IdeEvent::Task {
+                            id: task,
+                            title: "Indexing".into(),
+                            message: Some(format!("{done} / {total} files")),
+                            fraction: Some(done as f32 / total.max(1) as f32),
+                            done: false,
+                            cancellable: false,
+                        });
+                    }
+                }
+                if !batch.is_empty() && !self.is_cancelled() {
+                    done += batch.len();
+                    laps.add(self.publish(batch.drain(..)));
+                }
+            });
+            laps.extract = pass_started.elapsed();
         }
         if self.is_cancelled() {
             self.end_scan(task);
             return None;
         }
+        let durable_started = Instant::now();
         self.persist(&[], &[], true);
+        let durable = durable_started.elapsed();
         let update_elapsed = update_started.elapsed();
         let snapshot_started = Instant::now();
         if let Some(store) = &self.store {
             let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
             let d = self.data.read();
+            let snapshot_started = Instant::now();
             if let Err(e) = store.save_snapshot(&d, &filter, guard) {
                 tracing::warn!("index snapshot: {e}");
             }
+            tracing::info!("index snapshot: written in {:?}", snapshot_started.elapsed());
             if let Err(e) = store.save_recent_file(&recent) {
                 tracing::warn!("index recent snapshot: {e}");
             }
@@ -553,8 +614,16 @@ impl Shared {
             cancellable: false,
         });
         self.emit_state();
-        let counts =
-            ScanCounts { discovered: found.len(), metadata_reused: found.len() - total, scheduled: total, outcomes };
+        if self.is_cancelled() {
+            return None;
+        }
+        laps.outcomes.not_processed += total - laps.outcomes.total();
+        let counts = ScanCounts {
+            discovered: found.len(),
+            metadata_reused: found.len() - total,
+            scheduled: total,
+            outcomes: laps.outcomes,
+        };
         let outcomes = &counts.outcomes;
         let d = self.data.read();
         tracing::info!(
@@ -573,10 +642,15 @@ impl Shared {
             read_failed = outcomes.read_failed,
             not_processed = outcomes.not_processed,
             prewalked = was_prewalked,
-            walk_ms = walk_elapsed.as_millis() as u64,
-            snapshot_write_ms = snapshot_elapsed.as_millis() as u64,
-            reconcile_ms = reconcile_elapsed.as_millis() as u64,
+            walk_ms = walk.as_millis() as u64,
+            classify_ms = classify.as_millis() as u64,
+            // Pipeline and update wall times overlap insert/persist; do not sum these fields.
+            extract_pipeline_ms = laps.extract.as_millis() as u64,
+            insert_ms = laps.insert.as_millis() as u64,
+            persist_ms = laps.persist.as_millis() as u64,
+            durable_ms = durable.as_millis() as u64,
             update_ms = update_elapsed.as_millis() as u64,
+            snapshot_write_ms = snapshot_elapsed.as_millis() as u64,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "index scan completed"
         );
@@ -584,50 +658,95 @@ impl Shared {
     }
 
     /// Extracts records in parallel, then publishes them to memory and disk.
-    /// `force` re-parses files whose content is unchanged (their language changed).
-    fn index_files<'a>(&self, files: impl Iterator<Item = &'a Found>, force: bool) -> ExtractionCounts {
-        let files: Vec<&Found> = files.collect();
+    fn index_files(&self, files: &[(Found, Option<ContentHash>)]) -> ChunkLaps {
+        let mut laps = ChunkLaps::default();
         let filter = self.filter();
-        let extracted: Vec<(String, FileRecord, PathBuf, Extraction)> = files
-            .par_iter()
-            .filter_map(|f| {
-                if self.is_cancelled() {
-                    return None;
-                }
-                let rel = filter.rel(&f.path)?;
-                let prev_hash = if force { None } else { self.data.read().get(&f.path).map(|e| e.hash) };
-                match self.extract(f, prev_hash) {
-                    Extracted::Unchanged => {
-                        // Same content, new mtime: keep the symbols, refresh metadata.
-                        let mut rec = self.data.read().record_of(&f.path)?;
-                        rec.mtime = f.mtime;
-                        rec.size = f.size;
-                        rec.ignored = f.ignored;
-                        Some((rel, rec, f.path.clone(), Extraction::HashReused))
-                    }
-                    Extracted::New(rec, outcome) => Some((rel, rec, f.path.clone(), outcome)),
-                }
-            })
-            .collect();
-        let mut counts = ExtractionCounts { not_processed: files.len() - extracted.len(), ..Default::default() };
-        for (_, _, _, outcome) in &extracted {
-            counts.record(*outcome);
-        }
+        let started = Instant::now();
+        let extracted: Vec<ParsedFile> = INDEX_POOL.install(|| {
+            files.par_iter().filter_map(|(f, prev_hash)| self.parse_found(f, *prev_hash, &filter)).collect()
+        });
+        laps.extract = started.elapsed();
+        laps.outcomes.not_processed = files.len() - extracted.len();
         if extracted.is_empty() {
-            return counts;
+            return laps;
         }
-        let puts: Vec<(String, FileRecord)> =
-            extracted.iter().filter_map(|(_, rec, path, _)| Some((filter.store_key(path)?, rec.clone()))).collect();
-        {
-            let entries: Vec<(FileEntry, Vec<StoredSymbol>)> =
-                extracted.into_iter().map(|(rel, rec, path, _)| FileEntry::new(path, rel, rec)).collect();
-            let mut d = self.data.write();
-            for (e, symbols) in entries {
-                d.insert(e, symbols);
+        laps.add(self.publish(extracted.into_iter()));
+        laps
+    }
+
+    /// Reads and parses one file on `INDEX_POOL` without locking `self.data`,
+    /// serializing new records for the cache alongside the parse. `None` when
+    /// the file is outside the scope or the scan was cancelled.
+    fn parse_found(
+        &self,
+        f: &Found,
+        prev_hash: Option<ContentHash>,
+        filter: &std::sync::Arc<PathFilter>,
+    ) -> Option<ParsedFile> {
+        if self.is_cancelled() {
+            return None;
+        }
+        let rel = filter.rel(&f.path)?;
+        let key = filter.store_key(&f.path);
+        let outcome = match self.extract(f, prev_hash) {
+            Extracted::Unchanged => ParsedOutcome::Unchanged { mtime: f.mtime, size: f.size, ignored: f.ignored },
+            Extracted::New(rec, extraction) => {
+                let bytes = key.as_ref().and_then(|_| postcard::to_allocvec(&rec).ok());
+                ParsedOutcome::New { rec, bytes, extraction }
+            }
+        };
+        Some(ParsedFile { rel, key, outcome, path: f.path.clone() })
+    }
+
+    /// Inserts a parsed batch into the in-memory index and persists the records.
+    fn publish(&self, batch: impl Iterator<Item = ParsedFile>) -> ChunkLaps {
+        let mut laps = ChunkLaps::default();
+        let started = Instant::now();
+        let mut inserts: Vec<(FileEntry, Vec<StoredSymbol>)> = Vec::new();
+        let mut refreshes: Vec<MetadataRefresh> = Vec::new();
+        let mut puts: Vec<(String, Vec<u8>)> = Vec::new();
+        for out in batch {
+            let ParsedFile { rel, key, outcome, path } = out;
+            match outcome {
+                ParsedOutcome::New { rec, bytes, extraction } => {
+                    laps.outcomes.record(extraction);
+                    if let (Some(key), Some(bytes)) = (key, bytes) {
+                        puts.push((key, bytes));
+                    }
+                    inserts.push(FileEntry::new(path, rel, rec));
+                }
+                ParsedOutcome::Unchanged { mtime, size, ignored } => {
+                    refreshes.push(MetadataRefresh { path, key, mtime, size, ignored });
+                }
             }
         }
-        self.persist(&puts, &[], false);
-        counts
+        let mut refreshed_records: Vec<(String, FileRecord)> = Vec::new();
+        {
+            let mut d = self.data.write();
+            for (e, symbols) in inserts {
+                d.insert(e, symbols);
+            }
+            for r in refreshes {
+                if let Some(rec) = d.refresh_metadata(&r.path, r.mtime, r.size, r.ignored) {
+                    laps.outcomes.record(Extraction::HashReused);
+                    if let Some(key) = r.key {
+                        refreshed_records.push((key, rec));
+                    }
+                } else {
+                    laps.outcomes.not_processed += 1;
+                }
+            }
+        }
+        for (key, rec) in refreshed_records {
+            if let Ok(bytes) = postcard::to_allocvec(&rec) {
+                puts.push((key, bytes));
+            }
+        }
+        laps.insert = started.elapsed();
+        let started = Instant::now();
+        self.persist_raw(&puts, &[], false);
+        laps.persist = started.elapsed();
+        laps
     }
 
     fn schedule_snapshot(&self) {
@@ -668,6 +787,15 @@ impl Shared {
         }
     }
 
+    /// [`Self::persist`] for records already serialized by the parse pool.
+    fn persist_raw(&self, puts: &[(String, Vec<u8>)], deletes: &[String], durable: bool) {
+        if let Some(store) = &self.store
+            && let Err(e) = store.apply_raw(puts, deletes, durable)
+        {
+            tracing::warn!("index cache write failed: {e}");
+        }
+    }
+
     fn extract(&self, f: &Found, prev_hash: Option<[u8; 32]>) -> Extracted {
         let mut rec = FileRecord { mtime: f.mtime, size: f.size, ignored: f.ignored, ..Default::default() };
         if f.ignored {
@@ -699,7 +827,13 @@ impl Shared {
                 .syntax
                 .tags(&lang, &text)
                 .into_iter()
-                .map(|t| StoredSymbol { name: t.name, kind: t.kind, container: t.container, range: t.range })
+                .map(|t| StoredSymbol {
+                    name: t.name,
+                    kind: t.kind,
+                    container: t.container,
+                    range: t.range,
+                    bases: t.bases,
+                })
                 .collect();
             return Extracted::New(rec, Extraction::Symbols);
         }
@@ -807,9 +941,9 @@ impl Shared {
         for (dir, wanted) in by_dir {
             files.extend(filter.list_dir(&dir).into_iter().filter(|f| wanted.contains(&f.path)));
         }
-        let files: Vec<Found> = {
+        let files: Vec<(Found, Option<ContentHash>)> = {
             let d = self.data.read();
-            files.into_iter().filter(|f| d.get(&f.path).is_none_or(|e| e.stale_for(f))).collect()
+            files.into_iter().filter_map(|f| prev_hash_if_stale(&d, &f).map(|h| (f, h))).collect()
         };
         if !files.is_empty() {
             touched = true;
@@ -817,17 +951,17 @@ impl Shared {
                 if self.is_cancelled() {
                     return;
                 }
-                self.index_files(chunk.iter(), false);
+                self.index_files(chunk);
             }
         }
         for before in reparse {
-            let affected: Vec<Found> = {
+            let affected: Vec<(Found, Option<ContentHash>)> = {
                 let d = self.data.read();
                 d.paths()
                     .filter(|p| before.detect(p, None) != self.languages.detect(p, None))
                     .filter_map(|p| {
                         let e = d.get(p)?;
-                        Some(Found { path: p.clone(), mtime: e.mtime, size: e.size, ignored: e.ignored })
+                        Some((Found { path: p.clone(), mtime: e.mtime, size: e.size, ignored: e.ignored }, None))
                     })
                     .collect()
             };
@@ -837,7 +971,7 @@ impl Shared {
                     if self.is_cancelled() {
                         return;
                     }
-                    self.index_files(chunk.iter(), true);
+                    self.index_files(chunk);
                 }
             }
         }
@@ -855,6 +989,18 @@ impl Shared {
     }
 }
 
+type ContentHash = [u8; 32];
+
+/// `Some(prev_hash)` when `f` is missing or stale in `d` (`None` inner hash when
+/// the file must be parsed fresh); `None` when `d` is already current for `f`.
+fn prev_hash_if_stale(d: &IndexData, f: &Found) -> Option<Option<ContentHash>> {
+    match d.get(&f.path) {
+        None => Some(None),
+        Some(e) if e.stale_for(f) => Some((!e.ignored).then_some(e.hash)),
+        Some(_) => None,
+    }
+}
+
 /// The first line, capped at 256 bytes (for shebang / `<?xml` detection).
 fn first_line(text: &str) -> &str {
     let line = text.lines().next().unwrap_or_default();
@@ -869,6 +1015,47 @@ enum Extracted {
     /// Content hash matches the indexed version.
     Unchanged,
     New(FileRecord, Extraction),
+}
+
+/// Wall-time laps of one `index_files` chunk, accumulated by the scan.
+#[derive(Default)]
+struct ChunkLaps {
+    extract: Duration,
+    insert: Duration,
+    persist: Duration,
+    outcomes: ExtractionCounts,
+}
+
+impl ChunkLaps {
+    fn add(&mut self, other: ChunkLaps) {
+        self.extract += other.extract;
+        self.insert += other.insert;
+        self.persist += other.persist;
+        self.outcomes.add(other.outcomes);
+    }
+}
+
+struct MetadataRefresh {
+    path: PathBuf,
+    key: Option<String>,
+    mtime: u64,
+    size: u64,
+    ignored: bool,
+}
+
+enum ParsedOutcome {
+    Unchanged { mtime: u64, size: u64, ignored: bool },
+    New { rec: FileRecord, bytes: Option<Vec<u8>>, extraction: Extraction },
+}
+
+/// One file parsed off the index thread: its outcome ready to publish, with new
+/// records already serialized for the cache in parallel with the parse.
+struct ParsedFile {
+    rel: String,
+    /// Cache key; `None` when outside the persisted root.
+    key: Option<String>,
+    outcome: ParsedOutcome,
+    path: PathBuf,
 }
 
 /// Mutually exclusive outcomes for this batch, not all files in the index. "Symbols"
@@ -898,6 +1085,17 @@ struct ExtractionCounts {
 }
 
 impl ExtractionCounts {
+    fn total(&self) -> usize {
+        self.hash_reused
+            + self.symbol_extractions
+            + self.ignored
+            + self.oversized
+            + self.binary
+            + self.unsupported
+            + self.read_failed
+            + self.not_processed
+    }
+
     fn record(&mut self, outcome: Extraction) {
         *match outcome {
             Extraction::HashReused => &mut self.hash_reused,
@@ -936,6 +1134,16 @@ mod metric_tests {
     use super::*;
     use std::sync::Arc;
 
+    fn index_files<'a>(index: &Shared, files: impl Iterator<Item = &'a Found>, force: bool) -> ExtractionCounts {
+        let files: Vec<_> = files
+            .map(|f| {
+                let hash = if force || f.ignored { None } else { index.data.read().get(&f.path).map(|e| e.hash) };
+                (f.clone(), hash)
+            })
+            .collect();
+        index.index_files(&files).outcomes
+    }
+
     fn shared(root: &Path) -> Shared {
         Shared::new(
             PathFilter::new(root, &crate::IndexRoots::from(Vec::new()), &[]),
@@ -944,6 +1152,44 @@ mod metric_tests {
             Arc::new(ide_core::NullSink),
             None,
         )
+    }
+
+    #[test]
+    fn streaming_scan_counts_full_batch_and_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let shared = shared(&root);
+        let count = SCAN_BATCH + 3;
+        for i in 0..count {
+            std::fs::write(root.join(format!("file_{i}.unknown")), "plain").unwrap();
+        }
+        let cold = shared.scan(None, None, SystemTime::now()).unwrap();
+        assert_eq!((cold.discovered, cold.metadata_reused, cold.scheduled), (count, 0, count));
+        assert_eq!(cold.outcomes, ExtractionCounts { unsupported: count, ..Default::default() });
+        assert_eq!(shared.data.read().file_count as usize, count);
+        let hot = shared.scan(None, None, SystemTime::now()).unwrap();
+        assert_eq!((hot.discovered, hot.metadata_reused, hot.scheduled), (count, count, 0));
+        assert_eq!(hot.outcomes.total(), 0);
+    }
+
+    #[test]
+    fn removed_entry_is_not_counted_as_hash_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let shared = shared(&root);
+        let path = root.join("main.rs");
+        std::fs::write(&path, "fn main() {}").unwrap();
+        shared.scan(None, None, SystemTime::now()).unwrap();
+        let (found, hash) = {
+            let data = shared.data.read();
+            let e = data.get(&path).unwrap();
+            (Found { path: path.clone(), mtime: e.mtime, size: e.size, ignored: e.ignored }, e.hash)
+        };
+        let parsed = shared.parse_found(&found, Some(hash), &shared.filter()).unwrap();
+        shared.data.write().remove(&path).unwrap();
+        let counts = shared.publish(std::iter::once(parsed)).outcomes;
+        assert_eq!(counts, ExtractionCounts { not_processed: 1, ..Default::default() });
+        assert_eq!(shared.data.read().file_count, 0);
     }
 
     #[test]
@@ -960,7 +1206,10 @@ mod metric_tests {
         assert_eq!((hot.discovered, hot.metadata_reused, hot.scheduled), (1, 1, 0));
         assert_eq!(hot.outcomes, ExtractionCounts::default());
         // Force a metadata mismatch without a timestamp-resolution-dependent sleep.
-        let mut rec = shared.data.read().record_of(&path).unwrap();
+        let mut rec = {
+            let data = shared.data.read();
+            data.record(data.get(&path).unwrap())
+        };
         rec.mtime = rec.mtime.wrapping_add(1);
         let (entry, symbols) = FileEntry::new(path.clone(), "main.rs".into(), rec);
         shared.data.write().insert(entry, symbols);
@@ -990,7 +1239,7 @@ mod metric_tests {
             }
             found.push(Found { path, mtime: 0, size, ignored });
         }
-        let counts = shared.index_files(found.iter(), false);
+        let counts = index_files(&shared, found.iter(), false);
         assert_eq!(
             counts,
             ExtractionCounts {
@@ -1005,8 +1254,8 @@ mod metric_tests {
             }
         );
         assert_eq!(shared.data.read().file_count as usize, found.len());
-        assert_eq!(shared.index_files(found[..1].iter(), false).hash_reused, 1);
-        assert_eq!(shared.index_files(found[..1].iter(), true).symbol_extractions, 1);
+        assert_eq!(index_files(&shared, found[..1].iter(), false).hash_reused, 1);
+        assert_eq!(index_files(&shared, found[..1].iter(), true).symbol_extractions, 1);
     }
 
     #[test]
@@ -1117,15 +1366,36 @@ mod metric_tests {
         // A scan can retain Found values from a root removed by set_scope.
         let outside = Found { path: dir.path().join("outside.rs"), mtime: 0, size: 0, ignored: false };
         assert_eq!(
-            index.index_files([&outside].into_iter(), false),
+            index_files(&index, [&outside].into_iter(), false),
             ExtractionCounts { not_processed: 1, ..Default::default() }
         );
         index.cancel();
         let inside = Found { path: root.join("inside.rs"), mtime: 0, size: 0, ignored: false };
         assert_eq!(
-            index.index_files([&inside].into_iter(), false),
+            index_files(&index, [&inside].into_iter(), false),
             ExtractionCounts { not_processed: 1, ..Default::default() }
         );
+    }
+
+    #[test]
+    fn cancellation_during_final_notifications_suppresses_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("source.rs"), "fn source() {}").unwrap();
+        let index: Arc<Shared> = Arc::new_cyclic(|weak: &std::sync::Weak<Shared>| {
+            let mut index = shared(&root);
+            let weak = weak.clone();
+            index.sink = Arc::new(move |event| {
+                if matches!(event, IdeEvent::Task { done: true, .. }) {
+                    weak.upgrade().unwrap().cancel();
+                }
+            });
+            index
+        });
+        assert!(index.scan(None, None, SystemTime::now()).is_none());
+        assert!(index.is_cancelled());
+        assert!(!index.indexing.load(Ordering::Relaxed));
+        assert_eq!(index.data.read().file_count, 1);
     }
 
     #[test]

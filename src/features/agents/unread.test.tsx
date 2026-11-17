@@ -163,14 +163,26 @@ describe("agent unread activity", () => {
     expect([...useAgents.getState().unread]).toEqual(["one"]);
   });
 
-  it.each(["ready", "needsInput", "failed", "limited"] as const)("marks background %s transitions unread", (status) => {
+  it.each([
+    ["finished", "ready"],
+    ["input", "needsInput"],
+    ["failed", "failed"],
+    ["failed", "limited"],
+  ] as const)("marks background attention %s unread", (reason, status) => {
     emit({ type: "task", task: task("one", status) });
+    emit({ type: "attention", task: "one", eventId: `one:${reason}:1`, reason });
     expect(useAgents.getState().unread.has("one")).toBe(true);
     expect(backend.notify).toHaveBeenCalledTimes(1);
     show();
-    emit({ type: "task", task: task("one", status) });
+    emit({ type: "attention", task: "one", eventId: `one:${reason}:2`, reason });
     expect(useAgents.getState().unread.size).toBe(0);
     expect(backend.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify from status alone once Attention exists", () => {
+    emit({ type: "task", task: task("one", "ready") });
+    expect(backend.notify).not.toHaveBeenCalled();
+    expect(useAgents.getState().unread.has("one")).toBe(false);
   });
 
   it("keeps the latest usage limits per provider without marking anything unread", () => {
@@ -258,6 +270,7 @@ describe("agent unread activity", () => {
 describe("agent unread indicators", () => {
   it("shows a dot on the task and a clickable status count even when all tasks are idle", () => {
     emit({ type: "task", task: task("one", "ready") });
+    emit({ type: "attention", task: "one", eventId: "one:finished:1", reason: "finished" });
     render(
       <>
         <AgentsView />

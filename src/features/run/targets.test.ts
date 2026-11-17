@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { detectRunTargets, jsNamePattern, targetConfig } from "./targets";
+import { detectRunTargets, goFuzzConfig, jsNamePattern, targetConfig, type RunTarget } from "./targets";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
   name: over.id,
@@ -238,6 +238,99 @@ describe("Go test targets", () => {
       "-args",
       "-test.short",
     ]);
+  });
+  describe("Run with Fuzzing", () => {
+    const text = [
+      "package parse",
+      "func TestParse(t *testing.T) {}",
+      "func BenchmarkParse(b *testing.B) {}",
+      "func FuzzParse(f *testing.F) {",
+      ' f.Add("x")',
+      " f.Fuzz(func(t *testing.T, s string) {})",
+      "}",
+      "func ExampleParse() {}",
+    ].join("\n");
+    const base = cfg({ id: "go:test", kind: "go", args: ["test", "-tags", "demo", "./...", "-args", "-test.short"] });
+    const fuzzOf = (rel: string, name: string, configs = [base]) => {
+      const target = detectRunTargets(text, rel).find((t) => t.name === name)!;
+      const config = targetConfig(target, rel, configs, text)!;
+      return goFuzzConfig(config, target);
+    };
+
+    it("adds -fuzz with the -run pattern of a Fuzz function", () => {
+      const config = fuzzOf("parse/parse_test.go", "FuzzParse")!;
+      expect(config.args).toEqual([
+        "test",
+        "-tags",
+        "demo",
+        "./parse",
+        "-run",
+        "^FuzzParse$",
+        "-fuzz",
+        "^FuzzParse$",
+        "-args",
+        "-test.short",
+      ]);
+      // A temporary configuration of its own, beside the plain run of the fuzz target.
+      expect(config.id).not.toBe(
+        targetConfig(detectRunTargets(text, "parse/parse_test.go")[2]!, "parse/parse_test.go", [base], text)!.id,
+      );
+      expect(config.name).toBe("FuzzParse (fuzzing)");
+    });
+
+    it("runs a fuzz target at the module root and in nested package directories", () => {
+      expect(fuzzOf("parse_test.go", "FuzzParse")!.args.slice(3, 4)).toEqual(["."]);
+      expect(fuzzOf("internal/text/parse/parse_test.go", "FuzzParse")!.args.slice(3, 4)).toEqual([
+        "./internal/text/parse",
+      ]);
+    });
+
+    it("is offered for Fuzz functions only", () => {
+      for (const name of ["TestParse", "BenchmarkParse", "ExampleParse"])
+        expect(fuzzOf("parse/parse_test.go", name)).toBeNull();
+      const npm = cfg({ id: "npm:test", kind: "npm", command: "npm", args: ["run", "test"] });
+      const js: RunTarget = { line: 0, kind: "test", name: "Fuzz it", path: ["Fuzz it"] };
+      expect(goFuzzConfig(targetConfig(js, "src/a.test.ts", [npm])!, js)).toBeNull();
+    });
+
+    it("escapes the name and replaces a saved selection", () => {
+      const saved = cfg({
+        id: "go:saved",
+        kind: "go",
+        args: ["test", "-fuzz=Old", "-run", "Old", "-bench", ".", "./parse", "-fuzztime", "30s"],
+      });
+      const target: RunTarget = { line: 0, kind: "test", name: "Fuzz.Δ+", path: ["Fuzz.Δ+"] };
+      expect(goFuzzConfig(saved, target)!.args).toEqual([
+        "test",
+        "-fuzztime",
+        "30s",
+        "./parse",
+        "-run",
+        "^Fuzz\\.Δ\\+$",
+        "-fuzz",
+        "^Fuzz\\.Δ\\+$",
+      ]);
+    });
+
+    it("needs exactly one package: -fuzz cannot match across packages", () => {
+      const target: RunTarget = { line: 0, kind: "test", name: "FuzzParse", path: ["FuzzParse"] };
+      const go = (args: string[]) => cfg({ id: "go:x", kind: "go", args });
+      expect(goFuzzConfig(go(["test", "./..."]), target)).toBeNull();
+      expect(goFuzzConfig(go(["test", "./a", "./b"]), target)).toBeNull();
+      expect(goFuzzConfig(go(["run", "."]), target)).toBeNull();
+      expect(goFuzzConfig(go(["test", "./a"]), target)).not.toBeNull();
+    });
+
+    it("keeps a Go Test configuration's form in step", () => {
+      const typed = cfg({
+        id: "go:typed",
+        kind: "go",
+        args: ["test", "-tags", "demo", "."],
+        params: { goKind: "test", scope: "package", target: ".", toolArgs: "-tags demo" },
+      });
+      const config = fuzzOf("parse/parse_test.go", "FuzzParse", [typed])!;
+      expect(config.params).toMatchObject({ pattern: "^FuzzParse$", toolArgs: "-tags demo -fuzz '^FuzzParse$'" });
+    });
   });
   it("uses the module and overrides a saved filter before binary arguments", () => {
     const base = cfg({

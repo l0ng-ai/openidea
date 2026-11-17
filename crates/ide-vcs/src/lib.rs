@@ -307,6 +307,20 @@ pub struct ChangedFile {
     pub path: String,
     pub kind: ChangeKind,
     pub old_path: Option<String>,
+    /// Set when the entry is a symbolic link (git mode `120000`); only revision diffs fill it.
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
+}
+
+/// What a symbolic link in a revision points to, resolved inside that revision's tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkTarget {
+    Dir,
+    File,
+    /// Dangling, outside the repository (absolute or above its root), or a link loop.
+    Unresolved,
 }
 
 /// Added and deleted lines of one file between two revisions (`git diff --numstat`).
@@ -334,6 +348,10 @@ pub struct RevisionChange {
     pub before: Option<String>,
     /// Commit holding the new content; `None` when the file was deleted.
     pub after: Option<String>,
+    /// Set when the entry is a symbolic link, resolved at `after` (`before`, for a deletion).
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -496,6 +514,9 @@ pub struct CheckoutOptions {
     /// Required when checking out a remote branch whose local namesake is ahead of it.
     #[serde(default)]
     pub diverged: Option<DivergedLocal>,
+    /// Check the branch out even though another worktree has it checked out.
+    #[serde(default)]
+    pub ignore_other_worktrees: bool,
 }
 
 /// Result of [`Repo::checkout_with`]; the non-`Done` variants other than `Conflicts`
@@ -521,6 +542,12 @@ pub enum CheckoutOutcome {
     /// on conflicts in these files.
     Conflicts {
         files: Vec<String>,
+    },
+    /// Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+    /// changed; the branch can be worked on there.
+    CheckedOutInWorktree {
+        branch: String,
+        path: PathBuf,
     },
 }
 
@@ -618,6 +645,7 @@ pub mod changelists;
 mod cli;
 mod compare;
 mod diff;
+mod external_diff;
 mod history;
 mod ignore;
 mod index_writes;
@@ -644,6 +672,7 @@ pub use cli::{
     set_git_command_observer, set_git_executable,
 };
 pub use diff::build_partial_patch;
+pub use external_diff::{ExternalDiffSide, launch_external_diff};
 pub use ignore::{IgnoreDestination, add_to_ignore};
 pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};
 pub use remotes::Remote;
@@ -1148,7 +1177,8 @@ impl Repo {
         write::stage_patch(self, patch, &|path| encoding(path).map(Into::into))
     }
     /// Discards unstaged changes: tracked paths are restored from the index (staged
-    /// changes are kept), untracked files and directories are deleted.
+    /// changes are kept), untracked files and directories are deleted. A submodule goes back
+    /// to the commit the index records, with its tracked files restored.
     pub fn discard(&self, paths: &[PathBuf]) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::discard(self, paths)

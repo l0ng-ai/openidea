@@ -17,7 +17,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
@@ -94,6 +94,11 @@ pub(crate) struct Session {
     /// The `type` of the launch or attach request (js-debug's `pwa-node`, `pwa-chrome`); a child
     /// session's comes from the configuration the adapter started it with.
     pub launch_type: std::sync::OnceLock<String>,
+    /// The response rules of a page once a connection applies them (`js_cdp::serve`).
+    /// Dropped with the session, which switches the browser's interception off.
+    pub js_overrides: tokio::sync::Mutex<Option<tokio::sync::watch::Sender<Vec<crate::JsResponseRule>>>>,
+    /// The file js-debug records the page's CPU profile into, while one is being recorded.
+    pub js_profile: parking_lot::Mutex<Option<std::path::PathBuf>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -109,8 +114,13 @@ pub(crate) struct Session {
     pub jvm_located: watch::Sender<bool>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
+    pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
+    pub(crate) stream_trace: parking_lot::Mutex<Option<crate::stream_trace::ActiveTrace>>,
+    /// The last trace that finished, until the stop its records were read in ends.
+    pub(crate) stream_trace_done: parking_lot::Mutex<Option<crate::stream_trace::DoneTrace>>,
     /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
     pub(crate) quirks: kotlin_lsp::Quirks,
+    pub(crate) unity_startup_activity: Mutex<Instant>,
 }
 
 /// Which threads of the program are suspended: each from its `stopped` event until a
@@ -189,6 +199,13 @@ impl Suspension {
         self.0.lock().ticket
     }
 
+    /// The ticket of a stop of `thread` (its own or every thread's) taken after ticket `after`.
+    pub fn stopped_since(&self, thread: i64, after: u64) -> Option<u64> {
+        let stops = self.0.lock();
+        let own = stops.threads.iter().find(|&&(id, _)| id == thread).map(|&(_, ticket)| ticket);
+        own.max(stops.all).filter(|&ticket| ticket > after)
+    }
+
     /// After a successful resume-like request for `thread`; `all`: every thread ran.
     pub fn resumed(&self, ticket: u64, thread: i64, all: bool) {
         self.0.lock().release(Some(thread), all, ticket);
@@ -255,6 +272,8 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             jdwp_link: parking_lot::Mutex::new(None),
             launch_type: std::sync::OnceLock::new(),
+            js_overrides: tokio::sync::Mutex::new(None),
+            js_profile: parking_lot::Mutex::new(None),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),
@@ -262,7 +281,11 @@ impl Session {
             jvm_located: watch::channel(false).0,
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
+            stream_tracer: parking_lot::Mutex::new(None),
+            stream_trace: parking_lot::Mutex::new(None),
+            stream_trace_done: parking_lot::Mutex::new(None),
             quirks: kotlin_lsp::Quirks::default(),
+            unity_startup_activity: Mutex::new(Instant::now()),
         }
     }
 
@@ -474,10 +497,7 @@ impl Session {
             let _ = c.start_kill();
         }
         if let Some(mut program) = self.program.lock().take() {
-            let _ = program.child.kill();
-            let _ = std::thread::Builder::new().name("openidea-debug-reap".into()).spawn(move || {
-                let _ = program.child.wait();
-            });
+            program.kill();
         }
     }
 }
@@ -574,7 +594,7 @@ fn launch_groups(s: &Session) -> Vec<libc::pid_t> {
     for child in s.debuggees.lock().iter() {
         push(child.id());
     }
-    push(s.program.lock().as_ref().and_then(|p| p.child.process_id()));
+    push(s.program.lock().as_ref().and_then(ProgramTerminal::process_id));
     groups.retain(|g| *g > 0);
     groups
 }
@@ -712,6 +732,15 @@ pub(crate) async fn event_loop(
 }
 
 async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut body: Value) {
+    if s.adapter == "unity"
+        && event == "output"
+        && body
+            .get("output")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.starts_with("Loaded assembly:") || text.starts_with("Resolved pending breakpoint"))
+    {
+        *s.unity_startup_activity.lock() = Instant::now();
+    }
     if let Some(mirror) = s.kotlin_mirror.lock().as_ref() {
         mirror.translate(&mut body);
     }
@@ -720,10 +749,15 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
     match event {
         "initialized" => {
             s.initialized.send_replace(true);
-            s.emit(DebugEvent::Initialized);
+            if s.adapter != "unity" {
+                s.emit(DebugEvent::Initialized);
+            }
         }
         "stopped" => {
             let all = body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false);
+            if crate::stream_trace::resume_traced_stop(s, int("threadId"), all) {
+                return;
+            }
             s.suspended.stopped(int("threadId"), all);
             let mut reason = str_("reason").unwrap_or_else(|| "pause".into());
             if let Some(quirks) = s.kotlin_lsp_quirks() {
@@ -743,6 +777,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             // DAP: an event without the flag continues its thread alone. The UI keeps treating
             // it as all threads; the suspension, which holds only threads that stopped, need not.
             s.suspended.continued(int("threadId"), all.unwrap_or(false));
+            crate::stream_trace::release_done(s);
             s.emit(DebugEvent::Continued {
                 thread_id: int("threadId").unwrap_or(0),
                 all_threads_continued: all.unwrap_or(true),
@@ -845,6 +880,10 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                 s.emit(DebugEvent::JsNetwork { event });
             }
         }
+        // js-debug, after `startProfile`: where it records the profile.
+        "profileStarted" => {
+            *s.js_profile.lock() = str_("file").map(std::path::PathBuf::from);
+        }
         _ => tracing::trace!("dap: ignored event {event}"),
     }
 }
@@ -874,7 +913,11 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
 /// A `runInTerminal` program and the pseudo-terminal it runs in.
 pub(crate) struct ProgramTerminal {
     writer: ide_core::input::InputWriter,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pid: Option<u32>,
+    /// Set once the program has exited and been reaped.
+    exited: Arc<AtomicBool>,
     _master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
@@ -882,6 +925,29 @@ impl ProgramTerminal {
     pub(crate) fn write(&mut self, text: &str) -> std::io::Result<()> {
         self.writer.write(text.as_bytes())
     }
+
+    /// The program's process id while it runs.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        if self.exited.load(Ordering::Acquire) { None } else { self.pid }
+    }
+
+    pub(crate) fn kill(&mut self) {
+        // After the reap the pid may belong to another process.
+        if !self.exited.load(Ordering::Acquire) {
+            let _ = self.killer.kill();
+        }
+    }
+}
+
+/// Reaps the program as soon as it exits. Until then it stays a zombie that `kill(pid, 0)` still
+/// finds: js-debug polls the `processId` it was given and keeps the session (and its terminal)
+/// open while that process looks alive, and Stop would wait for it as for a running program.
+fn reap_on_exit(mut child: Box<dyn portable_pty::Child + Send + Sync>, exited: Arc<AtomicBool>) {
+    let _ = std::thread::Builder::new().name("openidea-debug-reap".into()).spawn(move || {
+        let _ = child.wait();
+        exited.store(true, Ordering::Release);
+    });
 }
 
 /// `runInTerminal`: starts the debuggee on a pseudo-terminal, as an IDE terminal would (CodeLLDB
@@ -968,8 +1034,12 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
         #[cfg(unix)]
         wait_readable,
     );
-    if let Some(mut previous) = s.program.lock().replace(ProgramTerminal { writer, child, _master: pair.master }) {
-        let _ = previous.child.kill();
+    let killer = child.clone_killer();
+    let exited = Arc::new(AtomicBool::new(false));
+    reap_on_exit(child, exited.clone());
+    let program = ProgramTerminal { writer, killer, pid, exited, _master: pair.master };
+    if let Some(mut previous) = s.program.lock().replace(program) {
+        previous.kill();
     }
     s.owner.sink.emit(IdeEvent::Debug { session: s.id, event: DebugEvent::ProgramInput });
     Ok(json!({ "processId": pid }))
@@ -1337,5 +1407,30 @@ mod tests {
         assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 127.0.0.1:51234"), Some(51234));
         assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: [::1]:51234"), Some(51234));
         assert_eq!(parse_jdwp_port("unrelated output"), None);
+    }
+
+    /// js-debug polls the `runInTerminal` pid with `kill(pid, 0)`; an unreaped zombie answers it as
+    /// a live process and keeps the session open after the program ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_program_is_reaped_when_it_exits() {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let pair =
+            native_pty_system().openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "exit 0"]);
+        let child = pair.slave.spawn_command(cmd).unwrap();
+        let pid = child.process_id().unwrap() as libc::pid_t;
+        let exited = Arc::new(AtomicBool::new(false));
+        super::reap_on_exit(child, exited.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !exited.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "program was not reaped");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // SAFETY: signal 0 only checks whether the process exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     }
 }

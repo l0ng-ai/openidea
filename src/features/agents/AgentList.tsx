@@ -21,6 +21,7 @@ import clsx from "clsx";
 import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
+import { isPerModelOption } from "./composerModel";
 import { providerIcon } from "./model";
 import {
   DISTRIBUTION_LABEL,
@@ -575,7 +576,7 @@ function Details({
       {job && (
         <div className={styles.progress}>
           <ProgressBar value={job.fraction} aria-label={tx`Installing ${agent.name}`} />
-          <span className={styles.hint}>{job.message}</span>
+          <span>{job.message}</span>
         </div>
       )}
       {!job && installed && update && <p className={styles.notice}>{tx`${update} is available`}</p>}
@@ -965,7 +966,7 @@ function ExternalLink({ url, label }: { url: string; label: string }) {
 
 /** The options a new task of `agent` starts with: each the agent's own default unless chosen. */
 export function defaultOptions(agent: AgentProvider, chosen: Record<string, string>): AgentConfigOption[] {
-  const base = agent.config.filter((o) => o.category !== "thought_level" && o.values.length > 1);
+  const base = agent.config.filter((o) => !isPerModelOption(o) && o.values.length > 1);
   const modelOption = base.find((o) => o.category === "model");
   const model = (modelOption && chosen[modelOption.id]) || modelOption?.current;
   const levels = (model && agent.thoughtLevels?.[model]) || [];

@@ -455,6 +455,7 @@ describe("add service categories", () => {
       cmake: "Build Tools",
       make: "Build Tools",
       just: "Build Tools",
+      sbt: "Build Tools",
       go: "Go",
       python: "Python",
       pytest: "Python",

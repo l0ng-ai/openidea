@@ -171,7 +171,7 @@ export function gradleRunConfigs(
   });
 }
 
-function normalizeDir(cwd: string | null | undefined): string {
+export function normalizeDir(cwd: string | null | undefined): string {
   return (cwd ?? "")
     .replace(/\\/g, "/")
     .replace(/^\.\/?/, "")

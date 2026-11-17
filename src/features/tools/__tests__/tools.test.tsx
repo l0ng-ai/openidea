@@ -225,6 +225,7 @@ describe("missing language server prompt", () => {
       installMethod: "uv (virtualenv)",
       languages: ["Python"],
       alternatives: [],
+      companion: false,
     });
     await promptInstall("ruff", true, new Set(), true);
     expect(notes.at(-1)).toMatchObject({
@@ -232,6 +233,22 @@ describe("missing language server prompt", () => {
       body: "Reformat Code needs Ruff. Install it via uv (virtualenv)?",
       key: missingKey("ruff"),
     });
+  });
+
+  it("doesn't offer a companion server (refactorings only) when it is missing", async () => {
+    const template = sampleTools()[0]!;
+    backend.tools.push({
+      ...template,
+      name: "pylsp",
+      displayName: "pylsp-rope (Python refactorings)",
+      command: "pylsp",
+      status: "missing",
+      languages: ["Rope Only"],
+      alternatives: [],
+      companion: true,
+    });
+    expect(await promptInstall("pylsp")).toBe(false);
+    expect(notes).toEqual([]);
   });
 
   it("stays silent when an installed alternative serves the same languages", async () => {
@@ -375,6 +392,19 @@ describe("LanguageServersPage", () => {
     // The install log can be shown afterwards.
     await user.click(screen.getByRole("button", { name: "Show install log" }));
     expect(screen.getByLabelText("gopls install log")).toHaveTextContent("Installing gopls");
+  });
+
+  it("cancels an install from its progress row when the display name differs from the tool name", async () => {
+    const user = userEvent.setup();
+    backend.stepMs = 50;
+    renderPage();
+    await open(user, "Go");
+    await user.click(toolItem("delve"));
+    const details = screen.getByLabelText("Delve (Go debugger) details");
+    await user.click(within(details).getByRole("button", { name: "Install Delve (Go debugger)" }));
+    await user.click(within(details).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(useTools.getState().logs["delve"]?.error).toBe("Cancelled"));
+    expect(toolItem("delve")).toHaveTextContent("Missing");
   });
 
   it("offers an update when a newer version of an installed tool is out", async () => {

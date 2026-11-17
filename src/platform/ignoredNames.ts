@@ -12,6 +12,7 @@ export const DEFAULT_IGNORED_NAMES: readonly string[] = [
   ".git",
   ".hg",
   ".jj",
+  ".ropeproject",
   ".svn",
   "CVS",
   "__pycache__",

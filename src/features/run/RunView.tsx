@@ -2,7 +2,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
-import { EmptyState, Icon, IconButton, Menu, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  Menu,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Tabs,
+  type TabItem,
+  T,
+  showContextMenu,
+} from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { ConsoleModel } from "./console";
@@ -15,7 +27,6 @@ import {
   baseConfigOf,
   canRunSelectedTests,
   clearConsole,
-  closeSessionTab,
   closeStdin,
   debugSession,
   failedTests,
@@ -31,11 +42,13 @@ import {
   writeTerminal,
   type RunSession,
   isLive,
+  pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
 import { nodeOutput } from "./testing";
 import { TestTreeView, formatDuration } from "./TestTreeView";
-import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import { configIcon } from "./configs";
@@ -43,7 +56,6 @@ import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
-import { toolWindowService } from "@/workbench/contributions";
 
 function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
@@ -278,6 +290,7 @@ function sessionItems(sessions: readonly RunSession[], targets: readonly RunTarg
     // An agent's command that ended, however it ended.
     dimmed: agentName(s.config) !== null && !isLive(s),
     closable: true,
+    pinned: s.pinned,
     tooltip:
       s.status === "finished"
         ? tx`Finished in ${formatDuration((s.endedAt ?? s.startedAt) - s.startedAt)}, exit code ${s.exitCode ?? "?"}`
@@ -297,13 +310,6 @@ function currentTab(
   if (trace) return { trace };
   if (sessions.length) return { session: sessions[sessions.length - 1]! };
   return traces.length ? { trace: traces[traces.length - 1]! } : null;
-}
-
-/** Closes a session or stack trace tab; as in IDEA, the tool window goes away with its last tab. */
-export async function closeRunTab(id: string, traces: readonly StackTraceTab[]) {
-  if (traces.some((t) => t.id === id)) closeStackTrace(id);
-  else if (!(await closeSessionTab(id))) return;
-  if (!useRun.getState().sessions.length && !useStackTraces.getState().tabs.length) toolWindowService().hide("run");
 }
 
 /** Session (and stack trace) tabs in the tool window header. */
@@ -330,7 +336,15 @@ export function RunTabs() {
       items={items}
       activeId={activeId}
       onSelect={(id) => useRun.setState({ activeSession: id })}
-      onClose={(id) => void closeRunTab(id, traces)}
+      onClose={(id) => void closeRunTab(id)}
+      onTogglePin={(id) => {
+        const s = sessions.find((x) => x.id === id);
+        if (s) pinSession(s.id, !s.pinned);
+      }}
+      onContextMenu={(id, e) => {
+        e.preventDefault();
+        showContextMenu(e, runTabMenu(id), { owner: e.currentTarget });
+      }}
       panelIdPrefix="openidea-run"
       trailing={archived.length > 0 && <AgentArchive sessions={archived} activeId={activeId} />}
     />

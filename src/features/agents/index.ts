@@ -15,6 +15,7 @@ import {
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
+  registerMenuSlotItem,
   registerOverlay,
   registerSettingsPage,
   registerStatusItem,
@@ -31,11 +32,23 @@ import {
   SESSION_KIND,
   TASK_DRAG,
   TOOL_WINDOW,
+  WORKING_STATUS_PAGE,
   providerIcon,
 } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
+import { cycleFocusedEffort } from "./effortFocus";
+import { clearAgentTabFontZoom } from "./fontZoom";
+import {
+  closeActiveTask,
+  closeAndNewTask,
+  connect,
+  disconnect,
+  openHome,
+  refreshModels,
+  refreshProviders,
+  useAgents,
+} from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
@@ -51,6 +64,15 @@ export function activateSettingsPages(): () => void {
       order: 450,
       keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
+    }),
+    registerSettingsPage({
+      id: WORKING_STATUS_PAGE,
+      title: "Working Status",
+      group: AGENTS_GROUP,
+      // After Chat.
+      order: 465,
+      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
+      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
     }),
     registerSettingsPage({
       id: MCP_PAGE,
@@ -152,6 +174,7 @@ export function activate(): () => void {
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
@@ -163,12 +186,22 @@ export function activate(): () => void {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
         return task ? providerIcon(task.provider) : "toolwindow-agents";
       },
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       restorable: true,
+      // Mounting it again on every switch rebuilds the composer and refetches the agent, models and branches.
+      keepAlive: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.
     registerEditorDropHandler({
       accepts: (type) => type === TASK_DRAG,
       drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
+    }),
+    // The button above the commit message (the Commit tool window and dialog).
+    registerMenuSlotItem("commitMessage", {
+      action: "agents.generateCommitMessage",
+      label: "Generate Commit Message with Agent",
+      icon: "toolwindow-agents",
+      when: "projectOpen && vcsAvailable",
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
@@ -192,6 +225,24 @@ export function activate(): () => void {
         run: () => focusedSession()?.openFind(),
       },
       {
+        id: "agents.focusInput",
+        title: "Focus Agent Input",
+        description: "Focuses the message input of the current agent task without moving the caret.",
+        category: "Agents",
+        when: "agentSessionFocus && agentInputAvailable",
+        keyWhen: "agentSessionFocus && !popupOpen",
+        run: () => focusedSession()?.focusInput?.(),
+      },
+      {
+        id: "agents.cycleEffort",
+        title: "Cycle Agent Effort",
+        description: "Cycles the current model's supported effort levels without changing the message.",
+        category: "Agents",
+        when: "agentEffortAvailable",
+        keyWhen: "agentEffortAvailable && !popupOpen",
+        run: cycleFocusedEffort,
+      },
+      {
         id: "agents.newTask",
         title: "New Agent Task",
         description: "Opens the New Task page; a string `arg` pre-fills the task description.",
@@ -200,6 +251,13 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["agent", "claude", "codex", "gemini", "ai"],
         run: ({ arg }) => openHome(typeof arg === "string" ? arg : undefined),
+      },
+      {
+        id: "agents.refreshModels",
+        title: "Refresh models",
+        category: "Agents",
+        when: "projectOpen",
+        run: () => refreshModels(),
       },
       {
         id: "agents.closeTask",
@@ -252,6 +310,21 @@ export function activate(): () => void {
         run: ({ arg }) => {
           if (Array.isArray(arg)) sendPaths(arg.filter((p): p is string => typeof p === "string"));
           else sendSelection();
+        },
+      },
+      {
+        id: "agents.generateCommitMessage",
+        title: "Generate Commit Message with Agent",
+        description:
+          "Has the coding agent you work with review the changes about to be committed and write the commit message.",
+        category: "Agents",
+        icon: "toolwindow-agents",
+        when: "projectOpen && vcsAvailable",
+        keywords: ["agent", "commit", "message", "ai", "copilot", "generate"],
+        indicatesRunning: true,
+        run: async () => {
+          const { generateCommitMessage } = await import("./commitMessage");
+          await generateCommitMessage();
         },
       },
       {

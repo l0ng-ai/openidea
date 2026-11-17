@@ -216,6 +216,48 @@ const go = set(
   ],
 );
 
+const zig = set(
+  "zig",
+  ["zig"],
+  [
+    { key: "if", description: "if (expr)", body: "if ($EXPR$) {\n\t$END$\n}", statement: true },
+    { key: "not", description: "!expr", body: "!$EXPR$$END$", wrapCompound: true },
+    {
+      key: "const",
+      description: "const name = expr;",
+      body: "const $NAME$ = $EXPR$;$END$",
+      statement: true,
+      variables: [NAME],
+    },
+    {
+      key: "var",
+      description: "var name = expr;",
+      body: "var $NAME$ = $EXPR$;$END$",
+      statement: true,
+      variables: [NAME],
+    },
+    { key: "return", description: "return expr;", body: "return $EXPR$;$END$", statement: true },
+    { key: "try", description: "try expr;", body: "try $EXPR$;$END$", statement: true },
+    { key: "defer", description: "defer expr;", body: "defer $EXPR$;$END$", statement: true },
+    {
+      key: "nn",
+      description: "if (expr) |item|",
+      body: "if ($EXPR$) |$ITEM$| {\n\t$END$\n}",
+      statement: true,
+      variables: [ITEM],
+    },
+    { key: "null", description: "if (expr == null)", body: "if ($EXPR$ == null) {\n\t$END$\n}", statement: true },
+    { key: "switch", description: "switch (expr)", body: "switch ($EXPR$) {\n\t$END$\n}", statement: true },
+    {
+      key: "print",
+      description: 'std.debug.print("{any}\\n", .{expr})',
+      body: 'std.debug.print("{any}\\n", .{$EXPR$});$END$',
+      statement: true,
+    },
+    { key: "par", description: "(expr)", body: "($EXPR$)$END$" },
+  ],
+);
+
 const java = set(
   "java",
   ["java"],
@@ -316,13 +358,22 @@ const kotlin = set(
   ],
 );
 
-export const POSTFIX_TEMPLATES: readonly PostfixTemplate[] = [...tsLike, ...rust, ...python, ...go, ...java, ...kotlin];
+export const POSTFIX_TEMPLATES: readonly PostfixTemplate[] = [
+  ...tsLike,
+  ...rust,
+  ...python,
+  ...go,
+  ...zig,
+  ...java,
+  ...kotlin,
+];
 
 export const POSTFIX_GROUPS: Array<{ id: string; title: string }> = [
   { id: "ts", title: "JavaScript / TypeScript" },
   { id: "rust", title: "Rust" },
   { id: "py", title: "Python" },
   { id: "go", title: "Go" },
+  { id: "zig", title: "Zig" },
   { id: "java", title: "Java" },
   { id: "kt", title: "Kotlin" },
 ];

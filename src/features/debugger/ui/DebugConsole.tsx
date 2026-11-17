@@ -123,7 +123,12 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   // The debug console uses the same font as the Run console.
   const consoleFont = useConsoleFont();
   const { rowHeight } = consoleFont;
-  const fontStyle = { fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px` };
+  const fontStyle = {
+    fontFamily: consoleFont.family,
+    fontSize: `${consoleFont.size}px`,
+    fontWeight: consoleFont.weight,
+    ["--fw-code-bold" as string]: String(consoleFont.boldWeight),
+  };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
   const logColors = useWorkflowSettings((s) => s.console.logColors);

@@ -1,6 +1,7 @@
 //! Protocol flow against an in-memory fake adapter.
 
 mod jvm_inspect;
+mod stream_trace;
 
 use super::*;
 use crate::adapter::{AdapterIo, LaunchFuture};
@@ -71,10 +72,21 @@ async fn windows_stop_releases_the_debuggees_port_before_returning() {
             .unwrap();
         let pid = child.0.id();
         child.1 = Some(ide_core::process::ProcessTree::capture(pid));
-        let h = harness(Script { debuggee_pid: Some(pid), supports_terminate, ..Default::default() });
+        // A running program: one suspended at a breakpoint is killed at once (#3658), without the
+        // wait for its tree this test is about.
+        let h = harness(Script {
+            debuggee_pid: Some(pid),
+            supports_terminate,
+            continued_after_stop: true,
+            ..Default::default()
+        });
         let id = h.start(config()).await.unwrap();
         let session = h.manager.session(id).unwrap();
-        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+        // The pid, then the stop at launch and the `continued` that ends it.
+        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid)
+            || session.suspended.ticket() == 0
+            || session.suspended.get()
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let stop = tokio::spawn({
@@ -132,6 +144,16 @@ struct Script {
     continue_reply: Option<Value>,
     /// Answer `continue` and stop at a breakpoint again, instead of letting the program exit.
     stop_after_continue: bool,
+    /// Answer `stepOut` and stop these threads one after the other, 100 ms apart (java-debug
+    /// stops the stepping thread right after the call returns).
+    step_out_stops: &'static [i64],
+    /// Refuse `stepOut`.
+    refuse_step_out: bool,
+    /// Refuse `continue`.
+    refuse_continue: bool,
+    /// Stop thread 1 alone at a breakpoint right after each of the first this many `continue`s
+    /// that `continue_reply` answers.
+    breakpoints_after_continue: usize,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
     /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
@@ -158,6 +180,7 @@ struct Script {
     /// `launch`, and a `configurationDone` sent while it runs is refused with `notStopped`.
     gdb15_starts_at_launch: bool,
     launch_after_configuration: bool,
+    empty_thread_responses: usize,
     /// Requests of the adapter's own (js-debug's `setCustomBreakpoints`…) answered with an empty body.
     accept: &'static [&'static str],
     /// Requests of the adapter's own answered with a body and followed by events.
@@ -184,6 +207,10 @@ impl Default for Script {
             hang_up_after_stop: false,
             continue_reply: None,
             stop_after_continue: false,
+            step_out_stops: &[],
+            refuse_step_out: false,
+            refuse_continue: false,
+            breakpoints_after_continue: 0,
             step_reason: None,
             refuse_next: false,
             invalidated_after_stop: false,
@@ -198,6 +225,7 @@ impl Default for Script {
             close_during_startup: false,
             gdb15_starts_at_launch: false,
             launch_after_configuration: false,
+            empty_thread_responses: 0,
             accept: &[],
             custom: None,
         }
@@ -244,6 +272,9 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut held: Vec<Value> = Vec::new();
     let mut stopped = false;
     let mut running = false;
+    let mut thread_requests = 0;
+    let mut unity = false;
+    let mut breakpoints_left = script.breakpoints_after_continue;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -268,13 +299,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
         }
         match msg["command"].as_str().unwrap_or_default() {
             "initialize" => {
+                unity = msg["arguments"]["adapterID"] == "unity";
                 if let Some(delay) = script.delay_initialize {
                     tokio::time::sleep(delay).await;
                 }
                 ok!(
                     msg,
                     json!({
-                        "supportsConfigurationDoneRequest": true,
+                        "supportsConfigurationDoneRequest": !unity,
                         "supportsCompletionsRequest": true,
                         "supportsTerminateRequest": script.supports_terminate,
                         "supportsSetVariable": true,
@@ -293,8 +325,15 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     // defers it sends late).
                     send!(json!({"type": "event", "event": "initialized"}));
                 }
+                if unity {
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
             }
             "launch" | "attach" => {
+                if unity {
+                    ok!(msg, Value::Null);
+                    continue;
+                }
                 if script.gdb15_starts_at_launch {
                     // GDB 15 starts the program here and answers `launch` right away.
                     running = true;
@@ -448,7 +487,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 ok!(msg, json!({"threads": [{"id": 1, "name": "\"main\"@1"}]}));
             }
-            "threads" => ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]})),
+            "threads" => {
+                thread_requests += 1;
+                if thread_requests <= script.empty_thread_responses {
+                    ok!(msg, json!({"threads": []}));
+                } else {
+                    ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]}));
+                }
+            }
             "stackTrace" => ok!(
                 msg,
                 json!({"stackFrames": [
@@ -475,7 +521,21 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     {"label": ""},
                 ]})
             ),
-            "continue" if script.continue_reply.is_some() => ok!(msg, script.continue_reply.clone().unwrap()),
+            "continue" if script.refuse_continue => send!(
+                json!({"type": "response", "request_seq": msg["seq"], "command": "continue", "success": false, "message": "Thread is not suspended"})
+            ),
+            "continue" if script.continue_reply.is_some() => {
+                ok!(msg, script.continue_reply.clone().unwrap());
+                if breakpoints_left > 0 {
+                    breakpoints_left -= 1;
+                    send!(
+                        json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}})
+                    );
+                }
+            }
+            "stepOut" if script.refuse_step_out => send!(
+                json!({"type": "response", "request_seq": msg["seq"], "command": "stepOut", "success": false, "message": "Thread is not suspended"})
+            ),
             "continue" if script.stop_after_continue => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(
@@ -488,6 +548,16 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(json!({"type": "event", "event": "terminated"}));
             }
             "pause" if script.hang_up_on_pause => break,
+            "stepOut" if !script.step_out_stops.is_empty() => {
+                ok!(msg, Value::Null);
+                for (i, thread) in script.step_out_stops.iter().enumerate() {
+                    if i > 0 {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    let reason = if i + 1 == script.step_out_stops.len() { "step" } else { "breakpoint" };
+                    send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": thread}}));
+                }
+            }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "redefineClasses" => {
                 send!(
@@ -508,6 +578,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 }
             }
             "disconnect" => {
+                // Like Delve: the adapter ends the program it launched.
+                #[cfg(unix)]
+                if msg["arguments"]["terminateDebuggee"] == true
+                    && let Some(pid) = script.debuggee_pid
+                {
+                    // SAFETY: plain syscall on the test's own child process.
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                }
                 ok!(msg, Value::Null);
                 let _ = w.lock().await.shutdown().await;
                 break;
@@ -879,6 +957,32 @@ async fn stop_terminates_and_disconnects() {
 }
 
 #[tokio::test]
+async fn unity_attach_waits_for_mono_and_disconnects_without_terminating_editor() {
+    let h = harness(Script { empty_thread_responses: 2, ..Script::default() });
+    h.manager.set_breakpoints(PathBuf::from("/p/a.cs"), vec![bp(4)]).await.unwrap();
+    let start = h.start(LaunchConfig {
+        adapter: "unity".into(),
+        request: "attach".into(),
+        program: None,
+        extra_json: Some(json!({ "name": "Unity Editor (42)", "__exceptionOptions": [] }).to_string()),
+        ..config()
+    });
+    let ready = async {
+        h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+        let commands = h.commands();
+        let before_breakpoints = commands.iter().take_while(|c| *c != "setBreakpoints");
+        assert!(before_breakpoints.filter(|c| *c == "threads").count() >= 3);
+        assert!(commands.iter().any(|c| c == "setBreakpoints"));
+    };
+    let (id, ()) = tokio::join!(start, ready);
+    let id = id.unwrap();
+    assert_eq!(h.request("attach")["arguments"]["name"], "Unity Editor (42)");
+    h.manager.stop(id).await.unwrap();
+    assert!(!h.commands().iter().any(|c| c == "launch" || c == "terminate"));
+    assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], false);
+}
+
+#[tokio::test]
 async fn concurrent_sessions_are_independent() {
     let h = harness(Script::default());
     let a = h.start(config()).await.unwrap();
@@ -1102,6 +1206,142 @@ async fn a_page_whose_requests_the_adapter_does_not_report_says_so() {
     let browser = h.start(js_config("pwa-chrome")).await.unwrap();
     child_of(&h, browser).await;
     h.wait_event(|e| matches!(e, DebugEvent::JsNetworkUnavailable)).await;
+}
+
+/// Where the fake adapter says its CDP proxy listens (`requestCDPProxy`).
+static CDP_PROXY_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+fn proxy_adapter(msg: &Value) -> Option<CustomReply> {
+    let port = CDP_PROXY_PORT.load(std::sync::atomic::Ordering::Relaxed);
+    (msg["command"] == "requestCDPProxy")
+        .then(|| (json!({ "host": "127.0.0.1", "port": port, "path": "/session" }), Vec::new()))
+}
+
+#[tokio::test]
+async fn response_overrides_reach_the_page_through_the_adapters_proxy() {
+    use crate::js_cdp::tests::{next, proxy, rule};
+    let (url, mut received, _events) = proxy().await;
+    let port: u16 = url.trim_start_matches("ws://127.0.0.1:").trim_end_matches("/session").parse().unwrap();
+    CDP_PROXY_PORT.store(port, std::sync::atomic::Ordering::Relaxed);
+
+    let h = harness(Script {
+        start_debugging: true,
+        custom: Some(proxy_adapter),
+        child_launch_delay: Duration::from_millis(150),
+        ..Script::default()
+    });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+
+    // Rules that are there as the page starts wait until its session takes requests.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    h.manager.js_set_response_overrides(page, vec![rule("api/items", 200, "[]")]).await.unwrap();
+    let dropped = h.log.lock().iter().filter(|m| m["type"] == "dropped").count();
+    assert_eq!(dropped, 0, "the proxy was asked for before the page took requests");
+    assert_eq!(next(&mut received).await.0, "JsDebug.subscribe");
+    assert_eq!(
+        next(&mut received).await,
+        ("Fetch.enable".into(), json!({ "patterns": [{ "urlPattern": "*api/items*", "requestStage": "Request" }] }))
+    );
+    // Changed rules go over the connection that is open: the proxy is asked for once.
+    h.manager.js_set_response_overrides(page, vec![rule("api/users", 200, "[]")]).await.unwrap();
+    assert_eq!(next(&mut received).await.1["patterns"][0]["urlPattern"], "*api/users*");
+    assert_eq!(requests(&h, "requestCDPProxy").len(), 1);
+
+    h.manager.js_set_response_overrides(page, Vec::new()).await.unwrap();
+    assert_eq!(next(&mut received).await.0, "Fetch.disable");
+    // A rule switched back on.
+    h.manager.js_set_response_overrides(page, vec![rule("api/items", 200, "[]")]).await.unwrap();
+    assert_eq!(next(&mut received).await.0, "Fetch.enable");
+    assert_eq!(requests(&h, "requestCDPProxy").len(), 1);
+
+    let not_a_page = h.manager.js_set_response_overrides(browser, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(not_a_page.kind, ide_core::error::ErrorKind::Unavailable);
+}
+
+#[tokio::test]
+async fn response_overrides_are_unavailable_without_the_adapters_proxy() {
+    use crate::js_cdp::tests::rule;
+    let h = harness(Script { start_debugging: true, ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+    let refused = h.manager.js_set_response_overrides(page, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(refused.kind, ide_core::error::ErrorKind::Unavailable);
+    // Nothing to switch off is not an error.
+    h.manager.js_set_response_overrides(page, Vec::new()).await.unwrap();
+}
+
+/// A port nothing listens on, which the fake adapter gives as its CDP proxy.
+static DEAD_PROXY_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+fn dead_proxy_adapter(msg: &Value) -> Option<CustomReply> {
+    let port = DEAD_PROXY_PORT.load(std::sync::atomic::Ordering::Relaxed);
+    (msg["command"] == "requestCDPProxy")
+        .then(|| (json!({ "host": "127.0.0.1", "port": port, "path": "/session" }), Vec::new()))
+}
+
+#[tokio::test]
+async fn response_overrides_that_cannot_reach_the_browser_are_an_error() {
+    use crate::js_cdp::tests::rule;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    DEAD_PROXY_PORT.store(listener.local_addr().unwrap().port(), std::sync::atomic::Ordering::Relaxed);
+    drop(listener);
+
+    let h = harness(Script { start_debugging: true, custom: Some(dead_proxy_adapter), ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+    let unreachable = h.manager.js_set_response_overrides(page, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(unreachable.kind, ide_core::error::ErrorKind::Unavailable);
+    // The next rules try again instead of going to a connection that never was.
+    let again = h.manager.js_set_response_overrides(page, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(again.kind, ide_core::error::ErrorKind::Unavailable);
+    assert_eq!(requests(&h, "requestCDPProxy").len(), 2);
+}
+
+/// The file the fake adapter says it records a CPU profile into (`profileStarted`).
+static PROFILE_FILE: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
+
+fn profiling_adapter(msg: &Value) -> Option<CustomReply> {
+    match msg["command"].as_str()? {
+        "startProfile" => {
+            Some((json!({}), vec![("profileStarted", json!({ "file": *PROFILE_FILE.lock(), "type": "cpu" }))]))
+        }
+        "stopProfile" => Some((json!({}), vec![("profilerStateUpdate", json!({ "label": "", "running": false }))])),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn a_pages_cpu_profile_is_handed_over_as_a_cpuprofile_file() {
+    let recorded = std::env::temp_dir().join(format!("openidea-dap-profile-{}", std::process::id()));
+    std::fs::write(&recorded, r#"{"nodes":[],"samples":[]}"#).unwrap();
+    *PROFILE_FILE.lock() = recorded.to_string_lossy().into_owned();
+
+    let h = harness(Script { start_debugging: true, custom: Some(profiling_adapter), ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+
+    // Nothing is being recorded yet.
+    let idle = h.manager.js_stop_profile(page).await.unwrap_err();
+    assert_eq!(idle.kind, ide_core::error::ErrorKind::InvalidInput);
+
+    h.manager.js_start_profile(page).await.unwrap();
+    assert_eq!(requests(&h, "startProfile"), [json!({ "type": "cpu" })]);
+    let dir = h.manager.js_stop_profile(page).await.unwrap();
+    assert_eq!(requests(&h, "stopProfile").len(), 1);
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(files, ["page.cpuprofile"]);
+    assert_eq!(std::fs::read_to_string(dir.join("page.cpuprofile")).unwrap(), r#"{"nodes":[],"samples":[]}"#);
+    // One recording is handed over once.
+    assert_eq!(h.manager.js_stop_profile(page).await.unwrap_err().kind, ide_core::error::ErrorKind::InvalidInput);
+
+    // The adapter's file isn't there when it is asked for (the hand-over above took the first one).
+    assert!(!recorded.exists());
+    h.manager.js_start_profile(page).await.unwrap();
+    assert_eq!(h.manager.js_stop_profile(page).await.unwrap_err().kind, ide_core::error::ErrorKind::Unavailable);
+
+    assert_eq!(h.manager.js_start_profile(browser).await.unwrap_err().kind, ide_core::error::ErrorKind::Unavailable);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1682,6 +1922,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         framework_files: Vec::new(),
         formatter: None,
         scratch_template: None,
+        rainbow_brackets: Default::default(),
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {
@@ -2136,6 +2377,44 @@ async fn stop_waits_for_the_launched_program_to_exit() {
     assert!(elapsed >= Duration::from_millis(800), "stop returned after {elapsed:?}, before the program exited");
     assert!(elapsed < Duration::from_secs(5), "stop waited {elapsed:?} for a program that ended after a second");
     h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+}
+
+/// Delve and other adapters without `terminate`: a program stopped at a breakpoint cannot
+/// handle the SIGTERM Stop sends, so Stop has the adapter end it instead of waiting out the grace period.
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_kills_a_program_suspended_at_a_breakpoint_at_once() {
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let exited = Arc::new(AtomicBool::new(false));
+    {
+        let exited = exited.clone();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            exited.store(true, Ordering::Release);
+        });
+    }
+    let h = harness(Script { debuggee_pid: Some(pid), supports_terminate: false, ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await; // let the program install its trap
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(3), "stop waited {elapsed:?} for a suspended program");
+    assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], true);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !exited.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline, "the suspended program was left running");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[cfg(unix)]

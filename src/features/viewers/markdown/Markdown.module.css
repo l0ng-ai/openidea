@@ -32,6 +32,9 @@
   min-width: 0;
   position: relative;
   overflow: auto;
+  /* Positions are restored and synced by source line; Chromium's scroll anchoring
+     would keep a later block in view while images above it load. */
+  overflow-anchor: none;
   padding: 16px 28px 40vh;
   outline: none;
   /* The preview sits on the editor background, so its text comes from the
@@ -130,7 +133,11 @@
   margin: 1.5em 0;
 }
 .preview :global(img) {
-  max-width: 100%;
+  max-width: calc(100% * var(--markdown-zoom-scale, 1));
+}
+.preview :global(img[data-natural-width]) {
+  width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
 }
 .preview :global(ul.contains-task-list) {
   list-style: none;
@@ -154,11 +161,35 @@
 .preview :global([data-mermaid-state="ok"] > pre) {
   display: none;
 }
+.preview :global([align="left" i]) {
+  --mermaid-align: left;
+  --mermaid-margin-left: 0;
+  --mermaid-margin-right: auto;
+}
+.preview :global([align="right" i]) {
+  --mermaid-align: right;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: 0;
+}
+.preview :global([align="center" i]),
+.preview :global(center) {
+  --mermaid-align: center;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: auto;
+}
 .preview :global(.mermaid-output) {
-  overflow: hidden;
-  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: var(--mermaid-align, center);
+}
+.preview :global(.mermaid-output svg[data-natural-width]) {
+  display: block;
+  margin: 0 var(--mermaid-margin-right, auto) 0 var(--mermaid-margin-left, auto);
+  width: calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
 }
 .preview :global(.mermaid-output[data-zoomed="true"]) {
+  overflow: hidden;
   cursor: grab;
   touch-action: none;
   user-select: none;

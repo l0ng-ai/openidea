@@ -20,6 +20,7 @@ import { offsetToPos } from "@/editor/lsp/positions";
 import type { DbCompletion, DbCompletionTable, DbDriver } from "@/platform/ipc";
 import { formatSql } from "./sql/format";
 import { SqlResolver, type SqlSymbol } from "./sql/resolve";
+import { useProject } from "@/platform/project";
 import { consoleSchema, consoleSource, revealInTree, sourceById, useDatabase } from "./store";
 
 /** Producer id of the console's diagnostics (Problems view, hover). */
@@ -38,18 +39,29 @@ function sourceOf(path: string): { id: string | null; driver: DbDriver; model: D
   };
 }
 
-function resolver(path: string, state: EditorState): SqlResolver {
+/**
+ * Where the SQL of a file is: its text as the SQL tools read it (the file's offsets), and
+ * whether an offset is in SQL. A SQL file is SQL throughout; a MyBatis mapper only in its statements.
+ */
+export interface SqlText {
+  text(state: EditorState): string;
+  at?(state: EditorState, pos: number): boolean;
+}
+
+export const WHOLE_FILE: SqlText = { text: (state) => state.doc.toString() };
+
+function resolver(path: string, state: EditorState, sql: SqlText): SqlResolver {
   const { driver, model } = sourceOf(path);
-  return new SqlResolver(state.doc.toString(), driver, model);
+  return new SqlResolver(sql.text(state), driver, model);
 }
 
 /** Unresolved tables / columns / aliases as error diagnostics, re-checked after edits and schema loads. */
-function inspections(path: string): Extension {
+function inspections(path: string, sql: SqlText): Extension {
   return ViewPlugin.define((view) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const run = () => {
       const doc = view.state.doc;
-      const problems = sourceOf(path).model ? resolver(path, view.state).problems() : [];
+      const problems = sourceOf(path).model ? resolver(path, view.state, sql).problems() : [];
       setFileDiagnostics(
         path,
         INSPECTIONS,
@@ -69,8 +81,17 @@ function inspections(path: string): Extension {
     schedule();
     // The schema model arrives (or the console is bound to another source / schema) after the editor opens.
     const unsubscribe = useDatabase.subscribe((s, prev) => {
-      if (s.completion !== prev.completion || s.consoles !== prev.consoles || s.consoleSchemas !== prev.consoleSchemas)
+      if (
+        s.completion !== prev.completion ||
+        s.consoles !== prev.consoles ||
+        s.consoleSchemas !== prev.consoleSchemas ||
+        s.sources !== prev.sources
+      )
         schedule();
+    });
+    // SQL resolution scopes can move the file to another data source.
+    const unsubscribeSettings = useProject.subscribe((s, prev) => {
+      if (s.settings !== prev.settings) schedule();
     });
     return {
       update: (u) => {
@@ -79,16 +100,20 @@ function inspections(path: string): Extension {
       destroy: () => {
         clearTimeout(timer);
         unsubscribe();
+        unsubscribeSettings();
         setFileDiagnostics(path, INSPECTIONS, []);
       },
     };
   });
 }
 
-function definition(path: string): ContributedDefinition {
+function definition(path: string, sql: SqlText): ContributedDefinition {
   return (view, pos) => {
-    const r = resolver(path, view.state).resolveAt(pos);
+    if (sql.at && !sql.at(view.state, pos)) return false;
+    const r = resolver(path, view.state, sql).resolveAt(pos);
     const sym = r?.symbol;
+    // Outside SQL names, other providers (the XML language server) may know the place.
+    if (!sym && sql.at) return false;
     const id = consoleSource(path);
     const reveal = (t: DbCompletionTable, column?: string) => {
       if (id) void revealInTree(id, t.schema, t.name, t.kind, column);
@@ -172,9 +197,10 @@ function symbolDoc(sym: SqlSymbol, model: DbCompletion | null): string | null {
   }
 }
 
-function hover(path: string): ContributedHover {
+function hover(path: string, sql: SqlText): ContributedHover {
   return (state, pos) => {
-    const r = resolver(path, state).resolveAt(pos);
+    if (sql.at && !sql.at(state, pos)) return null;
+    const r = resolver(path, state, sql).resolveAt(pos);
     const markdown = r?.symbol ? symbolDoc(r.symbol, sourceOf(path).model) : null;
     return r && markdown ? { from: r.from, to: r.to, markdown } : null;
   };
@@ -184,11 +210,12 @@ function formatter(path: string): ContributedFormatter {
   return (state, range) => formatSql(state.doc.toString(), sourceOf(path).driver, range);
 }
 
-export function sqlSupport(path: string): Extension {
+/** Inspections, navigation and documentation for the SQL of `path` (and Reformat Code for SQL files). */
+export function sqlSupport(path: string, sql: SqlText = WHOLE_FILE): Extension {
   const data = {
-    [CONTRIBUTED_DEFINITION]: definition(path),
-    [CONTRIBUTED_HOVER]: hover(path),
-    [CONTRIBUTED_FORMAT]: formatter(path),
+    [CONTRIBUTED_DEFINITION]: definition(path, sql),
+    [CONTRIBUTED_HOVER]: hover(path, sql),
+    ...(sql === WHOLE_FILE ? { [CONTRIBUTED_FORMAT]: formatter(path) } : {}),
   };
-  return [inspections(path), EditorState.languageData.of(() => [data])];
+  return [inspections(path, sql), EditorState.languageData.of(() => [data])];
 }

@@ -6,7 +6,8 @@ import type { Location } from "@/platform/ipc";
 export interface NavigationMatch {
   from: number;
   to: number;
-  targets: Location[];
+  /** `name`: what the chooser shows for a target (else the word at it). */
+  targets: Array<Location & { name?: string }>;
 }
 type Provider = (view: EditorView, offset: number) => Promise<NavigationMatch | null>;
 const providers = new Set<Provider>();

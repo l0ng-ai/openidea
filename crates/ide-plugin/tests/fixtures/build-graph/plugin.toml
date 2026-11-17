@@ -1,0 +1,12 @@
+id = "test.build-graph"
+name = "Build dependency graph fixture"
+version = "0.1.0"
+engines.openidea = "^1.10"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+optional = ["build.read"]
+
+[[contributes.commands]]
+id = "dependencies"
+title = "List the dependency graph of a module, or of every module"

@@ -15,6 +15,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -128,6 +129,8 @@ export interface TreeProps<T> {
   indent?: number;
   className?: string;
   rowClassName?: (node: T) => string | undefined;
+  /** CSS colour the row background is tinted with (File Colors). */
+  rowTint?: (node: T) => string | undefined;
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
   /** Context key set while the tree itself has keyboard focus. */
@@ -273,6 +276,7 @@ export function Tree<T>(props: TreeProps<T>) {
     indent = 20,
     className,
     rowClassName,
+    rowTint,
     handleRef,
     empty,
   } = props;
@@ -395,7 +399,16 @@ export function Tree<T>(props: TreeProps<T>) {
     if (!row.expandable || row.expanded === open) return;
     const next = new Set(expanded);
     if (open) next.add(row.key);
-    else next.delete(row.key);
+    else {
+      // Collapsing a node also collapses everything expanded below it, so expanding it again
+      // shows only its direct children.
+      next.delete(row.key);
+      const stack = [...(getChildren(row.node) ?? [])];
+      while (next.size && stack.length) {
+        const n = stack.pop()!;
+        if (next.delete(getKey(n)) || isExpandable(n)) stack.push(...(getChildren(n) ?? []));
+      }
+    }
     if (!expandedControlled) setExpandedInner(next);
     props.onExpandedChange?.(next, row.node, open);
     if (open && getChildren(row.node) === undefined) void loadChildren?.(row.node);
@@ -739,6 +752,7 @@ export function Tree<T>(props: TreeProps<T>) {
             const icon = getIcon?.(row.node, row.expanded);
             const detail = getDetail?.(row.node);
             const color = getColor?.(row.node);
+            const tint = rowTint?.(row.node);
             return (
               <div
                 key={v.key}
@@ -754,13 +768,14 @@ export function Tree<T>(props: TreeProps<T>) {
                   styles.row,
                   props.horizontalScroll && styles.wideRow,
                   rowClassName?.(row.node),
+                  tint && styles.tinted,
                   isSelected && styles.selected,
                   joinPrev && styles.joinPrev,
                   joinNext && styles.joinNext,
                   isLead && styles.lead,
                   reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}
-                style={style}
+                style={tint ? ({ ...style, "--row-tint": tint } as CSSProperties) : style}
                 onPointerDown={
                   props.reorder
                     ? (e) => reordering.start(e, row)

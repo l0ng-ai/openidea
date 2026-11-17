@@ -138,6 +138,12 @@ pub(super) struct Settings {
     pub model: String,
     pub effort: Option<String>,
     pub mode: Mode,
+    /// Codex's Default/Plan collaboration mode. It is sent with each turn because it is
+    /// part of the turn contract rather than the sandbox permission mode above.
+    pub collaboration_mode: String,
+    /// A mode just chosen by the user, sent once even when it is Default so a resumed Plan
+    /// thread is explicitly reset. Subsequent default turns can omit the field again.
+    pub collaboration_mode_override: Option<String>,
 }
 
 impl Settings {
@@ -156,6 +162,12 @@ impl Settings {
                 result.get("approvalPolicy").unwrap_or(&Value::Null),
                 result.get("sandbox").unwrap_or(&Value::Null),
             ),
+            collaboration_mode: result
+                .pointer("/collaborationMode/mode")
+                .and_then(Value::as_str)
+                .unwrap_or(DEFAULT_COLLABORATION_MODE)
+                .to_owned(),
+            collaboration_mode_override: None,
         };
         s.fit_effort(models);
         s
@@ -194,6 +206,13 @@ impl Settings {
                 self.effort = Some(value.to_owned());
             }
             MODE => self.mode = Mode::parse(value).ok_or_else(|| format!("unknown mode {value}"))?,
+            COLLABORATION_MODE => {
+                if !matches!(value, DEFAULT_COLLABORATION_MODE | PLAN_COLLABORATION_MODE) {
+                    return Err(format!("unknown collaboration mode {value}"));
+                }
+                self.collaboration_mode = value.to_owned();
+                self.collaboration_mode_override = Some(value.to_owned());
+            }
             _ => return Err(format!("unknown setting {option}")),
         }
         Ok(())
@@ -203,6 +222,9 @@ impl Settings {
 pub(super) const MODEL: &str = "model";
 pub(super) const EFFORT: &str = "reasoning_effort";
 pub(super) const MODE: &str = "mode";
+pub(super) const COLLABORATION_MODE: &str = "collaboration_mode";
+pub(super) const DEFAULT_COLLABORATION_MODE: &str = "default";
+pub(super) const PLAN_COLLABORATION_MODE: &str = "plan";
 
 /// ACP `configOptions`: model, reasoning effort (for models that have it) and mode.
 pub(super) fn config_options(models: &[ModelInfo], s: &Settings) -> Value {
@@ -235,7 +257,30 @@ pub(super) fn config_options(models: &[ModelInfo], s: &Settings) -> Value {
         "id": MODE, "name": "Mode", "category": "mode", "type": "select", "currentValue": s.mode.id(),
         "options": Mode::ALL.iter().map(|m| select_value(m.id(), m.name(), Some(m.description()))).collect::<Vec<_>>(),
     }));
+    out.push(json!({
+        "id": COLLABORATION_MODE,
+        "name": "Collaboration mode",
+        "category": "collaboration_mode",
+        "type": "select",
+        "currentValue": s.collaboration_mode,
+        "options": [
+            select_value(DEFAULT_COLLABORATION_MODE, "Default", Some("Execute changes directly")),
+            select_value(PLAN_COLLABORATION_MODE, "Plan", Some("Plan before making changes")),
+        ],
+    }));
     Value::Array(out)
+}
+
+/// `turn/start.collaborationMode`: the preset plus the selected model settings.
+pub(super) fn collaboration_mode(settings: &Settings, models: &[ModelInfo]) -> Value {
+    json!({
+        "mode": settings.collaboration_mode_override.as_deref().unwrap_or(&settings.collaboration_mode),
+        "settings": {
+            "model": settings.model_slug(models),
+            "reasoning_effort": settings.effort,
+            "developer_instructions": null,
+        },
+    })
 }
 
 fn select_value(value: &str, name: &str, description: Option<&str>) -> Value {
@@ -878,8 +923,18 @@ fn str_of(v: &Value, key: &str) -> Option<String> {
 
 /// Session-scoped MCP configuration, carried in thread/start, resume and fork.
 pub(super) fn mcp_config(params: &Value) -> Option<Value> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+    let cwd = params.get("cwd").and_then(Value::as_str).map_or_else(|| std::path::Path::new("."), std::path::Path::new);
+    let external = crate::mcp::codex_external_server_names(home.as_deref(), cwd);
+    mcp_config_with_external(params, &external)
+}
+
+pub(super) fn mcp_config_with_external(
+    params: &Value,
+    external_names: &std::collections::BTreeSet<String>,
+) -> Option<Value> {
     let mut servers = serde_json::Map::new();
-    for server in params.get("mcpServers")?.as_array()? {
+    for server in params.get("mcpServers").and_then(Value::as_array).into_iter().flatten() {
         if server.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
             continue;
         }
@@ -900,6 +955,17 @@ pub(super) fn mcp_config(params: &Value) -> Option<Value> {
             json!({"command":command,
             "args":server.get("args").cloned().unwrap_or_else(||json!([])),"env":env}),
         );
+    }
+    for name in params
+        .pointer("/_meta/openidea/mcpServersOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !servers.contains_key(name) && external_names.contains(name) {
+            servers.insert(name.to_owned(), json!({ "enabled": false }));
+        }
     }
     (!servers.is_empty()).then(|| json!({"mcp_servers":servers}))
 }

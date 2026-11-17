@@ -51,13 +51,12 @@ import {
   GutterMarker,
   ViewPlugin,
   WidgetType,
-  gutter,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import { gutterIconMarkup } from "@/ui/icons";
-import { emptyGutterSpacer } from "@/editor/api";
+import { iconAreaSource } from "./iconArea";
 import { tx, useI18n } from "@/platform/i18n";
 import { loadMarkdown, markupToHtml } from "@/editor/lsp/markdown";
 import { hasContent, renderDoc, type DocComment, type DocStyle, type RenderedDoc } from "./docRender";
@@ -358,18 +357,6 @@ function toggleMarker(rendered: boolean): ToggleMarker {
   return new ToggleMarker(rendered, tx("Toggle Rendered View"));
 }
 
-/** Reserves the toggles' width. Not a `ToggleMarker`: the spacer is in the DOM, hidden, and must not read as a button. */
-class ToggleSpacer extends GutterMarker {
-  override toDOM(): Node {
-    const el = document.createElement("span");
-    el.style.display = "inline-block";
-    el.style.width = "14px";
-    return el;
-  }
-}
-
-const toggleSpacer = new ToggleSpacer();
-
 /** A doc comment, with where its first line starts and its last line ends, and whether it is rendered now. */
 type PlacedComment = DocComment & { line: number; end: number; rendered: boolean };
 
@@ -658,8 +645,8 @@ const docsField = StateField.define<DocsView>({
   provide: (f) => EditorView.decorations.from(f, (v) => v.decorations),
 });
 
-const toggleGutter = gutter({
-  class: "cm-openidea-docToggles",
+const toggleSource = iconAreaSource.of({
+  order: 90,
   // Comments left as source: their first line is a text line, which reads these markers.
   // Asked again on every update, so the icon follows the mouse.
   markers: (view) => sourceToggle(view.state),
@@ -674,24 +661,21 @@ const toggleGutter = gutter({
   lineMarkerChange: (update) =>
     update.startState.field(hovered) !== update.state.field(hovered) ||
     update.transactions.some((tr) => tr.effects.some((e) => e.is(relabel))),
-  // A file without doc comments gets no column at all; one with them keeps its column
-  // while the icon comes and goes, so the text does not shift.
-  initialSpacer: (view) => (placedComments(view.state).length ? toggleSpacer : emptyGutterSpacer),
-  updateSpacer: (_spacer, update) => (placedComments(update.state).length ? toggleSpacer : emptyGutterSpacer),
-  domEventHandlers: {
-    mousedown(view, block, event) {
-      const target = event.target instanceof Element ? event.target.closest(".cm-openidea-docToggle") : null;
-      if ((event as MouseEvent).button !== 0 || !target) return false;
-      // A file that renders none may not have been scanned since its last edit: the flip
-      // must land on where its comment starts now.
-      const comment = active(view.state)
-        ? commentOverlapping(view.state, block.from, block.to)
-        : (placeComments(view.state).find((c) => block.from <= c.to && block.to >= c.line)?.from ?? null);
-      if (comment === null) return false;
-      event.preventDefault();
-      view.dispatch({ effects: toggleRenderedView.of(comment) });
-      return true;
-    },
+  // A file with doc comments keeps an icon's width while the icon comes and goes, so the
+  // text does not shift; it shares the icon area with the run and inheritance icons.
+  reserve: (state) => placedComments(state).length > 0,
+  mousedown(view, block, event) {
+    const target = event.target instanceof Element ? event.target.closest(".cm-openidea-docToggle") : null;
+    if (event.button !== 0 || !target) return false;
+    // A file that renders none may not have been scanned since its last edit: the flip
+    // must land on where its comment starts now.
+    const comment = active(view.state)
+      ? commentOverlapping(view.state, block.from, block.to)
+      : (placeComments(view.state).find((c) => block.from <= c.to && block.to >= c.line)?.from ?? null);
+    if (comment === null) return false;
+    event.preventDefault();
+    view.dispatch({ effects: toggleRenderedView.of(comment) });
+    return true;
   },
 });
 
@@ -874,15 +858,15 @@ const docsTheme = EditorView.theme({
   ".cm-openidea-renderedDocSections dt": { color: "var(--syn-doc-comment)" },
   ".cm-openidea-renderedDocSections dd": { margin: "0" },
   ".cm-openidea-renderedDocText p": { display: "inline", margin: "0" },
-  ".cm-openidea-docToggles .cm-gutterElement": {
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "center",
-    padding: "0 2px",
-  },
   ".cm-openidea-docToggle": {
+    // At the comment's first line, at the right of the icon area (IDEA aligns it right).
+    alignSelf: "flex-start",
+    marginLeft: "auto",
     display: "inline-flex",
     alignItems: "center",
+    justifyContent: "center",
+    // An icon's width, like the other icons of the area, so showing it doesn't widen the area.
+    width: "14px",
     height: "var(--openidea-editor-line-height, var(--lh-code))",
     padding: "0",
     border: "none",
@@ -902,7 +886,7 @@ export const renderedDocsExtension: Extension = [
   hovered,
   hoverTracker,
   showSourceAtCaret,
-  toggleGutter,
+  toggleSource,
   markdownReady,
   languageWatcher,
   docMetrics,

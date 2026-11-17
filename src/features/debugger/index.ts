@@ -18,10 +18,13 @@ import {
   useDebugRunSessions,
 } from "@/workbench/contributions";
 import { registerDebugActions } from "./actions";
+import { registerDebugTabActions } from "./tabActions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
 import { watchNetworkSessions } from "./js/networkSessions";
+import { loadResponseOverrides, watchOverrideSessions } from "./js/responseOverrides";
+import { watchProfiledSessions } from "./js/profile";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
@@ -30,6 +33,7 @@ import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
 import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
 import {
   activeSession,
+  canTraceStream,
   handleDebugEvent,
   isLive,
   loadWatches,
@@ -44,12 +48,26 @@ import { jsBrowserType } from "./browser";
 import { forgetInstances } from "./memory/instancesState";
 import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
+import { streamTraceKind } from "./streams/streamTraceKind";
 import { installHeapContext } from "./heap/heapDumpFiles";
 import { forgetMemory } from "./memory/memoryState";
+import { closeStaleStreamChooser, forgetStreamTrace } from "./streams/streamState";
 
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
 const useAnyOverlay = () =>
-  useOverlays((s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep));
+  useOverlays(
+    (s) =>
+      !!(
+        s.popover ||
+        s.evaluate ||
+        s.breakpoints ||
+        s.chooser ||
+        s.attach ||
+        s.smartStep ||
+        s.streamChooser ||
+        s.streamAbort != null
+      ),
+  );
 
 /** The Debug stripe button's badge, like Run's: how many debug sessions (child sessions aside) are live. */
 function useLiveSessionCount(): number | null {
@@ -66,9 +84,11 @@ export function activate(): () => void {
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
   loadJsBreakpoints(useProject.getState().project?.root ?? null);
+  loadResponseOverrides(useProject.getState().project?.root ?? null);
   const disposers = [
     () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
     registerDebugActions(),
+    registerDebugTabActions(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
     registerRunConfigType(jsBrowserType),
@@ -85,6 +105,7 @@ export function activate(): () => void {
       useBadge: useLiveSessionCount,
     }),
     registerEditorKind(heapEditorKind),
+    registerEditorKind(streamTraceKind),
     installHeapContext(),
     forgetHeapOnProjectChange(),
     registerOverlay({
@@ -94,7 +115,14 @@ export function activate(): () => void {
     registerMenuGroup({
       id: "debugger.evaluate",
       menus: ["editor"],
-      items: () => (activeSession()?.status === "paused" ? [{ kind: "action", action: "debug.evaluate" }] : []),
+      items: () => {
+        const s = activeSession();
+        if (s?.status !== "paused") return [];
+        return [
+          { kind: "action", action: "debug.evaluate" },
+          ...(canTraceStream(s) ? [{ kind: "action" as const, action: "debug.traceStreamChain" }] : []),
+        ];
+      },
     }),
     registerMenuGroup({
       id: "debugger.hotswap",
@@ -130,26 +158,32 @@ export function activate(): () => void {
     }),
     useDebug.subscribe((s, prev) => {
       if (s.sessions === prev.sessions) return;
+      closeStaleStreamChooser();
       for (const id of Object.keys(prev.sessions)) {
         if (id in s.sessions) continue;
         forgetMemory(Number(id));
         forgetInstances(Number(id));
         forgetHeapCapture(Number(id));
+        forgetStreamTrace(Number(id));
       }
     }),
     useProject.subscribe((s, prev) => {
       const root = s.project?.root ?? null;
       if (root !== (prev.project?.root ?? null) || s.project?.trusted !== prev.project?.trusted) {
+        useOverlays.setState({ attach: null });
         resetSessions();
         loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
         loadSpecialBreakpoints(root);
         loadJsBreakpoints(root);
+        loadResponseOverrides(root);
       }
     }),
     watchPageSessions(),
     watchNetworkSessions(),
+    watchOverrideSessions(),
+    watchProfiledSessions(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

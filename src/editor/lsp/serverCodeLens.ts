@@ -6,6 +6,8 @@ import { call, commands } from "@/platform/ipc";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { posToOffset } from "./positions";
 import { onLspRefresh, onServerSettled, anyServerBusy } from "./availability";
+import { editorPrefs } from "@/platform/editorSettings";
+import { useProject } from "@/platform/project";
 /**
  * A server's reference count ("3 references", csharp-ls's "3 Reference(s)"): Code Vision's
  * Usages shows the same count above the declaration, under its own setting.
@@ -38,12 +40,18 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
           timer: ReturnType<typeof setTimeout> | undefined;
           generation = 0;
           skipped = false;
+          enabled = editorPrefs().inlay.codeVision;
           off: () => void;
           constructor() {
             const offs = [
               onNavigationProvidersChanged(() => this.schedule()),
               onLspRefresh("codeLens", () => this.schedule()),
               onServerSettled(() => this.schedule()),
+              // Turning Code Vision off hides these rows too, and turning it back on asks again.
+              useProject.subscribe((s, prev) => {
+                if (s.settings !== prev.settings && editorPrefs(s.settings).inlay.codeVision !== this.enabled)
+                  this.schedule();
+              }),
             ];
             this.off = () => offs.forEach((f) => f());
             this.schedule();
@@ -59,6 +67,11 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
           async run() {
             const gen = this.generation;
             const text = view.state.doc;
+            this.enabled = editorPrefs().inlay.codeVision;
+            if (!this.enabled) {
+              if (view.state.field(field).length) view.dispatch({ effects: set.of([]) });
+              return;
+            }
             try {
               await whenSynced(view);
               const result = await call(commands.lspCodeLens(ctx.doc));

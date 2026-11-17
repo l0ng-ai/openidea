@@ -1,15 +1,36 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { menuGroupItems, registerMenuGroup } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
-import { canDebugProduced, choiceItems, contextMenuItems } from "./contextRun";
-import { OPTIMISTIC, produceContextChoices } from "./producers";
+import { canDebugProduced, choiceItems, compiledDebugPlan, contextMenuItems } from "./contextRun";
+import { OPTIMISTIC, produceContextChoices, type ToolEnv } from "./producers";
 import { gutterTestState, markerIcon, targetMenuItems } from "./runGutter";
 import { useRun } from "./store";
 import type { RunTarget } from "./targets";
 import { TestResults } from "./testing";
 import { clearTestStates, recordTestStates } from "./testing/states";
+import { setInvokeRoute } from "@/platform/tauriCore";
+
+const mocks = vi.hoisted(() => ({
+  tauri: { value: false },
+  read: { value: null as string | null },
+  toolEnv: { value: null as ((...args: unknown[]) => unknown) | null },
+}));
+
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/platform/ipc")>();
+  return { ...actual, isTauri: () => mocks.tauri.value };
+});
+
+vi.mock("./runtimes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./runtimes")>();
+  return {
+    ...actual,
+    toolEnv: (...args: Parameters<typeof actual.toolEnv>) =>
+      mocks.toolEnv.value ? mocks.toolEnv.value(...args) : actual.toolEnv(...args),
+  };
+});
 
 const ROOT = "/work/app";
 const SCRATCHES = "/Users/me/scratches";
@@ -203,6 +224,23 @@ describe("run gutter popup", () => {
 describe("Debug entry", () => {
   const config = (c: Partial<RunConfig>) =>
     ({ id: "c", name: "c", command: "", args: [], cwd: "", env: {}, ...c }) as RunConfig;
+  const MAIN_ZIG = [
+    'const std = @import("std");',
+    "pub fn main() !void {",
+    '    std.debug.print("hi\\n", .{});',
+    "}",
+  ].join("\n");
+  const CALC_ZIG = [
+    'const std = @import("std");',
+    'test "adds two numbers" {',
+    "    try std.testing.expect(true);",
+    "}",
+  ].join("\n");
+  const zigEnv: ToolEnv = {
+    tool: (n) => (n === "zig" ? { path: "/bin/zig", version: "0.17.1" } : null),
+    compileDir: "/tmp/openidea-run",
+  };
+
   it("is offered for Maven and Gradle tests, which run with a JDWP agent", () => {
     const mavenTest = config({ kind: "maven", command: "mvn", args: ["test", "-Dtest=A#b"], isTest: true });
     expect(canDebugProduced({ name: "A.b", scope: "element", config: mavenTest })).toBe(true);
@@ -215,6 +253,115 @@ describe("Debug entry", () => {
     expect(canDebugProduced({ name: "A.b", scope: "element", config: gradleTest })).toBe(true);
     expect(
       canDebugProduced({ name: "lint", scope: "file", config: config({ kind: "npm", args: ["run", "lint"] }) }),
+    ).toBe(false);
+  });
+
+  beforeEach(() => {
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    useRun.setState({ configs: [], loaded: true });
+    mocks.tauri.value = true;
+    mocks.toolEnv.value = () => zigEnv;
+    // Bindings' `typedError` wraps the raw invoke result: `fs_read_text` resolves to its text.
+    setInvokeRoute((cmd) =>
+      cmd === "fs_read_text" ? Promise.resolve(mocks.read.value) : Promise.reject(new Error("not stubbed")),
+    );
+  });
+  afterEach(() => {
+    mocks.tauri.value = false;
+    mocks.read.value = null;
+    mocks.toolEnv.value = null;
+    setInvokeRoute(null);
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], loaded: false });
+  });
+
+  it("re-debug of a saved zig file config rebuilds the build-then-debug plan", async () => {
+    mocks.read.value = MAIN_ZIG;
+    const saved = config({
+      id: "context:file:src/main.zig",
+      kind: "zig",
+      command: "zig",
+      args: ["run", "src/main.zig"],
+      cwd: null,
+    });
+    const plan = await compiledDebugPlan(saved);
+    expect(plan?.debug).toBeTruthy();
+    expect(plan!.debug!.build.command).toMatch(
+      /zig build-exe src\/main\.zig -femit-bin=\/tmp\/openidea-run\/main-\w+$/,
+    );
+    expect(plan!.debug!.config).toMatchObject({
+      kind: "native",
+      debugAdapter: "codelldb",
+      params: { language: "zig" },
+    });
+  });
+
+  it("re-debug of a saved zig test config re-targets its test", async () => {
+    mocks.read.value = CALC_ZIG;
+    const saved = config({
+      id: "context:file:src/calc.zig#adds two numbers",
+      kind: "zig",
+      command: "zig",
+      args: ["test", "src/calc.zig", "--test-filter", "adds two numbers"],
+      cwd: null,
+    });
+    const plan = await compiledDebugPlan(saved);
+    expect(plan?.debug).toBeTruthy();
+    expect(plan!.debug!.build.command).toMatch(
+      /zig test src\/calc\.zig --test-filter 'adds two numbers' --test-no-exec/,
+    );
+    expect(plan!.debug!.config.args).toEqual([]);
+  });
+
+  it("leaves other configurations alone", async () => {
+    expect(await compiledDebugPlan(config({ id: "c", kind: "shell", command: "make" }))).toBeNull();
+    expect(
+      await compiledDebugPlan(config({ id: "user:x", kind: "zig", command: "zig", args: ["run", "x.zig"], cwd: null })),
+    ).toBeNull();
+  });
+});
+
+describe("Run with Fuzzing", () => {
+  const goTest: RunConfig = {
+    ...npmTest,
+    id: "go:test",
+    name: "go test ./...",
+    kind: "go",
+    command: "go",
+    args: ["test", "./..."],
+    debugAdapter: "delve",
+  };
+  const text = "package parse\nfunc TestParse(t *testing.T) {}\nfunc FuzzParse(f *testing.F) {\n}\n";
+  const path = `${ROOT}/parse/parse_test.go`;
+  const target = (line: number, name: string): RunTarget => ({ line, kind: "test", name, path: [name] });
+  const itemLabels = (items: MenuItem[]) => items.map((i) => ("label" in i ? (i.label ?? "") : "---"));
+
+  beforeEach(() => {
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    useRun.setState({ configs: [goTest], loaded: true });
+  });
+  afterEach(() => {
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], loaded: false });
+  });
+
+  it("the gutter offers it on a Fuzz function, after Run and Debug", () => {
+    expect(itemLabels(targetMenuItems(target(2, "FuzzParse"), path, text))).toEqual([
+      "Run 'FuzzParse in parse'",
+      "Debug 'FuzzParse in parse'",
+      "Run 'FuzzParse in parse' with Fuzzing",
+      "---",
+      "Modify Run Configuration…",
+    ]);
+    expect(itemLabels(targetMenuItems(target(1, "TestParse"), path, text)).some((l) => /Fuzzing/.test(l))).toBe(false);
+  });
+
+  it("the editor menu offers it under More Run/Debug at a Fuzz function only", () => {
+    const at = (line: number) => labels(contextMenuItems("editor", { paths: [path], text, line }));
+    expect(at(2)).toContain("Run 'FuzzParse in parse' with Fuzzing");
+    expect(at(1).some((l) => /Fuzzing/.test(l))).toBe(false);
+    expect(
+      labels(contextMenuItems("projectView", { paths: [path], dirs: [false] })).some((l) => /Fuzzing/.test(l)),
     ).toBe(false);
   });
 });

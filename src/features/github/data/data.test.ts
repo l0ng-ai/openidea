@@ -401,6 +401,9 @@ describe("pull request helpers", () => {
       "ssh://git@github.com/o/r.git",
       "ssh://git@github.com:22/o/r.git",
       "git://github.com/o/r",
+      // GitHub's SSH-over-HTTPS host.
+      "ssh://git@ssh.github.com:443/o/r.git",
+      "git@ssh.github.com:o/r.git",
     ])
       expect(parseGitHubRemote(url), url).toEqual({ owner: "o", name: "r" });
     expect(parseGitHubRemote("https://gitlab.com/o/r.git")).toBeNull();

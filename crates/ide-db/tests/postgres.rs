@@ -133,3 +133,173 @@ async fn a_reused_physical_connection_restores_the_full_default_path() -> IdeRes
     );
     Ok(())
 }
+
+/// Indexes, foreign keys, routines and completion read the catalog with queries every
+/// PostgreSQL-protocol server answers, back to the 9.2 core of openGauss / GaussDB (#3637).
+#[tokio::test]
+async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_meta CASCADE",
+        "CREATE SCHEMA oi_meta",
+        "CREATE TABLE oi_meta.orders (region INT, id INT, note TEXT DEFAULT 'x', PRIMARY KEY (region, id))",
+        "CREATE TABLE oi_meta.lines (n INT PRIMARY KEY, o_region INT, o_id INT, \
+         FOREIGN KEY (o_region, o_id) REFERENCES oi_meta.orders (region, id))",
+        "CREATE INDEX lines_order ON oi_meta.lines (o_id, o_region)",
+        "CREATE FUNCTION oi_meta.twice(v INT) RETURNS INT AS 'SELECT v * 2' LANGUAGE sql",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    let details = db.table_details("p", "oi_meta", "lines").await?;
+    let index = details.indexes.iter().find(|i| i.name == "lines_order").expect("lines_order");
+    assert_eq!(index.columns, ["o_id", "o_region"]);
+    assert!(!index.unique);
+    assert_eq!(details.foreign_keys.len(), 1, "{:?}", details.foreign_keys);
+    assert_eq!(details.foreign_keys[0].columns, ["o_region", "o_id"]);
+    assert_eq!(details.foreign_keys[0].ref_columns, ["region", "id"]);
+    let orders = db.table_details("p", "oi_meta", "orders").await?;
+    let key = orders.indexes.iter().find(|i| i.unique).expect("primary key index");
+    assert_eq!(key.columns, ["region", "id"]);
+
+    let objects = db.schema_objects("p", "oi_meta").await?;
+    assert!(objects.routines.iter().any(|r| r.name == "twice"), "{:?}", objects.routines);
+    let completion = db.completion("p").await?;
+    assert!(completion.tables.iter().any(|t| t.schema == "oi_meta" && t.name == "orders"));
+    db.execute("p", "DROP SCHEMA oi_meta CASCADE", 10, &c).await?;
+    Ok(())
+}
+
+/// Opening a table pairs the columns of composite keys in order, also when a foreign key lists
+/// them in another order than the key it references; its data page and DDL read the same catalog,
+/// and completion tells identity columns apart in one query (#3637).
+#[tokio::test]
+async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_keys CASCADE",
+        "CREATE SCHEMA oi_keys",
+        "CREATE TABLE oi_keys.pairs (a INT, b INT, PRIMARY KEY (b, a))",
+        "CREATE TABLE oi_keys.refs (id INT PRIMARY KEY, x INT, y INT, FOREIGN KEY (y, x) REFERENCES oi_keys.pairs (b, a))",
+        "CREATE UNIQUE INDEX refs_yx ON oi_keys.refs (y, x)",
+        "INSERT INTO oi_keys.pairs VALUES (1, 2)",
+        "INSERT INTO oi_keys.refs VALUES (7, 1, 2)",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+
+    let details = db.table_details("p", "oi_keys", "refs").await?;
+    let indexes: Vec<_> = details.indexes.iter().map(|i| (i.name.as_str(), i.unique, i.columns.join(","))).collect();
+    assert_eq!(indexes, [("refs_pkey", true, "id".into()), ("refs_yx", true, "y,x".into())]);
+    let key = |k: &ide_db::ForeignKey| (k.columns.join(","), k.ref_table.clone(), k.ref_columns.join(","));
+    assert_eq!(
+        details.foreign_keys.iter().map(key).collect::<Vec<_>>(),
+        [("y,x".into(), "pairs".into(), "b,a".into())]
+    );
+    let pairs = db.table_details("p", "oi_keys", "pairs").await?;
+    assert_eq!(pairs.indexes[0].columns, ["b", "a"]);
+
+    let page = db.table_page("p", "oi_keys", "refs", None, &[], 0, 10, &c).await?;
+    assert_eq!(page.result.rows.len(), 1);
+    // Identity columns (PostgreSQL 10+; openGauss has none) are optional in INSERT.
+    let identity =
+        db.execute("p", "CREATE TABLE oi_keys.ids (n INT GENERATED ALWAYS AS IDENTITY, v INT)", 10, &c).await;
+    let completion = db.completion("p").await?;
+    if identity.is_ok() {
+        let ids = completion.tables.iter().find(|t| t.schema == "oi_keys" && t.name == "ids").expect("ids");
+        let defaults: Vec<_> = ids.columns.iter().map(|c| (c.name.as_str(), c.has_default)).collect();
+        assert_eq!(defaults, [("n", true), ("v", false)]);
+    }
+    assert!(
+        completion.foreign_keys.iter().any(|k| k.table == "refs" && key(k).2 == "b,a"),
+        "{:?}",
+        completion.foreign_keys
+    );
+    // The other catalog reads of the tree and its DDL actions, on the same server.
+    assert!(db.schemas("p").await?.iter().any(|s| s == "oi_keys"));
+    assert_eq!(db.tables("p", "oi_keys").await?.len(), if identity.is_ok() { 3 } else { 2 });
+    db.execute("p", "CREATE SEQUENCE oi_keys.seq", 10, &c).await?;
+    let objects = db.schema_objects("p", "oi_keys").await?;
+    assert_eq!(objects.sequences.len(), 1);
+    assert!(db.ddl("p", "oi_keys", "refs").await?.contains("FOREIGN KEY"));
+    db.execute("p", "DROP SCHEMA oi_keys CASCADE", 10, &c).await?;
+    Ok(())
+}
+
+/// Runs `job` with the newest installed copy of its tool, the way the dialogs do.
+async fn run_tool(db: &DbManager, target: &str, job: ide_db::tools::DbToolJob) -> IdeResult<()> {
+    let install = ide_db::tools::find_installs(job.tool()).into_iter().next().expect("installed");
+    let mut lines = Vec::new();
+    let code = db.run_tool(target, install.path.as_ref(), &job, &CancellationToken::new(), |b| lines.extend(b)).await?;
+    assert_eq!(code, Some(0), "{} failed: {lines:?}", job.tool().program());
+    Ok(())
+}
+
+#[tokio::test]
+async fn dumps_and_restores_with_the_client_tools() -> IdeResult<()> {
+    use ide_db::tools::{
+        DbDumpContent, DbDumpFormat, DbDumpStatements, DbPgDumpOptions, DbPgRestoreOptions, DbPsqlOptions, DbTool,
+        DbToolJob, find_installs,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let server = db.server_version("p").await? / 10000;
+    let major = |t: DbTool| {
+        find_installs(t).first().and_then(|i| i.version.split(' ').nth(2)?.split('.').next()?.parse::<u32>().ok())
+    };
+    // Other major versions write or refuse what this server needs; the dialogs warn about that instead.
+    if [DbTool::PgDump, DbTool::PgRestore, DbTool::Psql].into_iter().any(|t| major(t) != Some(server)) {
+        return Ok(());
+    }
+    create_schemas(&db).await;
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_restore", 1, &c).await?;
+    db.execute("p", "CREATE DATABASE oi_restore", 1, &c).await?;
+    let file = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+
+    let dump = |format, file: String, schema: &str| DbToolJob::PgDump {
+        file,
+        options: DbPgDumpOptions {
+            format,
+            statements: DbDumpStatements::Copy,
+            content: DbDumpContent::All,
+            schemas: vec![schema.into()],
+            tables: vec![],
+            exclude_tables: vec![],
+            clean: false,
+            if_exists: false,
+            create: false,
+            no_owner: false,
+            no_privileges: false,
+            jobs: 1,
+        },
+    };
+    let archive = file("a.dump");
+    run_tool(&db, "p", dump(DbDumpFormat::Custom, archive.clone(), "oi_a")).await?;
+    let restore = DbPgRestoreOptions {
+        content: DbDumpContent::All,
+        schemas: vec![],
+        clean: false,
+        if_exists: false,
+        no_owner: false,
+        no_privileges: false,
+        single_transaction: false,
+        exit_on_error: true,
+        jobs: 1,
+    };
+    run_tool(&db, "p:oi_restore", DbToolJob::PgRestore { file: archive, options: restore }).await?;
+
+    let script = file("b.sql");
+    run_tool(&db, "p", dump(DbDumpFormat::Plain, script.clone(), "oi_b")).await?;
+    let psql = DbPsqlOptions { single_transaction: true, stop_on_error: true };
+    run_tool(&db, "p:oi_restore", DbToolJob::Psql { file: script, options: psql }).await?;
+
+    let r = db.execute("p:oi_restore", "SELECT a.tag || ', ' || b.tag FROM oi_a.items a, oi_b.items b", 1, &c).await?;
+    assert_eq!(r.rows[0][0].as_deref(), Some("from a, from b"));
+    db.disconnect("p:oi_restore").await;
+    db.execute("p", "DROP DATABASE oi_restore", 1, &c).await?;
+    Ok(())
+}

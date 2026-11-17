@@ -20,6 +20,18 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       agentCommands: (provider: string, task: string | null) => agentCommands(provider, task),
       agentCreate: (request: unknown) => agentCreate(request),
+      agentRefreshModels: async (provider: string) => ({
+        status: "ok",
+        data: {
+          provider,
+          config: [],
+          thoughtLevels: {},
+          refreshing: false,
+          refreshedAtMs: Date.now(),
+          retryAtMs: null,
+          error: null,
+        },
+      }),
       clipboardImage: () => clipboardImage(),
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),
@@ -156,6 +168,18 @@ describe("New Task composer commands", () => {
     expect(textOf(box)).toBe("/triage ");
     typeIn(box, "/com");
     expect((await screen.findByRole("listbox", { name: "Commands" })).textContent).toBe("Commands/compact");
+  });
+
+  it("opens the per-session MCP picker when /mcp is completed in the composer", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "/mc");
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/mcp");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("");
+    expect(await screen.findByText("Session MCP Servers")).toBeInTheDocument();
   });
 
   it("names the icon-only Start action and disables it while starting", async () => {

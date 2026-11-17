@@ -34,6 +34,16 @@ pub struct RunInput<'a> {
 /// variables, missing includes) fail; transport errors are part of the exchange.
 pub async fn run(input: RunInput<'_>, cancel: &CancellationToken) -> IdeResult<HttpExchange> {
     let request = prepare(&input)?;
+    send(request, input.file, cancel).await
+}
+
+/// Sends an already prepared request (one the user approved as shown); `file` is the
+/// request file it came from, for the history.
+pub async fn send(
+    request: PreparedRequest,
+    file: Option<&Path>,
+    cancel: &CancellationToken,
+) -> IdeResult<HttpExchange> {
     let time_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64() * 1000.0)
@@ -57,7 +67,7 @@ pub async fn run(input: RunInput<'_>, cancel: &CancellationToken) -> IdeResult<H
             url: request.url.clone(),
             status: response.as_ref().map(|r| r.status),
             total_ms: response.as_ref().map(|r| r.total_ms),
-            file: input.file.map(IpcPath::from),
+            file: file.map(IpcPath::from),
             error,
         },
         request,

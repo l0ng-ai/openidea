@@ -10,7 +10,7 @@
 .options {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 18px;
+  gap: var(--space-1) 18px;
 }
 .split {
   flex: 1;
@@ -32,7 +32,7 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: var(--h-header);
   padding: 0 4px;
   border-bottom: 1px solid var(--border);
@@ -50,7 +50,7 @@
 .groupHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-row);
   padding: 0 8px;
   color: var(--fg-muted);
@@ -61,7 +61,7 @@
 .item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-row);
   padding: 0 8px 0 18px;
   cursor: default;
@@ -100,12 +100,12 @@
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .label {
   width: 92px;
@@ -170,7 +170,7 @@
 }
 .buttons {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   justify-content: flex-end;
 }
 .list {
@@ -199,7 +199,7 @@
 }
 .tabs {
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   flex-wrap: wrap;
 }
 .tab {
@@ -226,7 +226,7 @@
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   border: 0;
   padding: 0;
   margin: 0;

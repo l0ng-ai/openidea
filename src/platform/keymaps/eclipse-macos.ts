@@ -7,6 +7,8 @@ import { intellijMacos } from "./intellij-macos";
 
 export const eclipseMacos: Record<string, string[]> = {
   ...intellijMacos,
+  "agents.focusInput": ["Meta+L"],
+  "agents.cycleEffort": ["Alt+T"],
   // $Undo / $Redo stay unbound as in the parent keymap: the focused editor or view handles them.
   "code.autoIndentLines": ["Meta+I"],
   "navigate.back": ["Meta+[", "Button4", "SwipeRight"],
@@ -18,6 +20,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "editor.closeAllTabs": ["Meta+Shift+W"],
   "analyze.inspectFile": [],
   "project.collapseAll": ["Meta+Shift+NumpadDivide"],
+  "run.collapseAllTests": ["Meta+Shift+NumpadDivide"],
   "code.foldAll": ["Meta+Shift+NumpadDivide"],
   "code.fold": ["Meta+NumpadSubtract"],
   "code.commentBlock": ["Shift+Meta+/"],
@@ -37,6 +40,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.shrinkSelection": ["Shift+Ctrl+Down"],
   "debug.evaluate": ["Meta+U"],
   "project.expandAll": ["Meta+Shift+NumpadMultiply"],
+  "run.expandAllTests": ["Meta+Shift+NumpadMultiply"],
   "code.unfoldAll": ["Meta+NumpadMultiply"],
   "code.unfold": ["Meta+NumpadAdd"],
   "code.expandAllToLevel1": [],
@@ -51,6 +55,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.expandToLevel5": [],
   "refactor.extractMethod": ["Meta+Alt+M"],
   "navigate.fileStructure": ["Meta+O"],
+  // ⌘R runs to the cursor: no Reload Page default on it.
+  "db.reloadPage": [],
   "db.goToColumn": ["Meta+O"],
   "find.inFile": [],
   "find.inPath": ["Ctrl+H"],
@@ -93,6 +99,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "diff.nextDifference": ["Ctrl+F7"],
   "diff.prevFile": [],
   "diff.nextFile": [],
+  "diff.focusOppositePane": [],
   "navigate.nextOccurrence": [],
   "editor.nextTab": ["Meta+F6", "Meta+Alt+Right"],
   "db.nextResultTab": ["Meta+F6", "Meta+Alt+Right"],

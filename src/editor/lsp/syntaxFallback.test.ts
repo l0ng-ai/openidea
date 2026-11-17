@@ -585,9 +585,10 @@ describe("navigation wiring", () => {
     if (popup?.kind !== "list") return;
     expect(popup.title).toBe("Choose Declaration of run (2 found, based on syntax)");
     expect(popup.pin?.label).toBe("Open in Find Tool Window");
-    expect(popup.items.map((i) => [i.label, i.symbol, i.detail?.split(" · ")[0]])).toEqual([
-      ["run", "method", "A"],
-      ["run", "method", "B"],
+    // Same-named candidates read by their containers.
+    expect(popup.items.map((i) => [i.label, i.symbol, i.detail])).toEqual([
+      ["A", "method", "p/a.ts:4"],
+      ["B", "method", "p/b.ts:4"],
     ]);
     expect(openFile).not.toHaveBeenCalled();
   });

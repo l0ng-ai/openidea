@@ -28,4 +28,11 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = tally });
     const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    const failing_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/failing.zig"),
+        .target = target,
+    }) });
+    const test_failing_step = b.step("test-failing", "Run the tests that fail on purpose");
+    test_failing_step.dependOn(&b.addRunArtifact(failing_tests).step);
 }

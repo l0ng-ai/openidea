@@ -8,6 +8,11 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "TSX"
 tree-sitter = "tsx"
 
+# Rainbow brackets › angle: editor syntax nodes whose `<` `>` pair up (never comparisons).
+[rainbow-brackets]
+angle = ["TypeArgList", "TypeParamList"]
+tags = ["JSXOpenTag", "JSXCloseTag", "JSXSelfClosingTag", "JSXFragmentTag"]
+
 [[language-servers]]
 name = "vtsls"
 tsserver-project = true

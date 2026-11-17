@@ -129,6 +129,7 @@ Java 调试使用 jdtls 内的 Microsoft java-debug，Kotlin 调试使用 Kotlin
 
 - **Spring Boot 运行配置**：根据 `@SpringBootApplication` 类创建，默认显示在 **服务** 工具窗口中。
 - **配置导航**：在 `application.yml` 或 `.properties` 的键上转到定义，会打开绑定到它的 Java 成员（`@ConfigurationProperties`、`@Value`、`Environment.getProperty`）；反过来，从 Java、YAML、properties 或 Spring XML 里的 `${…}` 占位符也能跳到配置键。依赖中 `spring-configuration-metadata.json` 描述的键会跳到对应的源类。对配置键执行 **查找用法**，会同时列出配置声明和 Java 中的使用处。
+- **Thymeleaf 模板**：项目中有 `src/main/resources/templates` 时，`.html` 文件里 `th:*` 和 `data-th-*` 的值按 Thymeleaf 表达式高亮，输入 `th:` 后补全属性名。在片段表达式（`~{fragments/nav :: menu}`，或 `th:replace` / `th:insert` 中不带 `~{}` 的写法）上转到声明，打开对应模板或其 `th:fragment`；在消息键（`#{home.title}`）上转到声明，列出 `spring.messages.basename` 所设消息包中每个 `messages*.properties` 里的该键。
 - **Spring Web 端点**：Java 和 Kotlin 控制器中的请求映射旁有边栏图标，还有 **在 HTTP 客户端中生成请求** 和 **为控制器生成请求** 两个操作，会把请求写进一个临时 `.http` 文件。随处搜索的 **全部** 标签页可以按请求路径搜索。见 [HTTP Client](/zh/guide/http-client)。
 - **Facet**：在 **项目结构**（`⌘;` / `Ctrl+Alt+Shift+S`）里记录模块使用的框架（Web、Spring、JPA）。添加 Web Facet 还会把其中的 `WEB-INF/lib/*.jar` 加入 jdtls 的类路径。
 

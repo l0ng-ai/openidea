@@ -37,7 +37,7 @@ public final class InspectCommand implements IDelegateCommandHandler {
     /** One per connected VM; also the lock that runs one command per VM at a time. */
     private static final Map<VirtualMachine, Handles<ObjectReference>> HANDLES = new IdentityHashMap<>();
 
-    private static final class Failure extends Exception {
+    static final class Failure extends Exception {
         private static final long serialVersionUID = 1L;
         final String code;
 
@@ -50,12 +50,11 @@ public final class InspectCommand implements IDelegateCommandHandler {
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) {
         try {
-            List<VmInfo> vms = describe(ConnectedVms.read(InspectCommand::loadJavaDebug));
+            List<VmInfo> vms = connected();
             if (command.equals("openidea.jvm.vms")) return ok(summaries(vms));
             Target target = Target.of(arguments.get(0));
-            VirtualMachine vm = VmSelector.select(vms, target)
-                    .orElseThrow(() -> new Failure("vmNotFound", "no single VM matches " + target)).vm();
-            Handles<ObjectReference> handles = handles(vm);
+            VirtualMachine vm = select(vms, target);
+            Handles<ObjectReference> handles = handlesFor(vm);
             synchronized (handles) {
                 if (!vm.canGetInstanceInfo()) throw new Failure("unsupported", "the VM cannot list instances");
                 if (vm.allThreads().stream().noneMatch(ThreadReference::isSuspended)) {
@@ -86,7 +85,16 @@ public final class InspectCommand implements IDelegateCommandHandler {
         }
     }
 
-    private static Class<?> loadJavaDebug(String name) {
+    /** java-debug's live VMs, with the handle tables of VMs that are gone dropped. */
+    static List<VmInfo> connected() throws ConnectedVms.Unsupported {
+        return describe(ConnectedVms.read(InspectCommand::loadJavaDebug));
+    }
+
+    static VirtualMachine select(List<VmInfo> vms, Target target) throws Failure {
+        return VmSelector.select(vms, target).orElseThrow(() -> new Failure("vmNotFound", "no single VM matches " + target)).vm();
+    }
+
+    static Class<?> loadJavaDebug(String name) {
         Bundle bundle = Platform.getBundle(JAVA_DEBUG);
         if (bundle == null) return null;
         try {
@@ -130,7 +138,8 @@ public final class InspectCommand implements IDelegateCommandHandler {
         return out;
     }
 
-    private static Handles<ObjectReference> handles(VirtualMachine vm) {
+    /** Shared with the stream commands, so their objects expand like any other; also the per-VM command lock. */
+    static Handles<ObjectReference> handlesFor(VirtualMachine vm) {
         synchronized (HANDLES) {
             return HANDLES.computeIfAbsent(vm, k -> new Handles<>());
         }
@@ -221,11 +230,11 @@ public final class InspectCommand implements IDelegateCommandHandler {
         return (Number) argument;
     }
 
-    private static Map<String, Object> ok(Object payload) {
+    static Map<String, Object> ok(Object payload) {
         return Values.json("ok", payload);
     }
 
-    private static Map<String, Object> error(String code, String detail) {
+    static Map<String, Object> error(String code, String detail) {
         return Values.json("error", code, "detail", detail);
     }
 }

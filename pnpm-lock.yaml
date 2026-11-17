@@ -26,6 +26,9 @@ importers:
       '@codemirror/lang-javascript':
         specifier: ^6.2.5
         version: 6.2.5
+      '@codemirror/lang-markdown':
+        specifier: ^6.5.2
+        version: 6.5.2
       '@codemirror/lang-sass':
         specifier: ^6.0.2
         version: 6.0.2

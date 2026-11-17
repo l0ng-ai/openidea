@@ -148,6 +148,8 @@ describe("openProjectInWindow", () => {
     expect(wslResolve).toHaveBeenCalledWith(share);
     expect(connectRemote).toHaveBeenCalledWith(target, linuxPath);
     expect(openProject).not.toHaveBeenCalled();
+    // The remote window doesn't keep untitled buffers, so the guard counts them.
+    expect(confirmLeaveProject).toHaveBeenCalledWith(false);
   });
 
   it("asks for a new window when this one already has a project", async () => {
@@ -499,6 +501,7 @@ describe("launch", () => {
         path: "/x/b.txt",
         left: { type: "file", path: "/x/a.txt", label: "/x/a.txt" },
         right: { type: "worktree", label: "/x/b.txt" },
+        swappable: true,
       },
     ]);
   });
@@ -514,6 +517,7 @@ describe("launch", () => {
         path: "/p/b.txt",
         left: { type: "file", path: "/p/a.txt", label: "a.txt" },
         right: { type: "worktree", label: "b.txt" },
+        swappable: true,
       },
     ]);
   });
@@ -744,5 +748,55 @@ describe("explicit project-window requests", () => {
     } finally {
       dispose();
     }
+  });
+});
+
+describe("trust is asked before a new project window opens", () => {
+  const openProjectPath = (arg: unknown) =>
+    windowActions()
+      .find((a) => a.id === "file.openProjectPath")!
+      .run({ arg } as never);
+  const newWindowEntries: [string, () => unknown][] = [
+    ["Open… from a project window", () => openProjectInWindow("/p/b", false)],
+    ["Open in New Window", () => openProjectInWindow("/p/b", true)],
+    ["Open project in: New Window", () => openProjectWithPolicy("/p/b")],
+    ["a plugin's new-window request", () => openProjectPath({ path: "/p/b", newWindow: true })],
+  ];
+
+  it.each(newWindowEntries)("%s asks in this window first", async (_, open) => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "new" } } } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+    await open();
+    expect(confirmProjectTrust).toHaveBeenCalledWith("/p/b", "local");
+    expect(vi.mocked(confirmProjectTrust).mock.invocationCallOrder[0]).toBeLessThan(
+      windowOpenProject.mock.invocationCallOrder[0]!,
+    );
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", true, []);
+  });
+
+  it.each(newWindowEntries)("%s opens no window when the user chooses Don't Open", async (_, open) => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "new" } } } as never);
+    vi.mocked(confirmProjectTrust).mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    await open();
+    expect(windowOpenProject).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(useProject.getState().project?.root).toBe("/p/a");
+  });
+
+  it("leaves a WSL folder to the remote window, which asks about the distribution's project", async () => {
+    useProject.setState(projectState("/p/a") as never);
+    wslResolve.mockResolvedValue({ target: { kind: "wsl", distro: "Debian" }, path: "/srv/app" });
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+    await openProjectInWindow("\\\\wsl.localhost\\Debian\\srv\\app", true);
+    expect(confirmProjectTrust).not.toHaveBeenCalled();
+    expect(windowOpenProject).toHaveBeenCalled();
+  });
+
+  it("asks only once, from openProject, when the project opens in this window", async () => {
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    await openProjectInWindow("/p/b", false);
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", false, []);
+    expect(confirmProjectTrust).not.toHaveBeenCalled();
+    expect(openProject).toHaveBeenCalledWith("/p/b");
   });
 });

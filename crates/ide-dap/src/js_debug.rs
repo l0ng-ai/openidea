@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use specta::Type;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(crate) const ADAPTER: &str = "js-debug";
 
@@ -25,7 +27,7 @@ pub(crate) fn is_page(session: &Session) -> bool {
 /// Waits until the adapter answered the `launch` of `session`. js-debug sets a page's session
 /// up between `configurationDone` and that answer; a request of its own that arrives then is
 /// answered and has no effect.
-async fn launched(session: &Session) -> bool {
+pub(crate) async fn launched(session: &Session) -> bool {
     let mut launched = session.launched.subscribe();
     let answered = tokio::time::timeout(REQUEST_TIMEOUT, launched.wait_for(|answered| *answered)).await;
     matches!(answered, Ok(Ok(_)))
@@ -58,6 +60,44 @@ impl DebugManager {
     ) -> IdeResult<()> {
         self.js_page_request(s, "setCustomBreakpoints", json!({ "ids": ids, "xhr": xhr })).await?;
         Ok(())
+    }
+
+    /// Starts recording the page's CPU profile; [`Self::js_stop_profile`] ends it.
+    pub async fn js_start_profile(&self, s: DebugSessionId) -> IdeResult<()> {
+        self.js_page_request(s, "startProfile", json!({ "type": "cpu" })).await?;
+        Ok(())
+    }
+
+    /// Ends the recording and returns a new directory holding it as `page.cpuprofile`
+    /// (what `ide-profiler` reads a directory of).
+    pub async fn js_stop_profile(&self, s: DebugSessionId) -> IdeResult<PathBuf> {
+        let session = self.session(s)?;
+        // js-debug names the file it records into when the recording starts.
+        let Some(recorded) = session.js_profile.lock().take() else {
+            return Err(IdeError::invalid("no CPU profile is being recorded"));
+        };
+        self.js_page_request(s, "stopProfile", json!({})).await?;
+        static HANDED_OVER: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "openidea-js-profile-{}-{}-{}",
+            std::process::id(),
+            s.0,
+            HANDED_OVER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let copied = tokio::task::spawn_blocking({
+            let dir = dir.clone();
+            move || {
+                std::fs::create_dir_all(&dir)?;
+                std::fs::copy(&recorded, dir.join("page.cpuprofile"))?;
+                // The adapter's own copy is in the system's temporary directory: no use keeping two.
+                let _ = std::fs::remove_file(&recorded);
+                Ok::<_, std::io::Error>(())
+            }
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        copied.map_err(|e| IdeError::unavailable(format!("the recorded CPU profile cannot be read: {e}")))?;
+        Ok(dir)
     }
 }
 

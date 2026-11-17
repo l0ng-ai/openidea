@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 pub struct EditorGeneralSettings {
     /// Change font size with ⌘ + mouse wheel.
     pub wheel_zoom: bool,
+    /// Scope of ⌘ + mouse wheel font zoom: `active` editor | `all` editors.
+    pub wheel_zoom_scope: String,
     pub markdown_image_folder: String,
     pub markdown_image_name_pattern: String,
     /// Drag-and-drop of selected text inside the editor.
@@ -37,6 +39,7 @@ impl Default for EditorGeneralSettings {
     fn default() -> Self {
         Self {
             wheel_zoom: false,
+            wheel_zoom_scope: "active".into(),
             markdown_image_folder: "assets".into(),
             markdown_image_name_pattern: "image-{timestamp}".into(),
             drag_and_drop: true,
@@ -340,6 +343,8 @@ pub struct InlayHintsSettings {
     /// Hints of other kinds (chaining, closing labels…).
     pub other: bool,
     pub disabled_languages: Vec<String>,
+    /// Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on.
+    pub code_vision: bool,
     /// Code vision: usages above declarations.
     pub code_vision_usages: bool,
     /// Code vision: last author of a declaration (VCS blame) beside its usages.
@@ -370,6 +375,7 @@ impl Default for InlayHintsSettings {
             parameters: true,
             other: true,
             disabled_languages: Vec::new(),
+            code_vision: true,
             code_vision_usages: true,
             code_vision_author: true,
             code_vision_no_usages: true,

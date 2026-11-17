@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+use specta::Type;
+
 /// The Windows OS build used by ConPTY; unavailable on other platforms or on query failure.
 #[cfg(windows)]
 pub fn windows_build_number() -> Option<u32> {
@@ -16,6 +19,61 @@ pub fn windows_build_number() -> Option<u32> {
     None
 }
 
+/// A caption button of a frameless window's title bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowButton {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+/// Which caption buttons the title bar shows on each side, in order from left to right.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowButtonLayout {
+    pub left: Vec<WindowButton>,
+    pub right: Vec<WindowButton>,
+}
+
+impl Default for WindowButtonLayout {
+    /// Minimise, maximise, close on the right (Windows, and Linux when the desktop says nothing).
+    fn default() -> Self {
+        Self { left: Vec::new(), right: vec![WindowButton::Minimize, WindowButton::Maximize, WindowButton::Close] }
+    }
+}
+
+impl WindowButtonLayout {
+    /// Reads GTK's `gtk-decoration-layout` (also GNOME's `button-layout`): button names separated
+    /// by commas, the left side before the colon, e.g. `close,maximize,minimize:icon`. Names other
+    /// than the three caption buttons (`icon`, `menu`, `appmenu`, `spacer`) are skipped, as are
+    /// repeats. A value without any caption button is unusable for a frameless window: `None`.
+    pub fn from_gtk_decoration_layout(layout: &str) -> Option<Self> {
+        let mut seen = Vec::new();
+        let mut side = |part: Option<&str>| {
+            let mut buttons = Vec::new();
+            for name in part.unwrap_or_default().split(',') {
+                let button = match name.trim() {
+                    "minimize" => WindowButton::Minimize,
+                    "maximize" => WindowButton::Maximize,
+                    "close" => WindowButton::Close,
+                    _ => continue,
+                };
+                if !seen.contains(&button) {
+                    seen.push(button);
+                    buttons.push(button);
+                }
+            }
+            buttons
+        };
+        // GTK splits at the first colon only; without one, every button is on the left.
+        let mut parts = layout.splitn(2, ':');
+        let left = side(parts.next());
+        let right = side(parts.next());
+        (!left.is_empty() || !right.is_empty()).then_some(Self { left, right })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -25,5 +83,43 @@ mod tests {
         assert!(build.is_some_and(|build| build > 0));
         #[cfg(not(windows))]
         assert_eq!(build, None);
+    }
+
+    use super::{WindowButton::*, WindowButtonLayout};
+
+    fn layout(left: &[super::WindowButton], right: &[super::WindowButton]) -> Option<WindowButtonLayout> {
+        Some(WindowButtonLayout { left: left.to_vec(), right: right.to_vec() })
+    }
+
+    #[test]
+    fn reads_gtk_decoration_layouts() {
+        let cases = [
+            // KDE Plasma with `ButtonsOnLeft=XAIS` (#3794).
+            ("close,maximize,minimize:icon", layout(&[Close, Maximize, Minimize], &[])),
+            ("close,minimize,maximize:", layout(&[Close, Minimize, Maximize], &[])),
+            (":minimize,maximize,close", layout(&[], &[Minimize, Maximize, Close])),
+            // GNOME's default.
+            ("appmenu:close", layout(&[], &[Close])),
+            ("menu:minimize,close", layout(&[], &[Minimize, Close])),
+            ("icon,close:minimize,maximize", layout(&[Close], &[Minimize, Maximize])),
+            (" close , spacer : minimize ", layout(&[Close], &[Minimize])),
+            // No colon: GTK puts everything on the left.
+            ("close,minimize", layout(&[Close, Minimize], &[])),
+            // Only the first colon separates the sides; a button appears once.
+            ("close:minimize:maximize", layout(&[Close], &[])),
+            ("close,close:close,minimize", layout(&[Close], &[Minimize])),
+            ("", None),
+            (":", None),
+            ("appmenu:", None),
+            ("garbage", None),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(WindowButtonLayout::from_gtk_decoration_layout(value), expected, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn default_layout_is_on_the_right() {
+        assert_eq!(WindowButtonLayout::default(), layout(&[], &[Minimize, Maximize, Close]).unwrap());
     }
 }

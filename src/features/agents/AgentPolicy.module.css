@@ -18,14 +18,14 @@
   min-height: 0;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .column {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
@@ -42,7 +42,7 @@
   min-height: 120px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   overflow: auto;
 }
 
@@ -50,9 +50,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 4px 8px;
-  background: var(--bg-subtle);
+  background: var(--bg-hover);
   border-radius: var(--radius-control);
   font-family: var(--font-mono);
   font-size: var(--fs-small);
@@ -65,7 +65,7 @@
 .add {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .input {

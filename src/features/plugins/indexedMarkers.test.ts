@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { EditorState, type RangeSet, type StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
 import { offsetsToRange } from "@/editor/lsp/positions";
 import type { FileMarkers } from "@/platform/ipc";
 import { indexedMarkers } from "./indexedMarkers";
@@ -25,7 +26,7 @@ const source = '<mapper>\n<select id="find">SELECT 1</select>\n</mapper>';
 function setup() {
   view = new EditorView({
     parent: document.body,
-    state: EditorState.create({ doc: source, extensions: [indexedMarkers("/p/Query.xml")] }),
+    state: EditorState.create({ doc: source, extensions: [iconAreaExtension, indexedMarkers("/p/Query.xml")] }),
   });
   const range = (from: number, to: number) => offsetsToRange(view!.state.doc, from, to);
   const target = { path: "/p/Query.java", range: range(0, 4) };
@@ -56,10 +57,17 @@ it("puts a button on the marker's line that goes to its target", async () => {
   expect(calls.navigate).toHaveBeenCalledWith(target);
 });
 
-it("hides markers on edit and when the entry goes away", async () => {
+it("keeps markers on their lines while typing and hides them when the entry goes away", async () => {
   setup();
   await vi.waitFor(() => expect(button()).not.toBeNull());
+  // Typing must not empty the column: it would collapse and shift the text (#3370).
+  view!.dispatch({ changes: { from: source.indexOf("SELECT"), insert: "x" } });
+  expect(button()).not.toBeNull();
   view!.dispatch({ changes: { from: 0, insert: "\n" } });
+  expect(button()).not.toBeNull();
+  // Deleting the marker's line drops it.
+  const line = view!.state.doc.line(3);
+  view!.dispatch({ changes: { from: line.from - 1, to: line.to } });
   expect(button()).toBeNull();
   usePluginMarkers.setState({ entries: new Map() });
   await vi.waitFor(() => expect(button()).toBeNull());

@@ -12,7 +12,13 @@ import type { BlameLine, Settings } from "@/bindings";
 import { HEAVY_LIMIT, _emitEditorEvent } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { useI18n } from "@/platform/i18n";
-import { formatInlineBlame, inlineBlame, inlineBlameSegments, relativeBlameDate } from "../inlineBlame";
+import {
+  formatInlineBlame,
+  inlineBlame,
+  inlineBlameSegments,
+  inlineBlameTheme,
+  relativeBlameDate,
+} from "../inlineBlame";
 import { useVcs } from "../store";
 
 const mocks = vi.hoisted(() => ({ blame: vi.fn(), file: vi.fn(), log: vi.fn(), action: vi.fn() }));
@@ -41,8 +47,18 @@ const uncommitted: BlameLine = { commit: "0".repeat(40), author: "Not Committed 
 const ctx = { doc: 1, path: "/repo/file.ts", language: "typescript", uiMode: null, readOnly: false };
 let view: EditorView | undefined;
 
-function settings(enabled: boolean) {
-  useProject.setState({ settings: { vcs: { git: { inlineBlame: enabled } } } as Settings });
+function settings(enabled: boolean, clickable = true) {
+  useProject.setState({
+    settings: { vcs: { git: { inlineBlame: enabled, inlineBlameClickable: clickable } } } as Settings,
+  });
+}
+
+/** Presses the primary button on the label; jsdom has no layout, so the click resolves to `pos`
+    the way a browser resolves a point past the line end. */
+function pressLabel(v: EditorView, pos: number) {
+  vi.spyOn(v, "posAndSideAtCoords").mockReturnValue({ pos, assoc: -1 });
+  label()!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+  document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
 }
 
 function editor(doc = "one\ntwo\nthree", context = ctx) {
@@ -54,10 +70,12 @@ function editor(doc = "one\ntwo\nthree", context = ctx) {
 }
 
 const hint = () => view?.dom.querySelector<HTMLElement>(".cm-vcs-inline-blame");
+/** The out-of-flow, absolutely positioned label; the anchor itself is zero-width. */
+const label = () => hint()?.firstElementChild as HTMLElement | null;
 const tick = () => vi.advanceTimersByTimeAsync(300);
-/** The hover belongs to the label: put the pointer on it before activating, as a user would. */
+/** The hover belongs to the label: put the pointer on the inner box (the anchor is zero-width). */
 const hoverLabel = (v: EditorView, pos: number) => {
-  hint()!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+  label()!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
   activateHover(v, pos, 1);
 };
 
@@ -123,18 +141,34 @@ describe("current line decoration", () => {
     expect(hint()?.textContent).toContain("Bob Jones");
     v.dispatch({ selection: { anchor: 0 } });
     expect(hint()).toBeNull();
-    await tick();
+    // The document's blame is already loaded, so the new line shows without the
+    // 300 ms debounce that protects a git call (#3396).
+    await vi.advanceTimersByTimeAsync(0);
     expect(hint()?.textContent).toContain("Alice Smith");
     expect(mocks.blame).toHaveBeenCalledTimes(1);
     expect(mocks.file).toHaveBeenCalledTimes(1);
     expect(hint()?.contentEditable).toBe("false");
-    expect([...hint()!.querySelectorAll("span")].map((s) => s.className)).toEqual([
+    expect(label()?.className).toBe("cm-vcs-inline-blame-inner");
+    expect([...label()!.querySelectorAll("span")].map((s) => s.className)).toEqual([
       "cm-vcs-inline-blame-author",
       "cm-vcs-inline-blame-date",
       "cm-vcs-inline-blame-subject",
     ]);
-    hint()?.click();
+    // The inner box is the pointer-hit region; the zero-width anchor is not interactive.
+    expect(label()?.getAttribute("role")).toBe("button");
+    label()!.click();
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", alice.commit);
+  });
+
+  it("still debounces the git call after an edit (#3396)", async () => {
+    const v = editor();
+    await tick();
+    mocks.blame.mockClear();
+    v.dispatch({ changes: { from: 0, insert: "x" } });
+    await vi.advanceTimersByTimeAsync(299);
+    expect(mocks.blame).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.blame).toHaveBeenCalledTimes(1);
   });
 
   it("uses only the primary selection and hides multiline selections", async () => {
@@ -244,6 +278,46 @@ describe("current line decoration", () => {
     expect(mocks.blame).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves a click on a non-clickable label to the editor, which puts the caret at the line end (#3802)", async () => {
+    settings(true, false);
+    const v = editor();
+    v.dispatch({ selection: { anchor: 1 } });
+    await tick();
+    expect(hint()?.textContent).toContain("Alice Smith");
+    expect(label()?.hasAttribute("role")).toBe(false);
+    expect(label()?.hasAttribute("tabindex")).toBe(false);
+    label()!.click();
+    label()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    pressLabel(v, 3);
+    expect(v.state.selection.main.head).toBe(3);
+    expect(mocks.action).not.toHaveBeenCalled();
+  });
+
+  it("leaves a click on the uncommitted-changes label, which opens nothing, to the editor", async () => {
+    const v = editor();
+    v.dispatch({ selection: { anchor: 9 } });
+    await tick();
+    expect(hint()?.textContent).toBe("You, now · Uncommitted changes");
+    expect(label()?.hasAttribute("role")).toBe(false);
+    pressLabel(v, 13);
+    expect(v.state.selection.main.head).toBe(13);
+  });
+
+  it("applies the clickable setting to an open editor without another git call", async () => {
+    editor();
+    await tick();
+    expect(label()?.getAttribute("role")).toBe("button");
+    settings(true, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(label()?.hasAttribute("role")).toBe(false);
+    settings(true, true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(label()?.getAttribute("role")).toBe("button");
+    label()!.click();
+    expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", alice.commit);
+    expect(mocks.blame).toHaveBeenCalledTimes(1);
+  });
+
   it("responds to the setting immediately", async () => {
     settings(false);
     editor();
@@ -339,7 +413,7 @@ describe("current line decoration", () => {
     await tick();
     // the widget measures, and starts observing, in the task after its insertion
     await vi.advanceTimersByTimeAsync(10);
-    expect(hint()!.style.paddingLeft).toBe("");
+    expect(label()!.style.left).toBe("");
 
     // the hint shows up only after the blame mounted — the blame must still step past it
     view.dispatch({
@@ -355,11 +429,22 @@ describe("current line decoration", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(view.dom.querySelector(".cm-openidea-lensInlineInner")).not.toBeNull();
     // hint 120px, then the message's 70px: the label steps past the whole chain
-    expect(hint()!.style.paddingLeft).toBe("calc(3ch + 190px)");
+    expect(label()!.style.left).toBe("calc(3ch + 190px)");
 
     // and it gives the space back when the hint and the message go away
     view.dispatch({ effects: lens.reconfigure([]) });
     await vi.advanceTimersByTimeAsync(10);
-    expect(hint()!.style.paddingLeft).toBe("");
+    expect(label()!.style.left).toBe("");
+  });
+
+  it("is an out-of-flow, zero-width anchor so soft wrap cannot fold it onto a new row", () => {
+    const anchor = inlineBlameTheme[".cm-vcs-inline-blame"];
+    const inner = inlineBlameTheme[".cm-vcs-inline-blame-inner"];
+    // The label no longer takes part in the line's flow: no soft-wrapped continuation row and
+    // no line-height stretch, unlike the old in-flow `inline-block; nowrap` label.
+    expect(anchor).toMatchObject({ width: "0", position: "relative", display: "inline-block" });
+    expect(inner).toMatchObject({ position: "absolute", whiteSpace: "nowrap" });
+    // The visible label is the pointer/click region; the anchor stays zero-width.
+    expect(inlineBlameTheme['.cm-vcs-inline-blame-inner[role="button"]']).toEqual({ cursor: "pointer" });
   });
 });

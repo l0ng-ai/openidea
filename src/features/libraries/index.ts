@@ -2,9 +2,10 @@
  * External Libraries: the project's SDK / library source folders (the Python
  * interpreter's standard library and site-packages, the JDK, node_modules
  * packages, Cargo crates and the Rust standard library, GOROOT and Go modules,
- * Maven / Gradle dependency jars) as a Project view root. Their files open
- * read-only, like IDEA's library sources. Archives (the JDK's `src.zip`, jars)
- * are browsed through the backend's `<archive>!/<entry>` paths.
+ * the Zig standard library and its fetched build.zig.zon packages, Maven /
+ * Gradle dependency jars) as a Project view root. Their files open read-only,
+ * like IDEA's library sources. Archives (the JDK's `src.zip`, jars, Zig
+ * package tarballs) are browsed through the backend's `<archive>!/<entry>` paths.
  */
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type LibraryGroup, type RequestId } from "@/bindings";
@@ -32,10 +33,12 @@ const GROUP_ICONS: Record<string, string> = {
   classpath: "file-java",
   ruby: "file-ruby",
   gems: "file-ruby",
+  zig: "file-zig",
+  zigPackages: "file-zig",
 };
 
 /** SDK groups, which IDEA writes in angle brackets (`< 21 >`); library groups (`Maven: g:a:v`) go without. */
-const SDK_KINDS = new Set(["jdk", "python", "ruby", "go", "rust"]);
+const SDK_KINDS = new Set(["jdk", "python", "ruby", "go", "rust", "zig"]);
 
 /** An archive's root (`/jdk/lib/src.zip!`): its entries live below `<archive>!/`. */
 const isArchiveRoot = (path: string) => path.endsWith("!");
@@ -62,6 +65,7 @@ const MANIFESTS = new Set([
   "go.mod",
   "go.sum",
   "go.work",
+  "build.zig.zon",
   ".classpath",
   "pyproject.toml",
   "setup.py",
@@ -129,6 +133,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     l?.go?.goroot,
     l?.go?.gopath,
     l?.go?.modules,
+    l?.zig?.zig,
     s.settings?.projectStructure?.libraries,
     s.settings?.projectStructure?.sourceRoots,
   ]);

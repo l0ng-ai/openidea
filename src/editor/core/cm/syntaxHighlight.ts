@@ -1,6 +1,6 @@
 /**
  * Tree-sitter highlighting (`doc_highlights`) for languages without a
- * CodeMirror mode (Elixir, ...) or a limited stream mode (Kotlin): backend kinds → Lezer tags, so the colours
+ * CodeMirror mode (Elixir, ...) or a limited stream mode (Kotlin, Shell): backend kinds → Lezer tags, so the colours
  * come from the same highlight style and Color Scheme settings as Lezer
  * highlighting. Refreshed with folding; in between, marks are mapped through
  * the changes.
@@ -9,7 +9,7 @@ import { Prec, StateEffect, StateField, type EditorState } from "@codemirror/sta
 import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import { highlightingFor } from "@codemirror/language";
 import { tags as t, type Tag } from "@lezer/highlight";
-import { parameter } from "./highlight";
+import { parameter, shellCommand } from "./highlight";
 import type { SyntaxHighlightKind, SyntaxHighlights } from "@/platform/ipc";
 
 const TAGS: Record<SyntaxHighlightKind, Tag> = {
@@ -38,6 +38,7 @@ const TAGS: Record<SyntaxHighlightKind, Tag> = {
   tag: t.tagName,
   operator: t.operator,
   punctuation: t.punctuation,
+  command: shellCommand,
 };
 
 export const setSyntaxHighlights = StateEffect.define<SyntaxHighlights>();

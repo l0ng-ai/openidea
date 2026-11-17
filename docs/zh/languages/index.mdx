@@ -102,7 +102,7 @@ IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自�
 | D                   | `d`                | `.d`, `.di`                                                 | 是   | —           | serve-d                                                                               | —                        |
 | Dart                | `dart`             | `.dart`                                                     | 是   | 是          | dart                                                                                  | dart                     |
 | Diff                | `diff`             | `.diff`, `.patch`, `.rej`                                   | 是   | —           | —                                                                                     | —                        |
-| Django Template     | `django-html`      | `.djhtml`, `templates/*.html`, `*.txt`                      | 是   | 是          | **vscode-html-language-server**                                                       | —                        |
+| Django Template     | `django-html`      | `.djhtml`, `templates/*.html`, `*.txt`                      | 是   | 是          | **vscode-html-language-server**, **djlsp**                                            | —                        |
 | Dockerfile          | `dockerfile`       | `.dockerfile`, `.containerfile`                             | 是   | —           | **dockerfile-language-server**                                                        | —                        |
 | Elixir              | `elixir`           | `.ex`, `.exs`                                               | 是   | 是          | **elixir-ls**                                                                         | **elixir-ls-debugger**   |
 | ERB                 | `erb`              | `.erb`, `.html.erb`, `.rhtml`, `.js.erb`, `.text.erb`, …    | 是   | —           | —                                                                                     | —                        |
@@ -143,7 +143,7 @@ IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自�
 | OCaml               | `ocaml`            | `.ml`, `.mll`, `.mly`                                       | 是   | 是          | ocamllsp                                                                              | ocamlearlybird           |
 | OCaml Interface     | `ocaml.interface`  | `.mli`                                                      | 是   | 是          | ocamllsp                                                                              | —                        |
 | Perl                | `perl`             | `.pl`, `.pm`, `.pod`, `.psgi`, `.cgi`                       | 是   | —           | **perlnavigator**                                                                     | —                        |
-| PHP                 | `php`              | `.php`, `.phtml`, `.php3`, `.php4`, `.php5`, …              | 是   | 是          | **intelephense** → phpactor + **laravel-lsp**                                         | **php-debug**            |
+| PHP                 | `php`              | `.php`, `.phtml`, `.php3`, `.php4`, `.php5`, …              | 是   | 是          | **intelephense** → phpactor → **phoxite** + **laravel-lsp**                           | **php-debug**            |
 | Plain Text          | `plaintext`        | `.txt`, `.text`                                             | —    | —           | —                                                                                     | —                        |
 | PowerShell          | `powershell`       | `.ps1`, `.psm1`, `.psd1`, `.pssc`, `.psrc`                  | 是   | —           | powershell-editor-services                                                            | —                        |
 | Prisma              | `prisma`           | `.prisma`                                                   | 是   | 是          | **prisma-language-server**                                                            | —                        |
@@ -195,6 +195,7 @@ IDE 安装工具从不需要 `sudo`。工具装在本地数据目录下 IDE 自�
 | Ruby                    | `Gemfile`、`Rakefile`、`*.gemspec`、`config.ru`                           | Rails server、Rake 任务、RSpec、Minitest                                   |
 | C / C++                 | `CMakeLists.txt`                                                          | CMake 目标                                                                 |
 | C#                      | `.sln`、`.slnx`、`.csproj`                                                | .NET Project、`dotnet test`                                                |
+| Scala                   | `build.sbt`                                                               | `sbt run`、`sbt test`；各项目的任务在 **sbt** 工具窗口中                   |
 | GDScript                | `project.godot`                                                           | Godot                                                                      |
 | 任意                    | `justfile`、`Makefile`                                                    | just 配方、Make 目标                                                       |
 

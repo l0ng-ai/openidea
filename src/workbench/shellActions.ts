@@ -69,7 +69,7 @@ export function registerShellActions(): () => void {
       category: "File",
       when: "projectOpen",
       run: async () => {
-        if (!useProject.getState().project || !(await confirmLeaveProject())) return;
+        if (!useProject.getState().project || !(await confirmLeaveProject(false))) return;
         try {
           await closeProject();
         } catch (e) {

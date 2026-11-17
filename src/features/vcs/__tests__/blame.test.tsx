@@ -4,11 +4,15 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlameLine, Commit } from "@/bindings";
 import { useI18n } from "@/platform/i18n";
-import { blameSlot, toggleAnnotations } from "../blame";
+import { annotationsShown, blameSlot, toggleAnnotations } from "../blame";
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
-const mocks = vi.hoisted(() => ({ blame: vi.fn(), log: vi.fn(), action: vi.fn() }));
+const mocks = vi.hoisted(() => ({ blame: vi.fn(), log: vi.fn(), action: vi.fn(), notify: vi.fn() }));
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
+}));
 vi.mock("@/platform/actions", async (original) => ({
   ...(await original<typeof import("@/platform/actions")>()),
   executeAction: mocks.action,
@@ -60,6 +64,22 @@ afterEach(() => {
 });
 
 describe("git blame gutter and commit popup", () => {
+  it("opens no empty column for a file Git has no commit of", async () => {
+    const zero = "0".repeat(40);
+    mocks.blame.mockResolvedValue({
+      status: "ok",
+      data: [1, 2].map(() => ({ commit: zero, author: "Not Committed Yet", timeMs: 0, summary: "" })),
+    });
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "a\nb", extensions: [blameSlot()] }),
+    });
+    await toggleAnnotations(view, "/repo/ignored_test.py");
+    expect(annotationsShown(view)).toBe(false);
+    expect(view.dom.querySelector(".cm-vcs-blame .cm-gutterElement [data-commit]")).toBeNull();
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Nothing to annotate" }));
+  });
+
   it("highlights matching commit lines on hover, shows the commit popup, and jumps to Git Log on click", async () => {
     view = new EditorView({
       parent: document.body,

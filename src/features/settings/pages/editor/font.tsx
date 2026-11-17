@@ -17,7 +17,8 @@ import { tx } from "@/platform/i18n";
 
 function FontRow() {
   const [family, setFamily] = useSetting<string>("editor.fontFamily");
-  const [monoOnly, setMonoOnly] = useState(true);
+  const [monoSetting, setMonoOnly] = useSetting<boolean>("editor.onlyMonospacedFonts");
+  const monoOnly = monoSetting !== false;
   const matched = useLabelMatch("Show only monospaced fonts");
   return (
     <Row label="Font">

@@ -11,7 +11,7 @@ import { call, commands, type Sdk } from "@/platform/ipc";
 import { IconButton, Input, type SelectOption, T } from "@/ui";
 import { JAVA_LANGUAGE_LEVELS, PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
-import { choosePath } from "./api";
+import { choosePath } from "@/platform/choosePath";
 import { usePageContext, useSetting } from "../components/context";
 import { SdkField, tildify, useDetected, useJdtlsJdk } from "./components";
 import styles from "./Sdk.module.css";
@@ -722,6 +722,29 @@ export function TypeScriptPage() {
             aria-label="tsserver memory limit"
           />
         </Row>
+      </Section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Zig
+
+export function ZigPage() {
+  return (
+    <div className={styles.page}>
+      <Section>
+        <SdkRow
+          k="languages.zig.zig"
+          label="Zig toolchain"
+          kind="zig"
+          emptyLabel="Auto"
+          emptyDetail="zig on PATH"
+          directory
+          browseTitle="Select Zig Directory"
+          aria-label="Zig toolchain"
+          hint="Zig whose standard library and build.zig.zon packages appear under External Libraries. ZLS must match this Zig version. PATH, Homebrew, zvm and mise / asdf installs are detected."
+        />
       </Section>
     </div>
   );

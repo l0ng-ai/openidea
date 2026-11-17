@@ -14,12 +14,14 @@ import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
+import { OutputActivity } from "./activity";
 import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
-import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
+import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
+import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
@@ -29,7 +31,9 @@ import { hostOs, useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
+import type { CompletionInfo } from "./completion";
 import {
+  readLinkColor,
   readSearchDecorations,
   readTerminalTheme,
   remeasureWhenFontsLoad,
@@ -62,8 +66,27 @@ export interface SessionSnapshot {
   appTitle: string | null;
   /** A command is running (shell integration's OSC 133 C … D), or the session runs a non-shell program. */
   commandRunning: boolean;
+  /**
+   * The running program's own progress report (OSC 9;4, #3831): "active" while it
+   * shows itself as working, "cleared" once it reports being done, null while it
+   * has said nothing. An interactive CLI is one command from OSC 133's point of
+   * view, so only its own report separates working from waiting for input.
+   */
+  progress: "active" | "cleared" | null;
+  /**
+   * The running command is at work (#3831): as its progress report says; without
+   * one, always for a plain command, and for an interactive program (an agent
+   * CLI, a REPL, an editor) only while it keeps producing output, not while it
+   * waits for input.
+   */
+  working: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
+  /**
+   * A finished command has not been seen yet (#3712): the tab shows a dot
+   * until it is focused or opened from its notification.
+   */
+  unseenDone: boolean;
 }
 
 export interface SessionOptions {
@@ -73,6 +96,11 @@ export interface SessionOptions {
   onFocus: (key: string) => void;
   /** The shell exited (after the exit message was printed). */
   onExit?: (key: string) => void;
+  /**
+   * A shell-integration command finished (OSC 133 D): how long it ran, its
+   * exit status, and whether it was stopped with Ctrl-C (#3712).
+   */
+  onCompletion?: (key: string, info: CompletionInfo) => void;
   /**
    * Run this program instead of the configured shell (e.g. `docker exec -it <id> sh`).
    * `shell`: it is a shell (a predefined session), so shell integration still applies.
@@ -94,6 +122,8 @@ export interface SessionOptions {
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+/** Bracketed paste and the alternate screen: DEC private modes of a program that reads the keyboard itself. */
+const INPUT_MODES = new Set([47, 1047, 1049, 2004]);
 const CLEAR_SCROLLBACK_MARKER = "\x1b]133;OpenIDEA;ClearScrollback\x07";
 
 let audio: AudioContext | null = null;
@@ -213,6 +243,7 @@ export class TerminalSession {
   private selectingSearchMatch = false;
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
+  private readonly linkHighlights: LinkHighlightController;
   private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -232,6 +263,14 @@ export class TerminalSession {
   private lastSize = { cols: 0, rows: 0 };
   /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
   private fontZoom = 0;
+  /** Kept while a shell-integration command runs, for its completion time (#3712). */
+  private commandStartedAt: number | null = null;
+  /** Ctrl-C was typed while the current command ran: it was stopped, not finished. */
+  private commandInterrupted = false;
+  private readonly activity = new OutputActivity();
+  private activityTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Input modes the running command asked for; see `interactive`. */
+  private readonly inputModes = new Set<number>();
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -243,7 +282,7 @@ export class TerminalSession {
    * Hands the session to another owner (a terminal tab moved to the editor): its
    * snapshots, focus and exit go there from now on. The PTY keeps running.
    */
-  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit">) {
+  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit" | "onCompletion">) {
     this.opts = { ...this.opts, ...owner, onExit: owner.onExit };
     this.opts.onChange(this.key, this.snapshot);
   }
@@ -257,7 +296,10 @@ export class TerminalSession {
       title: "Local",
       appTitle: null,
       commandRunning: false,
+      progress: null,
+      working: false,
       cwd: opts.cwd,
+      unseenDone: false,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -330,6 +372,10 @@ export class TerminalSession {
       }),
       this.term.onData((data) => this.fromTerminal(data)),
       this.term.onBinary((data) => this.input(data)),
+      this.term.onWriteParsed(() => {
+        this.activity.output(Date.now());
+        this.syncWorking();
+      }),
       this.term.onTitleChange((title) => this.update({ appTitle: title.trim() || null })),
       // OSC 7: `file://host/path` — shells report their cwd so relative links resolve correctly.
       this.term.parser.registerOscHandler(7, (data) => {
@@ -341,9 +387,45 @@ export class TerminalSession {
         }
         return true;
       }),
-      // OSC 133 (shell integration): C = a command starts, D = it finished.
+      // OSC 133 (shell integration): C = a command starts, D;<status> = it
+      // finished (plain D carries no status; both are accepted).
       this.term.parser.registerOscHandler(133, (data) => {
-        if (data === "C" || data.startsWith("D")) this.update({ commandRunning: data === "C" });
+        if (data === "C") {
+          this.commandStartedAt = Date.now();
+          this.commandInterrupted = false;
+          // A new command in the tab: the previous completion has been seen, and
+          // the new program has not reported progress yet.
+          this.resetActivity();
+          this.update({ commandRunning: true, unseenDone: false, progress: null });
+        } else if (data === "D" || data.startsWith("D;")) {
+          const status = data.length > 2 ? Number.parseInt(data.slice(2), 10) : Number.NaN;
+          const startedAt = this.commandStartedAt;
+          this.commandStartedAt = null;
+          const interrupted = this.commandInterrupted;
+          this.commandInterrupted = false;
+          this.resetActivity();
+          this.update({ commandRunning: false, progress: null });
+          // A D without a C (shell startup, a restored tab's first prompt) is
+          // not a command finishing.
+          if (startedAt !== null) {
+            this.opts.onCompletion?.(this.key, {
+              durationMs: Date.now() - startedAt,
+              exitCode: Number.isFinite(status) ? status : null,
+              interrupted,
+            });
+          }
+        }
+        return true;
+      }),
+      // OSC 9;4 (ConEmu-style progress): agent CLIs (Claude Code, Gemini CLI, …)
+      // and long jobs report their own working state — state 0 removes it, 1–4
+      // report work in flight. A program that reports progress decides the tab's
+      // spinner itself (#3831): it clears the report when it waits for input,
+      // while OSC 133 still sees one command running from launch to exit.
+      this.term.parser.registerOscHandler(9, (data) => {
+        if (!data.startsWith("4;")) return false;
+        const state = Number.parseInt(data.slice(2), 10);
+        if (Number.isFinite(state)) this.update({ progress: state === 0 ? "cleared" : "active" });
         return true;
       }),
       this.term.registerLinkProvider({
@@ -358,6 +440,8 @@ export class TerminalSession {
         if (!this.searchSelection && workflowSettings().terminal.copyOnSelection && this.term.hasSelection())
           this.copySelection();
       }),
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => this.noteInputModes(params, true)),
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => this.noteInputModes(params, false)),
       // Mouse reporting off: ignore the application's requests to enable mouse tracking.
       this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
         if (workflowSettings().terminal.mouseReporting) return false;
@@ -368,10 +452,11 @@ export class TerminalSession {
     this.selectionHighlights = installSelectionHighlights(this.term, {
       isSearchSelection: () => this.searchSelection,
     });
-    this.disposables.push(this.selectionHighlights);
+    this.linkHighlights = installLinkHighlights(this.term, readLinkColor);
+    this.disposables.push(this.selectionHighlights, this.linkHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
-      { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
+      { dispose: installTerminalDrop(this.host, (text) => this.paste(text), this.clipboardTarget) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
     this.host.addEventListener("wheel", this.onWheelZoom, { capture: true, passive: false });
@@ -437,6 +522,7 @@ export class TerminalSession {
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
     this.selectionHighlights.refresh();
+    this.linkHighlights.refresh();
     this.scheduleFit();
   }
 
@@ -460,6 +546,16 @@ export class TerminalSession {
     return this.snapshot;
   }
 
+  /** Marks the tab: a finished command here has not been seen yet (#3712). */
+  markUnseenDone() {
+    if (!this.snapshot.unseenDone) this.update({ unseenDone: true });
+  }
+
+  /** The completion has been seen (the tab was focused). */
+  private clearUnseenDone() {
+    if (this.snapshot.unseenDone) this.update({ unseenDone: false });
+  }
+
   get hasSelection(): boolean {
     return this.term.hasSelection();
   }
@@ -470,7 +566,52 @@ export class TerminalSession {
 
   private update(patch: Partial<SessionSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
+    this.snapshot.working = this.isWorking();
     this.opts.onChange(this.key, this.snapshot);
+  }
+
+  /**
+   * The running program takes input itself: it asked for bracketed paste or the
+   * alternate screen. Only its own requests count, not a mode an earlier program
+   * left on (one killed inside the alternate screen).
+   */
+  private get interactive(): boolean {
+    return this.inputModes.size > 0;
+  }
+
+  private noteInputModes(params: (number | number[])[], on: boolean): boolean {
+    for (const p of params) {
+      const mode = Array.isArray(p) ? p[0] : p;
+      if (mode === undefined || !INPUT_MODES.has(mode)) continue;
+      if (on) this.inputModes.add(mode);
+      else this.inputModes.delete(mode);
+    }
+    return false;
+  }
+
+  /** A command starts or ends: what the previous one asked for and drew no longer counts. */
+  private resetActivity() {
+    this.inputModes.clear();
+    this.activity.reset();
+  }
+
+  private isWorking(): boolean {
+    const { status, commandRunning, progress } = this.snapshot;
+    if (!commandRunning || status === "exited" || status === "error") return false;
+    if (progress) return progress === "active";
+    return !this.interactive || this.activity.active(Date.now());
+  }
+
+  /** Re-judges `working` after output, and again once the output has been quiet long enough. */
+  private syncWorking() {
+    if (this.disposed) return;
+    if (this.activityTimer !== null) clearTimeout(this.activityTimer);
+    this.activityTimer = null;
+    const working = this.isWorking();
+    if (working !== this.snapshot.working) this.update({});
+    if (!this.snapshot.commandRunning || !this.interactive) return;
+    const wait = this.activity.quietAt - Date.now();
+    if (wait >= 0) this.activityTimer = setTimeout(() => this.syncWorking(), wait + 1);
   }
 
   private linksAt(y: number): ILink[] | undefined {
@@ -479,17 +620,14 @@ export class TerminalSession {
     const text = line.translateToString(true);
     const found = findTerminalLinks(text);
     if (found.length === 0) return undefined;
-    return found.map((l) => ({
-      text: l.text,
-      range: { start: { x: l.start + 1, y }, end: { x: l.end, y } },
-      decorations: { underline: true, pointerCursor: true },
-      activate: (event: MouseEvent) => {
+    return found.map((l) =>
+      xtermLink(this.term, line, y, l, (event) => {
         // Plain click opens; a click that ends a drag-selection never reaches here.
         event.preventDefault();
         if (l.kind === "url") void openExternal(l.url);
         else void openFileLink(l, this.snapshot.cwd);
-      },
-    }));
+      }),
+    );
   }
 
   /** Moves the host into `container` and fits / starts once the pane has a size. */
@@ -525,7 +663,10 @@ export class TerminalSession {
       () => !this.disposed,
       () => this.scheduleFit(),
     );
-    this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
+    this.term.textarea?.addEventListener("focus", () => {
+      this.clearUnseenDone();
+      this.opts.onFocus(this.key);
+    });
     this.watchImeCommit();
     if (this.pendingFocus) this.focus();
   }
@@ -641,11 +782,18 @@ export class TerminalSession {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
     this.outputTail = "";
+    this.resetActivity();
     const custom = this.opts.command;
-    this.update({ status: "starting", exitCode: null, appTitle: null, commandRunning: !!custom && !custom.shell });
+    this.update({
+      status: "starting",
+      exitCode: null,
+      appTitle: null,
+      commandRunning: !!custom && !custom.shell,
+      progress: null,
+    });
     if (!isTauri()) {
       this.term.writeln("\x1b[2mTerminal is unavailable outside the desktop app.\x1b[0m");
-      this.update({ status: "error" });
+      this.update({ status: "error", commandRunning: false, progress: null });
       return;
     }
     const cols = Math.max(2, this.term.cols);
@@ -689,7 +837,8 @@ export class TerminalSession {
       this.pendingInput = "";
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
       if (!custom?.onExit) this.term.writeln(RESTART_HINT);
-      this.update({ status: "error" });
+      // Nothing runs: a non-shell command tab must not keep its running marker.
+      this.update({ status: "error", commandRunning: false, progress: null });
     }
   }
 
@@ -719,7 +868,9 @@ export class TerminalSession {
     this.ptyId = null;
     this.opts.command?.onExit?.(code, false);
     this.pendingInput = "";
-    this.update({ status: "exited", exitCode: code });
+    // The process is gone: a non-shell command tab never sees OSC 133's D, so
+    // the running marker stops here rather than spinning over the dead tab.
+    this.update({ status: "exited", exitCode: code, commandRunning: false, progress: null });
     // Let output still in flight on the channel land first.
     setTimeout(() => {
       if (this.disposed || this.snapshot.status !== "exited") return;
@@ -757,6 +908,9 @@ export class TerminalSession {
       this.pendingInput += data;
       return;
     }
+    // Ctrl-C stops the running command: its D mark must not count as a completion (#3712).
+    if (this.snapshot.commandRunning && data.includes("\x03")) this.commandInterrupted = true;
+    this.activity.input(Date.now());
     void call(commands.termWrite(this.ptyId, data)).catch((error) => {
       notifications().notify({
         level: "error",
@@ -781,7 +935,7 @@ export class TerminalSession {
 
   paste(text: string) {
     if (this.disposed) return;
-    this.term.paste(text);
+    pasteIntoTerminal(this.term, text);
   }
 
   clearSelection() {
@@ -820,6 +974,8 @@ export class TerminalSession {
   /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */
   focus() {
     if (this.disposed) return;
+    // The tab is becoming visible either way: its finished command counts as seen.
+    this.clearUnseenDone();
     if (!this.opened || !this.term.textarea) {
       this.pendingFocus = true;
       this.scheduleFit();
@@ -838,6 +994,7 @@ export class TerminalSession {
   applyTheme() {
     this.term.options.theme = readTerminalTheme();
     this.searchDecorations = null;
+    this.linkHighlights.refresh();
   }
 
   /** Finds `query` (highlighting every match); `incremental` keeps the current match while typing. */
@@ -884,6 +1041,7 @@ export class TerminalSession {
       this.opts.command?.onExit?.(null, true);
     this.fitter.cancel();
     this.ptyResize.cancel();
+    if (this.activityTimer !== null) clearTimeout(this.activityTimer);
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
