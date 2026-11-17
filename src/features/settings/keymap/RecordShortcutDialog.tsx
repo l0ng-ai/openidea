@@ -15,6 +15,7 @@ import { groupPath } from "./groups";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
 import { tx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 
 export interface RecordShortcutDialogProps {
   action: Pick<Action, "id" | "title" | "category" | "when">;
@@ -23,7 +24,7 @@ export interface RecordShortcutDialogProps {
   onCancel: () => void;
   /** `removeConflicts`: also unbind the conflicting assignments. */
   onSubmit: (binding: string, conflicts: Conflict[], removeConflicts: boolean) => void;
-  /** Record a mouse shortcut (modified left clicks or side buttons) instead of keys. */
+  /** Record a mouse shortcut (modified left clicks, middle or side buttons) instead of keys. */
   mouse?: boolean;
 }
 
@@ -31,6 +32,8 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
   const [useSecond, setUseSecond] = useState(false);
+  const os = usePlatform((s) => s.os);
+  const rectangularSelection = action.id === "editor.createRectangularSelectionOnMouseDrag";
 
   const binding =
     mouse || isPageSwipe(first) ? first : first && useSecond ? (second ? `${first} ${second}` : "") : first;
@@ -76,7 +79,7 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
     >
       <div className={styles.recordBody}>
         {mouse ? (
-          <MouseRecorder value={first} onChange={setFirst} />
+          <MouseRecorder value={first} onChange={setFirst} sideButtons={!rectangularSelection} />
         ) : (
           <KeyStrokes
             first={first}
@@ -86,6 +89,11 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
             setSecond={setSecond}
             setUseSecond={setUseSecond}
           />
+        )}
+        {mouse && os === "linux" && rectangularSelection && /(?:^|\+)Button2$/.test(binding) && (
+          <div className={styles.recordHint}>
+            <T>On Linux, middle-button rectangular selection conflicts with primary selection paste.</T>
+          </div>
         )}
         <div className={styles.conflictsLabel}>
           <T>Conflicts:</T>
@@ -180,10 +188,20 @@ function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecon
   );
 }
 
-/** Record modified left clicks and side buttons; shortcuts stay off while the dialog is open. */
-function MouseRecorder({ value, onChange }: { value: string; onChange: (binding: string) => void }) {
+/** Shortcuts stay off while the dialog records mouse buttons and modifiers. */
+function MouseRecorder({
+  value,
+  onChange,
+  sideButtons,
+}: {
+  value: string;
+  onChange: (binding: string) => void;
+  sideButtons: boolean;
+}) {
   useEffect(() => suspendKeyboardDispatch(), []);
   const record = (e: MouseEvent<HTMLDivElement>) => {
+    // Rectangular selection only handles left and middle buttons.
+    if (!sideButtons && e.button > 1) return;
     const stroke = mouseStrokeOf(e.nativeEvent);
     if (!stroke) return;
     e.preventDefault();
@@ -204,7 +222,11 @@ function MouseRecorder({ value, onChange }: { value: string; onChange: (binding:
         <span className={styles.recorded}>{formatBinding(value)}</span>
       ) : (
         <span className={styles.recorderPlaceholder}>
-          <T>Click here with Ctrl, Alt or Command held, or use a mouse side button</T>
+          {sideButtons ? (
+            <T>Click here with Ctrl, Alt or Command held, or use a middle or side mouse button</T>
+          ) : (
+            <T>Click here with Ctrl, Alt or Command held, or use the middle mouse button</T>
+          )}
         </span>
       )}
     </div>

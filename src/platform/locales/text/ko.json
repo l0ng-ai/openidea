@@ -4923,7 +4923,7 @@
   "Sort by Type": "타입순 정렬",
   "Sort by Modification Time": "수정 시간순 정렬",
   "Add Mouse Shortcut": "마우스 단축키 추가",
-  "Click here with Ctrl, Alt or Command held, or use a mouse side button": "Ctrl, Alt 또는 Command를 누른 채 여기를 클릭하거나 마우스 측면 버튼을 사용하세요",
+  "Click here with Ctrl, Alt or Command held, or use a middle or side mouse button": "Ctrl, Alt 또는 Command를 누른 채 여기를 클릭하거나 마우스 가운데 버튼 또는 측면 버튼을 사용하세요",
   "Mouse shortcut": "마우스 단축키",
   "Mouse Shortcut: {action}": "마우스 단축키: {action}",
   "Accept Left Side": "왼쪽 수락",
