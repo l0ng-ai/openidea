@@ -32,6 +32,9 @@ import {
   type NotificationGroupValid,
   type NavigationBarPosition,
   type OpenProjectIn,
+  PRESENTATION_ASSISTANT_DURATION,
+  type PresentationAssistantPosition,
+  type PresentationAssistantSize,
 } from "../model/behaviorSchema";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
@@ -391,6 +394,21 @@ const AA_OPTIONS: SelectOption<Antialiasing>[] = [
   { value: "subpixel", label: "Subpixel" },
   { value: "greyscale", label: "Greyscale" },
   { value: "none", label: "No antialiasing" },
+];
+
+const PRESENTATION_SIZE_OPTIONS: SelectOption<PresentationAssistantSize>[] = [
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large", label: "Large" },
+];
+
+const PRESENTATION_POSITION_OPTIONS: SelectOption<PresentationAssistantPosition>[] = [
+  { value: "top-left", label: "Top left" },
+  { value: "top", label: "Top center" },
+  { value: "top-right", label: "Top right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom", label: "Bottom center" },
+  { value: "bottom-right", label: "Bottom right" },
 ];
 
 const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
@@ -961,6 +979,50 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Show tool window bars",
             keywords: ["Show tool window names", "Widescreen tool window layout", "stripes"],
             component: ToolWindowsGrid,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "appearance.presentationAssistant",
+    title: "Presentation Assistant",
+    order: 0,
+    keywords: ["action names", "shortcuts", "screencast", "demo", "presentation"],
+    sections: [
+      {
+        options: [
+          {
+            kind: "toggle",
+            key: "appearance.presentationAssistant.enabled",
+            label: "Show action names and shortcuts",
+            hint: "Each action you run shows its name and shortcut in a popup, for screencasts and demos.",
+          },
+          {
+            kind: "select",
+            key: "appearance.presentationAssistant.size",
+            label: "Popup size",
+            options: PRESENTATION_SIZE_OPTIONS,
+          },
+          {
+            kind: "number",
+            key: "appearance.presentationAssistant.durationSeconds",
+            label: "Duration",
+            ...PRESENTATION_ASSISTANT_DURATION,
+            integer: true,
+            unit: "seconds",
+          },
+          {
+            kind: "select",
+            key: "appearance.presentationAssistant.position",
+            label: "Popup position",
+            options: PRESENTATION_POSITION_OPTIONS,
+          },
+          {
+            kind: "toggle",
+            key: "appearance.presentationAssistant.alternateKeymap",
+            label: "Also show the other platform's shortcut",
+            hint: "macOS shortcuts on Windows and Linux, Windows/Linux shortcuts on macOS.",
           },
         ],
       },

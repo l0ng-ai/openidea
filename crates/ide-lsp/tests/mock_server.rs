@@ -3934,16 +3934,31 @@ async fn navigation_rename_format_and_decorations() {
     let item = json!({ "name": "foo", "kind": 12, "uri": uri, "range": r(0,0,0,11), "selectionRange": r(0,3,0,6), "data": "id" });
     s.respond("textDocument/prepareCallHierarchy", json!([item]));
     s.respond("callHierarchy/incomingCalls", json!([{ "from": { "name": "main", "kind": 12, "uri": uri, "range": r(1,0,1,6), "selectionRange": r(1,0,1,3) }, "fromRanges": [r(1,0,1,3)] }]));
-    let calls = h
-        .mgr
-        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default())
-        .await
-        .unwrap()
-        .items;
+    let hierarchy =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    let root = hierarchy.root.expect("the prepared item");
+    assert_eq!((root.name.as_str(), root.selection_range), ("foo", rng(0, 3, 0, 6)));
+    assert_eq!(root.path.to_path_buf(), path);
+    let calls = hierarchy.items;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "main");
     assert_eq!(calls[0].from_ranges, vec![rng(1, 0, 1, 3)]);
     assert_eq!(s.requested("callHierarchy/incomingCalls")[0]["item"]["data"], "id");
+
+    // Outgoing calls of each prepared item are in that item's file.
+    let other = path.with_file_name("b.mk");
+    let second =
+        json!({ "name": "foo", "kind": 12, "uri": uri_of(&other), "range": r(4,0,4,11), "selectionRange": r(4,3,4,6) });
+    s.respond("textDocument/prepareCallHierarchy", json!([item, second]));
+    s.respond("callHierarchy/outgoingCalls", json!([{ "to": { "name": "bar", "kind": 12, "uri": uri, "range": r(2,0,2,6), "selectionRange": r(2,0,2,3) }, "fromRanges": [r(0,8,0,11)] }]));
+    let callees = h
+        .mgr
+        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Outgoing, Default::default())
+        .await
+        .unwrap()
+        .items;
+    let from: Vec<_> = callees.iter().map(|c| c.from_path.clone().map(|p| p.into_path_buf())).collect();
+    assert_eq!(from, [Some(path.clone()), Some(other)]);
 
     // No documentSymbolProvider → None so callers fall back to tree-sitter.
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);

@@ -397,6 +397,7 @@ impl LspManager {
                     range: *r,
                     selection_range: *selection,
                     from_ranges: vec![*call],
+                    from_path: None,
                 }),
             }
         }

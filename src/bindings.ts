@@ -12,6 +12,8 @@ export const commands = {
 	 *  local checkout, uncommitted; files the checkout changed itself are left alone and reported.
 	 */
 	agentAcceptChanges: (task: string, paths: string[] | null) => typedError<AgentAcceptOutcome, IdeError>(__TAURI_INVOKE("agent_accept_changes", { task, paths })),
+	/**  Answers a non-blocking question, without cancelling the current turn. */
+	agentAnswerQuestion: (task: string, question: string, answer: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_answer_question", { task, question, answer })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
 	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
@@ -811,6 +813,11 @@ export const commands = {
 	selectionRange: Range,
 	/**  Call sites, for call hierarchy. */
 	fromRanges: Range[],
+	/**
+	 *  The file of `from_ranges` when it is not the item's own: for an outgoing call, the
+	 *  file of the prepared item that makes it (a path, or the URI of a virtual document).
+	 */
+	fromPath?: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("lsp_prepare_type_hierarchy", { doc, pos })),
 	/**
 	 *  References of the symbol at `pos`. `project_wide` also searches project files
@@ -1812,7 +1819,7 @@ export const commands = {
 	/**  Closes several project tabs one by one (each asks about its own unsaved changes), then selects `keep`. */
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
-	windowGroupDetach: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach")),
+	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
@@ -2130,7 +2137,11 @@ sentMs?: number | null;
 /**  When the turn it started ended; `None` while it runs or when it was cut off. */
 doneMs?: number | null; 
 /**  Sent into a running turn rather than starting one. */
-steered?: boolean } | { type: "agent"; text: string } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+steered?: boolean } | { type: "agent"; text: string } | 
+/**  A question that can be answered while the agent keeps working, or after the turn ends. */
+{ type: "question"; id: string; title: string; questions: AgentQuestion[]; 
+/**  The submitted answers, or `Skipped`; `None` while unanswered. */
+chosen: string | null } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
 /**  Text the tool reported (command output…), truncated. */
@@ -2812,6 +2823,8 @@ export type AppearanceSettings_Deserialize = {
 	mainToolbar?: MainToolbarSettings | null,
 	/**  Appearance › Background Image: an image shown through the IDE window. */
 	backgroundImage?: BackgroundImageSettings,
+	/**  Appearance › Presentation Assistant: the name and shortcut of each action run. */
+	presentationAssistant?: PresentationAssistantSettings,
 };
 
 export type AppearanceSettings_Serialize = {
@@ -2881,6 +2894,8 @@ export type AppearanceSettings_Serialize = {
 	mainToolbar: MainToolbarSettings | null,
 	/**  Appearance › Background Image: an image shown through the IDE window. */
 	backgroundImage: BackgroundImageSettings,
+	/**  Appearance › Presentation Assistant: the name and shortcut of each action run. */
+	presentationAssistant: PresentationAssistantSettings,
 };
 
 export type ApplyOutcome = {
@@ -3183,6 +3198,8 @@ export type CMakeSettings_Serialize = {
 };
 
 export type CallHierarchy = {
+	/**  The symbol the hierarchy is for: the first item the server prepared at the position. */
+	root?: HierarchyItem | null,
 	items: HierarchyItem[],
 	incomplete: ReferencesIncomplete | null,
 };
@@ -3583,6 +3600,8 @@ export type CommitSettings = {
 	 *  `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
 	 */
 	doubleClickOpensDiff?: boolean | null,
+	/**  Team conventions for Generate Commit Message with Agent, added to its prompt. */
+	agentInstructions?: string,
 };
 
 export type Commit_Deserialize = {
@@ -6414,6 +6433,11 @@ export type HierarchyItem = {
 	selectionRange: Range,
 	/**  Call sites, for call hierarchy. */
 	fromRanges: Range[],
+	/**
+	 *  The file of `from_ranges` when it is not the item's own: for an outgoing call, the
+	 *  file of the prepared item that makes it (a path, or the URI of a virtual document).
+	 */
+	fromPath?: IpcPath | null,
 };
 
 export type HierarchyMember = {
@@ -9211,6 +9235,19 @@ export type PreparedRequest = {
 	body: string | null,
 };
 
+/**  Appearance › Presentation Assistant: shows the name and shortcut of each action the user runs. */
+export type PresentationAssistantSettings = {
+	enabled?: boolean,
+	/**  `small` | `medium` | `large`. */
+	size?: string,
+	/**  How long each popup stays, in seconds. */
+	durationSeconds?: number,
+	/**  `top-left`, `top`, `top-right`, `bottom-left`, `bottom` or `bottom-right` of the window. */
+	position?: string,
+	/**  Also show the shortcut of the other platform's keymap (macOS ⇄ Windows/Linux). */
+	alternateKeymap?: boolean,
+};
+
 export type ProblemSeverity = "info" | "warning" | "error" | 
 /**  The refactoring can't run at all; there is no edit. */
 "fatal";
@@ -10797,6 +10834,10 @@ export type Stash = {
 	index: number,
 	message: string,
 	timeMs: number | null,
+	/**  The stash commit; its changes are those against `base`. */
+	id: string,
+	/**  The commit the stash was made on (the stash commit's first parent). */
+	base: string | null,
 };
 
 /**  A plugin's status bar item. */

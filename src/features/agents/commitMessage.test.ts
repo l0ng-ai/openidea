@@ -112,6 +112,15 @@ describe("commitMessagePrompt", () => {
   it("leaves out the style hint without earlier commits", () => {
     expect(commitMessagePrompt(PATCH, 72, [])).not.toContain("latest commits");
   });
+
+  it("adds the project's commit conventions before the recent subjects", () => {
+    const prompt = commitMessagePrompt(PATCH, 72, ["fix: y"], "  Use Conventional Commits.\nPrefix the issue key.  ");
+    const conventions = prompt.indexOf("Follow these conventions for commit messages here:\nUse Conventional Commits.");
+    expect(conventions).toBeGreaterThan(0);
+    expect(prompt).toContain("Prefix the issue key.\n");
+    expect(conventions).toBeLessThan(prompt.indexOf("latest commits"));
+    expect(commitMessagePrompt(PATCH, 72, [], " \n ")).not.toContain("conventions");
+  });
 });
 
 describe("commitMessageOf", () => {

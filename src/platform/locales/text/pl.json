@@ -4802,7 +4802,7 @@
   "Sort by Type": "Sortuj według typu",
   "Sort by Modification Time": "Sortuj według czasu modyfikacji",
   "Add Mouse Shortcut": "Dodaj skrót myszy",
-  "Click here with Ctrl, Alt or Command held, or use a mouse side button": "Kliknij tutaj przytrzymując Ctrl, Alt lub Command albo użyj bocznego przycisku myszy",
+  "Click here with Ctrl, Alt or Command held, or use a middle or side mouse button": "Kliknij tutaj przytrzymując Ctrl, Alt lub Command albo użyj środkowego lub bocznego przycisku myszy",
   "Mouse shortcut": "Skrót myszy",
   "Mouse Shortcut: {action}": "Skrót myszy: {action}",
   "Accept Left Side": "Zaakceptuj lewą stronę",

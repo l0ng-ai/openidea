@@ -280,7 +280,7 @@ fn context(call: &Call) -> IdeResult<(u32, u32)> {
 
 /// `line`, or when longer than [`MAX_LINE_TEXT`] UTF-16 units, the part from [`SNIPPET_AROUND`]
 /// units before 0-based UTF-16 column `start` to as many after `end`, with `…` where it was cut.
-fn snippet(line: &str, start: usize, end: usize) -> String {
+pub(super) fn snippet(line: &str, start: usize, end: usize) -> String {
     let units: usize = line.chars().map(char::len_utf16).sum();
     if units <= MAX_LINE_TEXT {
         return line.to_owned();

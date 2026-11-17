@@ -3,6 +3,31 @@
 import type { SymbolKind } from "@/platform/ipc";
 import { opensOtherShare } from "@/platform/paths";
 
+/** Display a structured async answer as the question and answer, keeping its wire ids out of the UI. */
+export function userMessageText(text: string): string {
+  const start = "<send_user_message_question_reply>";
+  const end = "</send_user_message_question_reply>";
+  if (!text.startsWith(start) || !text.endsWith(end)) return text;
+  try {
+    const replies: unknown = JSON.parse(text.slice(start.length, -end.length));
+    if (
+      !Array.isArray(replies) ||
+      !replies.length ||
+      !replies.every(
+        (reply) =>
+          reply &&
+          typeof reply.questionItemId === "string" &&
+          typeof reply.question === "string" &&
+          typeof reply.answer === "string",
+      )
+    )
+      return text;
+    return replies.map((reply) => `${reply.question}\n${reply.answer}`).join("\n\n");
+  } catch {
+    return text;
+  }
+}
+
 /** `text` as a Markdown quote for the composer, followed by an empty line to type in. */
 export function quoteText(text: string): string {
   const lines = text.replace(/\s+$/, "").split("\n");

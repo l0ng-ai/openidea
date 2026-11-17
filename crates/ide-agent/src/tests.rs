@@ -245,6 +245,10 @@ impl Handler for FakeAgent {
             }
             "session/prompt" => {
                 let text = params.pointer("/prompt/0/text").and_then(Value::as_str).unwrap_or_default().to_owned();
+                if text.starts_with("<send_user_message_question_reply>") {
+                    self.say(&session, "answer received");
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "again" {
                     self.say(&session, "second turn");
                     return Ok(json!({"stopReason": "end_turn"}));
@@ -1152,6 +1156,83 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
 
 fn text(t: &str) -> AgentPrompt {
     AgentPrompt { text: t.into(), ..AgentPrompt::default() }
+}
+
+fn asynchronous_question() -> Value {
+    json!({"sessionUpdate":"user_question","id":"call-1","title":"Which?",
+        "questions":[{"answerKey":"q1","question":"Which?","options":[]}]})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn async_question_answers_join_the_turn_and_skipping_does_not_cancel_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent { session_steering: true, ..Default::default() });
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("wait"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Running).await;
+    let handle = mgr.task(&task.id).unwrap();
+    handle.on_update(Some("s1"), &asynchronous_question());
+    assert!(mgr.answer_question(&task.id, "call-1", Some("{}".into())).await.is_err());
+    handle.live.lock().as_mut().unwrap().capabilities.steer = false;
+    assert!(mgr.answer_question(&task.id, "call-1", Some(r#"{"q1":["One"]}"#.into())).await.is_err());
+    assert!(handle.state.lock().task.queue.is_empty());
+    assert_eq!(handle.state.lock().task.status, AgentStatus::Running);
+    handle.live.lock().as_mut().unwrap().capabilities.steer = true;
+    mgr.answer_question(&task.id, "call-1", Some(r#"{"q1":["One"]}"#.into())).await.unwrap();
+    assert_eq!(handle.state.lock().task.status, AgentStatus::Running);
+    assert!(
+        agent.calls.lock().iter().any(|call| call.starts_with("_session/steering ") && call.contains("questionItemId"))
+    );
+    assert!(!agent.calls.lock().iter().any(|call| call == "session/cancel"));
+    assert!(mgr.answer_question(&task.id, "call-1", None).await.is_err());
+    let mut question = asynchronous_question();
+    question["id"] = json!("call-2");
+    handle.on_update(Some("s1"), &question);
+    mgr.answer_question(&task.id, "call-2", None).await.unwrap();
+    assert!(
+        matches!(mgr.entries(&task.id, None).unwrap().last(), Some(AgentEntry::Question { chosen: Some(chosen), .. }) if chosen == "Skipped")
+    );
+    assert_eq!(handle.state.lock().task.status, AgentStatus::Running);
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn async_questions_can_be_answered_after_the_turn_ends() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.task(&task.id).unwrap().on_update(Some("s1"), &asynchronous_question());
+    mgr.answer_question(&task.id, "call-1", Some(r#"{"q1":["One"]}"#.into())).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(
+        mgr.entries(&task.id, None)
+            .unwrap()
+            .iter()
+            .any(|entry| matches!(entry, AgentEntry::Question { chosen: Some(answer), .. } if answer == "Which?: One"))
+    );
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries.iter().any(|entry| matches!(entry, AgentEntry::User { text, .. } if text.contains("questionItemId")))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

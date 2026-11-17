@@ -1028,6 +1028,11 @@ impl CodexShim {
                     }
                     Some(t.chunk(kind, &id, &text))
                 });
+                if ty == "agentMessage"
+                    && let Some(update) = translate::question_update(item)
+                {
+                    self.emit(thread, update);
+                }
             }
             "subAgentActivity" => {
                 let child = item.get("agentThreadId").and_then(Value::as_str).unwrap_or_default();
