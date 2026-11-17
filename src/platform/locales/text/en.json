@@ -2134,6 +2134,7 @@
   "No classes to move to": "No classes to move to",
   "Move {name} to a new file": "Move {name} to a new file",
   "Move {name} to another class": "Move {name} to another class",
+  "Move {name} to New Window": "Move {name} to New Window",
   "(default package)": "(default package)",
   "Field": "Field",
   "Move": "Move",

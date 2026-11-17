@@ -29,8 +29,9 @@ pub async fn window_group_select(window: WebviewWindow, label: String) -> IdeRes
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_group_detach(window: WebviewWindow) -> IdeResult<()> {
-    groups::detach(window.app_handle(), window.label())?;
+pub async fn window_group_detach(window: WebviewWindow, label: String) -> IdeResult<()> {
+    groups::select(window.app_handle(), window.label(), &label)?;
+    groups::detach(window.app_handle(), &label)?;
     groups::persist(window.app_handle()).await
 }
 
