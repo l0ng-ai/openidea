@@ -3005,13 +3005,13 @@ async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|arg| (arg["path"].as_str().unwrap().to_owned(), arg["test"].as_bool().unwrap()))
+        .map(|arg| (PathBuf::from(arg["path"].as_str().unwrap()), arg["test"].as_bool().unwrap()))
         .collect();
     assert_eq!(
         paths,
         vec![
-            (h.root.join("target/generated-sources/protobuf/grpc-java").to_string_lossy().into_owned(), false),
-            (h.root.join("target/generated-sources/protobuf/java").to_string_lossy().into_owned(), false),
+            (h.root.join("target/generated-sources/protobuf/grpc-java"), false),
+            (h.root.join("target/generated-sources/protobuf/java"), false),
         ]
     );
 }
