@@ -161,6 +161,19 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn history_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("h");
+        History::new(dir.clone()).add(&exchange("a")).unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("a.json")), 0o600);
+        assert_eq!(mode(&dir.join(INDEX)), 0o600);
+    }
+
     #[test]
     fn stores_newest_first_and_caps() {
         let tmp = tempfile::tempdir().unwrap();
