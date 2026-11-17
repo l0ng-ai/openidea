@@ -107,7 +107,7 @@ function modelChoice(options: readonly AgentConfigOption[]): AgentConfigChoice[]
 }
 
 /**
- * The settings that make the agent ask before it edits or runs anything. New tasks start
+ * The settings that keep the agent read-only, or else make it ask before it edits or runs anything. New tasks start
  * in the mode that approves everything unless the user chose otherwise, and the changes
  * the agent reads here are text from the repository: they must not be able to run commands.
  */
@@ -116,7 +116,10 @@ export function askingChoices(options: readonly AgentConfigOption[]): AgentConfi
   const mode = modeOption(options);
   if (mode) {
     const asking = mode.values.filter((v) => ["lock", "eye"].includes(modeIcon(v.value)));
-    const value = ["default", "ask"].map((p) => asking.find((v) => v.value === p)).find(Boolean) ?? asking[0];
+    const value =
+      asking.find((v) => /read-?only/i.test(v.value)) ??
+      ["default", "ask"].map((p) => asking.find((v) => v.value === p)).find(Boolean) ??
+      asking[0];
     if (value) out.push({ id: mode.id, value: value.value });
   }
   const permissions = options.find((o) => o.category === "permissions");

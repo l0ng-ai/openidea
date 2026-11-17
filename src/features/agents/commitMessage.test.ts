@@ -183,6 +183,11 @@ describe("askingChoices", () => {
     expect(askingChoices([codex])).toEqual([{ id: "mode", value: "read-only" }]);
   });
 
+  it("prefers read-only over a mode that asks before it writes", () => {
+    const codex = option("mode", "mode", ["read-only", "ask", "auto", "full-access"], "auto");
+    expect(askingChoices([codex])).toEqual([{ id: "mode", value: "read-only" }]);
+  });
+
   it("turns allow-all permissions and bypassed approvals off", () => {
     const options = [
       option("permissions", "perm", ["on", "off"], "on"),
