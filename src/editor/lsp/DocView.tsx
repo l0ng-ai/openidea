@@ -12,6 +12,7 @@ import {
   docLinkHandler,
   docStep,
   editDocSource,
+  linkSignatureTypes,
   moveDocPopupToWindow,
   type DocHistory,
   type DocHost,
@@ -57,7 +58,11 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
         <DomContent
           key={`${history.index}:${history.entries.length}`}
           className={clsx(styles.docBody, selectableText)}
-          build={() => renderMarkup(entry.markup, entry.language, docLinkHandler(host))}
+          build={() => {
+            const dom = renderMarkup(entry.markup, entry.language, docLinkHandler(host));
+            linkSignatureTypes(dom, host, entry);
+            return dom;
+          }}
         />
       )}
       <div className={styles.docToolbar}>

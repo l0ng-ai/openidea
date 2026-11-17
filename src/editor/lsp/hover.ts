@@ -249,6 +249,7 @@ function docEntry(view: EditorView, pos: number, hover: Hover): DocEntry {
   return {
     markup: hover.contents,
     language: ctx?.uiMode ?? null,
+    file: ctx?.path,
     source:
       ctx && !constructAt(view.state, pos, ctx.language)
         ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos))

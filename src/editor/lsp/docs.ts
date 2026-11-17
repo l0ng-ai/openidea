@@ -11,7 +11,8 @@ import { commands, nextRequestId, type Location } from "@/platform/ipc";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { editorService, maybeEditorService, toolWindowService } from "@/workbench/contributions";
 import { closePopup, updatePopup, useLspPopup, type DocEntry } from "./popupStore";
-import { isEmptyMarkup, languageForPath, sourceLink, type DocLinkHandler } from "./markdown";
+import { isEmptyMarkup, languageForPath, openDocLink, sourceLink, type DocLinkHandler } from "./markdown";
+import { findInPackage, pkgGoDevLink, resolveGoRef, signatureRef } from "./docLinks/go";
 import { lspRequest } from "./lsp";
 import { readFileLines, withDocument } from "./files";
 
@@ -177,37 +178,78 @@ async function docAt(target: { path: string; line: number; col: number }): Promi
           path: target.path,
           range: { start: { line: target.line, col }, end: { line: target.line, col } },
         };
-        return { markup: hover.contents, language: languageForPath(target.path), source: async () => location };
+        return {
+          markup: hover.contents,
+          language: languageForPath(target.path),
+          file: target.path,
+          source: async () => location,
+        };
       }
     }
     return null;
   });
 }
 
+type DocTarget = { path: string; line: number; col: number };
+
+/** Shows `target`'s documentation as the next history step; without any, opens its source. */
+async function followTo(host: DocHost, target: DocTarget) {
+  const entry = await docAt(target).catch(() => null);
+  const h = history(host);
+  if (!entry || !h) {
+    closeHost(host);
+    void maybeEditorService()?.openFile(target.path, {
+      selection: { line: target.line, col: target.col },
+      focus: true,
+    });
+    return;
+  }
+  setHistory(host, pushHistory(h, entry));
+}
+
 /**
  * Link clicks in a documentation view: a source link shows that symbol's
- * documentation in the same view (⌘-click opens the source instead).
+ * documentation in the same view (⌘-click opens the source instead); so does
+ * a pkg.go.dev link whose symbol is found, others open in the browser.
  */
 export function docLinkHandler(host: DocHost): DocLinkHandler {
   return (href, e) => {
     const target = sourceLink(href);
-    if (!target || hasPrimaryModifier(e)) {
+    const web = target ? null : pkgGoDevLink(href);
+    if ((!target && !web) || hasPrimaryModifier(e)) {
       if (target) closeHost(host);
       return false;
     }
     void (async () => {
-      const entry = await docAt(target).catch(() => null);
-      const h = history(host);
-      if (!entry || !h) {
-        closeHost(host);
-        void maybeEditorService()?.openFile(target.path, {
-          selection: { line: target.line, col: target.col },
-          focus: true,
-        });
-        return;
-      }
-      setHistory(host, pushHistory(h, entry));
+      const found = target ?? (web && (await findInPackage(web.importPath, web.name).catch(() => null)));
+      if (found) await followTo(host, found);
+      else openDocLink(href);
     })();
     return true;
   };
+}
+
+/** The signature block of gopls documentation, whose type names `linkSignatureTypes` follows. */
+const GO_SIGNATURE = ":scope > pre:first-of-type > code.language-go";
+
+/**
+ * Go: a click on a type name in the signature shows that type's documentation
+ * in the same view, when the name resolves to exactly one declaration.
+ */
+export function linkSignatureTypes(dom: HTMLElement, host: DocHost, entry: DocEntry) {
+  dom.addEventListener("click", (e) => {
+    const name = (e.target as Element | null)?.closest?.(".tok-typeName");
+    const code = dom.querySelector(GO_SIGNATURE);
+    if (!name || !code?.contains(name) || !document.getSelection()?.isCollapsed) return;
+    const before = document.createRange();
+    before.setStart(code, 0);
+    before.setEndBefore(name);
+    const from = before.toString().length;
+    const ref = signatureRef(code.textContent ?? "", from, from + (name.textContent ?? "").length);
+    void (async () => {
+      const declaring = (await entry.source?.().catch(() => null))?.path ?? null;
+      const target = await resolveGoRef(ref, { declaring, current: entry.file ?? null }).catch(() => null);
+      if (target) await followTo(host, target);
+    })();
+  });
 }
