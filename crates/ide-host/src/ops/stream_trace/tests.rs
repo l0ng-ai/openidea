@@ -442,3 +442,20 @@ fn chain_info_steps_keep_modifiers() {
     let found = chains_at(service(), &snap, &frame(1), true, true, &CancellationToken::new()).unwrap();
     assert_eq!(found[0].info.steps, ["filter", "unordered", "map"]);
 }
+
+#[test]
+fn ready_says_a_stream_found_parallel_at_run_time_ran_sequentially() {
+    let java = LanguageId::new("java");
+    let snap = Snapshot::text(&java, SOURCE);
+    let found = chains_at(service(), &snap, &frame(line_of("C_SPIKE")), true, true, &CancellationToken::new()).unwrap();
+    let Candidate { info, chain } = found.into_iter().next().unwrap();
+    let chain = chain.unwrap();
+    let plan = real_run_plan(&chain).unwrap();
+    assert!(!plan.sequentialize);
+
+    let collected = TraceCollected { sequentialized: true, ..spike_collected() };
+    let StreamTraceResult::Ready { banners, .. } = ready(info, &chain, &plan, collected, 9, 0) else {
+        panic!("not ready");
+    };
+    assert!(banners.contains(&TraceBanner::Sequentialized), "{banners:?}");
+}

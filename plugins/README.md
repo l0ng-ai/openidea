@@ -447,6 +447,29 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
   required `when`: the command runs on a plain Escape in a focused editor once the
   IDE's own Escape handling (popups, completion, rename, selection, extra carets,
   Vim) found nothing to do.
+- **The marker bar's problems in editor panels.** An editor panel's page reads
+  the problems its group's marker bar shows with `openidea.editor.problems()`
+  and hears them change through `onProblems`. See _Editor panels_.
+- **Semantic highlighting in editor panels.** `openidea.editor.highlights()`
+  returns the colours the editor shows, semantic highlighting from the language
+  server layered over the syntax colours, and `onHighlights` reports the lines
+  whose colours change when semantic tokens arrive. See _Editor panels_.
+- **Folds and soft wrap in editor panels.** An editor panel's page reads which
+  lines are folded with `openidea.editor.folded()`, how many rows each line takes
+  with soft wrap on with `wrapped(fromLine, toLine)`, and hears both change
+  through `onLayout`. See _Editor panels_.
+- **The caret and selections in editor panels.** An editor panel's page reads
+  the caret and every selection of its group's editor with
+  `openidea.editor.selections()` and hears them move through `onSelections`. See
+  _Editor panels_.
+- **VCS changes in editor panels.** An editor panel's page reads the added,
+  modified and deleted lines its group's change-marker lane shows with
+  `openidea.editor.changes()` and hears them change through `onChanges`. Frames
+  get the lane's colours as `--openidea-change-added`, `--openidea-change-modified`
+  and `--openidea-change-deleted`. See _Editor panels_.
+- **The tab size in editor panels.** `openidea.editor.get()` includes the
+  `tabSize` the editor expands tabs with for the group's file, and `onTarget`
+  reports it again when it changes. See _Editor panels_.
 
 ### API 1.9
 
@@ -1751,6 +1774,7 @@ values (the body already uses the text colour, UI font and size):
 | `--openidea-border`, `--openidea-focus-ring`, `--openidea-link`                                                   | Lines, focus, links                                              |
 | `--openidea-accent`, `--openidea-fg-on-accent`                                                                    | Accent and text on it                                            |
 | `--openidea-danger`, `--openidea-warning`, `--openidea-success`, `--openidea-info`                                | Status colours                                                   |
+| `--openidea-change-added`, `--openidea-change-modified`, `--openidea-change-deleted`                              | API 1.10: the editor's VCS change markers                        |
 | `--openidea-font-ui`, `--openidea-font-mono`, `--openidea-font-size`                                              | Fonts (web fonts the IDE bundles are not available in the frame) |
 
 Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
@@ -1912,22 +1936,35 @@ sit side by side.
 The page gets `openidea.editor` (only an editor panel's page has it). Lines are
 0-based, columns UTF-16:
 
-| `openidea.editor`                      | What it does                                                                                                                                                                             |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get()`                                | `{ path, language, version, lineCount }` of the group's file, or `null`                                                                                                                  |
-| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none                                                                                                                           |
-| `document.get()` / `document.onChange` | The `openidea.document` of web views, on the group's file and read-only: `edit` and `replace` reject. Changes arrive at most once a frame                                                |
-| `viewport()` / `onViewport(fn)`        | `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; lines are fractional (the position within a line). Sent on scroll, resize and folding, at most once a frame |
-| `scrollTo(line)`                       | Scrolls so that `line` (fractional) is at the top of the visible area; call it on every move while dragging                                                                              |
-| `scrollBy(pixels)`                     | Scrolls the editor by `pixels`: hand it the page's wheel                                                                                                                                 |
-| `highlights(fromLine, toLine)`         | One array per line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): `[{ from, to, color }]`, `color` the syntax colour in the current scheme (a CSS colour)               |
-| `onHighlights(fn)`                     | `{ fromLine, toLine }` whose colours may have changed: parsing progressed, the file was edited, the colour scheme changed                                                                |
+| `openidea.editor`                      | What it does                                                                                                                                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `get()`                                | `{ path, language, version, lineCount, tabSize }` of the group's file, or `null`; `tabSize` (API 1.10) is the columns a tab takes in the editor (Code Style, `.editorconfig`, indent detection)                                |
+| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none, and (API 1.10) when the file's tab size changes                                                                                                                |
+| `document.get()` / `document.onChange` | The `openidea.document` of web views, on the group's file and read-only: `edit` and `replace` reject. Changes arrive at most once a frame                                                                                      |
+| `viewport()` / `onViewport(fn)`        | `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; lines are fractional (the position within a line). Sent on scroll, resize and folding, at most once a frame                                       |
+| `scrollTo(line)`                       | Scrolls so that `line` (fractional) is at the top of the visible area; call it on every move while dragging                                                                                                                    |
+| `scrollBy(pixels)`                     | Scrolls the editor by `pixels`: hand it the page's wheel                                                                                                                                                                       |
+| `highlights(fromLine, toLine)`         | One array per line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): `[{ from, to, color }]`, `color` the colour the editor shows in the current scheme (a CSS colour; API 1.10: semantic highlighting included) |
+| `onHighlights(fn)`                     | `{ fromLine, toLine }` whose colours may have changed: parsing progressed, the file was edited, the colour scheme changed, semantic tokens arrived (API 1.10)                                                                  |
+| `problems()`                           | API 1.10: the problems the marker bar shows, in file order: `[{ line, lastLine, severity }]`, `lastLine` the last line a problem covers, `severity` `error`, `warning` or `weakWarning`                                        |
+| `onProblems(fn)`                       | API 1.10: called with `problems()` when a problem appears or goes away, when edits move them, and when the group shows another file; at most once a frame                                                                      |
+| `folded()`                             | API 1.10: the folded ranges, in file order: `[{ fromLine, toLine }]`, `fromLine` the line that stays visible (with the placeholder), `toLine` the last line hidden. Folds inside a fold are part of it                         |
+| `wrapped(fromLine, toLine)`            | API 1.10: the visual rows of each line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): 1 for a line that fits, 0 for a line a fold hides; `null` while soft wrap is off                                        |
+| `onLayout(fn)`                         | API 1.10: called with `{ folded, softWrap }` (`folded()`, and whether soft wrap is on) when folds change, soft wrap turns on or off, wrapped rows may have changed, and the group shows another file; at most once a frame     |
+| `selections()`                         | API 1.10: the caret and selections: `[{ anchor: { line, column }, head: { line, column } }]`, the main selection first, the others in file order; a caret is a selection whose `anchor` equals `head`                          |
+| `onSelections(fn)`                     | API 1.10: called with `selections()` when the caret moves, a selection changes, and the group shows another file; at most once a frame                                                                                         |
+| `changes()`                            | API 1.10: the VCS changes beside the line numbers, in file order: `[{ line, lastLine, kind }]`, `kind` `added`, `modified` or `deleted`; a deletion's `line` is the line below the deleted text. `[]` outside version control  |
+| `onChanges(fn)`                        | API 1.10: called with `changes()` when the changes are recomputed or edits move them, and when the group shows another file; at most once a frame                                                                              |
 
-Colours come from syntax highlighting only (no semantic highlighting yet); the
+Colours are the editor's: syntax highlighting and, from API 1.10, the semantic
+highlighting over it (a semantic colour wins where both apply). The
 panel's other colours are the frame's theme variables (`openidea.theme`,
-`onThemeChange`). Not there yet: the caret and selections, and the marker bar's
-problems and changes. `crates/ide-plugin/tests/fixtures/editor-panel` is a
-minimal minimap (each line 2 px, its frame draggable) to install and try.
+`onThemeChange`). Before API 1.10 there is no `problems`, `folded`, `wrapped`,
+`onLayout`, `selections` or `changes`: check for them (`if (editor.problems)`) when the page also runs in
+older IDEs. Outside the visible area the editor estimates wrapped rows from the
+line's length until it lays the line out; `onLayout` follows when it does.
+`crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
+2 px, its frame draggable, problems marked at its right edge, folded lines left out, the selected lines and the caret's line tinted, VCS changes at its left edge) to install and try.
 
 ### Web frame PTYs (API 1.3)
 

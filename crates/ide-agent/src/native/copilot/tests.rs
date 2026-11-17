@@ -362,6 +362,8 @@ impl Handler for FakeCopilotServer {
             "commands.list" => Ok(json!({ "commands": [{ "name": "compact", "description": "Compact context" }] })),
             "skills.discover" => Ok(json!({ "skills": [] })),
             "session.create" => Ok(json!({ "sessionId": "cop-sess-1" })),
+            "session.resume" => Ok(json!({ "sessionId": params["sessionId"] })),
+            "session.model.getCurrent" => Ok(json!({ "modelId": "gemini-4-carbon" })),
             "session.model.switchTo" => Ok(json!({ "modelId": params["modelId"] })),
             "session.mode.set" => Ok(json!({})),
             "session.permissions.setApproveAll" => {
@@ -570,12 +572,11 @@ async fn shim_creates_session_with_copilot_defaults_switches_tiers_and_streams_t
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_ends_a_turn_left_running_only_by_background_shells() {
-    let server =
-        Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()), background_shell: true });
+async fn shim_forwards_disabled_mcp_servers_on_create_and_resume() {
+    let server = Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()) });
     let updates = Arc::new(CollectUpdates(Mutex::new(Vec::new())));
     let server_clone = server.clone();
-    let client = attach(updates.clone(), move |events| {
+    let client = attach(updates, move |events| {
         let (a, b) = tokio::io::duplex(1 << 16);
         let (ar, aw) = tokio::io::split(a);
         let (br, bw) = tokio::io::split(b);
@@ -584,51 +585,38 @@ async fn stop_ends_a_turn_left_running_only_by_background_shells() {
         Ok(Peer::connect_framed(ar, aw, events, Framing::ContentLength))
     })
     .unwrap();
-    let init: Value = client.request("initialize", json!({}), None).await.unwrap();
-    assert_eq!(init["agentCapabilities"]["_meta"]["openidea"]["backgroundTasks"], true);
-    let _: Value = client.request("session/new", json!({ "cwd": "/tmp", "mcpServers": [] }), None).await.unwrap();
 
-    let prompt_client = client.clone();
-    let turn = tokio::spawn(async move {
-        prompt_client
-            .request::<_, Value>(
-                "session/prompt",
-                json!({ "sessionId": "cop-sess-1", "prompt": [{ "type": "text", "text": "watch CI" }] }),
-                None,
-            )
-            .await
-    });
-
-    // The running shell shows as a background task.
-    let mut shown = None;
-    for _ in 0..500 {
-        shown = updates.0.lock().iter().find(|u| u["sessionUpdate"] == crate::BACKGROUND_TASKS_UPDATE).cloned();
-        if shown.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(
-        shown.unwrap()["tasks"],
-        json!([{ "task_id": "shell-1", "task_type": "local_bash", "description": "gh pr checks 3819 --watch" }])
-    );
-
+    let _: Value = client.request("initialize", json!({}), None).await.unwrap();
+    let disabled = json!(["datadog", "github-mcp-server", "linear", "playwright", "slack-official"]);
     let _: Value = client
-        .request("_openidea/stop_task", json!({ "sessionId": "cop-sess-1", "taskId": "shell-1" }), None)
+        .request(
+            "session/new",
+            json!({
+                "cwd": "/tmp",
+                "mcpServers": [],
+                "_meta": { "openidea": { "mcpServersOff": disabled } }
+            }),
+            None,
+        )
         .await
         .unwrap();
-    assert!(
-        server
-            .calls
-            .lock()
-            .iter()
-            .any(|(m, p)| m == "session.tasks.cancel" && p["sessionId"] == "cop-sess-1" && p["id"] == "shell-1")
-    );
+    let _: Value = client
+        .request(
+            "session/load",
+            json!({
+                "sessionId": "cop-sess-1",
+                "cwd": "/tmp",
+                "mcpServers": [],
+                "_meta": { "openidea": { "mcpServersOff": disabled } }
+            }),
+            None,
+        )
+        .await
+        .unwrap();
 
-    // The main loop is idle, so Stop ends the turn even though `session.idle` never comes.
-    assert!(!turn.is_finished());
-    client.notify("session/cancel", json!({ "sessionId": "cop-sess-1" })).unwrap();
-    let res = tokio::time::timeout(Duration::from_secs(5), turn).await.unwrap().unwrap().unwrap();
-    assert_eq!(res["stopReason"], "cancelled");
-    assert!(!server.calls.lock().iter().any(|(m, _)| m == "session.abort"));
+    let calls = server.calls.lock();
+    let (_, create_params) = calls.iter().find(|(m, _)| m == "session.create").unwrap();
+    assert_eq!(create_params["disabledMcpServers"], disabled);
+    let (_, resume_params) = calls.iter().find(|(m, _)| m == "session.resume").unwrap();
+    assert_eq!(resume_params["disabledMcpServers"], disabled);
 }

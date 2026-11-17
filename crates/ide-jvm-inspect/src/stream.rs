@@ -64,13 +64,15 @@ pub struct TraceCollected {
 }
 
 pub trait StreamTracer: Send + Sync {
-    /// `plan` is the JSON of `ide_streams::RealRunPlan`; `budget` caps the records kept.
+    /// `plan` is the JSON of `ide_streams::RealRunPlan`; `budget` caps the records kept. `token`
+    /// names the trace for [`release_armed`](Self::release_armed) when no reply arrives.
     fn arm<'a>(
         &'a self,
         target: &'a VmTarget,
         thread_id: i64,
         plan: &'a serde_json::Value,
         budget: u32,
+        token: &'a str,
     ) -> InspectFuture<'a, TraceId>;
     /// Blocks up to `ms` milliseconds for the trace to leave `Running`.
     fn wait<'a>(&'a self, target: &'a VmTarget, trace: TraceId, ms: u32) -> InspectFuture<'a, TraceState>;
@@ -81,4 +83,7 @@ pub trait StreamTracer: Send + Sync {
     /// with; reading each takes a round trip to the JVM, so the time allowed grows with them.
     fn collect<'a>(&'a self, target: &'a VmTarget, trace: TraceId, records: u64) -> InspectFuture<'a, TraceCollected>;
     fn release<'a>(&'a self, target: &'a VmTarget, trace: TraceId) -> InspectFuture<'a, ()>;
+    /// Releases the trace armed with `token` whose `arm` reply never came (it timed out); nothing
+    /// when there is none.
+    fn release_armed<'a>(&'a self, target: &'a VmTarget, token: &'a str) -> InspectFuture<'a, ()>;
 }

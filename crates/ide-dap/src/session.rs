@@ -116,6 +116,8 @@ pub(crate) struct Session {
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
     pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
     pub(crate) stream_trace: parking_lot::Mutex<Option<crate::stream_trace::ActiveTrace>>,
+    /// The last trace that finished, until the stop its records were read in ends.
+    pub(crate) stream_trace_done: parking_lot::Mutex<Option<crate::stream_trace::DoneTrace>>,
     /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
     pub(crate) quirks: kotlin_lsp::Quirks,
     pub(crate) unity_startup_activity: Mutex<Instant>,
@@ -281,6 +283,7 @@ impl Session {
             jvm_memory: tokio::sync::Mutex::default(),
             stream_tracer: parking_lot::Mutex::new(None),
             stream_trace: parking_lot::Mutex::new(None),
+            stream_trace_done: parking_lot::Mutex::new(None),
             quirks: kotlin_lsp::Quirks::default(),
             unity_startup_activity: Mutex::new(Instant::now()),
         }
@@ -774,6 +777,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             // DAP: an event without the flag continues its thread alone. The UI keeps treating
             // it as all threads; the suspension, which holds only threads that stopped, need not.
             s.suspended.continued(int("threadId"), all.unwrap_or(false));
+            crate::stream_trace::release_done(s);
             s.emit(DebugEvent::Continued {
                 thread_id: int("threadId").unwrap_or(0),
                 all_threads_continued: all.unwrap_or(true),

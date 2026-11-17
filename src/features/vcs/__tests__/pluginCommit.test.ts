@@ -13,7 +13,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsCommit: commit.mockImplementation(() => ok("commit1")),
-      vcsCreatePatch: createPatch.mockImplementation(() => ok("diff --git a/p b/p\n")),
+      vcsPendingPatch: createPatch.mockImplementation(() => ok("diff --git a/p b/p\n")),
     },
   };
 });
@@ -106,9 +106,9 @@ describe("the commit plugins see", () => {
     expect(maybeCommitService()!.setMessage(draftRevision(), "x")).toBe(false);
   });
 
-  it("reads the diff of the included files only, at the revision of the draft", async () => {
+  it("reads the diff of what Commit would commit, at the revision of the draft", async () => {
     const changes = (await maybeCommitService()!.changes())!;
-    expect(createPatch).toHaveBeenCalledExactlyOnceWith("/p", { from: "changes", paths: ["/p/a.ts"], reverse: false });
+    expect(createPatch).toHaveBeenCalledExactlyOnceWith("/p", expect.objectContaining({ stage: ["/p/a.ts"] }));
     expect(changes).toEqual({ revision: draftRevision(), roots: ["/p"], patch: "diff --git a/p b/p\n" });
     expect(maybeCommitService()!.setMessage(changes.revision, "generated")).toBe(true);
   });
@@ -120,8 +120,8 @@ describe("the commit plugins see", () => {
     useCommit.setState({ checks: new Map() });
     const changes = (await maybeCommitService()!.changes())!;
     expect(createPatch.mock.calls).toEqual([
-      ["/w/b", { from: "changes", paths: ["/w/b/Bar.java"], reverse: false }],
-      ["/w/a", { from: "changes", paths: ["/w/a/Foo.java"], reverse: false }],
+      ["/w/b", expect.objectContaining({ stage: ["/w/b/Bar.java"] })],
+      ["/w/a", expect.objectContaining({ stage: ["/w/a/Foo.java"] })],
     ]);
     expect(changes.roots).toEqual(["/w/b", "/w/a"]);
     expect(changes.patch).toBe("diff --git a/p b/p\n\ndiff --git a/p b/p\n");

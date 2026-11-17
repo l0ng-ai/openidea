@@ -92,6 +92,19 @@ describe("EditorController", () => {
     expect(ctrl.nav.snapshot().entries.map((e) => e.path)).toEqual(["/p/x.ts", "/p/b.ts"]);
   });
 
+  it("goes back to a diff closed without leaving it first", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const diff = { kind: "diff", key: "diff:/p/a.ts", path: "/p/a.ts" };
+    await ctrl.openInput(diff, { preview: true });
+    await ctrl.closeEverything();
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(diff.key);
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/a.ts");
+  });
+
   it("goes back to a diff where it was left, open or closed", async () => {
     // The diff viewer gives the input that reopens it at its caret.
     const dispose = registerEditorKind({

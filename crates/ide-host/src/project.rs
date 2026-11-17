@@ -286,6 +286,7 @@ impl Host {
             lsp.set_prepare_hook(Box::new(move |cfg, _, cancel| {
                 let effective = settings.effective();
                 if cfg.name == "jdtls" {
+                    ide_sdk::jdtls_workspaces::mark_used(cfg);
                     crate::java_runtime::prepare(
                         cfg,
                         &data_dir,

@@ -20,6 +20,7 @@ const backend = vi.hoisted(() => ({
   notify: vi.fn(),
   changes: vi.fn(),
   setMessage: vi.fn(),
+  revision: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (original) => ({
@@ -35,7 +36,12 @@ vi.mock("@/platform/ipc", async (original) => ({
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   notifications: () => ({ notify: backend.notify }),
-  maybeCommitService: () => ({ changes: backend.changes, setMessage: backend.setMessage, selection: vi.fn() }),
+  maybeCommitService: () => ({
+    changes: backend.changes,
+    setMessage: backend.setMessage,
+    revision: backend.revision,
+    selection: vi.fn(),
+  }),
 }));
 
 const ok = (data: unknown) => Promise.resolve({ status: "ok" as const, data });
@@ -183,6 +189,11 @@ describe("askingChoices", () => {
     expect(askingChoices([codex])).toEqual([{ id: "mode", value: "read-only" }]);
   });
 
+  it("prefers read-only over a mode that asks before it writes", () => {
+    const codex = option("mode", "mode", ["read-only", "ask", "auto", "full-access"], "auto");
+    expect(askingChoices([codex])).toEqual([{ id: "mode", value: "read-only" }]);
+  });
+
   it("turns allow-all permissions and bypassed approvals off", () => {
     const options = [
       option("permissions", "perm", ["on", "off"], "on"),
@@ -278,6 +289,7 @@ describe("generateCommitMessage", () => {
     vi.clearAllMocks();
     backend.changes.mockResolvedValue(changes);
     backend.setMessage.mockReturnValue(true);
+    backend.revision.mockReturnValue(changes.revision);
     backend.log.mockImplementation(() => ok([{ summary: "feat: earlier" }]));
     backend.cancel.mockImplementation(() => ok(null));
     backend.remove.mockImplementation(() => ok(null));
@@ -375,6 +387,14 @@ describe("generateCommitMessage", () => {
     await generateCommitMessage();
     expect(notified()).toEqual([expect.objectContaining({ level: "info", title: "Commit message not replaced" })]);
     expect(backend.remove).toHaveBeenCalledWith("new", false);
+  });
+
+  it("does not fill in a message for changes edited in the files while the agent worked", async () => {
+    createdTask("ready");
+    backend.changes.mockResolvedValueOnce(changes).mockResolvedValue({ ...changes, patch: changes.patch + "+more\n" });
+    await generateCommitMessage();
+    expect(backend.setMessage).not.toHaveBeenCalled();
+    expect(notified()).toEqual([expect.objectContaining({ level: "info", title: "Commit message not replaced" })]);
   });
 
   it("runs once at a time", async () => {

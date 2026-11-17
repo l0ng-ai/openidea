@@ -30,6 +30,7 @@ import {
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
+import type { HunkKind } from "@/bindings";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
@@ -373,6 +374,21 @@ export const scrollbarMarks = Facet.define<readonly ScrollbarMark[], readonly Sc
  * Several providers are layered (later ones on top).
  */
 export const gutterLaneMarkers = Facet.define<RangeSet<GutterMarker>>();
+
+/**
+ * The VCS changes the change-marker lane shows, as document offsets of this state (mapped
+ * through edits), in file order. `to <= from` draws a deletion notch on the line at `from`.
+ * Editor panels read them (`openidea.editor.changes()`).
+ */
+export interface LineChange {
+  kind: HunkKind;
+  from: number;
+  to: number;
+}
+
+export const lineChanges = Facet.define<readonly LineChange[], readonly LineChange[]>({
+  combine: (values) => values[0] ?? [],
+});
 
 /** Marker for `gutterLaneMarkers`: a solid 3px bar (or a small wedge for `deleted`). */
 export class LaneMarker extends GutterMarker {

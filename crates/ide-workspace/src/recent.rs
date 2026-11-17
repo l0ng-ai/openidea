@@ -156,7 +156,9 @@ pub fn with_live_branches(mut items: Vec<RecentProject>) -> Vec<RecentProject> {
 /// and WSL shares, which a stopped distribution only hides, never count as missing.
 fn is_missing(path: &Path) -> bool {
     let text = path.to_string_lossy();
-    let wsl = text.starts_with(r"\\wsl$") || text.starts_with(r"\\wsl.localhost");
+    // Stored paths may use `/` (`//wsl.localhost/Ubuntu/...`); host names ignore case.
+    let unc = text.replace('/', r"\").to_ascii_lowercase();
+    let wsl = unc.starts_with(r"\\wsl$") || unc.starts_with(r"\\wsl.localhost");
     path.is_absolute() && !text.contains("://") && !wsl && !path.exists()
 }
 
@@ -257,6 +259,15 @@ impl RecentProjects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wsl_shares_stored_with_forward_slashes_are_never_missing() {
+        for path in
+            [r"\\wsl.localhost\Ubuntu\home\me\gone", "//wsl.localhost/Ubuntu/home/me/gone", "//WSL$/Ubuntu/gone"]
+        {
+            assert!(!is_missing(Path::new(path)), "{path}");
+        }
+    }
 
     #[test]
     fn newest_first_capped_and_persisted() {

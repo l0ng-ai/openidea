@@ -72,9 +72,8 @@ async fn run_once(
         config::add_client_options(&launch.id, &mut options);
         let model_option = options.iter().find(|o| o.category.as_deref() == Some("model"));
         let mut levels = BTreeMap::new();
-        if new.get("configOptions").is_some_and(Value::is_array)
-            && let Some(model) = model_option.and_then(|o| o.current.as_ref())
-        {
+        let has_config = new.get("configOptions").is_some_and(Value::is_array);
+        if has_config && let Some(model) = model_option.and_then(|o| o.current.as_ref()) {
             levels.insert(model.clone(), levels_for_model_from_slice(&options));
         }
         if let Some(selected) = selected_model
@@ -88,7 +87,7 @@ async fn run_once(
             updates.config.lock().session = Some(session.to_owned());
             let response: Value = conn.request(method, params, None).await.map_err(discovery_error)?;
             let settings = if let Some(settings) = selected_settings(&response, selected) {
-                settings
+                Some(settings)
             } else {
                 tokio::time::timeout(CONFIG_UPDATE_TIMEOUT, async {
                     loop {
@@ -106,9 +105,15 @@ async fn run_once(
                     }
                 })
                 .await
-                .map_err(|_| "The agent did not report settings for the selected model".to_owned())?
+                .ok()
             };
-            levels.insert(selected.to_owned(), levels_for_model_from_slice(&settings));
+            match settings {
+                Some(settings) => levels.insert(selected.to_owned(), levels_for_model_from_slice(&settings)),
+                // An agent on the legacy `models` field that says nothing more: the model has
+                // no settings of its own, and switching to it must not fail.
+                None if !has_config => levels.insert(selected.to_owned(), Vec::new()),
+                None => return Err("The agent did not report settings for the selected model".to_owned()),
+            };
         }
         let commands = updates
             .commands

@@ -40,6 +40,8 @@ public final class StreamCommand implements IDelegateCommandHandler {
     private static final int GONE_KEPT = 16;
     private static final AtomicLong IDS = new AtomicLong();
     private static final Map<VirtualMachine, RealRunTrace> TRACES = new IdentityHashMap<>();
+    /** The {@code token} each trace was armed with: a client whose {@code arm} timed out releases by it. */
+    private static final Map<RealRunTrace, String> TOKENS = new IdentityHashMap<>();
     /** By trace id, the answer {@link RealRunTrace#ended} gave: the trace itself would keep its dead VM's mirrors. */
     private static final Map<Long, Map<String, Object>> GONE = new LinkedHashMap<>() {
         private static final long serialVersionUID = 1L;
@@ -64,6 +66,7 @@ public final class StreamCommand implements IDelegateCommandHandler {
             } catch (Failure e) {
                 Map<String, Object> gone = name.equals("arm") ? null : gone(args);
                 if (gone == null) throw e;
+                if (name.equals("release") && args.get("token") instanceof String) return InspectCommand.ok(Map.of());
                 return InspectCommand.ok(switch (name) {
                     case "wait" -> gone;
                     case "release" -> Map.of();
@@ -76,7 +79,9 @@ public final class StreamCommand implements IDelegateCommandHandler {
                 case "stop" -> Values.json("records", trace(vm, args).stopRecording());
                 case "abort" -> trace(vm, args).abort();
                 case "collect" -> collect(vm, target, trace(vm, args));
-                case "release" -> release(vm, trace(vm, args));
+                case "release" -> args.get("token") instanceof String token && !(args.get("traceId") instanceof Number)
+                        ? releaseArmed(vm, token)
+                        : release(vm, trace(vm, args));
                 default -> throw new IllegalArgumentException("unknown command " + command);
             });
         } catch (Failure e) {
@@ -131,6 +136,7 @@ public final class StreamCommand implements IDelegateCommandHandler {
             RealRunTrace trace = RealRunTrace.arm(IDS.incrementAndGet(), vm, thread, plan, budget, target.generation(), hub);
             synchronized (TRACES) {
                 TRACES.put(vm, trace);
+                if (args.get("token") instanceof String token) TOKENS.put(trace, token);
             }
             return trace.id;
         }
@@ -166,9 +172,25 @@ public final class StreamCommand implements IDelegateCommandHandler {
         if (!trace.state().wire.equals("running")) {
             synchronized (TRACES) {
                 TRACES.remove(vm, trace);
+                TOKENS.remove(trace);
             }
         }
         return Map.of();
+    }
+
+    /**
+     * The trace armed with {@code token}, whose {@code arm} reply the client gave up on: released,
+     * so its breakpoints come back on. Under the arm lock, so an arm still setting up finishes first.
+     */
+    private static Map<String, Object> releaseArmed(VirtualMachine vm, String token) {
+        synchronized (InspectCommand.handlesFor(vm)) {
+            RealRunTrace current;
+            synchronized (TRACES) {
+                current = TRACES.get(vm);
+                if (current == null || !token.equals(TOKENS.get(current))) return Map.of();
+            }
+            return release(vm, current);
+        }
     }
 
     /** Releases the traces of VMs java-debug no longer has; their requests and objects went with the VM. */
@@ -182,6 +204,7 @@ public final class StreamCommand implements IDelegateCommandHandler {
                 if (live.contains(e.getKey())) continue;
                 RealRunTrace trace = e.getValue();
                 trace.vmGone();
+                TOKENS.remove(trace);
                 GONE.put(trace.id, trace.ended());
                 gone.add(trace);
                 i.remove();

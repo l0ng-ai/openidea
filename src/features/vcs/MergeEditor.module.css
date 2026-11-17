@@ -35,7 +35,8 @@
   flex: none;
   height: var(--h-row);
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  /* The panes' columns, so each title sits over its pane. */
+  grid-template-columns: 1fr 30px 1fr 30px 1fr;
   border-bottom: 1px solid var(--border);
   color: var(--fg-secondary);
   font-size: var(--fs-small);
@@ -45,14 +46,17 @@
   align-items: center;
   padding: 0 12px;
 }
-.labels > span + span {
-  border-left: 1px solid var(--border);
+.labels > span:nth-child(2) {
+  grid-column: 3;
+}
+.labels > span:nth-child(3) {
+  grid-column: 5;
 }
 .panes {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 30px 1fr 30px 1fr;
 }
 .panes[hidden] {
   display: none;
@@ -63,8 +67,34 @@
   display: flex;
   overflow: hidden;
 }
-.pane + .pane {
+/* Between two panes, as the diff viewer's divider: the bands of the changes on either side. */
+.divider {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-app);
   border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.divider > svg {
+  position: absolute;
+  inset: 0;
+}
+.divider :global(.cm-mergeBand-conflict) {
+  --band: color-mix(in srgb, var(--vcs-conflict) 14%, transparent);
+  --band-line: var(--vcs-conflict);
+}
+.divider :global(.cm-mergeBand-change) {
+  --band: color-mix(in srgb, var(--vcs-modified) 14%, transparent);
+  --band-line: var(--vcs-modified);
+}
+.divider :global(.cm-mergeBand) {
+  fill: var(--band);
+}
+.divider :global(.cm-mergeBandLine) {
+  fill: none;
+  stroke: var(--band-line);
+  stroke-width: 1px;
 }
 .pane > :global(.cm-editor) {
   flex: 1;

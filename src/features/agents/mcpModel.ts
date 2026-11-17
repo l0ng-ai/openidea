@@ -80,6 +80,9 @@ export interface NativeCliMcpItem {
   sourceLabel: string;
   sourcePath: string;
   server: McpDiscoveredServer;
+  defaultEnabled: boolean;
+  enabled: boolean;
+  overridden: boolean;
 }
 
 export interface ResolvedSessionMcp {
@@ -166,20 +169,25 @@ export function resolveSessionMcp(
     for (const srv of src.servers) {
       if (seenNames.has(srv.name) || !srv.enabled) continue;
       seenNames.add(srv.name);
+      const explicit = overrides[srv.name];
+      const enabled = explicit ?? true;
       nativeCli.push({
         name: srv.name,
         sourceId: src.id,
         sourceLabel: src.label,
         sourcePath: src.path,
         server: srv,
+        defaultEnabled: true,
+        enabled,
+        overridden: explicit !== undefined && explicit !== true,
       });
     }
   }
 
   const controllable = [...(ideMcpEnabled ? [ide] : []), ...workspace.filter((i) => !i.lockedReason), ...user];
-  const activeCount = controllable.filter((i) => i.enabled).length + nativeCli.length;
+  const activeCount = controllable.filter((i) => i.enabled).length + nativeCli.filter((i) => i.enabled).length;
   const totalCount = controllable.length + nativeCli.length;
-  const overrideCount = controllable.filter((i) => i.overridden).length;
+  const overrideCount = controllable.filter((i) => i.overridden).length + nativeCli.filter((i) => i.overridden).length;
 
   return { ide, workspace, user, nativeCli, activeCount, totalCount, overrideCount };
 }
@@ -187,7 +195,7 @@ export function resolveSessionMcp(
 /** Computes the minimal `mcpOverrides` map after toggling `name` to `nextEnabled`. */
 export function nextSessionOverrides(
   current: Readonly<Record<string, boolean>> | undefined,
-  item: SessionMcpItem,
+  item: Pick<SessionMcpItem, "name" | "defaultEnabled">,
   nextEnabled: boolean,
 ): Record<string, boolean> {
   const next = { ...(current ?? {}) };

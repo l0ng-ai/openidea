@@ -6,7 +6,9 @@ import { languages } from "@codemirror/language-data";
 import {
   BracketScanner,
   DEFAULT_RAINBOW_OPTIONS,
+  LONG_LINE,
   bracketClass,
+  bracketScanner,
   rainbowBrackets,
   type RainbowBracketOptions,
 } from "./rainbowBrackets";
@@ -157,7 +159,13 @@ describe("rainbow brackets", () => {
   });
 
   it("keeps interpolation depth across chunks, viewports and edits", async () => {
-    const doc = "f(`" + "literal ([ ".repeat(500) + "${g([1])}" + " tail ) ".repeat(700) + "`); h()";
+    // Newlines keep every line under `LONG_LINE`; the template still crosses chunk boundaries.
+    const doc =
+      "f(`" +
+      ("literal ([ ".repeat(20) + "\n").repeat(30) +
+      "${g([1])}" +
+      (" tail ) ".repeat(20) + "\n").repeat(40) +
+      "`); h()";
     const ext = await javascript();
     const scanner = new BracketScanner();
     const from = doc.indexOf("[1]");
@@ -223,6 +231,44 @@ describe("rainbow brackets", () => {
     // With a syntax tree, a bracket in a template literal is skipped too.
     const js = completedSyntaxState(EditorState.create({ doc: "f(`(`, [\n", extensions: await javascript() }));
     expect(new BracketScanner().openAt(js, [js.doc.length]).map((m) => m?.depth)).toEqual([1]);
+  });
+
+  it("jumps over minified lines, keeping the nesting across them", async () => {
+    // The long line starts inside a scan chunk; one of its brackets is never closed.
+    const pad = "y()\n".repeat(1100);
+    const long = `f(${"x({a:[1,2]});".repeat(Math.ceil(LONG_LINE / 13))}`;
+    const doc = `{\n${pad}${long}\n[z]\n}`;
+    const from = doc.indexOf(long);
+    for (const ext of [cStyle, await javascript()]) expect(marks(doc, ext, from)).toEqual(["[1", "]1", "}0"]);
+    // One character shorter, it is scanned like any other line.
+    const short = "x({a:[1,2]});".repeat(Math.floor((LONG_LINE - 1) / 13));
+    expect(marks(`{\n${short}\n[z]\n}`, cStyle).slice(0, 7)).toEqual(["{0", "(1", "{2", "[3", "]3", "}2", ")1"]);
+    const state = EditorState.create({ doc, extensions: cStyle });
+    expect(new BracketScanner().openAt(state, [doc.indexOf("[z]") + 1]).map((m) => m?.depth)).toEqual([1]);
+  });
+
+  it("drops a line's brackets once it grows past the limit and brings them back when it shrinks", () => {
+    // Checkpoints fall inside the line while it is short; its open `f(` must not leak past it once long.
+    const line = `f(${"x({a:[1,2]});".repeat(Math.floor((LONG_LINE - 100) / 13))}`;
+    const doc = `${"y()\n".repeat(1100)}${line}\n[z]\n`;
+    const view = new EditorView({
+      state: EditorState.create({ doc, extensions: [cStyle, rainbowBrackets()] }),
+      parent: document.body,
+    });
+    const depthOfZ = () => {
+      const state = view.state;
+      const at = state.doc.toString().indexOf("[z]");
+      return bracketScanner(view)!
+        .marks(state, at, state.doc.length)
+        .map((m) => m.depth);
+    };
+    expect(depthOfZ()).toEqual([1, 1]);
+    const end = doc.indexOf("\n[z]");
+    view.dispatch({ changes: { from: end, insert: "x".repeat(200) } });
+    expect(depthOfZ()).toEqual([0, 0]);
+    view.dispatch({ changes: { from: end, to: end + 200 } });
+    expect(depthOfZ()).toEqual([1, 1]);
+    view.destroy();
   });
 
   it("is installed by the Rainbow brackets setting", () => {

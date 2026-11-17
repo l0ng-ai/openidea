@@ -10,7 +10,7 @@ use crate::{
 };
 use ide_core::IpcPath;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -89,24 +89,61 @@ fn matches_agent(agents: &[String], provider: &str) -> bool {
 /// The configured servers off for this session: off by default and not switched on for it, or
 /// switched off for it. Named so an agent that also loads its own configuration can keep a
 /// same-named server of it off too. Workspace entries take precedence, as in [`acp_mcp_servers`].
-pub(crate) fn servers_off(all: &[McpServer], overrides: &BTreeMap<String, bool>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let ordered =
-        all.iter().filter(|s| s.scope == McpScope::Workspace).chain(all.iter().filter(|s| s.scope == McpScope::User));
-    let configured: Vec<String> = ordered
-        .filter(|s| seen.insert(s.name.as_str()))
-        .filter(|s| !overrides.get(&s.name).copied().unwrap_or(s.enabled))
-        .map(|s| s.name.clone())
-        .collect();
-    // A server switched off that the IDE doesn't configure may still be the agent's own.
-    let switched = overrides
+pub(crate) fn servers_off(all: &[McpServer], provider: &str, overrides: &BTreeMap<String, bool>) -> Vec<String> {
+    let mut seen_configured = HashSet::new();
+    let mut enabled_names = HashSet::new();
+    let mut off = BTreeSet::new();
+
+    let ordered = all
         .iter()
-        .filter(|(name, on)| !**on && name.as_str() != BUILTIN_MCP_NAME && !seen.contains(name.as_str()))
-        .map(|(name, _)| name.clone());
-    let mut off: Vec<String> = configured.into_iter().chain(switched).collect();
-    off.sort();
-    off.dedup();
-    off
+        .filter(|s| s.scope == McpScope::Workspace && !s.unapproved)
+        .chain(all.iter().filter(|s| s.scope == McpScope::User));
+
+    for srv in ordered {
+        if !seen_configured.insert(srv.name.as_str()) {
+            continue;
+        }
+        let explicit = overrides.get(&srv.name).copied();
+        let matches = explicit == Some(true) || matches_agent(&srv.agents, provider);
+        let active = explicit.unwrap_or(srv.enabled) && matches;
+        if active {
+            enabled_names.insert(srv.name.as_str());
+        } else {
+            off.insert(srv.name.clone());
+        }
+    }
+
+    for srv in all.iter().filter(|s| s.scope == McpScope::Workspace && s.unapproved) {
+        if !enabled_names.contains(srv.name.as_str()) {
+            off.insert(srv.name.clone());
+        }
+    }
+
+    // A server switched off that the IDE doesn't configure may still be the agent's own.
+    for (name, &on) in overrides {
+        if !on && name.as_str() != BUILTIN_MCP_NAME && !enabled_names.contains(name.as_str()) {
+            off.insert(name.clone());
+        }
+    }
+
+    off.into_iter().collect()
+}
+
+/// Names of MCP servers present in Codex's own TOML configuration files (`~/.codex/config.toml`
+/// and `<workspace_root>/.codex/config.toml`).
+pub(crate) fn codex_external_server_names(home_dir: Option<&Path>, workspace_root: &Path) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut paths = Vec::new();
+    if let Some(home) = home_dir {
+        paths.push(home.join(".codex").join("config.toml"));
+    }
+    paths.push(workspace_root.join(".codex").join("config.toml"));
+    for path in paths {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            names.extend(parse_codex_toml_servers(&text).into_keys());
+        }
+    }
+    names
 }
 
 /// Builds the ACP `mcpServers` array for `session/new`, `session/load`, and `session/fork`.
@@ -1058,6 +1095,11 @@ mod tests {
 
     #[test]
     fn servers_off_follow_the_effective_state() {
+        let mut claude_only = configured("claude-only", McpScope::User, true);
+        claude_only.agents = vec!["claude".into()];
+        let mut unapproved_ws = configured("unapproved-ws", McpScope::Workspace, false);
+        unapproved_ws.unapproved = true;
+
         let all = [
             configured("default-off", McpScope::User, false),
             configured("switched-on", McpScope::User, false),
@@ -1066,6 +1108,8 @@ mod tests {
             // The workspace entry decides for its name.
             configured("both", McpScope::User, true),
             configured("both", McpScope::Workspace, false),
+            claude_only,
+            unapproved_ws,
         ];
         let overrides = BTreeMap::from([
             ("switched-on".to_owned(), true),
@@ -1073,8 +1117,11 @@ mod tests {
             ("agent-own".to_owned(), false),
             (BUILTIN_MCP_NAME.to_owned(), false),
         ]);
-        assert_eq!(servers_off(&all, &overrides), ["agent-own", "both", "default-off", "switched-off"]);
-        assert_eq!(servers_off(&all[2..4], &BTreeMap::new()), Vec::<String>::new());
+        assert_eq!(
+            servers_off(&all, "copilot", &overrides),
+            ["agent-own", "both", "claude-only", "default-off", "switched-off", "unapproved-ws"]
+        );
+        assert_eq!(servers_off(&all[2..4], "copilot", &BTreeMap::new()), Vec::<String>::new());
     }
 
     #[test]

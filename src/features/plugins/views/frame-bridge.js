@@ -19,7 +19,15 @@
   const listeners = [];
   const themeListeners = [];
   const documentListeners = [];
-  const editorListeners = { target: [], viewport: [], highlights: [] };
+  const editorListeners = {
+    target: [],
+    viewport: [],
+    highlights: [],
+    problems: [],
+    layout: [],
+    selections: [],
+    changes: [],
+  };
   const editorPanel = /(?:^|[?&])openidea=editor-panel(?:&|$)/.test(location.search.slice(1));
   const pending = new Map();
   const root = document.documentElement;
@@ -99,7 +107,7 @@
     } else if (m.document) {
       for (const l of documentListeners) safely(l, m.document);
     } else if (editorPanel && typeof m.editor === "string") {
-      // Only the three lists: not `constructor` and the like.
+      // Only those lists: not `constructor` and the like.
       const list = editorListeners[m.editor];
       if (Array.isArray(list)) for (const l of list) safely(l, m.value);
     } else if (typeof m.text === "string") {
@@ -131,9 +139,9 @@
   };
   /** The text editor of the editor group the panel is in. */
   const editorApi = Object.freeze({
-    /** `{ path, language, version, lineCount }` of the group's file, or null. */
+    /** `{ path, language, version, lineCount, tabSize }` of the group's file, or null. */
     get: () => call("editor.get"),
-    /** Called with the new `get()` value when the group shows another file, or none. */
+    /** Called with the new `get()` value when the group shows another file, or none, or the file's tab size changes. */
     onTarget: listen(editorListeners.target),
     /** The group's document, read-only (`edit` / `replace` reject). */
     document: documentApi,
@@ -149,6 +157,24 @@
     highlights: (fromLine, toLine) => call("editor.highlights", { fromLine: Number(fromLine), toLine: Number(toLine) }),
     /** Called with `{ fromLine, toLine }` when those lines' colours may have changed. */
     onHighlights: listen(editorListeners.highlights),
+    /** The marker bar's problems: `[{ line, lastLine, severity }]`, severity `error`, `warning` or `weakWarning`. */
+    problems: () => call("editor.problems"),
+    /** Called with `problems()` when a problem appears or goes away, or its lines move, at most once a frame. */
+    onProblems: listen(editorListeners.problems),
+    /** The folded ranges: `[{ fromLine, toLine }]`, the line that stays visible and the last one hidden. */
+    folded: () => call("editor.folded"),
+    /** Visual rows of lines `fromLine` up to `toLine` (exclusive), at most 2000; 0 for folded-away lines. Null without soft wrap. */
+    wrapped: (fromLine, toLine) => call("editor.wrapped", { fromLine: Number(fromLine), toLine: Number(toLine) }),
+    /** Called with `{ folded, softWrap }` when folds change, soft wrap turns on or off, or wrapped rows may have changed, at most once a frame. */
+    onLayout: listen(editorListeners.layout),
+    /** The caret and selections: `[{ anchor: { line, column }, head: { line, column } }]`, the main one first; a caret has `anchor` equal to `head`. */
+    selections: () => call("editor.selections"),
+    /** Called with `selections()` when the caret moves, a selection changes, or the group shows another file, at most once a frame. */
+    onSelections: listen(editorListeners.selections),
+    /** The VCS changes beside the line numbers: `[{ line, lastLine, kind }]`, kind `added`, `modified` or `deleted` (`lastLine` equals `line`, the line below the deleted text). */
+    changes: () => call("editor.changes"),
+    /** Called with `changes()` when the changes are recomputed or edits move them, or the group shows another file, at most once a frame. */
+    onChanges: listen(editorListeners.changes),
   });
 
   window.openidea = Object.freeze({

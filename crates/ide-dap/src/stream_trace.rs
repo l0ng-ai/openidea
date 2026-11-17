@@ -88,6 +88,32 @@ pub enum TraceUnavailable {
     },
 }
 
+/// A trace that finished. Its records keep their objects from being collected until the stop they
+/// were read in ends; then the UI no longer shows them and [`release_done`] lets them go.
+pub(crate) struct DoneTrace {
+    tracer: Arc<dyn StreamTracer>,
+    target: VmTarget,
+    id: TraceId,
+}
+
+/// The stop a finished trace was read in ended (a resume, a step, a `continued` event).
+pub(crate) fn release_done(s: &Session) {
+    let Some(done) = s.stream_trace_done.lock().take() else { return };
+    let ended = s.ended.clone();
+    let session = s.id.0;
+    tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            () = ended.cancelled() => {}
+            result = done.tracer.release(&done.target, done.id) => {
+                if let Err(e) = result {
+                    tracing::debug!(session, trace = done.id, "releasing a finished stream trace: {e}");
+                }
+            }
+        }
+    });
+}
+
 /// The session's running trace; `id` is `None` until `arm` answers.
 pub(crate) struct ActiveTrace {
     tracer: Arc<dyn StreamTracer>,
@@ -181,10 +207,30 @@ pub(crate) async fn run(
     if !s.suspended.get() {
         return unavailable(TraceUnavailable::NotSuspended);
     }
-    let mut trace =
-        Trace { mgr, s, tracer: &*tracer, target: &target, thread_id, progress, id: None, last: Counts::default() };
+    // The bundle releases the previous trace itself when this one arms.
+    s.stream_trace_done.lock().take();
+    static TOKENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let token =
+        format!("{}-{}-{}", std::process::id(), s.id.0, TOKENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let mut trace = Trace {
+        mgr,
+        s,
+        tracer: &*tracer,
+        target: &target,
+        thread_id,
+        progress,
+        token,
+        arm_sent: false,
+        id: None,
+        last: Counts::default(),
+    };
     match trace.drive(plan, cancel).await {
-        Ok(run) => run,
+        Ok(run) => {
+            if let (TraceRun::Done { .. }, Some(id)) = (&run, trace.id) {
+                *s.stream_trace_done.lock() = Some(DoneTrace { tracer: tracer.clone(), target: target.clone(), id });
+            }
+            run
+        }
         Err(run) => {
             // A stop from now on is the user's to see.
             set_running(s, false);
@@ -231,6 +277,9 @@ struct Trace<'a, P> {
     target: &'a VmTarget,
     thread_id: i64,
     progress: &'a P,
+    /// Names the trace to the bundle before `arm` answers (see [`StreamTracer::release_armed`]).
+    token: String,
+    arm_sent: bool,
     /// Set once `arm` answers.
     id: Option<TraceId>,
     last: Counts,
@@ -241,8 +290,9 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
     async fn drive(&mut self, plan: &Value, cancel: &CancellationToken) -> Result<TraceRun, TraceRun> {
         let (s, tracer, target) = (self.s, self.tracer, self.target);
         self.report(TracePhase::Arming);
+        self.arm_sent = true;
         let id = self
-            .until_ended(tracer.arm(target, self.thread_id, plan, BUDGET))
+            .until_ended(tracer.arm(target, self.thread_id, plan, BUDGET, &self.token))
             .await?
             .map_err(|e| if s.ended.is_cancelled() { ended() } else { refused(e) })?;
         self.id = Some(id);
@@ -313,14 +363,20 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
     /// After a trace that ended early. Left to the bundle, an armed trace would keep every
     /// breakpoint off and a parked one its thread suspended behind java-debug's back; the bundle
     /// undoes either, or does so once a terminal still running returns. Not after a finished
-    /// trace: the records it unpins are the values the result shows.
+    /// trace: the records it unpins are the values the result shows ([`release_done`] does, once
+    /// that stop ends). An `arm` that never answered (it timed out) may still have armed: released
+    /// by its token.
     async fn release(&self) {
-        let Some(id) = self.id else { return };
         if self.s.ended.is_cancelled() {
             return;
         }
-        if let Ok(Err(e)) = self.until_ended(self.tracer.release(self.target, id)).await {
-            tracing::debug!(session = self.s.id.0, trace = id, "stream trace release: {e}");
+        let work = match self.id {
+            Some(id) => self.tracer.release(self.target, id),
+            None if self.arm_sent => self.tracer.release_armed(self.target, &self.token),
+            None => return,
+        };
+        if let Ok(Err(e)) = self.until_ended(work).await {
+            tracing::debug!(session = self.s.id.0, trace = ?self.id, "stream trace release: {e}");
         }
     }
 

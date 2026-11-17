@@ -267,12 +267,12 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
             {update && <Badge tone="accent">{tx("Update")}</Badge>}
             {plugin.status === "failed" && (
               <Badge dot tone="danger">
-                <T>Failed</T>
+                {tx("Failed")}
               </Badge>
             )}
             {plugin.status === "needsConsent" && (
               <Badge dot tone="warning">
-                <T>Needs permission</T>
+                {tx("Needs permission")}
               </Badge>
             )}
           </span>

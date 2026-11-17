@@ -55,6 +55,7 @@ impl StreamTracer for FakeTracer {
         _thread_id: i64,
         _plan: &'a Value,
         _budget: u32,
+        _token: &'a str,
     ) -> InspectFuture<'a, TraceId> {
         self.record("arm", target);
         let error = self.arm_error.lock().clone();
@@ -94,6 +95,11 @@ impl StreamTracer for FakeTracer {
 
     fn release<'a>(&'a self, target: &'a VmTarget, _trace: TraceId) -> InspectFuture<'a, ()> {
         self.record("release", target);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn release_armed<'a>(&'a self, target: &'a VmTarget, _token: &'a str) -> InspectFuture<'a, ()> {
+        self.record("releaseArmed", target);
         Box::pin(async { Ok(()) })
     }
 }
@@ -441,6 +447,36 @@ async fn a_finished_trace_is_not_released() {
 
     assert!(matches!(trace(&h, id).await.unwrap(), TraceRun::Done { .. }));
     assert!(!tracer.names().contains(&"release"), "{:?}", tracer.names());
+}
+
+#[tokio::test]
+async fn a_finished_trace_is_released_once_the_program_runs_on() {
+    let h = harness(java_debug());
+    let tracer = FakeTracer::scripted([parked()]);
+    let id = stopped_java(&h, &tracer).await;
+    assert!(matches!(trace(&h, id).await.unwrap(), TraceRun::Done { .. }));
+
+    h.manager.resume(id, 1).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !tracer.names().contains(&"release") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the finished trace was not released");
+    assert_eq!(tracer.names().iter().filter(|n| **n == "release").count(), 1);
+}
+
+#[tokio::test]
+async fn an_arm_without_a_reply_is_released_by_its_token() {
+    // The bundle may still finish arming after the reply timed out: its breakpoints would stay off.
+    let h = harness(java_debug());
+    let tracer = FakeTracer::scripted([]);
+    let id = stopped_java(&h, &tracer).await;
+    *tracer.arm_error.lock() = Some(InspectError::TimedOut);
+
+    assert!(matches!(trace(&h, id).await.unwrap(), TraceRun::Failed { .. }));
+    assert_eq!(tracer.names(), ["arm", "releaseArmed"]);
 }
 
 #[tokio::test]
