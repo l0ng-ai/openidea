@@ -154,7 +154,12 @@ function CommitRowView({
       id={id}
       role="option"
       aria-selected={selected}
-      className={clsx(styles.row, onBranch && styles.currentBranch, selected && styles.selected)}
+      className={clsx(
+        styles.row,
+        onBranch && styles.currentBranch,
+        selected && styles.selected,
+        opts.showColumnDividers && styles.showDividers,
+      )}
       style={{ top }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks

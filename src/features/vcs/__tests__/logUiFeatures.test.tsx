@@ -179,6 +179,68 @@ describe("log controls", () => {
     },
   );
 
+  it("Commit's left divider is header-only, resizes its left neighbour, and is inert when first", async () => {
+    // Commit leads by default: its left divider exists but cannot be dragged.
+    useLogOptions.setState({ showColumnHeaders: true, columnOrder: ["author", "date"] });
+    render(<LogView />);
+    const commitBorder = await screen.findByRole("separator", { name: "Commit column border" });
+    expect(commitBorder.tabIndex).toBe(-1);
+    expect(useLogOptions.getState().columnWidths.author).toBeUndefined();
+
+    // Data rows have no Commit divider.
+    expect(document.querySelector('[role="option"] [class*="colSubject"] [class*="columnResize"]')).toBeNull();
+  });
+
+  it("dragging Commit's divider grows the column to its left and shrinks Commit", async () => {
+    // Put Hash before Commit so the divider has a left neighbour to resize.
+    // subject must be listed explicitly after hash, else columnSequence puts it first.
+    useLogOptions.setState({
+      showColumnHeaders: true,
+      showHash: true,
+      columnOrder: ["hash", "subject", "author", "date"],
+    });
+    render(<LogView />);
+    const handle = await screen.findByRole("separator", { name: "Resize Commit column" });
+    handle.setPointerCapture = vi.fn();
+    handle.hasPointerCapture = () => true;
+    handle.releasePointerCapture = vi.fn();
+    // Drag left: the divider follows the pointer, so the left neighbour (Hash)
+    // shrinks and Commit (flex) grows. Default Hash width is 72 -> 42.
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100 });
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 70 });
+    fireEvent.pointerUp(handle, { pointerId: 7, clientX: 70 });
+    expect(useLogOptions.getState().columnWidths.hash).toBe(42); // 72 - 30
+  });
+
+  it("hides column dividers by default and shows them via the option", async () => {
+    useLogOptions.setState({ showColumnHeaders: true, showColumnDividers: false });
+    const { rerender } = render(<LogView />);
+    await screen.findByRole("separator", { name: "Resize Author column" });
+    const sep = screen.getByRole("separator", { name: "Resize Author column" });
+    // Hit strip and cursor stay active, but no rule is painted by default.
+    expect(sep.className).toMatch(/columnResize/);
+    expect(sep.closest('[class*="showDividers"]')).toBeNull();
+    act(() => useLogOptions.setState({ showColumnDividers: true }));
+    rerender(<LogView />);
+    expect(
+      screen.getByRole("separator", { name: "Resize Author column" }).closest('[class*="showDividers"]'),
+    ).not.toBeNull();
+  });
+
+  it("hides a column from the header context menu", async () => {
+    useLogOptions.setState({ showColumnHeaders: true });
+    render(
+      <>
+        <LogView />
+        <ContextMenuHost />
+      </>,
+    );
+    const author = document.querySelector<HTMLElement>('[data-log-column="author"]')!;
+    fireEvent.contextMenu(author, { bubbles: true, clientX: 10, clientY: 10 });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Hide Column" }));
+    expect(useLogOptions.getState().showAuthor).toBe(false);
+  });
+
   it("exposes a full-height column divider on data rows", async () => {
     useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);

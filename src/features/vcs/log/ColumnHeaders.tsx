@@ -16,6 +16,16 @@ interface ColumnDrag {
   after: boolean;
 }
 
+/** Fixed columns that can be hidden from the header context menu. */
+const HIDDEN_COLUMN_OPTION: Record<string, keyof LogOptions> = {
+  author: "showAuthor",
+  date: "showDate",
+  hash: "showHash",
+  signature: "showSignature",
+  "github-checks": "showGitHubChecks",
+  repository: "showRepository",
+};
+
 export function ColumnHeaders({
   columns,
   options,
@@ -37,7 +47,10 @@ export function ColumnHeaders({
   };
   const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
   return (
-    <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+    <div
+      className={clsx(styles.row, styles.columnHeader, options.showColumnDividers && styles.showDividers)}
+      style={{ minWidth }}
+    >
       {options.showRepository && useVcs.getState().roots.length > 1 && (
         <span className={styles.colRepository}>{tx("Repository")}</span>
       )}
@@ -122,8 +135,11 @@ function LogColumnHeader({
     id: column.id,
     width,
     ...columnPrev(ids, column.id, options, columns),
+    // Commit is flex:1 — dragging its left divider only resizes the left neighbour.
+    leftOnly: subject || undefined,
   };
   const index = ids.indexOf(column.id);
+  const isFirst = index === 0;
   const hitColumn = (x: number, y: number) => {
     const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
     if (!el || el.parentElement !== press.current?.element.parentElement) return null;
@@ -179,12 +195,28 @@ function LogColumnHeader({
             disabled: index === ids.length - 1,
             run: () => onMove(column.id, ids[index + 1] ?? null, true),
           },
-          ...(subject ? [] : [{ label: "Reset Width", run: () => resetColumnWidth(column.id) }]),
+          ...(subject
+            ? []
+            : [
+                { label: "Reset Width", run: () => resetColumnWidth(column.id) },
+                { kind: "separator" as const },
+                {
+                  label: tx("Hide Column"),
+                  run: () => {
+                    const key = HIDDEN_COLUMN_OPTION[column.id];
+                    if (key) updateLogOptions({ [key]: false });
+                  },
+                },
+              ]),
         ]);
       }}
     >
       {tx(column.title)}
-      {!subject && (
+      {subject ? (
+        // Commit's left divider exists only in the header. It is decorative when
+        // Commit is the first column; otherwise it resizes the neighbour on its left.
+        <ColumnResizeHandle target={resizeTarget} title={column.title} disabled={isFirst} />
+      ) : (
         <ColumnResizeHandle
           target={resizeTarget}
           title={column.title}

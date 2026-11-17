@@ -17,9 +17,11 @@ const clamp = (value: number) => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, value))
 export type ResizeTarget = {
   id: string;
   width: number;
-  /** Column to the left of this divider, or null when it is the flexible Commit column. */
+  /** Column to the left of this divider, or null when this is the first column. */
   prevId: string | null;
   prevWidth: number;
+  /** True for the flexible Commit column: only the left neighbour gets a stored width. */
+  leftOnly?: boolean;
 };
 
 /** Resolve the column immediately left of `id` in the visible order. */
@@ -32,8 +34,11 @@ export function columnPrev(
   const index = ids.indexOf(id);
   const prevId = index > 0 ? ids[index - 1] : null;
   // The Commit column is flex:1 and absorbs space on its own — never store a width for it.
-  if (!prevId || prevId === SUBJECT_COLUMN.id) return { prevId: null, prevWidth: 0 };
+  // (When *we are* the Commit column the caller handles the left neighbour via leftOnly,
+  // so this guard only applies to fixed columns whose left neighbour is Commit.)
+  if (!prevId || (prevId === SUBJECT_COLUMN.id && id !== SUBJECT_COLUMN.id)) return { prevId: null, prevWidth: 0 };
   const prev = columns.find((c) => c.id === prevId);
+  // subject has no fixed width of its own; its "prevWidth" is unused in leftOnly mode.
   return { prevId, prevWidth: options.columnWidths[prevId] ?? prev?.width ?? 120 };
 }
 
@@ -44,10 +49,17 @@ export function columnPrev(
  * absorbs the rest through flex:1).
  */
 export function resizeColumnPair(target: ResizeTarget, delta: number) {
-  const { id, width, prevId, prevWidth } = target;
+  const { id, width, prevId, prevWidth, leftOnly } = target;
   const widths = { ...logOptions().columnWidths };
   if (prevId == null) {
+    // First column with no left neighbour (should be non-resizable at the UI layer).
     widths[id] = clamp(width + delta);
+  } else if (leftOnly) {
+    // The Commit column is flex:1. The handle sits on the boundary (the left
+    // neighbour's right edge), so the divider follows the pointer: dragging right
+    // widens the left neighbour and shrinks Commit. `delta` is already -dx, so
+    // subtracting it makes the neighbour track dx exactly.
+    widths[prevId] = clamp(prevWidth - delta);
   } else {
     const left = clamp(prevWidth - delta);
     const given = prevWidth - left; // what the left column actually gave up

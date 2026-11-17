@@ -241,31 +241,49 @@
   align-items: center;
   justify-content: center;
 }
-/* The rule sits at the strip centre, midway between the two columns. */
-.columnResize::before {
+/* Divider line is opt-in (View Options › Columns › Column Dividers, off by
+   default like IDEA). The transparent hit strip and resize cursor always work;
+   only the paint is gated. */
+.columnResize::before,
+.columnResize::after {
   content: "";
+  display: none;
+}
+.showDividers .columnResize::before {
+  display: block;
   position: absolute;
   inset-block: 0;
   inset-inline-start: 4px;
   width: 1px;
   background: var(--border-strong);
 }
-/* A visible grip on the boundary, always shown, brightens on hover/drag. */
-.columnResize::after {
-  content: "";
+.showDividers .columnResize::after {
+  display: block;
   width: 2px;
   height: 16px;
   border-radius: 1px;
   background: var(--control-off);
 }
-.columnResize:hover::before,
-.columnResize:active::before {
+.showDividers .columnResize:hover::before,
+.showDividers .columnResize:active::before {
   background: var(--accent);
   width: 2px;
 }
-.columnResize:hover::after,
-.columnResize:active::after {
+.showDividers .columnResize:hover::after,
+.showDividers .columnResize:active::after {
   background: var(--accent);
+}
+/* First column's border: visible only when dividers are on, never draggable. */
+.columnResizeDisabled {
+  cursor: default;
+}
+.showDividers .columnResizeDisabled::after {
+  display: none;
+}
+.showDividers .columnResizeDisabled:hover::before,
+.showDividers .columnResizeDisabled:active::before {
+  background: var(--border-strong);
+  width: 1px;
 }
 /* Data-row strips keep the full-height rule but not the repeating grip. */
 .columnResizeRow::after {
@@ -307,19 +325,6 @@
   /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
   overflow-x: clip;
   overflow-y: visible;
-}
-/* Commit is the flexible, non-resizable column: a static rule on its left edge
-   (no grip, no hover highlight) keeps it visually consistent without implying it
-   can be resized. Both header and data rows use .colSubject, so this spans the
-   full table height. */
-.colSubject::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: 0;
-  width: 1px;
-  background: var(--border-strong);
-  pointer-events: none;
 }
 .colAuthor {
   flex: none;

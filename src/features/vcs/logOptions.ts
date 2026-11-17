@@ -25,6 +25,8 @@ export interface LogOptions {
   showGitHubChecks: boolean;
   /** The row naming the columns, where they are resized and reordered. */
   showColumnHeaders: boolean;
+  /** Draw a 1px divider on each column's left edge (off by default, like IDEA). */
+  showColumnDividers: boolean;
   highlightMine: boolean;
   highlightMerges: boolean;
   highlightCurrentBranch: boolean;
@@ -63,6 +65,7 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   showSignature: false,
   showGitHubChecks: false,
   showColumnHeaders: false,
+  showColumnDividers: false,
   highlightMine: true,
   highlightMerges: true,
   highlightCurrentBranch: true,
