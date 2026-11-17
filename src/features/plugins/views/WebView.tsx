@@ -107,6 +107,18 @@ export interface EditorFold {
   toLine: number;
 }
 
+/** A position in the document: 0-based line, UTF-16 column. */
+export interface EditorPosition {
+  line: number;
+  column: number;
+}
+
+/** A selection, as `openidea.editor.selections()` returns it; the caret is one whose `anchor` equals `head`. */
+export interface EditorSelection {
+  anchor: EditorPosition;
+  head: EditorPosition;
+}
+
 /** What `openidea.editor.onLayout` hears: the folds, and whether long lines wrap. */
 export interface EditorLayout {
   folded: EditorFold[];
@@ -118,7 +130,8 @@ export type FrameEditorEvent =
   | { editor: "viewport"; value: EditorViewport }
   | { editor: "highlights"; value: { fromLine: number; toLine: number } }
   | { editor: "problems"; value: EditorProblem[] }
-  | { editor: "layout"; value: EditorLayout };
+  | { editor: "layout"; value: EditorLayout }
+  | { editor: "selections"; value: EditorSelection[] };
 
 /** The text editor an editor panel's frame follows (`openidea.editor`). */
 export interface FrameEditor {
@@ -132,6 +145,8 @@ export interface FrameEditor {
   folded(): EditorFold[];
   /** Visual rows of lines `fromLine` up to `toLine` (0 for lines folds hide), or null without soft wrap. */
   wrapped(fromLine: number, toLine: number): number[] | null;
+  /** The main selection first, then the others in file order. */
+  selections(): EditorSelection[];
   subscribe(listener: (event: FrameEditorEvent) => void): () => void;
 }
 
@@ -403,11 +418,13 @@ export function WebView({
         case "editor.highlights":
         case "editor.problems":
         case "editor.folded":
+        case "editor.selections":
         case "editor.wrapped": {
           if (!editor) throw new Error("this view is not an editor panel");
           if (op === "editor.get") return [editor.get()];
           if (op === "editor.problems") return [editor.problems()];
           if (op === "editor.folded") return [editor.folded()];
+          if (op === "editor.selections") return [editor.selections()];
           if (op === "editor.viewport") return [editor.viewport()];
           if (op === "editor.scrollTo") return [editor.scrollTo(finite(args.line, "line"))];
           if (op === "editor.scrollBy") return [editor.scrollBy(finite(args.pixels, "pixels"))];

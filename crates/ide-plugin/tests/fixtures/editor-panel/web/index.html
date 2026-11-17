@@ -23,7 +23,8 @@
     <script>
       // A minimal minimap over `openidea.editor`: each line 2px high, each character 1px wide,
       // in its highlight colour; the visible area as a frame that can be dragged; the wheel
-      // scrolls the editor; the marker bar's problems as bars at the right edge; folded lines left out.
+      // scrolls the editor; the marker bar's problems as bars at the right edge; folded lines left out;
+      // the selected lines tinted and the caret's line marked.
       const editor = window.openidea.editor;
       const canvas = document.getElementById("map");
       const ctx = canvas.getContext("2d");
@@ -35,6 +36,7 @@
       let view = null;
       let problems = [];
       let folds = [];
+      let selections = [];
       const PROBLEM_COLOR = { error: "--openidea-danger", warning: "--openidea-warning" };
       const PROBLEM_RANK = { error: 2, warning: 1 };
       let drag = null;
@@ -103,6 +105,16 @@
         const last = Math.min(L, Math.ceil((offset + H) / LINE));
         const missing = [];
         const muted = cssVar("--openidea-fg-muted");
+        // Selections under the text: the lines they cover tinted, a caret's line a stronger strip.
+        ctx.fillStyle = cssVar("--openidea-accent");
+        for (const s of selections) {
+          const caret = s.anchor.line === s.head.line && s.anchor.column === s.head.column;
+          const from = Math.floor(rowOf(Math.min(s.anchor.line, s.head.line)));
+          const to = Math.floor(rowOf(Math.max(s.anchor.line, s.head.line)));
+          ctx.globalAlpha = caret ? 0.6 : 0.3;
+          ctx.fillRect(0, from * LINE - offset, W, (to - from + 1) * LINE);
+        }
+        ctx.globalAlpha = 1;
         for (let row = first; row < last; row++) {
           const i = lineOfRow(row);
           const y = row * LINE - offset;
@@ -171,6 +183,7 @@
         // `problems` is API 1.10.
         problems = editor.problems ? await editor.problems() : [];
         folds = editor.folded ? await editor.folded() : [];
+        selections = editor.selections ? await editor.selections() : [];
         view = Object.assign(await editor.viewport(), { version: target.version });
         redraw();
       }
@@ -197,6 +210,11 @@
       if (editor.onLayout)
         editor.onLayout((l) => {
           folds = l.folded;
+          redraw();
+        });
+      if (editor.onSelections)
+        editor.onSelections((s) => {
+          selections = s;
           redraw();
         });
       window.openidea.onThemeChange(redraw);

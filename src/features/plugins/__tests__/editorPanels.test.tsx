@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import { javascript } from "@codemirror/lang-javascript";
 import { codeFolding, foldEffect, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
-import { EditorState, StateEffect } from "@codemirror/state";
+import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Diagnostic, PluginInfo } from "@/bindings";
 import type { TextEditorHandle } from "@/editor/api";
@@ -80,11 +80,13 @@ describe("frame bridge: openidea.editor", () => {
       problems(): Promise<unknown>;
       folded(): Promise<unknown>;
       wrapped(from: number, to: number): Promise<unknown>;
+      selections(): Promise<unknown>;
       onTarget(fn: (v: unknown) => void): void;
       onViewport(fn: (v: unknown) => void): void;
       onHighlights(fn: (v: unknown) => void): void;
       onProblems(fn: (v: unknown) => void): void;
       onLayout(fn: (v: unknown) => void): void;
+      onSelections(fn: (v: unknown) => void): void;
       document: unknown;
     };
     expect(editor.document).toBe(api.document);
@@ -112,6 +114,8 @@ describe("frame bridge: openidea.editor", () => {
     expect(sent.at(-1)).toMatchObject({ op: "editor.folded" });
     void editor.wrapped(4, 9);
     expect(sent.at(-1)).toMatchObject({ op: "editor.wrapped", args: { fromLine: 4, toLine: 9 } });
+    void editor.selections();
+    expect(sent.at(-1)).toMatchObject({ op: "editor.selections" });
 
     const events: unknown[] = [];
     editor.onTarget((v) => events.push(["target", v]));
@@ -119,11 +123,13 @@ describe("frame bridge: openidea.editor", () => {
     editor.onHighlights((v) => events.push(["highlights", v]));
     editor.onProblems((v) => events.push(["problems", v]));
     editor.onLayout((v) => events.push(["layout", v]));
+    editor.onSelections((v) => events.push(["selections", v]));
     send({ editor: "target", value: null });
     send({ editor: "viewport", value: { firstLine: 1.5 } });
     send({ editor: "highlights", value: { fromLine: 0, toLine: 4 } });
     send({ editor: "problems", value: [] });
     send({ editor: "layout", value: { folded: [], softWrap: true } });
+    send({ editor: "selections", value: [] });
     send({ editor: "constructor", value: 1 });
     expect(events).toEqual([
       ["target", null],
@@ -131,6 +137,7 @@ describe("frame bridge: openidea.editor", () => {
       ["highlights", { fromLine: 0, toLine: 4 }],
       ["problems", []],
       ["layout", { folded: [], softWrap: true }],
+      ["selections", []],
     ]);
   });
 
@@ -158,6 +165,7 @@ describe("WebView as an editor panel", () => {
       },
       problems: () => [{ line: 1, lastLine: 2, severity: "warning" }],
       folded: () => [{ fromLine: 0, toLine: 2 }],
+      selections: () => [{ anchor: { line: 1, column: 0 }, head: { line: 1, column: 4 } }],
       wrapped: (from, to) => {
         calls.push(["wrapped", from, to]);
         return [1, 3];
@@ -227,6 +235,8 @@ describe("WebView as an editor panel", () => {
     send({ call: 13, op: "editor.wrapped", args: { fromLine: 0.5, toLine: 2 } });
     expect((await reply(13)).error).toBeDefined();
     expect(calls.at(-1)).toEqual(["wrapped", 1, 3]);
+    send({ call: 14, op: "editor.selections" });
+    expect((await reply(14)).value).toEqual([{ anchor: { line: 1, column: 0 }, head: { line: 1, column: 4 } }]);
 
     editor.fire({ editor: "highlights", value: { fromLine: 0, toLine: 3 } });
     expect(posted.at(-1)).toEqual({ tag: FRAME_TAG, editor: "highlights", value: { fromLine: 0, toLine: 3 } });
@@ -558,6 +568,83 @@ describe("PanelEditor problems", () => {
 
     panel.dispose();
     view.destroy();
+  });
+});
+
+describe("PanelEditor selections", () => {
+  const view = (doc: string) => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    return new EditorView({
+      parent,
+      state: EditorState.create({
+        doc,
+        extensions: [EditorState.allowMultipleSelections.of(true), editorPanelUpdates],
+      }),
+    });
+  };
+  const handleOf = (v: EditorView, path: string): TextEditorHandle => ({
+    view: v,
+    tabId: path,
+    ctx: { doc: 1, path, language: "javascript", uiMode: "JavaScript", readOnly: false },
+  });
+  const at = (line: number, column: number) => ({ line, column });
+
+  it("reports the caret and every selection, the main one first, and follows them", async () => {
+    // Line 0 is "é😀ab": the emoji takes two UTF-16 columns.
+    const a = view("é😀ab\nsecond\nthird");
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handleOf(a, "/p/a.js"));
+    await nextFrame();
+    // Showing a file: its caret (at the start).
+    expect(events).toContainEqual({ editor: "selections", value: [{ anchor: at(0, 0), head: at(0, 0) }] });
+
+    // Two selections and a caret; the main one (the last) comes first, the others in file order.
+    events.length = 0;
+    const three = EditorSelection.create(
+      [EditorSelection.range(1, 3), EditorSelection.range(12, 7), EditorSelection.cursor(15)],
+      2,
+    );
+    a.dispatch({ selection: three });
+    const shown = [
+      { anchor: at(2, 2), head: at(2, 2) },
+      { anchor: at(0, 1), head: at(0, 3) },
+      { anchor: at(1, 6), head: at(1, 1) },
+    ];
+    expect(panel.selections()).toEqual(shown);
+    // Several moves in one frame: one event.
+    a.dispatch({ selection: EditorSelection.cursor(0) });
+    a.dispatch({ selection: three });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "selections")).toEqual([{ editor: "selections", value: shown }]);
+
+    // An edit above moves the caret to another line.
+    events.length = 0;
+    a.dispatch({ changes: { from: 0, insert: "\n" }, selection: EditorSelection.cursor(1) });
+    await nextFrame();
+    expect(events).toContainEqual({ editor: "selections", value: [{ anchor: at(1, 0), head: at(1, 0) }] });
+
+    // Scrolling alone says nothing.
+    events.length = 0;
+    a.scrollDOM.dispatchEvent(new Event("scroll"));
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "selections")).toEqual([]);
+
+    // Another file: its selections.
+    const b = view("x\ny");
+    b.dispatch({ selection: EditorSelection.range(0, 3) });
+    events.length = 0;
+    panel.bind(handleOf(b, "/p/b.js"));
+    await nextFrame();
+    expect(events).toContainEqual({ editor: "selections", value: [{ anchor: at(0, 0), head: at(1, 1) }] });
+
+    panel.bind(null);
+    expect(panel.selections()).toEqual([]);
+    panel.dispose();
+    a.destroy();
+    b.destroy();
   });
 });
 

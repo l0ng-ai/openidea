@@ -3,7 +3,7 @@
  * editor group, following the group's text editor (a minimap, say). Each group has one frame,
  * kept while the group switches tabs: the page hears `onTarget` instead of reloading. Through
  * `openidea.editor` it reads the file (read-only), the viewport, the colours (syntax and semantic), the
- * marker bar's problems, the folds and the rows of wrapped lines, and scrolls the editor — straight
+ * marker bar's problems, the folds and the rows of wrapped lines, the caret and selections, and scrolls the editor — straight
  * from the editor, not through the plugin's code, since a minimap follows every frame of a scroll.
  */
 import { foldedRanges, highlightingFor, syntaxTree } from "@codemirror/language";
@@ -25,6 +25,7 @@ import {
   type DocumentState,
   type EditorFold,
   type EditorProblem,
+  type EditorSelection,
   type EditorTarget,
   type EditorViewport,
   type FrameDocument,
@@ -79,6 +80,7 @@ const nothingPending = () => ({
   document: false,
   problems: false,
   layout: false,
+  selections: false,
   lines: null as [number, number] | null,
 });
 
@@ -141,6 +143,8 @@ export class PanelEditor implements FrameEditor {
         }
         if (u.geometryChanged || u.heightChanged || u.viewportChanged) this.schedule({ viewport: true });
         if (markerBarProblems(u.startState) !== markerBarProblems(u.state)) this.schedule({ problems: true });
+        // An edit can move a caret to another line without changing its offset.
+        if (u.docChanged || !u.state.selection.eq(u.startState.selection)) this.schedule({ selections: true });
         // Wrapped rows follow the line blocks' heights.
         const wrap = u.view.lineWrapping;
         if (foldedRanges(u.startState) !== foldedRanges(u.state) || wrap !== softWrap || (wrap && u.heightChanged)) {
@@ -167,7 +171,7 @@ export class PanelEditor implements FrameEditor {
         set.delete(onUpdate);
         if (!set.size) updateListeners.delete(view);
       };
-      this.schedule({ viewport: true, problems: true, layout: true });
+      this.schedule({ viewport: true, problems: true, layout: true, selections: true });
     }
     this.emit({ editor: "target", value: this.get() });
   }
@@ -318,6 +322,21 @@ export class PanelEditor implements FrameEditor {
     return out;
   }
 
+  selections(): EditorSelection[] {
+    const view = this.handle?.view;
+    if (!view) return [];
+    const { doc, selection } = view.state;
+    const position = (pos: number) => {
+      const line = doc.lineAt(pos);
+      return { line: line.number - 1, column: pos - line.from };
+    };
+    const main = selection.main;
+    return [main, ...selection.ranges.filter((_, i) => i !== selection.mainIndex)].map((r) => ({
+      anchor: position(r.anchor),
+      head: position(r.head),
+    }));
+  }
+
   /** The text colour of spans nested with these classes (outermost first), as the current scheme resolves it. */
   private color(view: EditorView, nested: string[]): string {
     const key = nested.join("\n");
@@ -346,6 +365,7 @@ export class PanelEditor implements FrameEditor {
     document?: boolean;
     problems?: boolean;
     layout?: boolean;
+    selections?: boolean;
     lines?: [number, number];
   }) {
     const q = this.pending;
@@ -353,6 +373,7 @@ export class PanelEditor implements FrameEditor {
     q.document ||= !!p.document;
     q.problems ||= !!p.problems;
     q.layout ||= !!p.layout;
+    q.selections ||= !!p.selections;
     if (p.lines) q.lines = q.lines ? [Math.min(q.lines[0], p.lines[0]), Math.max(q.lines[1], p.lines[1])] : p.lines;
     if (!this.frame) this.frame = requestAnimationFrame(() => this.flush());
   }
@@ -375,6 +396,7 @@ export class PanelEditor implements FrameEditor {
     if (q.viewport) this.emit({ editor: "viewport", value: this.viewport()! });
     if (q.problems) this.emit({ editor: "problems", value: this.problems() });
     if (q.layout) this.emit({ editor: "layout", value: { folded: this.folded(), softWrap: view.lineWrapping } });
+    if (q.selections) this.emit({ editor: "selections", value: this.selections() });
   }
 }
 
