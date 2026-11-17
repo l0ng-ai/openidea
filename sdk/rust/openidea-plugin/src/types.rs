@@ -189,6 +189,71 @@ impl PickItem {
     }
 }
 
+/// A highlight rule for Run and Debug console output ([`crate::host::set_console_rules`], API 1.12).
+///
+/// `pattern` is a regular expression in the syntax Rust's `regex` and JavaScript share, without
+/// inline flags, named groups, lookaround, backreferences or repeated groups; one that could
+/// backtrack for long on a 2000-character line is `Invalid`. Colours are console palette names
+/// (`red`, `bright-blue`, …), styles any of `bold`, `italic`, `underline`, `strikethrough`, `dim`;
+/// unknown names are ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsoleRule {
+    pub pattern: String,
+    pub ignore_case: bool,
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    pub styles: Vec<String>,
+    /// Style the whole line instead of only the matched text.
+    pub whole_line: bool,
+    /// A disabled rule keeps its place but never matches.
+    pub enabled: bool,
+}
+
+impl ConsoleRule {
+    /// An enabled, case-sensitive rule that styles only the matched text.
+    pub fn new(pattern: &str) -> Self {
+        Self {
+            pattern: pattern.to_owned(),
+            ignore_case: false,
+            foreground: None,
+            background: None,
+            styles: Vec::new(),
+            whole_line: false,
+            enabled: true,
+        }
+    }
+
+    pub fn ignore_case(mut self) -> Self {
+        self.ignore_case = true;
+        self
+    }
+
+    pub fn foreground(mut self, color: &str) -> Self {
+        self.foreground = Some(color.to_owned());
+        self
+    }
+
+    pub fn background(mut self, color: &str) -> Self {
+        self.background = Some(color.to_owned());
+        self
+    }
+
+    pub fn style(mut self, style: &str) -> Self {
+        self.styles.push(style.to_owned());
+        self
+    }
+
+    pub fn whole_line(mut self) -> Self {
+        self.whole_line = true;
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
 /// A context key's value, as `when` clauses compare it ([`crate::host::set_context`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContextValue {
