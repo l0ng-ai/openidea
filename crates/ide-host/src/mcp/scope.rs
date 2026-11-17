@@ -25,12 +25,17 @@ impl Scope {
         } else {
             call.root().join(given)
         });
+        let roots: Vec<PathBuf> =
+            std::iter::once(call.root().to_path_buf()).chain(call.project().content_roots()).collect();
+        // Before touching the file system: on Windows, resolving `\\host\share` signs in to that host.
+        if !ide_vfs::content_path_allowed(&path, &roots) {
+            return Err(IdeError::invalid(format!("scope {raw} is outside the project")));
+        }
         let path = dunce::canonicalize(&path).unwrap_or(path);
         if !path.is_dir() {
             return Err(IdeError::not_found(format!("scope {raw} is not a directory")));
         }
-        let roots = std::iter::once(call.root().to_path_buf()).chain(call.project().content_roots());
-        if !roots.into_iter().any(|root| path.starts_with(root)) {
+        if !roots.iter().any(|root| path.starts_with(root)) {
             return Err(IdeError::invalid(format!("scope {raw} is outside the project")));
         }
         Ok(Self(Some(path)))

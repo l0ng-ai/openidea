@@ -883,14 +883,20 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     let host = call.host();
     let project = call.project().clone();
     let indexing_before = project.index.status().indexing;
-    let pool = if scope.is_all() && dir.dir().is_none() {
-        limit + 1
-    } else {
-        ((limit + 1) * SYMBOL_POOL_FACTOR).min(MAX_SYMBOL_POOL)
-    };
+    let pool = if scope.is_all() { limit + 1 } else { ((limit + 1) * SYMBOL_POOL_FACTOR).min(MAX_SYMBOL_POOL) };
     let found = {
-        let (project, q) = (project.clone(), q.clone());
-        host.blocking(move || Ok(project.index.find_symbols(&q, ide_index::SymbolFilter::All, pool))).await?
+        let (project, q, dir) = (project.clone(), q.clone(), dir.dir().map(Path::to_path_buf));
+        host.blocking(move || {
+            Ok(match dir {
+                // Filtered in the index: a pool cut before the filter could miss every match.
+                Some(dir) => project
+                    .index
+                    .find_symbols_until(&q, ide_index::SymbolFilter::All, pool, &|p| p.starts_with(&dir), &|| false)
+                    .unwrap_or_default(),
+                None => project.index.find_symbols(&q, ide_index::SymbolFilter::All, pool),
+            })
+        })
+        .await?
     };
     let mut items: Vec<SearchItem> = found
         .into_iter()
@@ -910,10 +916,14 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
         let budget = MEDIUM_TIMEOUT.saturating_sub(started.elapsed());
         let (symbols, out_of_time) = workspace_symbols(&call, &q, budget).await;
         timed_out = out_of_time;
+        let mut roots = project.content_roots();
+        roots.extend(crate::mcp::tool::attached_projects(call.root()));
         for (name, container, location) in symbols {
             let path = location.uri.clone().unwrap_or_else(|| call.display(&location.path));
-            // Project files obey `scope` and `paths`; library symbols are what was asked for.
-            let inside = location.uri.is_none() && !Path::new(&path).is_absolute();
+            // Project files (attached projects' too) obey `scope` and `paths`; library symbols
+            // are what was asked for.
+            let inside = location.uri.is_none()
+                && (!Path::new(&path).is_absolute() || roots.iter().any(|r| location.path.starts_with(r)));
             if inside && !(dir.contains_shown(call.root(), &path) && scope.matches(&path)) {
                 continue;
             }
