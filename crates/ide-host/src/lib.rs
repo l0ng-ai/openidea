@@ -92,6 +92,8 @@ pub struct Host {
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
     pub remote: Arc<ide_remote::RemoteService>,
+    /// Tunnels of Docker connections made through an SSH configuration.
+    pub docker_tunnels: ops::docker::DockerTunnels,
     /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
     pub environment: environment::Environment,
     /// The built-in web server (Open In › Browser, the editor's browser bar). On a remote host the
@@ -162,6 +164,7 @@ impl Host {
             agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
+            docker_tunnels: Default::default(),
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
             web: ide_web::WebServer::new(),
             global_settings,
