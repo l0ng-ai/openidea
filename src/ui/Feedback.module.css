@@ -75,7 +75,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 24px;
   text-align: center;
   color: var(--fg-subtle);
@@ -96,7 +96,7 @@
 }
 .emptyActions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 4px;
 }
 
@@ -105,6 +105,7 @@
   display: flex;
   gap: 10px;
   width: 340px;
+  max-width: 100%;
   /* Never grow past the window: the close button must stay reachable. */
   max-height: calc(100vh - 48px);
   padding: 14px 34px 14px 14px;
@@ -134,12 +135,12 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .toastHead {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 16px;
 }
 .toastTitle {

@@ -40,7 +40,16 @@ vi.mock("@xterm/addon-fit", () => ({
   },
 }));
 vi.mock("./session", () => ({ fontFor: () => ({}), LINK_HANDLER: {}, openExternal: vi.fn(), openFileLink: vi.fn() }));
-vi.mock("./theme", () => ({ readTerminalTheme: () => ({}), remeasureWhenFontsLoad: vi.fn(), MIN_CONTRAST_RATIO: 1 }));
+vi.mock("./theme", () => ({
+  readTerminalTheme: () => ({}),
+  readLinkColor: () => "#000000",
+  remeasureWhenFontsLoad: vi.fn(),
+  MIN_CONTRAST_RATIO: 1,
+}));
+vi.mock("./linkHighlights", () => ({
+  installLinkHighlights: () => ({ refresh() {}, update() {}, dispose() {} }),
+  xtermLink: vi.fn(),
+}));
 
 beforeEach(() => {
   vi.useFakeTimers();

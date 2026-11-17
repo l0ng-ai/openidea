@@ -30,12 +30,14 @@ pub enum SettingsScope {
 /// Settings a project's own file can't hold: the IDE's MCP server, imported color schemes, and
 /// what agents may do without asking (commands run without asking, the modes new tasks start in,
 /// whether new tasks ask for approvals).
-const USER_ONLY: [&[&str]; 5] = [
+const USER_ONLY: [&[&str]; 6] = [
     &["mcpServer"],
     &["editor", "customSchemes"],
     &["agentSecurity", "allowedCommands"],
     &["agents", "defaults"],
     &["agents", "newTaskApprovals"],
+    // OS notification centre: machine-local; projects must not enable/disable.
+    &["notifications", "systemNotifications"],
 ];
 
 /// The [`USER_ONLY`] setting that writing `value` at `key` would set, as a dotted key.
@@ -145,6 +147,19 @@ fn read_layer(file: &Path) -> Option<Json> {
             None
         }
     }
+}
+
+/// The first appearance theme key of `file` naming a removed theme, if any. Plugin themes
+/// (`plugin:<id>/<theme>`) carry their plugin's id, so a plain id can only be a built-in's.
+fn removed_theme_in(file: &Path) -> Option<String> {
+    const KEYS: [&str; 3] = ["theme", "preferredLightTheme", "preferredDarkTheme"];
+    let layer = read_layer(file)?;
+    KEYS.iter()
+        .filter_map(|key| match layer.pointer(&format!("/appearance/{key}"))? {
+            Json::String(id) => Some(id.clone()),
+            _ => None,
+        })
+        .find(|id| ide_core::settings::REMOVED_THEMES.iter().any(|(removed, _)| id.as_str() == *removed))
 }
 
 /// Merges `layer` onto `merged` if the result still deserializes.
@@ -262,6 +277,13 @@ impl SettingsStore {
             .into_iter()
             .filter_map(|scope| Some((scope, self.file(scope)?.to_path_buf())))
             .collect()
+    }
+
+    /// The removed built-in theme id (`REMOVED_THEMES`) a settings file still names, if any.
+    /// `Settings` reports its stand-in, so this reads the files again: it is what a settings
+    /// file named, not what the theme rows show now.
+    pub fn named_removed_theme(&self) -> Option<String> {
+        self.layers().into_iter().rev().find_map(|(_, file)| removed_theme_in(&file))
     }
 
     fn compute(&self) -> Settings {
@@ -419,13 +441,26 @@ impl SettingsStore {
 #[serde(rename_all = "camelCase")]
 pub struct JetBrainsSettings {
     pub entries: Vec<String>,
-    /// Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads.
+    /// Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
+    /// `codestyles/*.xml` and some of `options/`.
     pub files: BTreeMap<String, String>,
 }
 
 const JETBRAINS_MARKER: &str = "IntelliJ IDEA Global Settings";
-const JETBRAINS_OPTIONS: [&str; 4] =
-    ["options/editor-font.xml", "options/colors.scheme.xml", "options/editor.xml", "options/ide.general.xml"];
+const JETBRAINS_OPTIONS: [&str; 9] = [
+    "options/editor-font.xml",
+    "options/terminal-font.xml",
+    "options/colors.scheme.xml",
+    "options/code.style.schemes.xml",
+    "options/editor.xml",
+    "options/ide.general.xml",
+    // The active keymap is stored per operating system.
+    "options/mac/keymap.xml",
+    "options/windows/keymap.xml",
+    "options/linux/keymap.xml",
+];
+/// Folders whose files are all read: (folder, extension).
+const JETBRAINS_READ_DIRS: [(&str, &str); 3] = [("colors/", ".icls"), ("keymaps/", ".xml"), ("codestyles/", ".xml")];
 const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
 
 /// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
@@ -436,11 +471,23 @@ pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
 
 fn is_mapped_jetbrains_file(name: &str) -> bool {
     JETBRAINS_OPTIONS.contains(&name)
-        || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"))
+        || JETBRAINS_READ_DIRS
+            .iter()
+            .any(|(dir, ext)| name.strip_prefix(dir).is_some_and(|n| !n.contains('/') && n.ends_with(ext)))
 }
 
 /// Folders of the settings folder whose files are listed (their names say what the user customised).
-const JETBRAINS_LISTED_DIRS: [&str; 6] = ["options", "colors", "keymaps", "codestyles", "templates", "inspection"];
+const JETBRAINS_LISTED_DIRS: [&str; 9] = [
+    "options",
+    "options/mac",
+    "options/windows",
+    "options/linux",
+    "colors",
+    "keymaps",
+    "codestyles",
+    "templates",
+    "inspection",
+];
 
 fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
     use std::io::Read;
@@ -524,6 +571,30 @@ struct SettingsBundle {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn removed_theme_named_in_a_settings_file_is_reported_for_the_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        // Nothing to report without a removed id.
+        std::fs::write(cfg.join("settings.toml"), "[appearance]\ntheme = \"dark\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme(), None);
+        // The theme the notice is about, and the light one for good measure.
+        std::fs::write(cfg.join("settings.toml"), "[appearance]\ntheme = \"one-dark\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-dark"));
+        std::fs::write(
+            cfg.join("settings.toml"),
+            "[appearance]\npreferredDarkTheme = \"one-dark\"\ntheme = \"plugin:acme.themes/night\"\n",
+        )
+        .unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-dark"));
+        // A project layer naming it wins over the global one.
+        std::fs::write(proj.join(".openidea/settings.toml"), "[appearance]\ntheme = \"one-light\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-light"));
+    }
 
     #[test]
     fn compose_file_choices_are_project_settings_and_survive_reload() {
@@ -890,11 +961,25 @@ mod tests {
                 ("options/editor-font.xml", "<application/>"),
                 ("options/vcs.xml", "<application/>"),
                 ("keymaps/macOS.xml", "<keymap/>"),
+                ("keymaps/nested/ignored.xml", "<keymap/>"),
+                ("codestyles/Default.xml", "<code_scheme/>"),
+                ("options/mac/keymap.xml", "<application/>"),
+                ("options/terminal-font.xml", "<application/>"),
             ],
         );
         let read = read_jetbrains_settings(&ok).unwrap();
-        assert_eq!(read.entries.len(), 5);
-        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(read.entries.len(), 9);
+        assert_eq!(
+            read.files.keys().collect::<Vec<_>>(),
+            [
+                "codestyles/Default.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "options/editor-font.xml",
+                "options/mac/keymap.xml",
+                "options/terminal-font.xml"
+            ]
+        );
         assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
         std::fs::write(tmp.path().join("plain.zip"), "not a zip").unwrap();
         assert!(read_jetbrains_settings(&tmp.path().join("plain.zip")).is_err());
@@ -913,18 +998,31 @@ mod tests {
         put("colors/nested/ignored.icls", "<scheme/>");
         put("options/editor-font.xml", "<application/>");
         put("options/vcs.xml", "<application/>");
+        put("options/mac/keymap.xml", "<application/>");
         put("keymaps/macOS.xml", "<keymap/>");
+        put("codestyles/Default.xml", "<code_scheme/>");
         put("plugins/Tools/lib/tools.jar", "jar");
 
         let read = read_jetbrains_settings(&config).unwrap();
-        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(
+            read.files.keys().collect::<Vec<_>>(),
+            [
+                "codestyles/Default.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "options/editor-font.xml",
+                "options/mac/keymap.xml"
+            ]
+        );
         assert_eq!(
             read.entries,
             [
                 "options/editor-font.xml",
                 "options/vcs.xml",
+                "options/mac/keymap.xml",
                 "colors/_@user_Darcula.icls",
                 "keymaps/macOS.xml",
+                "codestyles/Default.xml",
                 "installed.txt"
             ]
         );
@@ -1174,5 +1272,23 @@ mod tests {
         assert_eq!(s.agents.new_task_approvals, NewTaskApprovals::Ask);
         std::fs::write(project.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"bypass\"\n").unwrap();
         assert_eq!(settings.reload().agents.new_task_approvals, NewTaskApprovals::Ask);
+    }
+
+    #[test]
+    fn system_notifications_are_a_user_setting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = false\n")
+            .unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(settings.effective().notifications.system_notifications);
+        assert!(settings.set(SettingsScope::Project, "notifications.systemNotifications", json!(false)).is_err());
+        let s = settings.set(SettingsScope::Global, "notifications.systemNotifications", json!(false)).unwrap();
+        assert!(!s.notifications.system_notifications);
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = true\n")
+            .unwrap();
+        assert!(!settings.reload().notifications.system_notifications);
     }
 }

@@ -1,4 +1,5 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { describe, expect, it } from "vitest";
 import type { AppMetrics } from "@/platform/ipc";
 import { MemoryDetails } from "../MemoryStatus";
@@ -22,10 +23,18 @@ const metrics: AppMetrics = {
   languageServers: 2,
   syntax: { documents: 4, trees: 2, treeTextBytes: 2 * MB, hits: 10, incrementalParses: 5, fullParses: 2 },
   memory: [
-    { category: "app", label: "Backend", detail: null, processes: 1, bytes: 60 * MB },
-    { category: "app", label: "Web content", detail: "idea", processes: 1, bytes: 300 * MB },
-    { category: "languageServer", label: "jdtls", detail: "idea", processes: 1, bytes: 900 * MB },
-    { category: "process", label: "codelldb", detail: null, processes: 1, bytes: 30 * MB },
+    { category: "app", label: "Backend", detail: null, pid: 10, processes: 1, bytes: 60 * MB, cpuPercent: 4.25 },
+    { category: "app", label: "Web content", detail: "idea", pid: 11, processes: 1, bytes: 300 * MB, cpuPercent: 1 },
+    {
+      category: "languageServer",
+      label: "jdtls",
+      detail: "idea",
+      pid: 20,
+      processes: 2,
+      bytes: 900 * MB,
+      cpuPercent: 0,
+    },
+    { category: "process", label: "codelldb", detail: null, pid: 30, processes: 1, bytes: 30 * MB, cpuPercent: null },
   ],
 };
 
@@ -49,6 +58,26 @@ describe("perf views", () => {
     expect(screen.getByText("Backend malloc in use")).toBeTruthy();
     expect(screen.getByText("40 ms")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Clear caches/ })).toBeTruthy();
+    expect(openidea.textContent).toContain("5.3%");
+    expect(servers.textContent).toContain("0%");
+    expect(screen.getByTitle("PID 20 · 2 processes")).toBeTruthy();
+  });
+
+  it("ends language servers and processes, never OpenIDEA's own", async () => {
+    const calls: [string, unknown][] = [];
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === "end_process") return true;
+      if (cmd === "app_metrics") return metrics;
+    });
+    render(<MemoryDetails metrics={metrics} />);
+    expect(screen.queryByRole("button", { name: "End Process Backend" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "End Process Web content" })).toBeNull();
+    expect(screen.getByRole("button", { name: "End Process codelldb" })).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "End Process jdtls" })));
+    expect(calls[0]).toEqual(["end_process", { pid: 20 }]);
+    expect(calls.some(([cmd]) => cmd === "app_metrics")).toBe(true);
+    clearMocks();
   });
 
   it("overlay is off by default and degrades without PerformanceObserver", async () => {

@@ -48,7 +48,10 @@ import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
 import { activate as github, activateSettingsPages as githubPages } from "./github";
 import { activate as httpClient } from "./http-client";
-import { activate as database } from "./database";
+import { activate as cucumber } from "./cucumber";
+import { activate as rails } from "./rails";
+import { activate as thymeleaf } from "./thymeleaf";
+import { activate as database, activateSettingsPages as databasePages } from "./database";
 import { activate as graphql } from "./graphql";
 import { activate as deployment, activateDeploymentWindow } from "./deployment";
 import { activate as agents, activateSettingsPages as agentsPages } from "./agents";
@@ -99,6 +102,9 @@ const features: Array<[string, Activate]> = [
   ["services", services],
   ["github", github],
   ["http-client", httpClient],
+  ["cucumber", cucumber],
+  ["rails", rails],
+  ["thymeleaf", thymeleaf],
   ["database", database],
   ["graphql", graphql],
   ["deployment", deployment],
@@ -188,6 +194,7 @@ export function activateSettingsWindowFeatures(parent: string): () => void {
     ["vim", vimPages],
     ["vcs", vcsPages],
     ["github", githubPages],
+    ["database", databasePages],
   ];
   return activateAll("settings pages", pages);
 }

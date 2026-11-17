@@ -20,6 +20,13 @@ pub async fn web_url(window: Window, state: State<'_, AppState>, path: IpcPath) 
     ide_host::ops::web::url(&state.host, window.label(), &path).await
 }
 
+/// Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open.
+#[tauri::command]
+#[specta::specta]
+pub async fn web_serves_page(url: String) -> IdeResult<bool> {
+    Ok(ide_host::ops::web::serves_page(&url).await)
+}
+
 /// Opens `url` in `browser` (an id from `web_browsers`), or the default browser.
 #[tauri::command]
 #[specta::specta]

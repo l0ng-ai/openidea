@@ -25,6 +25,7 @@ fn paths(dir: &Path) -> AgentPaths {
         custom_agents_dir: None,
         home_dir: None,
         env_secrets: None,
+        catalogs: Arc::default(),
     }
 }
 
@@ -63,6 +64,7 @@ async fn create(mgr: &AgentManager, provider: &str, prompt: &str) -> String {
         config: config(provider),
         isolation: Isolation::Local,
         base: None,
+        ..Default::default()
     };
     mgr.create(req).await.unwrap().id
 }

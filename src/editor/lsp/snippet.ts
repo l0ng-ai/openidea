@@ -215,6 +215,38 @@ export function lspSnippetToPlain(snippet: string, vars: SnippetVariables = {}):
   return flatten(parse(snippet), vars);
 }
 
+/**
+ * The snippet as plain text with where its caret goes: the start of the first tab stop
+ * (`$1`, else the lowest), else `$0`, else the end. For insertion at several carets,
+ * where fields cannot be edited together.
+ */
+export function lspSnippetToPlainWithCaret(
+  snippet: string,
+  vars: SnippetVariables = {},
+): { text: string; caret: number } {
+  let text = "";
+  let best: { n: number; at: number } | null = null;
+  const visit = (nodes: Node[]) => {
+    for (const n of nodes) {
+      if (n.t === "text") text += n.v;
+      else if (n.t === "tab" || n.t === "choice") {
+        const order = n.n === 0 ? Number.MAX_SAFE_INTEGER : n.n;
+        if (!best || order < best.n) best = { n: order, at: text.length };
+        if (n.t === "choice") text += n.options[0] ?? "";
+        else if (n.children) visit(n.children);
+      } else {
+        const v = vars[n.name];
+        if (v !== undefined) text += v;
+        else if (n.children) visit(n.children);
+        else text += n.name;
+      }
+    }
+  };
+  visit(parse(snippet));
+  const found = best as { n: number; at: number } | null;
+  return { text, caret: found ? found.at : text.length };
+}
+
 /** Standard LSP snippet variables for a file. */
 export function snippetVariables(path: string, extra: SnippetVariables = {}): SnippetVariables {
   const slash = path.lastIndexOf("/");

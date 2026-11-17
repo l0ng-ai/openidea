@@ -14,6 +14,7 @@ import {
   type DocId,
   type DocumentEncoding,
   type DocumentInfo,
+  type DocumentLanguage,
   type FoldRange,
   type LanguageInfo_Serialize,
   type LineEnding,
@@ -41,6 +42,10 @@ export interface DocBackend {
   open(path: string): Promise<DocumentInfo>;
   /** Opens a read-only language-server document (library or disk class contents). */
   openVirtual(uri: string): Promise<DocumentInfo>;
+  /** Opens (or re-references) an editable untitled buffer (`untitled:Untitled-N`); `null` mints one. */
+  openUntitled(name: string | null): Promise<DocumentInfo>;
+  /** Save As for an untitled buffer: writes it to `path` and re-keys the document. */
+  saveAs(doc: DocId, path: string): Promise<DocumentInfo>;
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;
   save(doc: DocId): Promise<void>;
@@ -58,8 +63,11 @@ export interface DocBackend {
   highlights(doc: DocId): Promise<SyntaxHighlights>;
   selectionRanges(doc: DocId, offset: number): Promise<Range[]>;
   languages(): Promise<LanguageInfo[]>;
-  /** The `DocumentInfo.uiMode` a file would open with, without opening it (previews). */
-  uiModeOf?(path: string): Promise<string | null>;
+  /**
+   * The language and `DocumentInfo.uiMode` a file opens with, without opening it (previews,
+   * diffs); `firstLine` is the shown text's, for hashbangs (default: the file's own).
+   */
+  languageOf?(path: string, firstLine?: string): Promise<DocumentLanguage>;
   onPatched(handler: (e: DocPatchedEvent) => void): () => void;
   onDirty(handler: (e: { doc: DocId; dirty: boolean }) => void): () => void;
   /** Files changed on disk (used to refresh nothing but closed-file state). */
@@ -79,6 +87,8 @@ export interface DocBackend {
 export const ipcBackend: DocBackend = {
   open: (path) => call(commands.docOpen(path)),
   openVirtual: (uri) => call(commands.docOpenVirtual(uri)),
+  openUntitled: (name) => call(commands.docOpenUntitled(name)),
+  saveAs: (doc, path) => call(commands.docSaveAs(doc, path)),
   close: async (doc) => void (await call(commands.docClose(doc))),
   edit: (doc, baseVersion, changes) => call(commands.docEdit(doc, baseVersion, { changes })),
   save: async (doc) => void (await call(commands.docSave(doc))),
@@ -92,7 +102,7 @@ export const ipcBackend: DocBackend = {
   highlights: (doc) => call(commands.docHighlights(doc)),
   selectionRanges: (doc, offset) => call(commands.docSelectionRanges(doc, offset)),
   languages: () => commands.languages(),
-  uiModeOf: (path) => call(commands.docUiMode(path)),
+  languageOf: (path, firstLine) => call(commands.docLanguage(path, firstLine ?? null)),
   onPatched: (h) => onIdeEvent("docPatched", (e) => h(e)),
   onDirty: (h) => onIdeEvent("docDirty", (e) => h(e)),
   onFsChanged: (h) => onIdeEvent("fsChanged", (e) => h(e)),
@@ -384,6 +394,14 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
   let nextId = 1;
   const store = new Map(Object.entries(files));
   const savedBoms = new Map<string, boolean>();
+  const memUntitledCount = () => {
+    let max = 0;
+    for (const key of byPath.keys()) {
+      const m = /^untitled:Untitled-(\d+)$/.exec(key);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+    return max;
+  };
 
   const info = (d: MemDoc): DocumentInfo => ({
     id: d.id,
@@ -503,6 +521,47 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
       if (!d || --d.refs > 0) return;
       docs.delete(doc);
       byPath.delete(d.path);
+    },
+    async openUntitled(name) {
+      const key = name ?? `untitled:Untitled-${memUntitledCount() + 1}`;
+      const existing = byPath.get(key);
+      if (existing !== undefined) {
+        const d = get(existing);
+        d.refs++;
+        return info(d);
+      }
+      const d: MemDoc = {
+        id: nextId++,
+        path: key,
+        text: "",
+        saved: "",
+        savedBom: false,
+        version: 0,
+        refs: 1,
+        lineEnding: "lf",
+        hasBom: false,
+        readOnly: false,
+        language: "plaintext",
+        uri: key,
+      };
+      docs.set(d.id, d);
+      byPath.set(key, d.id);
+      return info(d);
+    },
+    async saveAs(doc, path) {
+      const d = get(doc);
+      const before = d.text !== d.saved || d.hasBom !== d.savedBom;
+      d.saved = d.text;
+      d.savedBom = d.hasBom;
+      store.set(path, d.text);
+      savedBoms.set(path, d.hasBom);
+      byPath.delete(d.path);
+      byPath.set(path, d.id);
+      d.path = path;
+      d.uri = undefined;
+      d.language = EXT_LANG[path.slice(path.lastIndexOf(".") + 1).toLowerCase()] ?? "plaintext";
+      setDirty(d, before);
+      return info(d);
     },
     edit(doc, baseVersion, changes) {
       return delay(() => {
@@ -630,8 +689,10 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     async languages() {
       return MEM_LANGUAGES;
     },
-    async uiModeOf(path) {
-      return uiModeOf(path);
+    async languageOf(path) {
+      const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+      const uiMode = uiModeOf(path);
+      return { language: EXT_LANG[ext] ?? "plaintext", ...(uiMode ? { uiMode } : {}) };
     },
     onPatched(h) {
       patched.add(h);

@@ -5,6 +5,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
+/// Why a task needs the user's attention (native / in-app notify).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentAttentionReason {
+    Finished,
+    Input,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentStatus {
@@ -38,12 +47,13 @@ pub struct AgentCapabilities {
     pub background_tasks: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum Isolation {
     /// A new git worktree on its own branch.
     Worktree,
     /// The project's own checkout.
+    #[default]
     Local,
 }
 
@@ -95,6 +105,9 @@ pub struct AgentTask {
     // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
     #[serde(default)]
     pub background: Box<Vec<AgentBackgroundTask>>,
+    /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp_overrides: BTreeMap<String, bool>,
 }
 
 /// A task the agent runs in the background while the conversation goes on.
@@ -120,6 +133,40 @@ pub struct AgentRetry {
     pub error: Option<String>,
 }
 
+/// Token pricing (Credits per 1M tokens) and context window capacity for one tier.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTokenPricing {
+    pub input: f64,
+    pub output: f64,
+    #[serde(default)]
+    #[specta(optional)]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub cache_write: Option<f64>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub context_tokens: Option<u32>,
+}
+
+/// Pricing and context-tier metadata attached to a model [`AgentConfigValue`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelPricing {
+    /// `"low"`, `"medium"`, `"high"`, or `"very_high"`.
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_tier: Option<String>,
+    /// Request-based billing multiplier (e.g. `1.0`, `0.33`, `3.0`), when applicable.
+    #[serde(default)]
+    #[specta(optional)]
+    pub multiplier: Option<f64>,
+    /// Token pricing keyed by context tier (`"default"`, `"long_context"`).
+    #[serde(default)]
+    pub tiers: BTreeMap<String, AgentTokenPricing>,
+}
+
 /// One value of a select-type session setting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -127,6 +174,18 @@ pub struct AgentConfigValue {
     pub value: String,
     pub name: String,
     pub description: Option<String>,
+    /// Relative cost category from ACP `_meta` (`copilotPriceCategory`, e.g. `low`, `medium`, `high`, `very_high`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_category: Option<String>,
+    /// Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub usage_multiplier: Option<String>,
+    /// Detailed per-tier token pricing from `_meta.pricing` when available.
+    #[serde(default)]
+    #[specta(optional)]
+    pub pricing: Option<Box<AgentModelPricing>>,
 }
 
 /// How a setting is changed.
@@ -152,6 +211,10 @@ pub struct AgentConfigOption {
     /// ACP category: `model`, `mode`, `thought_level`, or agent-specific.
     pub category: Option<String>,
     pub current: Option<String>,
+    /// Initial default value reported by the agent, preserved across session updates for Reset.
+    #[serde(default)]
+    #[specta(optional)]
+    pub default_value: Option<String>,
     pub values: Vec<AgentConfigValue>,
     pub via: AgentConfigVia,
 }
@@ -313,6 +376,59 @@ pub struct AgentQuestionOption {
     pub preview: Option<String>,
 }
 
+/// A form the agent asks the user to fill in (ACP `elicitation/create`, form mode).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentForm {
+    pub fields: Vec<AgentFormField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFormField {
+    /// The property name the answer is keyed by.
+    pub name: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    pub kind: AgentFormFieldKind,
+    /// The choices of a `choice` or `choices` field.
+    #[serde(default)]
+    pub options: Vec<AgentFormOption>,
+    /// The initial answer: option values, a text, a number, or `true` / `false`.
+    #[serde(default)]
+    pub default: Vec<String>,
+    /// Bounds: the number of a `number` / `integer`, the length of a `text`, the count of `choices`.
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFormFieldKind {
+    Text,
+    Number,
+    Integer,
+    Boolean,
+    /// One of `options`.
+    Choice,
+    /// Any of `options`.
+    Choices,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFormOption {
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 /// One item of a task's conversation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -393,6 +509,10 @@ pub enum AgentEntry {
         /// of question to answer instead of an option.
         #[serde(default)]
         questions: Vec<AgentQuestion>,
+        /// Set when the agent asks for a form (ACP elicitation); answered with a JSON object of
+        /// field name to its values, `decline`, or nothing to cancel.
+        #[serde(default)]
+        form: Option<AgentForm>,
         /// Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled".
         chosen: Option<String>,
     },
@@ -473,7 +593,7 @@ pub struct AgentProbe {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAgentTask {
     /// Validated by the host; defaults to the window project root.
@@ -486,6 +606,9 @@ pub struct NewAgentTask {
     pub isolation: Isolation,
     /// Branch to start the worktree from; the current branch when `None`.
     pub base: Option<String>,
+    /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
+    #[serde(default)]
+    pub mcp_overrides: BTreeMap<String, bool>,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
@@ -538,13 +661,26 @@ pub struct AgentChanges {
     pub commits: Vec<AgentCommit>,
 }
 
+/// Authoritative choices for new tasks, independent of any running session's settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelCatalog {
+    pub provider: String,
+    pub config: Vec<AgentConfigOption>,
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
+    pub refreshing: bool,
+    pub refreshed_at_ms: Option<f64>,
+    pub retry_at_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
 /// Streamed to the window that subscribed (`AgentManager::subscribe`).
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {
     /// A task was created or its metadata changed.
     Task {
-        task: AgentTask,
+        task: Box<AgentTask>,
     },
     Removed {
         id: String,
@@ -575,8 +711,18 @@ pub enum AgentEvent {
         provider: String,
         limits: Vec<AgentLimit>,
     },
+    /// A model lookup started or completed, including unsuccessful lookups.
+    ModelCatalog {
+        catalog: AgentModelCatalog,
+    },
     /// The installed or configured agent providers changed.
     Providers,
+    /// The task needs attention once (finished turn, explicit input, or failure).
+    Attention {
+        task: String,
+        event_id: String,
+        reason: AgentAttentionReason,
+    },
 }
 
 pub use ide_core::settings::{AgentMcpServer, McpTransport};
@@ -614,6 +760,9 @@ pub struct McpServer {
     /// Agent provider ids this server is enabled for; empty means enabled for all agents.
     #[serde(default)]
     pub agents: Vec<String>,
+    /// True when this Workspace server was added outside OpenIDEA and has not been approved yet.
+    #[serde(default)]
+    pub unapproved: bool,
 }
 
 /// Payload for creating or updating a user or workspace MCP server.
@@ -644,6 +793,69 @@ pub struct McpServerInput {
 
 fn default_true() -> bool {
     true
+}
+
+/// An external MCP configuration file discovered on disk (user CLI config or workspace file).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpExternalSource {
+    /// Stable source identifier (e.g. `"copilot-cli"`, `"jetbrains-air"`, `"claude-code"`, `"cursor"`, `"workspace-mcp"`, `"vscode-mcp"`).
+    pub id: String,
+    /// Human-readable source label (e.g. `"GitHub Copilot CLI"`).
+    pub label: String,
+    /// Absolute path of the discovered configuration file.
+    pub path: IpcPath,
+    /// Suggested target scope when importing this source into OpenIDEA settings.
+    pub suggested_scope: McpScope,
+    /// Agent provider ID this external CLI reads natively (`Some("copilot")`, `Some("claude")`, `Some("cursor")`, or `None`).
+    pub native_provider: Option<String>,
+    /// Servers found inside this external configuration file (values omitted for safety; imported directly on the host).
+    pub servers: Vec<McpDiscoveredServer>,
+}
+
+/// Summary of one server discovered inside an external MCP configuration file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiscoveredServer {
+    pub name: String,
+    pub transport: McpTransport,
+    pub enabled: bool,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    /// Environment variable names declared on this server (values stay on the host).
+    pub env_keys: Vec<String>,
+    /// HTTP header names declared on this server (values stay on the host).
+    pub header_keys: Vec<String>,
+}
+
+/// Selection of one server from an external MCP configuration source to import.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportSelection {
+    pub source_id: String,
+    pub name: String,
+}
+
+/// One tool advertised by an MCP server during `tools/list`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolSummary {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Result of testing/probing an MCP server (`initialize` + `tools/list`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProbeResult {
+    pub ok: bool,
+    pub server_name: Option<String>,
+    pub server_version: Option<String>,
+    pub protocol_version: Option<String>,
+    pub tools: Vec<McpToolSummary>,
+    pub duration_ms: u32,
+    pub error: Option<String>,
 }
 
 /// Payload for creating a custom ACP agent (always the ACP driver); the id

@@ -14,9 +14,11 @@ import { copyText } from "@/ui/selectableText";
 import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
+import { ideaDiffConfig } from "./diffOptions";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
+import { mergeDividers } from "./mergeDividers";
 import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles } from "./conflicts";
 import {
@@ -92,6 +94,12 @@ const writeAutoApply = (on: boolean) => {
   }
 };
 
+// Each side against the base is compared line by line, as in the diff viewer. The default diff
+// gives up on long files and marks the whole file as one changed block.
+const SIDE_DIFF = ideaDiffConfig("none", "words");
+/** A file without a language; one value, so finding none again doesn't rebuild the panes. */
+const NO_LANGUAGE: Extension = [];
+
 export function MergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
   const [state, setState] = useState<{
@@ -116,6 +124,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const oursRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const theirsRef = useRef<HTMLDivElement>(null);
+  const leftDividerRef = useRef<HTMLDivElement>(null);
+  const rightDividerRef = useRef<HTMLDivElement>(null);
   const resultView = useRef<EditorView | null>(null);
   const oursView = useRef<EditorView | null>(null);
   const theirsView = useRef<EditorView | null>(null);
@@ -148,13 +158,16 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   useEffect(() => {
     void Promise.resolve().then(load);
   }, [load]);
+  // From a side's first line (hashbang-only scripts): the file on disk may start with a conflict marker.
+  const firstLine = state ? firstLineOf(state.ours || state.theirs) : undefined;
   useEffect(() => {
+    if (firstLine === undefined) return;
     let alive = true;
-    void languageFor(path).then((l) => alive && setLang(() => l ?? []));
+    void languageFor(path, firstLine).then((l) => alive && setLang(() => l ?? NO_LANGUAGE));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, firstLine]);
 
   useEffect(() => {
     if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;
@@ -176,7 +189,9 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) refreshMergeActions(actionHost);
       }),
-      state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      state.base !== null
+        ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true, diffConfig: SIDE_DIFF })
+        : [],
       sideControls(which, controls),
       mergeStripe(which),
       mergeTheme,
@@ -221,8 +236,12 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     }
     // Scroll the three panes together, lined up through their changes.
     const stopSync = syncMergeScroll({ ours, result, theirs });
+    const left = leftDividerRef.current;
+    const right = rightDividerRef.current;
+    const stopDividers = left && right ? mergeDividers({ ours, result, theirs }, { left, right }) : () => {};
     return () => {
       stopSync();
+      stopDividers();
       ours.destroy();
       theirs.destroy();
       result.destroy();
@@ -349,6 +368,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     applyChange: () => false,
     file: () => {},
     showSettings: () => void actionHost.run("settings"),
+    focusOpposite: () => false,
+    close: () => false,
+    swapSides: () => false,
+    showInExternalTool: () => false,
   }));
   useEffect(
     () => () => {
@@ -586,7 +609,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   return (
     <div ref={rootRef} className={styles.root} {...focusProps}>
-      <MergeToolbar summary={summary} />
+      <MergeToolbar summary={summary} step={goto} run={(c) => void runAction(c)} />
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>
         <span>
@@ -607,6 +630,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           role="region"
           onContextMenu={(e) => oursView.current && showSideMenu(e, oursView.current, "left")}
         />
+        <div ref={leftDividerRef} className={styles.divider} aria-hidden />
         <div
           ref={resultRef}
           className={styles.pane}
@@ -614,6 +638,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           role="region"
           onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current)}
         />
+        <div ref={rightDividerRef} className={styles.divider} aria-hidden />
         <div
           ref={theirsRef}
           className={styles.pane}
@@ -622,7 +647,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
         />
       </div>
-      <MergeFooter />
+      <MergeFooter run={(c) => void runAction(c)} />
     </div>
   );
 }

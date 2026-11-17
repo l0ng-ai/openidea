@@ -47,7 +47,7 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 | **Move Caret to Code Block Start** / **End**    | `⌥⌘[` / `⌥⌘]`   | `Ctrl+[` / `Ctrl+]`                            |
 | **Toggle Insert/Overwrite**                     | `Insert`        | `Insert`                                       |
 
-**Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines; they have no default shortcut.
+**Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
 
 Brackets and quotes are paired as you type, and typing a quote or bracket over a selection surrounds it. These and other typing aids (smart Home, Tab out of a closing bracket, smart indent on Enter, documentation comment stubs, what Backspace does with indentation, reformat on paste) are under **Settings › Editor › General › Smart Keys**.
 
@@ -107,6 +107,8 @@ To format on every save, enable **Reformat code** (and optionally **Optimize imp
 
 Tab placement, the tab limit and what happens when it is reached, the preview tab, sorting, and which tab is activated after one closes are set in **Settings › Editor › General › Editor Tabs**.
 
+With tabs placed left or right, the tab column is as wide as its longest name, up to a limit. Drag the column's inner edge (or focus it and press `←` / `→`) to change the limit; it applies to every editor group and is remembered.
+
 ## Split editors
 
 | Action                      | macOS | Windows / Linux |
@@ -115,7 +117,7 @@ Tab placement, the tab limit and what happens when it is reached, the preview ta
 | **Go to Next Splitter**     | `⌥⇥`  | `Alt+Tab`       |
 | **Go to Previous Splitter** | `⌥⇧⇥` | `Alt+Shift+Tab` |
 
-**Window › Editor Tabs** also offers **Split Down**, **Unsplit**, **Unsplit All**, **Move to Opposite Group**, **Open in Opposite Group** and **Change Splitter Orientation**. You can also drag a tab to an edge of the editor area to split it.
+**Window › Editor Tabs** also offers **Split Down**, **Unsplit**, **Unsplit All**, **Move to Opposite Group**, **Open in Opposite Group** and **Change Splitter Orientation**. You can also drag a tab to an edge of the editor area to split it. In the Project view, **Open in Right Split** (`⇧↵` / `Shift+Enter`, also in the context menu) opens the selected file in the split to the right.
 
 ## View options
 
@@ -126,7 +128,7 @@ Tab placement, the tab limit and what happens when it is reached, the preview ta
 | **Scroll to Center**   | `⌃L`  | `Ctrl+M`        |
 
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
-- **View › Reset Font Size in All Editors** undoes font zoom. Changing the font size with `⌘` / `Ctrl` + mouse wheel can be turned on in **Settings › Editor › General**, section **Mouse Control**.
+- **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.
 - **View › Appearance › Enter Distraction Free Mode** hides tool windows, tabs, the status bar and the gutter and centres the text. Run the same command again to leave.
 - Line numbers, whitespace, indent guides, caret style and the intention bulb are in **Settings › Editor › General › Appearance**. Breadcrumbs and sticky lines (the enclosing declarations pinned at the top while you scroll) have their own pages under **Settings › Editor › General**.
 

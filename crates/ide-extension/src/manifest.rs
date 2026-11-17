@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.8.0";
+pub const ENGINE_VERSION: &str = "1.10.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -356,6 +356,17 @@ impl Manifest {
             }
             if matches!(cap, Capability::NetAsk) {
                 self.needs_api(&format!("capability `{cap}`"), 5)?;
+            }
+            if matches!(cap, Capability::Lsp(_)) {
+                self.needs_api(&format!("capability `{cap}`"), 9)?;
+            }
+            if matches!(cap, Capability::BuildRead) {
+                self.needs_api(&format!("capability `{cap}`"), 10)?;
+            }
+            if matches!(cap, Capability::JavaAgent) {
+                return Err(
+                    "`java.agent` comes from `[[contributes.javaAgents]]`: remove it from [capabilities]".into()
+                );
             }
         }
         if let Some(dark) = &self.icon_dark {
@@ -709,6 +720,37 @@ mod tests {
             assert!(err(&format!("{BASE}{caps}")).contains("new in plugin API 1.3"), "{cap}");
             let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.3"))).unwrap();
             assert_eq!(m.capabilities.optional[0].to_string(), cap);
+        }
+    }
+
+    #[test]
+    fn language_server_capabilities_need_api_1_9() {
+        let caps = "[capabilities]
+required = [\"lsp:phoxite\"]
+";
+        for engine in ["^1.2", "^1.8"] {
+            assert!(
+                err(&format!("{}{caps}", BASE.replace("^1.2", engine))).contains("new in plugin API 1.9"),
+                "{engine}"
+            );
+        }
+        let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.9"))).unwrap();
+        assert_eq!(m.capabilities.required, [Capability::Lsp("phoxite".into())]);
+    }
+
+    #[test]
+    fn the_build_capability_needs_api_1_10() {
+        let caps = "[capabilities]\noptional = [\"build.read\"]\n";
+        assert!(err(&format!("{}{caps}", BASE.replace("^1.2", "^1.9"))).contains("new in plugin API 1.10"));
+        let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.10"))).unwrap();
+        assert_eq!(m.capabilities.optional, [Capability::BuildRead]);
+    }
+
+    #[test]
+    fn java_agent_capability_is_not_declared() {
+        for list in ["required", "optional"] {
+            let caps = format!("[capabilities]\n{list} = [\"java.agent\"]\n");
+            assert!(err(&format!("{}{caps}", BASE.replace("^1.2", "^1.10"))).contains("contributes.javaAgents"));
         }
     }
 

@@ -102,6 +102,18 @@ describe("Welcome › Projects", () => {
     expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
   });
 
+  it("shows a project whose folder is gone as unavailable", async () => {
+    recent = [
+      p("acme-api", "/Users/me/repo/acme-api", "dev"),
+      { ...p("gone", "/Users/me/worktrees/gone"), missing: true },
+    ];
+    await renderWelcome();
+    const [live, gone] = screen.getAllByRole("option");
+    expect(live!.title).toBe("/Users/me/repo/acme-api");
+    expect(gone!.title).toBe("/Users/me/worktrees/gone (unavailable)");
+    expect(within(gone!).getByText("gone").className).toMatch(/unavailable/);
+  });
+
   it("moves with arrows, filters by typing, opens with Enter and removes with Delete", async () => {
     await renderWelcome();
     const search = screen.getByLabelText("Search projects") as HTMLInputElement;

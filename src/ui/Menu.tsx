@@ -51,6 +51,8 @@ export type MenuItem =
       /** The pointer or the keyboard made it the active item (not on opening the menu). */
       onActive?: () => void;
       submenu?: MenuItem[];
+      /** The text the item copies, for choosers that show it (Copy Path/Reference…). */
+      preview?: string;
     };
 
 interface Resolved {

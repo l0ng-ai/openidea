@@ -1,6 +1,6 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { onEndpointsChanged } from "@/workbench/contributions";
-import { useFilePresentation } from "@/platform/filePresentation";
+import { useFilePresentation } from "@/ui/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";

@@ -34,6 +34,7 @@ import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
 import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
 import { evaluateWhen, getContext } from "@/platform/context";
+import { SettingsPageFocusContext } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
@@ -856,6 +857,63 @@ describe("PluginsPage", () => {
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
   });
 
+  it("lists installed and marketplace plugins together, each group foldable", async () => {
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    const installed = await screen.findByRole("list", { name: "Installed plugins" });
+    await waitFor(() => expect(within(installed).getAllByRole("listitem")).toHaveLength(3));
+    expect(screen.queryByRole("tab", { name: /Available/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Available plugins" })).toBeInTheDocument();
+    const toggle = within(installed).getByRole("button", { name: /^Installed/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(installed).queryAllByRole("listitem")).toHaveLength(0);
+    await user.click(toggle);
+    expect(within(installed).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("opens on the marketplace's themes when Settings asks for `plugins#themes`", async () => {
+    const base = createMemoryPluginsBackend([], sampleCatalog());
+    const marketEntry = (id: string, name: string, categories?: string[]): MarketPlugin => ({
+      id,
+      name,
+      version: "1.0.0",
+      description: `From the marketplace: ${name}`,
+      authors: [],
+      publisher: "acme",
+      download: `${id}.oiplugin`,
+      digest: "x",
+      capabilities: [],
+      engine: "^1.0",
+      installed: null,
+      compatible: true,
+      categories,
+    });
+    setPluginsBackend({
+      ...base,
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [marketEntry("dark-pro", "One Dark Pro", ["themes"]), marketEntry("toy-mkt", "Toy Tool")],
+    });
+    const consume = vi.fn();
+    const page = (focus: string | null) => (
+      <SettingsPageFocusContext.Provider value={{ focus, consume }}>
+        <PluginsPage />
+      </SettingsPageFocusContext.Provider>
+    );
+    const { rerender } = render(page(null));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("One Dark Pro")).toBeInTheDocument());
+
+    // What the Appearance link does: the page is shown as `plugins#themes`.
+    rerender(page("themes"));
+    await waitFor(() => expect(screen.getByLabelText("Category")).toHaveTextContent("Themes"));
+    expect(within(list).getByText("One Dark Pro")).toBeInTheDocument();
+    expect(within(list).queryByText("Toy Tool")).not.toBeInTheDocument();
+    // The request is consumed, so showing the page again does not filter again.
+    expect(consume).toHaveBeenCalled();
+  });
+
   it("offers the IntelliJ theme imports only in a trusted project's window", async () => {
     const user = userEvent.setup();
     render(
@@ -899,7 +957,6 @@ describe("PluginsPage", () => {
       setPluginsBackend(createMemoryPluginsBackend(source === "installed" ? [entry] : [], [catalog]));
       const user = userEvent.setup();
       render(<PluginsPage initialTab="installed" />);
-      if (source === "catalog") await user.click(screen.getByRole("tab", { name: /Available/ }));
       await screen.findByRole("heading", { level: 2, name: entry.name });
       return user;
     }
@@ -1014,7 +1071,6 @@ describe("PluginsPage", () => {
     const catalog = sampleCatalog();
     setPluginsBackend(createMemoryPluginsBackend([], catalog));
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Toy Language")).toBeInTheDocument());
     await user.click(within(list).getByText("Toy Language"));
@@ -1031,9 +1087,7 @@ describe("PluginsPage", () => {
       ...createMemoryPluginsBackend([], sampleCatalog()),
       marketUrl: () => Promise.reject({ kind: "unavailable", message: "Index unreachable", data: null }),
     });
-    const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     expect(await within(list).findByText("Index unreachable")).toBeInTheDocument();
     expect(within(list).queryByText("[object Object]")).not.toBeInTheDocument();
@@ -1142,7 +1196,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
@@ -1187,7 +1240,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Examples")).toBeInTheDocument());
     const headers = within(list)
@@ -1209,9 +1261,7 @@ describe("marketplace", () => {
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [],
     });
-    const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     expect(await screen.findByText("No plugin selected")).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Filter plugins" })).toHaveAttribute("placeholder", "Search plugins");
@@ -1234,7 +1284,6 @@ describe("marketplace", () => {
         <InputDialogsHost />
       </>,
     );
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     expect(screen.queryByRole("textbox", { name: /Marketplace index URL/ })).not.toBeInTheDocument();
     const edit = async (value: string) => {
       await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
@@ -1277,7 +1326,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Dusk")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Category" }));
@@ -1315,7 +1363,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Incompatible")).toBeInTheDocument());
     await user.click(within(list).getByText("Next"));
@@ -1502,6 +1549,33 @@ describe("marketplace", () => {
       expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
     },
   );
+
+  it("shows the Java agent next to the java.agent permission", async () => {
+    setPluginsBackend(
+      createMemoryPluginsBackend([
+        plugin({
+          id: "spring",
+          name: "Spring",
+          hasCode: false,
+          status: "static",
+          capabilities: [
+            {
+              id: "java.agent",
+              risk: "high",
+              description: "Run code inside the Java applications you start",
+              optional: true,
+              granted: true,
+            },
+          ],
+          contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
+        }),
+      ]),
+    );
+    render(<PluginsPage initialTab="installed" />);
+    const permissions = await screen.findByRole("list", { name: "Permissions" });
+    expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
+    expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+  });
 
   it("offers to roll back an update", async () => {
     const base = createMemoryPluginsBackend([

@@ -11,7 +11,7 @@
 .item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-list-row);
   margin: 0 6px;
   padding: 0 8px 0 6px;

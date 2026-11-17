@@ -3,7 +3,7 @@
 use crate::model::{AgentChange, AgentChanges, AgentCommit};
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_vcs::{ChangeKind, LogQuery, Repo};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -546,6 +546,25 @@ pub(crate) fn snapshot(cwd: &Path) -> IdeResult<BTreeMap<String, Stamp>> {
     // and held up starting a task in a checkout with many of them.
     let Some(repo) = Repo::discover(cwd)? else { return Ok(BTreeMap::new()) };
     Ok(repo.status()?.into_iter().map(|s| (s.rel_path, stamp(&s.path))).collect())
+}
+
+/// The files whose state changed between two snapshots of a checkout: edited, new, deleted,
+/// or back to as committed.
+pub(crate) fn changed_between(start: &BTreeMap<String, Stamp>, end: &BTreeMap<String, Stamp>) -> Vec<String> {
+    let mut changed: Vec<String> =
+        end.iter().filter(|(path, stamp)| start.get(*path) != Some(*stamp)).map(|(path, _)| path.clone()).collect();
+    changed.extend(start.keys().filter(|path| !end.contains_key(*path)).cloned());
+    changed
+}
+
+/// The changes among `changes` that the task made, when it records the files its turns
+/// changed (`None`: every change counts).
+pub(crate) fn made_by_task(changes: Vec<AgentChange>, touched: Option<&BTreeSet<String>>) -> Vec<AgentChange> {
+    let Some(touched) = touched else { return changes };
+    changes
+        .into_iter()
+        .filter(|c| touched.contains(&c.rel_path) || c.old_path.as_ref().is_some_and(|old| touched.contains(old)))
+        .collect()
 }
 
 /// Drops the changes that were there before the task and haven't been touched since.
@@ -1183,5 +1202,21 @@ mod tests {
         // The user's own edit survives; the other file comes over.
         assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nMINE\n");
         assert_eq!(std::fs::read_to_string(repo.join("gone.txt")).unwrap(), "bye\nbye\n");
+    }
+
+    #[test]
+    fn a_turn_changed_the_files_whose_state_moved() {
+        let start: BTreeMap<String, Stamp> =
+            [("edited", Some((1, 1))), ("same", Some((2, 2))), ("reverted", Some((3, 3)))]
+                .into_iter()
+                .map(|(p, s)| (p.to_owned(), s))
+                .collect();
+        let end: BTreeMap<String, Stamp> = [("edited", Some((1, 9))), ("same", Some((2, 2))), ("new", Some((4, 4)))]
+            .into_iter()
+            .map(|(p, s)| (p.to_owned(), s))
+            .collect();
+        let mut changed = changed_between(&start, &end);
+        changed.sort();
+        assert_eq!(changed, ["edited", "new", "reverted"]);
     }
 }

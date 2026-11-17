@@ -35,7 +35,7 @@
 .agentRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   min-width: 0;
   padding: 0 8px;
@@ -69,7 +69,7 @@
 .registryState {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 6px 12px;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
@@ -79,7 +79,7 @@
 .customActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px;
   border-top: 1px solid var(--border);
 }
@@ -116,7 +116,7 @@
 .facts {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   margin-top: 2px;
   color: var(--fg-muted);
@@ -143,12 +143,12 @@
 .actions {
   display: flex;
   flex: none;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .progress {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 360px;
   margin: 10px 0 0 34px;
 }
@@ -182,7 +182,7 @@
 }
 .links {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .link {
   padding: 0;
@@ -209,7 +209,7 @@
 .sectionTitle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: 22px;
   margin-bottom: 4px;
   color: var(--fg-strong);
@@ -244,7 +244,7 @@
   grid-template-columns: minmax(150px, max-content) minmax(0, 1fr);
   align-items: center;
   column-gap: 10px;
-  row-gap: 4px;
+  row-gap: var(--space-1);
   min-width: 0;
 }
 .label {
@@ -278,7 +278,7 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   max-width: 480px;
 }

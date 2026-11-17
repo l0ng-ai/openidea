@@ -24,6 +24,8 @@ pub use words::{MIN_WORD_CHARS, WordSpan, words};
 pub enum RegionKind {
     Comment,
     String,
+    /// A raw / verbatim string: `\` is literal text, not an escape (`r"\user"`).
+    RawString,
     /// A declared identifier (`camelCase` / `snake_case` split).
     Name,
     /// Plain text / Markdown prose.
@@ -53,7 +55,7 @@ impl From<RegionKind> for TypoContext {
     fn from(kind: RegionKind) -> Self {
         match kind {
             RegionKind::Name => Self::Code,
-            RegionKind::String => Self::Literal,
+            RegionKind::String | RegionKind::RawString => Self::Literal,
             RegionKind::Comment => Self::Comment,
             RegionKind::Prose => Self::Prose,
         }
@@ -89,7 +91,7 @@ impl SpellScope {
     pub fn includes(&self, kind: RegionKind) -> bool {
         match kind {
             RegionKind::Name => self.code,
-            RegionKind::String => self.literals,
+            RegionKind::String | RegionKind::RawString => self.literals,
             RegionKind::Comment => self.comments,
             RegionKind::Prose => true,
         }
@@ -676,6 +678,15 @@ mod tests {
         let typos = s.check(text, &regions, &|| false).unwrap();
         let found: Vec<_> = typos.iter().map(|t| (t.word.as_str(), t.context)).collect();
         assert_eq!(found, [("mesage", TypoContext::Code)]);
+    }
+
+    #[test]
+    fn raw_strings_do_not_lose_the_letter_after_a_backslash() {
+        let s = Speller::default();
+        let text = r#"r"\user \mesage""#;
+        let regions = [Region { start: 0, end: text.len(), kind: RegionKind::RawString }];
+        let typos = s.check(text, &regions, &|| false).unwrap();
+        assert_eq!(typos.iter().map(|t| t.word.as_str()).collect::<Vec<_>>(), ["mesage"]);
     }
 
     #[test]

@@ -4,14 +4,15 @@
  * for the script, or a temporary one when it has none.
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource, mapLineStart, type EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
+import { runIconsShown } from "./runGutter";
 import { loadConfigs, useRun } from "./store";
 import styles from "./Run.module.css";
 
@@ -21,13 +22,15 @@ export interface ScriptEntry {
   line: number;
 }
 
+/** The top-level `scripts` entries of `package.json` text, in document order. */
+export const scriptEntries = (text: string): ScriptEntry[] => objectEntries(text, "scripts");
+
 /**
- * The top-level `scripts` entries of `package.json` text, in document order
- * (a small JSON scanner: script values may contain braces, colons, escapes).
- * Entries parsed so far survive malformed text, so a trailing comma keeps
- * earlier scripts visible.
+ * The keys of the top-level object `section` of JSON text, in document order
+ * (a small JSON scanner: values may contain braces, colons, escapes). Entries
+ * parsed so far survive malformed text, so a trailing comma keeps earlier ones visible.
  */
-export function scriptEntries(text: string): ScriptEntry[] {
+export function objectEntries(text: string, section: string): ScriptEntry[] {
   const entries: ScriptEntry[] = [];
   let i = 0;
   let line = 0;
@@ -132,7 +135,7 @@ export function scriptEntries(text: string): ScriptEntry[] {
         if (text[i] !== ":") break;
         i++;
         ws();
-        if (key === "scripts" && text[i] === "{") {
+        if (key === section && text[i] === "{") {
           i++;
           ws();
           if (text[i] !== "}") {
@@ -153,7 +156,7 @@ export function scriptEntries(text: string): ScriptEntry[] {
               break;
             }
           }
-          i++; // the closing `}` of `scripts`
+          i++; // the closing `}` of the section
         } else {
           value();
         }
@@ -302,19 +305,13 @@ interface Placed extends ScriptEntry {
 
 const setEntries = StateEffect.define<Placed[]>();
 
-const entriesField = StateField.define<Placed[]>({
-  create: () => [],
-  update(value, tr) {
-    for (const e of tr.effects) if (e.is(setEntries)) return e.value;
-    if (!tr.docChanged) return value;
-    return value.map((p) => ({ ...p, pos: tr.state.doc.lineAt(tr.changes.mapPos(p.pos, -1)).from }));
-  },
-});
+type EntryMenu = (entry: ScriptEntry, path: string, content: string) => Promise<MenuItem[]>;
 
 class ScriptMarker extends GutterMarker {
   constructor(
     readonly entry: ScriptEntry,
     readonly path: string,
+    readonly menu: EntryMenu,
   ) {
     super();
   }
@@ -330,7 +327,7 @@ class ScriptMarker extends GutterMarker {
     el.innerHTML = gutterIconMarkup("gutter-run") ?? "";
     el.addEventListener("click", () => {
       const rect = el.getBoundingClientRect();
-      void scriptMenuItems(this.entry, this.path, view.state.doc.toString()).then((items) =>
+      void this.menu(this.entry, this.path, view.state.doc.toString()).then((items) =>
         showContextMenu({ x: rect.left, y: rect.bottom + 2 }, items),
       );
     });
@@ -338,13 +335,32 @@ class ScriptMarker extends GutterMarker {
   }
 }
 
-const scriptSpacer = gutterSpacer(styles.runMarker ?? "");
-
 const DEBOUNCE = 300;
 
 export function npmGutter(ctx: EditorDocContext): Extension {
+  return entryGutter(ctx, /(^|\/)package\.json$/, scriptEntries, scriptMenuItems);
+}
+
+/**
+ * Run ▶ icons on the entries `entries` finds in files matching `file`; a click opens `menu`.
+ * Shared by `package.json` scripts and `launchSettings.json` profiles.
+ */
+export function entryGutter(
+  ctx: EditorDocContext,
+  file: RegExp,
+  entries: (text: string) => ScriptEntry[],
+  menu: EntryMenu,
+): Extension {
   const path = ctx.path;
-  if (ctx.virtual || !/(^|\/)package\.json$/.test(path) || !useProject.getState().project?.root) return [];
+  if (ctx.virtual || !file.test(path) || !useProject.getState().project?.root) return [];
+  const entriesField = StateField.define<Placed[]>({
+    create: () => [],
+    update(value, tr) {
+      for (const e of tr.effects) if (e.is(setEntries)) return e.value;
+      if (!tr.docChanged) return value;
+      return value.map((p) => ({ ...p, pos: mapLineStart(tr, p.pos) }));
+    },
+  });
   const detector = ViewPlugin.fromClass(
     class {
       timer: ReturnType<typeof setTimeout> | undefined;
@@ -358,10 +374,10 @@ export function npmGutter(ctx: EditorDocContext): Extension {
         clearTimeout(this.timer);
         this.timer = setTimeout(() => {
           const view = this.view;
-          const entries = scriptEntries(view.state.doc.toString())
+          const found = entries(view.state.doc.toString())
             .filter((e) => e.line < view.state.doc.lines)
             .map((e) => ({ ...e, pos: view.state.doc.line(e.line + 1).from }));
-          view.dispatch({ effects: setEntries.of(entries) });
+          view.dispatch({ effects: setEntries.of(found) });
         }, delay);
       }
       destroy() {
@@ -372,24 +388,22 @@ export function npmGutter(ctx: EditorDocContext): Extension {
   return [
     entriesField,
     detector,
-    gutter({
-      // Shares the run gutter's class so "Show run icons" hides these too.
-      class: `${styles.runGutter} cm-openidea-gutter-run`,
+    // In the shared icon area with the other run icons; hidden with them.
+    iconAreaSource.of({
+      order: 10,
       markers: (view) =>
-        RangeSet.of(
-          view.state.field(entriesField).map((e) => new ScriptMarker(e, path).range(e.pos)),
-          true,
-        ),
-      // Reserve width only while the file has scripts, like the run gutter.
-      initialSpacer: () => emptyGutterSpacer,
-      updateSpacer: (_spacer, update) => (update.state.field(entriesField).length ? scriptSpacer : emptyGutterSpacer),
-      domEventHandlers: {
-        mousedown: (view, block, event) => {
-          const entry = view.state.field(entriesField).find((e) => e.pos === block.from);
-          if (!entry || (event as MouseEvent).button !== 0) return false;
-          event.preventDefault();
-          return true;
-        },
+        runIconsShown()
+          ? RangeSet.of(
+              view.state.field(entriesField).map((e) => new ScriptMarker(e, path, menu).range(e.pos)),
+              true,
+            )
+          : RangeSet.empty,
+      reserve: (state) => runIconsShown() && state.field(entriesField).length > 0,
+      // The marker's own click opens the menu; keep the press from moving the caret.
+      mousedown: (_view, _block, event) => {
+        if (event.button !== 0 || !(event.target as HTMLElement).closest?.(`.${styles.runMarker}`)) return false;
+        event.preventDefault();
+        return true;
       },
     }),
   ];

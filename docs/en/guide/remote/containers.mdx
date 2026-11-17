@@ -96,4 +96,7 @@ Container target options:
 | **Run options**                                                     | Extra `docker run` options, for example `--network host`.                                                                                         |
 | **Run as the image's user, not the project folder's owner (Linux)** | On Linux the container runs as the owner of the project folder by default, so the files it writes stay yours. Tick this to keep the image's user. |
 
+A container target can also be the project's Python interpreter, so the editor resolves the packages installed in the
+image; see [Python](/en/languages/python#a-docker-or-compose-run-target-as-the-interpreter).
+
 See [Run configurations](/en/guide/run) for run targets in general, including SSH targets.

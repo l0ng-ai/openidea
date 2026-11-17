@@ -153,6 +153,11 @@ describe("markdown preview rendering", () => {
     ["close right after the text", "<details>\n<summary>S</summary>\n\nContent\n</details>\n", "details > p"],
     ["kept open", "<details open>\n<summary>S</summary>\n\n- a\n- b\n\n</details>\n", "details[open] > ul > li"],
     ["a centred README header", '<div align="center">\n\n# Title\n\n</div>\n', "div[align='center'] > h1"],
+    [
+      "an aligned mermaid container",
+      '<div align="left" style="width: 960px;">\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n</div>\n',
+      "div[align='left']:not([style]) > [data-mermaid]",
+    ],
     ["a section", "<section>\n\n```js\nx\n```\n\n</section>\n", "section > pre > code"],
     ["upper case", "<DETAILS>\n<SUMMARY>S</SUMMARY>\n\nContent\n\n</DETAILS>\n", "details > p"],
     ["a list item", "- item\n  <details>\n  <summary>S</summary>\n\n  body\n\n  </details>\n", "li details"],

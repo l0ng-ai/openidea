@@ -1,5 +1,6 @@
 //! Pull Members Up / Push Members Down through the app-owned JDT extension
-//! (`java/java-usages`). The server checks the move and computes the edit; the UI
+//! (`java/java-usages`), or through Phoxite's own requests when the document's
+//! server advertises them (`crate::phoxite`). The server checks the move and computes the edit; the UI
 //! shows its problems and applies the edit itself.
 use super::COMMAND_TIMEOUT;
 use crate::types::{HierarchyChoice, HierarchyMembers, HierarchyRefactored, HierarchyRefactoring, RefactoringProblem};
@@ -75,6 +76,9 @@ impl LspManager {
         kind: HierarchyRefactoring,
         cancel: CancellationToken,
     ) -> IdeResult<HierarchyMembers> {
+        if let Some(phoxite) = self.phoxite_refactor_target(doc).await {
+            return self.phoxite_hierarchy_members(&phoxite, pos, kind, &cancel).await;
+        }
         let (members, _, _) = self.hierarchy_command(doc, pos, kind, MEMBERS, &[], &cancel).await?;
         Ok(members)
     }
@@ -89,6 +93,9 @@ impl LspManager {
         choices: Vec<HierarchyChoice>,
         cancel: CancellationToken,
     ) -> IdeResult<HierarchyRefactored> {
+        if let Some(phoxite) = self.phoxite_refactor_target(doc).await {
+            return self.phoxite_hierarchy_refactor(&phoxite, pos, kind, target, &choices, &cancel).await;
+        }
         let choices: Vec<Value> = choices.iter().map(|c| json!({ "id": c.id, "abstract": c.make_abstract })).collect();
         let (refactored, _, t): (Refactored, _, _) =
             self.hierarchy_command(doc, pos, kind, REFACTOR, &[json!(target), json!(choices)], &cancel).await?;

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { fileHref, findAll, findRanges, formatDuration, pathLink, quoteText, withQuote } from "./conversation";
+import {
+  fileHref,
+  findAll,
+  findRanges,
+  formatDuration,
+  isFindRangeShown,
+  pathLink,
+  quoteText,
+  symbolRef,
+  withQuote,
+} from "./conversation";
 
 describe("quoting", () => {
   it("quotes each line and leaves a line to type on", () => {
@@ -33,6 +43,44 @@ describe("pathLink", () => {
       "tests/",
     ]) {
       expect(pathLink(t, cwd)).toBeNull();
+    }
+  });
+});
+
+describe("symbolRef", () => {
+  it("reads the forms a reply names a symbol in", () => {
+    expect(symbolRef("FooView")).toMatchObject({ name: "FooView", kinds: expect.arrayContaining(["class"]) });
+    expect(symbolRef("load()")).toMatchObject({ name: "load", kinds: ["function", "method", "constructor"] });
+    expect(symbolRef("validate(input)")).toMatchObject({ name: "validate" });
+    expect(symbolRef("has_header")).toMatchObject({ name: "has_header", kinds: ["function", "method", "constructor"] });
+    expect(symbolRef("loadConfig")).toMatchObject({ name: "loadConfig" });
+    expect(symbolRef("Config.load")).toMatchObject({ name: "load", container: "Config" });
+    expect(symbolRef("Config::load()")).toMatchObject({ name: "load", container: "Config" });
+    expect(symbolRef("lib.rs::has_header")).toMatchObject({ name: "has_header", file: "lib.rs" });
+    expect(symbolRef("src/a.ts#load")).toMatchObject({ name: "load", file: "src/a.ts" });
+  });
+  it("leaves words, keywords, literals, commands and code plain", () => {
+    for (const text of [
+      "true",
+      "null",
+      "inventory",
+      "None",
+      "False",
+      "Self",
+      "Some(x)",
+      "None.value",
+      "42",
+      "1.5",
+      "cargo test",
+      "git log --oneline",
+      "x = 1",
+      "a && b",
+      "$HOME",
+      "foo(bar(1))",
+      "TODO",
+      "src/",
+    ]) {
+      expect(symbolRef(text)).toBeNull();
     }
   });
 });
@@ -83,5 +131,29 @@ describe("finding", () => {
     root.innerHTML = "<p>one <code>two</code> one</p>";
     expect(findRanges(root, "one").map((r) => r.toString())).toEqual(["one", "one"]);
     expect(findRanges(root, "TWO")).toHaveLength(1);
+  });
+  it("skips user-select:none chrome, buttons, svgs and mermaid source, and hides ranges in closed <details>", () => {
+    const root = document.createElement("div");
+    root.innerHTML = [
+      '<details><summary style="user-select: none">Confirming summary</summary><div>hidden confirm body</div></details>',
+      "<details><summary>stop_bash confirm</summary><pre>tool confirm output</pre></details>",
+      "<button>confirm button</button>",
+      "<svg><text>confirm svg</text></svg>",
+      '<div data-mermaid-state="ok"><pre><code>graph TD; confirm</code></pre></div>',
+      "<p>Visible confirm</p>",
+    ].join("");
+    const ranges = findRanges(root, "confirm");
+    expect(ranges.map((r) => r.startContainer.parentElement?.tagName)).toEqual(["DIV", "SUMMARY", "PRE", "P"]);
+
+    // Simulate WebKit's content-visibility: hidden on closed <details>, where getClientRects() stays non-empty.
+    for (const r of ranges) r.getClientRects = () => [new DOMRect(0, 0, 10, 10)] as unknown as DOMRectList;
+    expect(ranges.filter((r) => isFindRangeShown(r, root)).map((r) => r.startContainer.parentElement?.tagName)).toEqual(
+      ["SUMMARY", "P"],
+    );
+
+    for (const d of root.querySelectorAll("details")) d.open = true;
+    expect(ranges.filter((r) => isFindRangeShown(r, root)).map((r) => r.startContainer.parentElement?.tagName)).toEqual(
+      ["DIV", "SUMMARY", "PRE", "P"],
+    );
   });
 });

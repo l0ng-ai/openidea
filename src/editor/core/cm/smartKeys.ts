@@ -125,15 +125,23 @@ const tabOutScopes = StateField.define<readonly Scope[]>({
   },
 });
 
-/** Empty scopes between the bracket / quote pairs a typing transaction auto-inserted. */
+/** Empty scopes between bracket / quote pairs a typing or completion transaction inserted. */
 function insertedPairs(tr: Transaction): Scope[] {
-  if (!tr.isUserEvent("input.type")) return [];
+  const completed = tr.isUserEvent("input.complete");
+  if (!completed && !tr.isUserEvent("input.type")) return [];
   const out: Scope[] = [];
-  tr.changes.iterChanges((_fa, _ta, fromB, toB, inserted) => {
+  tr.changes.iterChanges((_fa, _ta, _fromB, toB, inserted) => {
     const text = inserted.toString();
-    if (toB - fromB !== 2 || PAIRS[text[0]!] !== text[1]) return;
-    const inside = fromB + 1;
-    if (tr.newSelection.ranges.some((r) => r.empty && r.head === inside)) out.push({ from: inside, to: inside });
+    // Typing inserts just the pair; a completion inserts a whole word plus its `()`, so the
+    // pair is the tail of the inserted text.
+    const pair = completed ? text.slice(-2) : text;
+    if (pair.length !== 2 || PAIRS[pair[0]!] !== pair[1]) return;
+    const inside = toB - 1;
+    // A call snippet without stops leaves the caret after `)` and a later selection-only
+    // transaction moves it back inside. Register the pair while the text is inserted: that
+    // transaction does not change the document, so the scope survives until the caret arrives.
+    if (completed || tr.newSelection.ranges.some((r) => r.empty && r.head === inside))
+      out.push({ from: inside, to: inside });
   });
   return out;
 }

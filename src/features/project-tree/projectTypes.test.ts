@@ -45,11 +45,10 @@ describe("automatic project types", () => {
     expect([...useProjectTree.getState().projectTypes.values()]).toEqual(Array(9).fill("go"));
     expect(backend.fsReadDir).toHaveBeenCalledTimes(9);
   });
-  it("leaves a single project root alone", async () => {
+  it("detects the type for New menu templates in a single project", async () => {
     initProjectTree("/app");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(backend.fsReadDir).not.toHaveBeenCalled();
-    expect(useProjectTree.getState().projectTypes.size).toBe(0);
+    await waitFor(() => expect(useProjectTree.getState().projectTypes.get("/app")).toBe("node"));
+    expect(backend.fsReadDir).toHaveBeenCalledExactlyOnceWith("/app");
   });
   it("refreshes only affected markers and clears a removed project type", async () => {
     initProjectTree("/ws", "Workspace", ["/a", "/b"]);

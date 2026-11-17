@@ -10,6 +10,7 @@ description: "贡献运行配置，把测试输出解析进测试树，从代码
 | ---------------------------------------------- | --------------------------------------------------------------- | --------- |
 | 项目包含某个标记文件时提供固定命令             | `[[contributes.runDetectors]]`（无需代码）                      | 1.0       |
 | 在代码中计算项目的运行配置                     | `[[contributes.runConfigurations]]` + `run-configurations` 导出 | 1.4       |
+| 给配置加上环境变量和调试器                     | `launch-configurations` 导出                                    | 1.9       |
 | 把测试输出转成 IDE 的测试树                    | `test-results` 导出，`framework = "plugin"`                     | 1.4       |
 | 从命令中启动自己的某个配置                     | `host::start_run`（WIT `run.start`）                            | 1.4       |
 | 让项目的所有运行都经过包装程序（DDEV、容器等） | `host::register_run_target`（WIT `run-targets`）                | 1.4       |
@@ -70,6 +71,40 @@ register_plugin!(TestRunner, run_configurations);
 每个 `PluginRunConfiguration` 包含 `id`、`name`、`program`、`args`、可选的项目内 `cwd`、`test` 和可选的 `framework`。
 请返回该项目根目录的完整列表；列出配置时会刷新。宿主最多保留 1000 项 / 4 MiB，导出失败时保留上一次有效的列表，
 程序未获批准的条目不会提供。该导出在没有窗口的情况下运行，不能弹出对话框。
+
+## 环境变量和调试器
+
+从 API 1.9 起，可以改为导出 `launch-configurations`（实现 `LaunchConfigurations`，注册为 `launch_configurations`），
+给每个配置加上环境变量和调试器。组件同时导出两者时，IDE 使用这一个。
+
+```rust
+use openidea_plugin::{Debugger, LaunchConfigurations, PluginLaunchConfiguration, PluginRunConfiguration};
+
+impl LaunchConfigurations for Functions {
+    fn launch_configurations(&mut self, _root: &str) -> Vec<PluginLaunchConfiguration> {
+        vec![PluginLaunchConfiguration {
+            config: PluginRunConfiguration {
+                id: "func".into(),
+                name: "Functions host".into(),
+                program: "func".into(),
+                args: vec!["start".into(), "--dotnet-isolated-debug".into()],
+                ..Default::default()
+            },
+            env: vec![("FUNCTIONS_WORKER_RUNTIME".into(), "dotnet-isolated".into())],
+            debugger: Some(Debugger::AttachChild { kind: "dotnet".into(), command_contains: None }),
+        }]
+    }
+}
+
+register_plugin!(Functions, launch_configurations);
+```
+
+- `env` 最多给运行的环境添加 64 个变量。和 `process` 命令一样只能新增：IDE 自身环境里已有的变量名（`PATH` 等）会让整个列表无效。
+- `debugger: None` 保持默认行为：Debug 根据 `args` 中的源文件推断调试器。
+- `Debugger::Launch { language }` 在该语言的调试器（其 `[debugger]`）下启动 `program`，适用于参数里没有源文件的程序。
+- `Debugger::AttachChild { kind, command_contains }` 让 Debug 先像 Run 一样运行配置，再附加到这次运行启动的第一个该类型进程
+  （`dotnet`、`node`、`python`、`go` 或 `native`，与 Attach to Process 相同），可选地只匹配命令行包含 `command_contains` 的进程。
+  只有这次运行自己的进程才是候选。IDE 在运行期间最多等待一分钟；没有匹配时运行继续，但不附加调试器。
 
 ## 测试结果
 

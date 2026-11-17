@@ -19,7 +19,7 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .targets {
@@ -41,7 +41,7 @@
   display: grid;
   grid-template-columns: 1fr 110px;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 8px;
   min-height: var(--h-list-row);
 }
@@ -88,6 +88,6 @@
 .busy {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }

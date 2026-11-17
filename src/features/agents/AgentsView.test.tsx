@@ -230,7 +230,17 @@ describe("Agents docked view", () => {
       { kind: "action", action: "agents.useEditor", icon: "", checked: false },
       { kind: "separator" },
       { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
+      { kind: "action", action: "agents.importSessions", icon: "download" },
     ]);
+  });
+
+  it("lists Import Sessions from Other Apps in Find Action", () => {
+    const action = taskActions.find((a) => a.id === "agents.importSessions");
+    expect(action?.hidden).toBeFalsy();
+    expect(action?.when).toBe("projectOpen");
+    act(() => void action?.run({} as never));
+    expect(useAgents.getState().importOpen).toBe(true);
+    act(() => useAgents.setState({ importOpen: false }));
   });
 
   it("opens tabs as usual without a docked conversation", () => {
@@ -331,6 +341,23 @@ describe("Agents task menu", () => {
     // A click opens the task: the menu doesn't repeat it.
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
     expect(menu[0]).toMatchObject({ action: "agents.renameTask" });
+  });
+
+  it("offers Terminal for worktree or off-root tasks and hides it for local-checkout tasks at the project root", () => {
+    const localMenu = taskMenu([{ ...task("one", "ready", "local"), projectRoot: "/project", cwd: "/project" }]);
+    expect(localMenu).not.toContainEqual(expect.objectContaining({ action: "terminal.openAt" }));
+
+    const worktree = { ...task("two", "ready", "worktree"), cwd: "/worktrees/two" };
+    const worktreeMenu = taskMenu([worktree]);
+    expect(worktreeMenu).toContainEqual(
+      expect.objectContaining({ action: "terminal.openAt", label: "Terminal", arg: "/worktrees/two" }),
+    );
+
+    const subfolder = { ...task("three", "ready", "local"), projectRoot: "/project", cwd: "/project/packages/api" };
+    const subfolderMenu = taskMenu([subfolder]);
+    expect(subfolderMenu).toContainEqual(
+      expect.objectContaining({ action: "terminal.openAt", label: "Terminal", arg: "/project/packages/api" }),
+    );
   });
 });
 

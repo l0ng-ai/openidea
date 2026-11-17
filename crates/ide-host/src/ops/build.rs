@@ -311,12 +311,11 @@ pub async fn build_sync(
     if completion_token.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    if tool == BuildTool::Gradle {
-        // The sync may report project folders outside the project (`includeFlat`): index and list them.
-        project.refresh_index_scope();
-        let p = project.clone();
-        tokio::task::spawn_blocking(move || p.refresh_repositories());
-    }
+    // Gradle may report project folders outside the project (`includeFlat`), and a Maven
+    // reactor may have gained or dropped modules beside it: index and list them.
+    project.refresh_index_scope();
+    let p = project.clone();
+    tokio::task::spawn_blocking(move || p.refresh_repositories());
     // New source folders and dependency versions: the Project view and External Libraries reload.
     project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
     if tool == BuildTool::Maven
@@ -468,12 +467,54 @@ pub async fn gradle_dependencies(
             gradle_command: Some(gradle.command.clone()),
             ..Default::default()
         };
-        ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)
+        let dependencies =
+            ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)?;
+        // What plugins read of the build (`build.dependencies`) instead of running Gradle.
+        let report = ide_build::GradleReport { project: gradle_path, configuration, dependencies };
+        let cache = ide_build::gradle::cache_dir(&scope.cache, &gradle.dir);
+        if let Err(e) = ide_build::save_gradle_report(&scope.root, &cache, gradle, &report) {
+            tracing::debug!("keeping the dependencies report of {}: {e}", report.project);
+        }
+        Ok(report.dependencies)
     })
     .await
     .map_err(join_err);
     host.end_request(request);
     result?
+}
+
+/// What the Dependency Analyzer has of the builds of `project` at `root` (the project, or one
+/// of its workspace members), without running a build tool: the Maven modules as last synced
+/// and the Gradle reports read since the build files last changed.
+pub(crate) fn analyzed_dependencies(
+    project: &Project,
+    config: &Path,
+    root: &Path,
+) -> IdeResult<crate::plugins::BuildGraph> {
+    let mut graph = crate::plugins::BuildGraph::default();
+    for scope in workspace::scopes(project, config)?.iter().filter(|s| root == project.root || s.root == root) {
+        let settings = &scope.settings;
+        let model = ide_build::load_linked(
+            &scope.root,
+            &scope.cache,
+            ide_sdk::apply::maven_local_repository(&scope.root, settings),
+            &settings.languages.java.maven,
+            &settings.languages.java.gradle,
+        );
+        graph.maven.extend(model.maven.into_iter().flat_map(|m| m.projects));
+        for build in &model.gradle {
+            let reports =
+                ide_build::gradle_reports(&scope.root, &ide_build::gradle::cache_dir(&scope.cache, &build.dir), build);
+            // buildSrc can't be analyzed from the build, as in the Dependency Analyzer.
+            for p in build.projects.iter().filter(|p| !p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc"))) {
+                graph.gradle.push(crate::plugins::GradleModule {
+                    path: p.path.clone(),
+                    reports: reports.iter().filter(|r| r.project == p.path).cloned().collect(),
+                });
+            }
+        }
+    }
+    Ok(graph)
 }
 
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.
@@ -641,6 +682,82 @@ pub async fn maven_exclude_dependency(
     .map_err(join_err)?
 }
 
+/// Build / Rebuild / Build Artifacts of a Java project without a build tool, from its
+/// Project Structure; `None` when it has no Java sources under its source roots.
+fn structure_plan(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    kind: BuildKind,
+    cache: &Path,
+) -> IdeResult<Option<compile::BuildPlan>> {
+    let (ps, roots, jdk) = structure_inputs(root, settings, detected);
+    compile::structure_plan(root, &ps, &roots, jdk.as_ref(), &settings.languages.java.language_level, kind, cache)
+}
+
+/// The Project Structure, roots and JDK a build of a project without a build tool uses.
+/// An Eclipse project's `.classpath` libraries and its web content folder count as if they
+/// were configured, and a web project with no artifacts gets IDEA's `<name>:war exploded`.
+pub(crate) fn structure_inputs(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+) -> (ide_core::settings::ProjectStructureSettings, compile::StructureRoots, Option<compile::StructureJdk>) {
+    use ide_core::settings::{ArtifactConfig, ArtifactKind, FacetConfig, ProjectLibrary};
+    use ide_workspace::roots::{ProjectRoots, RootKind, eclipse};
+    let mut ps = settings.project_structure.clone();
+    let mut included = Vec::new();
+    if let Some(cp) = eclipse::classpath(root).filter(|cp| !cp.libraries.is_empty()) {
+        let name = "Eclipse classpath".to_owned();
+        if !ps.libraries.iter().any(|l| l.name == name) {
+            ps.libraries.push(ProjectLibrary { name: name.clone(), classes: cp.libraries, ..Default::default() });
+        }
+        included.push(name);
+    }
+    if !ps.facets.iter().any(|f| f.kind == "web")
+        && let Some(web) = eclipse::web_root(root)
+    {
+        ps.facets.push(FacetConfig {
+            kind: "web".into(),
+            module: ".".into(),
+            descriptor: format!("{web}/WEB-INF/web.xml"),
+            web_root: web,
+        });
+        if ps.artifacts.is_empty() {
+            let name = root.file_name().map_or_else(|| "app".into(), |n| n.to_string_lossy().into_owned());
+            ps.artifacts.push(ArtifactConfig {
+                name: format!("{name}:war exploded"),
+                kind: ArtifactKind::WarExploded,
+                module: ".".into(),
+                include_libraries: included,
+                ..Default::default()
+            });
+        }
+    }
+    let roots = ProjectRoots::compute(detected.to_vec(), &ps);
+    let of = |kind: RootKind| roots.roots.iter().filter(|r| r.kind == kind).map(|r| root.join(&r.path)).collect();
+    let module = ps.module_settings(root, root);
+    let level = module
+        .map(|m| m.language_level.as_str())
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or(&settings.languages.java.language_level);
+    // Without a configured SDK, an installed JDK that can compile the language level.
+    let jdk = ide_sdk::apply::module_jdk(root, root, settings)
+        .or_else(|| {
+            let installed = ide_sdk::java::installed_jdks();
+            ide_sdk::java::pick_jdk(&installed, compile::language_release(level)).cloned()
+        })
+        .map(|j| compile::StructureJdk { home: j.home, major: j.major });
+    let roots = compile::StructureRoots {
+        sources: of(RootKind::Source),
+        tests: of(RootKind::Test),
+        resources: of(RootKind::Resources),
+        test_resources: of(RootKind::TestResources),
+        excluded: of(RootKind::Excluded),
+    };
+    (ps, roots, jdk)
+}
+
 fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
     let commands = ide_run::cmake_build_configs(configs, id)?;
     let title = commands.last().map(|c| c.name.clone()).unwrap_or_default();
@@ -675,6 +792,7 @@ pub async fn build_run(
     let project = host.project(window)?;
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
     let settings = project.settings.effective();
+    let detected = project.detected_roots.read().clone();
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
@@ -738,17 +856,15 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            prepare_plan(
-                compile::plan(
-                    &root,
-                    &with_profiles(load(&root, &cache, &settings), &cache),
-                    kind,
-                    file.as_deref(),
-                    settings.cmake.profiles.as_deref(),
-                )?,
-                &root,
-                &settings,
-            )
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            match compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref()) {
+                Ok(plan) => prepare_plan(plan, &root, &settings),
+                // No build tool: a Java project builds from its Project Structure.
+                Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => {
+                    structure_plan(&root, &settings, &detected, kind, &cache)?.ok_or(e)?
+                }
+                Err(e) => return Err(e),
+            }
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);

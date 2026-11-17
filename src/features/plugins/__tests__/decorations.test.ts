@@ -4,6 +4,7 @@ import { EditorView } from "@codemirror/view";
 import type { DecorationSet } from "@/bindings";
 import { _addEditor, _removeEditor, type EditorDocContext, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
+import { fileIconName, registerExternalIcons, themedFolderIconName } from "@/ui";
 import { getFileDecoration } from "@/workbench/contributions";
 import { decorationExtension, setPluginDecorations } from "../decorations";
 import { capabilityDescription } from "../consent";
@@ -87,6 +88,41 @@ it("shows a tree note after the name without colouring the file", () => {
   setPluginDecorations("test", []);
 });
 
+it("resolves dynamic file and folder icons declared by the plugin", () => {
+  const unregister = registerExternalIcons([
+    ["ext:fileIcon/test/helm-template", '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="#39989F"/></svg>'],
+    ["ext:fileIcon/test/helm-dir", '<svg viewBox="0 0 16 16"><rect width="16" height="16" fill="#39989F"/></svg>'],
+  ]);
+  try {
+    setPluginDecorations("test", [
+      {
+        root: "/p",
+        path: "/p/chart",
+        setId: "icons",
+        tree: true,
+        items: [],
+        file: { style: "", badge: null, tooltip: "Helm chart", icon: "helm-dir" },
+      },
+      {
+        root: "/p",
+        path: "/p/chart/templates/stage.yaml",
+        setId: "icons",
+        tree: true,
+        items: [],
+        file: { style: "", badge: null, tooltip: "Helm template", icon: "helm-template" },
+      },
+    ]);
+    expect(themedFolderIconName("chart", false, false, "/p/chart")).toBe("ext:fileIcon/test/helm-dir");
+    expect(fileIconName("stage.yaml", "/p/chart/templates/stage.yaml")).toBe("ext:fileIcon/test/helm-template");
+    expect(getFileDecoration("/p/chart")?.tooltip).toBe("Helm chart");
+    setPluginDecorations("test", []);
+    expect(themedFolderIconName("chart", false, false, "/p/chart")).toBeNull();
+    expect(fileIconName("stage.yaml", "/p/chart/templates/stage.yaml")).toBe("file-yaml");
+  } finally {
+    unregister();
+  }
+});
+
 it("selects UTF-16 ranges and reveals without changing text", () => {
   handleRuntimeEvent({ type: "editorRanges", path: ctx.path, ranges: [range], reveal: false });
   expect(editor.view.state.selection.main.from).toBe(2);
@@ -111,4 +147,15 @@ it("describes ide.commands explicitly in consent", () => {
     risk: "high",
   });
   expect(description).toContain("including running programs, committing and pushing");
+});
+
+it("names the language server of an lsp grant in consent", () => {
+  const description = capabilityDescription({
+    id: "lsp:phoxite",
+    description: "",
+    optional: false,
+    granted: false,
+    risk: "high",
+  });
+  expect(description).toBe("Send requests to the phoxite language server, which reads and changes the project's files");
 });

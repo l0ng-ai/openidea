@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Branch, BranchInfo } from "@/bindings";
 import { isMacHost } from "@/platform/keymap";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -22,8 +22,8 @@ vi.mock("@/platform/actions", async (importOriginal) => ({
 }));
 
 import { ContextMenuHost } from "@/ui";
-import { BranchesPanel } from "../GitLog";
 import syncStyles from "../BranchSync.module.css";
+import { BranchesPanel } from "../log/BranchesPanel";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
 

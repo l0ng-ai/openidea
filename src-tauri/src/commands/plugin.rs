@@ -110,6 +110,8 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     project_host.languages.attach_plugins(host.language_store().clone());
     ide_language::set_external_syntax(Some(host.syntax_provider()));
     ide_run::set_external_detection(Some(host.run_detection()));
+    // Java agents load only on this machine: `openidea-server` installs no source.
+    ide_run::java_agent::set_java_agent_source(Some(host.java_agents()));
     host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(project_host)))));
     // The official plugins (published with each release) are listed until the user picks another index.
     host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
@@ -1047,6 +1049,21 @@ pub async fn plugin_prepare_debug_run(
 ) -> IdeResult<ide_run::RunConfig> {
     let (plugins, client) = (state.plugins.clone(), window.label().to_owned());
     tokio::task::spawn_blocking(move || plugins.prepare_debug_run(&client, config))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Waits for the process an `attach-child` plugin configuration's debugger attaches to.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_debug_attach_target(
+    window: Window,
+    state: State<'_, AppState>,
+    config: String,
+    run: ide_core::RunId,
+) -> IdeResult<ide_dap::attach::AttachableProcess> {
+    let (plugins, host, client) = (state.plugins.clone(), state.host.clone(), window.label().to_owned());
+    tokio::task::spawn_blocking(move || plugins.debug_attach_target(&host, &client, &config, run))
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
 }

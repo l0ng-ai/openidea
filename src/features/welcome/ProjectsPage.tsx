@@ -19,7 +19,7 @@ import {
   showContextMenu,
   T,
 } from "@/ui";
-import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu } from "./RecentList";
+import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
 import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
 import type { RecentProjectGroup } from "@/platform/ipc";
 import styles from "./Welcome.module.css";
@@ -33,6 +33,9 @@ function HeaderButtons() {
   const openKey = shortcutLabel("file.openProject");
   return (
     <div className={styles.headerButtons}>
+      <Button disabled={opening} onClick={() => void executeAction("file.newUntitled")}>
+        <T>New File</T>
+      </Button>
       {canCreate && (
         <Button disabled={opening} onClick={() => void executeAction("file.newProject")}>
           <T>New Project</T>
@@ -44,6 +47,9 @@ function HeaderButtons() {
         title={openKey ? tx`Open (${openKey})` : "Open"}
       >
         <T>Open</T>
+      </Button>
+      <Button disabled={opening} onClick={() => void executeAction("file.openFile")}>
+        <T>Open File</T>
       </Button>
       {canClone && (
         <Button onClick={() => void executeAction("vcs.clone")}>
@@ -81,6 +87,12 @@ function Landing() {
         <T>You can also drop a folder onto this window.</T>
       </p>
       <div className={styles.landingActions}>
+        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.newUntitled")}>
+          <span className={styles.landingIcon}>
+            <Icon name="plus" size={20} />
+          </span>
+          <T>New File</T>
+        </button>
         {canCreate && (
           <button
             type="button"
@@ -104,6 +116,12 @@ function Landing() {
             <Icon name="folder-open" size={20} />
           </span>
           <T>Open</T>
+        </button>
+        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.openFile")}>
+          <span className={styles.landingIcon}>
+            <Icon name="file" size={20} />
+          </span>
+          <T>Open File</T>
         </button>
         {canClone && (
           <button type="button" className={styles.landingAction} onClick={() => void executeAction("vcs.clone")}>
@@ -227,7 +245,7 @@ function ProjectRow({
       id={id}
       role="option"
       aria-selected={selected}
-      title={m.project.path}
+      title={unavailableTitle(m.project) ?? m.project.path}
       className={clsx(styles.project, nested && styles.projectNested, selected && styles.projectSelected)}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
@@ -240,9 +258,14 @@ function ProjectRow({
         showContextMenu(e, recentMenu(m.project));
       }}
     >
-      <ProjectBadge name={m.project.name} className={styles.projectBadge} />
+      <ProjectBadge name={m.project.name} className={styles.projectBadge} missing={!!m.project.missing} />
       <span className={styles.projectText}>
-        <HighlightedText className={styles.projectName} text={m.project.name} indices={m.nameMatch} tone="strong" />
+        <HighlightedText
+          className={clsx(styles.projectName, m.project.missing && styles.unavailable)}
+          text={m.project.name}
+          indices={m.nameMatch}
+          tone="strong"
+        />
         {stage ? (
           <span className={styles.projectPath} role="status">
             {stage}

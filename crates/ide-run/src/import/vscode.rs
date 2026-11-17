@@ -1,7 +1,8 @@
 //! `.vscode/launch.json`: JSON with comments and trailing commas, `configurations` and
 //! `compounds`. Python (`debugpy`, the older `python`) and Node.js (`node`, `pwa-node`,
 //! `node-terminal`) launches become run configurations of the matching kind, their attach
-//! requests Python Remote Debug / Attach to Node.js configurations. Variables with a fixed
+//! requests Python Remote Debug / Attach to Node.js configurations. A browser launch
+//! (`chrome`, `msedge` and their `pwa-` names) becomes a JavaScript Debug configuration. Variables with a fixed
 //! meaning (`${workspaceFolder}`, `${userHome}`, `${env:NAME}`…) are replaced when importing;
 //! an entry using one that depends on the moment VS Code launches it (`${file}`,
 //! `${input:…}`, `${command:…}`) is skipped.
@@ -46,6 +47,7 @@ const PYTHON_ATTACH: &[&str] = &["connect", "host", "port", "pathMappings"];
 const NODE_LAUNCH: &[&str] = &["program", "args", "runtimeExecutable", "runtimeArgs"];
 const NODE_ATTACH: &[&str] = &["address", "port", "localRoot", "remoteRoot"];
 const NODE_TERMINAL: &[&str] = &["command"];
+const BROWSER_LAUNCH: &[&str] = &["url", "webRoot"];
 const COMPOUND: &[&str] = &["configurations"];
 
 const PACKAGE_MANAGERS: &[&str] = &["npm", "pnpm", "yarn", "bun"];
@@ -221,7 +223,14 @@ impl Cx<'_> {
             ("node" | "pwa-node", "launch") => (self.node_launch(name, obj)?, NODE_LAUNCH),
             ("node" | "pwa-node", "attach") => (self.node_attach(name, obj)?, NODE_ATTACH),
             ("node-terminal", "launch") => (self.node_terminal(name, obj)?, NODE_TERMINAL),
-            ("debugpy" | "python" | "node" | "pwa-node" | "node-terminal", other) => {
+            ("chrome" | "pwa-chrome" | "msedge" | "pwa-msedge", "launch") => {
+                (self.browser_launch(name, obj, ty)?, BROWSER_LAUNCH)
+            }
+            (
+                "debugpy" | "python" | "node" | "pwa-node" | "node-terminal" | "chrome" | "pwa-chrome" | "msedge"
+                | "pwa-msedge",
+                other,
+            ) => {
                 return Err(SkipReason::UnsupportedRequest { request: other.to_owned() });
             }
             (other, _) => return Err(SkipReason::UnsupportedType { type_: other.to_owned() }),
@@ -337,6 +346,23 @@ impl Cx<'_> {
         let mut c = config(name, "node-remote", String::new(), Vec::new(), Some("js-debug"));
         c.extras.params = BTreeMap::from([("host".into(), host), ("port".into(), port)]);
         self.roots(obj, &mut c)?;
+        Ok(c)
+    }
+
+    /// A page opened in Chrome or Edge with the debugger attached: a JavaScript Debug configuration.
+    fn browser_launch(&self, name: &str, obj: &Map<String, Value>, ty: &str) -> Res<RunConfig> {
+        let Some(url) = self.string(obj, "url")? else {
+            return Err(SkipReason::NothingToRun);
+        };
+        let browser = if ty.ends_with("msedge") { "edge" } else { "chrome" };
+        let mut c = config(name, "js-browser", String::new(), Vec::new(), Some("js-debug"));
+        c.extras.params = BTreeMap::from([("url".into(), url), ("browser".into(), browser.into())]);
+        if let Some(web_root) = self.string(obj, "webRoot")? {
+            let web_root = self.path_from(web_root, self.root);
+            if web_root != "." {
+                c.extras.params.insert("webRoot".into(), web_root);
+            }
+        }
         Ok(c)
     }
 

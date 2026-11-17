@@ -1235,6 +1235,86 @@ pub fn external_pom_dirs(root: &Path, linked: &[String]) -> Vec<PathBuf> {
     out
 }
 
+type FileStamp = Option<(Option<std::time::SystemTime>, u64)>;
+
+fn file_stamp(path: &Path) -> FileStamp {
+    std::fs::metadata(path).ok().map(|m| (m.modified().ok(), m.len()))
+}
+
+/// The POM files a reactor walk read or looked for, and the module folders it found outside the root.
+struct ReactorScan {
+    stamps: Vec<(PathBuf, FileStamp)>,
+    dirs: Vec<PathBuf>,
+}
+
+/// Folders of the modules that the reactor of `root/pom.xml` lists outside `root`
+/// (`<module>../service-a</module>`), with their own modules in turn, including those of
+/// the active `profiles`. An `unlinked` POM leaves out its modules too. A folder that
+/// holds `root` (`<module>..</module>`) is not a module beside the project and is skipped.
+/// Callers keep the outermost directory only. Memoized on the POMs' modification times and
+/// sizes: content roots are read on hot paths (every references search, Find in Files).
+pub fn reactor_external_dirs(root: &Path, profiles: &[String], unlinked: &[String]) -> Vec<PathBuf> {
+    type Memo = HashMap<(PathBuf, Vec<String>, Vec<String>), ReactorScan>;
+    static MEMO: std::sync::LazyLock<Mutex<Memo>> = std::sync::LazyLock::new(Default::default);
+    let key = (root.to_path_buf(), profiles.to_vec(), unlinked.to_vec());
+    if let Some(scan) = MEMO.lock().unwrap_or_else(|e| e.into_inner()).get(&key)
+        && scan.stamps.iter().all(|(path, stamp)| file_stamp(path) == *stamp)
+    {
+        return scan.dirs.clone();
+    }
+    let scan = scan_reactor(root, profiles, unlinked);
+    let dirs = scan.dirs.clone();
+    MEMO.lock().unwrap_or_else(|e| e.into_inner()).insert(key, scan);
+    dirs
+}
+
+/// Reads only the POMs the reactor lists (no parent resolution and no directory walk).
+fn scan_reactor(root: &Path, profiles: &[String], unlinked: &[String]) -> ReactorScan {
+    let canonical_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let chosen = Resolver::new(None, profiles);
+    let unlinked: HashSet<String> = unlinked.iter().map(|p| normalized_pom(p.trim())).collect();
+    let first = root.join("pom.xml");
+    let mut scan = ReactorScan { stamps: vec![(first.clone(), file_stamp(&first))], dirs: Vec::new() };
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut pending = vec![first];
+    while let Some(path) = pending.pop() {
+        if seen.len() >= MAX_PROJECTS {
+            break;
+        }
+        let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !seen.insert(canonical.clone()) || unlinked.contains(&project_rel(&canonical_root, &canonical)) {
+            continue;
+        }
+        let Some(pom) = xml::read_text(&path).as_deref().and_then(parse_pom) else { continue };
+        let dir = path.parent().unwrap_or(root).to_path_buf();
+        let dir_canon = dunce::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !dir_canon.starts_with(&canonical_root) {
+            if canonical_root.starts_with(&dir_canon) {
+                continue;
+            }
+            scan.dirs.push(dir_canon);
+        }
+        let active: Vec<&RawProfile> = chosen.active(&pom.profiles).collect();
+        let props: HashMap<String, String> =
+            pom.properties.iter().chain(active.iter().flat_map(|p| &p.properties)).cloned().collect();
+        for module in pom.modules.iter().chain(active.iter().flat_map(|p| &p.modules)) {
+            let module = interpolate(module, &props);
+            if module.contains("${") {
+                continue;
+            }
+            let mut mp = crate::gradle::normalize(&dir.join(module));
+            if mp.is_dir() || mp.extension().is_none_or(|e| e != "xml") {
+                mp.push("pom.xml");
+            }
+            scan.stamps.push((mp.clone(), file_stamp(&mp)));
+            if mp.is_file() {
+                pending.push(mp);
+            }
+        }
+    }
+    scan
+}
+
 /// Whether `root` holds a Maven build or the settings link one inside it.
 pub fn has_projects(root: &Path, settings: &ide_core::settings::MavenSettings) -> bool {
     is_maven_project(root) || !linked_poms(root, &settings.linked_projects).is_empty()
@@ -2479,8 +2559,12 @@ mod tests {
         assert_eq!(normalized[0], dunce::canonicalize(b.join("pom.xml")).unwrap().to_string_lossy().replace('\\', "/"));
         assert_eq!(normalized[1], "pom.xml");
         assert_eq!(normalized[2], "stub/pom.xml");
-        assert_eq!(crate::maven_external_roots(&a, &normalized), vec![b.clone()]);
-        assert_eq!(crate::maven_external_roots(&a, &stored), vec![b.clone()]);
+        let external_roots = |linked: &[String]| {
+            let settings = ide_core::settings::MavenSettings { linked_projects: linked.to_vec(), ..Default::default() };
+            crate::maven_external_roots(&a, &base.join("cache"), &settings, true)
+        };
+        assert_eq!(external_roots(&normalized), vec![b.clone()]);
+        assert_eq!(external_roots(&stored), vec![b.clone()]);
 
         let removed = load_with_linked(&a, None, &[], &[]);
         assert!(removed.projects.iter().all(|p| p.artifact_id != "b"));

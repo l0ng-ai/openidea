@@ -42,7 +42,7 @@
 .error {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 8px 12px;
   color: var(--danger, var(--fg));
   border-bottom: 1px solid var(--border);
@@ -93,7 +93,7 @@
 .cellToolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-height: 28px;
   padding: 2px 6px;
   background: var(--bg-elev, var(--bg-app));
@@ -202,7 +202,7 @@
 .addBar {
   display: flex;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   padding: 12px 16px 32px;
 }
@@ -211,7 +211,7 @@
     padding: 5px;
   }
   .toolbar {
-    gap: 2px;
+    gap: var(--space-0-5);
   }
   .interpreter {
     max-width: 180px;

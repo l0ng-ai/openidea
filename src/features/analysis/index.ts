@@ -1,7 +1,9 @@
 /**
  * Code analysis: Inspect Code (batch language-server diagnostics), Locate
- * Duplicates and Search / Replace Structurally.
+ * Duplicates and Search / Replace Structurally, and the Python inheritance
+ * inspections the IDE computes from its own graph.
  */
+import { registerEditorContribution } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { registerOverlay, registerToolWindow } from "@/workbench/contributions";
@@ -9,17 +11,20 @@ import {
   showCodeCleanupDialog,
   showDuplicatesDialog,
   showInspectCodeDialog,
+  showReformatCodeDialog,
   showStructuralDialog,
 } from "./AnalysisDialogs";
 import { AnalysisDialogHost } from "./dialogs";
 import { resetDuplicates } from "./duplicates";
 import { DuplicatesHeaderActions, DuplicatesView } from "./DuplicatesView";
+import { pythonInheritanceExtension } from "./inheritanceInspections";
 import { installInspectionProfileSync, resetInspection, runInspection } from "./inspect";
 import { defaultScope } from "./scope";
 import { InspectionHeaderActions, InspectionView, useInspectionHeaderMenu } from "./InspectionView";
 
 export function activate(): () => void {
   const disposers = [
+    registerEditorContribution({ id: "analysis.python-inheritance", extensions: pythonInheritanceExtension }),
     installInspectionProfileSync(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
@@ -75,6 +80,23 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["fix all", "cleanup", "organize imports", "reformat"],
         run: () => void showCodeCleanupDialog(),
+      },
+      {
+        id: "code.reformatFiles",
+        title: "Reformat Code…",
+        description: "Reformat Code dialog for `{ files?, directories? }`, as for a project view selection.",
+        category: "Code",
+        hidden: true,
+        when: "projectOpen",
+        run: ({ arg }) => {
+          const a = (arg ?? {}) as { files?: unknown; directories?: unknown };
+          const paths = (v: unknown) => (Array.isArray(v) ? v.filter((p): p is string => typeof p === "string") : []);
+          const targets = [
+            ...paths(a.directories).map((path) => ({ path, dir: true })),
+            ...paths(a.files).map((path) => ({ path, dir: false })),
+          ];
+          if (targets.length) showReformatCodeDialog(targets);
+        },
       },
       {
         id: "analyze.locateDuplicates",

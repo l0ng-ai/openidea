@@ -151,12 +151,14 @@ struct State {
     owned_commands: BTreeSet<String>,
     search: Option<SearchHandler>,
     commits: Vec<CommitInfo>,
+    build_graph: Vec<DependencyNode>,
     blame: BTreeMap<String, Vec<BlameLine>>,
     patch: Option<String>,
     restricted: bool,
     decorations: BTreeMap<(String, String), Vec<Decoration>>,
     file_decorations: BTreeMap<(String, String), FileDecoration>,
     file_notes: BTreeMap<(String, String), (String, Option<String>)>,
+    file_icons: BTreeMap<(String, String), (String, Option<String>)>,
     revealed_ranges: Vec<Range>,
     loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
@@ -175,10 +177,13 @@ struct State {
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
-    diffs: Vec<(crate::ContentDiff, Option<String>)>,
+    diffs: Vec<(crate::FileDiff, Option<String>)>,
     database_sources: BTreeMap<(String, String), PluginDataSource>,
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
+    lsp_responses: BTreeMap<(String, String), String>,
+    lsp_requests: Vec<MockServerMessage>,
+    lsp_notifications: Vec<MockServerMessage>,
     mcp_stdio: Option<Vec<String>>,
     extension_points: BTreeMap<String, Vec<crate::Contribution>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
@@ -188,6 +193,15 @@ struct State {
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
     locale: Option<String>,
+}
+
+/// What the plugin sent a language server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockServerMessage {
+    pub server: String,
+    pub method: String,
+    /// JSON, as the plugin passed it.
+    pub params: Option<String>,
 }
 
 /// A terminal the plugin opened.
@@ -227,6 +241,7 @@ const ALL: &[&str] = &[
     "editor.write",
     "vcs.read",
     "vcs.write",
+    "build.read",
     "storage",
     "events",
     "events.input",
@@ -289,6 +304,11 @@ impl MockHost {
         s.blame.insert(path.into(), blame);
         s.patch = patch;
     }
+    /// The project's dependency graph as the IDE would answer `build_dependencies(None)`:
+    /// modules are the roots, every parent comes before its children.
+    pub fn set_build_dependencies(&self, nodes: Vec<DependencyNode>) {
+        self.state.borrow_mut().build_graph = nodes;
+    }
     /// Simulates Restricted Mode for new VCS read APIs.
     pub fn set_restricted(&self, restricted: bool) {
         self.state.borrow_mut().restricted = restricted;
@@ -304,6 +324,10 @@ impl MockHost {
     /// `(set, path)` → `(note, tooltip)` set with `set_file_note`.
     pub fn file_notes(&self) -> BTreeMap<(String, String), (String, Option<String>)> {
         self.state.borrow().file_notes.clone()
+    }
+    /// `(set, path)` → `(icon, tooltip)` set with `set_file_icon` or `set_file_icons`.
+    pub fn file_icons(&self) -> BTreeMap<(String, String), (String, Option<String>)> {
+        self.state.borrow().file_icons.clone()
     }
     /// Ranges requested to scroll into view.
     pub fn revealed_ranges(&self) -> Vec<Range> {
@@ -613,6 +637,19 @@ impl MockHost {
     pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
         self.state.borrow().configuration_runs.clone()
     }
+    /// Makes the language server `server` run and answer `method` with `result` (JSON).
+    /// A server with no answer set is not running: requests to it are not-found.
+    pub fn set_language_server_response(&self, server: &str, method: &str, result: &str) {
+        self.state.borrow_mut().lsp_responses.insert((server.into(), method.into()), result.into());
+    }
+    /// The requests the plugin sent to language servers, in order.
+    pub fn language_server_requests(&self) -> Vec<MockServerMessage> {
+        self.state.borrow().lsp_requests.clone()
+    }
+    /// The notifications the plugin sent to language servers, in order.
+    pub fn language_server_notifications(&self) -> Vec<MockServerMessage> {
+        self.state.borrow().lsp_notifications.clone()
+    }
     /// Configures only argv discovery; the mock has no token or URL.
     pub fn set_mcp_stdio_command(&self, command: Option<Vec<String>>) {
         self.state.borrow_mut().mcp_stdio = command;
@@ -642,6 +679,11 @@ impl MockHost {
                 .unwrap(),
         })
     }
+    /// Diffs the plugin opened (`open_diff` sides are always `Some`), with their file names.
+    pub fn opened_diffs(&self) -> Vec<(crate::FileDiff, Option<String>)> {
+        self.state.borrow().diffs.clone()
+    }
+
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
@@ -1662,7 +1704,8 @@ pub mod current {
             if style(&item.style) {
                 next.insert((set.into(), path.clone()), item.clone());
             }
-            let names: BTreeSet<_> = next.keys().chain(s.file_notes.keys()).map(|(set, _)| set).collect();
+            let names: BTreeSet<_> =
+                next.keys().chain(s.file_notes.keys()).chain(s.file_icons.keys()).map(|(set, _)| set).collect();
             if set.is_empty()
                 || set.len() > 128
                 || names.len() > 50
@@ -1671,7 +1714,8 @@ pub mod current {
                 return Err(Error::Invalid("file decoration limit".into()));
             }
             s.file_decorations = next;
-            s.file_notes.remove(&(set.into(), path));
+            s.file_notes.remove(&(set.into(), path.clone()));
+            s.file_icons.remove(&(set.into(), path));
             Ok(())
         })
     }
@@ -1680,6 +1724,7 @@ pub mod current {
             require(s, "project.read")?;
             s.file_decorations.retain(|(id, _), _| id != set);
             s.file_notes.retain(|(id, _), _| id != set);
+            s.file_icons.retain(|(id, _), _| id != set);
             Ok(())
         })
     }
@@ -1688,8 +1733,14 @@ pub mod current {
             require(s, "project.read")?;
             let path = decoration_path(s, path)?;
             let key = (set.to_string(), path);
-            let names: BTreeSet<_> =
-                s.file_decorations.keys().chain(s.file_notes.keys()).chain([&key]).map(|(set, _)| set).collect();
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .chain(s.file_notes.keys())
+                .chain(s.file_icons.keys())
+                .chain([&key])
+                .map(|(set, _)| set)
+                .collect();
             if set.is_empty()
                 || set.len() > 128
                 || names.len() > 50
@@ -1700,7 +1751,71 @@ pub mod current {
                 return Err(Error::Invalid("a file note is one non-empty line of at most 200 characters".into()));
             }
             s.file_decorations.remove(&key);
+            s.file_icons.remove(&key);
             s.file_notes.insert(key, (note.into(), tooltip.map(Into::into)));
+            Ok(())
+        })
+    }
+    fn valid_icon_id(id: &str) -> bool {
+        let first = id.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        let rest = id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+        first && rest && id.len() <= 64
+    }
+    pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            if !valid_icon_id(icon) {
+                return Err(Error::Invalid(format!("invalid file icon id {icon:?}")));
+            }
+            let key = (set.to_string(), path);
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .chain(s.file_notes.keys())
+                .chain(s.file_icons.keys())
+                .chain([&key])
+                .map(|(set, _)| set)
+                .collect();
+            if set.is_empty() || set.len() > 128 || names.len() > 50 {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations.remove(&key);
+            s.file_notes.remove(&key);
+            s.file_icons.insert(key, (icon.into(), tooltip.map(Into::into)));
+            Ok(())
+        })
+    }
+    pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if set.is_empty() || set.len() > 128 || items.len() > 10_000 {
+                return Err(Error::Invalid("file icon decoration limit".into()));
+            }
+            let mut next = BTreeMap::new();
+            for (path, icon) in items {
+                if !valid_icon_id(icon) {
+                    return Err(Error::Invalid(format!("invalid file icon id {icon:?}")));
+                }
+                next.insert((set.to_string(), decoration_path(s, path)?), (icon.clone(), None));
+            }
+            let mut merged = s.file_icons.clone();
+            merged.retain(|(id, _), _| id != set);
+            merged.extend(next);
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .filter(|(id, _)| id != set)
+                .chain(s.file_notes.keys().filter(|(id, _)| id != set))
+                .chain(merged.keys())
+                .map(|(set, _)| set)
+                .collect();
+            if names.len() > 50 {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations.retain(|(id, _), _| id != set);
+            s.file_notes.retain(|(id, _), _| id != set);
+            s.file_icons = merged;
             Ok(())
         })
     }
@@ -2186,6 +2301,103 @@ pub mod current {
             Ok(())
         })
     }
+    /// The host's rule: only a server's own methods, none of LSP's.
+    fn lsp_method_allowed(method: &str) -> bool {
+        const LSP: [&str; 14] = [
+            "textDocument",
+            "workspace",
+            "window",
+            "notebookDocument",
+            "callHierarchy",
+            "typeHierarchy",
+            "completionItem",
+            "codeAction",
+            "codeLens",
+            "documentLink",
+            "inlayHint",
+            "workspaceSymbol",
+            "client",
+            "telemetry",
+        ];
+        let namespace = method.split('/').next().unwrap_or_default();
+        !(method.is_empty()
+            || method.starts_with("$/")
+            || ["initialize", "initialized", "shutdown", "exit"].contains(&method)
+            || LSP.contains(&namespace))
+    }
+    fn lsp_message(s: &State, server: &str, method: &str, params: Option<&str>) -> Result<MockServerMessage, Error> {
+        require(s, &format!("lsp:{server}"))?;
+        if s.restricted {
+            return Err(Error::Denied("project is not trusted".into()));
+        }
+        if !lsp_method_allowed(method) {
+            return Err(Error::Invalid(format!("`{method}` is not one of the server's own methods")));
+        }
+        if !s.lsp_responses.keys().any(|(running, _)| running == server) {
+            return Err(Error::NotFound(format!("no language server `{server}` is running for this project")));
+        }
+        Ok(MockServerMessage { server: server.into(), method: method.into(), params: params.map(str::to_owned) })
+    }
+    pub fn lsp_request(
+        _project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        with(|s| {
+            let message = lsp_message(s, server, method, params)?;
+            let answer = s.lsp_responses.get(&(server.to_owned(), method.to_owned())).cloned();
+            s.lsp_requests.push(message);
+            answer.ok_or_else(|| Error::Failed(format!("{server}: method not found: {method}")))
+        })
+    }
+    /// The module roots matching `module` (`group:artifact`, or a Gradle path) and what is
+    /// under them, with `parent` renumbered.
+    pub fn build_dependencies(_project: &ProjectRes, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        with(|s| {
+            require(s, "build.read")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let mut index = vec![None; s.build_graph.len()];
+            let mut out: Vec<DependencyNode> = Vec::new();
+            for (i, node) in s.build_graph.iter().enumerate() {
+                let parent = match node.parent {
+                    // A Maven module is named `group:artifact`, a Gradle project by its path.
+                    None if module.is_none_or(|m| {
+                        if node.group.is_empty() {
+                            m == node.artifact
+                        } else {
+                            m == format!("{}:{}", node.group, node.artifact)
+                        }
+                    }) =>
+                    {
+                        None
+                    }
+                    None => continue,
+                    Some(p) => match index.get(p as usize).copied().flatten() {
+                        Some(p) => Some(p),
+                        None => continue,
+                    },
+                };
+                index[i] = Some(out.len() as u32);
+                out.push(DependencyNode { parent, ..node.clone() });
+            }
+            match module {
+                Some(m) if out.is_empty() => {
+                    Err(Error::NotFound(format!("no Maven or Gradle module `{m}` in this project")))
+                }
+                _ => Ok(out),
+            }
+        })
+    }
+    pub fn lsp_notify(_project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            let message = lsp_message(s, server, method, params)?;
+            s.lsp_notifications.push(message);
+            Ok(())
+        })
+    }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         with(|s| s.mcp_stdio.clone())
     }
@@ -2281,7 +2493,11 @@ pub mod current {
         Ok(())
     }
     pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
-        if diff.left.contains('\0') || diff.right.contains('\0') {
+        open_file_diff(&diff.clone().into(), file_name)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        let sides = [&diff.left, &diff.right];
+        if sides.iter().all(|s| s.is_none()) || sides.into_iter().flatten().any(|s| s.contains('\0')) {
             return Err(Error::Invalid("invalid diff".into()));
         }
         with(|s| s.diffs.push((diff.clone(), file_name.map(Into::into))));
@@ -2947,6 +3163,20 @@ mod tests {
         assert_eq!(mock.log_tabs().len(), 1);
         assert_eq!((mock.log_tabs()[0].title.as_str(), &mock.log_tabs()[0].log), ("api logs again", &log));
         assert!(matches!(host::open_log_tab("", "api logs", &log), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn a_file_diff_may_miss_one_side() {
+        let mock = MockHost::install();
+        let added = crate::FileDiff { right: Some("new\n".into()), ..Default::default() };
+        host::open_file_diff(&added, Some("src/new.rs")).unwrap();
+        host::open_diff(&crate::ContentDiff { left: "a".into(), right: "b".into(), ..Default::default() }, None)
+            .unwrap();
+        assert!(matches!(host::open_file_diff(&crate::FileDiff::default(), None), Err(Error::Invalid(_))));
+        let diffs = mock.opened_diffs();
+        assert_eq!(diffs[0], (added, Some("src/new.rs".into())));
+        assert_eq!((diffs[1].0.left.as_deref(), diffs[1].0.right.as_deref()), (Some("a"), Some("b")));
+        assert_eq!(diffs.len(), 2);
     }
 
     #[test]

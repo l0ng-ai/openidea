@@ -1,0 +1,149 @@
+/* Session Pull Requests, Issues, References, and Artifacts pills above the composer. */
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  padding: 0 2px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  height: 24px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font: inherit;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.pill:hover,
+.pill[aria-expanded="true"] {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--fg-strong);
+}
+
+.pillLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.popup {
+  width: min(440px, calc(100vw - 24px));
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.section + .section {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.sectionHeader {
+  padding: 4px 12px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 28px;
+  padding: 1px 6px 1px 10px;
+}
+
+.row:hover,
+.row:focus-within {
+  background: var(--bg-hover);
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px 2px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowMain:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.rowIcon {
+  flex: none;
+}
+
+.rowId {
+  flex: none;
+  color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-strong);
+}
+
+.rowActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-0-5);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.row:hover .rowActions,
+.row:focus-within .rowActions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .rowActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}

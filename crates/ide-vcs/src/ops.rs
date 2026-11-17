@@ -495,7 +495,7 @@ pub(crate) fn diff_with_worktree(r: &Repo, rev: &str) -> IdeResult<Vec<ChangedFi
             } else {
                 ChangeKind::Modified
             };
-            changes.push(ChangedFile { path, kind, old_path: None });
+            changes.push(ChangedFile { path, kind, old_path: None, link: None });
         }
         return Ok(changes);
     }
@@ -564,9 +564,51 @@ pub(crate) fn parse_numstat_z(text: &str) -> Vec<FileLineStats> {
 /// Files that differ between two revisions (Update Project's "N files updated").
 pub(crate) fn diff_revisions(r: &Repo, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
     check_commits(&[from.to_string(), to.to_string()])?;
-    let out =
-        run(r.root(), &["diff", "--name-status", "-z", "-M", "--no-ext-diff", "--no-textconv", from, to, "--"], None)?;
-    Ok(parse_name_status(&out.stdout_str()))
+    let out = run(r.root(), &["diff", "--raw", "-z", "-M", "--no-ext-diff", "--no-textconv", from, to, "--"], None)?;
+    let mut files = parse_raw_diff(&out.stdout_str());
+    if files.iter().any(|(_, link)| *link) {
+        let repo = r.gix()?;
+        let (old_tree, new_tree) = (crate::repo::tree_of(&repo, from)?, crate::repo::tree_of(&repo, to)?);
+        for (file, link) in &mut files {
+            if *link {
+                // A deleted link is described as it was at `from`.
+                let tree = if file.kind == ChangeKind::Deleted { old_tree.as_ref() } else { new_tree.as_ref() };
+                file.link = tree.and_then(|t| crate::repo::link_target(&repo, t, &file.path));
+            }
+        }
+    }
+    Ok(files.into_iter().map(|(file, _)| file).collect())
+}
+
+/// Parses `git diff --raw -z` output: each file, and whether it is a symbolic link after the
+/// change (before it, for a deletion).
+fn parse_raw_diff(text: &str) -> Vec<(ChangedFile, bool)> {
+    const LINK_MODE: &str = "120000";
+    let mut parts = text.split('\0').filter(|s| !s.is_empty());
+    let mut out = Vec::new();
+    while let Some(header) = parts.next() {
+        let fields: Vec<&str> = header.trim_start_matches(':').split(' ').collect();
+        let [old_mode, new_mode, _, _, status] = fields[..] else { continue };
+        let kind = match status.as_bytes().first() {
+            Some(b'A') | Some(b'C') => ChangeKind::Added,
+            Some(b'D') => ChangeKind::Deleted,
+            Some(b'R') => ChangeKind::Renamed,
+            Some(b'U') => ChangeKind::Conflicted,
+            _ => ChangeKind::Modified,
+        };
+        let (path, old_path) = if matches!(status.as_bytes().first(), Some(b'R' | b'C')) {
+            let old = parts.next().unwrap_or_default().to_string();
+            (parts.next().unwrap_or_default().to_string(), Some(old))
+        } else {
+            (parts.next().unwrap_or_default().to_string(), None)
+        };
+        let link = if kind == ChangeKind::Deleted { old_mode == LINK_MODE } else { new_mode == LINK_MODE };
+        if !path.is_empty() {
+            out.push((ChangedFile { path, kind, old_path, link: None }, link));
+        }
+    }
+    out.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+    out
 }
 
 /// Parses `git diff --name-status -z` output.
@@ -589,7 +631,7 @@ pub(crate) fn parse_name_status(text: &str) -> Vec<ChangedFile> {
             (parts.next().unwrap_or_default().to_string(), None)
         };
         if !path.is_empty() {
-            out.push(ChangedFile { path, kind, old_path });
+            out.push(ChangedFile { path, kind, old_path, link: None });
         }
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -612,6 +654,31 @@ mod tests {
                 ("b c.txt", ChangeKind::Added, None),
                 ("gone", ChangeKind::Deleted, None),
                 ("new.rs", ChangeKind::Renamed, Some("old.rs")),
+            ]
+        );
+    }
+
+    #[test]
+    fn raw_diff_parsing_marks_symbolic_links() {
+        let link = "120000";
+        let file = "100644";
+        let none = "000000";
+        let z = "0000000000000000000000000000000000000000";
+        let text = format!(
+            ":{file} {file} {z} {z} M\0a.txt\0:{none} {link} {z} {z} A\0new link\0\
+             :{link} {none} {z} {z} D\0gone\0:{link} {link} {z} {z} R100\0old\0renamed\0\
+             :{link} {file} {z} {z} T\0now file\0"
+        );
+        let files: Vec<_> =
+            parse_raw_diff(&text).into_iter().map(|(f, link)| (f.path, f.kind, f.old_path, link)).collect();
+        assert_eq!(
+            files,
+            [
+                ("a.txt".into(), ChangeKind::Modified, None, false),
+                ("gone".into(), ChangeKind::Deleted, None, true),
+                ("new link".into(), ChangeKind::Added, None, true),
+                ("now file".into(), ChangeKind::Modified, None, false),
+                ("renamed".into(), ChangeKind::Renamed, Some("old".into()), true),
             ]
         );
     }

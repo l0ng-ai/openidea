@@ -1,6 +1,4 @@
 /* Editor gutter ▶ per request (same look as run configuration targets). */
-/* No fixed width: the endpoints gutter is conditional (updateSpacer), so files
-   without endpoint markers keep a narrow gutter. */
 .runGutter :global(.cm-gutterElement) {
   display: flex;
   align-items: center;
@@ -21,7 +19,7 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   height: var(--h-header);
   padding: 0 8px;
   background: var(--bg-editor);
@@ -47,7 +45,7 @@
 .entry {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--h-list-row);
   padding: 0 8px;
   border: none;
@@ -68,7 +66,7 @@
 .runningRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--h-list-row);
   padding: 0 8px;
   color: var(--fg-secondary);
@@ -114,7 +112,7 @@
 .statusLine {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   height: var(--h-header);
   padding: 0 8px;
   flex: none;
@@ -197,7 +195,7 @@
 .pendingLine {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-secondary);
 }
 .pendingRequest {
@@ -206,4 +204,13 @@
 }
 .pendingMethod {
   font-weight: 600;
+}
+
+.match {
+  border-radius: 2px;
+  color: var(--fg-search-match);
+  background: var(--bg-search-match);
+}
+.matchCurrent {
+  background: var(--bg-search-match-current);
 }

@@ -5,7 +5,9 @@ import { codeLenses, shownAgain, whenSynced, type CodeLens, type EditorDocContex
 import { call, commands } from "@/platform/ipc";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { posToOffset } from "./positions";
-import { onLspRefresh, onServerSettled } from "./availability";
+import { onLspRefresh, onServerSettled, anyServerBusy } from "./availability";
+import { editorPrefs } from "@/platform/editorSettings";
+import { useProject } from "@/platform/project";
 /**
  * A server's reference count ("3 references", csharp-ls's "3 Reference(s)"): Code Vision's
  * Usages shows the same count above the declaration, under its own setting.
@@ -38,12 +40,18 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
           timer: ReturnType<typeof setTimeout> | undefined;
           generation = 0;
           skipped = false;
+          enabled = editorPrefs().inlay.codeVision;
           off: () => void;
           constructor() {
             const offs = [
               onNavigationProvidersChanged(() => this.schedule()),
               onLspRefresh("codeLens", () => this.schedule()),
               onServerSettled(() => this.schedule()),
+              // Turning Code Vision off hides these rows too, and turning it back on asks again.
+              useProject.subscribe((s, prev) => {
+                if (s.settings !== prev.settings && editorPrefs(s.settings).inlay.codeVision !== this.enabled)
+                  this.schedule();
+              }),
             ];
             this.off = () => offs.forEach((f) => f());
             this.schedule();
@@ -59,31 +67,40 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
           async run() {
             const gen = this.generation;
             const text = view.state.doc;
+            this.enabled = editorPrefs().inlay.codeVision;
+            if (!this.enabled) {
+              if (view.state.field(field).length) view.dispatch({ effects: set.of([]) });
+              return;
+            }
             try {
               await whenSynced(view);
               const result = await call(commands.lspCodeLens(ctx.doc));
               if (gen !== this.generation || text !== view.state.doc) return;
               this.skipped = !view.dom.isConnected;
               if (this.skipped) return;
-              view.dispatch({
-                effects: set.of(
-                  result.flatMap((l) =>
-                    l.command && !REFERENCE_COUNT.test(l.command.title)
-                      ? [
-                          {
-                            pos: posToOffset(text, l.range.start),
-                            title: l.command.title,
-                            run: () => {
-                              void call(commands.lspExecuteCommand(ctx.doc, l.command!)).catch(console.warn);
-                            },
-                          },
-                        ]
-                      : [],
-                  ),
-                ),
-              });
+              const fresh = result.flatMap((l) =>
+                l.command && !REFERENCE_COUNT.test(l.command.title)
+                  ? [
+                      {
+                        pos: posToOffset(text, l.range.start),
+                        title: l.command.title,
+                        run: () => {
+                          void call(commands.lspExecuteCommand(ctx.doc, l.command!)).catch(console.warn);
+                        },
+                      },
+                    ]
+                  : [],
+              );
+              // A busy server (indexing, loading) can answer with nothing: keep the
+              // lenses shown until it settles, instead of blinking the rows away.
+              // A partial non-empty answer is applied as-is.
+              if (!fresh.length && view.state.field(field).length && anyServerBusy()) return;
+              view.dispatch({ effects: set.of(fresh) });
             } catch {
-              if (gen === this.generation && view.dom.isConnected) view.dispatch({ effects: set.of([]) });
+              // A failed request while a server is starting or busy: keep the lenses until it
+              // settles. Otherwise the server is gone and so are its lenses.
+              if (gen === this.generation && view.dom.isConnected && !anyServerBusy())
+                view.dispatch({ effects: set.of([]) });
             }
           }
           destroy() {

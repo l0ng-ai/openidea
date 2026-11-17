@@ -32,7 +32,9 @@ vi.mock("@/workbench/contributions", () => ({
     return () => {};
   },
 }));
+import { isStatusWidgetAvailable } from "@/workbench/statusBarWidgets";
 import { activatePythonStatus, interpreterChoices, isPythonPath, nearMember } from "../languages/PythonStatus";
+import { rememberSdk, useSdks } from "../languages/api";
 
 let dispose: () => void;
 beforeEach(() => {
@@ -49,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   dispose();
+  useSdks.setState({ byKind: {} });
 });
 
 const mount = () => {
@@ -118,6 +121,7 @@ describe("Python interpreter status", () => {
     await waitFor(() => expect(mocks.files).toHaveBeenCalled());
     expect(screen.queryByRole("button")).toBeNull();
     expect(mocks.detect).not.toHaveBeenCalled();
+    await waitFor(() => expect(isStatusWidgetAvailable("python.interpreter")).toBe(false));
   });
   it("shows a warning for Python files without an interpreter", async () => {
     mocks.files.mockResolvedValue([{ path: "/project/src/main.py" }]);
@@ -140,6 +144,27 @@ describe("Python interpreter status", () => {
     expect(await screen.findByText("/opt/homebrew/bin/python3.11")).toBeTruthy();
     expect(screen.getByText("/usr/local/bin/python3.11")).toBeTruthy();
     expect(screen.queryByText("/venv/bin/python")).toBeNull();
+  });
+  it("shows a run target interpreter by name and offers container targets", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/manage.py" }]);
+    mocks.detect.mockResolvedValue([{ path: "/venv/python", name: "Python 3.12 (.venv)" }]);
+    const runTargets = [
+      { kind: "compose", id: "web", name: "Compose web", service: "web" },
+      { kind: "docker", id: "img", name: "Image", image: "python:3.12" },
+      { kind: "ssh", id: "box", name: "Build box" },
+    ];
+    useProject.setState({
+      settings: { languages: { python: { interpreter: "target:web" } }, runTargets } as never,
+    });
+    mount();
+    const button = await screen.findByRole("button", { name: "Python Interpreter: Compose web" });
+    expect(button.querySelector("svg")).toBeNull();
+    await act(() => executeAction("python.interpreterPopup"));
+    expect(await screen.findByText("Docker Compose service web")).toBeTruthy();
+    expect(screen.getByText("Image")).toBeTruthy();
+    expect(screen.queryByText("Build box")).toBeNull();
+    await act(async () => screen.getByText("Image").click());
+    expect(mocks.set).toHaveBeenCalledWith("project", "languages.python.interpreter", JSON.stringify("target:img"));
   });
   it("opens the Python page when the widget is hidden", async () => {
     const run = vi.fn();
@@ -186,6 +211,24 @@ describe("Python interpreter status", () => {
     act(() => useProject.setState({ project: { root: "/other" } as ProjectInfo }));
     await act(async () => finish([{ path: "/old/python", name: "Python 3.12" } as Sdk]));
     expect(screen.queryByRole("button")).toBeNull();
+  });
+  it("picks up an environment created outside the project", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const python = "C:\\Users\\me\\miniconda3\\envs\\demo\\python.exe";
+      useProject.setState({ settings: { languages: { python: { interpreter: python } } } as never });
+      mocks.files.mockResolvedValue([{ path: "/project/main.py" }]);
+      mount();
+      await screen.findByRole("button", { name: "Python Interpreter: Invalid interpreter" });
+      // conda creates the environment in its envs directory, the configured path stays the same.
+      mocks.effective.mockResolvedValue(python);
+      act(() => rememberSdk("python", { path: python, name: "Python 3.12 (demo)", source: "conda" } as Sdk));
+      await act(() => vi.advanceTimersByTimeAsync(400));
+      await screen.findByRole("button", { name: "Python Interpreter: Python 3.12 (demo)" });
+      expect(mocks.detect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("opens the Python page for both settings entries", async () => {
     const run = vi.fn();

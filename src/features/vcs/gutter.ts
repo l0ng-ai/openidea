@@ -9,7 +9,14 @@ import { EditorView, GutterMarker, ViewPlugin, type PluginValue, type ViewUpdate
 import { foldState, foldedRanges } from "@codemirror/language";
 import type { HunkKind, LineHunk } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { LaneMarker, gutterLaneMarkers, scrollbarMarks, type EditorDocContext, type ScrollbarMark } from "@/editor/api";
+import {
+  LaneMarker,
+  gutterLaneMarkers,
+  lineChanges,
+  scrollbarMarks,
+  type EditorDocContext,
+  type ScrollbarMark,
+} from "@/editor/api";
 import { lineStarts } from "./hunks";
 import { useVcs } from "./store";
 
@@ -85,6 +92,7 @@ export const hunkField = StateField.define<HunkState>({
     });
     return { hunks, markers: buildMarkers(hunks, tr.state.doc) };
   },
+  provide: (f) => lineChanges.from(f, (v) => v.hunks),
 });
 
 export function editorHunks(state: EditorState): EditorHunk[] {

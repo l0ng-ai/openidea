@@ -8,6 +8,8 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
     onmessage: (p: unknown) => void = () => {};
   },
+  // Balloons are mirrored to a system notification (`showSystemNotification`).
+  invoke: async () => null,
 }));
 
 type Channel = { onmessage: (p: UpdateProgress) => void };

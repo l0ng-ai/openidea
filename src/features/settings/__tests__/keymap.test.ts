@@ -267,6 +267,11 @@ describe("shortcut search", () => {
       { id: "internal.x", title: "Internal", hidden: true, run },
     ];
     const draft = { preset: "intellij-macos", overrides: {} };
+    // Hidden from Search Everywhere but keymap-listed (Cut / Copy / Paste) still shows.
+    const copy = { id: "edit.copy", title: "Copy", category: "Edit", hidden: true, keymap: true, run };
+    const withCopy = buildKeymapTree([...actions, copy], draft, "copy", "");
+    const edit = withCopy[0]!.kind === "group" ? withCopy[0]!.children[0] : undefined;
+    expect(edit?.kind === "group" && edit.children.map((n) => n.key)).toEqual(["edit.copy"]);
     const all = buildKeymapTree(actions, draft, "", "");
     expect(all.map((n) => n.key)).toEqual(["grp:Main Menu"]);
     const menu = all[0]!.kind === "group" ? all[0]!.children : [];

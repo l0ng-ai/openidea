@@ -40,7 +40,6 @@ beforeEach(() => {
         sequences: [],
       },
     },
-    treeFilter: "",
     separateProceduresAndFunctions: false,
     treeExpanded: new Set(["pg", "pg/public", "pg/public/routines"]),
   });
@@ -59,9 +58,6 @@ describe("routine grouping", () => {
     expect(tree.queryByText("functions")).toBeNull();
     fireEvent.mouseDown(tree.getAllByText("calculate")[1]!, { button: 0 });
     expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/routines/calculate(text)");
-    act(() => useDatabase.setState({ treeFilter: "refresh" }));
-    expect(tree.queryAllByText("calculate")).toHaveLength(0);
-    expect(tree.getByText("refresh_data")).toBeInTheDocument();
   });
 
   it("toggles through the action, persists the option, and restores the old expansion", async () => {
@@ -90,7 +86,7 @@ describe("routine grouping", () => {
     });
   });
 
-  it.each([false, true])("applies object and quick filters before grouping (separate: %s)", (separate) => {
+  it.each([false, true])("applies the object filter before grouping (separate: %s)", (separate) => {
     const source = useDatabase.getState().sources[0]!;
     useDatabase.setState({
       separateProceduresAndFunctions: separate,
@@ -104,10 +100,6 @@ describe("routine grouping", () => {
     expect(tree.getAllByText("calculate")).toHaveLength(2);
     const folder = tree.getByText(separate ? "functions" : "routines").closest('[role="treeitem"]')!;
     expect(within(folder as HTMLElement).getByText("2")).toBeInTheDocument();
-    act(() => useDatabase.setState({ treeFilter: "refresh" }));
-    expect(tree.queryByText("public")).toBeNull();
-    expect(tree.queryByText("routines")).toBeNull();
-    expect(tree.queryByText("functions")).toBeNull();
   });
 });
 
@@ -189,5 +181,23 @@ describe("Expand All", () => {
     // Its columns aren't loaded, and neither is the SQLite source: Expand All loads nothing.
     expect(tree.getByText("users").closest('[role="treeitem"]')).toHaveAttribute("aria-expanded", "false");
     expect(tree.getByText("SQLite").closest('[role="treeitem"]')).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("data source colour", () => {
+  it("tints the whole tree row of the source and of every node under it", () => {
+    useDatabase.setState({
+      sources: [
+        { id: "pg", name: "PostgreSQL", driver: "postgres", color: "red", options: { singleDatabase: true } },
+        { id: "lite", name: "SQLite", driver: "sqlite" },
+      ],
+    });
+    render(<DatabaseView />);
+    const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+    const tint = (name: string) =>
+      tree.getByText(name).closest<HTMLElement>('[role="treeitem"]')!.style.getPropertyValue("--row-tint");
+    for (const name of ["PostgreSQL", "public", "routines", "refresh_data"])
+      expect(tint(name)).toBe("var(--db-color-red)");
+    expect(tint("SQLite")).toBe("");
   });
 });

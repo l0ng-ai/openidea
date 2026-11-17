@@ -2,16 +2,19 @@
   position: fixed;
   /* Inside the editor island's bottom-right corner, clear of the right stripe. */
   right: 78px;
+  /* A narrow window narrows the balloons instead of pushing them off its left edge. */
+  left: 16px;
   bottom: calc(var(--h-statusbar) + 16px);
   /* Balloons belong to the main window: modal dialogs cover them, like IDEA. */
   z-index: calc(var(--z-dialog) - 1);
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
   pointer-events: none;
 }
 .balloon {
+  max-width: 100%;
   pointer-events: auto;
   animation: slideIn var(--dur) var(--ease);
 }

@@ -7,11 +7,14 @@ OpenIDEA 开箱即可高亮 PHP 文件（`.php`、`.phtml`、`.phpt` 以及老�
 
 ## 语言服务器
 
-| 服务器         | 启用条件                                                                                                              |
-| -------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `intelephense` | 默认。工作区根：`composer.json`、`.phpactor.json` 或 `index.php`。                                                    |
-| `phpactor`     | 备选：仅在未安装 Intelephense 时使用。                                                                                |
-| `laravel-lsp`  | 仅限 Laravel 项目（`artisan` 文件所在目录之下）：在 `config('…')`、`route('…')`、`view('…')` 中提供悬停、跳转和补全。 |
+| 服务器         | 启用条件                                                                                                                     |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `intelephense` | 默认。工作区根：`composer.json`、`.phpactor.json` 或 `index.php`。                                                           |
+| `phpactor`     | 备选：仅在未安装 Intelephense 时使用。                                                                                       |
+| `phoxite`      | 备选，自带 Laravel 和 Blade 支持：仅在以上两个服务器都未安装时使用，或在 **设置 › 语言和框架 › 语言服务器** 中选中它时使用。 |
+| `laravel-lsp`  | 仅限 Laravel 项目（`artisan` 文件所在目录之下）：在 `config('…')`、`route('…')`、`view('…')` 中提供悬停、跳转和补全。        |
+
+Phoxite 为项目提供服务时不会启动 `laravel-lsp`：Laravel 相关的字符串由 Phoxite 自己处理。
 
 Intelephense 会按项目的 PHP 版本检查代码（见下文“语言级别”），并索引你配置的 stub 和包含路径。
 
@@ -25,6 +28,7 @@ Intelephense 会按项目的 PHP 版本检查代码（见下文“语言级别�
 | ------------------ | -------------------------------------------------- |
 | Intelephense       | npm（`intelephense`）                              |
 | Laravel LSP        | GitHub release（`laravel/lsp`）                    |
+| Phoxite            | GitHub release（`samehelhawary/phoxite`）          |
 | PHP Debug (Xdebug) | Open VSX（`xdebug.php-debug`），运行时需要 Node.js |
 | phpactor           | IDE 不负责安装，请自行安装并放到 `PATH` 上         |
 
@@ -77,12 +81,12 @@ PHPUnit 运行配置类型包含 **目标**、**配置文件**、**测试过滤�
 
 ## 框架支持
 
-- **Laravel**：Laravel LSP 支持 `config()`、`route()`、`view()` 中的字符串，并提供 `artisan serve` 运行配置。
+- **Laravel**：Laravel LSP 支持 `config()`、`route()`、`view()` 中的字符串，并提供 `artisan serve` 运行配置。以 Phoxite 作为 PHP 服务器时，路由、视图、配置、翻译和 Eloquent 模型的补全、跳转和重命名改由它提供。
 - **WordPress** 等平台：在 **附加存根** 中加入对应 stub，在 **包含路径** 中加入平台代码目录。
 
 ## 已知限制
 
-- 不支持 Blade 或 Twig 模板，只有 `.php` 文件有 PHP 代码智能。
+- 使用 Intelephense 时不支持 Blade 或 Twig 模板，只有 `.php` 文件有 PHP 代码智能。Phoxite 为 `.blade.php` 文件提供代码智能，但没有 Blade 语法高亮。
 - IDE 不会安装 phpactor。
 - PHPUnit 不支持使用覆盖率运行。
 - 调试需要 PHP 已安装 Xdebug 扩展，IDE 不负责安装。

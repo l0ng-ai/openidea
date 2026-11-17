@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
 import { invalidateNavigationProviders } from "@/editor/navigationProviders";
 const ipc = vi.hoisted(() => ({
   pluginLanguageVisuals: vi.fn(),
@@ -54,7 +55,7 @@ it("renders owned gutter commands and drops answers to superseded buffers", asyn
   };
   ipc.pluginLanguageVisuals.mockResolvedValue({ status: "ok", data: visual });
   const view = new EditorView({
-    state: EditorState.create({ doc: "before", extensions: pluginLanguageVisuals(ctx) }),
+    state: EditorState.create({ doc: "before", extensions: [iconAreaExtension, pluginLanguageVisuals(ctx)] }),
     parent: document.body,
   });
   views.push(view);
@@ -79,14 +80,14 @@ it("keeps Run buttons mounted while edits and delayed refreshes move their lines
   const visual = { version: 1, injections: [], colors: [], gutterActions: [["riscv", action]] };
   ipc.pluginLanguageVisuals.mockResolvedValueOnce({ status: "ok", data: visual });
   const view = new EditorView({
-    state: EditorState.create({ doc: "sum: ret", extensions: pluginLanguageVisuals(ctx) }),
+    state: EditorState.create({ doc: "sum: ret", extensions: [iconAreaExtension, pluginLanguageVisuals(ctx)] }),
     parent: document.body,
   });
   views.push(view);
   await vi.advanceTimersByTimeAsync(300);
   const button = view.dom.querySelector<HTMLButtonElement>(".cm-plugin-gutter-action")!;
   expect(button).not.toBeNull();
-  const column = view.dom.querySelector(".cm-plugin-gutter-actions");
+  const area = view.dom.querySelector(".cm-openidea-iconArea");
   let answer!: (value: unknown) => void;
   ipc.pluginLanguageVisuals.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
   view.dispatch({ changes: { from: 8, insert: " " } });
@@ -96,7 +97,7 @@ it("keeps Run buttons mounted while edits and delayed refreshes move their lines
   answer({ status: "ok", data: visual });
   await vi.advanceTimersByTimeAsync(0);
   expect(view.dom.querySelector(".cm-plugin-gutter-action")).toBe(button);
-  expect(view.dom.querySelector(".cm-plugin-gutter-actions")).toBe(column);
+  expect(view.dom.querySelector(".cm-openidea-iconArea")).toBe(area);
 
   ipc.pluginLanguageVisuals.mockResolvedValueOnce({ status: "ok", data: visual });
   invalidateNavigationProviders();
@@ -130,7 +131,7 @@ it("retains buttons on refresh failures and removes them when the provider confi
   };
   ipc.pluginLanguageVisuals.mockResolvedValueOnce({ status: "ok", data: visual });
   const view = new EditorView({
-    state: EditorState.create({ doc: "main: ret", extensions: pluginLanguageVisuals(ctx) }),
+    state: EditorState.create({ doc: "main: ret", extensions: [iconAreaExtension, pluginLanguageVisuals(ctx)] }),
     parent: document.body,
   });
   views.push(view);
@@ -147,5 +148,4 @@ it("retains buttons on refresh failures and removes them when the provider confi
   expect(view.dom.querySelector(".cm-plugin-gutter-action")).toBe(button);
   await vi.advanceTimersByTimeAsync(300);
   expect(view.dom.querySelector(".cm-plugin-gutter-action")).toBeNull();
-  expect(view.dom.querySelector(".cm-plugin-gutter-actions")).toBeNull();
 });

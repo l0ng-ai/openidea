@@ -5,6 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { java } from "@codemirror/lang-java";
 import { useI18n } from "@/platform/i18n";
+import { iconAreaExtension } from "./iconArea";
 import { renderDocComments, renderedDocsExtension, renderedRanges, toggleRenderedViewAtCaret } from "./renderedDocs";
 
 let view: EditorView | null = null;
@@ -21,7 +22,7 @@ function open(reader: boolean, doc = DOC) {
   view = new EditorView({
     state: EditorState.create({
       doc,
-      extensions: [java(), renderedDocsExtension, renderDocComments.of(reader)],
+      extensions: [java(), iconAreaExtension, renderedDocsExtension, renderDocComments.of(reader)],
     }),
     parent: document.body,
   });
@@ -38,11 +39,8 @@ async function hover(v: EditorView, line: number) {
 
 const pressed = (v: EditorView) => toggles(v).map((t) => t.getAttribute("aria-pressed"));
 
-/** Whether the gutter gives the toggles a column: its spacer has their width, else none. */
-const hasColumn = (v: EditorView) =>
-  [...v.dom.querySelectorAll<HTMLElement>(".cm-openidea-docToggles .cm-gutterElement span")].some(
-    (el) => el.style.width === "14px",
-  );
+/** Whether the icon area keeps the toggles an icon's width: its spacer is the icon spacer, else none. */
+const hasColumn = (v: EditorView) => !!v.dom.querySelector(".cm-openidea-iconArea .cm-openidea-iconSpacer");
 
 /** Opens the file rendering its comments, then brings this one's source back with its pencil. */
 async function openFlippedToSource() {
