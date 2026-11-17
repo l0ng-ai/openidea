@@ -813,6 +813,11 @@ export const commands = {
 	selectionRange: Range,
 	/**  Call sites, for call hierarchy. */
 	fromRanges: Range[],
+	/**
+	 *  The file of `from_ranges` when it is not the item's own: for an outgoing call, the
+	 *  file of the prepared item that makes it (a path, or the URI of a virtual document).
+	 */
+	fromPath?: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("lsp_prepare_type_hierarchy", { doc, pos })),
 	/**
 	 *  References of the symbol at `pos`. `project_wide` also searches project files
@@ -3193,6 +3198,8 @@ export type CMakeSettings_Serialize = {
 };
 
 export type CallHierarchy = {
+	/**  The symbol the hierarchy is for: the first item the server prepared at the position. */
+	root?: HierarchyItem | null,
 	items: HierarchyItem[],
 	incomplete: ReferencesIncomplete | null,
 };
@@ -6426,6 +6433,11 @@ export type HierarchyItem = {
 	selectionRange: Range,
 	/**  Call sites, for call hierarchy. */
 	fromRanges: Range[],
+	/**
+	 *  The file of `from_ranges` when it is not the item's own: for an outgoing call, the
+	 *  file of the prepared item that makes it (a path, or the URI of a virtual document).
+	 */
+	fromPath?: IpcPath | null,
 };
 
 export type HierarchyMember = {
