@@ -4,8 +4,10 @@ import { javascript } from "@codemirror/lang-javascript";
 import { syntaxHighlighting } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { PluginInfo } from "@/bindings";
+import type { Diagnostic, PluginInfo } from "@/bindings";
 import type { TextEditorHandle } from "@/editor/api";
+import { diagnosticsExtension, setFileDiagnostics } from "@/editor/lsp/diagnostics";
+import { lspDoc } from "@/editor/lsp/lsp";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { setContext } from "@/platform/context";
 import { useEditorGroupPanels } from "@/workbench/contributions";
@@ -64,9 +66,11 @@ describe("frame bridge: openidea.editor", () => {
       scrollTo(line: number): Promise<unknown>;
       scrollBy(pixels: number): Promise<unknown>;
       highlights(from: number, to: number): Promise<unknown>;
+      problems(): Promise<unknown>;
       onTarget(fn: (v: unknown) => void): void;
       onViewport(fn: (v: unknown) => void): void;
       onHighlights(fn: (v: unknown) => void): void;
+      onProblems(fn: (v: unknown) => void): void;
       document: unknown;
     };
     expect(editor.document).toBe(api.document);
@@ -86,19 +90,26 @@ describe("frame bridge: openidea.editor", () => {
     expect(sent.at(-1)).toMatchObject({ op: "editor.highlights", args: { fromLine: 0, toLine: 3000 } });
     send({ reply: sent.at(-1)!.call, error: "at most 2000 lines at a time" });
     await expect(lines).rejects.toThrow("2000");
+    const problems = editor.problems();
+    expect(sent.at(-1)).toMatchObject({ op: "editor.problems" });
+    send({ reply: sent.at(-1)!.call, value: [{ line: 2, lastLine: 2, severity: "error" }] });
+    await expect(problems).resolves.toEqual([{ line: 2, lastLine: 2, severity: "error" }]);
 
     const events: unknown[] = [];
     editor.onTarget((v) => events.push(["target", v]));
     editor.onViewport((v) => events.push(["viewport", v]));
     editor.onHighlights((v) => events.push(["highlights", v]));
+    editor.onProblems((v) => events.push(["problems", v]));
     send({ editor: "target", value: null });
     send({ editor: "viewport", value: { firstLine: 1.5 } });
     send({ editor: "highlights", value: { fromLine: 0, toLine: 4 } });
+    send({ editor: "problems", value: [] });
     send({ editor: "constructor", value: 1 });
     expect(events).toEqual([
       ["target", null],
       ["viewport", { firstLine: 1.5 }],
       ["highlights", { fromLine: 0, toLine: 4 }],
+      ["problems", []],
     ]);
   });
 
@@ -124,6 +135,7 @@ describe("WebView as an editor panel", () => {
         calls.push(["highlights", from, to]);
         return [[{ from: 0, to: 5, color: "rgb(1, 2, 3)" }]];
       },
+      problems: () => [{ line: 1, lastLine: 2, severity: "warning" }],
       subscribe: (l) => {
         listeners.add(l);
         return () => void listeners.delete(l);
@@ -178,6 +190,8 @@ describe("WebView as an editor panel", () => {
     // Read-only: the page cannot edit the group's file.
     send({ call: 8, op: "document.edit", args: { version: 0, edits: [] } });
     expect((await reply(8)).error).toBeDefined();
+    send({ call: 9, op: "editor.problems" });
+    expect((await reply(9)).value).toEqual([{ line: 1, lastLine: 2, severity: "warning" }]);
 
     editor.fire({ editor: "highlights", value: { fromLine: 0, toLine: 3 } });
     expect(posted.at(-1)).toEqual({ tag: FRAME_TAG, editor: "highlights", value: { fromLine: 0, toLine: 3 } });
@@ -269,6 +283,88 @@ describe("PanelEditor", () => {
     await nextFrame();
     expect(events).toEqual([]);
     expect(() => panel.document.read()).toThrow();
+    view.destroy();
+  });
+});
+
+describe("PanelEditor problems", () => {
+  const PATH = "/p/src/problems.js";
+  const at = (line: number, col: number, endLine = line, endCol = col + 1) => ({
+    start: { line, col },
+    end: { line: endLine, col: endCol },
+  });
+  const diag = (range: ReturnType<typeof at>, severity: Diagnostic["severity"], extra: Partial<Diagnostic> = {}) =>
+    ({ range, severity, message: severity, source: null, code: null, ...extra }) as Diagnostic;
+
+  it("reports the marker bar's problems by line and follows them", async () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: "let a = 1;\nlet b = 2;\nfoo(\n  bar);\nend",
+        extensions: [
+          lspDoc.of({ doc: 1, path: PATH, language: "javascript", uiMode: null, readOnly: false }),
+          diagnosticsExtension(),
+          editorPanelUpdates,
+        ],
+      }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: PATH, language: "javascript", uiMode: "JavaScript", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    await nextFrame();
+    // Switching to a file: its problems (none yet).
+    expect(events).toContainEqual({ editor: "problems", value: [] });
+
+    events.length = 0;
+    setFileDiagnostics(PATH, "test", [
+      diag(at(2, 0, 3, 6), "error"),
+      diag(at(0, 4), "warning"),
+      diag(at(1, 4), "info"),
+      // Not on the marker bar: hints, unused code.
+      diag(at(4, 0), "hint"),
+      diag(at(0, 0), "warning", { unnecessary: true }),
+    ]);
+    await Promise.resolve();
+    await nextFrame();
+    const shown = [
+      { line: 0, lastLine: 0, severity: "warning" },
+      { line: 1, lastLine: 1, severity: "weakWarning" },
+      { line: 2, lastLine: 3, severity: "error" },
+    ];
+    expect(panel.problems()).toEqual(shown);
+    expect(events.filter((e) => e.editor === "problems")).toEqual([{ editor: "problems", value: shown }]);
+
+    // An edit above moves them.
+    events.length = 0;
+    view.dispatch({ changes: { from: 0, insert: "\n" } });
+    await nextFrame();
+    expect(events).toContainEqual({
+      editor: "problems",
+      value: shown.map((p) => ({ ...p, line: p.line + 1, lastLine: p.lastLine + 1 })),
+    });
+
+    // Fixed: gone.
+    events.length = 0;
+    setFileDiagnostics(PATH, "test", []);
+    await Promise.resolve();
+    await nextFrame();
+    expect(events).toEqual([{ editor: "problems", value: [] }]);
+
+    // Scrolling or selecting alone says nothing.
+    events.length = 0;
+    view.dispatch({ selection: { anchor: 2 } });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "problems")).toEqual([]);
+
+    panel.dispose();
     view.destroy();
   });
 });
