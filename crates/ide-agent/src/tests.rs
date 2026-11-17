@@ -1367,6 +1367,41 @@ fn prompts_become_acp_content_blocks() {
     assert!(clean(text(" ")).is_none());
 }
 
+#[test]
+fn acp_images_declare_the_type_their_bytes_sniff_as() {
+    // A web-page paste announces a type the payload doesn't match (JPEG/WebP/GIF bytes behind an
+    // `image/png` label, or no label at all); a strict agent rejects the whole prompt on that
+    // mismatch, so the sniffed signature wins.
+    let cases = [
+        ("/9j/4AAQSkZJRgAB", "image/jpeg"),
+        ("UklGRiQAAABXRUJQ", "image/webp"),
+        ("R0lGODlhAAAAAAAA", "image/gif"),
+        ("R0lGODdhAAAAAAAA", "image/gif"),
+        ("iVBORw0KGgoAAAAA", "image/png"),
+    ];
+    for (data, mime) in cases {
+        let p = AgentPrompt {
+            images: vec![AgentImage { mime_type: "image/png".into(), data: data.into(), name: None }],
+            ..AgentPrompt::default()
+        };
+        assert_eq!(blocks(&p, &[])[0]["mimeType"], json!(mime), "data {data}");
+    }
+}
+
+#[test]
+fn acp_images_without_a_known_signature_keep_the_declared_type() {
+    // Text bytes and payloads too short to sniff are passed through with their declared type,
+    // so genuinely non-image attachments still reach the agent exactly as declared.
+    let cases = ["aGVsbG8=", "AAA", "", "not base64!"];
+    for data in cases {
+        let p = AgentPrompt {
+            images: vec![AgentImage { mime_type: "image/jpeg".into(), data: data.into(), name: None }],
+            ..AgentPrompt::default()
+        };
+        assert_eq!(blocks(&p, &[])[0]["mimeType"], json!("image/jpeg"), "data {data}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn claude_questions_keep_the_answer_object_as_the_option_id() {
     let tmp = tempfile::tempdir().unwrap();

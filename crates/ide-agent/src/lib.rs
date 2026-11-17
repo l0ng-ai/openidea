@@ -3027,8 +3027,35 @@ fn asked_questions(params: &Value) -> (Vec<AgentQuestion>, bool) {
     (Vec::new(), false)
 }
 
+/// The image type a base64 `data` payload really is, sniffed from its magic bytes, when it is
+/// one agents read over ACP: `image/png`, `image/jpeg`, `image/gif`, `image/webp`.
+///
+/// The declaring side can't be trusted: web-page clipboards often hand over bytes whose declared
+/// type disagrees with the payload (JPEG or WebP announced as `image/png`), and a strict agent
+/// rejects the whole prompt on that mismatch — so the bytes are the source of truth.
+fn sniffed_image_mime(data: &str) -> Option<&'static str> {
+    use base64::Engine as _;
+    // 16 base64 chars decode to exactly 12 bytes without padding, enough for every signature
+    // below (PNG 8, GIF 6, JPEG 3, WebP 12). Anything undecodable keeps the declared type.
+    let head: String = data.chars().take(16).collect();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(head).ok()?;
+    let starts = |sig: &[u8]| bytes.starts_with(sig);
+    if starts(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if starts(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if starts(b"GIF87a") || starts(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes[..4] == *b"RIFF" && bytes[8..12] == *b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 /// ACP content blocks: the text, each file (embedded when its text is in `contents`, else
-/// a `resource_link`), then the images.
+/// a `resource_link`), then the images, declaring the type the bytes sniff as when they are
+/// a known image format (and the declared type otherwise).
 fn blocks(prompt: &AgentPrompt, contents: &[Option<String>]) -> Vec<Value> {
     let mut out = Vec::new();
     if !prompt.text.is_empty() {
@@ -3042,7 +3069,8 @@ fn blocks(prompt: &AgentPrompt, contents: &[Option<String>]) -> Vec<Value> {
         });
     }
     for i in &prompt.images {
-        out.push(json!({ "type": "image", "mimeType": i.mime_type, "data": i.data }));
+        let mime = sniffed_image_mime(&i.data).unwrap_or(i.mime_type.as_str());
+        out.push(json!({ "type": "image", "mimeType": mime, "data": i.data }));
     }
     out
 }
