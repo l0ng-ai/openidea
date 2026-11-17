@@ -442,6 +442,7 @@
   "menu.navigate.nextBookmark": "Next Bookmark",
   "menu.navigate.prevBookmark": "Previous Bookmark",
   "menu.view.toggleCompactMode": "Compact Mode",
+  "menu.view.togglePresentationAssistant": "Presentation Assistant",
   "menu.view.zoomIn": "Zoom In IDE",
   "menu.view.zoomOut": "Zoom Out IDE",
   "menu.view.resetZoom": "Reset IDE Zoom",
