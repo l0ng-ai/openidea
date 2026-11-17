@@ -14,7 +14,7 @@
  */
 import { syntaxTree } from "@codemirror/language";
 import type { Tree } from "@lezer/common";
-import { Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { Prec, StateEffect, StateField, type EditorState, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { commands, type SemanticTokens } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -206,6 +206,11 @@ const semanticField = StateField.define<DecorationSet>({
     return tr.docChanged ? deco.map(tr.changes) : deco;
   },
 });
+
+/** The semantic marks the editor shows over the syntax colours (empty without semantic highlighting). */
+export function semanticHighlights(state: EditorState): DecorationSet {
+  return state.field(semanticField, false) ?? Decoration.none;
+}
 
 const semanticPlugin = ViewPlugin.fromClass(
   class {

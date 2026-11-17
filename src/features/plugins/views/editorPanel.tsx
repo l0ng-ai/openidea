@@ -2,17 +2,19 @@
  * Plugin editor panels (`[[contributes.editorPanels]]`): a web page at the right edge of every
  * editor group, following the group's text editor (a minimap, say). Each group has one frame,
  * kept while the group switches tabs: the page hears `onTarget` instead of reloading. Through
- * `openidea.editor` it reads the file (read-only), the viewport, the syntax colours and the
+ * `openidea.editor` it reads the file (read-only), the viewport, the colours (syntax and semantic) and the
  * marker bar's problems, and scrolls the editor — straight from the editor, not through the
  * plugin's code, since a minimap follows every frame of a scroll.
  */
 import { highlightingFor, syntaxTree } from "@codemirror/language";
-import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
+import { RangeSet, type Range } from "@codemirror/state";
+import { Decoration, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { highlightTree } from "@lezer/highlight";
 import { useEffect, useMemo } from "react";
 import type { Severity } from "@/bindings";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { markerBarProblems } from "@/editor/lsp/diagnostics";
+import { semanticHighlights } from "@/editor/lsp/semantic";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { subscribeTheme } from "@/platform/themeWatch";
 import { registerEditorGroupPanel } from "@/workbench/contributions";
@@ -44,6 +46,13 @@ const PROBLEM_LEVEL: Record<Severity, EditorProblem["severity"]> = {
   warning: "warning",
   info: "weakWarning",
   hint: "weakWarning",
+};
+
+const syntaxMarks = new Map<string, Decoration>();
+const syntaxMark = (classes: string) => {
+  let m = syntaxMarks.get(classes);
+  if (!m) syntaxMarks.set(classes, (m = Decoration.mark({ class: classes })));
+  return m;
 };
 
 /** View updates of the editors that panels follow. */
@@ -133,6 +142,16 @@ export class PanelEditor implements FrameEditor {
         }
         if (u.geometryChanged || u.heightChanged || u.viewportChanged) this.schedule({ viewport: true });
         if (markerBarProblems(u.startState) !== markerBarProblems(u.state)) this.schedule({ problems: true });
+        const semBefore = semanticHighlights(u.startState);
+        const semAfter = semanticHighlights(u.state);
+        if (semBefore !== semAfter) {
+          // New semantic tokens: the lines whose marks differ (in the new document).
+          const changed = (from: number, to: number) => {
+            const doc = u.state.doc;
+            this.schedule({ lines: [doc.lineAt(from).number - 1, doc.lineAt(Math.max(from, to - 1)).number] });
+          };
+          RangeSet.compare([semBefore], [semAfter], u.changes, { compareRange: changed, comparePoint: changed });
+        }
       };
       view.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
       let set = updateListeners.get(view);
@@ -217,23 +236,31 @@ export class PanelEditor implements FrameEditor {
     const out: HighlightSpan[][] = Array.from({ length: to - fromLine }, () => []);
     const start = doc.line(fromLine + 1).from;
     const end = doc.line(to).to;
+    const syntax: Range<Decoration>[] = [];
     highlightTree(
       syntaxTree(state),
       { style: (tags) => highlightingFor(state, tags) },
-      (from, until, classes) => {
-        const color = this.color(view, classes);
+      (from, until, classes) => void syntax.push(syntaxMark(classes).range(from, until)),
+      start,
+      end,
+    );
+    // As the editor layers them: semantic marks inside the syntax spans, so their colour wins.
+    RangeSet.spans([semanticHighlights(state), Decoration.set(syntax)], start, end, {
+      span: (from, until, active) => {
+        if (!active.length) return;
+        // `active` runs innermost first.
+        const color = this.color(view, active.map((d) => (d.spec.class as string | undefined) ?? "").reverse());
         if (!color) return;
         // A token can run over several lines (a block comment): one span per line.
-        for (let pos = Math.max(from, start); pos < Math.min(until, end);) {
+        for (let pos = from; pos < until;) {
           const line = doc.lineAt(pos);
-          const stop = Math.min(until, end, line.to);
+          const stop = Math.min(until, line.to);
           if (stop > pos) out[line.number - 1 - fromLine]!.push({ from: pos - line.from, to: stop - line.from, color });
           pos = line.to + 1;
         }
       },
-      start,
-      end,
-    );
+      point: () => {},
+    });
     return out;
   }
 
@@ -248,18 +275,21 @@ export class PanelEditor implements FrameEditor {
     }));
   }
 
-  /** The text colour `classes` give in the editor, as the current scheme resolves it. */
-  private color(view: EditorView, classes: string): string {
-    let color = this.colors.get(classes);
+  /** The text colour of spans nested with these classes (outermost first), as the current scheme resolves it. */
+  private color(view: EditorView, nested: string[]): string {
+    const key = nested.join("\n");
+    let color = this.colors.get(key);
     if (color === undefined) {
       // Outside the content DOM, which the editor observes; inside the editor, for its variables.
       const probe = document.createElement("span");
-      probe.className = classes;
       probe.style.cssText = "position:absolute;visibility:hidden";
+      let inner = probe;
+      for (const classes of nested)
+        inner = inner.appendChild(Object.assign(document.createElement("span"), { className: classes }));
       view.dom.appendChild(probe);
-      color = getComputedStyle(probe).color;
+      color = getComputedStyle(inner).color;
       probe.remove();
-      this.colors.set(classes, color);
+      this.colors.set(key, color);
     }
     return color;
   }
