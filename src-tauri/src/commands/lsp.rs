@@ -1,6 +1,7 @@
 //! IPC commands of `ide_host::ops::lsp` (the shared implementation).
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 #[allow(unused_imports)]
 pub use ide_host::ops::lsp::*;
@@ -563,6 +564,7 @@ pub async fn lsp_restart(window: Window, state: State<'_, AppState>, server: Ser
 }
 
 /// Restarts the language servers named `name` in every open project (after a tool update).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_restart_named(state: State<'_, AppState>, name: String) -> IdeResult<()> {
@@ -663,3 +665,5 @@ pub async fn plugin_color_presentations(
 pub fn plugin_formatters() -> IdeResult<Vec<ide_host::plugins::language_features::FormatterChoice>> {
     ide_host::ops::lsp::plugin_formatters()
 }
+
+ide_command::desktop_domain!(lsp_restart_named);

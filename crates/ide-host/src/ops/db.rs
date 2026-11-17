@@ -3,7 +3,7 @@
 //! shell: its path comes from a local save dialog, so the export must land
 //! on the user's machine, not the side the project runs on.
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
 use ide_db::{
@@ -24,106 +24,13 @@ pub struct StatementOutcome {
     pub error: Option<String>,
 }
 
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("db_sources", |c| async move { db_sources(&c.host, &c.window) });
-    d.add("db_save_sources", |c| async move { db_save_sources(&c.host, &c.window, c.arg("sources")?).await });
-    d.add("db_set_password", |c| async move {
-        db_set_password(&c.host, &c.window, c.arg("id")?, c.arg("password")?, c.arg("save")?).await
-    });
-    d.add("db_test", |c| async move {
-        db_test(&c.host, &c.window, c.arg("source")?, c.arg("password")?, c.arg("sshSecret")?).await
-    });
-    d.add("db_test_tunnel", |c| async move {
-        db_test_tunnel(&c.host, &c.window, c.arg("source")?, c.arg("sshSecret")?).await
-    });
-    d.add("db_set_ssh_secret", |c| async move {
-        db_set_ssh_secret(&c.host, &c.window, c.arg("id")?, c.arg("secret")?, c.arg("save")?).await
-    });
-    d.add("db_trust_ssh_host", |c| async move { db_trust_ssh_host(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_connected", |c| async move { db_connected(&c.host, &c.window) });
-    d.add("db_connect", |c| async move { db_connect(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_set_manual_commit", |c| async move {
-        db_set_manual_commit(&c.host, &c.window, c.arg("id")?, c.arg("manual")?).await
-    });
-    d.add("db_finish_transaction", |c| async move {
-        db_finish_transaction(&c.host, &c.window, c.arg("id")?, c.arg("commit")?).await
-    });
-    d.add("db_disconnect", |c| async move { db_disconnect(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_databases", |c| async move { db_databases(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_database_catalog", |c| async move {
-        db_database_catalog(&c.host, &c.window, c.arg("id")?, c.arg("database")?).await
-    });
-    d.add("db_saved_catalog", |c| async move { db_saved_catalog(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_retain_catalog", |c| async move {
-        db_retain_catalog(&c.host, &c.window, c.arg("id")?, c.arg("databases")?).await
-    });
-    d.add("db_session_context", |c| async move { db_session_context(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_schemas", |c| async move { db_schemas(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_tables", |c| async move { db_tables(&c.host, &c.window, c.arg("id")?, c.arg("schema")?).await });
-    d.add("db_table_details", |c| async move {
-        db_table_details(&c.host, &c.window, c.arg("id")?, c.arg("schema")?, c.arg("table")?).await
-    });
-    d.add(
-        "db_ddl",
-        |c| async move { db_ddl(&c.host, &c.window, c.arg("id")?, c.arg("schema")?, c.arg("table")?).await },
-    );
-    d.add("db_schema_objects", |c| async move {
-        db_schema_objects(&c.host, &c.window, c.arg("id")?, c.arg("schema")?).await
-    });
-    d.add("db_object_ddl", |c| async move {
-        db_object_ddl(&c.host, &c.window, c.arg("id")?, c.arg("schema")?, c.arg("kind")?, c.arg("name")?).await
-    });
-    d.add("db_explain", |c| async move {
-        db_explain(&c.host, &c.window, c.arg("request")?, c.arg("id")?, c.arg("statement")?, c.arg("schema")?).await
-    });
-    d.add("db_history", |c| async move { db_history(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_remove_history", |c| async move {
-        db_remove_history(&c.host, &c.window, c.arg("id")?, c.arg("texts")?).await
-    });
-    d.add("db_completion", |c| async move { db_completion(&c.host, &c.window, c.arg("id")?).await });
-    d.add("db_statements", |c| async move {
-        db_statements(&c.host, &c.window, c.arg("id")?, c.arg("text")?, c.arg("from")?, c.arg("to")?)
-    });
-    d.add("db_execute", |c| async move {
-        db_execute(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("id")?,
-            c.arg("statements")?,
-            c.arg::<Option<u32>>("skip")?.unwrap_or(0),
-            c.arg("maxRows")?,
-            c.arg("schema")?,
-        )
-        .await
-    });
-    d.add("db_table_page", |c| async move {
-        db_table_page(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("id")?,
-            c.arg("schema")?,
-            c.arg("table")?,
-            c.arg("filter")?,
-            c.arg("sort")?,
-            c.arg("offset")?,
-            c.arg("limit")?,
-        )
-        .await
-    });
-    d.add("db_apply_edits", |c| async move {
-        db_apply_edits(&c.host, &c.window, c.arg("id")?, c.arg("schema")?, c.arg("table")?, c.arg("edits")?).await
-    });
-    d.add("db_console_path", |c| async move { db_console_path(&c.host, c.arg("id")?) });
-    d.add("db_consoles", |c| async move { db_consoles(&c.host, c.arg("id")?, c.arg("create")?) });
-}
-
+#[command(trust = trusted)]
 pub fn db_sources(host: &Host, window: &str) -> IdeResult<Vec<DataSource>> {
     // The data sources configured for the project (the tree's roots).
     host.project(window)?.db.sources()
 }
 
+#[command(trust = trusted)]
 pub async fn db_save_sources(host: &Host, window: &str, sources: Vec<DataSource>) -> IdeResult<()> {
     // Replaces the project's data sources with `sources`.
     let db = host.project(window)?.db.clone();
@@ -135,6 +42,7 @@ pub async fn db_save_sources(host: &Host, window: &str, sources: Vec<DataSource>
     Ok(())
 }
 
+#[command(trust = trusted)]
 pub async fn db_set_password(
     host: &Host,
     window: &str,
@@ -148,6 +56,7 @@ pub async fn db_set_password(
     db.set_password(&id, password, save).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_test(
     host: &Host,
     window: &str,
@@ -161,6 +70,7 @@ pub async fn db_test(
 }
 
 /// Data Source › SSH/SSL › Test SSH Tunnel.
+#[command(trust = trusted)]
 pub async fn db_test_tunnel(
     host: &Host,
     window: &str,
@@ -172,6 +82,7 @@ pub async fn db_test_tunnel(
     db.test_tunnel(&source, ssh_secret).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_set_ssh_secret(
     host: &Host,
     window: &str,
@@ -184,6 +95,7 @@ pub async fn db_set_ssh_secret(
     db.set_ssh_secret(&id, secret, save).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_trust_ssh_host(host: &Host, window: &str, id: String) -> IdeResult<()> {
     // Trusts the SSH host key that made the last connection of `id` fail with
     // "Unknown SSH host key" (records it in `~/.ssh/known_hosts`).
@@ -191,17 +103,20 @@ pub async fn db_trust_ssh_host(host: &Host, window: &str, id: String) -> IdeResu
     db.trust_ssh_host(&id).await
 }
 
+#[command(trust = trusted)]
 pub fn db_connected(host: &Host, window: &str) -> IdeResult<Vec<String>> {
     // The data sources with an open connection.
     Ok(host.project(window)?.db.connected())
 }
 
+#[command(trust = trusted)]
 pub async fn db_connect(host: &Host, window: &str, id: String) -> IdeResult<()> {
     // Connects (fails with `permissionDenied` when the password is missing or wrong).
     let db = host.project(window)?.db.clone();
     db.pool(&id).await.map(|_| ())
 }
 
+#[command(trust = trusted)]
 pub async fn db_set_manual_commit(host: &Host, window: &str, id: String, manual: bool) -> IdeResult<()> {
     // Switches a data source between auto-commit and manual commit (leaving
     // manual mode rolls back what was not committed).
@@ -209,12 +124,14 @@ pub async fn db_set_manual_commit(host: &Host, window: &str, id: String, manual:
     db.set_manual_commit(&id, manual).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_finish_transaction(host: &Host, window: &str, id: String, commit: bool) -> IdeResult<()> {
     // Commits or rolls back the open transaction of a manual-commit data source.
     let db = host.project(window)?.db.clone();
     db.finish_transaction(&id, commit).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_disconnect(host: &Host, window: &str, id: String) -> IdeResult<()> {
     // Closes the connection of data source `id`.
     let db = host.project(window)?.db.clone();
@@ -222,12 +139,14 @@ pub async fn db_disconnect(host: &Host, window: &str, id: String) -> IdeResult<(
     Ok(())
 }
 
+#[command(trust = trusted)]
 pub async fn db_databases(host: &Host, window: &str, id: String) -> IdeResult<Databases> {
     // Databases of the server of data source `id` (PostgreSQL); connect to one as `<id>:<database>`.
     let db = host.project(window)?.db.clone();
     db.databases(&id).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_database_catalog(
     host: &Host,
     window: &str,
@@ -239,36 +158,42 @@ pub async fn db_database_catalog(
     db.database_catalog(&id, &database).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_saved_catalog(host: &Host, window: &str, id: String) -> IdeResult<Option<ide_db::SourceCatalog>> {
     // What earlier introspection of data source `id` saved; the data source is not connected to.
     let db = host.project(window)?.db.clone();
     db.saved_catalog(&id).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_retain_catalog(host: &Host, window: &str, id: String, databases: Vec<String>) -> IdeResult<()> {
     // Drops the saved databases of data source `id` that are not in `databases` any more.
     let db = host.project(window)?.db.clone();
     db.retain_catalog(&id, databases).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_session_context(host: &Host, window: &str, id: String) -> IdeResult<ide_db::SessionContext> {
     // The warehouse and role of the Snowflake session of data source `id`, and what it may switch to.
     let db = host.project(window)?.db.clone();
     db.session_context(&id).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_schemas(host: &Host, window: &str, id: String) -> IdeResult<Vec<String>> {
     // The schemas of data source `id`.
     let db = host.project(window)?.db.clone();
     db.schemas(&id).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_tables(host: &Host, window: &str, id: String, schema: String) -> IdeResult<Vec<TableInfo>> {
     // The tables and views of `schema`.
     let db = host.project(window)?.db.clone();
     db.tables(&id, &schema).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_table_details(
     host: &Host,
     window: &str,
@@ -281,18 +206,21 @@ pub async fn db_table_details(
     db.table_details(&id, &schema, &table).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_ddl(host: &Host, window: &str, id: String, schema: String, table: String) -> IdeResult<String> {
     // The DDL of table or view `table` (Go to DDL, Generate DDL).
     let db = host.project(window)?.db.clone();
     db.ddl(&id, &schema, &table).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_schema_objects(host: &Host, window: &str, id: String, schema: String) -> IdeResult<SchemaObjects> {
     // The routines and sequences of `schema` (the tree's `routines` / `sequences`).
     let db = host.project(window)?.db.clone();
     db.schema_objects(&id, &schema).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_object_ddl(
     host: &Host,
     window: &str,
@@ -306,6 +234,7 @@ pub async fn db_object_ddl(
     db.object_ddl(&id, &schema, kind, &name).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_explain(
     host: &Host,
     window: &str,
@@ -322,24 +251,28 @@ pub async fn db_explain(
     result
 }
 
+#[command(trust = trusted)]
 pub async fn db_history(host: &Host, window: &str, id: String) -> IdeResult<Vec<HistoryEntry>> {
     // The statements data source `id` ran, newest first (Browse Query History).
     let db = host.project(window)?.db.clone();
     db.history(&id).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_remove_history(host: &Host, window: &str, id: String, texts: Option<Vec<String>>) -> IdeResult<()> {
     // Removes statements from the query history of `id` (`None`: all of them).
     let db = host.project(window)?.db.clone();
     db.remove_history(&id, texts).await
 }
 
+#[command(trust = trusted)]
 pub async fn db_completion(host: &Host, window: &str, id: String) -> IdeResult<CompletionModel> {
     // Tables, columns and foreign keys for SQL completion.
     let db = host.project(window)?.db.clone();
     db.completion(&id).await
 }
 
+#[command(trust = trusted)]
 pub fn db_statements(
     host: &Host,
     window: &str,
@@ -358,13 +291,15 @@ pub fn db_statements(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn db_execute(
     host: &Host,
     window: &str,
     request: RequestId,
     id: String,
     statements: Vec<SqlStatement>,
-    skip: u32,
+    // Clients before pagination send no `skip`.
+    #[default] skip: u32,
     max_rows: u32,
     schema: Option<String>,
 ) -> IdeResult<Vec<StatementOutcome>> {
@@ -401,6 +336,7 @@ pub async fn db_execute(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn db_table_page(
     host: &Host,
     window: &str,
@@ -423,6 +359,7 @@ pub async fn db_table_page(
     result
 }
 
+#[command(trust = trusted)]
 pub async fn db_apply_edits(
     host: &Host,
     window: &str,
@@ -436,6 +373,7 @@ pub async fn db_apply_edits(
     Ok(db.apply_edits(&id, &schema, &table, &edits).await? as f64)
 }
 
+#[command(trust = always)]
 pub fn db_console_path(host: &Host, id: String) -> IdeResult<IpcPath> {
     // The query console file of data source `id` (`<dataDir>/consoles/db/<id>/console.sql`),
     // created on first use. Consoles are files of the project, so a remote
@@ -448,6 +386,7 @@ pub fn db_console_path(host: &Host, id: String) -> IdeResult<IpcPath> {
 }
 
 /// The query consoles of data source `id`; `create` adds the next one first.
+#[command(trust = always)]
 pub fn db_consoles(host: &Host, id: String, create: bool) -> IdeResult<Vec<IpcPath>> {
     // The default `console.sql`, then `console_1.sql`, `console_2.sql`… in order
     // (`create`: DataGrip's New › Query Console).
@@ -530,3 +469,40 @@ pub fn tool_preview(
 pub async fn server_version(host: &Host, window: &str, id: &str) -> IdeResult<u32> {
     host.project(window)?.db.server_version(id).await
 }
+
+ide_command::domain!(
+    db:
+    db_apply_edits,
+    db_completion,
+    db_connect,
+    db_connected,
+    db_console_path,
+    db_consoles,
+    db_database_catalog,
+    db_databases,
+    db_ddl,
+    db_disconnect,
+    db_execute,
+    db_explain,
+    db_finish_transaction,
+    db_history,
+    db_object_ddl,
+    db_remove_history,
+    db_retain_catalog,
+    db_save_sources,
+    db_saved_catalog,
+    db_schema_objects,
+    db_schemas,
+    db_session_context,
+    db_set_manual_commit,
+    db_set_password,
+    db_set_ssh_secret,
+    db_sources,
+    db_statements,
+    db_table_details,
+    db_table_page,
+    db_tables,
+    db_test,
+    db_test_tunnel,
+    db_trust_ssh_host,
+);

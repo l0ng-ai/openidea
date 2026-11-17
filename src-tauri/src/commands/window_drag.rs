@@ -1,5 +1,6 @@
 //! Native window drag started from the web title bar.
 
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
 use tauri::WebviewWindow;
 
@@ -7,6 +8,7 @@ use tauri::WebviewWindow;
 ///
 /// macOS WebKit can deliver a tap's `mousedown` after the button is already up. AppKit would then run
 /// its drag loop with no release left to end it, and the window follows the pointer until the next click.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn window_start_drag(window: WebviewWindow) -> IdeResult<bool> {
@@ -17,3 +19,5 @@ pub fn window_start_drag(window: WebviewWindow) -> IdeResult<bool> {
     window.start_dragging().map_err(|e| IdeError::internal(e.to_string()))?;
     Ok(true)
 }
+
+ide_command::desktop_domain!(window_start_drag);

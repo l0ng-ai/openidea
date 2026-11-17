@@ -2,6 +2,7 @@
 use super::api::{PluginApi, Shared};
 use super::{PluginEvent, PluginHost};
 use crate::Host;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::{HostError, PluginRunTarget};
 use std::path::{Path, PathBuf};
@@ -153,6 +154,7 @@ impl PluginHost {
     }
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_run_targets(
     host: &Host,
     plugins: &Arc<PluginHost>,
@@ -161,6 +163,7 @@ pub async fn plugin_run_targets(
     list(host, plugins, window)
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_answer_run_target(
     host: &Arc<Host>,
     plugins: &Arc<PluginHost>,
@@ -215,3 +218,5 @@ pub fn answer(
     plugins.shared.sink.emit(None, PluginEvent::RunTargetsChanged);
     Ok(project.settings.effective())
 }
+
+ide_command::domain!(plugins_run_targets: plugin_answer_run_target, plugin_run_targets);

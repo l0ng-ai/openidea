@@ -3,11 +3,13 @@
 //! local projects, `openidea-server` for remote ones.
 
 use super::{CommitSelection, PluginCommitCheckRef, PluginCommitCheckResult, PluginHost};
+use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use std::sync::Arc;
 
 /// Runs plugins' before-commit checks on what `selection` commits, until
 /// `request` is cancelled.
+#[command(trust = trusted)]
 pub async fn plugin_commit_checks(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -27,3 +29,5 @@ pub async fn plugin_commit_checks(
     host.end_request(request);
     result
 }
+
+ide_command::domain!(plugins_commit: plugin_commit_checks);

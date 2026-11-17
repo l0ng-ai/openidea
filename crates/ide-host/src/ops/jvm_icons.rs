@@ -1,5 +1,6 @@
 //! Bounded, read-only JVM presentation for visible files, also served remotely.
 use crate::Host;
+use ide_command::command;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use ide_syntax::{JvmPresentation, Snapshot, StructureService, jvm_type_header};
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,7 @@ fn read_presentation(
     Ok(presentation)
 }
 
+#[command(trust = always)]
 pub async fn jvm_file_presentations(
     host: &Host,
     window: &str,
@@ -103,14 +105,6 @@ pub async fn jvm_file_presentations(
     .await
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
-    d.add(
-        "jvm_file_presentations",
-        |c| async move { jvm_file_presentations(&c.host, &c.window, c.arg("paths")?).await },
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,3 +134,5 @@ mod tests {
         assert_eq!(presentation.kind, Some(ide_syntax::JvmTypeKind::Class));
     }
 }
+
+ide_command::domain!(jvm_icons: jvm_file_presentations);

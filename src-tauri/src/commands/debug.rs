@@ -1,6 +1,7 @@
 //! IPC commands of `ide_host::ops::debug` (the shared implementation).
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{DebugSessionId, IdeResult};
 use ide_dap::*;
 #[allow(unused_imports)]
@@ -105,12 +106,14 @@ pub async fn debug_pause(state: State<'_, AppState>, session: DebugSessionId, th
     ide_host::ops::debug::debug_pause(&state.host, session, thread_id).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_hot_reload(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
     ide_host::ops::debug::debug_hot_reload(&state.host, session).await
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_hot_restart(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
@@ -426,3 +429,5 @@ pub async fn debug_jvm_memory_referrers(
 ) -> IdeResult<JvmReferrersResult> {
     ide_host::ops::debug::debug_jvm_memory_referrers(&state.host, window.label(), session, object, limit).await
 }
+
+ide_command::desktop_domain!(debug_hot_reload, debug_hot_restart);

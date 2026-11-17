@@ -1,6 +1,7 @@
 //! IPC commands of `ide_host::ops::nav` (the shared implementation).
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{DocId, IdeResult, IpcPath, Pos};
 #[allow(unused_imports)]
 pub use ide_host::ops::nav::*;
@@ -52,6 +53,7 @@ pub async fn find_dirs(
 }
 
 /// Spring Web mapping sources for the request-path index of Search Everywhere.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn spring_route_sources(
@@ -62,6 +64,7 @@ pub fn spring_route_sources(
 }
 
 /// Cucumber feature files and step definition files, for step navigation.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn cucumber_sources(
@@ -193,3 +196,5 @@ pub async fn web_unresolved_references(
 ) -> IdeResult<Vec<FileReference>> {
     ide_host::ops::nav::web_unresolved_references(&state.host, window.label(), doc).await
 }
+
+ide_command::desktop_domain!(cucumber_sources, spring_route_sources);

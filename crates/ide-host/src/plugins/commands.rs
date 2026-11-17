@@ -5,6 +5,7 @@ use super::{
     PluginStatusItem, WorkbenchEvent,
 };
 use crate::Host;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_plugin::Invocation;
 use ide_workspace::settings::SettingsScope;
@@ -18,6 +19,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
 
 /// Runs a plugin command in the context of this window's project and focused editor.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn plugin_run_command(
     host: &Host,
     plugins: &Arc<PluginHost>,
@@ -53,12 +55,14 @@ pub async fn plugin_run_command(
 }
 
 /// The UI language (BCP 47) that plugin code reads with `ui.locale()`.
+#[command(trust = always)]
 pub async fn plugin_set_ui_locale(plugins: &Arc<PluginHost>, tag: String) -> IdeResult<()> {
     plugins.set_ui_locale(&tag);
     Ok(())
 }
 
 /// Workbench events from this window (only the kinds of `plugin_event_kinds`).
+#[command(trust = trusted)]
 pub fn plugin_post_events(
     plugins: &Arc<PluginHost>,
     window: &str,
@@ -69,43 +73,51 @@ pub fn plugin_post_events(
 }
 
 /// Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`).
+#[command(trust = trusted, desktop_body = async)]
 pub async fn plugin_event_kinds(plugins: &Arc<PluginHost>) -> Vec<EventKind> {
     plugins.event_kinds().into_iter().collect()
 }
 
 /// Every plugin status bar item (later changes arrive as `statusItemChanged`).
+#[command(trust = trusted)]
 pub fn plugin_status_items(plugins: &Arc<PluginHost>, window: &str) -> Vec<PluginStatusItem> {
     plugins.status_snapshot(window)
 }
 
 /// Plugin context keys in effect for this window (later changes arrive as `contextChanged`).
+#[command(trust = trusted)]
 pub fn plugin_context_keys(plugins: &Arc<PluginHost>, window: &str) -> Vec<PluginContextKey> {
     plugins.context_keys(Some(window))
 }
 
 /// Cancels a plugin task (`taskStarted` with `cancellable`).
+#[command(trust = trusted)]
 pub fn plugin_cancel_task(plugins: &Arc<PluginHost>, task_id: String) -> bool {
     plugins.cancel_task(&task_id)
 }
 
 /// Reports the user's answer to a plugin's `promptRequested`: the chosen keys
 /// (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
+#[command(trust = trusted)]
 pub fn plugin_answer_prompt(plugins: &Arc<PluginHost>, prompt_id: String, answer: Option<Vec<String>>) -> bool {
     plugins.answer_prompt(&prompt_id, answer)
 }
 
 /// A window's answer to a plugin's `commitRequested`; false when the call no
 /// longer waits.
+#[command(trust = trusted)]
 pub fn plugin_answer_commit(plugins: &Arc<PluginHost>, request_id: String, answer: CommitAnswer) -> bool {
     plugins.answer_commit(&request_id, answer)
 }
 
 /// The UI reports the focused editor's file (`editor-focused` events).
+#[command(trust = always)]
 pub fn plugin_set_active_file(plugins: &Arc<PluginHost>, window: &str, path: Option<String>) {
     plugins.set_active_file(window, path);
 }
 
 /// The invoking window's reply to a plugin command request.
+#[command(trust = trusted)]
 pub fn plugin_answer_command(
     plugins: &Arc<PluginHost>,
     window: &str,
@@ -124,6 +136,7 @@ fn scope_root(host: &Host, window: &str, scope: SettingsScope) -> IdeResult<Opti
 }
 
 /// Re-approves a plugin's executable, globally or for this window's project.
+#[command(trust = outside_restricted)]
 pub async fn plugin_choose_program(
     host: &Host,
     plugins: &Arc<PluginHost>,
@@ -139,6 +152,7 @@ pub async fn plugin_choose_program(
 }
 
 /// The currently approved executable in the selected scope, after revalidating its pin.
+#[command(trust = outside_restricted)]
 pub async fn plugin_program(
     host: &Host,
     plugins: &Arc<PluginHost>,
@@ -153,11 +167,13 @@ pub async fn plugin_program(
 }
 
 /// Project-scoped decoration snapshots; the window filters to its current root.
+#[command(trust = trusted)]
 pub fn plugin_decoration_sets(plugins: &Arc<PluginHost>) -> BTreeMap<String, Vec<DecorationSet>> {
     plugins.decoration_sets()
 }
 
 /// Reports exactly one completion from the operation's launching window.
+#[command(trust = trusted)]
 pub fn plugin_finish_operation(
     plugins: &Arc<PluginHost>,
     window: &str,
@@ -169,6 +185,7 @@ pub fn plugin_finish_operation(
 }
 
 /// Dispatches a wasm content editor action through the owning plugin's event handler.
+#[command(trust = trusted)]
 pub fn plugin_content_tab_action(
     plugins: &Arc<PluginHost>,
     window: &str,
@@ -179,6 +196,7 @@ pub fn plugin_content_tab_action(
 }
 
 /// Selects test-tree paths in an owned plugin test configuration.
+#[command(trust = trusted)]
 pub async fn plugin_select_tests(
     plugins: &Arc<PluginHost>,
     window: &str,
@@ -190,6 +208,7 @@ pub async fn plugin_select_tests(
 }
 
 /// Parses one batch of an owned test configuration's output.
+#[command(trust = trusted)]
 pub async fn plugin_parse_test_results(
     plugins: &Arc<PluginHost>,
     window: &str,
@@ -201,6 +220,7 @@ pub async fn plugin_parse_test_results(
 }
 
 /// Starts only the pinned command recorded for this window's terminal operation.
+#[command(trust = trusted)]
 pub async fn plugin_terminal_session_spawn(
     host: &Arc<Host>,
     plugins: &Arc<PluginHost>,
@@ -227,11 +247,13 @@ pub async fn plugin_terminal_session_spawn(
 }
 
 /// Marks a keyed tab closed before ending its process.
+#[command(trust = trusted)]
 pub fn plugin_terminal_session_close(plugins: &Arc<PluginHost>, window: &str, operation: String) -> IdeResult<()> {
     plugins.close_terminal_session(window, &operation)
 }
 
 /// Revalidates a plugin run's executable before debugging, including reruns.
+#[command(trust = trusted)]
 pub async fn plugin_prepare_debug_run(
     plugins: &Arc<PluginHost>,
     window: &str,
@@ -242,6 +264,7 @@ pub async fn plugin_prepare_debug_run(
 }
 
 /// Waits for the process an `attach-child` plugin configuration's debugger attaches to.
+#[command(trust = trusted)]
 pub async fn plugin_debug_attach_target(
     host: &Arc<Host>,
     plugins: &Arc<PluginHost>,
@@ -252,3 +275,29 @@ pub async fn plugin_debug_attach_target(
     let (plugins, host, client) = (plugins.clone(), host.clone(), window.to_owned());
     blocking(move || plugins.debug_attach_target(&host, &client, &config, run)).await
 }
+
+ide_command::domain!(
+    plugins_commands:
+    plugin_answer_command,
+    plugin_answer_commit,
+    plugin_answer_prompt,
+    plugin_cancel_task,
+    plugin_choose_program,
+    plugin_content_tab_action,
+    plugin_context_keys,
+    plugin_debug_attach_target,
+    plugin_decoration_sets,
+    plugin_event_kinds,
+    plugin_finish_operation,
+    plugin_parse_test_results,
+    plugin_post_events,
+    plugin_prepare_debug_run,
+    plugin_program,
+    plugin_run_command,
+    plugin_select_tests,
+    plugin_set_active_file,
+    plugin_set_ui_locale,
+    plugin_status_items,
+    plugin_terminal_session_close,
+    plugin_terminal_session_spawn,
+);

@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::settings::Settings;
 use ide_core::{EventSink, IdeError, IdeResult, RequestId, TaskId};
 use ide_language::LanguageInfo;
@@ -26,6 +27,7 @@ pub struct AppInfo {
 
 pub use ide_host::ops::project::ProjectInfo;
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_info(state: State<'_, AppState>) -> AppInfo {
@@ -49,6 +51,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn recent_projects(app: tauri::AppHandle) -> Vec<RecentProject> {
@@ -62,6 +65,7 @@ pub async fn recent_projects(app: tauri::AppHandle) -> Vec<RecentProject> {
     }
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
@@ -71,6 +75,7 @@ pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeRe
 }
 
 /// The welcome screen's project groups.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn recent_project_groups(state: State<'_, AppState>) -> Vec<RecentProjectGroup> {
@@ -79,6 +84,7 @@ pub fn recent_project_groups(state: State<'_, AppState>) -> Vec<RecentProjectGro
 
 /// Replaces the project groups; returns them as saved (names trimmed and unique, each
 /// project in one group, only recent projects).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn set_recent_project_groups(
@@ -111,6 +117,7 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
 
 /// Edits the loose file `path` in this window without a project (LightEdit);
 /// a window already in LightEdit keeps its files. Returns the effective (global) settings.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Settings> {
@@ -129,6 +136,7 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
 
 /// LightEdit without a file (File › New File from a welcome window); returns
 /// the effective (global) settings.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn light_edit_open_untitled(window: Window) -> IdeResult<Settings> {
@@ -160,6 +168,7 @@ fn project_info(project: &crate::state::Project) -> ProjectInfo {
 
 /// File › Rename Project…: the project's display name (title bar, recent
 /// projects); an empty `name` restores the folder name. Stored in the project's settings.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<ProjectInfo> {
@@ -193,6 +202,7 @@ pub fn close_project(window: Window, state: State<'_, AppState>) {
     });
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
@@ -211,6 +221,7 @@ pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
 
 /// Defaults plus the global layer, without any project's values: what new
 /// projects (and projects without their own value) get.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
@@ -287,6 +298,7 @@ fn settings_set_now(
 
 /// File › Manage IDE Settings › Export Settings…: the global settings plus the
 /// frontend's IDE-level `storage` (live / file templates, macros) to `path`.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_export(
@@ -308,6 +320,7 @@ pub struct SettingsImport {
 }
 
 /// Import Settings…: replaces the global settings with the file's; every window re-reads them.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_import(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<SettingsImport> {
@@ -332,6 +345,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
 
 /// Import Settings… with a JetBrains `settings.zip` or an IDE's settings folder: reads it; the
 /// frontend maps and applies it.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::settings::JetBrainsSettings> {
@@ -341,6 +355,7 @@ pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::
 }
 
 /// The settings folders of the JetBrains IDEs installed for this user, to import from.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::intellij::InstalledIdeSettings>> {
@@ -388,6 +403,7 @@ pub enum LogLevel {
 }
 
 /// Routes frontend logs into the backend `tracing` pipeline.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn log_frontend(level: LogLevel, message: String) {
@@ -426,6 +442,7 @@ pub async fn project_trust_set(
     Ok(())
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
@@ -443,3 +460,22 @@ pub async fn project_trust_remove_location(state: State<'_, AppState>, path: Pat
     }
     Ok(())
 }
+
+ide_command::desktop_domain!(
+    app_info,
+    languages,
+    light_edit_open,
+    light_edit_open_untitled,
+    log_frontend,
+    project_rename,
+    project_trust_add_location,
+    recent_project_groups,
+    recent_projects,
+    remove_recent_project,
+    set_recent_project_groups,
+    settings_export,
+    settings_get_global,
+    settings_import,
+    settings_list_jetbrains_ides,
+    settings_read_jetbrains,
+);

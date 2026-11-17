@@ -4,6 +4,7 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod agent_secrets;
+pub mod catalogue;
 pub mod data_dirs;
 pub mod diagnostics_store;
 pub mod environment;

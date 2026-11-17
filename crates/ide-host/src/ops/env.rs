@@ -2,12 +2,13 @@
 //! (and, on the remote server, the project's `remoteEnv`) without a restart.
 use crate::Host;
 use crate::environment::EnvReloaded;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::IdeResult;
 use std::sync::Arc;
 
 /// Reload Environment: new child processes get the login shell's current environment
 /// (and the project's `remoteEnv` on a remote host); running ones keep theirs.
+#[command(trust = always)]
 pub async fn env_reload(host: &Arc<Host>, window: &str) -> IdeResult<EnvReloaded> {
     // Re-reads the login shell (and the window's project `remoteEnv` where it applies);
     // running terminals and processes keep their environment.
@@ -17,6 +18,4 @@ pub async fn env_reload(host: &Arc<Host>, window: &str) -> IdeResult<EnvReloaded
     host.blocking(move || h.environment.reload(root.as_deref(), &sink)).await
 }
 
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("env_reload", |c| async move { env_reload(&c.host, &c.window).await });
-}
+ide_command::domain!(env: env_reload);

@@ -1,4 +1,5 @@
 //! User-owned project execution decisions. Project settings never grant trust.
+use crate::catalogue::TrustClass;
 use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -656,14 +657,30 @@ pub fn projectless_command_allowed(cmd: &str) -> bool {
     )
 }
 
+/// The class the tables above give `command`.
+pub fn command_trust(command: &str) -> TrustClass {
+    if restricted_command_allowed(command) {
+        TrustClass::Always
+    } else if projectless_command_allowed(command) {
+        TrustClass::OutsideRestricted
+    } else {
+        TrustClass::Trusted
+    }
+}
+
 impl crate::Host {
     pub fn authorize_command(&self, window: &str, command: &str) -> IdeResult<()> {
-        if restricted_command_allowed(command) {
+        self.authorize(window, command_trust(command))
+    }
+
+    /// Whether `window` may run a command of class `trust`.
+    pub fn authorize(&self, window: &str, trust: TrustClass) -> IdeResult<()> {
+        if trust == TrustClass::Always {
             return Ok(());
         }
         match self.project(window) {
             Ok(project) => project.require_trust(),
-            Err(_) if projectless_command_allowed(command) => Ok(()),
+            Err(_) if trust == TrustClass::OutsideRestricted => Ok(()),
             Err(error) => Err(error),
         }
     }

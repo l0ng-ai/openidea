@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::remote_settings::SshConfiguration;
 use ide_core::{IdeEvent, IdeResult};
 use tauri::State;
@@ -61,6 +62,7 @@ pub fn ssh_disconnect(state: State<'_, AppState>, id: String) {
 }
 
 /// Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn ssh_askpass_answer(state: State<'_, AppState>, id: u64, answer: Option<String>, remember: bool) {
@@ -71,6 +73,7 @@ pub fn ssh_askpass_answer(state: State<'_, AppState>, id: u64, answer: Option<St
 }
 
 /// Settings › Git › Saved credentials: `scheme://host` of every saved entry.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn git_credentials(_state: State<'_, AppState>) -> Vec<String> {
@@ -78,6 +81,7 @@ pub fn git_credentials(_state: State<'_, AppState>) -> Vec<String> {
 }
 
 /// Forgets the credential of `key` (a `git_credentials` entry).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn git_credential_forget(_state: State<'_, AppState>, key: String) {
@@ -88,6 +92,7 @@ pub fn git_credential_forget(_state: State<'_, AppState>, key: String) {
 
 /// Tools › Start SSH Session: a shell on configuration `id` in a terminal tab, through the
 /// built-in client with the configuration's saved credentials.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn ssh_open_terminal(
@@ -111,3 +116,5 @@ pub async fn ssh_open_terminal(
     )
     .await
 }
+
+ide_command::desktop_domain!(git_credential_forget, git_credentials, ssh_askpass_answer, ssh_open_terminal,);

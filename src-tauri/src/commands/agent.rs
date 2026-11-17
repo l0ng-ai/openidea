@@ -8,6 +8,7 @@ use ide_agent::{
     ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput,
     NewAgentTask,
 };
+use ide_command::desktop_command;
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
 use ide_tools::InstallEvent;
@@ -72,6 +73,7 @@ pub fn agent_set_env(
 
 /// Saves a new custom ACP agent through its agent file; refuses built-in and
 /// ACP Registry ids and taken ids.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn agent_custom_save(window: Window, state: State<'_, AppState>, input: CustomAgentInput) -> IdeResult<()> {
@@ -79,6 +81,7 @@ pub fn agent_custom_save(window: Window, state: State<'_, AppState>, input: Cust
 }
 
 /// Removes a custom agent's file (registry installs go through `agent_registry_remove`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn agent_custom_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
@@ -86,6 +89,7 @@ pub fn agent_custom_remove(window: Window, state: State<'_, AppState>, id: Strin
 }
 
 /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn agent_custom_import(
@@ -483,3 +487,5 @@ pub async fn agent_base_text(
 ) -> IdeResult<Option<String>> {
     agent::agent_base_text(&state.host, window.label(), task, path).await
 }
+
+ide_command::desktop_domain!(agent_custom_import, agent_custom_remove, agent_custom_save);

@@ -1,6 +1,7 @@
 //! IPC commands of `ide_host::ops::db` (the shared implementation).
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
 use ide_db::tools::{DbDumpKind, DbTool, DbToolJob, ToolInstall, ToolLine};
@@ -266,6 +267,7 @@ pub async fn db_remove_history(
 /// Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
 /// desktop shell: the path comes from a local save dialog, and a remote
 /// window exports through its local fs commands instead.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn db_export_file(path: std::path::PathBuf, text: String) -> IdeResult<()> {
@@ -372,6 +374,7 @@ pub fn db_consoles(state: State<'_, AppState>, id: String, create: bool) -> IdeR
 }
 
 /// Installed copies of `tool`, newest first.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_installs(tool: DbTool) -> IdeResult<Vec<ToolInstall>> {
@@ -379,6 +382,7 @@ pub async fn db_tool_installs(tool: DbTool) -> IdeResult<Vec<ToolInstall>> {
 }
 
 /// The version line of the executable at `path`.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_version(path: std::path::PathBuf) -> IdeResult<String> {
@@ -386,6 +390,7 @@ pub async fn db_tool_version(path: std::path::PathBuf) -> IdeResult<String> {
 }
 
 /// What made the dump at `path` (from its first bytes), so a restore picks the right tool.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn db_dump_kind(path: std::path::PathBuf) -> IdeResult<DbDumpKind> {
@@ -393,6 +398,7 @@ pub async fn db_dump_kind(path: std::path::PathBuf) -> IdeResult<DbDumpKind> {
 }
 
 /// The command line `db_run_tool` would run, without the password.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn db_tool_preview(
@@ -407,6 +413,7 @@ pub fn db_tool_preview(
 
 /// Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
 /// in the desktop shell like [`db_export_file`]: the paths in `job` are local.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn db_run_tool(
@@ -425,8 +432,19 @@ pub async fn db_run_tool(
 }
 
 /// `server_version_num` of the PostgreSQL server of target `id` (connects first).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn db_server_version(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<u32> {
     ide_host::ops::db::server_version(&state.host, window.label(), &id).await
 }
+
+ide_command::desktop_domain!(
+    db_dump_kind,
+    db_export_file,
+    db_run_tool,
+    db_server_version,
+    db_tool_installs,
+    db_tool_preview,
+    db_tool_version,
+);

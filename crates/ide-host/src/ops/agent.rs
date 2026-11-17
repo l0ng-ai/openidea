@@ -3,7 +3,6 @@
 use super::Channel;
 use crate::Host;
 use crate::agent_secrets::{AgentSecrets, Kept};
-use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
@@ -11,6 +10,7 @@ use ide_agent::{
     ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput,
     McpTransport, NewAgentTask,
 };
+use ide_command::command;
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
 use ide_tools::InstallEvent;
@@ -18,12 +18,14 @@ use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
 /// Streams the project's agent events to this window; returns every task.
+#[command(trust = always)]
 pub fn agent_subscribe(host: &Host, window: &str, on_event: Channel<AgentEvent>) -> IdeResult<Vec<AgentTask>> {
     Ok(host.project(window)?.agents.subscribe(std::sync::Arc::new(move |e| {
         let _ = on_event.send(e);
     })))
 }
 
+#[command(trust = trusted)]
 pub fn agent_providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
     host.require_trust(window)?;
     let mut providers = host.project(window)?.agents.providers();
@@ -32,6 +34,7 @@ pub fn agent_providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider
 }
 
 /// Refreshes the model catalog; force bypasses freshness, not the cooldown.
+#[command(trust = trusted)]
 pub fn agent_refresh_models(
     host: &Host,
     window: &str,
@@ -46,6 +49,7 @@ pub fn agent_refresh_models(
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 /// built-in's driver and arguments), or returns it to auto-detection with `None`.
+#[command(trust = trusted)]
 pub fn agent_set_command(host: &Host, window: &str, id: String, command: Option<String>) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_builtin_command(&id, command)
@@ -53,6 +57,7 @@ pub fn agent_set_command(host: &Host, window: &str, id: String, command: Option<
 
 /// Environment variables built-in agent `id` starts with (saved in its agent file);
 /// an empty map clears them.
+#[command(trust = trusted)]
 pub fn agent_set_env(
     host: &Host,
     window: &str,
@@ -92,6 +97,7 @@ fn join_err(e: impl std::fmt::Display) -> IdeError {
 
 /// Agents of the ACP Registry this machine can run, with what is installed; the list
 /// saved earlier when the registry is unreachable. Cancel with `cancel_request(request)`.
+#[command(trust = always)]
 pub async fn agent_registry_list(host: &Host, request: RequestId) -> IdeResult<AgentRegistry> {
     let paths = registry_paths(host);
     let cancel = host.begin_request(request);
@@ -135,6 +141,7 @@ impl Drop for Installing {
 
 /// Installs the registry's current version of agent `id` (also to update it), streaming
 /// progress through `on_event`. Cancel with `cancel_request(request)`.
+#[command(trust = always)]
 pub async fn agent_registry_install(
     host: &Host,
     id: String,
@@ -192,6 +199,7 @@ pub async fn agent_registry_install(
 }
 
 /// Removes a registry agent: its agent file and installed files.
+#[command(trust = always)]
 pub async fn agent_registry_remove(host: &Host, id: String) -> IdeResult<()> {
     let paths = registry_paths(host);
     tokio::task::spawn_blocking(move || ide_agent::registry::remove(&paths, &id)).await.map_err(join_err)??;
@@ -203,6 +211,7 @@ pub async fn agent_registry_remove(host: &Host, id: String) -> IdeResult<()> {
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
 /// before a task exists (skills and custom commands on disk included).
+#[command(trust = always)]
 pub async fn agent_commands(
     host: &Host,
     window: &str,
@@ -213,11 +222,13 @@ pub async fn agent_commands(
 }
 
 /// Entries of `task`'s conversation, or of its subagent `subagent`'s.
+#[command(trust = always)]
 pub fn agent_entries(host: &Host, window: &str, task: String, subagent: Option<String>) -> IdeResult<Vec<AgentEntry>> {
     host.project(window)?.agents.entries(&task, subagent)
 }
 
 /// Sessions of the project on this machine that no task holds yet, newest first.
+#[command(trust = trusted)]
 pub async fn agent_external_sessions(host: &Host, window: &str) -> IdeResult<Vec<ExternalSession>> {
     // Reads transcripts from disk on the blocking pool.
     let agents = host.project(window)?.agents.clone();
@@ -225,6 +236,7 @@ pub async fn agent_external_sessions(host: &Host, window: &str) -> IdeResult<Vec
 }
 
 /// Imports an external session as a task: its first turn loads and replays it.
+#[command(trust = trusted)]
 pub async fn agent_import_session(
     host: &Host,
     window: &str,
@@ -236,6 +248,7 @@ pub async fn agent_import_session(
     tokio::task::spawn_blocking(move || agents.import_session(&provider, &session_id)).await.map_err(join_err)?
 }
 
+#[command(trust = trusted)]
 pub async fn agent_create(host: &Host, window: &str, request: NewAgentTask) -> IdeResult<AgentTask> {
     host.require_trust(window)?;
     let mut request = request;
@@ -249,35 +262,41 @@ pub async fn agent_create(host: &Host, window: &str, request: NewAgentTask) -> I
 }
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.
+#[command(trust = trusted)]
 pub async fn agent_prompt(host: &Host, window: &str, task: String, prompt: AgentPrompt, now: bool) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.prompt(&task, prompt, now).await
 }
 
 /// Drops a queued message and returns it (to edit it).
+#[command(trust = always)]
 pub fn agent_unqueue(host: &Host, window: &str, task: String, queued: String) -> IdeResult<AgentQueued> {
     host.project(window)?.agents.unqueue(&task, &queued)
 }
 
 /// Sends a queued message now, interrupting the current turn.
+#[command(trust = trusted)]
 pub async fn agent_send_queued_now(host: &Host, window: &str, task: String, queued: String) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.send_queued_now(&task, &queued).await
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
+#[command(trust = trusted)]
 pub async fn agent_set_config(host: &Host, window: &str, task: String, option: String, value: String) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_config(&task, &option, value).await
 }
 
 /// Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`).
+#[command(trust = trusted)]
 pub async fn agent_fork(host: &Host, window: &str, task: String, turns: Option<u32>) -> IdeResult<AgentTask> {
     host.require_trust(window)?;
     host.project(window)?.agents.fork(&task, turns).await
 }
 
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+#[command(trust = trusted)]
 pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
     host.require_trust(window)?;
     host.project(window)?.agents.rollback(&task, turns).await
@@ -285,22 +304,26 @@ pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32)
 
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
 /// or sign-in run). Remembered until `refresh`.
+#[command(trust = trusted)]
 pub async fn agent_probe(host: &Host, window: &str, provider: String, refresh: bool) -> IdeResult<AgentProbe> {
     host.require_trust(window)?;
     host.project(window)?.agents.probe(&provider, refresh).await
 }
 
 /// Stops the task's current turn, or with `subagent` only that subagent's work.
+#[command(trust = always)]
 pub fn agent_cancel(host: &Host, window: &str, task: String, subagent: Option<String>) -> IdeResult<()> {
     host.project(window)?.agents.cancel(&task, subagent)
 }
 
 /// Stops one of the task's background tasks.
+#[command(trust = always)]
 pub async fn agent_stop_background(host: &Host, window: &str, task: String, background: String) -> IdeResult<()> {
     host.project(window)?.agents.stop_background(&task, &background).await
 }
 
 /// Answers a permission request; `option: null` cancels it.
+#[command(trust = trusted)]
 pub fn agent_respond(
     host: &Host,
     window: &str,
@@ -312,41 +335,49 @@ pub fn agent_respond(
     host.project(window)?.agents.respond(&task, permission, option)
 }
 
+#[command(trust = always)]
 pub fn agent_archive(host: &Host, window: &str, task: String) -> IdeResult<()> {
     host.project(window)?.agents.archive(&task)
 }
 
+#[command(trust = always)]
 pub fn agent_unarchive(host: &Host, window: &str, task: String) -> IdeResult<()> {
     host.project(window)?.agents.unarchive(&task)
 }
 
+#[command(trust = trusted)]
 pub fn agent_rename(host: &Host, window: &str, task: String, title: String) -> IdeResult<()> {
     host.project(window)?.agents.rename(&task, &title)
 }
 
+#[command(trust = trusted)]
 pub async fn agent_delete(host: &Host, window: &str, task: String, remove_worktree: bool) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.delete(&task, remove_worktree).await
 }
 
+#[command(trust = trusted)]
 pub async fn agent_changes(host: &Host, window: &str, task: String) -> IdeResult<Vec<AgentChange>> {
     host.require_trust(window)?;
     host.project(window)?.agents.changes(&task).await
 }
 
 /// The task's uncommitted changes and the commits made since it started.
+#[command(trust = trusted)]
 pub async fn agent_grouped_changes(host: &Host, window: &str, task: String) -> IdeResult<AgentChanges> {
     host.require_trust(window)?;
     host.project(window)?.agents.grouped_changes(&task).await
 }
 
 /// Content of `path` when the task started (left side of its diff).
+#[command(trust = trusted)]
 pub async fn agent_base_text(host: &Host, window: &str, task: String, path: IpcPath) -> IdeResult<Option<String>> {
     host.require_trust(window)?;
     host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
 }
 
 /// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.
+#[command(trust = trusted)]
 pub async fn agent_rollback_changes(
     host: &Host,
     window: &str,
@@ -360,6 +391,7 @@ pub async fn agent_rollback_changes(
 
 /// Accept: copies a worktree task's changed files among `paths` (all without) into the
 /// local checkout, uncommitted; files the checkout changed itself are left alone and reported.
+#[command(trust = trusted)]
 pub async fn agent_accept_changes(
     host: &Host,
     window: &str,
@@ -565,6 +597,7 @@ pub(crate) fn session_mcp_servers(
 }
 
 /// Lists configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes.
+#[command(trust = always)]
 pub fn agent_mcp_list(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
     // Configured servers of the User (`settings.toml`) and Workspace (`.openidea/settings.toml`) scopes.
     let (user, workspace, project) = mcp_maps(host, window);
@@ -572,6 +605,7 @@ pub fn agent_mcp_list(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
 }
 
 /// Creates or updates a User or Workspace MCP server and returns the updated list.
+#[command(trust = always)]
 pub fn agent_mcp_save(host: &Host, window: &str, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
     // A Workspace server saved here is one the user turned on.
     let approve: Vec<String> =
@@ -583,6 +617,7 @@ pub fn agent_mcp_save(host: &Host, window: &str, input: McpServerInput) -> IdeRe
 
 /// Parses and saves one or more MCP servers from a pasted JSON snippet (`{"mcpServers": {...}}` or
 /// single server object).
+#[command(trust = always)]
 pub fn agent_mcp_save_json(
     host: &Host,
     window: &str,
@@ -607,6 +642,7 @@ pub fn agent_mcp_save_json(
 }
 
 /// Enables or disables an MCP server and returns the updated list.
+#[command(trust = always)]
 pub fn agent_mcp_set_enabled(host: &Host, window: &str, id: String, enabled: bool) -> IdeResult<Vec<McpServer>> {
     let approve: Vec<String> = ide_agent::mcp::parse_server_id(&id)
         .filter(|(scope, _)| enabled && *scope == McpScope::Workspace)
@@ -619,6 +655,7 @@ pub fn agent_mcp_set_enabled(host: &Host, window: &str, id: String, enabled: boo
 }
 
 /// Removes a User or Workspace MCP server and returns the updated list.
+#[command(trust = always)]
 pub fn agent_mcp_remove(host: &Host, window: &str, id: String) -> IdeResult<Vec<McpServer>> {
     update_mcp_maps(host, window, &[], |user, workspace, _| {
         ide_agent::mcp::apply_remove(user, workspace, &id).map(|_| Vec::new())
@@ -626,6 +663,7 @@ pub fn agent_mcp_remove(host: &Host, window: &str, id: String) -> IdeResult<Vec<
 }
 
 /// Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once.
+#[command(trust = always)]
 pub fn agent_mcp_import(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
     // They stay off until the user turns them on.
     update_mcp_maps(host, window, &[], |_, workspace, project_root| {
@@ -636,6 +674,7 @@ pub fn agent_mcp_import(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> 
 }
 
 /// Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`).
+#[command(trust = always)]
 pub async fn agent_mcp_discover_sources(host: &Host, window: &str) -> IdeResult<Vec<McpExternalSource>> {
     let project_root = host.project(window).ok().filter(|p| !p.light).map(|p| p.root.clone());
     let home = dirs::home_dir();
@@ -647,6 +686,7 @@ pub async fn agent_mcp_discover_sources(host: &Host, window: &str) -> IdeResult<
 }
 
 /// Imports selected servers from discovered external MCP configuration files into User or Workspace scope.
+#[command(trust = always)]
 pub async fn agent_mcp_import_selected(
     host: &Host,
     window: &str,
@@ -671,6 +711,7 @@ pub async fn agent_mcp_import_selected(
 }
 
 /// Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`).
+#[command(trust = trusted)]
 pub async fn agent_mcp_test(host: &Host, window: &str, id: String) -> IdeResult<McpProbeResult> {
     host.require_trust(window)?;
     let (user, workspace, project) = mcp_maps(host, window);
@@ -852,6 +893,7 @@ fn parse_mcp_http_response(body: &str) -> Result<serde_json::Value, String> {
 }
 
 /// Updates per-session MCP server enable/disable overrides on `task`.
+#[command(trust = always)]
 pub fn agent_set_mcp_overrides(
     host: &Host,
     window: &str,
@@ -859,105 +901,6 @@ pub fn agent_set_mcp_overrides(
     overrides: std::collections::BTreeMap<String, bool>,
 ) -> IdeResult<AgentTask> {
     host.project(window)?.agents.set_mcp_overrides(&task, overrides)
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("agent_subscribe", |c| async move { agent_subscribe(&c.host, &c.window, c.sender("onEvent")?) });
-    d.add("agent_providers", |c| async move { agent_providers(&c.host, &c.window) });
-    d.add("agent_refresh_models", |c| async move {
-        agent_refresh_models(&c.host, &c.window, c.arg("provider")?, c.arg("force")?, c.arg("model")?)
-    });
-
-    d.add(
-        "agent_set_command",
-        |c| async move { agent_set_command(&c.host, &c.window, c.arg("id")?, c.arg("command")?) },
-    );
-    d.add("agent_set_env", |c| async move { agent_set_env(&c.host, &c.window, c.arg("id")?, c.arg("env")?) });
-    d.add("agent_registry_list", |c| async move { agent_registry_list(&c.host, c.arg("request")?).await });
-    d.add("agent_registry_install", |c| async move {
-        agent_registry_install(&c.host, c.arg("id")?, c.arg("request")?, c.sender("onEvent")?).await
-    });
-    d.add("agent_registry_remove", |c| async move { agent_registry_remove(&c.host, c.arg("id")?).await });
-    d.add("agent_mcp_list", |c| async move { agent_mcp_list(&c.host, &c.window) });
-    d.add("agent_mcp_save", |c| async move { agent_mcp_save(&c.host, &c.window, c.arg("input")?) });
-    d.add("agent_mcp_save_json", |c| async move {
-        agent_mcp_save_json(
-            &c.host,
-            &c.window,
-            c.arg("scope")?,
-            c.arg("rawJson")?,
-            c.arg("fallbackName")?,
-            c.arg("agents")?,
-        )
-    });
-    d.add("agent_mcp_set_enabled", |c| async move {
-        agent_mcp_set_enabled(&c.host, &c.window, c.arg("id")?, c.arg("enabled")?)
-    });
-    d.add("agent_mcp_remove", |c| async move { agent_mcp_remove(&c.host, &c.window, c.arg("id")?) });
-    d.add("agent_mcp_import", |c| async move { agent_mcp_import(&c.host, &c.window) });
-    d.add("agent_mcp_discover_sources", |c| async move { agent_mcp_discover_sources(&c.host, &c.window).await });
-    d.add("agent_mcp_import_selected", |c| async move {
-        agent_mcp_import_selected(&c.host, &c.window, c.arg("scope")?, c.arg("selections")?, c.arg("overwrite")?).await
-    });
-    d.add("agent_mcp_test", |c| async move { agent_mcp_test(&c.host, &c.window, c.arg("id")?).await });
-    d.add("agent_set_mcp_overrides", |c| async move {
-        agent_set_mcp_overrides(&c.host, &c.window, c.arg("task")?, c.arg("overrides")?)
-    });
-    d.add(
-        "agent_commands",
-        |c| async move { agent_commands(&c.host, &c.window, c.arg("provider")?, c.arg("task")?).await },
-    );
-    d.add("agent_entries", |c| async move { agent_entries(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
-    d.add("agent_create", |c| async move { agent_create(&c.host, &c.window, c.arg("request")?).await });
-    d.add("agent_external_sessions", |c| async move { agent_external_sessions(&c.host, &c.window).await });
-    d.add("agent_import_session", |c| async move {
-        agent_import_session(&c.host, &c.window, c.arg("provider")?, c.arg("sessionId")?).await
-    });
-    d.add("agent_prompt", |c| async move {
-        agent_prompt(&c.host, &c.window, c.arg("task")?, c.arg("prompt")?, c.arg("now")?).await
-    });
-    d.add("agent_unqueue", |c| async move { agent_unqueue(&c.host, &c.window, c.arg("task")?, c.arg("queued")?) });
-    d.add("agent_send_queued_now", |c| async move {
-        agent_send_queued_now(&c.host, &c.window, c.arg("task")?, c.arg("queued")?).await
-    });
-    d.add("agent_set_config", |c| async move {
-        agent_set_config(&c.host, &c.window, c.arg("task")?, c.arg("option")?, c.arg("value")?).await
-    });
-    d.add("agent_fork", |c| async move { agent_fork(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await });
-    d.add(
-        "agent_rollback",
-        |c| async move { agent_rollback(&c.host, &c.window, c.arg("task")?, c.arg("turns")?).await },
-    );
-    d.add(
-        "agent_probe",
-        |c| async move { agent_probe(&c.host, &c.window, c.arg("provider")?, c.arg("refresh")?).await },
-    );
-    d.add("agent_cancel", |c| async move { agent_cancel(&c.host, &c.window, c.arg("task")?, c.arg("subagent")?) });
-    d.add("agent_stop_background", |c| async move {
-        agent_stop_background(&c.host, &c.window, c.arg("task")?, c.arg("background")?).await
-    });
-    d.add("agent_respond", |c| async move {
-        agent_respond(&c.host, &c.window, c.arg("task")?, c.arg("permission")?, c.arg("option")?)
-    });
-    d.add("agent_unarchive", |c| async move { agent_unarchive(&c.host, &c.window, c.arg("task")?) });
-    d.add("agent_rename", |c| async move { agent_rename(&c.host, &c.window, c.arg("task")?, c.arg("title")?) });
-    d.add("agent_archive", |c| async move { agent_archive(&c.host, &c.window, c.arg("task")?) });
-    d.add("agent_delete", |c| async move {
-        agent_delete(&c.host, &c.window, c.arg("task")?, c.arg("removeWorktree")?).await
-    });
-    d.add("agent_changes", |c| async move { agent_changes(&c.host, &c.window, c.arg("task")?).await });
-    d.add("agent_grouped_changes", |c| async move { agent_grouped_changes(&c.host, &c.window, c.arg("task")?).await });
-    d.add(
-        "agent_base_text",
-        |c| async move { agent_base_text(&c.host, &c.window, c.arg("task")?, c.arg("path")?).await },
-    );
-    d.add("agent_rollback_changes", |c| async move {
-        agent_rollback_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?, c.arg("view")?).await
-    });
-    d.add("agent_accept_changes", |c| async move {
-        agent_accept_changes(&c.host, &c.window, c.arg("task")?, c.arg("paths")?).await
-    });
 }
 
 fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {
@@ -1068,3 +1011,49 @@ mod tests {
         assert!(!reloaded.approved(&tmp.path().join("other"), "extra", &extra));
     }
 }
+
+ide_command::domain!(
+    agent:
+    agent_accept_changes,
+    agent_archive,
+    agent_base_text,
+    agent_cancel,
+    agent_changes,
+    agent_commands,
+    agent_create,
+    agent_delete,
+    agent_entries,
+    agent_external_sessions,
+    agent_fork,
+    agent_grouped_changes,
+    agent_import_session,
+    agent_mcp_discover_sources,
+    agent_mcp_import,
+    agent_mcp_import_selected,
+    agent_mcp_list,
+    agent_mcp_remove,
+    agent_mcp_save,
+    agent_mcp_save_json,
+    agent_mcp_set_enabled,
+    agent_mcp_test,
+    agent_probe,
+    agent_prompt,
+    agent_providers,
+    agent_refresh_models,
+    agent_registry_install,
+    agent_registry_list,
+    agent_registry_remove,
+    agent_rename,
+    agent_respond,
+    agent_rollback,
+    agent_rollback_changes,
+    agent_send_queued_now,
+    agent_set_command,
+    agent_set_config,
+    agent_set_env,
+    agent_set_mcp_overrides,
+    agent_stop_background,
+    agent_subscribe,
+    agent_unarchive,
+    agent_unqueue,
+);

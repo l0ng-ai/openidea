@@ -1,5 +1,6 @@
 use super::{Channel, Emit};
 use crate::Host;
+use ide_command::command;
 use ide_core::{IdeResult, TerminalId};
 use ide_terminal::{TerminalInfo, TerminalOptions};
 
@@ -7,6 +8,7 @@ mod images;
 
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
+#[command(trust = always)]
 pub async fn term_store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
     if data.len() > MAX_IMAGE_BYTES {
         return Err(ide_core::IdeError::invalid("image is too large to paste (limit 20 MB)"));
@@ -20,6 +22,7 @@ pub async fn term_store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: 
 
 /// Async to stay off the main thread: forking the IDE (its whole address space)
 /// to start the shell takes tens of milliseconds, a frozen UI if run there.
+#[command(trust = always)]
 pub async fn term_spawn(
     host: &Host,
     window: &str,
@@ -142,49 +145,38 @@ impl ide_terminal::TerminalChannel for SshTerminal {
     }
 }
 
+#[command(trust = always)]
 pub fn term_write(host: &Host, id: TerminalId, data: String) -> IdeResult<()> {
     host.terminals.write(id, &data)
 }
 
+#[command(trust = always)]
 pub fn term_resize(host: &Host, id: TerminalId, cols: u16, rows: u16) -> IdeResult<()> {
     host.terminals.resize(id, cols, rows)
 }
 
+#[command(trust = always)]
 pub fn term_kill(host: &Host, id: TerminalId) -> IdeResult<()> {
     host.terminals.kill(id)
 }
 
 /// Whether the session is running a command (closing its tab asks first). A
 /// `tcgetpgrp` or one process snapshot: async only to stay off the main thread.
+#[command(trust = always)]
 pub async fn term_is_busy(host: &Host, id: TerminalId) -> IdeResult<bool> {
     host.terminals.is_busy(id)
 }
 
 /// Shell used when Settings › Terminal › Shell path is empty.
+#[command(trust = always)]
 pub fn term_default_shell() -> String {
     ide_terminal::default_shell_path()
 }
 
 /// Installed shells for the Terminal's "New Predefined Session" menu.
+#[command(trust = always)]
 pub fn term_available_shells() -> Vec<String> {
     ide_terminal::available_shells()
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
-    d.add(
-        "term_spawn",
-        |c| async move { term_spawn(&c.host, &c.window, c.arg("options")?, c.sender("onOutput")?).await },
-    );
-    d.add("term_store_image", |c| async move {
-        term_store_image(&c.host, c.arg("id")?, c.arg("data")?, c.arg("mime")?).await
-    });
-    d.add("term_write", |c| async move { term_write(&c.host, c.arg("id")?, c.arg("data")?) });
-    d.add("term_resize", |c| async move { term_resize(&c.host, c.arg("id")?, c.arg("cols")?, c.arg("rows")?) });
-    d.add("term_kill", |c| async move { term_kill(&c.host, c.arg("id")?) });
-    d.add("term_is_busy", |c| async move { term_is_busy(&c.host, c.arg("id")?).await });
-    d.add("term_default_shell", |_| async move { Ok(term_default_shell()) });
-    d.add("term_available_shells", |_| async move { Ok(term_available_shells()) });
 }
 
 #[cfg(test)]
@@ -217,3 +209,15 @@ mod tests {
         assert!(!host.data_dir.join("terminal-images").exists());
     }
 }
+
+ide_command::domain!(
+    term:
+    term_available_shells,
+    term_default_shell,
+    term_is_busy,
+    term_kill,
+    term_resize,
+    term_spawn,
+    term_store_image,
+    term_write,
+);

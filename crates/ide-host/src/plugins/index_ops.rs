@@ -1,4 +1,5 @@
 use super::PluginHost;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::Invocation;
 use std::{path::PathBuf, sync::Arc};
@@ -9,6 +10,7 @@ pub struct NavigationFiles {
     pub extensions: Vec<String>,
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_navigation_files(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -41,6 +43,7 @@ pub async fn plugin_navigation_files(
     .await
 }
 
+#[command(trust = trusted)]
 pub fn plugin_navigation_invalidate(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -52,6 +55,7 @@ pub fn plugin_navigation_invalidate(
     Ok(())
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_navigation_index(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -142,6 +146,7 @@ pub async fn plugin_navigation_index(
     result
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_endpoints(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -154,6 +159,7 @@ pub async fn plugin_endpoints(
     blocking(move || Ok(plugins.endpoints(&plugin_id, &project.root)?.as_ref().clone())).await
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_navigation_goto(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -173,6 +179,7 @@ pub async fn plugin_navigation_goto(
     .await
 }
 
+#[command(trust = trusted)]
 pub async fn plugin_navigation_markers(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -196,3 +203,13 @@ pub async fn plugin_navigation_markers(
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
     tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
+
+ide_command::domain!(
+    plugins_index_ops:
+    plugin_endpoints,
+    plugin_navigation_files,
+    plugin_navigation_goto,
+    plugin_navigation_index,
+    plugin_navigation_invalidate,
+    plugin_navigation_markers,
+);

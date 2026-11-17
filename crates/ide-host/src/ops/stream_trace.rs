@@ -3,7 +3,7 @@
 
 use crate::Host;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{CancellationToken, DebugSessionId, IdeError, IdeResult, LanguageId, Range, RequestId};
 use ide_dap::{StackFrame, TraceRun};
 pub use ide_dap::{TracePhase, TraceProgress, TraceUnavailable};
@@ -103,6 +103,7 @@ pub enum TerminalView {
 }
 
 /// The stream chains around `frame`'s line; `top`: it is the thread's top frame.
+#[command(trust = trusted)]
 pub async fn debug_stream_chains(
     host: &Host,
     window: &str,
@@ -119,6 +120,7 @@ pub async fn debug_stream_chains(
 /// Traces chain `chain_index` of [`debug_stream_chains`], whose `range` the UI showed, while the
 /// program runs it; cancelling `request` stops recording.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn debug_stream_trace(
     host: &Host,
     window: &str,
@@ -196,6 +198,7 @@ async fn trace(
 }
 
 /// Ends the running trace's terminal operation; `None` when no trace runs.
+#[command(trust = trusted)]
 pub async fn debug_stream_trace_abort(
     host: &Host,
     window: &str,
@@ -439,29 +442,12 @@ fn box_kind(type_name: &str) -> Option<BoxKind> {
     })
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("debug_stream_chains", |c| async move {
-        debug_stream_chains(&c.host, &c.window, c.arg("session")?, c.arg("frame")?, c.arg("top")?).await
-    });
-    d.add("debug_stream_trace", |c| async move {
-        debug_stream_trace(
-            &c.host,
-            &c.window,
-            c.arg("session")?,
-            c.arg("request")?,
-            c.arg("threadId")?,
-            c.arg("frame")?,
-            c.arg("chainIndex")?,
-            c.arg("range")?,
-            c.sender("onProgress")?,
-        )
-        .await
-    });
-    d.add("debug_stream_trace_abort", |c| async move {
-        debug_stream_trace_abort(&c.host, &c.window, c.arg("session")?).await
-    });
-}
-
 #[cfg(test)]
 mod tests;
+
+ide_command::domain!(
+    stream_trace:
+    debug_stream_chains,
+    debug_stream_trace,
+    debug_stream_trace_abort,
+);

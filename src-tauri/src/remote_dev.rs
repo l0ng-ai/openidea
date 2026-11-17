@@ -5,6 +5,7 @@
 
 use crate::events::TauriSink;
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{EventSink, IdeError, IdeResult};
 use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, ServerInfo};
 use ide_jsonrpc::{Handler, Peer};
@@ -18,6 +19,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Window};
 
 /// Browse before connecting, using the desktop's SSH configuration even in a remote window.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_bootstrap_list(
@@ -486,6 +488,7 @@ fn build_id(path: &std::path::Path) -> IdeResult<String> {
 /// File › Remote Development: opens `path` on `target` (an SSH host, a WSL distribution, or a
 /// dev container, whose project folder is the container's own) in this window (installs /
 /// starts the server as needed).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_connect(
@@ -712,6 +715,7 @@ pub struct RemoteSession {
 }
 
 /// The remote session of this window (a settings window: its parent's), if any.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<RemoteSession> {
@@ -726,6 +730,7 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
 }
 
 /// This machine's trust decision for the window's remote project (see [`Connection::authorize_command`]).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_trust_status(window: Window, state: State<'_, AppState>) -> IdeResult<ide_host::trust::TrustStatus> {
@@ -739,6 +744,7 @@ pub fn remote_trust_status(window: Window, state: State<'_, AppState>) -> IdeRes
 }
 
 /// Records the user's trust decision for the window's remote project on this machine.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_trust_set(window: Window, state: State<'_, AppState>, trusted: bool) -> IdeResult<()> {
@@ -773,6 +779,7 @@ fn connection(window: &Window, state: &AppState) -> IdeResult<Arc<Connection>> {
 }
 
 /// The remote ports this window forwards to this machine.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_forwarded_ports(window: Window, state: State<'_, AppState>) -> Vec<ForwardedPort> {
@@ -781,6 +788,7 @@ pub fn remote_forwarded_ports(window: Window, state: State<'_, AppState>) -> Vec
 
 /// Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
 /// else to a free one. Nothing needs to listen there yet; connections are opened per use.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_forward_port(
@@ -890,6 +898,7 @@ async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
 }
 
 /// Stops forwarding `remote_port` of `host` (`None`: the remote host itself).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_stop_forwarding(
@@ -910,6 +919,7 @@ pub async fn remote_stop_forwarding(
     Ok(())
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
@@ -920,6 +930,7 @@ pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
 /// Runs a command on the window's remote server; `args` and the result are JSON
 /// text. Streaming arguments are `{ "$channel": id }`; their values arrive on
 /// `on_channel` tagged with the id.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_invoke(
@@ -985,6 +996,7 @@ pub async fn remote_invoke(
 }
 
 /// A client OS file belongs to this machine even when its destination is remote.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn remote_import_local(
@@ -1193,3 +1205,17 @@ mod tests {
         assert_eq!(serde_json::from_value::<RemoteTarget>(json).unwrap(), target);
     }
 }
+
+ide_command::desktop_domain!(
+    remote_bootstrap_list,
+    remote_connect,
+    remote_current,
+    remote_disconnect,
+    remote_forward_port,
+    remote_forwarded_ports,
+    remote_import_local,
+    remote_invoke,
+    remote_stop_forwarding,
+    remote_trust_set,
+    remote_trust_status,
+);

@@ -4,8 +4,8 @@ mod workspace;
 
 use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
 use crate::{Host, Project};
+use ide_command::command;
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
 use ide_build::maven::PomGoto;
@@ -126,6 +126,7 @@ fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
 }
 
 /// Maven and Gradle projects of the window's project, from the build files plus the last sync.
+#[command(trust = trusted)]
 pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -202,11 +203,13 @@ async fn set_gradle_projects(host: &Host, window: &str, paths: Vec<String>, link
     .map_err(join_err)?
 }
 
+#[command(trust = trusted)]
 pub async fn gradle_link_projects(host: &Host, window: &str, paths: Vec<String>) -> IdeResult<BuildModel> {
     // Links independent builds without changing their Gradle scripts.
     set_gradle_projects(host, window, paths, true).await
 }
 
+#[command(trust = trusted)]
 pub async fn gradle_unlink_projects(host: &Host, window: &str, paths: Vec<String>) -> IdeResult<BuildModel> {
     // Stops importing the selected independent builds; files and saved run configurations stay intact.
     set_gradle_projects(host, window, paths, false).await
@@ -216,6 +219,7 @@ pub async fn gradle_unlink_projects(host: &Host, window: &str, paths: Vec<String
 /// background, reporting progress on `on_progress`; cancellable with `cancel_request(request)`.
 /// Returns the refreshed model; a failed build is reported in its `syncError`.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn build_sync(
     host: &Host,
     window: &str,
@@ -420,6 +424,7 @@ fn declaring_pom(
 
 /// The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
 /// build has downloaded it.
+#[command(trust = trusted)]
 pub async fn gradle_published_catalog(
     host: &Host,
     window: &str,
@@ -435,6 +440,7 @@ pub async fn gradle_published_catalog(
 }
 
 /// The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer).
+#[command(trust = trusted)]
 pub async fn gradle_dependencies(
     host: &Host,
     window: &str,
@@ -518,6 +524,7 @@ pub(crate) fn analyzed_dependencies(
 }
 
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.
+#[command(trust = trusted)]
 pub async fn maven_dependency_declaration(
     host: &Host,
     window: &str,
@@ -537,6 +544,7 @@ pub async fn maven_dependency_declaration(
 /// The go-to-declaration target at `pos` of a Maven POM: the definition of the
 /// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
 /// entry providing the dependency's / plugin's version, along the parent chain.
+#[command(trust = trusted)]
 pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
     // `pom` is project-relative, or absolute for a parent POM opened from the local repository.
     // The parent chain reaches into the local repository when a parent is not in the project;
@@ -573,6 +581,7 @@ const CENTRAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
 /// in the value of in the POM `doc`, from the local repository and Maven Central.
+#[command(trust = trusted)]
 pub async fn maven_dependency_completion(
     host: &Host,
     window: &str,
@@ -653,6 +662,7 @@ pub async fn maven_dependency_completion(
 /// Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency
 /// `dependency` of the Maven module `pom`, through the open document when there is one
 /// (saved). Returns the declaration; nothing changes when it already excludes it.
+#[command(trust = trusted)]
 pub async fn maven_exclude_dependency(
     host: &Host,
     window: &str,
@@ -777,6 +787,7 @@ fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: 
 /// with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 /// are cleared first; the new messages are published as `build` diagnostics.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn build_run(
     host: &Host,
     window: &str,
@@ -888,6 +899,7 @@ pub async fn build_run(
 /// `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
 /// build) are cleared first; the new messages are published as `build`
 /// diagnostics.
+#[command(trust = trusted)]
 pub async fn build_compile_file(
     host: &Host,
     window: &str,
@@ -922,73 +934,6 @@ pub async fn build_compile_file(
     .map_err(join_err);
     host.end_request(request);
     result?
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("build_model", |c| async move { build_model(&c.host, &c.window).await });
-    d.add("gradle_link_projects", |c| async move { gradle_link_projects(&c.host, &c.window, c.arg("paths")?).await });
-    d.add(
-        "gradle_unlink_projects",
-        |c| async move { gradle_unlink_projects(&c.host, &c.window, c.arg("paths")?).await },
-    );
-    d.add("build_sync", |c| async move {
-        build_sync(
-            &c.host,
-            &c.window,
-            c.arg("tool")?,
-            c.arg("request")?,
-            c.arg("offline")?,
-            c.arg("profiles")?,
-            c.arg("buildDir")?,
-            c.sender("onProgress")?,
-        )
-        .await
-    });
-    d.add("gradle_published_catalog", |c| async move {
-        gradle_published_catalog(&c.host, &c.window, c.arg("coordinates")?).await
-    });
-    d.add("gradle_dependencies", |c| async move {
-        gradle_dependencies(
-            &c.host,
-            &c.window,
-            c.arg("gradlePath")?,
-            c.arg("configuration")?,
-            c.arg("offline")?,
-            c.arg("request")?,
-            c.arg("buildDir")?,
-        )
-        .await
-    });
-    d.add("maven_dependency_declaration", |c| async move {
-        maven_dependency_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?).await
-    });
-    d.add("maven_goto_declaration", |c| async move {
-        maven_goto_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("pos")?).await
-    });
-    d.add("maven_dependency_completion", |c| async move {
-        maven_dependency_completion(&c.host, &c.window, c.arg("doc")?, c.arg("offset")?, c.arg("request")?).await
-    });
-    d.add("maven_exclude_dependency", |c| async move {
-        maven_exclude_dependency(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?, c.arg("exclusion")?).await
-    });
-    d.add("build_run", |c| async move {
-        build_run(
-            &c.host,
-            &c.window,
-            c.arg("kind")?,
-            c.arg("file")?,
-            c.arg("cmake")?,
-            c.arg("request")?,
-            c.arg("clear")?,
-            c.sender("onEvent")?,
-        )
-        .await
-    });
-    d.add("build_compile_file", |c| async move {
-        build_compile_file(&c.host, &c.window, c.arg("file")?, c.arg("request")?, c.arg("clear")?, c.sender("onEvent")?)
-            .await
-    });
 }
 
 #[cfg(test)]
@@ -1315,3 +1260,19 @@ mod maven_completion_tests {
         host.close_project("main");
     }
 }
+
+ide_command::domain!(
+    build:
+    build_compile_file,
+    build_model,
+    build_run,
+    build_sync,
+    gradle_dependencies,
+    gradle_link_projects,
+    gradle_published_catalog,
+    gradle_unlink_projects,
+    maven_dependency_completion,
+    maven_dependency_declaration,
+    maven_exclude_dependency,
+    maven_goto_declaration,
+);

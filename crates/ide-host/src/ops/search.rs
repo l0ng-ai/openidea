@@ -1,5 +1,6 @@
 use super::Channel;
 use crate::Host;
+use ide_command::command;
 use ide_core::{IdeResult, RequestId};
 use ide_search::{FileMatches, ProjectFileSet, SearchQuery, SearchSummary};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ pub fn literal_range(l: ide_language::Literal) -> ide_search::LiteralRange {
 
 /// Find in Files. Results stream through `on_event`; ends with `Done`.
 /// Cancel with `cancel_request(request)`.
+#[command(trust = always)]
 pub async fn search_start(
     host: &Host,
     window: &str,
@@ -175,5 +177,7 @@ mod tests {
     }
 }
 
-mod commands;
+pub mod commands;
 pub use commands::*;
+
+ide_command::domain!(search: search_start);

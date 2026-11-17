@@ -4,6 +4,7 @@
 //! the desktop for local projects, `openidea-server` for remote ones.
 
 use super::{PluginEditor, PluginHost, PluginOutputLine};
+use ide_command::command;
 use ide_core::{DocId, IdeError, IdeResult};
 use ide_plugin::{EditorContext, Invocation, ServiceTab, View, ViewEvent, Viewport};
 use std::sync::Arc;
@@ -41,6 +42,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
 /// Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
 /// a tool window, the window's active editor, as commands get it).
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn plugin_view_render(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -58,6 +60,7 @@ pub async fn plugin_view_render(
 
 /// A user action in a plugin view or custom editor (`doc`, `editor`: as for rendering).
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn plugin_view_event(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -74,6 +77,7 @@ pub async fn plugin_view_event(
 }
 
 /// The Services pane of node `key` of a plugin's `location = "services"` view.
+#[command(trust = trusted)]
 pub async fn plugin_service_detail(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -91,6 +95,7 @@ pub async fn plugin_service_detail(
 /// the toggles in `on`), streaming its output until it exits or `request` is
 /// cancelled; returns the exit code.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn plugin_service_log(
     host: &crate::Host,
     plugins: &Arc<PluginHost>,
@@ -145,3 +150,11 @@ mod tests {
         assert!(view_invocation(&host, "main", None, None).unwrap().editor.is_none());
     }
 }
+
+ide_command::domain!(
+    plugins_views:
+    plugin_service_detail,
+    plugin_service_log,
+    plugin_view_event,
+    plugin_view_render,
+);

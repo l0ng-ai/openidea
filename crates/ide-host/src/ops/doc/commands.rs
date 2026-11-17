@@ -1,7 +1,5 @@
-#[allow(unused_imports)]
-use super::*;
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
@@ -16,6 +14,7 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send
 
 /// Opens a read-only virtual document (see `lsp_virtual_document`) as an
 /// editor buffer, so syntax features and language-server requests work in it.
+#[command(trust = always)]
 pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResult<DocumentInfo> {
     let project = host.project(window)?;
     let vd = crate::ops::lsp::lsp_virtual_document(host, window, uri).await?;
@@ -35,6 +34,7 @@ pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResu
 /// The language and CodeMirror mode `path` is shown with in an editor, without opening
 /// it: previews of closed files and diffs. `first_line` is the shown text's (a revision's)
 /// for hashbang detection; without it the file's on disk counts.
+#[command(trust = always)]
 pub async fn doc_language(
     host: &Host,
     window: &str,
@@ -46,6 +46,7 @@ pub async fn doc_language(
 }
 
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
+#[command(trust = always)]
 pub async fn doc_set_encoding(
     host: &Host,
     window: &str,
@@ -70,12 +71,14 @@ pub async fn doc_set_encoding(
     host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
 }
 
+#[command(trust = always)]
 pub async fn doc_set_bom(host: &Host, window: &str, doc: DocId, has_bom: bool) -> IdeResult<DocumentEncoding> {
     // Adds or removes the BOM on a UTF-8 document; the change is written on save.
     let project = host.project(window)?;
     host.blocking(move || project.documents.set_bom(doc, has_bom)).await
 }
 
+#[command(trust = always)]
 pub async fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || project.documents.set_line_ending(doc, line_ending)).await
@@ -85,6 +88,7 @@ pub async fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_end
 /// visibility), tree-sitter otherwise.
 /// Tree-sitter answers come from the per-document tree cache (incremental
 /// re-parse); large documents get no syntax structure.
+#[command(trust = always)]
 pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<OutlineItem>> {
     let project = host.project(window)?;
     let lsp = project.lsp.document_symbols(doc).await.ok().flatten();
@@ -123,6 +127,7 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
     .await
 }
 
+#[command(trust = always)]
 pub async fn doc_folding(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<FoldRange>> {
     let project = host.project(window)?;
     blocking(move || {
@@ -157,6 +162,7 @@ pub async fn doc_folding(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
 
 /// Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
 /// empty when the grammar has no highlights query or the document is large.
+#[command(trust = always)]
 pub async fn doc_highlights(host: &Host, window: &str, doc: DocId) -> IdeResult<SyntaxHighlights> {
     let project = host.project(window)?;
     blocking(move || {
@@ -170,6 +176,7 @@ pub async fn doc_highlights(host: &Host, window: &str, doc: DocId) -> IdeResult<
 }
 
 /// Python class facts for the inheritance inspections: tree-sitter, no language server.
+#[command(trust = always)]
 pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResult<ide_language::PythonFacts> {
     // Base names as written, a method's parameters, decorator semantics and its body shape.
     let project = host.project(window)?;
@@ -180,6 +187,7 @@ pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResul
 
 /// Extend Selection (⌥↑): syntax ranges around `offset`, innermost first.
 /// Large documents fall back to word / line / document ranges.
+#[command(trust = always)]
 pub async fn doc_selection_ranges(host: &Host, window: &str, doc: DocId, offset: u32) -> IdeResult<Vec<Range>> {
     let project = host.project(window)?;
     blocking(move || {
@@ -205,48 +213,30 @@ pub async fn doc_selection_ranges(host: &Host, window: &str, doc: DocId, offset:
     .await
 }
 
+#[command(trust = always)]
 pub async fn history_list(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
     let project = host.project(window)?;
     blocking(move || project.history.list(&path)).await
 }
 
+#[command(trust = always)]
 pub async fn history_content(host: &Host, window: &str, id: String) -> IdeResult<String> {
     let project = host.project(window)?;
     blocking(move || project.history.content(&id)).await
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("doc_open", |c| async move { doc_open(&c.host, &c.window, c.arg("path")?).await });
-    d.add("doc_close", |c| async move { doc_close(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("doc_open_untitled", |c| async move { doc_open_untitled(&c.host, &c.window, c.arg("name")?).await });
-    d.add("doc_save_as", |c| async move { doc_save_as(&c.host, &c.window, c.arg("doc")?, c.arg("path")?).await });
-    d.add("doc_edit", |c| async move {
-        doc_edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?).await
-    });
-    d.add("doc_save", |c| async move { doc_save(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("doc_save_all", |c| async move { doc_save_all(&c.host, &c.window).await });
-    d.add("doc_sync_from_disk", |c| async move { doc_sync_from_disk(&c.host, &c.window).await });
-    d.add("doc_snapshot", |c| async move { doc_snapshot(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("doc_open_virtual", |c| async move { doc_open_virtual(&c.host, &c.window, c.arg("uri")?).await });
-    d.add(
-        "doc_language",
-        |c| async move { doc_language(&c.host, &c.window, c.arg("path")?, c.arg("firstLine")?).await },
-    );
-    d.add("doc_set_encoding", |c| async move {
-        doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
-    });
-    d.add("doc_set_bom", |c| async move { doc_set_bom(&c.host, &c.window, c.arg("doc")?, c.arg("hasBom")?).await });
-    d.add("doc_set_line_ending", |c| async move {
-        doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?).await
-    });
-    d.add("doc_outline", |c| async move { doc_outline(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("doc_folding", |c| async move { doc_folding(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("doc_highlights", |c| async move { doc_highlights(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("doc_python_facts", |c| async move { doc_python_facts(&c.host, &c.window, c.arg("doc")?).await });
-    d.add("doc_selection_ranges", |c| async move {
-        doc_selection_ranges(&c.host, &c.window, c.arg("doc")?, c.arg("offset")?).await
-    });
-    d.add("history_list", |c| async move { history_list(&c.host, &c.window, c.arg("path")?).await });
-    d.add("history_content", |c| async move { history_content(&c.host, &c.window, c.arg("id")?).await });
-}
+ide_command::domain!(
+    doc_commands:
+    doc_folding,
+    doc_highlights,
+    doc_language,
+    doc_open_virtual,
+    doc_outline,
+    doc_python_facts,
+    doc_selection_ranges,
+    doc_set_bom,
+    doc_set_encoding,
+    doc_set_line_ending,
+    history_content,
+    history_list,
+);

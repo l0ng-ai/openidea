@@ -1,5 +1,5 @@
-use crate::rpc::Dispatcher;
 use crate::{Host, Project};
+use ide_command::command;
 use ide_core::settings::Settings;
 use ide_core::{IdeEvent, IdeResult, RequestId, TaskId};
 use ide_workspace::settings::SettingsScope;
@@ -54,21 +54,25 @@ pub async fn open(host: &Arc<Host>, window: &str, path: &Path) -> IdeResult<Arc<
     host.blocking(move || h.open_project(&window, &path)).await
 }
 
+#[command(trust = always, desktop_body = async)]
 pub async fn open_project(host: &Arc<Host>, window: &str, path: PathBuf) -> IdeResult<ProjectInfo> {
     let project = open(host, window, &path).await?;
     Ok(info(&project))
 }
 
 /// The project open in this window (a settings window: its parent's), if any.
+#[command(trust = always, desktop_body = sync)]
 pub fn project_current(host: &Host, window: &str) -> Option<ProjectInfo> {
     host.project(window).ok().filter(|p| !p.light).map(|p| info(&p))
 }
 
+#[command(trust = always, desktop_body = spawn)]
 pub fn close_project(host: &Host, window: &str) {
     host.close_project(window);
 }
 
 /// Effective settings for the window's project, or global settings without one.
+#[command(trust = always, desktop_body = sync)]
 pub fn settings_get(host: &Host, window: &str) -> Settings {
     host.with_proxy_password(match host.project(window) {
         Ok(p) => p.settings.effective(),
@@ -79,6 +83,7 @@ pub fn settings_get(host: &Host, window: &str) -> Settings {
 /// The removed built-in theme id a settings file of this window still names, if any:
 /// `settings_get` reports the built-in that stands in for it, so the notice about
 /// a theme that moved to a plugin can address the installs it concerns.
+#[command(trust = always, desktop_body = sync)]
 pub fn settings_removed_theme(host: &Host, window: &str) -> Option<String> {
     match host.project(window) {
         Ok(p) => p.settings.named_removed_theme().or_else(|| host.global_settings.named_removed_theme()),
@@ -89,6 +94,7 @@ pub fn settings_removed_theme(host: &Host, window: &str) -> Option<String> {
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 /// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 /// re-reads its effective settings.
+#[command(trust = always, desktop_body = sync)]
 pub fn settings_set(
     host: &Host,
     window: &str,
@@ -107,65 +113,42 @@ pub fn settings_set(
 
 /// Effective source / test / resource / excluded roots of the window's project:
 /// auto-detected from build files, overridden by Settings › Project Structure.
+#[command(trust = always)]
 pub fn project_roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots> {
     Ok(host.project(window)?.roots())
 }
 
+#[command(trust = always)]
 pub fn cancel_request(host: &Host, id: RequestId) {
     host.cancel_request(id);
 }
 
 /// Stops a background task the backend reported with `cancellable` set; false when it
 /// has ended or can't be cancelled.
+#[command(trust = always)]
 pub fn cancel_task(id: TaskId) -> bool {
     ide_core::task::cancel(id)
 }
 
+#[command(trust = always)]
 pub fn project_trust_status(host: &Host, path: PathBuf) -> IdeResult<crate::trust::TrustStatus> {
     host.trust.status(&path)
 }
 
+#[command(trust = always)]
 pub fn project_trust_list(host: &Host) -> IdeResult<crate::trust::TrustDecisions> {
     host.trust.decisions()
 }
 
+#[command(trust = always, desktop_body = async)]
 pub async fn project_trust_set(host: &Host, path: PathBuf, trusted: bool, folder: bool) -> IdeResult<()> {
     host.set_project_trust(&path, trusted, folder).await
 }
 
+#[command(trust = always, desktop_body = async)]
 pub async fn project_trust_remove_location(host: &Host, path: PathBuf) -> IdeResult<()> {
     host.trust.remove_location(&path)?;
     host.refresh_project_trust().await
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("project_trust_status", |c| async move { project_trust_status(&c.host, c.arg("path")?) });
-    d.add("project_trust_list", |c| async move { project_trust_list(&c.host) });
-    d.add("project_trust_set", |c| async move {
-        project_trust_set(&c.host, c.arg("path")?, c.arg("trusted")?, c.arg("folder")?).await
-    });
-    d.add(
-        "project_trust_remove_location",
-        |c| async move { project_trust_remove_location(&c.host, c.arg("path")?).await },
-    );
-    d.add("open_project", |c| async move { open_project(&c.host, &c.window, c.arg("path")?).await });
-    d.add("project_current", |c| async move { Ok(project_current(&c.host, &c.window)) });
-    d.add("close_project", |c| async move {
-        close_project(&c.host, &c.window);
-        Ok(())
-    });
-    d.add("project_roots", |c| async move { project_roots(&c.host, &c.window) });
-    d.add("settings_get", |c| async move { Ok(settings_get(&c.host, &c.window)) });
-    d.add("settings_removed_theme", |c| async move { Ok(settings_removed_theme(&c.host, &c.window)) });
-    d.add("settings_set", |c| async move {
-        settings_set(&c.host, &c.window, c.arg("scope")?, c.arg("key")?, c.arg("value")?)
-    });
-    d.add("cancel_request", |c| async move {
-        cancel_request(&c.host, c.arg("id")?);
-        Ok(())
-    });
-    d.add("cancel_task", |c| async move { Ok(cancel_task(c.arg("id")?)) });
 }
 
 pub fn save_workspace(host: &Host, window: &str, name: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<ProjectInfo> {
@@ -380,3 +363,20 @@ pub fn set_settings(
     let roots_changed = current.as_ref().filter(|_| roots_changed && project_scope).map(|p| p.root.clone().into());
     Ok(SettingsApplied { settings: host.with_proxy_password(settings), project_scope, roots_changed })
 }
+
+ide_command::domain!(
+    project:
+    cancel_request,
+    cancel_task,
+    close_project,
+    open_project,
+    project_current,
+    project_roots,
+    project_trust_list,
+    project_trust_remove_location,
+    project_trust_set,
+    project_trust_status,
+    settings_get,
+    settings_removed_theme,
+    settings_set,
+);

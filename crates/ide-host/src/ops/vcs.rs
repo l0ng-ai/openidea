@@ -1,8 +1,10 @@
 use crate::{Host, apply_git_executable};
+use ide_command::command;
 use ide_core::IdeResult;
 use ide_vcs::FileStatus;
 
 /// Changes of every repository of the project.
+#[command(trust = always)]
 pub async fn vcs_status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
     let project = host.project(window)?;
     host.blocking(move || {
@@ -23,6 +25,7 @@ pub async fn vcs_status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>>
 }
 
 /// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
+#[command(trust = always)]
 pub async fn vcs_status_paths(host: &Host, window: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<Vec<FileStatus>> {
     // `paths` that belong to no repository are ignored, and an empty list is the full status.
     let project = host.project(window)?;
@@ -43,13 +46,7 @@ pub async fn vcs_status_paths(host: &Host, window: &str, paths: Vec<std::path::P
     .await
 }
 
-/// The status commands the remote server answers.
-pub(crate) fn register_status(d: &mut crate::rpc::Dispatcher) {
-    d.add("vcs_status", |c| async move { vcs_status(&c.host, &c.window).await });
-    d.add("vcs_status_paths", |c| async move { vcs_status_paths(&c.host, &c.window, c.arg("paths")?).await });
-}
-
-mod commands;
+pub mod commands;
 pub use commands::*;
 
 /// Refuses (with `refusal`) to remove or move the worktree that holds the open project.
@@ -90,3 +87,5 @@ fn check_worktree_away_from_project(
     }
     Ok(())
 }
+
+ide_command::domain!(vcs: vcs_status, vcs_status_paths);

@@ -1,7 +1,7 @@
 //! File › New Project (`ide-scaffold`).
 use crate::Host;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_scaffold::{CreateRequest, Field, GeneratorInfo, Requirement, ScaffoldEvent, Values};
@@ -11,12 +11,14 @@ fn join_err(e: impl std::fmt::Display) -> IdeError {
 }
 
 /// The project generators File › New Project offers, in list order.
+#[command(trust = always)]
 pub fn scaffold_catalog() -> Vec<GeneratorInfo> {
     ide_scaffold::catalog()
 }
 
 /// The fields a generator's project service adds for `values`; cancellable with
 /// `cancel_request(request)`.
+#[command(trust = always)]
 pub async fn scaffold_options(
     host: &Host,
     generator: String,
@@ -33,12 +35,14 @@ pub async fn scaffold_options(
 }
 
 /// The programs a generator needs for `values`, and whether they are installed.
+#[command(trust = always)]
 pub async fn scaffold_requirements(generator: String, values: Values) -> IdeResult<Vec<Requirement>> {
     tokio::task::spawn_blocking(move || ide_scaffold::requirements(&generator, &values)).await.map_err(join_err)?
 }
 
 /// Creates a project, streaming progress through `on_event`, and returns its directory,
 /// trusted. Cancellable with `cancel_request(request)`; a failed or cancelled run leaves nothing.
+#[command(trust = always)]
 pub async fn scaffold_create(
     host: &Host,
     req: CreateRequest,
@@ -60,17 +64,10 @@ pub async fn scaffold_create(
     Ok(dir.into())
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("scaffold_catalog", |_| async move { Ok(scaffold_catalog()) });
-    d.add("scaffold_options", |c| async move {
-        scaffold_options(&c.host, c.arg("generator")?, c.arg("values")?, c.arg("request")?).await
-    });
-    d.add(
-        "scaffold_requirements",
-        |c| async move { scaffold_requirements(c.arg("generator")?, c.arg("values")?).await },
-    );
-    d.add("scaffold_create", |c| async move {
-        scaffold_create(&c.host, c.arg("req")?, c.arg("request")?, c.sender("onEvent")?).await
-    });
-}
+ide_command::domain!(
+    scaffold:
+    scaffold_catalog,
+    scaffold_create,
+    scaffold_options,
+    scaffold_requirements,
+);

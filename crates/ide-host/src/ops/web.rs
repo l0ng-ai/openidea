@@ -1,6 +1,7 @@
 //! The built-in web server's URLs.
 
 use crate::Host;
+use ide_command::command;
 use ide_core::IdeResult;
 use ide_core::IpcPath;
 use ide_core::proxy_settings::{ProxyMode, ProxySettings};
@@ -47,15 +48,11 @@ pub async fn serves_page(url: &str) -> bool {
 }
 
 /// The built-in server's URL for `path` (started on first use).
+#[command(trust = always)]
 pub async fn web_url(host: &Host, window: &str, path: IpcPath) -> IdeResult<String> {
     // Under the window's project when it holds the file.
     let root = host.project(window).ok().map(|p| p.root.clone());
     host.web.url_for(root.as_deref(), &path).await
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
-    d.add("web_url", |c| async move { web_url(&c.host, &c.window, c.arg("path")?).await });
 }
 
 #[cfg(test)]
@@ -111,3 +108,5 @@ mod tests {
         assert!(!serves_page("not a url").await);
     }
 }
+
+ide_command::domain!(web: web_url);

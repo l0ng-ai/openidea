@@ -1,4 +1,5 @@
 use crate::Host;
+use ide_command::command;
 use ide_core::{CancellationToken, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
 use ide_remote::{DeployedPath, DeploymentCoverage, DeploymentRoot, SyncEntry, SyncStep, TransferReport};
 use ide_ssh::{FsConnection, RemoteEntry};
@@ -31,12 +32,14 @@ fn local(paths: Vec<IpcPath>) -> Vec<PathBuf> {
     paths.into_iter().map(|p| p.to_path_buf()).collect()
 }
 
+#[command(trust = always)]
 pub async fn deploy_coverage(window: &str, host: &Host, paths: Vec<IpcPath>) -> IdeResult<Vec<DeploymentCoverage>> {
     // Eligible paths per server, without contacting any deployment host.
     let project = host.project(window)?;
     Ok(ide_remote::coverage(&project.settings.effective(), &project.root, &local(paths)))
 }
 
+#[command(trust = trusted)]
 pub async fn deploy_upload(
     window: &str,
     host: &Host,
@@ -57,6 +60,7 @@ pub async fn deploy_upload(
     r
 }
 
+#[command(trust = trusted)]
 pub async fn deploy_download(
     window: &str,
     host: &Host,
@@ -77,6 +81,7 @@ pub async fn deploy_download(
     r
 }
 
+#[command(trust = trusted)]
 pub async fn deploy_delete_remote(
     window: &str,
     host: &Host,
@@ -88,6 +93,7 @@ pub async fn deploy_delete_remote(
     host.remote.delete_remote(&project.settings.effective(), &project.root, server.as_deref(), &local(paths)).await
 }
 
+#[command(trust = trusted)]
 pub async fn deploy_compare(
     window: &str,
     host: &Host,
@@ -103,6 +109,7 @@ pub async fn deploy_compare(
     r
 }
 
+#[command(trust = trusted)]
 pub async fn deploy_sync(
     window: &str,
     host: &Host,
@@ -123,6 +130,7 @@ pub async fn deploy_sync(
     r
 }
 
+#[command(trust = trusted)]
 pub async fn deploy_info(
     window: &str,
     host: &Host,
@@ -134,6 +142,7 @@ pub async fn deploy_info(
     host.remote.deployed(&project.settings.effective(), &project.root, server.as_deref(), &path).await
 }
 
+#[command(trust = trusted)]
 pub async fn deploy_server_root(window: &str, host: &Host, server: String) -> IdeResult<DeploymentRoot> {
     // Remote Host tool window: the resolved server root and project mappings.
     let project = host.project(window).ok();
@@ -141,33 +150,40 @@ pub async fn deploy_server_root(window: &str, host: &Host, server: String) -> Id
     host.remote.server_info(&settings, project.as_ref().map(|p| p.root.as_path()), &server).await
 }
 
+#[command(trust = always)]
 pub async fn remote_list(host: &Host, connection: FsConnection, path: String) -> IdeResult<Vec<RemoteEntry>> {
     // Entries of a folder on the selected filesystem (`~`: its home directory).
     host.remote.list(&connection, &path).await
 }
 
+#[command(trust = always)]
 pub async fn remote_open(host: &Host, connection: FsConnection, path: String) -> IdeResult<IpcPath> {
     // Opens a remote file for editing: a local copy, uploaded back on save.
     Ok(host.remote.open_remote(&connection, &path).await?.into())
 }
 
+#[command(trust = always)]
 pub fn remote_of(host: &Host, path: IpcPath) -> Option<(FsConnection, String)> {
     // The filesystem connection and path a cached editing copy stands for.
     host.remote.remote_of(&path)
 }
 
+#[command(trust = trusted)]
 pub async fn remote_delete(host: &Host, connection: FsConnection, path: String) -> IdeResult<()> {
     host.remote.remote_delete(&connection, &path).await
 }
 
+#[command(trust = trusted)]
 pub async fn remote_mkdir(host: &Host, connection: FsConnection, path: String) -> IdeResult<()> {
     host.remote.remote_mkdir(&connection, &path).await
 }
 
+#[command(trust = trusted)]
 pub async fn remote_rename(host: &Host, connection: FsConnection, from: String, to: String) -> IdeResult<()> {
     host.remote.remote_rename(&connection, &from, &to).await
 }
 
+#[command(trust = trusted)]
 pub async fn remote_download_into(
     window: &str,
     host: &Host,
@@ -187,6 +203,7 @@ pub async fn remote_download_into(
     r
 }
 
+#[command(trust = always)]
 pub async fn deploy_test_connection(
     host: &Host,
     connection: FsConnection,
@@ -197,45 +214,22 @@ pub async fn deploy_test_connection(
     host.remote.test_connection_with(&connection, &path, password).await
 }
 
-pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
-    d.add("deploy_coverage", |c| async move { deploy_coverage(&c.window, &c.host, c.arg("paths")?).await });
-    d.add("deploy_upload", |c| async move {
-        deploy_upload(&c.window, &c.host, c.arg("paths")?, c.arg("server")?, c.arg("request")?).await
-    });
-    d.add("deploy_download", |c| async move {
-        deploy_download(&c.window, &c.host, c.arg("paths")?, c.arg("server")?, c.arg("request")?).await
-    });
-    d.add("deploy_delete_remote", |c| async move {
-        deploy_delete_remote(&c.window, &c.host, c.arg("paths")?, c.arg("server")?).await
-    });
-    d.add("deploy_compare", |c| async move {
-        deploy_compare(&c.window, &c.host, c.arg("path")?, c.arg("server")?, c.arg("request")?).await
-    });
-    d.add("deploy_sync", |c| async move {
-        deploy_sync(&c.window, &c.host, c.arg("steps")?, c.arg("server")?, c.arg("request")?).await
-    });
-    d.add("deploy_info", |c| async move { deploy_info(&c.window, &c.host, c.arg("path")?, c.arg("server")?).await });
-    d.add("deploy_server_root", |c| async move { deploy_server_root(&c.window, &c.host, c.arg("server")?).await });
-    d.add("remote_list", |c| async move { remote_list(&c.host, c.arg("connection")?, c.arg("path")?).await });
-    d.add("remote_open", |c| async move { remote_open(&c.host, c.arg("connection")?, c.arg("path")?).await });
-    d.add("remote_of", |c| async move { Ok(remote_of(&c.host, c.arg("path")?)) });
-    d.add("remote_delete", |c| async move { remote_delete(&c.host, c.arg("connection")?, c.arg("path")?).await });
-    d.add("remote_mkdir", |c| async move { remote_mkdir(&c.host, c.arg("connection")?, c.arg("path")?).await });
-    d.add("remote_download_into", |c| async move {
-        remote_download_into(
-            &c.window,
-            &c.host,
-            c.arg("connection")?,
-            c.arg("paths")?,
-            c.arg("target")?,
-            c.arg("request")?,
-        )
-        .await
-    });
-    d.add("remote_rename", |c| async move {
-        remote_rename(&c.host, c.arg("connection")?, c.arg("from")?, c.arg("to")?).await
-    });
-    d.add("deploy_test_connection", |c| async move {
-        deploy_test_connection(&c.host, c.arg("connection")?, c.arg("path")?, c.arg("password")?).await
-    });
-}
+ide_command::domain!(
+    deploy:
+    deploy_compare,
+    deploy_coverage,
+    deploy_delete_remote,
+    deploy_download,
+    deploy_info,
+    deploy_server_root,
+    deploy_sync,
+    deploy_test_connection,
+    deploy_upload,
+    remote_delete,
+    remote_download_into,
+    remote_list,
+    remote_mkdir,
+    remote_of,
+    remote_open,
+    remote_rename,
+);

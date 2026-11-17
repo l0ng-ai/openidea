@@ -1,6 +1,7 @@
 //! The remote protocol end to end: a server on one side of an in-memory pipe,
 //! a JSON-RPC client on the other.
 
+use ide_host::catalogue::TrustClass;
 use ide_host::rpc::{self, ChannelMessage, Dispatcher, EventMessage, Invoke, ServerInfo};
 use ide_host::{Host, HostConfig};
 use ide_jsonrpc::{Handler, Peer};
@@ -493,10 +494,18 @@ async fn the_desktop_routes_exactly_what_a_server_of_this_build_answers() {
     let plugins = ide_host::plugins::remote_host::RemotePlugins::start(&base.join("data"), &host, peer_slot).unwrap();
     let mut dispatcher = Dispatcher::standard();
     plugins.register(&mut dispatcher);
-    dispatcher.add(ide_host::plugins::remote::SYNC_COMMAND, |_| async { Ok(()) });
+    dispatcher.add(ide_host::plugins::remote::SYNC_COMMAND, TrustClass::Trusted, |_| async { Ok(()) });
     assert_eq!(rpc::client_commands(), dispatcher.commands());
     assert!(rpc::client_commands().contains(&"term_spawn"));
     plugins.host().shutdown();
+}
+
+#[test]
+fn each_command_declares_the_class_the_trust_tables_give_it() {
+    let d = Dispatcher::standard();
+    let differ: Vec<_> =
+        d.commands().into_iter().filter(|n| d.trust(n) != Some(ide_host::trust::command_trust(n))).collect();
+    assert!(differ.is_empty(), "{differ:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -547,68 +556,4 @@ async fn renames_a_branch_with_the_clients_argument_names() {
     );
     invoke(&peer, "close_project", json!({})).await.unwrap();
     peer.kill();
-}
-
-/// A handler reads its arguments by the names the desktop client sends: `src/bindings.ts`
-/// passes them in camelCase, and a name the client never sends reads as `null` (an
-/// `Option` silently `None`, anything else an "invalid type: null" error).
-#[test]
-fn handlers_read_the_argument_names_the_client_sends() {
-    use std::collections::{BTreeSet, HashMap};
-    use std::path::Path;
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bindings = std::fs::read_to_string(repo.join("src/bindings.ts")).unwrap();
-    let mut sent = HashMap::<&str, BTreeSet<&str>>::new();
-    for part in bindings.split("__TAURI_INVOKE(\"").skip(1) {
-        let (command, rest) = part.split_once('"').unwrap();
-        let args = rest.strip_prefix(", {").and_then(|r| r.split_once('}')).map_or("", |(args, _)| args);
-        let names = args.split(',').map(|a| a.split(':').next().unwrap().trim()).filter(|a| !a.is_empty());
-        sent.insert(command, names.collect());
-    }
-    fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                sources(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    sources(&repo.join("crates/ide-host/src"), &mut files);
-    let mut checked = 0;
-    let mut wrong = Vec::new();
-    for file in files {
-        let src = std::fs::read_to_string(&file).unwrap();
-        // `.add("name", …)`, also with the name on the next line.
-        let starts: Vec<usize> = src
-            .match_indices(".add(")
-            .map(|(i, m)| i + m.len())
-            .filter_map(|i| src[i..].trim_start().strip_prefix('"').map(|rest| src.len() - rest.len()))
-            .collect();
-        for (n, &start) in starts.iter().enumerate() {
-            let body = &src[start..starts.get(n + 1).copied().unwrap_or(src.len())];
-            let (command, body) = body.split_once('"').unwrap();
-            let Some(sent) = sent.get(command) else { continue };
-            checked += 1;
-            for reader in ["c.arg", "c.sender", "c.channel"] {
-                for (at, _) in body.match_indices(reader) {
-                    let rest = &body[at + reader.len()..];
-                    let rest = match rest.strip_prefix("::<") {
-                        Some(generic) => &generic[generic.find(">(").unwrap() + 1..],
-                        None => rest,
-                    };
-                    let Some(name) = rest.strip_prefix("(\"").and_then(|r| r.split_once('"')).map(|(n, _)| n) else {
-                        continue;
-                    };
-                    if !sent.contains(name) {
-                        wrong.push(format!("{command} reads `{name}`; the client sends {sent:?}"));
-                    }
-                }
-            }
-        }
-    }
-    assert!(checked > 400, "found only {checked} handlers with client bindings");
-    assert!(wrong.is_empty(), "{wrong:#?}");
 }

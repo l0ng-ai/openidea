@@ -9,7 +9,7 @@ pub use requests::Requests;
 mod files;
 mod http;
 mod page;
-mod reports;
+pub mod reports;
 mod scope;
 mod search;
 mod symbols;

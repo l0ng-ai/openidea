@@ -2,11 +2,12 @@
 use crate::Host;
 pub use crate::notebook::NotebookOutputEvent;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_notebook::{NotebookEdit, NotebookSnapshot};
 use std::path::PathBuf;
 
+#[command(trust = always)]
 pub async fn notebook_open(host: &Host, window: &str, path: String) -> IdeResult<NotebookSnapshot> {
     let project = host.project(window)?;
     let path = PathBuf::from(path);
@@ -15,10 +16,12 @@ pub async fn notebook_open(host: &Host, window: &str, path: String) -> IdeResult
     host.blocking(move || notebooks.open(&path)).await
 }
 
+#[command(trust = always)]
 pub fn notebook_get(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     host.project(window)?.notebooks.get(&id)
 }
 
+#[command(trust = trusted)]
 pub fn notebook_cell_docs(host: &Host, window: &str, id: String) -> IdeResult<Vec<ide_lsp::NotebookCellDoc>> {
     // The language-server documents of the notebook's code cells (empty when no server syncs notebooks).
     let project = host.project(window)?;
@@ -26,6 +29,7 @@ pub fn notebook_cell_docs(host: &Host, window: &str, id: String) -> IdeResult<Ve
     Ok(project.lsp.notebook_cells(&path))
 }
 
+#[command(trust = always)]
 pub async fn notebook_edit(
     host: &Host,
     window: &str,
@@ -37,21 +41,25 @@ pub async fn notebook_edit(
     host.blocking(move || notebooks.edit(&id, version, edit)).await
 }
 
+#[command(trust = always)]
 pub async fn notebook_save(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     let notebooks = host.project(window)?.notebooks.clone();
     host.blocking(move || notebooks.save(&id)).await
 }
 
+#[command(trust = always)]
 pub async fn notebook_undo(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     let notebooks = host.project(window)?.notebooks.clone();
     host.blocking(move || notebooks.undo(&id, false)).await
 }
 
+#[command(trust = always)]
 pub async fn notebook_redo(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     let notebooks = host.project(window)?.notebooks.clone();
     host.blocking(move || notebooks.undo(&id, true)).await
 }
 
+#[command(trust = always)]
 pub async fn notebook_reload(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     let notebooks = host.project(window)?.notebooks.clone();
     // An abandoned IPC future must not leave a lifecycle transition half applied.
@@ -60,6 +68,7 @@ pub async fn notebook_reload(host: &Host, window: &str, id: String) -> IdeResult
         .map_err(|error| IdeError::internal(error.to_string()))?
 }
 
+#[command(trust = trusted)]
 pub async fn notebook_restart(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     host.require_trust(window)?;
     let notebooks = host.project(window)?.notebooks.clone();
@@ -68,6 +77,7 @@ pub async fn notebook_restart(host: &Host, window: &str, id: String) -> IdeResul
         .map_err(|error| IdeError::internal(error.to_string()))?
 }
 
+#[command(trust = always)]
 pub async fn notebook_close(host: &Host, window: &str, id: String) -> IdeResult<()> {
     let notebooks = host.project(window)?.notebooks.clone();
     tokio::spawn(async move { notebooks.close(&id).await })
@@ -75,6 +85,7 @@ pub async fn notebook_close(host: &Host, window: &str, id: String) -> IdeResult<
         .map_err(|error| IdeError::internal(error.to_string()))?
 }
 
+#[command(trust = always)]
 pub async fn notebook_interrupt(host: &Host, window: &str, id: String) -> IdeResult<()> {
     let notebooks = host.project(window)?.notebooks.clone();
     tokio::spawn(async move { notebooks.interrupt(&id).await })
@@ -83,6 +94,7 @@ pub async fn notebook_interrupt(host: &Host, window: &str, id: String) -> IdeRes
 }
 
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn notebook_execute(
     host: &Host,
     window: &str,
@@ -136,30 +148,18 @@ impl Drop for RequestGuard<'_> {
     }
 }
 
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("notebook_open", |c| async move { notebook_open(&c.host, &c.window, c.arg("path")?).await });
-    d.add("notebook_get", |c| async move { notebook_get(&c.host, &c.window, c.arg("id")?) });
-    d.add("notebook_cell_docs", |c| async move { notebook_cell_docs(&c.host, &c.window, c.arg("id")?) });
-    d.add("notebook_edit", |c| async move {
-        notebook_edit(&c.host, &c.window, c.arg("id")?, c.arg("version")?, c.arg("edit")?).await
-    });
-    d.add("notebook_save", |c| async move { notebook_save(&c.host, &c.window, c.arg("id")?).await });
-    d.add("notebook_reload", |c| async move { notebook_reload(&c.host, &c.window, c.arg("id")?).await });
-    d.add("notebook_undo", |c| async move { notebook_undo(&c.host, &c.window, c.arg("id")?).await });
-    d.add("notebook_redo", |c| async move { notebook_redo(&c.host, &c.window, c.arg("id")?).await });
-    d.add("notebook_close", |c| async move { notebook_close(&c.host, &c.window, c.arg("id")?).await });
-    d.add("notebook_interrupt", |c| async move { notebook_interrupt(&c.host, &c.window, c.arg("id")?).await });
-    d.add("notebook_restart", |c| async move { notebook_restart(&c.host, &c.window, c.arg("id")?).await });
-    d.add("notebook_execute", |c| async move {
-        notebook_execute(
-            &c.host,
-            &c.window,
-            c.arg("id")?,
-            c.arg("cells")?,
-            c.arg("python")?,
-            c.arg("request")?,
-            c.sender("onOutput")?,
-        )
-        .await
-    });
-}
+ide_command::domain!(
+    notebook:
+    notebook_cell_docs,
+    notebook_close,
+    notebook_edit,
+    notebook_execute,
+    notebook_get,
+    notebook_interrupt,
+    notebook_open,
+    notebook_redo,
+    notebook_reload,
+    notebook_restart,
+    notebook_save,
+    notebook_undo,
+);

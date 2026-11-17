@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::IdeResult;
 use ide_host::ops::fs;
 use ide_vfs::FileEntry;
@@ -106,6 +107,7 @@ pub async fn fs_read_text(window: Window, state: State<'_, AppState>, path: Path
 /// Opens a project file with its default application (Office, PDF readers). The checks run here,
 /// in the backend, instead of widening the webview's opener permissions: the window must be a
 /// trusted local project and the file must lie inside it.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn fs_open_with_system(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
@@ -121,3 +123,5 @@ pub async fn fs_open_with_system(window: Window, state: State<'_, AppState>, pat
         })
         .await
 }
+
+ide_command::desktop_domain!(fs_open_with_system);

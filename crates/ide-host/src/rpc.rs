@@ -15,6 +15,7 @@
 //!   remote project (`plugins::remote_host`).
 
 use crate::Host;
+use crate::catalogue::TrustClass;
 use crate::ops::{self, Emit};
 use ide_core::{IdeError, IdeEvent, IdeResult};
 use ide_jsonrpc::{Handler, Peer, codes};
@@ -103,30 +104,28 @@ impl Call {
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 type HandlerFn = Arc<dyn Fn(Call) -> BoxFuture<IdeResult<Value>> + Send + Sync>;
 
-/// Commands the server answers, by name.
+/// Commands the server answers, by name, each with the trust class it declares.
 #[derive(Default, Clone)]
 pub struct Dispatcher {
-    handlers: HashMap<&'static str, HandlerFn>,
+    handlers: HashMap<&'static str, (TrustClass, HandlerFn)>,
 }
 
 impl Dispatcher {
-    pub fn add<F, Fut, T>(&mut self, name: &'static str, f: F) -> &mut Self
+    pub fn add<F, Fut, T>(&mut self, name: &'static str, trust: TrustClass, f: F) -> &mut Self
     where
         F: Fn(Call) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = IdeResult<T>> + Send + 'static,
         T: Serialize,
     {
         let f = Arc::new(f);
-        self.handlers.insert(
-            name,
-            Arc::new(move |call| {
-                let fut = f(call);
-                Box::pin(async move {
-                    let value = fut.await?;
-                    serde_json::to_value(value).map_err(|e| IdeError::internal(e.to_string()))
-                })
-            }),
-        );
+        let handler: HandlerFn = Arc::new(move |call| {
+            let fut = f(call);
+            Box::pin(async move {
+                let value = fut.await?;
+                serde_json::to_value(value).map_err(|e| IdeError::internal(e.to_string()))
+            })
+        });
+        assert!(self.handlers.insert(name, (trust, handler)).is_none(), "command {name} is registered twice");
         self
     }
 
@@ -136,11 +135,15 @@ impl Dispatcher {
         out
     }
 
-    /// The commands of the core remote slice: project, files, documents, search,
-    /// terminals, runs and VCS status.
+    /// The trust class `name` was registered with.
+    pub fn trust(&self, name: &str) -> Option<TrustClass> {
+        self.handlers.get(name).map(|(trust, _)| *trust)
+    }
+
+    /// The commands every project host answers: those declared with `#[command]`.
     pub fn standard() -> Self {
         let mut d = Self::default();
-        ops::register_all(&mut d);
+        ops::register_domains(&mut d);
         d
     }
 }
@@ -211,10 +214,9 @@ pub fn client_accepts(event: &IdeEvent) -> bool {
 /// fixed here rather than taken from the server, so a server cannot move a command to this machine.
 pub fn client_commands() -> Vec<&'static str> {
     let mut out = Dispatcher::standard().commands();
-    out.extend(crate::plugins::remote_host::COMMANDS);
+    out.push(crate::plugins::remote_host::SYNC_PACKAGES);
     out.push(crate::plugins::remote::SYNC_COMMAND);
     out.sort_unstable();
-    out.dedup();
     out
 }
 
@@ -258,10 +260,10 @@ impl Handler for ServerHandler {
             "invoke" => {
                 let call: Invoke =
                     serde_json::from_value(params).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
-                let Some(handler) = self.dispatcher.handlers.get(call.cmd.as_str()).cloned() else {
+                let Some((trust, handler)) = self.dispatcher.handlers.get(call.cmd.as_str()).cloned() else {
                     return Err((codes::METHOD_NOT_FOUND, format!("command {} is not available remotely", call.cmd)));
                 };
-                self.host.authorize_command(&call.window, &call.cmd).map_err(error_reply)?;
+                self.host.authorize(&call.window, trust).map_err(error_reply)?;
                 let c = Call { host: self.host.clone(), window: call.window, args: call.args, peer: self.peer.clone() };
                 // Requests run on blocking-capable threads: wait for the command here.
                 self.host.runtime.block_on(handler(c)).map_err(error_reply)

@@ -1,9 +1,11 @@
 use super::Channel;
 use crate::Host;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_vfs::FileEntry;
 use std::path::{Path, PathBuf};
 
+#[command(trust = always)]
 pub async fn fs_entry_kind(host: &Host, path: PathBuf) -> IdeResult<ide_vfs::EntryKind> {
     host.blocking(move || {
         let meta = std::fs::metadata(path)?;
@@ -12,6 +14,7 @@ pub async fn fs_entry_kind(host: &Host, path: PathBuf) -> IdeResult<ide_vfs::Ent
     .await
 }
 
+#[command(trust = always)]
 pub async fn fs_compare_directories(
     host: &Host,
     window: &str,
@@ -38,6 +41,7 @@ pub async fn fs_compare_directories(
     result
 }
 
+#[command(trust = always)]
 pub async fn fs_copy_merge(
     host: &Host,
     window: &str,
@@ -73,6 +77,7 @@ pub async fn fs_copy_merge(
 /// Files of a deleted folder snapshotted in Local History.
 const DELETE_SNAPSHOT_LIMIT: usize = 2000;
 
+#[command(trust = always)]
 pub async fn fs_read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
     // Runs on the blocking pool: on a network share (`\\wsl.localhost`) every stat is slow.
     let project = host.project(window);
@@ -99,6 +104,7 @@ pub async fn fs_read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<
 
 /// Creates an empty file; inside a project, honours the EditorConfig
 /// `charset` (writes the BOM for `utf-8-bom` / UTF-16).
+#[command(trust = always)]
 pub fn fs_create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     match host.project(window) {
         Ok(p) => {
@@ -124,6 +130,7 @@ pub fn fs_create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()>
     }
 }
 
+#[command(trust = always)]
 pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
@@ -138,12 +145,14 @@ pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data
     .await
 }
 
+#[command(trust = always)]
 pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
     ide_vfs::create_dir(&path)
 }
 
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's
 /// state). Returns whether the file is read-only now.
+#[command(trust = always)]
 pub fn fs_set_writable(host: &Host, window: &str, path: PathBuf, writable: bool) -> IdeResult<bool> {
     match host.project(window) {
         Ok(p) => p.documents.set_writable(&path, writable),
@@ -152,6 +161,7 @@ pub fn fs_set_writable(host: &Host, window: &str, path: PathBuf, writable: bool)
 }
 
 /// Moving to the trash can take a while (large trees): kept off the main thread.
+#[command(trust = always)]
 pub async fn fs_delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     // Local History keeps the contents so deleted files can be restored.
     let project = host.project(window).ok();
@@ -173,6 +183,7 @@ pub async fn fs_delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()
     .await
 }
 
+#[command(trust = always)]
 pub async fn fs_copy(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
@@ -188,6 +199,7 @@ pub async fn fs_copy(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> I
     .await
 }
 
+#[command(trust = always)]
 pub async fn fs_rename(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
@@ -206,6 +218,7 @@ pub async fn fs_rename(host: &Host, window: &str, from: PathBuf, to: PathBuf) ->
 
 /// Reads a text file without opening it as a document (previews, quick
 /// definition). Prefers the unsaved buffer when the file is open.
+#[command(trust = always)]
 pub async fn fs_read_text(host: &Host, window: &str, path: PathBuf) -> IdeResult<String> {
     let project = host.project(window).ok();
     host.blocking(move || match project {
@@ -241,47 +254,6 @@ pub(crate) fn inside_any_root(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
-    d.add("fs_read_dir", |c| async move { fs_read_dir(&c.host, &c.window, c.arg("path")?).await });
-    d.add("fs_entry_kind", |c| async move { fs_entry_kind(&c.host, c.arg("path")?).await });
-    d.add("fs_create_file", |c| async move { fs_create_file(&c.host, &c.window, c.arg("path")?) });
-    d.add("fs_create_file_bytes", |c| async move {
-        fs_create_file_bytes(&c.host, &c.window, c.arg("path")?, c.arg("data")?).await
-    });
-    d.add("fs_create_dir", |c| async move { fs_create_dir(c.arg("path")?) });
-    d.add("fs_rename", |c| async move { fs_rename(&c.host, &c.window, c.arg("from")?, c.arg("to")?).await });
-    d.add(
-        "fs_set_writable",
-        |c| async move { fs_set_writable(&c.host, &c.window, c.arg("path")?, c.arg("writable")?) },
-    );
-    d.add("fs_delete", |c| async move { fs_delete(&c.host, &c.window, c.arg("path")?).await });
-    d.add("fs_copy", |c| async move { fs_copy(&c.host, &c.window, c.arg("from")?, c.arg("to")?).await });
-    d.add("fs_copy_merge", |c| async move {
-        fs_copy_merge(
-            &c.host,
-            &c.window,
-            c.arg("sourceRoot")?,
-            c.arg("destinationRoot")?,
-            c.arg("path")?,
-            c.arg("overwrite")?,
-        )
-        .await
-    });
-    d.add("fs_compare_directories", |c| async move {
-        fs_compare_directories(
-            &c.host,
-            &c.window,
-            c.arg("left")?,
-            c.arg("right")?,
-            c.arg("request")?,
-            c.sender("onProgress")?,
-        )
-        .await
-    });
-    d.add("fs_read_text", |c| async move { fs_read_text(&c.host, &c.window, c.arg("path")?).await });
-}
-
 #[cfg(test)]
 mod tests {
     use super::inside_any_root;
@@ -298,3 +270,19 @@ mod tests {
         assert!(!inside_any_root(Path::new("/work/spec.pdf"), &[]));
     }
 }
+
+ide_command::domain!(
+    fs:
+    fs_compare_directories,
+    fs_copy,
+    fs_copy_merge,
+    fs_create_dir,
+    fs_create_file,
+    fs_create_file_bytes,
+    fs_delete,
+    fs_entry_kind,
+    fs_read_dir,
+    fs_read_text,
+    fs_rename,
+    fs_set_writable,
+);

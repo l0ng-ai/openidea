@@ -1,7 +1,7 @@
 //! Language server / debug adapter installer and JDK downloads (`ide-tools`).
 use crate::Host;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_sdk::Sdk;
@@ -56,6 +56,7 @@ fn reconfigure_servers(host: &Host) {
 }
 
 /// Status of every known language server / debug adapter and the languages using it.
+#[command(trust = trusted)]
 pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
@@ -64,6 +65,7 @@ pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
 
 /// Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
 /// `on_event`. Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
 pub async fn tools_install(
     host: &Host,
     window: &str,
@@ -91,6 +93,7 @@ pub async fn tools_install(
 
 /// Newer versions of the tools the IDE installed (release downloads and npm packages).
 /// Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
 pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<ToolUpdate>> {
     let tools = tools(host, window)?;
     let cancel = host.begin_request(request);
@@ -100,6 +103,7 @@ pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> Ide
 }
 
 /// Removes a tool the IDE installed.
+#[command(trust = trusted)]
 pub async fn tools_uninstall(host: &Host, window: &str, name: String) -> IdeResult<ToolInfo> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
@@ -109,11 +113,13 @@ pub async fn tools_uninstall(host: &Host, window: &str, name: String) -> IdeResu
 }
 
 /// JDK distributions Download JDK offers.
+#[command(trust = always)]
 pub fn jdk_download_vendors() -> Vec<JdkVendor> {
     ide_tools::jdk::vendors()
 }
 
 /// Java versions `vendor` publishes; cancellable with `cancel_request(request)`.
+#[command(trust = always)]
 pub async fn jdk_download_releases(host: &Host, vendor: String, request: RequestId) -> IdeResult<JdkReleases> {
     let tools = Tools::new(&host.local_data_dir);
     let cancel = host.begin_request(request);
@@ -123,6 +129,7 @@ pub async fn jdk_download_releases(host: &Host, vendor: String, request: Request
 }
 
 /// Where Download JDK puts JDKs unless told otherwise.
+#[command(trust = always)]
 pub fn jdk_download_location(host: &Host) -> IdeResult<ide_core::IpcPath> {
     Ok(ide_tools::jdk::jdks_dir(&host.local_data_dir).into())
 }
@@ -131,6 +138,7 @@ pub fn jdk_download_location(host: &Host) -> IdeResult<ide_core::IpcPath> {
 /// [`jdk_download_location`]), streaming progress through `on_event`; cancellable
 /// with `cancel_request(request)`. The JDK is then detected like an installed one,
 /// and language servers waiting for a JDK (jdtls) start on it.
+#[command(trust = always)]
 pub async fn jdk_download(
     host: &Host,
     vendor: String,
@@ -165,6 +173,7 @@ pub async fn jdk_download(
 }
 
 /// The Java version the window's jdtls needs; `None` while it isn't installed or doesn't tell.
+#[command(trust = always)]
 pub async fn jdtls_required_java(host: &Host, window: &str) -> IdeResult<Option<u32>> {
     let settings = match host.project(window) {
         Ok(project) => project.settings.effective(),
@@ -180,29 +189,15 @@ pub async fn jdtls_required_java(host: &Host, window: &str) -> IdeResult<Option<
     tokio::task::spawn_blocking(move || ide_sdk::java::jdtls_required_java(&cfg)).await.map_err(join_err)
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("tools_list", |c| async move { tools_list(&c.host, &c.window).await });
-    d.add("tools_install", |c| async move {
-        tools_install(&c.host, &c.window, c.arg("name")?, c.arg("request")?, c.sender("onEvent")?).await
-    });
-    d.add("tools_uninstall", |c| async move { tools_uninstall(&c.host, &c.window, c.arg("name")?).await });
-    d.add("tools_updates", |c| async move { tools_updates(&c.host, &c.window, c.arg("request")?).await });
-    d.add("jdk_download_vendors", |_| async move { Ok(jdk_download_vendors()) });
-    d.add("jdk_download_releases", |c| async move {
-        jdk_download_releases(&c.host, c.arg("vendor")?, c.arg("request")?).await
-    });
-    d.add("jdk_download_location", |c| async move { jdk_download_location(&c.host) });
-    d.add("jdtls_required_java", |c| async move { jdtls_required_java(&c.host, &c.window).await });
-    d.add("jdk_download", |c| async move {
-        jdk_download(
-            &c.host,
-            c.arg("vendor")?,
-            c.arg("version")?,
-            c.arg("location")?,
-            c.arg("request")?,
-            c.sender("onEvent")?,
-        )
-        .await
-    });
-}
+ide_command::domain!(
+    tools:
+    jdk_download,
+    jdk_download_location,
+    jdk_download_releases,
+    jdk_download_vendors,
+    jdtls_required_java,
+    tools_install,
+    tools_list,
+    tools_uninstall,
+    tools_updates,
+);

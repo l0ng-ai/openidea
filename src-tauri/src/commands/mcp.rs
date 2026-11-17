@@ -2,6 +2,7 @@
 //! while `mcpServer.enabled` is on, and reports where it listens.
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeResult, IpcPath};
 use ide_host::mcp::{FileProblems, FocusedEditor};
 use parking_lot::Mutex;
@@ -168,6 +169,7 @@ pub struct McpServerStatus {
     pub stdio_command: Vec<String>,
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_server_status(window: Window, state: State<'_, AppState>) -> IdeResult<McpServerStatus> {
@@ -189,6 +191,7 @@ pub fn mcp_server_status(window: Window, state: State<'_, AppState>) -> IdeResul
 
 /// Settings › Agents › MCP Server › Regenerate Token: forgets the kept token, and restarts the
 /// server with a new one. Clients configured with the old token stop working.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_regenerate_token(state: State<'_, AppState>) -> IdeResult<()> {
@@ -230,6 +233,7 @@ pub fn mcp_report_problems(
     ide_host::mcp::mcp_report_problems(&state.host, window.label(), reset, files)
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_ui_ready(window: Window, state: State<'_, AppState>, ready: bool) -> IdeResult<()> {
@@ -239,6 +243,7 @@ pub fn mcp_ui_ready(window: Window, state: State<'_, AppState>, ready: bool) -> 
 }
 
 /// The user closed the Run tool window tab of an agent command (`run_command`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_agent_run_closed(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<()> {
@@ -247,6 +252,7 @@ pub fn mcp_agent_run_closed(window: Window, state: State<'_, AppState>, name: St
     Ok(())
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_respond(
@@ -276,3 +282,5 @@ mod tests {
         assert_eq!(port_to_wait_for((local, 64342), None), None);
     }
 }
+
+ide_command::desktop_domain!(mcp_agent_run_closed, mcp_regenerate_token, mcp_respond, mcp_server_status, mcp_ui_ready,);

@@ -1,6 +1,7 @@
 //! IPC commands of `ide_host::ops::vcs` (the shared implementation).
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeResult, RequestId};
 #[allow(unused_imports)]
 pub use ide_host::ops::vcs::*;
@@ -516,6 +517,7 @@ pub async fn vcs_diff_hunks(_app: AppHandle, old_text: String, new_text: String)
 /// Show Diff in External Tool: starts the tool set in the global settings (never a
 /// project's, which a cloned repository could carry) on the two sides, on this machine
 /// (a remote window passes the sides as text).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn diff_external_tool(
@@ -961,3 +963,5 @@ pub async fn vcs_compare_paths(
 ) -> IdeResult<ide_vcs::CompareResult> {
     ide_host::ops::vcs::vcs_compare_paths(&state.host, window.label(), paths, revision, repositories, request).await
 }
+
+ide_command::desktop_domain!(diff_external_tool);
