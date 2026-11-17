@@ -442,6 +442,7 @@
   "menu.navigate.nextBookmark": "下一个书签",
   "menu.navigate.prevBookmark": "上一个书签",
   "menu.view.toggleCompactMode": "紧凑模式",
+  "menu.view.togglePresentationAssistant": "演示助手",
   "menu.view.zoomIn": "放大 IDE",
   "menu.view.zoomOut": "缩小 IDE",
   "menu.view.resetZoom": "重置 IDE 缩放",

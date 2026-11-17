@@ -2812,6 +2812,8 @@ export type AppearanceSettings_Deserialize = {
 	mainToolbar?: MainToolbarSettings | null,
 	/**  Appearance › Background Image: an image shown through the IDE window. */
 	backgroundImage?: BackgroundImageSettings,
+	/**  Appearance › Presentation Assistant: the name and shortcut of each action run. */
+	presentationAssistant?: PresentationAssistantSettings,
 };
 
 export type AppearanceSettings_Serialize = {
@@ -2881,6 +2883,8 @@ export type AppearanceSettings_Serialize = {
 	mainToolbar: MainToolbarSettings | null,
 	/**  Appearance › Background Image: an image shown through the IDE window. */
 	backgroundImage: BackgroundImageSettings,
+	/**  Appearance › Presentation Assistant: the name and shortcut of each action run. */
+	presentationAssistant: PresentationAssistantSettings,
 };
 
 export type ApplyOutcome = {
@@ -9211,6 +9215,19 @@ export type PreparedRequest = {
 	url: string,
 	headers: ([string, string])[],
 	body: string | null,
+};
+
+/**  Appearance › Presentation Assistant: shows the name and shortcut of each action the user runs. */
+export type PresentationAssistantSettings = {
+	enabled?: boolean,
+	/**  `small` | `medium` | `large`. */
+	size?: string,
+	/**  How long each popup stays, in seconds. */
+	durationSeconds?: number,
+	/**  `top-left`, `top`, `top-right`, `bottom-left`, `bottom` or `bottom-right` of the window. */
+	position?: string,
+	/**  Also show the shortcut of the other platform's keymap (macOS ⇄ Windows/Linux). */
+	alternateKeymap?: boolean,
 };
 
 export type ProblemSeverity = "info" | "warning" | "error" | 

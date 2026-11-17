@@ -1,0 +1,107 @@
+.popup {
+  position: fixed;
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  max-width: calc(100vw - 32px);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-popup-large);
+  background: var(--bg-popup);
+  box-shadow: var(--shadow-popup);
+  color: var(--fg-strong);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: fade-in 120ms ease-out;
+}
+
+.leaving {
+  opacity: 0;
+  transition: opacity 300ms ease-in;
+}
+
+.top-left,
+.top,
+.top-right {
+  top: 56px;
+}
+
+.bottom-left,
+.bottom,
+.bottom-right {
+  bottom: 48px;
+}
+
+.top-left,
+.bottom-left {
+  left: 24px;
+}
+
+.top-right,
+.bottom-right {
+  right: 24px;
+}
+
+.top,
+.bottom {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.shortcut {
+  color: var(--fg-secondary);
+}
+
+.keymap {
+  color: var(--fg-muted);
+}
+
+.small {
+  font-size: 15px;
+}
+
+.medium {
+  font-size: 22px;
+}
+
+.large {
+  font-size: 32px;
+}
+
+.small .shortcut,
+.small .keymap {
+  font-size: 13px;
+}
+
+.medium .shortcut,
+.medium .keymap {
+  font-size: 18px;
+}
+
+.large .shortcut,
+.large .keymap {
+  font-size: 26px;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popup {
+    animation: none;
+  }
+
+  .leaving {
+    transition: none;
+  }
+}
