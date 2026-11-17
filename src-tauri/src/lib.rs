@@ -328,6 +328,8 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
+            #[cfg(target_os = "macos")]
+            windows::flush_auxiliary_geometry(app);
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.stop_processes_on_exit();
                 commands::mcp::stop(&state);
