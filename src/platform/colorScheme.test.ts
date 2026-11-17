@@ -218,6 +218,37 @@ describe("color schemes", () => {
     );
   });
 
+  // #3851: the editor showed the red-green colours while Color Scheme showed the plain ones.
+  it("resolves the red-green variant of the bundled schemes only", () => {
+    const rg = (id: Parameters<typeof schemeTokens>[0], name: string) => schemeTokens(id, undefined, true).get(name);
+    // The reporter's screenshot: keyword, string, function, number, constant.
+    expect(
+      ["--syn-keyword", "--syn-string", "--syn-function", "--syn-number", "--syn-constant"].map((n) => rg("dark", n)),
+    ).toEqual(["#597cc2", "#94907f", "#d9af6c", "#66a6ff", "#828eba"]);
+    expect(rg("light", "--syn-keyword")).toBe("#00428c");
+    for (const id of ["dark-hc", "solarized-dark"] as const)
+      expect(rg(id, "--syn-keyword")).toBe(schemeTokens(id).get("--syn-keyword"));
+    // VCS colours follow the setting in every scheme.
+    expect(rg("dark-hc", "--gutter-added")).not.toBe(schemeTokens("dark-hc").get("--gutter-added"));
+    expect(schemeTokens("dark").get("--syn-keyword")).toBe("#cf8e6d");
+    expect(resolvedAttribute("dark", "keyword", {}, true).foreground).toBe("#597cc2");
+    const customs = { "custom-rg": { name: "Mine", parent: "dark" as const, attributes: {} } };
+    expect(resolvedAttribute("custom-rg", "keyword", customs, true).foreground).toBe("#cf8e6d");
+  });
+
+  it("gives an explicit bundled scheme its red-green variant", () => {
+    const root = document.documentElement;
+    root.dataset.theme = "light";
+    root.dataset.redGreen = "";
+    try {
+      expect(schemeCss("dark", undefined, root)).toContain("--syn-keyword: #597cc2 !important");
+      delete root.dataset.redGreen;
+      expect(schemeCss("dark", undefined, root)).toContain("--syn-keyword: #cf8e6d !important");
+    } finally {
+      delete root.dataset.redGreen;
+    }
+  });
+
   it("applies an explicit scheme over a plugin theme of the same base", () => {
     const root = document.documentElement;
     root.dataset.theme = "dark";

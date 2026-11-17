@@ -8713,5 +8713,7 @@
   "Java agents of {list} were not added: they load only in local projects.": "未添加 {list} 的 Java 代理：Java 代理只加载到本地项目中。",
   "Java agent": "Java 代理",
   "Java Agents": "Java 代理",
-  "File at a Git revision (read-only).": "Git 修订版中的文件（只读）。"
+  "File at a Git revision (read-only).": "Git 修订版中的文件（只读）。",
+  "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.": "已开启「针对红绿色觉缺陷调整颜色」，此方案显示的是红绿色觉变体的颜色。",
+  "Appearance settings": "外观设置"
 }
