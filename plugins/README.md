@@ -450,6 +450,10 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
 - **The marker bar's problems in editor panels.** An editor panel's page reads
   the problems its group's marker bar shows with `openidea.editor.problems()`
   and hears them change through `onProblems`. See _Editor panels_.
+- **Semantic highlighting in editor panels.** `openidea.editor.highlights()`
+  returns the colours the editor shows, semantic highlighting from the language
+  server layered over the syntax colours, and `onHighlights` reports the lines
+  whose colours change when semantic tokens arrive. See _Editor panels_.
 
 ### API 1.9
 
@@ -1915,20 +1919,21 @@ sit side by side.
 The page gets `openidea.editor` (only an editor panel's page has it). Lines are
 0-based, columns UTF-16:
 
-| `openidea.editor`                      | What it does                                                                                                                                                                             |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get()`                                | `{ path, language, version, lineCount }` of the group's file, or `null`                                                                                                                  |
-| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none                                                                                                                           |
-| `document.get()` / `document.onChange` | The `openidea.document` of web views, on the group's file and read-only: `edit` and `replace` reject. Changes arrive at most once a frame                                                |
-| `viewport()` / `onViewport(fn)`        | `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; lines are fractional (the position within a line). Sent on scroll, resize and folding, at most once a frame |
-| `scrollTo(line)`                       | Scrolls so that `line` (fractional) is at the top of the visible area; call it on every move while dragging                                                                              |
-| `scrollBy(pixels)`                     | Scrolls the editor by `pixels`: hand it the page's wheel                                                                                                                                 |
-| `highlights(fromLine, toLine)`         | One array per line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): `[{ from, to, color }]`, `color` the syntax colour in the current scheme (a CSS colour)               |
-| `onHighlights(fn)`                     | `{ fromLine, toLine }` whose colours may have changed: parsing progressed, the file was edited, the colour scheme changed                                                                |
-| `problems()`                           | API 1.10: the problems the marker bar shows, in file order: `[{ line, lastLine, severity }]`, `lastLine` the last line a problem covers, `severity` `error`, `warning` or `weakWarning`  |
-| `onProblems(fn)`                       | API 1.10: called with `problems()` when a problem appears or goes away, when edits move them, and when the group shows another file; at most once a frame                                |
+| `openidea.editor`                      | What it does                                                                                                                                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `get()`                                | `{ path, language, version, lineCount }` of the group's file, or `null`                                                                                                                                                        |
+| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none                                                                                                                                                                 |
+| `document.get()` / `document.onChange` | The `openidea.document` of web views, on the group's file and read-only: `edit` and `replace` reject. Changes arrive at most once a frame                                                                                      |
+| `viewport()` / `onViewport(fn)`        | `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; lines are fractional (the position within a line). Sent on scroll, resize and folding, at most once a frame                                       |
+| `scrollTo(line)`                       | Scrolls so that `line` (fractional) is at the top of the visible area; call it on every move while dragging                                                                                                                    |
+| `scrollBy(pixels)`                     | Scrolls the editor by `pixels`: hand it the page's wheel                                                                                                                                                                       |
+| `highlights(fromLine, toLine)`         | One array per line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): `[{ from, to, color }]`, `color` the colour the editor shows in the current scheme (a CSS colour; API 1.10: semantic highlighting included) |
+| `onHighlights(fn)`                     | `{ fromLine, toLine }` whose colours may have changed: parsing progressed, the file was edited, the colour scheme changed, semantic tokens arrived (API 1.10)                                                                  |
+| `problems()`                           | API 1.10: the problems the marker bar shows, in file order: `[{ line, lastLine, severity }]`, `lastLine` the last line a problem covers, `severity` `error`, `warning` or `weakWarning`                                        |
+| `onProblems(fn)`                       | API 1.10: called with `problems()` when a problem appears or goes away, when edits move them, and when the group shows another file; at most once a frame                                                                      |
 
-Colours come from syntax highlighting only (no semantic highlighting yet); the
+Colours are the editor's: syntax highlighting and, from API 1.10, the semantic
+highlighting over it (a semantic colour wins where both apply). The
 panel's other colours are the frame's theme variables (`openidea.theme`,
 `onThemeChange`). Before API 1.10 there is no `problems`: check for it
 (`if (editor.problems)`) when the page also runs in older IDEs. Not there yet:

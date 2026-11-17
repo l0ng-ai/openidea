@@ -11,13 +11,24 @@ import { lspDoc } from "@/editor/lsp/lsp";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { setContext } from "@/platform/context";
 import { useEditorGroupPanels } from "@/workbench/contributions";
+import type { SemanticTokens } from "@/platform/ipc";
 import { createMemoryPluginsBackend, setPluginsBackend } from "../backend";
 import { usePlugins } from "../store";
 import { FRAME_TAG, frameDocument } from "../views/frame";
 import { PanelEditor, editorPanelUpdates, projectEditorPanel } from "../views/editorPanel";
 import { WebView, type FrameEditor, type FrameEditorEvent } from "../views/WebView";
 
+// The language server's semantic tokens, for the editor's semantic highlighting.
+const lsp = vi.hoisted(() => ({ tokens: { data: [], tokenTypes: [], tokenModifiers: [] } as SemanticTokens }));
+const lspSemanticTokens = vi.hoisted(() => async () => ({ status: "ok" as const, data: lsp.tokens }));
+vi.mock("@/platform/ipc", async (orig) => {
+  const actual = await orig<typeof import("@/platform/ipc")>();
+  return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspSemanticTokens } };
+});
+const { semanticExtension } = await import("@/editor/lsp/semantic");
+
 afterEach(() => {
+  vi.useRealTimers();
   setPluginsBackend(null);
   usePlugins.setState({ plugins: [] });
 });
@@ -283,6 +294,66 @@ describe("PanelEditor", () => {
     await nextFrame();
     expect(events).toEqual([]);
     expect(() => panel.document.read()).toThrow();
+    view.destroy();
+  });
+});
+
+describe("PanelEditor semantic highlights", () => {
+  it("layers the semantic colours over the syntax colours and follows the tokens", async () => {
+    vi.useFakeTimers();
+    const PATH = "/p/src/semantic.js";
+    lsp.tokens = { data: [1, 0, 5, 0, 0], tokenTypes: ["property"], tokenModifiers: [] };
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: "let total = 1;\ntotal;\nend",
+        extensions: [
+          lspDoc.of({ doc: 1, path: PATH, language: "javascript", uiMode: null, readOnly: false }),
+          javascript(),
+          syntaxHighlighting(openideaHighlightStyle),
+          semanticExtension(),
+          EditorView.theme({ ".cm-sem-property": { color: "rgb(1, 2, 3)" } }),
+          editorPanelUpdates,
+        ],
+      }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: PATH, language: "javascript", uiMode: "JavaScript", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    const syntaxOnly = panel.highlights(0, 3);
+    const semantic = "rgb(1, 2, 3)";
+    expect(syntaxOnly.flat().map((s) => s.color)).not.toContain(semantic);
+
+    // The tokens arrive: line 1's `total` takes the semantic colour; the other lines keep theirs.
+    events.length = 0;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(view.contentDOM.querySelector(".cm-sem-property")).not.toBeNull();
+    expect(events).toContainEqual({ editor: "highlights", value: { fromLine: 1, toLine: 2 } });
+    const lines = panel.highlights(0, 3);
+    expect(lines[1]).toContainEqual({ from: 0, to: 5, color: semantic });
+    expect(lines[1]!.filter((s) => s.from < 5)).toHaveLength(1);
+    expect(lines[0]).toEqual(syntaxOnly[0]);
+    expect(lines[2]).toEqual(syntaxOnly[2]);
+
+    // Refreshed after an edit at the end: the token moved to line 0, whose colours are reported.
+    lsp.tokens = { data: [0, 4, 5, 0, 0], tokenTypes: ["property"], tokenModifiers: [] };
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    await vi.advanceTimersByTimeAsync(20);
+    events.length = 0;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(events).toContainEqual({ editor: "highlights", value: { fromLine: 0, toLine: 2 } });
+    expect(panel.highlights(0, 1)[0]).toContainEqual({ from: 4, to: 9, color: semantic });
+    expect(panel.highlights(1, 2)).toEqual([syntaxOnly[1]]);
+
+    panel.dispose();
     view.destroy();
   });
 });
