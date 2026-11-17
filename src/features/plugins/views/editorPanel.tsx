@@ -42,12 +42,8 @@ export interface EditorPanelDecl {
 }
 
 /** The marker bar's levels (IDEA's): `info` is a weak warning; hints have no mark. */
-const PROBLEM_LEVEL: Record<Severity, EditorProblem["severity"]> = {
-  error: "error",
-  warning: "warning",
-  info: "weakWarning",
-  hint: "weakWarning",
-};
+const problemLevel = (severity: Severity): EditorProblem["severity"] =>
+  severity === "error" || severity === "warning" ? severity : "weakWarning";
 
 const syntaxMarks = new Map<string, Decoration>();
 const syntaxMark = (classes: string) => {
@@ -280,7 +276,7 @@ export class PanelEditor implements FrameEditor {
     return markerBarProblems(view.state).map((m) => ({
       line: doc.lineAt(m.from).number - 1,
       lastLine: doc.lineAt(Math.max(m.from, m.to - 1)).number - 1,
-      severity: PROBLEM_LEVEL[m.severity],
+      severity: problemLevel(m.severity),
     }));
   }
 
