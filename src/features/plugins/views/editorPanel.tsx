@@ -2,15 +2,17 @@
  * Plugin editor panels (`[[contributes.editorPanels]]`): a web page at the right edge of every
  * editor group, following the group's text editor (a minimap, say). Each group has one frame,
  * kept while the group switches tabs: the page hears `onTarget` instead of reloading. Through
- * `openidea.editor` it reads the file (read-only), the viewport and the syntax colours, and
- * scrolls the editor — straight from the editor, not through the plugin's code, since a minimap
- * follows every frame of a scroll.
+ * `openidea.editor` it reads the file (read-only), the viewport, the syntax colours and the
+ * marker bar's problems, and scrolls the editor — straight from the editor, not through the
+ * plugin's code, since a minimap follows every frame of a scroll.
  */
 import { highlightingFor, syntaxTree } from "@codemirror/language";
 import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { highlightTree } from "@lezer/highlight";
 import { useEffect, useMemo } from "react";
+import type { Severity } from "@/bindings";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
+import { markerBarProblems } from "@/editor/lsp/diagnostics";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { subscribeTheme } from "@/platform/themeWatch";
 import { registerEditorGroupPanel } from "@/workbench/contributions";
@@ -19,6 +21,7 @@ import { basename } from "./customEditor";
 import {
   WebView,
   type DocumentState,
+  type EditorProblem,
   type EditorTarget,
   type EditorViewport,
   type FrameDocument,
@@ -34,6 +37,14 @@ export interface EditorPanelDecl {
   width: number;
   when?: string | null;
 }
+
+/** The marker bar's levels (IDEA's): `info` is a weak warning; hints have no mark. */
+const PROBLEM_LEVEL: Record<Severity, EditorProblem["severity"]> = {
+  error: "error",
+  warning: "warning",
+  info: "weakWarning",
+  hint: "weakWarning",
+};
 
 /** View updates of the editors that panels follow. */
 const updateListeners = new Map<EditorView, Set<(u: ViewUpdate) => void>>();
@@ -56,6 +67,14 @@ function lineAtHeight(view: EditorView, height: number): number {
   return Math.min(doc.lines, first + frac * span);
 }
 
+/** What the next frame sends: nothing yet. */
+const nothingPending = () => ({
+  viewport: false,
+  document: false,
+  problems: false,
+  lines: null as [number, number] | null,
+});
+
 /** One panel frame's view of its group's text editor. */
 export class PanelEditor implements FrameEditor {
   private handle: TextEditorHandle | null = null;
@@ -67,11 +86,7 @@ export class PanelEditor implements FrameEditor {
   /** Highlight classes → their colour in the current scheme. */
   private readonly colors = new Map<string, string>();
   private frame = 0;
-  private pending: { viewport: boolean; document: boolean; lines: [number, number] | null } = {
-    viewport: false,
-    document: false,
-    lines: null,
-  };
+  private pending = nothingPending();
 
   readonly document: FrameDocument = {
     read: () => {
@@ -117,6 +132,7 @@ export class PanelEditor implements FrameEditor {
           }
         }
         if (u.geometryChanged || u.heightChanged || u.viewportChanged) this.schedule({ viewport: true });
+        if (markerBarProblems(u.startState) !== markerBarProblems(u.state)) this.schedule({ problems: true });
       };
       view.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
       let set = updateListeners.get(view);
@@ -127,7 +143,7 @@ export class PanelEditor implements FrameEditor {
         set.delete(onUpdate);
         if (!set.size) updateListeners.delete(view);
       };
-      this.schedule({ viewport: true });
+      this.schedule({ viewport: true, problems: true });
     }
     this.emit({ editor: "target", value: this.get() });
   }
@@ -221,6 +237,17 @@ export class PanelEditor implements FrameEditor {
     return out;
   }
 
+  problems(): EditorProblem[] {
+    const view = this.handle?.view;
+    if (!view) return [];
+    const doc = view.state.doc;
+    return markerBarProblems(view.state).map((m) => ({
+      line: doc.lineAt(m.from).number - 1,
+      lastLine: doc.lineAt(Math.max(m.from, m.to - 1)).number - 1,
+      severity: PROBLEM_LEVEL[m.severity],
+    }));
+  }
+
   /** The text colour `classes` give in the editor, as the current scheme resolves it. */
   private color(view: EditorView, classes: string): string {
     let color = this.colors.get(classes);
@@ -241,10 +268,11 @@ export class PanelEditor implements FrameEditor {
     for (const l of this.listeners) l(e);
   }
 
-  private schedule(p: { viewport?: boolean; document?: boolean; lines?: [number, number] }) {
+  private schedule(p: { viewport?: boolean; document?: boolean; problems?: boolean; lines?: [number, number] }) {
     const q = this.pending;
     q.viewport ||= !!p.viewport;
     q.document ||= !!p.document;
+    q.problems ||= !!p.problems;
     if (p.lines) q.lines = q.lines ? [Math.min(q.lines[0], p.lines[0]), Math.max(q.lines[1], p.lines[1])] : p.lines;
     if (!this.frame) this.frame = requestAnimationFrame(() => this.flush());
   }
@@ -252,7 +280,7 @@ export class PanelEditor implements FrameEditor {
   private flush() {
     this.frame = 0;
     const q = this.pending;
-    this.pending = { viewport: false, document: false, lines: null };
+    this.pending = nothingPending();
     const view = this.handle?.view;
     if (!view) return;
     if (q.document && this.documentListeners.size) {
@@ -265,6 +293,7 @@ export class PanelEditor implements FrameEditor {
       this.emit({ editor: "highlights", value: { fromLine, toLine: Math.min(q.lines[1], lines) } });
     }
     if (q.viewport) this.emit({ editor: "viewport", value: this.viewport()! });
+    if (q.problems) this.emit({ editor: "problems", value: this.problems() });
   }
 }
 

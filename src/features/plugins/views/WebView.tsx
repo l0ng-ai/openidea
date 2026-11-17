@@ -91,10 +91,19 @@ export interface HighlightSpan {
   color: string;
 }
 
+/** One problem of the marker bar, as `openidea.editor.problems()` returns it: 0-based lines. */
+export interface EditorProblem {
+  line: number;
+  /** The last line the problem covers (`line` for most). */
+  lastLine: number;
+  severity: "error" | "warning" | "weakWarning";
+}
+
 export type FrameEditorEvent =
   | { editor: "target"; value: EditorTarget | null }
   | { editor: "viewport"; value: EditorViewport }
-  | { editor: "highlights"; value: { fromLine: number; toLine: number } };
+  | { editor: "highlights"; value: { fromLine: number; toLine: number } }
+  | { editor: "problems"; value: EditorProblem[] };
 
 /** The text editor an editor panel's frame follows (`openidea.editor`). */
 export interface FrameEditor {
@@ -104,6 +113,7 @@ export interface FrameEditor {
   scrollBy(pixels: number): void;
   /** Lines `fromLine` up to `toLine` (exclusive); throws over {@link MAX_HIGHLIGHT_LINES}. */
   highlights(fromLine: number, toLine: number): HighlightSpan[][];
+  problems(): EditorProblem[];
   subscribe(listener: (event: FrameEditorEvent) => void): () => void;
 }
 
@@ -372,9 +382,11 @@ export function WebView({
         case "editor.viewport":
         case "editor.scrollTo":
         case "editor.scrollBy":
-        case "editor.highlights": {
+        case "editor.highlights":
+        case "editor.problems": {
           if (!editor) throw new Error("this view is not an editor panel");
           if (op === "editor.get") return [editor.get()];
+          if (op === "editor.problems") return [editor.problems()];
           if (op === "editor.viewport") return [editor.viewport()];
           if (op === "editor.scrollTo") return [editor.scrollTo(finite(args.line, "line"))];
           if (op === "editor.scrollBy") return [editor.scrollBy(finite(args.pixels, "pixels"))];

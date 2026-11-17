@@ -447,6 +447,9 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
   required `when`: the command runs on a plain Escape in a focused editor once the
   IDE's own Escape handling (popups, completion, rename, selection, extra carets,
   Vim) found nothing to do.
+- **The marker bar's problems in editor panels.** An editor panel's page reads
+  the problems its group's marker bar shows with `openidea.editor.problems()`
+  and hears them change through `onProblems`. See _Editor panels_.
 
 ### API 1.9
 
@@ -1922,12 +1925,16 @@ The page gets `openidea.editor` (only an editor panel's page has it). Lines are
 | `scrollBy(pixels)`                     | Scrolls the editor by `pixels`: hand it the page's wheel                                                                                                                                 |
 | `highlights(fromLine, toLine)`         | One array per line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): `[{ from, to, color }]`, `color` the syntax colour in the current scheme (a CSS colour)               |
 | `onHighlights(fn)`                     | `{ fromLine, toLine }` whose colours may have changed: parsing progressed, the file was edited, the colour scheme changed                                                                |
+| `problems()`                           | API 1.10: the problems the marker bar shows, in file order: `[{ line, lastLine, severity }]`, `lastLine` the last line a problem covers, `severity` `error`, `warning` or `weakWarning`  |
+| `onProblems(fn)`                       | API 1.10: called with `problems()` when a problem appears or goes away, when edits move them, and when the group shows another file; at most once a frame                                |
 
 Colours come from syntax highlighting only (no semantic highlighting yet); the
 panel's other colours are the frame's theme variables (`openidea.theme`,
-`onThemeChange`). Not there yet: the caret and selections, and the marker bar's
-problems and changes. `crates/ide-plugin/tests/fixtures/editor-panel` is a
-minimal minimap (each line 2 px, its frame draggable) to install and try.
+`onThemeChange`). Before API 1.10 there is no `problems`: check for it
+(`if (editor.problems)`) when the page also runs in older IDEs. Not there yet:
+the caret and selections, and the marker bar's changes.
+`crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
+2 px, its frame draggable, problems marked at its right edge) to install and try.
 
 ### Web frame PTYs (API 1.3)
 
