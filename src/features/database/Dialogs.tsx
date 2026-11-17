@@ -16,6 +16,8 @@ const ImportDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.I
 const SchemaCompareDialog = lazyComponent(() => import("./SchemaCompareDialog").then((m) => m.SchemaCompareDialog));
 const DumpDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.DumpDialog));
 const RestoreDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.RestoreDialog));
+const MysqlDumpDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlDumpDialog));
+const MysqlRestoreDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlRestoreDialog));
 
 function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok: boolean) => void }) {
   const [password, setPassword] = useState("");
@@ -214,6 +216,12 @@ export function DatabaseDialogs() {
         serverVersion={dialog.serverVersion}
       />
     );
+  if (dialog.kind === "mysqlDump")
+    return (
+      <MysqlDumpDialog key={dialog.target} target={dialog.target} database={dialog.database} tables={dialog.tables} />
+    );
+  if (dialog.kind === "mysqlRestore")
+    return <MysqlRestoreDialog key={dialog.target} target={dialog.target} database={dialog.database} />;
   if (dialog.kind === "sshSecret")
     return (
       <SshSecretDialog key={dialog.source.id} source={dialog.source} prompt={dialog.prompt} resolve={dialog.resolve} />

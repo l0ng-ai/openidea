@@ -45,7 +45,7 @@ import {
   removeSource,
 } from "./store";
 import { tableInput } from "./tableInput";
-import { dumpScope } from "./dumpTools";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
 import { tx } from "@/platform/i18n";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { databaseRequest } from "./requests";
@@ -466,6 +466,29 @@ export function registerDatabaseTreeActions(): () => void {
         const serverVersion = scope && (await serverVersionOf(scope.target));
         if (scope && serverVersion !== undefined)
           openDialog({ kind: "restore", target: scope.target, database: scope.database, serverVersion });
+      },
+    }),
+    tree({
+      id: "db.dumpWithMysqldump",
+      title: "Export with 'mysqldump'…",
+      icon: "export",
+      keywords: ["backup", "dump", "mysql", "mariadb"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && mysqlDumpScope(n, sourceOf(n));
+        if (scope && (await connect(scope.target))) openDialog({ kind: "mysqlDump", ...scope });
+      },
+    }),
+    tree({
+      id: "db.restoreWithMysql",
+      title: "Restore with 'mysql'…",
+      icon: "download",
+      keywords: ["backup", "restore", "load dump", "mysql", "mariadb"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && mysqlDumpScope(n, sourceOf(n));
+        if (scope && (await connect(scope.target)))
+          openDialog({ kind: "mysqlRestore", target: scope.target, database: scope.database });
       },
     }),
     tree({

@@ -282,6 +282,7 @@ async fn dumps_and_restores_with_the_client_tools() -> IdeResult<()> {
     let restore = DbPgRestoreOptions {
         content: DbDumpContent::All,
         schemas: vec![],
+        create: false,
         clean: false,
         if_exists: false,
         no_owner: false,
