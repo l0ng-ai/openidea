@@ -2329,5 +2329,6 @@
   "Java agents of {list} were not added: they load only in local projects.": "Java agents of {list} were not added: they load only in local projects.",
   "Java agent": "Java agent",
   "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.": "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.",
-  "Java Agents": "Java Agents"
+  "Java Agents": "Java Agents",
+  "File at a Git revision (read-only).": "File at a Git revision (read-only)."
 }
