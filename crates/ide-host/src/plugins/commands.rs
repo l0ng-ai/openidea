@@ -1,8 +1,8 @@
 //! Plugin window commands shared by local IPC and remote RPC.
 
 use super::{
-    CommandAnswer, CommitAnswer, DecorationSet, EventKind, PluginContextKey, PluginEditor, PluginHost, PluginInfo,
-    PluginStatusItem, WorkbenchEvent,
+    ClipboardAnswer, CommandAnswer, CommitAnswer, DecorationSet, EventKind, PluginContextKey, PluginEditor, PluginHost,
+    PluginInfo, PluginStatusItem, WorkbenchEvent,
 };
 use crate::Host;
 use ide_command::command;
@@ -125,6 +125,18 @@ pub fn plugin_answer_command(
     answer: CommandAnswer,
 ) -> IdeResult<bool> {
     Ok(plugins.answer_command(window, &request_id, answer))
+}
+
+/// This window's clipboard for a plugin's `clipboardRequested`; false when the call no
+/// longer waits or asked another window.
+#[command(trust = trusted)]
+pub fn plugin_answer_clipboard(
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    request_id: String,
+    answer: ClipboardAnswer,
+) -> IdeResult<bool> {
+    Ok(plugins.answer_clipboard(window, &request_id, answer))
 }
 
 /// The project root a `scope` setting applies to (`None`: global).
@@ -278,6 +290,7 @@ pub async fn plugin_debug_attach_target(
 
 ide_command::domain!(
     plugins_commands:
+    plugin_answer_clipboard,
     plugin_answer_command,
     plugin_answer_commit,
     plugin_answer_prompt,

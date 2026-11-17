@@ -167,6 +167,11 @@ mod imp {
         wit::ui::copy_to_clipboard(text).map_err(error)
     }
 
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        let content = wit::ui::read_clipboard().map_err(error)?;
+        Ok(ClipboardContent { text: content.text, image: content.image })
+    }
+
     pub fn open_url(url: &str) -> Result<(), Error> {
         wit::ui::open_url(url).map_err(error)
     }
@@ -1615,6 +1620,15 @@ pub fn remove_context(key: &str) {
 /// Copies `text` to the system clipboard. Needs `clipboard`.
 pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
     imp::copy_to_clipboard(text)
+}
+
+/// API 1.11: the clipboard's text and image (PNG bytes) on the user's machine; both `None`
+/// when it holds neither. Needs `clipboard.read`, and works only in a command the user ran
+/// or a view action from a window: event handlers, background work, web view messages
+/// and commands run through [`execute_command`] get `Error::Denied`. Text or an image over
+/// 16 MiB is `Error::Failed`. In a remote project the user confirms first (refused: `Denied`).
+pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+    imp::read_clipboard()
 }
 
 /// Opens an `http://` or `https://` URL in the user's default browser.

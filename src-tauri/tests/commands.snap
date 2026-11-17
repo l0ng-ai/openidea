@@ -386,6 +386,7 @@ notebook_undo                                always             project_host bin
 open_project                                 always             project_host bindings async
 path_completions                             always             project_host bindings async
 plugin_activation_event                      trusted            desktop      bindings async
+plugin_answer_clipboard                      trusted            project_host bindings sync
 plugin_answer_command                        trusted            project_host bindings sync
 plugin_answer_commit                         trusted            project_host bindings sync
 plugin_answer_prompt                         trusted            project_host bindings sync
