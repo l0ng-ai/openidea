@@ -202,6 +202,9 @@
   flex: none;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Keep the first glyph clear of the divider on this column's left edge.
+     box-sizing: border-box keeps the width and boundary position unchanged. */
+  padding-inline-start: var(--space-2);
   /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
   position: relative;
 }
@@ -227,7 +230,9 @@
 .columnResize {
   position: absolute;
   inset-block: 0;
-  inset-inline-start: -4px;
+  /* The strip centre (and rule) lands midway in the 8px row gap, between this
+     column and its left neighbour. */
+  inset-inline-start: -8px;
   width: 8px;
   cursor: ew-resize;
   touch-action: none;
@@ -236,7 +241,7 @@
   align-items: center;
   justify-content: center;
 }
-/* The rule sits exactly on the column boundary (centre of the strip). */
+/* The rule sits at the strip centre, midway between the two columns. */
 .columnResize::before {
   content: "";
   position: absolute;
