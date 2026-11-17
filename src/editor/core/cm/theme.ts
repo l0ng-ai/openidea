@@ -79,13 +79,6 @@ export const overviewStyles = {
     cursor: "default",
     zIndex: "3",
   },
-  // Over an outer scroller (an aligned diff): stays at the top of its viewport, taking no room.
-  ".cm-openidea-overview-sticky": {
-    position: "sticky",
-    bottom: "auto",
-    flex: "none",
-    alignSelf: "flex-end",
-  },
   ".cm-openidea-overviewMark": {
     position: "absolute",
     left: "3px",

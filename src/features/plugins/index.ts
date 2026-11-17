@@ -47,6 +47,7 @@ function registerPluginsPage(): () => void {
     title: "Plugins",
     // After Editor, as in IntelliJ IDEA.
     order: 250,
+    bleed: true,
     keywords: ["plugin", "extension", "wasm", "install", "theme", "marketplace"],
     component: lazyComponent(() => import("./PluginsPage").then((m) => m.PluginsPage)),
   });

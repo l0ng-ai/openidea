@@ -62,7 +62,8 @@ import { useProject } from "@/platform/project";
 import { openExternalUrl } from "@/platform/openUrl";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
-import { useSettingsPageFocus } from "@/workbench/contributions";
+import { useSettingsHeaderSlot, useSettingsPageFocus } from "@/workbench/contributions";
+import { createPortal } from "react-dom";
 import styles from "./PluginsPage.module.css";
 import { pluginsBackend } from "./backend";
 import { confirm } from "@/workbench/messages";
@@ -161,30 +162,25 @@ function useMarketUpdate(plugin: PluginInfo): MarketPlugin | undefined {
 function PluginIcon({
   id,
   icon,
-  large,
   name,
 }: {
   id: string;
   icon: PluginIconData | null | undefined;
-  large?: boolean;
   /** Without an icon: its first letter on a tint of its own instead of the generic icon. */
   name?: string;
 }) {
   if (!icon && name) {
     const { letter, tone } = monogram(id, name);
     return (
-      <span
-        className={clsx(styles.icon, large && styles.iconLarge, styles.monogram, styles[`tone${tone}`])}
-        aria-hidden
-      >
+      <span className={clsx(styles.icon, styles.monogram, styles[`tone${tone}`])} aria-hidden>
         {letter}
       </span>
     );
   }
   // A plugin's own icon fills the tile, as the initials do; the generic one sits on a plate.
   return (
-    <span className={clsx(styles.icon, large && styles.iconLarge, icon && styles.ownIcon)} aria-hidden>
-      <Icon name={pluginIconName(id, icon)} size={icon ? (large ? 56 : 32) : large ? 32 : 20} />
+    <span className={clsx(styles.icon, icon && styles.ownIcon)} aria-hidden>
+      <Icon name={pluginIconName(id, icon)} size={icon ? 40 : 20} />
     </span>
   );
 }
@@ -259,12 +255,11 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
             {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
           </span>
           <span className={styles.rowMeta}>
-            <span className={styles.rowVendor}>{vendorOf(plugin.authors) || plugin.id}</span>
             <span>{plugin.version}</span>
+            <span className={styles.rowVendor}>{vendorOf(plugin.authors) || plugin.id}</span>
             {plugin.source !== "installed" && (
               <span className={styles.devTag}>{plugin.source === "linked" ? tx("linked") : tx("dev")}</span>
             )}
-            {update && <Badge tone="accent">{tx("Update")}</Badge>}
             {plugin.status === "failed" && (
               <Badge dot tone="danger">
                 {tx("Failed")}
@@ -278,6 +273,7 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
           </span>
         </span>
       </button>
+      {update && <MarketAction entry={update} compact />}
       <Checkbox
         className={styles.rowCheck}
         checked={plugin.enabled}
@@ -328,8 +324,8 @@ function CatalogRow({ entry, selected, onSelect }: { entry: CatalogPlugin; selec
         <span className={styles.rowText}>
           <span className={styles.rowName}>{entry.name}</span>
           <span className={styles.rowMeta}>
-            <span className={styles.rowVendor}>{vendorOf(entry.authors) || entry.id}</span>
             <span>{entry.version}</span>
+            <span className={styles.rowVendor}>{vendorOf(entry.authors) || entry.id}</span>
           </span>
         </span>
       </button>
@@ -752,27 +748,22 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   return (
     <div className={styles.details} aria-label={`${plugin.name} details`}>
       <header className={styles.header}>
-        <PluginIcon id={plugin.id} icon={plugin.icon} large />
-        <div className={styles.headerText}>
-          <h2 className={styles.title}>{plugin.name}</h2>
-          {plugin.authors.length > 0 && <div className={styles.authors}>{vendorOf(plugin.authors)}</div>}
-          <div className={styles.titleLine}>
-            <span className={styles.version}>{plugin.version}</span>
-            <Badge tone={status.tone}>{status.label}</Badge>
-            {plugin.source !== "installed" && (
-              <Badge tone="warning">{plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}</Badge>
-            )}
-            {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
-            {plugin.source === "installed" &&
-              (plugin.publisher ? (
-                <Badge tone="success">{tx`Signed by ${plugin.publisher}`}</Badge>
-              ) : (
-                <Badge tone="neutral">{tx("Unsigned")}</Badge>
-              ))}
-          </div>
+        <div className={styles.titleLine}>
+          <Badge tone={status.tone}>{status.label}</Badge>
+          {plugin.source !== "installed" && (
+            <Badge tone="warning">{plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}</Badge>
+          )}
+          {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
+          {plugin.source === "installed" &&
+            (plugin.publisher ? (
+              <Badge tone="success">{tx`Signed by ${plugin.publisher}`}</Badge>
+            ) : (
+              <Badge tone="neutral">{tx("Unsigned")}</Badge>
+            ))}
         </div>
+        <h2 className={styles.title}>{plugin.name}</h2>
+        {plugin.authors.length > 0 && <div className={styles.authors}>{vendorOf(plugin.authors)}</div>}
         <div className={styles.headerActions}>
-          {busy && <Spinner size={14} label="Working" />}
           {update && (
             <Button
               size="small"
@@ -823,6 +814,8 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
                 <T>Uninstall…</T>
               </Button>
             ))}
+          <span className={styles.version}>{plugin.version}</span>
+          {busy && <Spinner size={14} label="Working" />}
         </div>
       </header>
       <DetailTabs notes={plugin.changeNotes} overview={overview} />
@@ -886,16 +879,11 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
       <header className={styles.header}>
-        <PluginIcon id={entry.id} icon={entry.icon} large />
-        <div className={styles.headerText}>
-          <h2 className={styles.title}>{entry.name}</h2>
-          {entry.authors.length > 0 && <div className={styles.authors}>{vendorOf(entry.authors)}</div>}
-          <div className={styles.titleLine}>
-            <span className={styles.version}>{entry.version}</span>
-          </div>
-        </div>
+        <h2 className={styles.title}>{entry.name}</h2>
+        {entry.authors.length > 0 && <div className={styles.authors}>{vendorOf(entry.authors)}</div>}
         <div className={styles.headerActions}>
           <CatalogButton entry={entry} />
+          <span className={styles.version}>{entry.version}</span>
         </div>
       </header>
       <DetailTabs notes={entry.changeNotes} overview={overview} />
@@ -1098,7 +1086,7 @@ function MarketAction({
 
 function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selected: boolean; onSelect: () => void }) {
   return (
-    <li className={clsx(styles.row, styles.marketRow, selected && styles.rowSelected)}>
+    <li className={clsx(styles.row, selected && styles.rowSelected)}>
       <button
         type="button"
         className={styles.rowMain}
@@ -1112,15 +1100,15 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
             <span className={styles.rowName}>{entry.name}</span>
             {isExample(entry) && <ExampleTag />}
           </span>
-          {entry.description && <span className={styles.rowDescription}>{entry.description}</span>}
           <span className={styles.rowMeta}>
-            {!isExample(entry) && <span className={styles.rowVendor}>{publisherOf(entry)}</span>}
             {entry.downloads != null && (
               <span className={styles.downloads} title={tx`${entry.downloads} downloads`}>
                 <Icon name="download" size={12} />
                 {formatDownloads(entry.downloads)}
               </span>
             )}
+            <span>{entry.version}</span>
+            {!isExample(entry) && <span className={styles.rowVendor}>{publisherOf(entry)}</span>}
           </span>
         </span>
       </button>
@@ -1221,24 +1209,21 @@ function MarketDetails({
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
       <header className={styles.header}>
-        <PluginIcon id={entry.id} icon={entry.icon} name={entry.name} large />
-        <div className={styles.headerText}>
-          <h2 className={styles.title}>{entry.name}</h2>
-          <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : publisherOf(entry)}</div>
-          <div className={styles.titleLine}>
-            <span className={styles.version}>{entry.version}</span>
-            {example && <ExampleTag />}
-            <Badge tone="success">{tx`Signed by ${publisherOf(entry)}`}</Badge>
-            {entry.downloads != null && (
-              <span className={styles.downloads}>
-                <Icon name="download" size={12} />
-                {tx`${formatDownloads(entry.downloads)} downloads`}
-              </span>
-            )}
-          </div>
+        <div className={styles.titleLine}>
+          {example && <ExampleTag />}
+          <Badge tone="success">{tx`Signed by ${publisherOf(entry)}`}</Badge>
+          {entry.downloads != null && (
+            <span className={styles.downloads}>
+              <Icon name="download" size={12} />
+              {tx`${formatDownloads(entry.downloads)} downloads`}
+            </span>
+          )}
         </div>
+        <h2 className={styles.title}>{entry.name}</h2>
+        <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : publisherOf(entry)}</div>
         <div className={styles.headerActions}>
           <MarketAction entry={entry} onInstalled={onInstalled} />
+          <span className={styles.version}>{entry.version}</span>
         </div>
       </header>
       {!entry.compatible && (
@@ -1290,13 +1275,12 @@ function useSuggestions(market: readonly MarketPlugin[] | null): Map<string, str
 }
 
 /**
- * One list, as in IntelliJ IDEA: installed plugins, then what the marketplace offers, each group
- * foldable. `initialTab` picks whose details show first (the marketplace's by default).
+ * Marketplace / Installed tabs in the page header; each lists its plugins in foldable groups.
+ * `initialTab` picks the one shown first (the marketplace by default).
  */
 export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab } = {}) {
   const { plugins, loaded, loading, error, installing, catalog, catalogError, market, marketUrl, marketError } =
     usePlugins();
-  // Whose details show: the installed plugin or the marketplace / local entry clicked last.
   const [tab, setTab] = useState<Tab>(initialTab);
   const [collapsed, toggleGroup] = useCollapsed();
   const [query, setQuery] = useState("");
@@ -1335,8 +1319,7 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
   );
   const marketOrder = [...groups.suggested, ...groups.featured, ...groups.community, ...groups.examples];
 
-  // Installed plugins carry no categories: a category filter lists only the marketplace.
-  const shown = useMemo(() => (category === "all" ? filterPlugins(plugins, query) : []), [plugins, query, category]);
+  const shown = useMemo(() => filterPlugins(plugins, query), [plugins, query]);
   const downloaded = shown.filter((p) => p.source === "installed");
   const dev = shown.filter((p) => p.source === "dev");
   const linked = shown.filter((p) => p.source === "linked");
@@ -1353,23 +1336,10 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
     ? null
     : (marketShown.find((m) => m.id === selectedMarketId) ?? marketOrder[0] ?? null);
   const selectedEntry = selectedMarket ? null : (pickedCatalog ?? catalogShown[0] ?? null);
-  // The details follow the side clicked last; with nothing listed there, the other side's first entry.
-  const pane: Tab =
-    tab === "installed"
-      ? selected
-        ? "installed"
-        : "marketplace"
-      : selectedMarket || selectedEntry || !selected
-        ? "marketplace"
-        : "installed";
+  const updates = (market ?? []).filter(isUpdate).length;
   const selectMarket = (id: string) => {
-    setTab("marketplace");
     setSelectedCatalogId(null);
     setSelectedMarketId(id);
-  };
-  const selectInstalled = (id: string) => {
-    setTab("installed");
-    setSelectedId(id);
   };
   /** An installed group: its header folds it. */
   const installedGroup = (key: string, title: string, list: readonly PluginInfo[]) =>
@@ -1383,12 +1353,7 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
         />
         {!collapsed.has(key) &&
           list.map((p) => (
-            <InstalledRow
-              key={p.id}
-              plugin={p}
-              selected={pane === "installed" && p.id === selected?.id}
-              onSelect={() => selectInstalled(p.id)}
-            />
+            <InstalledRow key={p.id} plugin={p} selected={p.id === selected?.id} onSelect={() => setSelectedId(p.id)} />
           ))}
       </>
     );
@@ -1403,7 +1368,7 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
     const r = e.currentTarget.getBoundingClientRect();
     showContextMenu(
       { x: r.left, y: r.bottom + 2 },
-      gearMenu(plugins, (market ?? []).filter(isUpdate).length, {
+      gearMenu(plugins, updates, {
         canImport: useProject.getState().project?.trusted === true,
         install: (packageFile) => void installFromDisk(undefined, packageFile).then(showInstalled),
         importIntellijFile: () => void importIntellijTheme().then(showInstalled),
@@ -1413,21 +1378,32 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
     );
   };
 
+  const headerSlot = useSettingsHeaderSlot();
+  const header = (
+    <>
+      <Tabs
+        variant="compact"
+        className={styles.sourceTabs}
+        aria-label="Plugin sources"
+        activeId={tab}
+        onSelect={(id) => setTab(id as Tab)}
+        items={[
+          { id: "marketplace", label: "Marketplace" },
+          {
+            id: "installed",
+            label: "Installed",
+            trailing: updates > 0 ? <span className={styles.tabCount}>{updates}</span> : undefined,
+          },
+        ]}
+      />
+      {(loading || installing) && <Spinner size={14} label={installing ? "Installing plugin" : "Loading plugins"} />}
+      <IconButton icon="settings" title="Manage Plugins" aria-haspopup="menu" onClick={openGear} />
+    </>
+  );
+
   return (
     <div className={styles.page}>
-      <div className={styles.topBar}>
-        <SearchField
-          className={styles.searchField}
-          value={query}
-          onChange={setQuery}
-          placeholder="Search plugins"
-          aria-label="Filter plugins"
-        />
-        {(market?.length ?? 0) > 0 && <CategoryFilter market={market ?? []} value={category} onChange={setCategory} />}
-        <span className={styles.spacer} />
-        {(loading || installing) && <Spinner size={14} label={installing ? "Installing plugin" : "Loading plugins"} />}
-        <IconButton icon="settings" title="Manage Plugins" aria-haspopup="menu" onClick={openGear} />
-      </div>
+      {headerSlot ? createPortal(header, headerSlot) : <div className={styles.topBar}>{header}</div>}
 
       {error && (
         <div className={styles.error} role="alert">
@@ -1436,84 +1412,101 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
       )}
 
       <div className={styles.body}>
-        <div className={clsx(styles.side, styles.lists)}>
-          {shown.length > 0 && (
+        <div className={styles.side}>
+          <div className={styles.searchRow}>
+            <SearchField
+              className={styles.searchField}
+              value={query}
+              onChange={setQuery}
+              placeholder={tab === "installed" ? "Search installed plugins" : "Search plugins"}
+              aria-label="Filter plugins"
+            />
+            {tab === "marketplace" && (market?.length ?? 0) > 0 && (
+              <CategoryFilter market={market ?? []} value={category} onChange={setCategory} />
+            )}
+          </div>
+          {tab === "installed" ? (
             <ul className={styles.list} aria-label={tx("Installed plugins")}>
               {installedGroup("installed", "Installed", downloaded)}
               {installedGroup("linked", "Linked for development", linked)}
               {installedGroup("dev", "Project (.openidea/plugins)", dev)}
+              {loaded && shown.length === 0 && (
+                <li className={styles.listEmpty}>
+                  {plugins.length === 0 ? tx("No plugins installed.") : tx("No plugins match.")}
+                </li>
+              )}
+            </ul>
+          ) : (
+            <ul className={styles.list} aria-label={tx("Available plugins")}>
+              {marketError && <li className={clsx(styles.listEmpty, styles.errorText)}>{marketError}</li>}
+              <MarketGroup
+                idPrefix="suggested"
+                collapsed={collapsed.has("suggested")}
+                onToggle={() => toggleGroup("suggested")}
+                title={tx("Suggested for This Project")}
+                entries={groups.suggested}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
+              <MarketGroup
+                idPrefix="featured"
+                collapsed={collapsed.has("featured")}
+                onToggle={() => toggleGroup("featured")}
+                title={tx("Featured")}
+                entries={groups.featured}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
+              <MarketGroup
+                idPrefix="community"
+                collapsed={collapsed.has("community")}
+                onToggle={() => toggleGroup("community")}
+                title={browsing ? tx("All Plugins") : tx("Marketplace")}
+                entries={groups.community}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
+              <MarketGroup
+                idPrefix="examples"
+                collapsed={collapsed.has("examples")}
+                onToggle={() => toggleGroup("examples")}
+                title={tx("Examples")}
+                note={exampleNote()}
+                entries={groups.examples}
+                selectedId={selectedMarket?.id}
+                onSelect={selectMarket}
+              />
+              {catalogShown.length > 0 && (
+                <ListHeader
+                  title="Local"
+                  count={catalogShown.length}
+                  collapsed={collapsed.has("local")}
+                  onToggle={() => toggleGroup("local")}
+                />
+              )}
+              {!collapsed.has("local") &&
+                catalogShown.map((c) => (
+                  <CatalogRow
+                    key={c.id}
+                    entry={c}
+                    selected={c.id === selectedEntry?.id}
+                    onSelect={() => {
+                      setSelectedMarketId(null);
+                      setSelectedCatalogId(c.id);
+                    }}
+                  />
+                ))}
+              {catalog && category === "all" && catalogShown.length === 0 && (
+                <li className={styles.listEmpty}>
+                  {catalog.length === 0 ? tx("No local plugin packages.") : tx("No plugins match.")}
+                </li>
+              )}
+              {catalogError && <li className={clsx(styles.listEmpty, styles.errorText)}>{catalogError}</li>}
             </ul>
           )}
-          <ul className={styles.list} aria-label={tx("Available plugins")}>
-            {marketError && <li className={clsx(styles.listEmpty, styles.errorText)}>{marketError}</li>}
-            <MarketGroup
-              idPrefix="suggested"
-              collapsed={collapsed.has("suggested")}
-              onToggle={() => toggleGroup("suggested")}
-              title={tx("Suggested for This Project")}
-              entries={groups.suggested}
-              selectedId={pane === "marketplace" ? selectedMarket?.id : undefined}
-              onSelect={selectMarket}
-            />
-            <MarketGroup
-              idPrefix="featured"
-              collapsed={collapsed.has("featured")}
-              onToggle={() => toggleGroup("featured")}
-              title={tx("Featured")}
-              entries={groups.featured}
-              selectedId={pane === "marketplace" ? selectedMarket?.id : undefined}
-              onSelect={selectMarket}
-            />
-            <MarketGroup
-              idPrefix="community"
-              collapsed={collapsed.has("community")}
-              onToggle={() => toggleGroup("community")}
-              title={browsing ? tx("All Plugins") : tx("Marketplace")}
-              entries={groups.community}
-              selectedId={pane === "marketplace" ? selectedMarket?.id : undefined}
-              onSelect={selectMarket}
-            />
-            <MarketGroup
-              idPrefix="examples"
-              collapsed={collapsed.has("examples")}
-              onToggle={() => toggleGroup("examples")}
-              title={tx("Examples")}
-              note={exampleNote()}
-              entries={groups.examples}
-              selectedId={pane === "marketplace" ? selectedMarket?.id : undefined}
-              onSelect={selectMarket}
-            />
-            {catalogShown.length > 0 && (
-              <ListHeader
-                title="Local"
-                count={catalogShown.length}
-                collapsed={collapsed.has("local")}
-                onToggle={() => toggleGroup("local")}
-              />
-            )}
-            {!collapsed.has("local") &&
-              catalogShown.map((c) => (
-                <CatalogRow
-                  key={c.id}
-                  entry={c}
-                  selected={pane === "marketplace" && c.id === selectedEntry?.id}
-                  onSelect={() => {
-                    setTab("marketplace");
-                    setSelectedMarketId(null);
-                    setSelectedCatalogId(c.id);
-                  }}
-                />
-              ))}
-            {catalog && category === "all" && catalogShown.length === 0 && (
-              <li className={styles.listEmpty}>
-                {catalog.length === 0 ? tx("No local plugin packages.") : tx("No plugins match.")}
-              </li>
-            )}
-            {catalogError && <li className={clsx(styles.listEmpty, styles.errorText)}>{catalogError}</li>}
-          </ul>
         </div>
 
-        {pane === "installed" ? (
+        {tab === "installed" ? (
           selected ? (
             <InstalledDetails key={selected.id} plugin={selected} />
           ) : (

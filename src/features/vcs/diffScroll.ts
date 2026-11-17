@@ -170,10 +170,135 @@ function loadRatio(fallback = 50): number {
 }
 
 /**
+ * The scroll machinery of a side-by-side diff's panes: added to both editors,
+ * attached to their MergeView, and torn down with the diff.
+ */
+export interface DiffPanes {
+  /** Extensions for both editors. */
+  extension: Extension;
+  attach(mv: MergeView): void;
+  /** Turns synchronized scrolling on (bringing the other pane along) or off. */
+  setSync(on: boolean): void;
+  /** Scrolls one pane, the other following. */
+  scrollTo(side: Side, options: ScrollToOptions): void;
+  destroy(): void;
+}
+
+/**
+ * Scroll synchronization for the padded panes of an aligned side-by-side diff:
+ * MergeView pads the panes so their lines lay out identically, so one `scrollTop`
+ * fits both. Each pane scrolls itself, which keeps its horizontal scrollbar at
+ * the pane's bottom edge — a content-tall scroller would render it at the bottom
+ * of the content, out of reach until the diff is scrolled to its end.
+ */
+export class PaddedPanes implements DiffPanes {
+  readonly extension: Extension = [];
+  private mv: MergeView | null = null;
+  private sync: boolean;
+  private scrolling: Side | null = null;
+  private scrollTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The scroll position a pane was last moved to by the other one, to tell its echo from the user. */
+  private readonly moved: Record<Side, number | null> = { a: null, b: null };
+  private readonly cleanup: (() => void)[] = [];
+
+  constructor(sync: boolean) {
+    this.sync = sync;
+  }
+
+  attach(mv: MergeView) {
+    this.mv = mv;
+    for (const side of ["a", "b"] as const) {
+      const el = this.view(side).scrollDOM;
+      const onScroll = () => this.scrolled(side);
+      el.addEventListener("scroll", onScroll, { passive: true });
+      this.cleanup.push(() => el.removeEventListener("scroll", onScroll));
+    }
+    this.resync();
+  }
+
+  /** Brings the left pane in line with the right one. */
+  resync() {
+    if (this.mv && this.sync) this.follow("b");
+  }
+
+  setSync(on: boolean) {
+    if (on === this.sync) return;
+    this.interruptScroll();
+    this.sync = on;
+    this.resync();
+  }
+
+  scrollTo(side: Side, options: ScrollToOptions) {
+    this.interruptScroll();
+    this.scrolling = this.sync ? side : null;
+    this.releaseScroll();
+    this.view(side).scrollDOM.scrollTo(options);
+  }
+
+  /**
+   * Marks `side` as the source of a layout-driven scroll (a soft-wrap toggle re-anchors it), so the
+   * other pane's delayed reflow follows it instead of being mistaken for a user scroll pulling back.
+   */
+  leadScroll(side: Side) {
+    this.scrolling = this.sync ? side : null;
+    this.releaseScroll();
+  }
+
+  destroy() {
+    clearTimeout(this.scrollTimer);
+    for (const f of this.cleanup) f();
+    this.mv = null;
+  }
+
+  private view(side: Side): EditorView {
+    return side === "a" ? this.mv!.a : this.mv!.b;
+  }
+
+  private scrolled(from: Side) {
+    if (this.scrolling) {
+      // A follower's delayed layout scroll must not pull back the navigation source.
+      this.follow(this.scrolling);
+      this.releaseScroll();
+      return;
+    }
+    const el = this.view(from).scrollDOM;
+    const moved = this.moved[from];
+    const echo = moved !== null && Math.abs(el.scrollTop - moved) <= 1;
+    this.moved[from] = null;
+    if (!echo && this.sync) this.follow(from);
+  }
+
+  private follow(from: Side) {
+    const to: Side = from === "a" ? "b" : "a";
+    const el = this.view(to).scrollDOM;
+    const top = this.view(from).scrollDOM.scrollTop;
+    if (Math.abs(el.scrollTop - top) < 1) return;
+    const before = el.scrollTop;
+    el.scrollTop = top;
+    if (el.scrollTop !== before) this.moved[to] = el.scrollTop;
+  }
+
+  private releaseScroll() {
+    clearTimeout(this.scrollTimer);
+    if (this.scrolling) this.scrollTimer = setTimeout(() => (this.scrolling = null), 150);
+  }
+
+  private interruptScroll() {
+    const side = this.scrolling;
+    this.scrolling = null;
+    clearTimeout(this.scrollTimer);
+    if (side && this.mv) {
+      const el = this.view(side).scrollDOM;
+      el.scrollTo({ top: el.scrollTop, behavior: "instant" });
+    }
+  }
+}
+
+/**
  * Scroll synchronization and the divider for a MergeView whose panes are not
  * padded into alignment. Add `extension` to both editors, then `attach` the view.
  */
-export class UnalignedPanes {
+export class UnalignedPanes implements DiffPanes {
   readonly extension: Extension;
   private mv: MergeView | null = null;
   private readonly divider = document.createElement("div");
