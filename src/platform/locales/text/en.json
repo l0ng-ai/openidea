@@ -2346,7 +2346,7 @@
   "Session references and artifacts": "Session references and artifacts",
   "Copy Link": "Copy Link",
   "Copy Path": "Copy Path",
-  "Add to Message": "Add to Message"
+  "Add to Message": "Add to Message",
   "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.": "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.",
   "Java Agents": "Java Agents",
   "File at a Git revision (read-only).": "File at a Git revision (read-only).",
