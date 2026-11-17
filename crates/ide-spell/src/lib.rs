@@ -101,7 +101,8 @@ impl SpellScope {
 /// At most this many typos are reported per text.
 pub const MAX_TYPOS: usize = 2000;
 
-/// The en_GB entries en_US lacks (`colour`, `behaviour`, `normalise`), in the
+/// The en_GB entries en_US lacks (`colour`, `behaviour`, `normalise`) and the
+/// -ize verbs it lists only as `-ization` / `-ized` (`parallelize`), in the
 /// same affix scheme: either spelling passes.
 const EN_GB_EXTRA: &str = include_str!("dict/en_GB-extra.dic");
 
@@ -544,6 +545,27 @@ mod tests {
             assert!(s.is_correct(ok), "{ok}");
         }
         for bad in ["filess", "contextes", "checkings", "acses"] {
+            assert!(!s.is_correct(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn ize_verbs_whose_derivatives_are_listed() {
+        let s = Speller::default();
+        for ok in [
+            "parallelize",
+            "parallelise",
+            "parallelizes",
+            "parallelizing",
+            "modularize",
+            "virtualize",
+            "virtualised",
+            "decimalize",
+            "underutilize",
+        ] {
+            assert!(s.is_correct(ok), "{ok}");
+        }
+        for bad in ["desireable", "releative", "parallelizee"] {
             assert!(!s.is_correct(bad), "{bad}");
         }
     }
