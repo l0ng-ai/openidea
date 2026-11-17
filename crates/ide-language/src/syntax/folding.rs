@@ -342,21 +342,25 @@ fn comment_folds(comments: &[Comment], out: &mut Vec<FoldRange>) {
 
 fn import_runs(kinds: &KindTable, node: Node, text: &str, out: &mut Vec<FoldRange>) {
     let mut cursor = node.walk();
-    let mut run: Option<(usize, usize)> = None;
+    let mut run: Option<(usize, usize, usize)> = None;
     for child in node.named_children(&mut cursor) {
         if kinds.has(&child, IMPORT) {
             let (s, e) = (child.start_position().row, last_content_row(&child, text));
             run = Some(match run {
-                Some((rs, _)) => (rs, e),
-                None => (s, e),
+                Some((rs, _, count)) => (rs, e, count + 1),
+                None => (s, e, 1),
             });
         } else if kinds.has(&child, COMMENT) {
             continue;
-        } else if let Some((s, e)) = run.take() {
+        } else if let Some((s, e, count)) = run.take()
+            && count > 1
+        {
             push(out, s, e, FoldKind::Imports);
         }
     }
-    if let Some((s, e)) = run {
+    if let Some((s, e, count)) = run
+        && count > 1
+    {
         push(out, s, e, FoldKind::Imports);
     }
 }

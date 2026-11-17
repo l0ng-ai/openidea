@@ -77,6 +77,35 @@ describe("foldsFromRanges", () => {
     ]);
   });
 
+  it("hides the closing line of a multiline import at the end of an import run", () => {
+    const s = EditorState.create({
+      doc: [
+        "import { ZodError } from 'zod'",
+        "import { Library } from './library.js'",
+        "import {",
+        "  creationPromptVersion,",
+        "  generateCreationIntent,",
+        "  validateCreationIntent,",
+        "  validationPromptVersion,",
+        "  type CreationAgentConfig,",
+        "  type CreationIntent,",
+        "  type IntentValidation,",
+        "} from './mastra/agents/creation-assistant.js'",
+        "",
+      ].join("\n"),
+    });
+    expect(foldsFromRanges(s, [{ start_line: 0, end_line: 10, kind: "imports" }])).toEqual([
+      { from: s.doc.line(1).to, to: s.doc.line(11).to, kind: "imports" },
+    ]);
+  });
+
+  it("keeps the closing line of a single multiline import", () => {
+    const s = EditorState.create({ doc: "import {\n  CreationIntent,\n} from './creation-assistant.js'\n" });
+    expect(foldsFromRanges(s, [fold(0, 2)])).toEqual([
+      { from: s.doc.line(1).to, to: s.doc.line(3).from, kind: "region" },
+    ]);
+  });
+
   it("folds a custom region from its start marker through its end marker", () => {
     const s = EditorState.create({
       doc: "class A {\n  //region Fields\n  int a;\n  //endregion\n}\n",

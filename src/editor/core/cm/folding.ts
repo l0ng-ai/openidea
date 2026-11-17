@@ -65,8 +65,8 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
     }
     const start = allmanHeader(state, first);
     const trimmed = end.text.trimStart();
-    // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA.
-    const to = /^[}\])]/.test(trimmed) ? end.from + (end.text.length - trimmed.length) : end.to;
+    // Syntax regions keep their closing delimiter visible; import runs hide the final statement.
+    const to = r.kind !== "imports" && /^[}\])]/.test(trimmed) ? end.from + (end.text.length - trimmed.length) : end.to;
     if (to > start.to) out.push({ from: start.to, to, kind: r.kind });
   }
   return out.sort((a, b) => a.from - b.from || b.to - a.to);

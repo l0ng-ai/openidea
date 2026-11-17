@@ -982,6 +982,17 @@ fn g() {}
 }
 
 #[test]
+fn folding_typescript_import_run_ending_with_multiline_import() {
+    let src = "import { ZodError } from 'zod'\nimport { Library } from './library.js'\nimport {\n  CreationIntent,\n} from './creation-assistant.js'\n";
+    assert!(folds("typescript", src).contains(&(0, 4, FoldKind::Imports)));
+    assert!(folds("typescript", "import {\n  CreationIntent,\n} from './creation-assistant.js'\n").contains(&(
+        0,
+        2,
+        FoldKind::Region
+    )));
+}
+
+#[test]
 fn folding_xml_custom_regions() {
     for (start, end) in [
         ("<!--region要折叠的内容-->", "<!-- endregion -->"),
@@ -1099,7 +1110,7 @@ fn folding_data_and_markup() {
 fn folding_go_imports_and_ruby_ends() {
     assert_eq!(
         folds("go", "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc main() {\n}\n"),
-        vec![(2, 5, FoldKind::Imports), (7, 8, FoldKind::Region)]
+        vec![(2, 5, FoldKind::Region), (7, 8, FoldKind::Region)]
     );
     assert_eq!(
         folds("ruby", "class A\n  def f\n    1\n  end\nend\n"),
