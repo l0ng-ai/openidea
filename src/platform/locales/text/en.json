@@ -2335,5 +2335,7 @@
   "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.": "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.",
   "Appearance settings": "Appearance settings",
   "No such file or folder": "No such file or folder",
-  "Choose a folder": "Choose a folder"
+  "Choose a folder": "Choose a folder",
+  "Nothing to annotate": "Nothing to annotate",
+  "The file has no committed history in Git.": "The file has no committed history in Git."
 }

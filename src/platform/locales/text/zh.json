@@ -8718,5 +8718,7 @@
   "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.": "已开启「针对红绿色觉缺陷调整颜色」，此方案显示的是红绿色觉变体的颜色。",
   "Appearance settings": "外观设置",
   "No such file or folder": "文件或文件夹不存在",
-  "Choose a folder": "请选择文件夹"
+  "Choose a folder": "请选择文件夹",
+  "Nothing to annotate": "没有可注解的内容",
+  "The file has no committed history in Git.": "此文件在 Git 中没有已提交的历史。"
 }
