@@ -5285,6 +5285,29 @@ fn plugin_readonly_fields_and_table_row_extensions_round_trip() {
 }
 
 #[test]
+fn document_changes_reach_plugins_relative_to_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("path-events"));
+    f.run("test.path-events", "count", None).unwrap();
+    let deliver = |path: &str| {
+        let change = ide_plugin::DocumentChanged {
+            path: to_ipc(&f.project.join(path)),
+            base_version: 1,
+            version: 2,
+            changes: Vec::new(),
+        };
+        f.host.post_events(Some("main"), vec![WorkbenchEvent::DocumentChanged(change)]);
+        f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+    };
+    deliver("src/main.rs");
+    assert_eq!(f.run("test.path-events", "document", None).unwrap(), None, "outside the subscribed paths");
+    // Queued with the absolute path, filtered again at delivery, handed over project-relative.
+    deliver("config/app.yaml");
+    assert_eq!(f.run("test.path-events", "document", None).unwrap().as_deref(), Some("config/app.yaml"));
+}
+
+#[test]
 fn path_filtered_events_do_not_wake_idle_plugins_and_recheck_queued_filters() {
     let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
     f.install(&sample("path-events"));
