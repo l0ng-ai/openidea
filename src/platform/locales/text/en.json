@@ -2042,6 +2042,7 @@
   "Enable openidea for this session": "Enable openidea for this session",
   "Agent Config": "Agent Config",
   "Active via {source}": "Active via {source}",
+  "Disabled for this session ({source})": "Disabled for this session ({source})",
   "Import into Global settings to toggle per session and share across agents": "Import into Global settings to toggle per session and share across agents",
   "No matching MCP servers.": "No matching MCP servers.",
   "Changes apply on the next message.": "Changes apply on the next message.",

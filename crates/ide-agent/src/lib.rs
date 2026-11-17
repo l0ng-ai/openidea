@@ -222,11 +222,24 @@ impl Shared {
             if builtin_off { Vec::new() } else { mcp_servers_for(init.mcp_stdio(), &self.paths.project_root) };
         let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
         servers.extend(mcp::acp_mcp_servers(&configured, provider, init, overrides));
-        let mut off = mcp::servers_off(&configured, overrides);
-        if builtin_off {
-            off.push(BUILTIN_SERVER.to_owned());
-        }
+        let off = Self::mcp_off(&configured, provider, overrides);
         McpForSession { servers, off }
+    }
+
+    fn mcp_servers_off_for_session(&self, provider: &str, overrides: &BTreeMap<String, bool>) -> Vec<String> {
+        let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
+        Self::mcp_off(&configured, provider, overrides)
+    }
+
+    fn mcp_off(configured: &[McpServer], provider: &str, overrides: &BTreeMap<String, bool>) -> Vec<String> {
+        let mut off = mcp::servers_off(configured, provider, overrides);
+        if overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false) {
+            off.push(BUILTIN_SERVER.to_owned());
+            off.push(mcp::BUILTIN_MCP_NAME.to_owned());
+            off.sort();
+            off.dedup();
+        }
+        off
     }
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
@@ -1618,6 +1631,26 @@ impl AgentManager {
         Ok(out)
     }
 
+    /// Recycles idle resumable live sessions (or schedules reload after the running turn) when
+    /// global, workspace, or built-in IDE MCP server settings change.
+    pub fn notify_mcp_servers_changed(&self) {
+        let tasks: Vec<Arc<Task>> = self.tasks.read().values().cloned().collect();
+        for task in tasks {
+            let (archived, busy, has_bg) = {
+                let s = task.state.lock();
+                (s.task.status == AgentStatus::Archived, s.busy, !s.background_tasks.is_empty())
+            };
+            if archived {
+                continue;
+            }
+            if busy || has_bg || !task.permissions.lock().is_empty() {
+                task.mcp_reload_pending.store(true, Ordering::Release);
+            } else {
+                task.recycle_resumable_session();
+            }
+        }
+    }
+
     /// Stops every agent (project closed).
     pub fn shutdown(&self) {
         for task in self.tasks.read().values() {
@@ -2218,9 +2251,16 @@ impl Task {
         saved: Option<String>,
     ) -> Result<Live, SessionOpenError> {
         let launch_cwd = cwd.to_path_buf();
-        let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
+        let mut spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
             .await
             .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?;
+        if spec.driver == provider::Driver::Acp && provider::is_copilot_provider(provider_id) {
+            let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
+            for name in self.shared.mcp_servers_off_for_session(provider_id, &mcp_overrides) {
+                spec.args.push("--disable-mcp-server".into());
+                spec.args.push(name);
+            }
+        }
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);

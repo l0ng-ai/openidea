@@ -125,11 +125,11 @@ const discoveredSources: McpExternalSource[] = [
     nativeProvider: "copilot",
     servers: [
       {
-        name: "workiq",
+        name: "playwright",
         transport: "stdio",
         enabled: true,
         command: "npx",
-        args: ["-y", "@microsoft/workiq", "mcp"],
+        args: ["-y", "@playwright/mcp@latest"],
         url: null,
         envKeys: [],
         headerKeys: [],
@@ -290,16 +290,18 @@ test("manages multi-level MCP servers in Settings and per-session overrides via 
   await expect(sessionPopup).toContainText("openidea");
   await expect(sessionPopup).toContainText("postgres-local");
   await expect(sessionPopup).toContainText("github-mcp-server");
-  await expect(sessionPopup).toContainText("workiq");
+  await expect(sessionPopup).toContainText("playwright");
 
-  // Disable `slack-official` for this session only and verify IPC call + `Session` badge.
+  // Disable `slack-official` (Global) and `playwright` (Agent Config) for this session only.
   await sessionPopup.getByRole("switch", { name: "Enable slack-official for this session" }).click();
-  await expect(sessionPopup).toContainText("Session");
+  await sessionPopup.getByRole("switch", { name: "Enable playwright for this session" }).click();
+  await expect(sessionPopup).toContainText("Disabled for this session (GitHub Copilot CLI)");
   const overrideCalls = await ipcCalls(page, "agent_set_mcp_overrides");
-  expect(overrideCalls.at(-1)?.overrides).toEqual({ "slack-official": false });
+  expect(overrideCalls.at(-1)?.overrides).toEqual({ "slack-official": false, playwright: false });
 
   const screenshotDir = process.env.CAPTURE_MCP_SCREENSHOTS;
   if (screenshotDir) {
+    await page.waitForTimeout(250);
     await page.screenshot({ path: `${screenshotDir}/mcp-session-picker.png` });
   }
 

@@ -37,13 +37,21 @@ pub fn apply(state: &AppState) {
     let settings = state.global_settings.effective().mcp_server;
     let mut server = state.mcp.server.lock();
     if !settings.enabled {
-        if let Some(running) = server.take() {
+        let was_running = server.take();
+        let stopped = was_running.is_some();
+        if let Some(running) = was_running {
             running.stop();
         }
         *state.mcp.running_with.lock() = None;
         ide_agent::set_mcp_executable(None);
         state.host.set_mcp_executable(None);
         *state.mcp.error.lock() = None;
+        drop(server);
+        if stopped {
+            for project in state.host.projects() {
+                project.agents.notify_mcp_servers_changed();
+            }
+        }
         return;
     }
     let Ok(address) = settings.address.trim().parse::<IpAddr>() else {
@@ -96,6 +104,10 @@ pub fn apply(state: &AppState) {
             *server = Some(started);
             *state.mcp.running_with.lock() = Some(wanted);
             *state.mcp.error.lock() = None;
+            drop(server);
+            for project in state.host.projects() {
+                project.agents.notify_mcp_servers_changed();
+            }
         }
         Err(e) => {
             tracing::warn!("MCP server: {e}");
