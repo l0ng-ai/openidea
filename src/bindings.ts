@@ -12,6 +12,8 @@ export const commands = {
 	 *  local checkout, uncommitted; files the checkout changed itself are left alone and reported.
 	 */
 	agentAcceptChanges: (task: string, paths: string[] | null) => typedError<AgentAcceptOutcome, IdeError>(__TAURI_INVOKE("agent_accept_changes", { task, paths })),
+	/**  Answers a non-blocking question, without cancelling the current turn. */
+	agentAnswerQuestion: (task: string, question: string, answer: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_answer_question", { task, question, answer })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
 	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
@@ -2130,7 +2132,11 @@ sentMs?: number | null;
 /**  When the turn it started ended; `None` while it runs or when it was cut off. */
 doneMs?: number | null; 
 /**  Sent into a running turn rather than starting one. */
-steered?: boolean } | { type: "agent"; text: string } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+steered?: boolean } | { type: "agent"; text: string } | 
+/**  A question that can be answered while the agent keeps working, or after the turn ends. */
+{ type: "question"; id: string; title: string; questions: AgentQuestion[]; 
+/**  The submitted answers, or `Skipped`; `None` while unanswered. */
+chosen: string | null } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
 /**  Text the tool reported (command output…), truncated. */

@@ -9,7 +9,22 @@ import {
   quoteText,
   symbolRef,
   withQuote,
+  userMessageText,
 } from "./conversation";
+
+it("shows async replies as readable question/answer pairs without losing malformed user text", () => {
+  const wire = `<send_user_message_question_reply>\n${JSON.stringify([
+    { questionItemId: "q1", question: "Which?", answer: "One" },
+    { questionItemId: "q2", question: "Why?", answer: "Because" },
+  ])}\n</send_user_message_question_reply>`;
+  expect(userMessageText(wire)).toBe("Which?\nOne\n\nWhy?\nBecause");
+  for (const text of [
+    "normal",
+    "<send_user_message_question_reply>bad</send_user_message_question_reply>",
+    "<send_user_message_question_reply>[{}]</send_user_message_question_reply>",
+  ])
+    expect(userMessageText(text)).toBe(text);
+});
 
 describe("quoting", () => {
   it("quotes each line and leaves a line to type on", () => {

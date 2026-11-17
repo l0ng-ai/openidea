@@ -453,6 +453,14 @@ pub enum AgentEntry {
     Agent {
         text: String,
     },
+    /// A question that can be answered while the agent keeps working, or after the turn ends.
+    Question {
+        id: String,
+        title: String,
+        questions: Vec<AgentQuestion>,
+        /// The submitted answers, or `Skipped`; `None` while unanswered.
+        chosen: Option<String>,
+    },
     Thought {
         text: String,
     },

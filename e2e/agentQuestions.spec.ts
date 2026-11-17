@@ -44,6 +44,91 @@ const questions: AgentQuestion[] = [
   },
 ];
 
+for (const status of ["running", "ready"] as const) {
+  test(`answers an asynchronous Codex question when ${status}`, async ({ workbench: page }) => {
+    const key = JSON.stringify(["request_user_input_async", "call-1", 0]);
+    await page.evaluate(
+      async ({ task, status, key }) => {
+        const storePath = "/src/features/agents/store.ts";
+        const ipcPath = "/src/platform/ipc.ts";
+        const store = await import(storePath);
+        (await import(ipcPath)).commands.agentAnswerQuestion = async (
+          id: string,
+          question: string,
+          answer: string | null,
+        ) => {
+          document.documentElement.dataset.asyncAnswer = JSON.stringify({ id, question, answer });
+          const entries = store.useAgents.getState().entries.get(id)!;
+          store.useAgents.setState({
+            entries: new Map([
+              [
+                id,
+                entries.map((entry) =>
+                  entry.type === "question" ? { ...entry, chosen: "Read latest content" } : entry,
+                ),
+              ],
+            ]),
+          });
+          return { status: "ok", data: null };
+        };
+        store.useAgents.setState({
+          loaded: true,
+          tasks: new Map([[task.id, { ...task, status }]]),
+          entries: new Map([
+            [
+              task.id,
+              [
+                { type: "agent", text: "I can keep working while you decide." },
+                {
+                  type: "question",
+                  id: "call-1",
+                  title: "Should Retry read the latest content?",
+                  chosen: null,
+                  questions: [
+                    {
+                      answerKey: key,
+                      header: "",
+                      question: "Should Retry read the latest content?",
+                      multiSelect: false,
+                      options: [
+                        { label: "Read latest content (Recommended)", description: "", preview: null },
+                        { label: "Keep the original snapshot", description: "", preview: null },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            ],
+          ]),
+        });
+        store.openTaskInEditorLocation(task.id);
+      },
+      { task, status, key },
+    );
+    const card = page.getByRole("form", { name: "Should Retry read the latest content?" });
+    await expect(card).toBeVisible();
+    await card.getByRole("radio", { name: /^Read latest content/ }).check();
+    if (status === "running") {
+      await page.evaluate(async (id) => {
+        const storePath = "/src/features/agents/store.ts";
+        const { useAgents } = await import(storePath);
+        useAgents.setState((s) => ({ tasks: new Map(s.tasks).set(id, { ...s.tasks.get(id)!, status: "ready" }) }));
+      }, task.id);
+      await expect(card.getByRole("radio", { name: /^Read latest content/ })).toBeChecked();
+    }
+    await card.getByRole("button", { name: "Submit", exact: true }).click();
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-async-answer",
+      JSON.stringify({
+        id: task.id,
+        question: "call-1",
+        answer: JSON.stringify({ [key]: ["Read latest content (Recommended)"] }),
+      }),
+    );
+    await expect(card).toHaveCount(0);
+  });
+}
+
 for (const theme of ["dark", "light"] as const) {
   for (const width of [760, 1400]) {
     for (const count of [1, 3]) {
