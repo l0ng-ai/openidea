@@ -208,7 +208,8 @@ export function sourceLink(href: string): { path: string; line: number; col: num
     const path = decodeURIComponent(url.pathname);
     // Documentation is text someone else wrote.
     if (onOtherShare(path, useProject.getState().project?.root ?? "")) return null;
-    const m = /^#?L?(\d+)(?:[,:](\d+))?/.exec(url.hash.slice(1));
+    // typescript-language-server encodes the comma (`#L20%2C3`).
+    const m = /^#?L?(\d+)(?:[,:](\d+))?/.exec(url.hash.slice(1).replace(/%2C/gi, ","));
     return {
       path,
       line: m ? Math.max(0, Number(m[1]) - 1) : 0,
