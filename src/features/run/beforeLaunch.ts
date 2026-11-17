@@ -13,6 +13,7 @@ import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications, toolWindowService, useContributions } from "@/workbench/contributions";
 import { externalToolConfig } from "./externalTools";
+import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import { startRun, useRun } from "./store";
 
 export const BUILD_ACTION = "build.buildProject";
@@ -56,8 +57,10 @@ export function taskLabel(task: BeforeLaunchTask, configs: readonly RunConfig[] 
       return `External tool '${workflowSettings().externalTools.find((t) => t.id === target)?.name ?? target}'`;
     case "command":
       return target ? `Run '${target}'` : "Run shell command";
-    case "toolWindow":
-      return `Activate '${useContributions.getState().toolWindows.get(target)?.title ?? target}' tool window`;
+    case "toolWindow": {
+      const tw = useContributions.getState().toolWindows.get(target);
+      return `Activate '${tw ? toolWindowTitle(tw) : target}' tool window`;
+    }
     default:
       return task.kind;
   }
