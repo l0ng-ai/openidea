@@ -1,11 +1,9 @@
 //! Web browsers: the built-in server's URLs and launching browsers.
 
-use super::coverage::blocking;
-use crate::state::AppState;
 use ide_command::desktop_command;
-use ide_core::{IdeResult, IpcPath};
+use ide_core::IdeResult;
+use ide_host::ops::coverage::blocking;
 use ide_web::Browser;
-use tauri::{State, Window};
 
 /// The browsers installed on this machine.
 #[desktop_command(trust = always)]
@@ -13,13 +11,6 @@ use tauri::{State, Window};
 #[specta::specta]
 pub async fn web_browsers() -> IdeResult<Vec<Browser>> {
     blocking(|| Ok(ide_web::installed())).await
-}
-
-/// The built-in server's URL for `path` (started on first use).
-#[tauri::command]
-#[specta::specta]
-pub async fn web_url(window: Window, state: State<'_, AppState>, path: IpcPath) -> IdeResult<String> {
-    ide_host::ops::web::web_url(&state.host, window.label(), path).await
 }
 
 /// Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open.

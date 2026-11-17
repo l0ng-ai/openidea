@@ -1,7 +1,7 @@
 //! LightEdit: a window editing loose files without a project.
 
 use ide_core::{ChangeSet, NullSink, TextChange};
-use ide_host::{Host, HostConfig, ops};
+use ide_host::{Host, HostConfig, catalogue::TrustClass, ops};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -106,9 +106,10 @@ async fn light_windows_stay_restricted_when_folder_trust_changes() {
     host.set_project_trust(&root, true, true).await.unwrap();
     assert!(!light.is_trusted());
     assert!(!trusted_folder.is_trusted());
-    for command in ["sdk_detect", "sdk_locate_tools", "notebook_execute", "notebook_restart", "run_start"] {
-        assert!(host.authorize_command("main", command).is_err(), "{command}");
+    for class in [TrustClass::OutsideRestricted, TrustClass::Trusted] {
+        assert!(host.authorize("main", class).is_err(), "{class:?}");
     }
+    assert!(host.authorize("main", TrustClass::Always).is_ok());
 
     let doc = ops::doc::doc_open(&host, "main", other.join("two.js")).await.unwrap();
     let error = ops::lsp::lsp_format(

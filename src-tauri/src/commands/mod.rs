@@ -1,4 +1,5 @@
-//! IPC surface. Each submodule owns one domain; `builder()` registers them all.
+//! IPC surface: the desktop commands, by domain, and the adapters derived for the project-host
+//! commands `ide-host` declares; `builder()` registers them all.
 //!
 //! Conventions:
 //! * every command returns `IdeResult<T>` (rejects with `IdeError` in JS);
@@ -7,49 +8,28 @@
 //!   UI-allocated `RequestId` and are cancelled via `cancel_request`.
 
 pub mod agent;
-pub mod analysis;
 pub mod android;
 pub mod app;
-pub mod build;
-pub mod bytes;
 pub mod caches;
 pub mod clipboard;
-pub mod coverage;
 pub mod db;
 pub mod debug;
-pub mod dependencies;
-pub mod deploy;
 pub mod doc;
 pub mod docker;
-pub mod env;
 pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
-pub mod heap;
-pub mod history;
 pub mod hotkeys;
 pub mod http;
-pub mod java;
 pub mod lsp;
 pub mod mcp;
 pub mod nav;
-pub mod notebook;
 pub mod notification;
 pub mod perf;
 pub mod plugin;
 pub mod profiler;
-pub mod refactor;
-pub mod run;
-pub mod scaffold;
-pub mod sdk;
-pub mod search;
-pub mod spell;
 pub mod ssh;
-pub mod stream_trace;
-pub mod syntax;
-pub mod term;
-pub mod tools;
 pub mod vcs;
 pub mod web;
 pub mod window;
@@ -58,7 +38,18 @@ pub mod window_group;
 pub mod workspace;
 pub mod wsl;
 
-use tauri_specta::collect_commands;
+use crate::remote_dev;
+use ide_host::catalogue::{Command, Placement, TrustClass};
+use std::sync::LazyLock;
+
+// Desktop bodies of project-host commands (`#[command(desktop_body = …)]`), which their derived
+// adapters call.
+use app::{
+    close_project, open_project, project_current, project_trust_remove_location, project_trust_set, settings_get,
+    settings_removed_theme, settings_set,
+};
+use doc::doc_edit;
+use plugin::plugin_event_kinds;
 
 /// A Tauri channel as the shared implementation's streaming argument.
 pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
@@ -69,730 +60,204 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
     })
 }
 
+/// The Tauri adapter of one project-host command, from the signature its `#[command]` hands over:
+/// it calls the `ide-host` implementation, or the desktop body of the same name in this module.
+macro_rules! adapter {
+    (@ty plain [$($p:tt)*] $m:ident $a:ident) => { $($p)*::$m::$a };
+    (@ty channel [$($p:tt)*] $m:ident $a:ident) => { tauri::ipc::Channel<$($p)*::$m::$a> };
+    (@ret [$($p:tt)*] $m:ident $rt:ident) => { $($p)*::$m::$rt };
+    (@fn [$($p:tt)*] $name:ident) => { $($p)*::$name };
+    (@val $w:ident (inj host)) => { &tauri::Manager::state::<$crate::state::AppState>(&$w).host };
+    (@val $w:ident (inj window)) => { $w.label() };
+    (@val $w:ident (inj plugins)) => { &tauri::Manager::state::<$crate::state::AppState>(&$w).plugins };
+    (@val $w:ident (arg plain $x:ident)) => { $x };
+    (@val $w:ident (arg channel $x:ident)) => { $crate::commands::sender($x) };
+    (@command [$($p:tt)*] $name:ident $m:ident) => {
+        #[doc(hidden)]
+        pub mod $name {
+            pub const COMMAND: ide_host::catalogue::Command = $($p)*::$m::COMMAND;
+        }
+    };
+    ({ $pp:tt $dom:ident } { name: $name:ident, module: $m:ident, docs: [$(#[$doc:meta])*], run: async,
+       result: $r:ident [$($rt:ident)?], body: derived, args: [$(($x:ident $k:ident $a:ident))*], call: [$($c:tt)*], }) => {
+        $(#[$doc])*
+        #[tauri::command]
+        #[specta::specta]
+        #[allow(clippy::too_many_arguments, unused_variables)] // `window`: a command may inject nothing
+        pub async fn $name(
+            window: tauri::Window,
+            $($x: $crate::commands::adapter!(@ty $k $pp $m $a)),*
+        ) $(-> $crate::commands::adapter!(@ret $pp $m $rt))? {
+            $crate::commands::adapter!(@fn $pp $name)($($crate::commands::adapter!(@val window $c)),*).await
+        }
+        $crate::commands::adapter!(@command $pp $name $m);
+    };
+    ({ $pp:tt $dom:ident } { name: $name:ident, module: $m:ident, docs: [$(#[$doc:meta])*], run: sync,
+       result: $r:ident [$($rt:ident)?], body: derived, args: [$(($x:ident $k:ident $a:ident))*], call: [$($c:tt)*], }) => {
+        $(#[$doc])*
+        #[tauri::command]
+        #[specta::specta]
+        #[allow(clippy::too_many_arguments, unused_variables)] // `window`: a command may inject nothing
+        pub fn $name(
+            window: tauri::Window,
+            $($x: $crate::commands::adapter!(@ty $k $pp $m $a)),*
+        ) $(-> $crate::commands::adapter!(@ret $pp $m $rt))? {
+            $crate::commands::adapter!(@fn $pp $name)($($crate::commands::adapter!(@val window $c)),*)
+        }
+        $crate::commands::adapter!(@command $pp $name $m);
+    };
+    ({ $pp:tt $dom:ident } { name: $name:ident, module: $m:ident, docs: [$(#[$doc:meta])*], run: async,
+       result: $r:ident [$($rt:ident)?], body: desktop, args: [$(($x:ident $k:ident $a:ident))*], call: $c:tt, }) => {
+        $(#[$doc])*
+        #[tauri::command]
+        #[specta::specta]
+        pub async fn $name(
+            window: tauri::Window,
+            $($x: $crate::commands::adapter!(@ty $k $pp $m $a)),*
+        ) $(-> $crate::commands::adapter!(@ret $pp $m $rt))? {
+            $crate::commands::$name(window, $($x),*).await
+        }
+        $crate::commands::adapter!(@command $pp $name $m);
+    };
+    ({ $pp:tt $dom:ident } { name: $name:ident, module: $m:ident, docs: [$(#[$doc:meta])*], run: sync,
+       result: $r:ident [$($rt:ident)?], body: desktop, args: [$(($x:ident $k:ident $a:ident))*], call: $c:tt, }) => {
+        $(#[$doc])*
+        #[tauri::command]
+        #[specta::specta]
+        pub fn $name(
+            window: tauri::Window,
+            $($x: $crate::commands::adapter!(@ty $k $pp $m $a)),*
+        ) $(-> $crate::commands::adapter!(@ret $pp $m $rt))? {
+            $crate::commands::$name(window, $($x),*)
+        }
+        $crate::commands::adapter!(@command $pp $name $m);
+    };
+    ({ $pp:tt $dom:ident } { name: $name:ident, module: $m:ident, docs: [$(#[$doc:meta])*], run: spawn,
+       result: $r:ident [$($rt:ident)?], body: desktop, args: [$(($x:ident $k:ident $a:ident))*], call: $c:tt, }) => {
+        $(#[$doc])*
+        #[tauri::command(async)]
+        #[specta::specta]
+        pub fn $name(
+            window: tauri::Window,
+            $($x: $crate::commands::adapter!(@ty $k $pp $m $a)),*
+        ) $(-> $crate::commands::adapter!(@ret $pp $m $rt))? {
+            $crate::commands::$name(window, $($x),*)
+        }
+        $crate::commands::adapter!(@command $pp $name $m);
+    };
+}
+pub(crate) use adapter;
+
+/// One module of adapters per `ide-host` domain, from the list `__domains!` hands over.
+macro_rules! derive_domains {
+    ({} [$(($dom:ident $list:ident { $($p:tt)* }))*]) => {
+        $(
+            pub mod $dom {
+                ide_host::$list!(@each [$crate::commands::adapter] { [$($p)*] $dom });
+            }
+        )*
+    };
+}
+pub(crate) use derive_domains;
+
+/// The derived adapters of every project-host command.
+pub mod derived {
+    ide_host::__domains!(@names [crate::commands::derive_domains] {});
+}
+
+/// `command_paths!(@go [] desktop app; …; host; raw [fonts::user_font_data])`: every command's
+/// path, gathered domain by domain (`host` is every `ide-host` domain), then `sorted_catalogue!`.
+macro_rules! command_paths {
+    (@go [$($done:tt)*] desktop $m:ident; $($rest:tt)*) => {
+        $m::__desktop_domain!(@names [$crate::commands::command_paths] { @named [$($done)*] [$m] [$($rest)*] })
+    };
+    (@go [$($done:tt)*] host; $($rest:tt)*) => {
+        ide_host::__domains!(@names [$crate::commands::command_paths] { @domains [$($done)*] [$($rest)*] })
+    };
+    (@go [$($done:tt)*] domain $list:ident $dom:ident; $($rest:tt)*) => {
+        ide_host::$list!(@names [$crate::commands::command_paths] { @named [$($done)*] [derived::$dom] [$($rest)*] })
+    };
+    (@go [$([$($seg:ident)::+] $n:ident,)*] raw [$($raw:path),*]) => {
+        ide_command::sorted_catalogue!(bindings: $($($seg)::+::$n),*; raw: $($raw),*)
+    };
+    ({ @named [$($done:tt)*] $m:tt [$($rest:tt)*] } [$($n:ident)*]) => {
+        $crate::commands::command_paths!(@go [$($done)* $($m $n,)*] $($rest)*)
+    };
+    ({ @domains [$($done:tt)*] [$($rest:tt)*] } [$(($dom:ident $list:ident { $($p:tt)* }))*]) => {
+        $crate::commands::command_paths!(@go [$($done)*] $(domain $list $dom;)* $($rest)*)
+    };
+}
+pub(crate) use command_paths;
+
+/// Every command, sorted by name: the commands in the bindings, and each command's declaration.
+fn catalogue() -> (tauri_specta::Commands<tauri::Wry>, Vec<Command>) {
+    let (commands, declarations) = command_paths!(@go []
+        desktop agent;
+        desktop android;
+        desktop app;
+        desktop caches;
+        desktop clipboard;
+        desktop db;
+        desktop debug;
+        desktop docker;
+        desktop file_dialog;
+        desktop fonts;
+        desktop fs;
+        desktop github;
+        desktop hotkeys;
+        desktop http;
+        desktop lsp;
+        desktop mcp;
+        desktop nav;
+        desktop notification;
+        desktop perf;
+        desktop plugin;
+        desktop profiler;
+        desktop remote_dev;
+        desktop ssh;
+        desktop vcs;
+        desktop web;
+        desktop window;
+        desktop window_drag;
+        desktop window_group;
+        desktop workspace;
+        desktop wsl;
+        host;
+        // Its raw response isn't a JSON type: `lib.rs` registers it outside the bindings.
+        raw [fonts::user_font_data]
+    );
+    (commands, declarations.to_vec())
+}
+
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
-    tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
-        agent::agent_accept_changes,
-        agent::agent_archive,
-        agent::agent_base_text,
-        agent::agent_cancel,
-        agent::agent_changes,
-        agent::agent_commands,
-        agent::agent_create,
-        agent::agent_custom_import,
-        agent::agent_custom_remove,
-        agent::agent_custom_save,
-        agent::agent_delete,
-        agent::agent_entries,
-        agent::agent_external_sessions,
-        agent::agent_fork,
-        agent::agent_grouped_changes,
-        agent::agent_import_session,
-        agent::agent_mcp_discover_sources,
-        agent::agent_mcp_import,
-        agent::agent_mcp_import_selected,
-        agent::agent_mcp_list,
-        agent::agent_mcp_remove,
-        agent::agent_mcp_save,
-        agent::agent_mcp_save_json,
-        agent::agent_mcp_set_enabled,
-        agent::agent_mcp_test,
-        agent::agent_probe,
-        agent::agent_prompt,
-        agent::agent_providers,
-        agent::agent_refresh_models,
-        agent::agent_registry_install,
-        agent::agent_registry_list,
-        agent::agent_registry_remove,
-        agent::agent_rename,
-        agent::agent_respond,
-        agent::agent_rollback,
-        agent::agent_rollback_changes,
-        agent::agent_send_queued_now,
-        agent::agent_set_command,
-        agent::agent_set_config,
-        agent::agent_set_env,
-        agent::agent_set_mcp_overrides,
-        agent::agent_stop_background,
-        agent::agent_subscribe,
-        agent::agent_unarchive,
-        agent::agent_unqueue,
-        analysis::analysis_locate_duplicates,
-        android::android_devices,
-        android::android_logcat,
-        window::app_build_info,
-        window::app_cancel_quit,
-        window::app_check_update,
-        window::app_cli_install,
-        window::app_cli_uninstall,
-        app::app_info,
-        window::app_install_update,
-        window::app_log_location,
-        perf::app_metrics,
-        window::app_quit,
-        window::app_release_notes,
-        caches::app_restart,
-        window::app_update_announcement,
-        window::app_update_status,
-        window::app_update_window_ready,
-        lsp::apply_workspace_edit,
-        build::build_compile_file,
-        build::build_model,
-        build::build_run,
-        build::build_sync,
-        caches::caches_local_data_info,
-        caches::caches_schedule_invalidation,
-        caches::caches_set_local_data_dir,
-        app::cancel_request,
-        app::cancel_task,
-        perf::clear_caches,
-        clipboard::clipboard_file_list,
-        clipboard::clipboard_has_files,
-        clipboard::clipboard_has_image,
-        clipboard::clipboard_image,
-        clipboard::clipboard_set_file_list,
-        clipboard::clipboard_text,
-        clipboard::clipboard_write_text,
-        app::close_project,
-        coverage::coverage_collect,
-        coverage::coverage_import,
-        coverage::coverage_prepare,
-        nav::cucumber_sources,
-        db::db_apply_edits,
-        db::db_completion,
-        db::db_connect,
-        db::db_connected,
-        db::db_console_path,
-        db::db_consoles,
-        db::db_database_catalog,
-        db::db_databases,
-        db::db_ddl,
-        db::db_disconnect,
-        db::db_dump_kind,
-        db::db_execute,
-        db::db_explain,
-        db::db_export_file,
-        db::db_finish_transaction,
-        db::db_history,
-        db::db_object_ddl,
-        db::db_remove_history,
-        db::db_retain_catalog,
-        db::db_run_tool,
-        db::db_save_sources,
-        db::db_saved_catalog,
-        db::db_schema_objects,
-        db::db_schemas,
-        db::db_server_version,
-        db::db_session_context,
-        db::db_set_manual_commit,
-        db::db_set_password,
-        db::db_set_ssh_secret,
-        db::db_sources,
-        db::db_statements,
-        db::db_table_details,
-        db::db_table_page,
-        db::db_tables,
-        db::db_test,
-        db::db_test_tunnel,
-        db::db_tool_installs,
-        db::db_tool_preview,
-        db::db_tool_version,
-        db::db_trust_ssh_host,
-        debug::debug_attachable_processes,
-        debug::debug_breakpoint_states,
-        debug::debug_capabilities,
-        debug::debug_completions,
-        debug::debug_data_breakpoint_info,
-        debug::debug_evaluate,
-        debug::debug_evaluate_in,
-        debug::debug_exception_filters,
-        debug::debug_force_step_over,
-        debug::debug_free_port,
-        heap::debug_heap_capture,
-        heap::debug_heap_classes,
-        heap::debug_heap_close,
-        heap::debug_heap_compare,
-        heap::debug_heap_dominators,
-        heap::debug_heap_open,
-        heap::debug_heap_path,
-        heap::debug_heap_save,
-        debug::debug_hot_reload,
-        debug::debug_hot_restart,
-        debug::debug_js_custom_breakpoints,
-        debug::debug_js_response_body,
-        debug::debug_js_response_overrides,
-        debug::debug_js_start_profile,
-        debug::debug_js_stop_profile,
-        debug::debug_jvm_memory_classes,
-        debug::debug_jvm_memory_fields,
-        debug::debug_jvm_memory_instances,
-        debug::debug_jvm_memory_referrers,
-        debug::debug_listen_for_jvm,
-        debug::debug_pause,
-        debug::debug_redefine_classes,
-        debug::debug_restart_frame,
-        debug::debug_resume,
-        debug::debug_run_to,
-        debug::debug_scopes,
-        debug::debug_send_input,
-        debug::debug_sessions,
-        debug::debug_set_breakpoints,
-        debug::debug_set_data_breakpoints,
-        debug::debug_set_exception_breakpoints,
-        debug::debug_set_function_breakpoints,
-        debug::debug_set_variable,
-        debug::debug_stack_trace,
-        debug::debug_start,
-        debug::debug_step,
-        debug::debug_step_in_target,
-        debug::debug_step_in_targets,
-        debug::debug_stop,
-        stream_trace::debug_stream_chains,
-        stream_trace::debug_stream_trace,
-        stream_trace::debug_stream_trace_abort,
-        debug::debug_threads,
-        debug::debug_unity_processes,
-        debug::debug_variables,
-        dependencies::dependency_versions,
-        deploy::deploy_compare,
-        deploy::deploy_coverage,
-        deploy::deploy_delete_remote,
-        deploy::deploy_download,
-        deploy::deploy_info,
-        deploy::deploy_server_root,
-        deploy::deploy_sync,
-        deploy::deploy_test_connection,
-        deploy::deploy_upload,
-        vcs::diff_external_tool,
-        doc::doc_close,
-        doc::doc_edit,
-        doc::doc_folding,
-        doc::doc_highlights,
-        doc::doc_language,
-        doc::doc_open,
-        doc::doc_open_untitled,
-        doc::doc_open_virtual,
-        doc::doc_outline,
-        doc::doc_python_facts,
-        doc::doc_save,
-        doc::doc_save_all,
-        doc::doc_save_as,
-        doc::doc_selection_ranges,
-        doc::doc_set_bom,
-        doc::doc_set_encoding,
-        doc::doc_set_line_ending,
-        doc::doc_snapshot,
-        doc::doc_sync_from_disk,
-        docker::docker_compose_op,
-        docker::docker_container_op,
-        docker::docker_container_stats,
-        docker::docker_container_top,
-        docker::docker_events,
-        docker::docker_image_history,
-        docker::docker_inspect,
-        docker::docker_logs,
-        docker::docker_prune,
-        docker::docker_pull,
-        docker::docker_registry_login,
-        docker::docker_remove,
-        docker::docker_run_env,
-        docker::docker_save_settings,
-        docker::docker_set_registry_password,
-        docker::docker_settings,
-        docker::docker_snapshot,
-        perf::end_process,
-        env::env_reload,
-        file_dialog::file_dialog_needs_gtk,
-        nav::find_dirs,
-        nav::find_files,
-        nav::find_files_named,
-        nav::find_symbols,
-        nav::find_symbols_named,
-        fs::fs_compare_directories,
-        fs::fs_copy,
-        fs::fs_copy_merge,
-        fs::fs_create_dir,
-        fs::fs_create_file,
-        fs::fs_create_file_bytes,
-        fs::fs_delete,
-        fs::fs_entry_kind,
-        fs::fs_open_with_system,
-        bytes::fs_probe,
-        fs::fs_read_dir,
-        bytes::fs_read_image,
-        bytes::fs_read_range,
-        fs::fs_read_text,
-        fs::fs_rename,
-        nav::fs_resolve_reference,
-        fs::fs_set_writable,
-        github::gh_account_repos,
-        github::gh_api,
-        github::gh_availability,
-        github::gh_pr_checkout,
-        github::gh_pr_comment,
-        github::gh_pr_create,
-        github::gh_pr_list,
-        github::gh_pr_prepare_diff,
-        github::gh_pr_review,
-        github::gh_pr_review_comments,
-        github::gh_pr_view,
-        ssh::git_credential_forget,
-        ssh::git_credentials,
-        build::gradle_dependencies,
-        build::gradle_link_projects,
-        build::gradle_published_catalog,
-        build::gradle_unlink_projects,
-        file_dialog::gtk_pick_paths,
-        doc::history_content,
-        doc::history_list,
-        history::history_list_dir,
-        history::history_put_label,
-        history::history_restore,
-        http::http_curl,
-        http::http_environment_file,
-        http::http_environments,
-        http::http_execute,
-        http::http_from_curl,
-        http::http_history,
-        http::http_history_clear,
-        http::http_history_get,
-        http::http_requests,
-        http::http_variable_definitions,
-        nav::index_file_extensions,
-        nav::index_status,
-        analysis::inspect_code,
-        java::java_build_workspace,
-        java::java_debug_server,
-        java::java_resolve_launch,
-        tools::jdk_download,
-        tools::jdk_download_location,
-        tools::jdk_download_releases,
-        tools::jdk_download_vendors,
-        tools::jdtls_required_java,
-        syntax::jvm_file_presentations,
-        app::languages,
-        app::light_edit_open,
-        app::light_edit_open_untitled,
-        app::log_frontend,
-        lsp::lsp_apply_code_action,
-        lsp::lsp_call_hierarchy,
-        lsp::lsp_can_download_sources,
-        lsp::lsp_change_signature,
-        lsp::lsp_code_action_query,
-        lsp::lsp_code_actions,
-        lsp::lsp_code_lens,
-        lsp::lsp_completion,
-        lsp::lsp_document_highlights,
-        lsp::lsp_document_links,
-        lsp::lsp_execute_code_action,
-        lsp::lsp_execute_command,
-        lsp::lsp_extract_interface,
-        lsp::lsp_extract_interface_info,
-        lsp::lsp_format,
-        lsp::lsp_goto,
-        lsp::lsp_goto_implementation,
-        lsp::lsp_hierarchy_members,
-        lsp::lsp_hierarchy_refactor,
-        lsp::lsp_hover,
-        lsp::lsp_implementation_locations,
-        lsp::lsp_implementations,
-        lsp::lsp_inlay_hints,
-        lsp::lsp_inline_completion,
-        lsp::lsp_java_move,
-        lsp::lsp_java_move_destinations,
-        lsp::lsp_java_source_types,
-        lsp::lsp_library_sources,
-        lsp::lsp_prepare_rename,
-        lsp::lsp_prepare_type_hierarchy,
-        lsp::lsp_references,
-        lsp::lsp_rename,
-        lsp::lsp_resend_diagnostics,
-        lsp::lsp_resolve_class_file,
-        lsp::lsp_resolve_code_action,
-        lsp::lsp_resolve_command,
-        lsp::lsp_resolve_completion,
-        lsp::lsp_restart,
-        lsp::lsp_restart_named,
-        lsp::lsp_semantic_tokens,
-        lsp::lsp_servers,
-        lsp::lsp_signature_help,
-        lsp::lsp_signature_info,
-        lsp::lsp_type_hierarchy,
-        lsp::lsp_virtual_document,
-        lsp::lsp_workspace_symbols,
-        nav::mark_recent,
-        build::maven_dependency_completion,
-        build::maven_dependency_declaration,
-        build::maven_exclude_dependency,
-        build::maven_goto_declaration,
-        mcp::mcp_agent_run_closed,
-        mcp::mcp_regenerate_token,
-        mcp::mcp_report_problems,
-        mcp::mcp_respond,
-        mcp::mcp_server_status,
-        mcp::mcp_set_focused_editor,
-        mcp::mcp_set_open_editors,
-        mcp::mcp_ui_ready,
-        window::menu_configure,
-        window::menu_model,
-        window::menu_refresh,
-        window::menu_set_disabled,
-        nav::nav_index_definitions,
-        nav::nav_inheritance,
-        nav::nav_resolve_module,
-        notebook::notebook_cell_docs,
-        notebook::notebook_close,
-        notebook::notebook_edit,
-        notebook::notebook_execute,
-        notebook::notebook_get,
-        notebook::notebook_interrupt,
-        notebook::notebook_open,
-        notebook::notebook_redo,
-        notebook::notebook_reload,
-        notebook::notebook_restart,
-        notebook::notebook_save,
-        notebook::notebook_undo,
-        app::open_project,
-        nav::path_completions,
-        plugin::plugin_activation_event,
-        plugin::plugin_answer_command,
-        plugin::plugin_answer_commit,
-        plugin::plugin_answer_prompt,
-        plugin::plugin_answer_run_target,
-        plugin::plugin_assets,
-        plugin::plugin_cancel_task,
-        plugin::plugin_catalog,
-        plugin::plugin_choose_program,
-        lsp::plugin_color_presentations,
-        plugin::plugin_commit_checks,
-        plugin::plugin_content_tab_action,
-        plugin::plugin_context_keys,
-        plugin::plugin_debug_attach_target,
-        plugin::plugin_decoration_sets,
-        plugin::plugin_endpoints,
-        plugin::plugin_event_kinds,
-        plugin::plugin_finish_operation,
-        lsp::plugin_formatters,
-        plugin::plugin_grant,
-        plugin::plugin_install_dir,
-        plugin::plugin_installed_intellij_themes,
-        lsp::plugin_language_visuals,
-        plugin::plugin_line_markers,
-        plugin::plugin_link,
-        plugin::plugin_list,
-        plugin::plugin_log_tab_spawn,
-        plugin::plugin_market,
-        plugin::plugin_market_download,
-        plugin::plugin_market_url,
-        plugin::plugin_navigation_files,
-        plugin::plugin_navigation_goto,
-        plugin::plugin_navigation_index,
-        plugin::plugin_navigation_invalidate,
-        plugin::plugin_navigation_markers,
-        plugin::plugin_parse_test_results,
-        plugin::plugin_post_events,
-        plugin::plugin_prepare_debug_run,
-        plugin::plugin_preview_install,
-        plugin::plugin_program,
-        plugin::plugin_read_intellij_theme,
-        plugin::plugin_reload,
-        plugin::plugin_revoke_net_host,
-        plugin::plugin_roll_back,
-        plugin::plugin_run_command,
-        plugin::plugin_run_targets,
-        plugin::plugin_secrets,
-        plugin::plugin_select_tests,
-        plugin::plugin_service_detail,
-        plugin::plugin_service_log,
-        plugin::plugin_set_active_file,
-        plugin::plugin_set_capability,
-        plugin::plugin_set_enabled,
-        plugin::plugin_set_market_url,
-        plugin::plugin_set_secret,
-        plugin::plugin_set_theme,
-        plugin::plugin_set_theme_frame,
-        plugin::plugin_set_ui_locale,
-        plugin::plugin_stage_package,
-        plugin::plugin_status_items,
-        plugin::plugin_subscribe,
-        plugin::plugin_terminal_session_close,
-        plugin::plugin_terminal_session_spawn,
-        plugin::plugin_uninstall,
-        plugin::plugin_unlink,
-        plugin::plugin_unpack_package,
-        plugin::plugin_view_event,
-        plugin::plugin_view_render,
-        plugin::plugin_web_page,
-        plugin::plugin_web_pty_spawn,
-        plugin::plugin_web_read_file,
-        plugin::plugin_web_save_file,
-        lsp::prepare_workspace_edit,
-        profiler::profiler_collect,
-        profiler::profiler_gc_before_stop,
-        profiler::profiler_prepare,
-        app::project_current,
-        app::project_rename,
-        app::project_roots,
-        app::project_trust_add_location,
-        app::project_trust_list,
-        app::project_trust_remove_location,
-        app::project_trust_set,
-        app::project_trust_status,
-        http::proxy_check_connection,
-        nav::recent_files,
-        app::recent_project_groups,
-        app::recent_projects,
-        lsp::redo_workspace_edit,
-        refactor::refactor_can_undo_file_move,
-        refactor::refactor_file_move_edits,
-        refactor::refactor_file_move_text_edits,
-        refactor::refactor_move_files,
-        refactor::refactor_undo_file_move,
-        crate::remote_dev::remote_bootstrap_list,
-        crate::remote_dev::remote_connect,
-        crate::remote_dev::remote_current,
-        deploy::remote_delete,
-        crate::remote_dev::remote_disconnect,
-        deploy::remote_download_into,
-        crate::remote_dev::remote_forward_port,
-        crate::remote_dev::remote_forwarded_ports,
-        crate::remote_dev::remote_import_local,
-        crate::remote_dev::remote_invoke,
-        deploy::remote_list,
-        deploy::remote_mkdir,
-        deploy::remote_of,
-        deploy::remote_open,
-        deploy::remote_rename,
-        crate::remote_dev::remote_stop_forwarding,
-        crate::remote_dev::remote_trust_set,
-        crate::remote_dev::remote_trust_status,
-        nav::remove_recent,
-        app::remove_recent_project,
-        search::replace_in_files,
-        search::replace_preview,
-        run::run_application_build,
-        run::run_application_publish,
-        run::run_apply_settings,
-        run::run_close_stdin,
-        run::run_configs,
-        run::run_dotnet_resolve,
-        run::run_env_files,
-        run::run_gradle_init_script,
-        run::run_gradle_jvm_args_script,
-        run::run_import_configs,
-        run::run_import_sources,
-        run::run_list,
-        run::run_resize,
-        run::run_save_configs,
-        run::run_save_templates,
-        run::run_start,
-        run::run_stdin,
-        run::run_stop,
-        run::run_system_env,
-        run::run_templates,
-        run::run_test_reports,
-        run::run_tomcat_artifacts,
-        run::run_tomcat_build,
-        run::run_tomcat_home,
-        run::run_tomcat_installations,
-        run::run_tomcat_sync,
-        run::run_tomcat_update,
-        run::run_without_derived,
-        scaffold::scaffold_catalog,
-        scaffold::scaffold_create,
-        scaffold::scaffold_options,
-        scaffold::scaffold_requirements,
-        sdk::sdk_container_python,
-        sdk::sdk_container_python_refresh,
-        sdk::sdk_detect,
-        sdk::sdk_jdk_at,
-        sdk::sdk_locate_tools,
-        sdk::sdk_php_composer_install,
-        sdk::sdk_php_effective,
-        sdk::sdk_php_language_level,
-        sdk::sdk_php_xdebug,
-        sdk::sdk_project_libraries,
-        sdk::sdk_python_create_venv,
-        sdk::sdk_python_effective,
-        sdk::sdk_python_interpreter,
-        sdk::sdk_python_packages,
-        sdk::sdk_python_pip,
-        sdk::sdk_python_project_interpreters,
-        search::search_start,
-        search::search_validate,
-        app::set_recent_project_groups,
-        app::settings_export,
-        app::settings_get,
-        app::settings_get_global,
-        app::settings_import,
-        app::settings_list_jetbrains_ides,
-        app::settings_read_jetbrains,
-        app::settings_removed_theme,
-        app::settings_set,
-        notification::show_system_notification,
-        spell::spell_check,
-        spell::spell_suggest,
-        nav::spring_route_sources,
-        ssh::ssh_askpass_answer,
-        ssh::ssh_connected,
-        ssh::ssh_disconnect,
-        ssh::ssh_needs_secret,
-        ssh::ssh_open_terminal,
-        ssh::ssh_password_saved,
-        ssh::ssh_set_secret,
-        ssh::ssh_test,
-        ssh::ssh_trust_host,
-        analysis::structural_languages,
-        analysis::structural_search,
-        analysis::structural_validate,
-        syntax::syntax_errors,
-        syntax::syntax_expression_at,
-        syntax::syntax_identifiers,
-        syntax::syntax_identifiers_in_files,
-        syntax::syntax_locals,
-        syntax::syntax_node_at,
-        syntax::syntax_structural_ranges,
-        syntax::syntax_support,
-        fonts::system_font_families,
-        hotkeys::system_probe_hotkeys,
-        term::term_available_shells,
-        term::term_default_shell,
-        term::term_is_busy,
-        term::term_kill,
-        term::term_resize,
-        term::term_spawn,
-        term::term_store_image,
-        term::term_write,
-        tools::tools_install,
-        tools::tools_list,
-        tools::tools_uninstall,
-        tools::tools_updates,
-        lsp::undo_workspace_edit,
-        vcs::vcs_add_to_ignore,
-        vcs::vcs_add_worktree,
-        vcs::vcs_apply_patch,
-        vcs::vcs_blame,
-        vcs::vcs_block_history,
-        vcs::vcs_branch_info,
-        vcs::vcs_branches,
-        vcs::vcs_changelists_load,
-        vcs::vcs_changelists_save,
-        vcs::vcs_checkout,
-        vcs::vcs_clone,
-        vcs::vcs_commit,
-        vcs::vcs_commit_files,
-        vcs::vcs_commits_changes,
-        vcs::vcs_compare_paths,
-        vcs::vcs_compare_scope,
-        vcs::vcs_config_get,
-        vcs::vcs_conflict_versions,
-        vcs::vcs_create_branch,
-        vcs::vcs_create_patch,
-        vcs::vcs_create_tag,
-        vcs::vcs_delete_branch,
-        vcs::vcs_delete_tag,
-        vcs::vcs_detected_git,
-        vcs::vcs_diff_hunks,
-        vcs::vcs_diff_numstat,
-        vcs::vcs_diff_revisions,
-        vcs::vcs_diff_text,
-        vcs::vcs_diff_with_worktree,
-        vcs::vcs_discard,
-        vcs::vcs_edit_remote,
-        vcs::vcs_file_at,
-        vcs::vcs_file_mode,
-        vcs::vcs_git_version,
-        vcs::vcs_has_hook,
-        vcs::vcs_ignore_blame_revision,
-        vcs::vcs_init,
-        vcs::vcs_line_hunks,
-        vcs::vcs_log,
-        vcs::vcs_log_details,
-        vcs::vcs_log_details_batch,
-        vcs::vcs_log_refs,
-        vcs::vcs_log_users,
-        vcs::vcs_merge,
-        vcs::vcs_merge_base,
-        vcs::vcs_merge_with,
-        vcs::vcs_move_worktree,
-        vcs::vcs_open_external_log,
-        vcs::vcs_operation,
-        vcs::vcs_patch_preview,
-        vcs::vcs_pending_patch,
-        vcs::vcs_rebase,
-        vcs::vcs_rebase_with,
-        vcs::vcs_remote,
-        vcs::vcs_remotes,
-        vcs::vcs_remove_worktree,
-        vcs::vcs_rename_branch,
-        vcs::vcs_restore_branch,
-        vcs::vcs_restore_head,
-        vcs::vcs_restore_tag,
-        vcs::vcs_revision_children,
-        vcs::vcs_revision_files,
-        vcs::vcs_reword,
-        vcs::vcs_roots,
-        vcs::vcs_shelf_delete,
-        vcs::vcs_shelf_diff,
-        vcs::vcs_shelf_import,
-        vcs::vcs_shelf_patch,
-        vcs::vcs_shelf_rename,
-        vcs::vcs_shelve,
-        vcs::vcs_shelves,
-        vcs::vcs_stage,
-        vcs::vcs_stage_hunks,
-        vcs::vcs_stage_patch,
-        vcs::vcs_stash_apply,
-        vcs::vcs_stash_drop,
-        vcs::vcs_stash_push,
-        vcs::vcs_stashes,
-        vcs::vcs_status,
-        vcs::vcs_status_paths,
-        vcs::vcs_tags,
-        vcs::vcs_undo_commit,
-        vcs::vcs_unshelve,
-        vcs::vcs_unstage,
-        vcs::vcs_worktrees,
-        vcs::vcs_write_patch,
-        web::web_browsers,
-        nav::web_goto,
-        web::web_open,
-        web::web_serves_page,
-        nav::web_unresolved_references,
-        web::web_url,
-        window::window_close_context,
-        window::window_complete_launch,
-        window::window_cycle,
-        window::window_flash_taskbar,
-        window_group::window_group_cancel_close,
-        window_group::window_group_close,
-        window_group::window_group_close_tabs,
-        window_group::window_group_current,
-        window_group::window_group_detach,
-        window_group::window_group_merge,
-        window_group::window_group_reorder,
-        window_group::window_group_restore,
-        window_group::window_group_select,
-        window::window_is_fullscreen,
-        window::window_new,
-        window::window_open_comparison,
-        window::window_open_deployment,
-        window::window_open_diff,
-        window::window_open_file_in_new_window,
-        window::window_open_files,
-        window::window_open_project,
-        window::window_open_projects,
-        window::window_open_remote,
-        window::window_open_settings,
-        window::window_set_titlebar_height,
-        window_drag::window_start_drag,
-        window::window_take_launch,
-        window::window_toggle_fullscreen,
-        window::window_toggle_zoom,
-        workspace::workspace_attach,
-        workspace::workspace_create,
-        workspace::workspace_discover_projects,
-        workspace::workspace_update,
-        wsl::wsl_distros,
-        wsl::wsl_resolve,
-    ])
+    tauri_specta::Builder::<tauri::Wry>::new().commands(catalogue().0)
+}
+
+/// Every command's declaration, sorted by name.
+pub fn declarations() -> &'static [Command] {
+    static DECLARATIONS: LazyLock<Vec<Command>> = LazyLock::new(|| catalogue().1);
+    &DECLARATIONS
+}
+
+/// The trust class `command` declares; `None` for a name no command has.
+pub fn trust_of(command: &str) -> Option<TrustClass> {
+    let declarations = declarations();
+    declarations.binary_search_by_key(&command, |c| c.name).ok().map(|i| declarations[i].trust)
+}
+
+/// The commands a remote window routes to its server: this build's project-host commands, fixed
+/// here rather than taken from the server, so a server cannot move a command to this machine.
+pub fn routed() -> Vec<&'static str> {
+    declarations().iter().filter(|c| c.placement == Placement::ProjectHost).map(|c| c.name).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    /// A domain missing from `catalogue()` would run on this machine in a remote window.
+    #[test]
+    fn routes_exactly_the_commands_a_server_of_this_build_declares() {
+        let mut served = ide_host::rpc::Dispatcher::standard().commands();
+        served.sort_unstable();
+        assert_eq!(super::routed(), served);
+    }
 }

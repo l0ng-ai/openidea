@@ -7,6 +7,7 @@ use crate::events::TauriSink;
 use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::{EventSink, IdeError, IdeResult};
+use ide_host::catalogue::TrustClass;
 use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, ServerInfo};
 use ide_jsonrpc::{Handler, Peer};
 use parking_lot::Mutex;
@@ -109,9 +110,10 @@ pub struct Connections(Mutex<HashMap<String, Arc<Connection>>>);
 
 impl Connection {
     /// Commands of a remote window that run on this machine follow this machine's decision about the
-    /// remote project, never the server's: the server only answers for what runs there.
-    pub fn authorize_command(&self, trust: &ide_host::trust::TrustStore, command: &str) -> IdeResult<()> {
-        if ide_host::trust::restricted_command_allowed(command) || self.trusted_here(trust) == Some(true) {
+    /// remote project, never the server's: the server only answers for what runs there. A remote
+    /// window always has a project, so only `Always` runs before it is trusted.
+    pub fn authorize(&self, trust: &ide_host::trust::TrustStore, class: TrustClass) -> IdeResult<()> {
+        if class == TrustClass::Always || self.trusted_here(trust) == Some(true) {
             Ok(())
         } else {
             Err(IdeError::unavailable("Project is in Restricted Mode"))
@@ -562,7 +564,7 @@ pub async fn remote_connect(
             env!("CARGO_PKG_VERSION")
         );
     }
-    let commands: Vec<String> = ide_host::rpc::client_commands().into_iter().map(str::to_owned).collect();
+    let commands: Vec<String> = crate::commands::routed().into_iter().map(str::to_owned).collect();
     let root = if path.trim().is_empty() || path.trim() == "~" {
         info.home.clone()
     } else if let Some(rest) = path.trim().strip_prefix("~/") {
@@ -631,12 +633,9 @@ pub async fn remote_connect(
 
 /// Sends the desktop's plugin languages, with the programs granted to them, to
 /// the window's server: `Workspace` contributions take effect where the project
-/// is. Servers without the command are left alone.
+/// is. A server without the command answers an error, which is logged.
 pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, window: &str) {
     use ide_host::plugins::remote::{SYNC_COMMAND, SyncReport};
-    if !c.commands.iter().any(|cmd| cmd == SYNC_COMMAND) {
-        return;
-    }
     let call = Invoke {
         window: window.to_owned(),
         cmd: SYNC_COMMAND.into(),
@@ -660,9 +659,6 @@ pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &
 /// then the files of the packages the server lacks, one per request.
 pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, window: &str) {
     use ide_host::plugins::remote_host::{PackageSyncReport, SYNC_PACKAGES};
-    if !c.commands.iter().any(|cmd| cmd == SYNC_PACKAGES) {
-        return;
-    }
     let host = plugins.clone();
     let Ok(packages) = tauri::async_runtime::spawn_blocking(move || host.remote_packages()).await else { return };
     let sync = |files: serde_json::Value| Invoke {
@@ -729,7 +725,7 @@ pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<Remo
     })
 }
 
-/// This machine's trust decision for the window's remote project (see [`Connection::authorize_command`]).
+/// This machine's trust decision for the window's remote project (see [`Connection::authorize`]).
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
@@ -1011,7 +1007,6 @@ pub async fn remote_import_local(
     let Some(session) = c.session.clone() else {
         return Err(IdeError::unavailable("Importing local files is not supported in a WSL project yet"));
     };
-    c.authorize_command(&state.host.trust, "fs_copy")?;
     let cancel = state.host.begin_request(request);
     let result = async {
         let fs = ide_ssh::RemoteFs::new(session.sftp().await?);
@@ -1156,15 +1151,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let trust = ide_host::trust::TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
         let c = connected(RemoteTarget::Ssh { config: "box".into() }, "/srv/app");
-        let error = c.authorize_command(&trust, "plugin_grant").unwrap_err();
-        assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
-        assert!(c.authorize_command(&trust, "fs_read_text").is_ok());
+        for class in [TrustClass::OutsideRestricted, TrustClass::Trusted] {
+            let error = c.authorize(&trust, class).unwrap_err();
+            assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+        }
+        assert!(c.authorize(&trust, TrustClass::Always).is_ok());
         trust.decide_remote(&c.location(), true).unwrap();
-        assert!(c.authorize_command(&trust, "plugin_grant").is_ok());
+        assert!(c.authorize(&trust, TrustClass::Trusted).is_ok());
         let other = connected(RemoteTarget::Ssh { config: "box".into() }, "/srv/other");
-        assert!(other.authorize_command(&trust, "plugin_grant").is_err());
+        assert!(other.authorize(&trust, TrustClass::Trusted).is_err());
         trust.decide_remote(&c.location(), false).unwrap();
-        assert!(c.authorize_command(&trust, "plugin_grant").is_err());
+        assert!(c.authorize(&trust, TrustClass::Trusted).is_err());
     }
 
     #[tokio::test]
@@ -1179,7 +1176,7 @@ mod tests {
         assert_eq!(c.trusted_here(&trust), None);
         trust.decide(&folder, true, false).unwrap();
         assert_eq!(c.trusted_here(&trust), Some(true));
-        assert!(c.authorize_command(&trust, "plugin_grant").is_ok());
+        assert!(c.authorize(&trust, TrustClass::Trusted).is_ok());
     }
 
     #[test]

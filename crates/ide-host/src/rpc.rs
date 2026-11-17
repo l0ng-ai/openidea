@@ -210,16 +210,6 @@ pub fn client_accepts(event: &IdeEvent) -> bool {
     }
 }
 
-/// The commands a desktop routes to its server: what `openidea-server` of this build answers,
-/// fixed here rather than taken from the server, so a server cannot move a command to this machine.
-pub fn client_commands() -> Vec<&'static str> {
-    let mut out = Dispatcher::standard().commands();
-    out.push(crate::plugins::remote_host::SYNC_PACKAGES);
-    out.push(crate::plugins::remote::SYNC_COMMAND);
-    out.sort_unstable();
-    out
-}
-
 struct PeerSink {
     peer: Arc<OnceLock<Peer>>,
     window: Option<String>,

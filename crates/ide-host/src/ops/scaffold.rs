@@ -1,4 +1,5 @@
-//! File › New Project (`ide-scaffold`).
+//! File › New Project (`ide-scaffold`). Its commands run in Restricted Mode: New Project writes
+//! only where the user chose and runs no code of an open project.
 use crate::Host;
 use crate::ops::Channel;
 use ide_command::command;

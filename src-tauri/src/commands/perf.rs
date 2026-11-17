@@ -1,10 +1,10 @@
 //! Diagnostics for the memory indicator / performance overlay.
 
-use crate::commands::doc::blocking;
 use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::IdeResult;
 use ide_core::event::ServerStatus;
+use ide_host::ops::doc::blocking;
 use ide_language::SyntaxCacheStats;
 use ide_workspace::memory::{self, CpuSampler, MemoryCategory, MemoryRoot, ProcessMemory, ProcessTable};
 use serde::{Deserialize, Serialize};

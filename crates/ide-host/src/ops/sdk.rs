@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub(crate) mod container_python;
+pub mod container_python;
 pub use container_python::{ContainerPython, sdk_container_python, sdk_container_python_refresh};
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {

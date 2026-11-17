@@ -1,9 +1,9 @@
 //! Run with Profiler: launch plans and profiles.
 
-use super::coverage::{KEEP_RUNS, blocking};
 use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::{IdeResult, RunId};
+use ide_host::ops::coverage::{KEEP_RUNS, blocking};
 use ide_profiler::{Profile, ProfileMode, ProfilePrepared, ProfileSpec};
 use ide_run::{RunConfig, RunInfo};
 use tauri::{State, Window};

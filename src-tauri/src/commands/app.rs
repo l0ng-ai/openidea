@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::settings::Settings;
-use ide_core::{EventSink, IdeError, IdeResult, RequestId, TaskId};
+use ide_core::{EventSink, IdeError, IdeResult};
 use ide_language::LanguageInfo;
 use ide_workspace::settings::SettingsScope;
 use ide_workspace::{RecentProject, RecentProjectGroup};
@@ -94,9 +94,7 @@ pub fn set_recent_project_groups(
     state.recent.set_groups(groups)
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInfo> {
+pub(crate) async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInfo> {
     // Opening touches the disk (index cache, watcher, git): keep it off the async runtime threads.
     let app = window.app_handle().clone();
     let label = window.label().to_owned();
@@ -190,9 +188,8 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
 }
 
 // Not on the main thread: closing stops the project's language servers, runs and file watcher.
-#[tauri::command(async)]
-#[specta::specta]
-pub fn close_project(window: Window, state: State<'_, AppState>) {
+pub(crate) fn close_project(window: Window) {
+    let state = window.state::<AppState>();
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
     let _ = crate::window_groups::detach(window.app_handle(), window.label());
     state.close_project(window.label());
@@ -211,10 +208,8 @@ pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
     state.languages.all().iter().map(LanguageInfo::from).collect()
 }
 
-/// Effective settings for the window's project, or global settings without one.
-#[tauri::command]
-#[specta::specta]
-pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
+pub(crate) fn settings_get(window: Window) -> Settings {
+    let state = window.state::<AppState>();
     state.note_ipc();
     ide_host::ops::project::settings_get(&state.host, window.label())
 }
@@ -228,12 +223,8 @@ pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
     state.host.with_proxy_password(state.global_settings.effective())
 }
 
-/// The removed built-in theme id a settings file of this window still names, if any:
-/// `settings_get` reports the built-in that stands in for it, so the notice about
-/// a theme that moved to a plugin can address the installs it concerns.
-#[tauri::command]
-#[specta::specta]
-pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Option<String> {
+pub(crate) fn settings_removed_theme(window: Window) -> Option<String> {
+    let state = window.state::<AppState>();
     state.note_ipc();
     ide_host::ops::project::settings_removed_theme(&state.host, window.label())
 }
@@ -241,15 +232,8 @@ pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Opt
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 /// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 /// re-reads its effective settings.
-#[tauri::command]
-#[specta::specta]
-pub fn settings_set(
-    window: Window,
-    app: tauri::AppHandle,
-    scope: SettingsScope,
-    key: String,
-    value: String,
-) -> IdeResult<Settings> {
+pub(crate) fn settings_set(window: Window, scope: SettingsScope, key: String, value: String) -> IdeResult<Settings> {
+    let app = window.app_handle().clone();
     let window = window.label().to_owned();
     // The merge validates its result by deserializing the whole `Settings`, which needs
     // ~250 KiB of stack in a debug build (measured by bisecting a thread's stack size; the
@@ -364,33 +348,9 @@ pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Effective source / test / resource / excluded roots of the window's project:
-/// auto-detected from build files, overridden by Settings › Project Structure.
-#[tauri::command]
-#[specta::specta]
-pub fn project_roots(window: Window, state: State<'_, AppState>) -> IdeResult<ide_workspace::ProjectRoots> {
-    ide_host::ops::project::project_roots(&state.host, window.label())
-}
-
-/// The project open in this window (a settings window: its parent's), if any.
-#[tauri::command]
-#[specta::specta]
-pub fn project_current(window: Window, state: State<'_, AppState>) -> Option<ProjectInfo> {
+pub(crate) fn project_current(window: Window) -> Option<ProjectInfo> {
+    let state = window.state::<AppState>();
     state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn cancel_request(state: State<'_, AppState>, id: RequestId) {
-    ide_host::ops::project::cancel_request(&state.host, id)
-}
-
-/// Stops a background task the backend reported with `cancellable` set; false when it
-/// has ended or can't be cancelled.
-#[tauri::command]
-#[specta::specta]
-pub fn cancel_task(id: TaskId) -> bool {
-    ide_host::ops::project::cancel_task(id)
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -415,26 +375,8 @@ pub fn log_frontend(level: LogLevel, message: String) {
     }
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn project_trust_status(state: State<'_, AppState>, path: PathBuf) -> IdeResult<ide_host::trust::TrustStatus> {
-    ide_host::ops::project::project_trust_status(&state.host, path)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn project_trust_list(state: State<'_, AppState>) -> IdeResult<ide_host::trust::TrustDecisions> {
-    ide_host::ops::project::project_trust_list(&state.host)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn project_trust_set(
-    state: State<'_, AppState>,
-    path: PathBuf,
-    trusted: bool,
-    folder: bool,
-) -> IdeResult<()> {
+pub(crate) async fn project_trust_set(window: Window, path: PathBuf, trusted: bool, folder: bool) -> IdeResult<()> {
+    let state = window.state::<AppState>();
     state.host.set_project_trust(&path, trusted, folder).await?;
     if !trusted {
         state.plugins.restrict_project(&dunce::canonicalize(&path).unwrap_or(path));
@@ -450,9 +392,8 @@ pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBu
     state.host.refresh_project_trust().await
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn project_trust_remove_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+pub(crate) async fn project_trust_remove_location(window: Window, path: PathBuf) -> IdeResult<()> {
+    let state = window.state::<AppState>();
     state.trust.remove_location(&path)?;
     state.host.refresh_project_trust().await?;
     for project in state.host.projects().into_iter().filter(|p| !p.is_trusted()) {

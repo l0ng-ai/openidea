@@ -1521,6 +1521,8 @@ pub async fn vcs_changelists_load(host: &Host, window: &str) -> IdeResult<Change
         .await
 }
 
+// Synchronous on purpose: the UI saves without waiting (debounced), and on the main thread
+// the saves land in order, so an older state can't overwrite a newer one.
 #[command(trust = trusted)]
 pub fn vcs_changelists_save(host: &Host, window: &str, changelists: ChangelistState) -> IdeResult<()> {
     let project = host.project(window)?;

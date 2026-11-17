@@ -239,17 +239,6 @@ pub async fn docker_registry_login(
     .await
 }
 
-/// Environment for a Docker run configuration's command line: selects `endpoint`'s
-/// daemon and puts the docker executable on `PATH`.
-#[tauri::command]
-#[specta::specta]
-pub async fn docker_run_env(
-    state: State<'_, AppState>,
-    endpoint: DockerEndpoint,
-) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    ide_host::ops::docker::docker_run_env(&state.host, endpoint).await
-}
-
 ide_command::desktop_domain!(
     docker_compose_op,
     docker_container_op,

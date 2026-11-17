@@ -4,7 +4,6 @@
 use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::{IdeResult, IpcPath};
-use ide_host::mcp::{FileProblems, FocusedEditor};
 use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
@@ -203,34 +202,6 @@ pub fn mcp_regenerate_token(state: State<'_, AppState>) -> IdeResult<()> {
     *state.mcp.running_with.lock() = None;
     apply(&state);
     Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn mcp_set_open_editors(window: Window, state: State<'_, AppState>, paths: Vec<IpcPath>) -> IdeResult<()> {
-    ide_host::mcp::mcp_set_open_editors(&state.host, window.label(), paths)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn mcp_set_focused_editor(
-    window: Window,
-    state: State<'_, AppState>,
-    editor: Option<FocusedEditor>,
-    focused: bool,
-) -> IdeResult<()> {
-    ide_host::mcp::mcp_set_focused_editor(&state.host, window.label(), editor, focused)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn mcp_report_problems(
-    window: Window,
-    state: State<'_, AppState>,
-    reset: bool,
-    files: Vec<FileProblems>,
-) -> IdeResult<()> {
-    ide_host::mcp::mcp_report_problems(&state.host, window.label(), reset, files)
 }
 
 #[desktop_command(trust = trusted)]

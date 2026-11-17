@@ -1,64 +1,11 @@
 use crate::state::AppState;
 use ide_command::desktop_command;
-use ide_core::remote_settings::SshConfiguration;
 use ide_core::{IdeEvent, IdeResult};
 use tauri::State;
 
 /// Settings › SSH Configurations: the configurations in effect.
 pub(crate) fn apply_ssh_settings(state: &AppState) {
     state.ssh.set_configs(state.global_settings.effective().ssh.configs);
-}
-
-/// Test Connection: connects with `config` as edited (not necessarily saved).
-#[tauri::command]
-#[specta::specta]
-pub async fn ssh_test(
-    state: State<'_, AppState>,
-    config: SshConfiguration,
-    secret: Option<String>,
-) -> IdeResult<String> {
-    ide_host::ops::ssh::ssh_test(&state.host, config, secret).await
-}
-
-/// Remembers the password / passphrase of configuration `id` (`None` forgets it).
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_set_secret(state: State<'_, AppState>, id: String, secret: Option<String>, save: bool) {
-    ide_host::ops::ssh::ssh_set_secret(&state.host, id, secret, save)
-}
-
-/// Whether a password is saved under `key` (an FTP deployment server's).
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_password_saved(state: State<'_, AppState>, key: String) -> bool {
-    ide_host::ops::ssh::ssh_password_saved(&state.host, key)
-}
-
-/// Whether connecting with configuration `id` needs a password first.
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_needs_secret(state: State<'_, AppState>, id: String) -> IdeResult<bool> {
-    ide_host::ops::ssh::ssh_needs_secret(&state.host, id)
-}
-
-/// Trusts the host key that failed the last connection of configuration `id`.
-#[tauri::command]
-#[specta::specta]
-pub async fn ssh_trust_host(state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    ide_host::ops::ssh::ssh_trust_host(&state.host, id).await
-}
-
-/// Ids of the configurations with an open connection.
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_connected(state: State<'_, AppState>) -> Vec<String> {
-    ide_host::ops::ssh::ssh_connected(&state.host)
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn ssh_disconnect(state: State<'_, AppState>, id: String) {
-    ide_host::ops::ssh::ssh_disconnect(&state.host, id)
 }
 
 /// Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it.
