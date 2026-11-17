@@ -26,7 +26,6 @@ import {
   EmptyState,
   Icon,
   IconButton,
-  List,
   Menu,
   Select,
   SplitGroup,
@@ -103,7 +102,8 @@ import {
 import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
-import type { FileStatus } from "@/bindings";
+import type { Commit, FileStatus, Stash } from "@/bindings";
+import { showChangesDiff, toLogChanges, type LogChange } from "./logChanges";
 import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
@@ -1334,18 +1334,33 @@ function CommitPanel({ included }: { included: number }) {
 
 // ---------------------------------------------------------------------------
 
+type StashEntry = Stash & { repo: string | null };
+type StashNode = { key: string; stash: StashEntry; change?: LogChange };
+
+const stashKey = (s: StashEntry) => `${s.repo}:${s.index}:${s.id}`;
+const STASH_PREVIEW_DELAY = 120;
+
+/** A stash's changes against the commit it was made on, as Git Log changes (diffs, line counts). */
+async function stashFileChanges(stash: StashEntry): Promise<LogChange[]> {
+  const files = await call(commands.vcsCommitFiles(stash.repo, stash.id));
+  const commit = { id: stash.id, shortId: stash.id.slice(0, 8), parents: stash.base ? [stash.base] : [] };
+  return toLogChanges(files, commit as unknown as Commit, stash.repo, true);
+}
+
 export function StashesPanel() {
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
   const version = useVcs((s) => s.version);
   const [tick, setTick] = useState(0);
-  const [active, setActive] = useState(0);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const request = useMemo(() => ({ repos, repo, version, tick }), [repos, repo, version, tick]);
   const [result, setResult] = useState<{
     request: typeof request;
-    stashes: (import("@/bindings").Stash & { repo: string | null })[];
+    stashes: StashEntry[];
     error: string | null;
   } | null>(null);
+  const [files, setFiles] = useState<ReadonlyMap<string, LogChange[]>>(new Map());
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const loaded = result?.request === request;
   const stashes = loaded ? result.stashes : [];
   const error = loaded ? result.error : null;
@@ -1366,7 +1381,29 @@ export function StashesPanel() {
       live = false;
     };
   }, [request]);
-  const current = stashes[active];
+  useEffect(() => () => clearTimeout(previewTimer.current), []);
+  const roots = useMemo<StashNode[]>(() => stashes.map((stash) => ({ key: stashKey(stash), stash })), [stashes]);
+  const childrenOf = (node: StashNode): StashNode[] | undefined =>
+    node.change
+      ? undefined
+      : files.get(node.key)?.map((change) => ({ key: `${node.key}\u0000${change.path}`, stash: node.stash, change }));
+  const loadFiles = async (node: StashNode) => {
+    if (files.has(node.key)) return;
+    const changes = await stashFileChanges(node.stash).catch(() => []);
+    setFiles((prev) => new Map(prev).set(node.key, changes));
+  };
+  const nodeOf = (key: string | null): StashNode | undefined => {
+    if (!key) return undefined;
+    const root = roots.find((r) => key === r.key || key.startsWith(`${r.key}\u0000`));
+    if (!root || key === root.key) return root;
+    return childrenOf(root)?.find((n) => n.key === key);
+  };
+  const selectedNode = nodeOf(selectedKey);
+  const current = selectedNode?.stash ?? stashes[0];
+  const showDiff = (node: StashNode, preview: boolean) => {
+    const chain = files.get(stashKey(node.stash)) ?? [];
+    if (node.change) void showChangesDiff([node.change], preview, chain).catch(() => undefined);
+  };
   return (
     <div className={styles.changes}>
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Stashes")}>
@@ -1378,7 +1415,15 @@ export function StashesPanel() {
             options={repos.map((root) => ({ value: root, label: repoName(root) }))}
           />
         )}
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => setTick((n) => n + 1)} />
+        <IconButton
+          icon="refresh"
+          title="Refresh"
+          size="small"
+          onClick={() => {
+            setFiles(new Map());
+            setTick((n) => n + 1);
+          }}
+        />
         <IconButton icon="plus" title="Stash Changes…" size="small" onClick={() => void stashChanges()} />
         <span className={styles.sep} />
         <IconButton
@@ -1403,44 +1448,77 @@ export function StashesPanel() {
           onClick={() => current && void dropStash(current.index, current.message, current.repo)}
         />
       </div>
-      <List
-        items={stashes}
-        getKey={(s) => `${s.repo}:${s.index}`}
-        activeIndex={Math.min(active, Math.max(0, stashes.length - 1))}
-        onActiveChange={setActive}
-        rowHeight={22}
-        aria-label="Stashes"
-        className={styles.stashList}
-        empty={<span className={styles.empty}>{error ?? (loaded ? tx("No stashes") : tx("Loading…"))}</span>}
-        onActivate={(s, _i, e) => {
-          if (e.type === "click" && (e as MouseEvent).detail < 2) return;
-          void applyStash(s.index, false, s.repo);
-        }}
-        onContextMenu={(s, i, e) => {
-          e.preventDefault();
-          setActive(i);
-          showContextMenu(e, [
-            { label: "Apply Stash", icon: "check", run: () => void applyStash(s.index, false, s.repo) },
-            { label: "Pop Stash", icon: "undo", run: () => void applyStash(s.index, true, s.repo) },
-            { label: "Unstash…", run: () => showUnstashDialog(s.index, s.repo) },
-            { kind: "separator" },
-            { label: "Drop Stash", icon: "trash", run: () => void dropStash(s.index, s.message, s.repo) },
-          ]);
-        }}
-        renderItem={(s) => {
-          const { branch, text } = stashLabel(s.message);
-          return (
-            <span className={styles.stashRow} title={`stash@{${s.index}}: ${s.message}`}>
-              <span className={styles.stashMessage}>
-                {repos.length > 1 && s.repo ? `${repoName(s.repo)} · ` : ""}
-                {text}
+      <div className={styles.treeWrap}>
+        <Tree<StashNode>
+          roots={roots}
+          getKey={(n) => n.key}
+          getLabel={(n) => (n.change ? basename(n.change.path) : n.stash.message)}
+          getChildren={childrenOf}
+          isExpandable={(n) => !n.change}
+          loadChildren={loadFiles}
+          selected={useMemo(() => new Set(selectedKey ? [selectedKey] : []), [selectedKey])}
+          multiSelect={false}
+          rowHeight={22}
+          aria-label="Stashes"
+          className={styles.stashList}
+          empty={<span className={styles.empty}>{error ?? (loaded ? tx("No stashes") : tx("Loading…"))}</span>}
+          onSelectionChange={(sel) => {
+            const key = [...sel][0] ?? null;
+            setSelectedKey(key);
+            clearTimeout(previewTimer.current);
+            const node = nodeOf(key);
+            // With Show Diff Preview on, the selection walks a preview tab through the stash's files.
+            if (node?.change && useCommit.getState().diffPreview && !vcsDiffInFront())
+              previewTimer.current = setTimeout(() => showDiff(node, true), STASH_PREVIEW_DELAY);
+          }}
+          onActivate={(n) => showDiff(n, false)}
+          onContextMenu={(n, _sel, e) => {
+            if (!n) return;
+            e.preventDefault();
+            setSelectedKey(n.key);
+            const s = n.stash;
+            showContextMenu(e, [
+              ...(n.change
+                ? [
+                    { label: "Show Diff", icon: "diff", run: () => showDiff(n, false) } as MenuItem,
+                    { kind: "separator" } as MenuItem,
+                  ]
+                : []),
+              { label: "Apply Stash", icon: "check", run: () => void applyStash(s.index, false, s.repo) },
+              { label: "Pop Stash", icon: "undo", run: () => void applyStash(s.index, true, s.repo) },
+              { label: "Unstash…", run: () => showUnstashDialog(s.index, s.repo) },
+              { kind: "separator" },
+              { label: "Drop Stash", icon: "trash", run: () => void dropStash(s.index, s.message, s.repo) },
+            ]);
+          }}
+          renderNode={(n) => {
+            if (n.change) {
+              const kind = n.change.kind === "untracked" ? "added" : n.change.kind;
+              return (
+                <>
+                  <Icon name={fileIconName(basename(n.change.path), n.change.path)} size={16} className={styles.icon} />
+                  <span className={styles.label} style={{ color: KIND_COLOR[kind] }}>
+                    {basename(n.change.path)}
+                  </span>
+                  <span className={styles.detail}>{dirname(n.change.path)}</span>
+                </>
+              );
+            }
+            const s = n.stash;
+            const { branch, text } = stashLabel(s.message);
+            return (
+              <span className={styles.stashRow} title={`stash@{${s.index}}: ${s.message}`}>
+                <span className={styles.stashMessage}>
+                  {repos.length > 1 && s.repo ? `${repoName(s.repo)} · ` : ""}
+                  {text}
+                </span>
+                {branch && <span className={clsx(styles.detail, styles.stashBranch)}>{branch}</span>}
+                <span className={clsx(styles.detail, styles.stashTime)}>{formatTime(s.timeMs)}</span>
               </span>
-              {branch && <span className={clsx(styles.detail, styles.stashBranch)}>{branch}</span>}
-              <span className={clsx(styles.detail, styles.stashTime)}>{formatTime(s.timeMs)}</span>
-            </span>
-          );
-        }}
-      />
+            );
+          }}
+        />
+      </div>
     </div>
   );
 }

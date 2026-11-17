@@ -3,7 +3,7 @@
  * mappings, excluded remote paths) and the transfer options. Consumed by the
  * deployment feature and `ide-remote` (automatic upload, remote delete).
  */
-import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import clsx from "clsx";
 import { call, commands, IpcError, isTauri, type FsConnection, type RemoteEntry } from "@/platform/ipc";
 import { useTx, tx, txTemplate } from "@/platform/i18n";
@@ -30,6 +30,7 @@ import {
   Spinner,
   T,
   Tabs,
+  type MenuItem,
 } from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
@@ -769,6 +770,26 @@ function DeploymentServersEditor() {
     setGroups([...groupList, group]);
     setSelected({ kind: "group", id: group.id });
   };
+  const removeTarget = (target: Selection) => {
+    if (!target) return;
+    if (target.kind === "group") {
+      const group = groupList.find((g) => g.id === target.id);
+      if (!group) return;
+      const index = groupList.indexOf(group);
+      const rest = groupList.filter((g) => g.id !== group.id);
+      setGroups(rest);
+      const next = rest[Math.min(index, rest.length - 1)] ?? null;
+      setSelected(next ? { kind: "group", id: next.id } : list[0] ? { kind: "server", id: list[0].id } : null);
+      return;
+    }
+    const server = list.find((s) => s.id === target.id);
+    if (!server) return;
+    const index = list.indexOf(server);
+    const rest = list.filter((s) => s.id !== server.id);
+    commit(rest);
+    const next = rest[Math.min(index, rest.length - 1)] ?? null;
+    setSelected(next ? { kind: "server", id: next.id } : null);
+  };
   const remove = () => {
     if (currentGroup) {
       const index = groupList.indexOf(currentGroup);
@@ -786,6 +807,34 @@ function DeploymentServersEditor() {
     setSelected(next ? { kind: "server", id: next.id } : null);
   };
   const isSelected = (kind: "server" | "group", id: string) => selected?.kind === kind && selected.id === id;
+  const addItems: MenuItem[] = [
+    { label: "Server", icon: "web", run: () => add() },
+    { label: "Server Group", icon: "folder", run: addGroup },
+  ];
+  // Right-click on a row works on that row (it is selected first); on the empty list it only adds.
+  const rowMenu = (e: ReactMouseEvent, target: Selection) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelected(target);
+    const server = target?.kind === "server" ? list.find((s) => s.id === target.id) : undefined;
+    showContextMenu(e, [
+      { label: "Add", icon: "plus", submenu: addItems },
+      ...(server
+        ? [
+            { label: "Duplicate", icon: "copy", run: () => add(server) } as MenuItem,
+            {
+              label: "Use as Default",
+              icon: "check",
+              disabled: server.id === effectiveDefault,
+              run: () => setDefaultServer(server.id),
+            } as MenuItem,
+          ]
+        : []),
+      { kind: "separator" },
+      // `remove` acts on the selection, which the state update above has not applied yet.
+      { label: "Remove", icon: "minus", run: () => removeTarget(target) },
+    ]);
+  };
 
   return (
     <div className={styles.layout}>
@@ -797,10 +846,7 @@ function DeploymentServersEditor() {
             size="small"
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
-              showContextMenu({ x: r.left, y: r.bottom }, [
-                { label: "Server", icon: "web", run: () => add() },
-                { label: "Server Group", icon: "folder", run: addGroup },
-              ]);
+              showContextMenu({ x: r.left, y: r.bottom }, addItems);
             }}
           />
           <IconButton icon="minus" title="Remove" size="small" disabled={!current && !currentGroup} onClick={remove} />
@@ -819,7 +865,15 @@ function DeploymentServersEditor() {
             onClick={() => current && setDefaultServer(current.id)}
           />
         </div>
-        <div className={styles.serverList} role="listbox" aria-label={tx("Deployment servers")}>
+        <div
+          className={styles.serverList}
+          role="listbox"
+          aria-label={tx("Deployment servers")}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            showContextMenu(e, [{ label: "Add", icon: "plus", submenu: addItems }]);
+          }}
+        >
           {list.length === 0 && groupList.length === 0 && (
             <div className={styles.empty}>
               <T>No servers. Click + to add one.</T>
@@ -832,6 +886,7 @@ function DeploymentServersEditor() {
               aria-selected={isSelected("group", g.id)}
               className={clsx(styles.serverRow, isSelected("group", g.id) && styles.serverSelected)}
               onMouseDown={() => setSelected({ kind: "group", id: g.id })}
+              onContextMenu={(e) => rowMenu(e, { kind: "group", id: g.id })}
             >
               <Icon name="folder" />
               <span className={styles.serverName}>{g.name || g.id}</span>
@@ -845,6 +900,7 @@ function DeploymentServersEditor() {
               aria-selected={isSelected("server", s.id)}
               className={clsx(styles.serverRow, isSelected("server", s.id) && styles.serverSelected)}
               onMouseDown={() => setSelected({ kind: "server", id: s.id })}
+              onContextMenu={(e) => rowMenu(e, { kind: "server", id: s.id })}
             >
               <Icon name="web" />
               <span className={clsx(styles.serverName, s.id === effectiveDefault && styles.default)}>

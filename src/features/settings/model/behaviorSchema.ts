@@ -35,6 +35,27 @@ export interface BackgroundImageValid {
   fill: BackgroundImageFill;
   anchor: BackgroundImageAnchor;
 }
+export type PresentationAssistantSize = "small" | "medium" | "large";
+export const PRESENTATION_ASSISTANT_POSITIONS = [
+  "top-left",
+  "top",
+  "top-right",
+  "bottom-left",
+  "bottom",
+  "bottom-right",
+] as const;
+export type PresentationAssistantPosition = (typeof PRESENTATION_ASSISTANT_POSITIONS)[number];
+export const PRESENTATION_ASSISTANT_DURATION = { min: 1, max: 60 } as const;
+
+/** Appearance › Presentation Assistant: the name and shortcut of each action the user runs. */
+export interface PresentationAssistantValid {
+  enabled: boolean;
+  size: PresentationAssistantSize;
+  durationSeconds: number;
+  position: PresentationAssistantPosition;
+  /** Also show the other platform's shortcut (macOS ⇄ Windows/Linux). */
+  alternateKeymap: boolean;
+}
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = ThemeChoiceId;
 
@@ -77,6 +98,7 @@ export interface AppearanceExtras {
    * the editor, in the status bar, or not at all. */
   navigationBar: NavigationBarPosition;
   backgroundImage: BackgroundImageValid;
+  presentationAssistant: PresentationAssistantValid;
 }
 
 export interface DateFormatValid {
@@ -156,6 +178,13 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showStatusBar: true,
   navigationBar: "statusBar",
   backgroundImage: { path: "", opacity: 15, fill: "scale", anchor: "center" },
+  presentationAssistant: {
+    enabled: false,
+    size: "medium",
+    durationSeconds: 4,
+    position: "bottom",
+    alternateKeymap: false,
+  },
 };
 
 const NAV_BAR_POSITIONS: readonly NavigationBarPosition[] = ["top", "statusBar", "hidden"];
@@ -238,6 +267,19 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
       return oneOf(a.navigationBar, NAV_BAR_POSITIONS, d.navigationBar);
     })(),
     backgroundImage: validateBackgroundImage(a.backgroundImage),
+    presentationAssistant: validatePresentationAssistant(a.presentationAssistant),
+  };
+}
+
+function validatePresentationAssistant(raw: unknown): PresentationAssistantValid {
+  const p = obj(raw);
+  const d = DEFAULT_APPEARANCE_EXTRAS.presentationAssistant;
+  return {
+    enabled: bool(p.enabled, d.enabled),
+    size: oneOf(p.size, ["small", "medium", "large"], d.size),
+    durationSeconds: int(p.durationSeconds, d.durationSeconds, PRESENTATION_ASSISTANT_DURATION),
+    position: oneOf(p.position, PRESENTATION_ASSISTANT_POSITIONS, d.position),
+    alternateKeymap: bool(p.alternateKeymap, d.alternateKeymap),
   };
 }
 

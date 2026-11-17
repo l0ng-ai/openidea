@@ -135,6 +135,8 @@ pub struct CommitSettings {
     /// `Settings::default()`, or `SettingsStore::set` rejects the key as unknown.
     #[specta(optional)]
     pub double_click_opens_diff: Option<bool>,
+    /// Team conventions for Generate Commit Message with Agent, added to its prompt.
+    pub agent_instructions: String,
 }
 
 impl Default for CommitSettings {
@@ -156,6 +158,7 @@ impl Default for CommitSettings {
             wrap_at_margin: false,
             disabled_plugin_checks: Vec::new(),
             double_click_opens_diff: None,
+            agent_instructions: String::new(),
         }
     }
 }

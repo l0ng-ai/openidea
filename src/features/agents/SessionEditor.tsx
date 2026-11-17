@@ -82,7 +82,7 @@ import { ConfigPickers } from "./ConfigPickers";
 import { McpPicker } from "./McpPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
-import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
+import { findRanges, formatDuration, formatSentAt, isFindRangeShown, userMessageText } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
 import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
@@ -143,6 +143,7 @@ import {
   removeQueued,
   resendMessage,
   respond,
+  answerQuestion,
   sendMessage,
   sendQueuedNow,
   setTaskConfig,
@@ -406,6 +407,11 @@ function SessionStatus({
     >
       {/* Where the task works, in one quiet line like the new-task page: project (in a workspace), branch, worktree. */}
       <span className={styles.where} title={task.cwd}>
+        {/* Which agent runs the task: with several tasks side by side, this tells their answers apart. */}
+        <span className={styles.fact} title={providerName(task.provider)}>
+          <Icon name={providerIcon(task.provider)} size={13} />
+          <span className={styles.factText}>{providerName(task.provider)}</span>
+        </span>
         {project?.workspace && projectName && (
           <span className={styles.fact}>
             <Icon name="folder" size={13} />
@@ -1521,6 +1527,20 @@ const Entry = memo(function Entry({
     case "permission":
       // Waiting for an answer, it is asked above the composer; the conversation keeps the record.
       return entry.chosen || entry.questions?.length ? <PermissionLine task={task} entry={entry} /> : null;
+    case "question":
+      return (
+        <div className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}>
+          <Icon name={!entry.chosen ? "warning" : entry.chosen === "Skipped" ? "minus" : "check"} size={14} />
+          <div className={styles.permissionBody}>
+            <span className={styles.permissionTitle}>{entry.title}</span>
+            {entry.chosen && (
+              <span className={styles.permissionRecord}>
+                {entry.chosen === "Skipped" ? <T>Skipped</T> : entry.chosen}
+              </span>
+            )}
+          </div>
+        </div>
+      );
     case "error":
       return (
         <div className={styles.error} role="alert">
@@ -1556,10 +1576,11 @@ function UserMessage({
   const inPlace = !archived && rollback && turn !== null;
   // A copy up to an earlier turn drops the later ones from the copied session.
   const canFork = idle && fork && (rollback || turn === turnCount - 1);
+  const text = userMessageText(entry.text);
   if (editing && turn !== null) {
     return (
       <MessageEditor
-        initial={entry.text}
+        initial={text}
         initialImages={entry.images ?? []}
         later={turn < turnCount - 1}
         onCancel={() => setEditing(false)}
@@ -1573,7 +1594,7 @@ function UserMessage({
   // Images are listed after the files in `attachments` and shown as thumbnails instead.
   // Files mentioned in the text are chips there already.
   const mentioned = new Set(
-    messageTokens(entry.text).flatMap((t) => {
+    messageTokens(text).flatMap((t) => {
       const m = t.kind === "file" ? parseMention(t.value) : null;
       return m ? [basename(m.rel.replace(/\/$/, ""))] : [];
     }),
@@ -1584,7 +1605,7 @@ function UserMessage({
       {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
       <div className={styles.messageHead}>
         <MessageActions>
-          <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
+          <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(text)} />
           {inPlace && entry.text && (
             <IconButton size="small" icon="edit" title="Edit" onClick={() => setEditing(true)} />
           )}
@@ -1625,7 +1646,7 @@ function UserMessage({
         </span>
       </div>
       <div className={styles.user}>
-        <ReferencedText text={entry.text} cwd={task.cwd} />
+        <ReferencedText text={text} cwd={task.cwd} />
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>
@@ -2343,15 +2364,39 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request or agent form, as a card above the composer; one question at a time. */
+type AsyncQuestionEntry = Extract<AgentEntry, { type: "question" }>;
+
+/** Blocking requests take priority; async questions stay available after their turn ends. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
-  const entry = entries?.find(
-    (candidate): candidate is PermissionEntry =>
-      candidate.type === "permission" && !candidate.chosen && asksInCard(candidate),
-  );
-  if (entry?.form) return <FormCard key={entry.id} task={task} entry={entry} form={entry.form} />;
+  const drafts = useRef(new Map<string, QuestionAnswer[]>());
+  useEffect(() => {
+    const open = new Set(
+      entries
+        ?.filter(
+          (entry): entry is PermissionEntry | AsyncQuestionEntry =>
+            (entry.type === "question" || entry.type === "permission") && !entry.chosen,
+        )
+        .map((entry) => `${entry.type}:${entry.id}`),
+    );
+    for (const key of drafts.current.keys()) if (!open.has(key)) drafts.current.delete(key);
+  }, [entries]);
+  if (task.status === "archived") return null;
+  const entry =
+    entries?.find(
+      (candidate): candidate is PermissionEntry =>
+        candidate.type === "permission" && !candidate.chosen && asksInCard(candidate),
+    ) ??
+    entries?.find((candidate): candidate is AsyncQuestionEntry => candidate.type === "question" && !candidate.chosen);
+  if (entry?.type === "permission" && entry.form)
+    return <FormCard key={entry.id} task={task} entry={entry} form={entry.form} />;
   return entry?.questions ? (
-    <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} />
+    <QuestionForm
+      key={`${entry.type}:${entry.id}`}
+      task={task}
+      entry={entry}
+      questions={entry.questions}
+      drafts={drafts}
+    />
   ) : null;
 }
 
@@ -2359,17 +2404,27 @@ function QuestionForm({
   task,
   entry,
   questions,
+  drafts,
 }: {
   task: AgentTask;
-  entry: PermissionEntry;
+  entry: PermissionEntry | AsyncQuestionEntry;
   questions: AgentQuestion[];
+  drafts: RefObject<Map<string, QuestionAnswer[]>>;
 }) {
-  const [answers, setAnswers] = useState<QuestionAnswer[]>(() =>
-    questions.map((question) => ({ question, picked: [], other: null })),
+  const cacheKey = `${entry.type}:${entry.id}`;
+  const [answers, setAnswers] = useState<QuestionAnswer[]>(
+    () =>
+      drafts.current.get(cacheKey) ??
+      questions.map((question) => ({ question, picked: [], other: question.options.length ? null : "" })),
   );
+  useLayoutEffect(() => {
+    drafts.current.set(cacheKey, answers);
+  }, [drafts, cacheKey, answers]);
   const [position, setPosition] = useState(0);
   const [hovered, setHovered] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
   const questionPrefix = useId();
   const panelsRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -2385,8 +2440,20 @@ function QuestionForm({
     panelRef.current?.focus();
   }, [position]);
   const send = (option: string) => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
-    void respond(task.id, entry.id, option).finally(() => setBusy(false));
+    setError(null);
+    const sent =
+      entry.type === "question"
+        ? answerQuestion(task.id, entry.id, option === "reject" ? null : option)
+        : respond(task.id, entry.id, option);
+    void sent
+      .catch((error: unknown) => setError(String(error)))
+      .finally(() => {
+        pending.current = false;
+        setBusy(false);
+      });
   };
   const submit = () =>
     send(
@@ -2560,7 +2627,7 @@ function QuestionForm({
                     })}
                     {item.other !== null && (
                       <Input
-                        autoFocus
+                        autoFocus={entry.type === "permission" || item.question.options.length > 0}
                         className={styles.questionOther}
                         value={item.other}
                         placeholder="Type your answer"
@@ -2606,6 +2673,11 @@ function QuestionForm({
         })}
       </div>
       <div className={styles.questionActions}>
+        {error && (
+          <span className={styles.error} role="alert">
+            {error}
+          </span>
+        )}
         <Button variant="ghost" disabled={busy} onClick={() => send("reject")}>
           Skip
         </Button>

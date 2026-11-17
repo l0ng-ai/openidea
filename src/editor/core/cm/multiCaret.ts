@@ -1,8 +1,7 @@
-/** Mouse caret gestures follow the keymap; Alt and middle-button drags select columns. */
+/** Mouse caret and rectangular selection gestures follow the keymap. */
 import { EditorSelection, type Extension } from "@codemirror/state";
 import { EditorView, type MouseSelectionStyle } from "@codemirror/view";
 import { bindingsFor, mouseStrokeOf, normalizeBinding } from "@/platform/keymap";
-import { usePlatform } from "@/platform/platformInfo";
 import { blockMouseSelection } from "./columnMode";
 
 /** The selection after a caret click / drag from `anchor` to `head` on top of `start`. */
@@ -25,6 +24,15 @@ export function isAddCaretGesture(event: MouseEvent): boolean {
   );
 }
 
+export function isRectangularSelectionGesture(event: MouseEvent): boolean {
+  if ((event.button !== 0 && event.button !== 1) || isAddCaretGesture(event)) return false;
+  const stroke = mouseStrokeOf(event);
+  return (
+    stroke !== null &&
+    bindingsFor("editor.createRectangularSelectionOnMouseDrag").some((binding) => normalizeBinding(binding) === stroke)
+  );
+}
+
 const addCaretStyle = EditorView.mouseSelectionStyle.of((view, event): MouseSelectionStyle | null => {
   if (!isAddCaretGesture(event)) return null;
   let start = view.state.selection;
@@ -44,9 +52,5 @@ export const multiCaretMouse: Extension = [
   addCaretStyle,
   // CodeMirror's default (⌘click) would clash with ⌘click navigation.
   EditorView.clickAddsSelectionRange.of(() => false),
-  blockMouseSelection((e) => {
-    if (isAddCaretGesture(e) || e.shiftKey || e.metaKey || e.ctrlKey) return false;
-    if (e.button === 0) return e.altKey;
-    return e.button === 1 && !e.altKey && usePlatform.getState().os !== "linux";
-  }),
+  blockMouseSelection(isRectangularSelectionGesture),
 ];

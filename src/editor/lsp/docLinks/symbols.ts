@@ -1,5 +1,5 @@
 /** `workspace/symbol` lookups shared by the per-language documentation link rules. */
-import { call, commands, nextRequestId, type WorkspaceSymbol } from "@/platform/ipc";
+import { call, commands, nextRequestId, type Location, type WorkspaceSymbol } from "@/platform/ipc";
 
 export interface DocTarget {
   path: string;
@@ -12,7 +12,7 @@ export async function symbols(query: string): Promise<WorkspaceSymbol[]> {
 }
 
 /** The one place `hits` name (the same place listed twice counts once); null when none or several. */
-export function unique(hits: WorkspaceSymbol[]): DocTarget | null {
+export function unique(hits: { location: Location }[]): DocTarget | null {
   const places = new Map(
     hits.map((s) => {
       const { path, range } = s.location;

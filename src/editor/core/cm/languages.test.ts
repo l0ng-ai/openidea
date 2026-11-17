@@ -1,6 +1,7 @@
 import { EditorState } from "@codemirror/state";
 import { LanguageDescription, type Language } from "@codemirror/language";
 import { describe, expect, it } from "vitest";
+import { getIndentation } from "@codemirror/language";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { logWarning } from "./highlight";
 import { fencedCodeMode, findLanguageDescription, loadSupport } from "./languages";
@@ -271,6 +272,28 @@ describe("language modes", () => {
     }
   });
 
+  it('keeps C++ namespace and extern "C" contents at the level of their braces', async () => {
+    const support = await loadSupport(findLanguageDescription("C++", "/p/a.cpp")!);
+    const doc = [
+      "namespace foo {",
+      "class Bar {",
+      "  int x;",
+      "};",
+      "namespace inner {",
+      "void f() {",
+      "  g();",
+      "}",
+      "}  // namespace inner",
+      "}  // namespace foo",
+      'extern "C" {',
+      "int h();",
+      "}",
+    ].join("\n");
+    const state = EditorState.create({ doc, extensions: [support!, EditorState.tabSize.of(2)] });
+    const indent = (line: number) => getIndentation(state, state.doc.line(line).from);
+    expect([2, 3, 4, 5, 6, 7, 9, 10, 12, 13].map(indent)).toEqual([0, 2, 0, 0, 0, 2, 0, 0, 0, 0]);
+  });
+
   it("colours `this`, `super` and Rust's `self` as keywords", async () => {
     const highlighter = tagHighlighter([
       { tag: t.keyword, class: "keyword" },
@@ -309,6 +332,26 @@ describe("language modes", () => {
       const support = await loadSupport(desc!);
       expect(support?.language).toBeTruthy();
     }
+  });
+
+  const keywordHighlighter = tagHighlighter([{ tag: t.keyword, class: "keyword" }]);
+
+  function keywords(language: Language, source: string) {
+    const found: string[] = [];
+    highlightTree(language.parser.parse(source), keywordHighlighter, (from, to) => found.push(source.slice(from, to)));
+    return found;
+  }
+
+  it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
+    for (const path of ["/p/Cargo.toml", "/p/uv.lock"]) {
+      const support = await loadSupport(findLanguageDescription("TOML", path)!);
+      expect(keywords(support!.language, '[package]\nname = "x"'), path).toEqual(["package", "name"]);
+    }
+    const fenced = fencedCodeMode("toml")!;
+    expect(fenced.name).toBe("TOML");
+    const language =
+      fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
+    expect(keywords(language, 'name = "x"')).toEqual(["name"]);
   });
 
   const propertiesHighlighter = tagHighlighter([
@@ -394,5 +437,59 @@ describe("language modes", () => {
         ["b", "string"],
       ]);
     }
+  });
+  it("colours Typst markup, embedded code and math", async () => {
+    const support = await loadSupport(findLanguageDescription("Typst", "/p/notes.typ")!);
+    const highlighter = tagHighlighter([
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.comment, class: "comment" },
+      { tag: t.heading, class: "heading" },
+      { tag: t.strong, class: "strong" },
+      { tag: t.emphasis, class: "emphasis" },
+      { tag: t.string, class: "string" },
+      { tag: t.number, class: "number" },
+      { tag: t.function(t.variableName), class: "function" },
+      { tag: t.labelName, class: "label" },
+      { tag: t.monospace, class: "raw" },
+      { tag: t.atom, class: "atom" },
+    ]);
+    const source = [
+      "#set page(width: 10cm)",
+      "// note",
+      "= Intro <intro>",
+      "Some *bold* and _it_ in snake_case, `raw` and $x^2$ see @intro.",
+      "#let total = 1 + 2",
+      "#if true [yes]",
+      "```rust",
+      "let x = 1;",
+      "```",
+    ].join("\n");
+    const found: string[] = [];
+    highlightTree(support!.language.parser.parse(source), highlighter, (from, to, cls) =>
+      found.push(`${source.slice(from, to)}:${cls}`),
+    );
+    expect(found).toEqual(
+      expect.arrayContaining([
+        "#set:keyword",
+        "page:function",
+        "10cm:number",
+        "// note:comment",
+        "= Intro :heading",
+        "<intro>:label",
+        "*bold*:strong",
+        "_it_:emphasis",
+        "`raw`:raw",
+        "$:keyword",
+        "@intro:label",
+        "#let:keyword",
+        "1:number",
+        "#if:keyword",
+        "true:atom",
+        "```rust:raw",
+        "let x = 1;:raw",
+      ]),
+    );
+    expect(found.filter((f) => f.endsWith(":emphasis"))).toEqual(["_it_:emphasis"]);
+    expect(found).not.toContain("yes:keyword");
   });
 });

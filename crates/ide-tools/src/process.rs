@@ -329,6 +329,9 @@ impl Http {
         }
         own_group(ide_core::process::prepare(&mut cmd));
         cmd.args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "-A", "openidea"]);
+        // A connection that stops delivering (a stalled proxy or mirror) fails and is retried
+        // instead of leaving the request waiting forever.
+        cmd.args(["--speed-limit", "1", "--speed-time", "30"]);
         // System Settings › HTTP Proxy (a manual proxy comes in through `prepare`'s environment).
         cmd.args(ide_core::proxy_settings::proxy().curl_args(url));
         if self.https_only {
@@ -916,6 +919,14 @@ mod github_auth_tests {
             fs::write(f.path("token"), "gho_fake_second\n").unwrap();
             f.get(API).unwrap();
             assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "Authorization: Bearer gho_fake_second\n");
+        }
+
+        #[test]
+        fn a_stalled_transfer_times_out_instead_of_hanging() {
+            let f = Fixture::new();
+            f.get(API).unwrap();
+            let args = fs::read_to_string(f.path("curl-args")).unwrap();
+            assert!(args.contains("--speed-limit\n1\n--speed-time\n30\n"), "{args}");
         }
 
         #[test]

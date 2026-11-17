@@ -102,8 +102,7 @@ export function WindowGroupTabs() {
               showContextMenu(e, [
                 {
                   label: "Move Tab to New Window",
-                  disabled: !tab.current,
-                  run: () => executeAction("window.detachTab"),
+                  run: () => executeAction("window.detachTab", tab.label),
                 },
                 { kind: "separator" },
                 {
@@ -156,15 +155,16 @@ export function WindowGroupTabs() {
               title={tx`Close ${tab.name}`}
               onClick={() => run(executeAction("window.closeTab", tab.label))}
             />
+            <IconButton
+              icon="external-link"
+              size="small"
+              className={styles.detach}
+              title={tx`Move ${tab.name} to New Window`}
+              onClick={() => run(executeAction("window.detachTab", tab.label))}
+            />
           </div>
         ))}
       </div>
-      <IconButton
-        className={styles.detach}
-        icon="external-link"
-        title="Move Tab to New Window"
-        action="window.detachTab"
-      />
     </div>
   );
 }

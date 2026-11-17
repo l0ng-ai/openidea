@@ -8,7 +8,7 @@ import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } fr
 import { connectedTargets, openDialog, openSourceDialog, sourceById, useDatabase } from "./store";
 import { readClipboardPlainText } from "@/platform/clipboard";
 import { useRemote } from "@/platform/remote";
-import { dumpScope } from "./dumpTools";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
 
 const act = (
   action: string,
@@ -83,14 +83,17 @@ function sqlScripts(n: DbNode, table: boolean): MenuItem {
   return { label: "SQL Scripts", submenu: [act("db.ddlToClipboard", n), act("db.ddlToConsole", n), sep, ...scripts] };
 }
 
-/** Export with 'pg_dump' / Restore of a PostgreSQL node; the tools run on this machine, so not in remote windows. */
+/** Export / Restore with the client tools of a PostgreSQL or MySQL node; they run on this machine, so not in remote windows. */
 function dumpItems(n: DbNode, restore: boolean): MenuItem[] {
   const source = sourceById(nodeTarget(n));
-  if (useRemote.getState().session || !dumpScope(n, source)) return [];
-  return [
-    act("db.dumpWithPgDump", n),
-    ...(restore ? [act("db.restoreWithPgRestore", n, { disabled: !!source?.readOnly })] : []),
-  ];
+  if (useRemote.getState().session) return [];
+  const [dump, load] = dumpScope(n, source)
+    ? ["db.dumpWithPgDump", "db.restoreWithPgRestore"]
+    : mysqlDumpScope(n, source)
+      ? ["db.dumpWithMysqldump", "db.restoreWithMysql"]
+      : [];
+  if (!dump || !load) return [];
+  return [act(dump, n), ...(restore ? [act(load, n, { disabled: !!source?.readOnly })] : [])];
 }
 
 function importExport(items: MenuItem[]): MenuItem[] {

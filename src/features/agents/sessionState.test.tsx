@@ -35,6 +35,8 @@ const backend = vi.hoisted(() => ({
   groupedCalls: 0,
   rolledBack: [] as Array<[string, string[] | null, string | null]>,
   answers: [] as Array<[string, number, string | null]>,
+  questionAnswers: [] as Array<[string, string, string | null]>,
+  questionError: null as string | null,
   fetched: [] as string[],
   entryError: null as string | null,
   entryWait: null as Promise<void> | null,
@@ -99,6 +101,11 @@ vi.mock("@/platform/ipc", async (original) => ({
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
     agentRespond: async (task: string, permission: number, option: string | null) => {
       backend.answers.push([task, permission, option]);
+      return { status: "ok", data: null };
+    },
+    agentAnswerQuestion: async (task: string, question: string, answer: string | null) => {
+      backend.questionAnswers.push([task, question, answer]);
+      if (backend.questionError) throw new Error(backend.questionError);
       return { status: "ok", data: null };
     },
     agentExternalSessions: async () => {
@@ -1277,6 +1284,125 @@ describe("a pending question", () => {
     ]);
     fireEvent.click(answers[1]!);
     await waitFor(() => expect(backend.answers).toEqual([["A", 7, "b"]]));
+  });
+});
+
+describe("an asynchronous Codex question", () => {
+  beforeEach(() => {
+    backend.questionAnswers = [];
+    backend.questionError = null;
+  });
+
+  function freeQuestion() {
+    const answerKey = JSON.stringify(["request_user_input_async", "free", 0]);
+    const entry: AgentEntry = {
+      type: "question",
+      id: "free",
+      title: "What deadline?",
+      chosen: null,
+      questions: [{ answerKey, header: "", question: "What deadline?", multiSelect: false, options: [] }],
+    };
+    backend.entries.set("A", [entry]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    return answerKey;
+  }
+
+  it("accepts a typed answer without suggested choices", async () => {
+    const answerKey = freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "Tomorrow" } });
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.questionAnswers).toEqual([["A", "free", JSON.stringify({ [answerKey]: ["Tomorrow"] })]]),
+    );
+  });
+
+  it("skips without submitting an answer", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    fireEvent.click(within(card).getByRole("button", { name: "Skip" }));
+    await waitFor(() => expect(backend.questionAnswers).toEqual([["A", "free", null]]));
+  });
+
+  it("preserves a draft while a blocking question takes priority", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "Tomorrow" } });
+    const asyncEntry = backend.entries.get("A")![0]!;
+    const blocking = {
+      type: "permission",
+      id: 100,
+      title: "Blocking question",
+      options: [],
+      chosen: null,
+      questions: [{ header: "", question: "Blocking question", multiSelect: false, options: [] }],
+    } as AgentEntry;
+    act(() => useAgents.setState({ entries: new Map([["A", [asyncEntry, blocking]]]) }));
+    expect(await screen.findByRole("form", { name: "Blocking question" })).toBeInTheDocument();
+    act(() => useAgents.setState({ entries: new Map([["A", [asyncEntry, { ...blocking, chosen: "Cancelled" }]]]) }));
+    const restored = await screen.findByRole("form", { name: "What deadline?" });
+    expect(within(restored).getByPlaceholderText("Type your answer")).toHaveValue("Tomorrow");
+  });
+
+  it("hides the card while its task is archived", async () => {
+    freeQuestion();
+    await screen.findByRole("form", { name: "What deadline?" });
+    act(() =>
+      useAgents.setState((s) => ({ tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "archived" }) })),
+    );
+    expect(screen.queryByRole("form", { name: "What deadline?" })).toBeNull();
+  });
+
+  it("keeps the typed answer after a failed submission and allows retry", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "Tomorrow" } });
+    backend.questionError = "reply unavailable";
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent("reply unavailable");
+    expect(within(card).getByPlaceholderText("Type your answer")).toHaveValue("Tomorrow");
+    backend.questionError = null;
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(backend.questionAnswers).toHaveLength(2));
+    expect(within(card).queryByRole("alert")).toBeNull();
+  });
+
+  it.each(["running", "ready"] as const)("offers answers while the task is %s", async (status) => {
+    const answerKey = JSON.stringify(["request_user_input_async", "call-1", 0]);
+    const question: AgentEntry = {
+      type: "question",
+      id: "call-1",
+      title: "Include retries?",
+      chosen: null,
+      questions: [
+        {
+          answerKey,
+          header: "",
+          question: "Include retries?",
+          multiSelect: false,
+          options: [
+            { label: "Yes", description: "", preview: null },
+            { label: "No", description: "", preview: null },
+          ],
+        },
+      ],
+    };
+    backend.questionAnswers = [];
+    backend.entries.set("A", [{ type: "agent", text: "I can continue while you decide." }, question]);
+    useAgents.setState((s) => ({
+      entries: new Map(backend.entries),
+      tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status }),
+    }));
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Include retries?" });
+    fireEvent.click(within(card).getByRole("radio", { name: /^Yes/ }));
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    await waitFor(() =>
+      expect(backend.questionAnswers).toEqual([["A", "call-1", JSON.stringify({ [answerKey]: ["Yes"] })]]),
+    );
   });
 });
 

@@ -208,6 +208,26 @@ export function appearanceToggleActions(): Action[] {
   ];
 }
 
+/** View › Appearance › Presentation Assistant. */
+export function presentationAssistantAction(): Action {
+  const enabled = () => validateSettings(useProject.getState().settings).appearance.presentationAssistant.enabled;
+  return {
+    id: "view.togglePresentationAssistant",
+    title: "Presentation Assistant",
+    category: "View",
+    keywords: ["appearance", "show shortcuts", "action names", "screencast", "demo", "key promoter"],
+    toggled: enabled,
+    run: async () => {
+      if (!isTauri()) return;
+      useProject.setState({
+        settings: await call(
+          commands.settingsSet("global", "appearance.presentationAssistant.enabled", JSON.stringify(!enabled())),
+        ),
+      });
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // View › Appearance › Navigation Bar: a radio choice (Top / Status Bar / hidden)
 

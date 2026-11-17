@@ -268,6 +268,19 @@ pub async fn agent_prompt(host: &Host, window: &str, task: String, prompt: Agent
     host.project(window)?.agents.prompt(&task, prompt, now).await
 }
 
+/// Answers a non-blocking question, without cancelling the current turn.
+#[command(trust = trusted)]
+pub async fn agent_answer_question(
+    host: &Host,
+    window: &str,
+    task: String,
+    question: String,
+    answer: Option<String>,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.answer_question(&task, &question, answer).await
+}
+
 /// Drops a queued message and returns it (to edit it).
 #[command(trust = always)]
 pub fn agent_unqueue(host: &Host, window: &str, task: String, queued: String) -> IdeResult<AgentQueued> {
@@ -1015,6 +1028,7 @@ mod tests {
 ide_command::domain!(
     agent:
     agent_accept_changes,
+    agent_answer_question,
     agent_archive,
     agent_base_text,
     agent_cancel,

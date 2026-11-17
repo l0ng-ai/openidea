@@ -1,11 +1,11 @@
 //! The OS clipboard's file list, so the project view and Explorer exchange files.
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-use crate::commands::doc::blocking;
 use ide_command::desktop_command;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use ide_core::IdeError;
 use ide_core::IdeResult;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+use ide_host::ops::doc::blocking;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, WebviewWindow};
 

@@ -425,7 +425,7 @@ fn release_install_end_to_end_without_network() {
         "curl",
         &format!(
             r#"out=""; url=""
-while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout|--speed-limit|--speed-time) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
 case "$url" in
   https://api.github.com/*) /bin/cat '{json}';;
   *) /bin/cp '{archive}' "$out";;
@@ -485,7 +485,7 @@ fn phar_release_installs_with_a_php_launcher() {
         "curl",
         &format!(
             r#"out=""; url=""
-while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout|--speed-limit|--speed-time) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
 case "$url" in
   https://api.github.com/*) /bin/cat '{json}';;
   *) /bin/cp '{phar}' "$out";;

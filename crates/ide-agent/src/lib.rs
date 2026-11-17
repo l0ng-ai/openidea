@@ -8,6 +8,7 @@
 //! next prompt when the agent supports `session/load`.
 
 mod acp;
+mod async_questions;
 mod catalogs;
 mod config;
 mod conversation;
@@ -415,6 +416,8 @@ struct Task {
     live: Mutex<Option<Live>>,
     /// Serializes starting the agent.
     connecting: tokio::sync::Mutex<()>,
+    /// Serializes replies from multiple windows to the same async question.
+    answering_questions: tokio::sync::Mutex<()>,
     /// Unanswered permission requests: where to send the chosen option id.
     permissions: Mutex<HashMap<u32, std::sync::mpsc::Sender<Option<String>>>>,
     next_permission: AtomicU32,
@@ -1409,6 +1412,53 @@ impl AgentManager {
         }
     }
 
+    /// Replies to a non-blocking question without interrupting the agent's current turn.
+    pub async fn answer_question(&self, id: &str, question: &str, answer: Option<String>) -> IdeResult<()> {
+        let task = self.task(id)?;
+        let _answering = task.answering_questions.lock().await;
+        let questions = {
+            let s = task.state.lock();
+            s.conversation
+                .main
+                .entries
+                .iter()
+                .find_map(|entry| match entry {
+                    AgentEntry::Question { id, questions, chosen: None, .. } if id == question => {
+                        Some(questions.clone())
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| IdeError::not_found("the question was already answered"))?
+        };
+        let chosen = match answer {
+            None => "Skipped".to_owned(),
+            Some(answer) => {
+                let (text, record) = async_questions::reply(&questions, &answer)?;
+                let prompt = AgentPrompt { text, files: Vec::new(), images: Vec::new() };
+                if let Err(prompt) = task.steer(prompt).await {
+                    if task.state.lock().busy {
+                        return Err(IdeError::unavailable("the reply could not join the running turn; try again"));
+                    }
+                    self.prompt(id, prompt, false).await?;
+                }
+                record
+            }
+        };
+        let changed = {
+            let mut s = task.state.lock();
+            s.conversation.main.entries.iter_mut().enumerate().find_map(|(index, entry)| match entry {
+                AgentEntry::Question { id, chosen: current, .. } if id == question => {
+                    *current = Some(chosen.clone());
+                    Some((None, index))
+                }
+                _ => None,
+            })
+        };
+        task.mark_dirty(changed);
+        task.persist();
+        Ok(())
+    }
+
     /// Stops the agent and moves the task to Archived; its worktree stays.
     pub fn archive(&self, id: &str) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -1707,6 +1757,7 @@ impl Task {
             }),
             live: Mutex::new(None),
             connecting: tokio::sync::Mutex::new(()),
+            answering_questions: tokio::sync::Mutex::new(()),
             permissions: Mutex::new(HashMap::new()),
             next_permission: AtomicU32::new(1),
             replaying: AtomicBool::new(false),
@@ -2655,7 +2706,7 @@ impl Task {
         let applied = self.state.lock().conversation.apply(session, update, now_ms());
         self.mark_dirty(applied);
         // A subagent can start or finish after the turn that started it: saved right away.
-        if kind == "subagent_update" {
+        if matches!(kind, "subagent_update" | "user_question") {
             self.persist();
         }
     }

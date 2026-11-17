@@ -2214,6 +2214,7 @@ impl PluginHost {
                 if events.is_empty() {
                     return Ok(());
                 }
+                let events = Self::relativize_documents(&shared, invocation.client.as_deref(), events);
                 rt.handle_events(events, invocation)
             },
             move |result| {

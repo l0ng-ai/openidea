@@ -662,6 +662,34 @@ async fn rust_references_and_rename_through_mcp() {
         assert!(std::time::Instant::now() < deadline, "language server did not find format_price references");
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+    // Its callers, the callees of one of them, and the hierarchy at a call.
+    let callers = h.json("get_call_hierarchy", args.clone()).await;
+    assert_eq!(callers["root"]["name"], "format_price", "{callers}");
+    let main = callers["items"].as_array().unwrap().iter().find(|i| i["name"] == "main").expect("main calls it");
+    assert_eq!(main["filePath"], "src/main.rs");
+    let call = main["callSites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["lineText"].as_str().unwrap().contains("format_price("))
+        .expect("the call in main");
+    assert_eq!(call["filePath"], "src/main.rs");
+    let callees = h
+        .json("get_call_hierarchy", json!({"filePath":"src/main.rs", "line":main["startLine"], "column":main["startColumn"], "direction":"outgoing"}))
+        .await;
+    // rust-analyzer leaves out the calls inside macro arguments, such as `format_price` in `println!`.
+    let parse = callees["items"].as_array().unwrap().iter().find(|i| i["name"] == "parse").expect("main calls parse");
+    assert_eq!(
+        (&parse["filePath"], &parse["callSites"][0]["filePath"]),
+        (&json!("src/parser.rs"), &json!("src/main.rs"))
+    );
+    let at_call = h
+        .json("get_call_hierarchy", json!({"filePath":"src/main.rs", "line":call["startLine"], "column":call["startColumn"], "direction":"outgoing"}))
+        .await;
+    assert_eq!(
+        (&at_call["root"]["name"], &at_call["root"]["filePath"]),
+        (&json!("format_price"), &json!("src/lib.rs"))
+    );
     let result = h.json("rename_refactoring", json!({"pathInProject":"src/lib.rs", "symbolName":"format_price", "newName":"format_amount", "line":line + 1, "column":column})).await;
     assert_eq!(result["applied"], true, "{result}");
     assert!(project.documents.text_snapshot(doc.id).unwrap().text.contains("format_amount"));
@@ -978,4 +1006,219 @@ async fn http_list_and_run_require_confirmation() {
     // Secrets must not appear as request headers/body in the tool payload.
     assert!(result.get("headers").is_none(), "{result}");
     assert!(result.get("request").is_none(), "{result}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn call_hierarchy_is_listed_for_untrusted_projects() {
+    let h = Harness::new();
+    let tools = Registry::new(h.host.clone()).tools(&h.root).unwrap();
+    assert!(tools.iter().any(|t| t.name == "get_call_hierarchy"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn call_hierarchy_without_a_language_server_says_it_is_unsupported() {
+    let h = Harness::new();
+    let error = h.error("get_call_hierarchy", json!({"filePath":"src/a.txt","line":1,"column":1})).await;
+    assert!(error.contains("call hierarchy"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn call_hierarchy_rejects_an_unknown_direction() {
+    let h = Harness::new();
+    let args = json!({"filePath":"src/a.txt","line":1,"column":1,"direction":"up"});
+    assert_eq!(h.error("get_call_hierarchy", args).await, "direction must be incoming or outgoing");
+}
+
+/// `src/lib.rs`: `price` calls `double`; `src/main.rs`: `main` calls `price` and `show`;
+/// `other/c.rs`: `helper` calls `price`; a library class calls it too.
+const LIB_RS: &str = "pub fn price(cents: u64) -> u64 {\n    double(cents)\n}\nfn double(v: u64) -> u64 { v * 2 }\n";
+const MAIN_RS: &str = "fn main() {\n    let a = price(1);\n    show(a);\n}\nfn show(v: u64) {}\n";
+const C_RS: &str = "fn helper() {\n    price(2);\n}\n";
+const LIBRARY_URI: &str = "jar:file:///lib.jar!/Caller.class";
+
+/// A language server for `rust` that knows the call hierarchy of the files above.
+struct CallServer {
+    root: PathBuf,
+}
+
+impl CallServer {
+    fn uri(&self, path: &str) -> String {
+        ide_lsp::path_to_uri_string(&self.root.join(path))
+    }
+    fn item(&self, name: &str) -> Value {
+        let r = |l, c, l2, c2| json!({"start":{"line":l,"character":c},"end":{"line":l2,"character":c2}});
+        let (uri, range, selection) = match name {
+            "price" => (self.uri("src/lib.rs"), r(0, 0, 2, 1), r(0, 7, 0, 12)),
+            "double" => (self.uri("src/lib.rs"), r(3, 0, 3, 34), r(3, 3, 3, 9)),
+            "main" => (self.uri("src/main.rs"), r(0, 0, 3, 1), r(0, 3, 0, 7)),
+            "show" => (self.uri("src/main.rs"), r(4, 0, 4, 18), r(4, 3, 4, 7)),
+            "helper" => (self.uri("other/c.rs"), r(0, 0, 2, 1), r(0, 3, 0, 9)),
+            _ => (LIBRARY_URI.to_owned(), r(0, 0, 9, 1), r(2, 4, 2, 10)),
+        };
+        json!({"name":name,"kind":12,"uri":uri,"range":range,"selectionRange":selection})
+    }
+    fn call(&self, name: &str, key: &str, sites: &[(u32, u32, u32)]) -> Value {
+        let sites: Vec<Value> = sites
+            .iter()
+            .map(|(l, c, c2)| json!({"start":{"line":l,"character":c},"end":{"line":l,"character":c2}}))
+            .collect();
+        json!({key: self.item(name), "fromRanges": sites})
+    }
+    /// The item named at `p`: on a declaration's name or on a call.
+    fn prepare(&self, p: &Value) -> Value {
+        let uri = p["textDocument"]["uri"].as_str().unwrap();
+        let (line, col) = (p["position"]["line"].as_u64().unwrap(), p["position"]["character"].as_u64().unwrap());
+        let on =
+            |path: &str, l: u64, from: u64, to: u64| uri == self.uri(path) && line == l && (from..=to).contains(&col);
+        let name = if on("src/lib.rs", 0, 7, 12) || on("src/main.rs", 1, 12, 17) {
+            "price"
+        } else if on("src/main.rs", 0, 3, 7) {
+            "main"
+        } else {
+            return Value::Null;
+        };
+        json!([self.item(name)])
+    }
+}
+
+impl ide_jsonrpc::Handler for CallServer {
+    fn on_notification(&self, _: &str, _: Value) {}
+    fn on_request(&self, method: &str, p: Value) -> Result<Value, (i64, String)> {
+        let item = p["item"]["name"].as_str().unwrap_or_default();
+        Ok(match method {
+            "initialize" => json!({"capabilities": {
+                "textDocumentSync": {"openClose": true, "change": 1},
+                "callHierarchyProvider": true,
+                "documentSymbolProvider": true,
+            }}),
+            "textDocument/prepareCallHierarchy" => self.prepare(&p),
+            "callHierarchy/incomingCalls" if item == "price" => json!([
+                self.call("main", "from", &[(1, 12, 17)]),
+                self.call("helper", "from", &[(1, 4, 9)]),
+                self.call("Caller", "from", &[(2, 8, 13)]),
+            ]),
+            "callHierarchy/outgoingCalls" if item == "price" => json!([self.call("double", "to", &[(1, 4, 10)])]),
+            "callHierarchy/outgoingCalls" if item == "main" => {
+                json!([self.call("show", "to", &[(2, 4, 8)]), self.call("price", "to", &[(1, 12, 17)])])
+            }
+            "textDocument/documentSymbol" if p["textDocument"]["uri"] == self.uri("src/main.rs") => {
+                let symbol = |name| {
+                    let item = self.item(name);
+                    json!({"name":name,"kind":12,"range":item["range"],"selectionRange":item["selectionRange"]})
+                };
+                json!([symbol("main"), symbol("show")])
+            }
+            "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" | "textDocument/documentSymbol" => json!([]),
+            _ => Value::Null,
+        })
+    }
+}
+
+/// The harness with the files above and [`CallServer`] serving them.
+async fn call_hierarchy_harness() -> (Harness, tokio::task::JoinHandle<()>) {
+    let h = Harness::new();
+    h.trust().await;
+    for (path, text) in [("src/lib.rs", LIB_RS), ("src/main.rs", MAIN_RS), ("other/c.rs", C_RS)] {
+        std::fs::create_dir_all(h.root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(h.root.join(path), text).unwrap();
+    }
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = Arc::new(CallServer { root: h.root.clone() });
+    let accept = tokio::spawn(async move {
+        let mut peers = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            let (r, w) = stream.into_split();
+            peers.push(ide_jsonrpc::Peer::connect(r, w, server.clone()));
+        }
+    });
+    let cfg: ide_language::LanguageServerConfig =
+        toml::from_str(&format!("name='calls'\ncommand='no-process-required'\nconnect='127.0.0.1:{port}'")).unwrap();
+    h.host.project("main").unwrap().lsp.set_servers_hook(Box::new(move |language, _| {
+        if language.as_str() == "rust" { vec![cfg.clone()] } else { Vec::new() }
+    }));
+    (h, accept)
+}
+
+fn names(result: &Value) -> Vec<&str> {
+    result["items"].as_array().unwrap().iter().map(|i| i["name"].as_str().unwrap()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn call_hierarchy_lists_callers_with_their_call_sites() {
+    let (h, _server) = call_hierarchy_harness().await;
+    let callers = h.json("get_call_hierarchy", json!({"filePath":"src/lib.rs","line":1,"column":9})).await;
+    assert_eq!(callers["root"]["name"], "price");
+    assert_eq!(callers["root"]["filePath"], "src/lib.rs");
+    assert_eq!(callers["root"]["lineText"], "pub fn price(cents: u64) -> u64 {");
+    assert_eq!(callers["total"], 3);
+    let main = callers["items"].as_array().unwrap().iter().find(|i| i["name"] == "main").unwrap();
+    assert_eq!(
+        main,
+        &json!({"name":"main","kind":"function","filePath":"src/main.rs",
+                "startLine":1,"startColumn":4,"endLine":1,"endColumn":8,"lineText":"fn main() {",
+                "callSites":[{"filePath":"src/main.rs","startLine":2,"startColumn":13,"endLine":2,"endColumn":18,
+                              "lineText":"    let a = price(1);"}]})
+    );
+    // An item's position is a valid input for the next level.
+    let main_calls = h
+        .json(
+            "get_call_hierarchy",
+            json!({"filePath":"src/main.rs","line":main["startLine"],"column":main["startColumn"],"direction":"outgoing"}),
+        )
+        .await;
+    assert_eq!(names(&main_calls), ["price", "show"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn outgoing_call_sites_are_in_the_file_of_the_root() {
+    let (h, _server) = call_hierarchy_harness().await;
+    // On the call `price(1)` in main.rs: the hierarchy of `price`, declared in lib.rs.
+    let callees = h
+        .json("get_call_hierarchy", json!({"filePath":"src/main.rs","line":2,"column":14,"direction":"outgoing"}))
+        .await;
+    assert_eq!(callees["root"]["filePath"], "src/lib.rs");
+    assert_eq!(names(&callees), ["double"]);
+    assert_eq!(
+        callees["items"][0]["callSites"],
+        json!([{"filePath":"src/lib.rs","startLine":2,"startColumn":5,"endLine":2,"endColumn":11,"lineText":"    double(cents)"}])
+    );
+    let from_main = h
+        .json("get_call_hierarchy", json!({"filePath":"src/main.rs","line":1,"column":4,"direction":"outgoing"}))
+        .await;
+    let price = &from_main["items"][0];
+    assert_eq!((&price["filePath"], &price["callSites"][0]["filePath"]), (&json!("src/lib.rs"), &json!("src/main.rs")));
+    assert_eq!(price["callSites"][0]["lineText"], "    let a = price(1);");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_position_in_a_function_body_means_that_function() {
+    let (h, _server) = call_hierarchy_harness().await;
+    let body = json!({"filePath":"src/main.rs","line":2,"column":5,"direction":"outgoing"});
+    let callees = h.json("get_call_hierarchy", body).await;
+    assert_eq!(callees["root"]["name"], "main");
+    assert_eq!(names(&callees), ["price", "show"]);
+    let outside = h.error("get_call_hierarchy", json!({"filePath":"src/main.rs","line":6,"column":1})).await;
+    assert_eq!(outside, "no function or method at 6:1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn call_hierarchy_pages_are_sorted_and_scoped() {
+    let (h, _server) = call_hierarchy_harness().await;
+    let at = |extra: Value| {
+        let mut args = json!({"filePath":"src/lib.rs","line":1,"column":9});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        args
+    };
+    let first = h.json("get_call_hierarchy", at(json!({"limit":2}))).await;
+    assert_eq!(names(&first), ["Caller", "helper"]);
+    assert_eq!(first["items"][0]["filePath"], LIBRARY_URI);
+    assert!(first["items"][0].get("lineText").is_none(), "{first}");
+    assert_eq!((&first["more"], &first["nextOffset"]), (&json!(true), &json!(2)));
+    let next = h.json("get_call_hierarchy", at(json!({"limit":2,"offset":2}))).await;
+    assert_eq!(names(&next), ["main"]);
+    let scoped = h.json("get_call_hierarchy", at(json!({"scope":"src"}))).await;
+    assert_eq!(names(&scoped), ["main"]);
+    assert_eq!(scoped["total"], 1);
+    assert_eq!(scoped["root"]["name"], "price", "the root is shown whatever the scope");
 }

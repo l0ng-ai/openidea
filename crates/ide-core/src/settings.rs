@@ -802,6 +802,35 @@ pub struct AppearanceSettings {
     pub main_toolbar: Option<MainToolbarSettings>,
     /// Appearance › Background Image: an image shown through the IDE window.
     pub background_image: BackgroundImageSettings,
+    /// Appearance › Presentation Assistant: the name and shortcut of each action run.
+    pub presentation_assistant: PresentationAssistantSettings,
+}
+
+/// Appearance › Presentation Assistant: shows the name and shortcut of each action the user runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PresentationAssistantSettings {
+    pub enabled: bool,
+    /// `small` | `medium` | `large`.
+    pub size: String,
+    /// How long each popup stays, in seconds.
+    pub duration_seconds: u32,
+    /// `top-left`, `top`, `top-right`, `bottom-left`, `bottom` or `bottom-right` of the window.
+    pub position: String,
+    /// Also show the shortcut of the other platform's keymap (macOS ⇄ Windows/Linux).
+    pub alternate_keymap: bool,
+}
+
+impl Default for PresentationAssistantSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: "medium".into(),
+            duration_seconds: 4,
+            position: "bottom".into(),
+            alternate_keymap: false,
+        }
+    }
 }
 
 /// Appearance › Background Image. An empty `path` shows no image.
@@ -894,6 +923,7 @@ impl Default for AppearanceSettings {
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
             background_image: BackgroundImageSettings::default(),
+            presentation_assistant: PresentationAssistantSettings::default(),
         }
     }
 }

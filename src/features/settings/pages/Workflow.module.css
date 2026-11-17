@@ -244,3 +244,30 @@
 .toolsLayout .alignedRow {
   grid-template-columns: subgrid;
 }
+
+/* Multi-line setting (agent instructions): a text field frame, full width. */
+.instructions {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 72px;
+  padding: var(--space-1-5) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-field, var(--bg-button));
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: var(--fs-ui);
+  resize: vertical;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.instructions::placeholder {
+  color: var(--fg-faint);
+}
+.instructions:focus {
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring),
+    0 0 0 1px var(--focus-ring);
+}
