@@ -97,6 +97,20 @@ it("leaves the reload to the user while edits are unsaved, and asks first", asyn
   expect(reconnectRemote).not.toHaveBeenCalled();
 });
 
+it("stops reconnecting on its own once a file is edited while it waits", async () => {
+  uninstall();
+  reconnectRemote.mockRejectedValueOnce(new Error("Network is unreachable"));
+  uninstall = installReconnect(async (ms) => {
+    waits.push(ms);
+    // Edited during the second wait.
+    if (waits.length === 2) dirty.ids = [7];
+  });
+  lose();
+  await settle();
+  expect(reconnectRemote).toHaveBeenCalledOnce();
+  expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Lost the connection to box" }));
+});
+
 it("ignores a lost connection of a window that is no longer remote", async () => {
   useRemote.setState({ session: null });
   lose();
