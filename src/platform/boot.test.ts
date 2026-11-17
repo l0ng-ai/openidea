@@ -213,20 +213,21 @@ it("preserves Safari error messages when its stack only lists locations", () => 
 });
 
 it("names an outdated system web engine as the cause", () => {
-  const supports = vi.fn(() => false);
-  vi.stubGlobal("CSS", { supports });
+  // Simulates Safari < 15.4, which can't parse the bundle's syntax.
+  vi.stubGlobal("structuredClone", undefined);
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
   );
   window.dispatchEvent(new ErrorEvent("error", { error: new SyntaxError("Unexpected token '.'") }));
   const hint = document.querySelector("#boot-error p")?.textContent;
-  expect(supports).toHaveBeenCalledWith("container-type", "inline-size");
-  expect(hint).toContain("needs macOS 13 Ventura or later");
+  expect(hint).toContain("needs macOS 12 Monterey or later");
+  expect(hint).toContain("macOS 11 Big Sur");
+  expect(hint).toContain("latest Safari update");
   vi.unstubAllGlobals();
 });
 
 it("keeps the plain report hint on a current engine", () => {
-  vi.stubGlobal("CSS", { supports: () => true });
+  vi.stubGlobal("structuredClone", () => ({}));
   window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
   expect(document.querySelector("#boot-error p")?.textContent).toBe(
     "Copy the details below and include them in a GitHub issue.",

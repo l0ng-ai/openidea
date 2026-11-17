@@ -2,12 +2,13 @@
 // (mcpserver.vcs/src/com/intellij/mcpserver/toolsets/vcs/VcsToolset.kt), Apache-2.0.
 //! Version control: repositories and git status.
 
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::{IdeError, IdeResult};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-const STATUS_DEFAULT_LIMIT: i64 = 1000;
+const STATUS_DEFAULT_LIMIT: usize = 100;
 
 pub fn tools() -> Vec<Tool> {
     vec![get_repositories(), git_status(), git_diff()]
@@ -28,7 +29,7 @@ fn relative_to(root: &Path, path: &Path) -> String {
     };
     match rel {
         Some(rel) => rel.to_string_lossy().replace('\\', "/"),
-        None => path.to_string_lossy().into_owned(),
+        None => path.to_string_lossy().replace('\\', "/"),
     }
 }
 
@@ -254,11 +255,7 @@ By default all Git repositories are returned.",
         |call| async move {
             let include_untracked = call.flag("includeUntracked", true)?;
             let include_ignored = call.flag("includeIgnored", false)?;
-            let limit = call.opt_i64("limit")?.unwrap_or(STATUS_DEFAULT_LIMIT);
-            if limit <= 0 {
-                return Err(IdeError::invalid("limit must be > 0"));
-            }
-            let limit = limit as usize;
+            let page = Page::of(&call, STATUS_DEFAULT_LIMIT)?;
             let host = call.host();
             let h = host.clone();
             let w = call.window.clone();
@@ -269,11 +266,16 @@ By default all Git repositories are returned.",
                 .map(|r| (r.root.into_path_buf(), r.head))
                 .collect();
             let wanted = call.opt_str("repositoryPathRelativeToProject")?;
+            let scope = super::scope::Scope::of(&call)?;
             let git = git_executable(&call);
-            let mut roots: Vec<(PathBuf, Option<String>)> = match &wanted {
+            // A repository asked for, or the one holding `scope`.
+            let target = match &wanted {
+                Some(wanted) => Some(call.resolve_inside(wanted)?),
+                None => scope.dir().map(Path::to_path_buf),
+            };
+            let mut roots: Vec<(PathBuf, Option<String>)> = match target {
                 None => repos,
-                Some(wanted) => {
-                    let path = call.resolve_inside(wanted)?;
+                Some(path) => {
                     // The innermost repository containing the path.
                     match innermost_repo(repos, &path) {
                         Some(repo) => vec![repo],
@@ -285,7 +287,8 @@ By default all Git repositories are returned.",
                                 vec![(root, branch)]
                             }
                             None => {
-                                return Err(IdeError::not_found(format!("No git repository found for path: {wanted}")));
+                                let shown = wanted.unwrap_or_else(|| call.display(&path));
+                                return Err(IdeError::not_found(format!("No git repository found for path: {shown}")));
                             }
                         },
                     }
@@ -296,16 +299,18 @@ By default all Git repositories are returned.",
             for (root, branch) in roots {
                 let rel = relative_to_project(&call, &root);
                 let (git, dir) = (git.clone(), root.clone());
-                let entries = host
+                let mut entries = host
                     .blocking(move || read_status(&git, &dir, include_untracked, include_ignored))
                     .await
                     .map_err(|e| {
                         IdeError::internal(format!("Failed to get git status for repository '{rel}': {}", e.message))
                     })?;
+                entries.retain(|e| scope.contains(&root.join(e.path.trim_end_matches('/'))));
                 let count = |f: fn(&StatusEntry) -> bool| entries.iter().filter(|e| f(e)).count();
                 let listed: Vec<Value> = entries
                     .iter()
-                    .take(limit)
+                    .skip(page.offset)
+                    .take(page.limit)
                     .map(|e| {
                         let mut v = json!({
                             "pathRelativeToRepository": e.path.trim_end_matches('/'),
@@ -318,19 +323,24 @@ By default all Git repositories are returned.",
                         v
                     })
                     .collect();
-                repositories.push(json!({
+                let more = entries.len() > page.end();
+                let mut repository = json!({
                     "repositoryPathRelativeToProject": rel,
                     "currentBranch": branch,
                     "isClean": entries.is_empty(),
                     "totalEntries": entries.len(),
-                    "hasMoreEntries": entries.len() > listed.len(),
+                    "hasMoreEntries": more,
                     "stagedCount": count(StatusEntry::staged),
                     "unstagedCount": count(StatusEntry::unstaged),
                     "untrackedCount": count(StatusEntry::untracked),
                     "ignoredCount": count(StatusEntry::ignored),
                     "conflictedCount": count(StatusEntry::conflicted),
                     "entries": listed,
-                }));
+                });
+                if more {
+                    repository["nextOffset"] = page.end().into();
+                }
+                repositories.push(repository);
             }
             Output::json(json!({ "repositories": repositories }))
         },
@@ -342,7 +352,9 @@ By default all Git repositories are returned.",
     ))
     .param(Param::optional("includeUntracked", ParamType::Boolean, "Whether to include untracked files"))
     .param(Param::optional("includeIgnored", ParamType::Boolean, "Whether to include ignored files"))
-    .param(Param::optional("limit", ParamType::Integer, "Maximum number of entries returned per repository"))
+    .param(super::scope::param())
+    .param(Param::optional("limit", ParamType::Integer, "Entries to return per repository at most (default 100)"))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
 
 fn git_diff() -> Tool {

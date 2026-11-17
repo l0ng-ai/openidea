@@ -112,6 +112,26 @@ export function dirName(path: string): string {
   return i < 0 ? "" : p.slice(0, i);
 }
 
+/**
+ * Changed-file label for a rename, in IDEA's wording: `renamed from old.txt` when the
+ * file stays in its directory, `moved from ../old/old.txt` when it changed directories
+ * — the old path relative to the file's new directory, so the move is visible.
+ */
+export function renameFrom(newPath: string, oldPath: string): string {
+  const dir = dirName(newPath);
+  if (dirName(oldPath) === dir) return tx`renamed from ${baseName(oldPath)}`;
+  return tx`moved from ${relativePath(dir, oldPath)}`;
+}
+
+/** `path` seen from the directory `from`, with `../` segments to climb out of it. */
+function relativePath(from: string, path: string): string {
+  const source = from ? from.split("/") : [];
+  const target = path.split("/");
+  let common = 0;
+  while (common < source.length && common < target.length - 1 && source[common] === target[common]) common++;
+  return "../".repeat(source.length - common) + target.slice(common).join("/");
+}
+
 /** List timestamp per Settings › System Settings › Date Formats. */
 export function formatTime(ms: number | null | undefined, now = Date.now()): string {
   return ms ? formatTimestamp(ms, now) : "";
@@ -194,26 +214,28 @@ export function remoteHosting(url: string): { name: string; kind: HostingKind } 
 
 /**
  * Page of a file or directory at `revision` on the remote's web UI, with the 0-based `line`
- * selected. `relative` is the `/`-separated path inside the repository ("" for its root).
+ * (through `endLine`, when later) selected. `relative` is the `/`-separated path inside the
+ * repository ("" for its root).
  */
 export function fileWebUrl(
   remoteUrl: string,
   revision: string,
   relative: string,
-  opts: { dir?: boolean; line?: number } = {},
+  opts: { dir?: boolean; line?: number; endLine?: number } = {},
 ): string | null {
   const base = remoteWebUrl(remoteUrl);
   const hosting = remoteHosting(remoteUrl);
   if (!base || !hosting) return null;
   const path = [...revision.split("/"), ...relative.split("/")].filter(Boolean).map(encodeURIComponent).join("/");
   const line = opts.line !== undefined && !opts.dir ? opts.line + 1 : null;
+  const end = line && opts.endLine !== undefined && opts.endLine + 1 > line ? opts.endLine + 1 : null;
   switch (hosting.kind) {
     case "github":
-      return `${base}/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}` : ""}`;
+      return `${base}/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-L${end}` : ""}` : ""}`;
     case "gitlab":
-      return `${base}/-/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}` : ""}`;
+      return `${base}/-/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-${end}` : ""}` : ""}`;
     case "bitbucket":
-      return `${base}/src/${path}${line ? `#lines-${line}` : ""}`;
+      return `${base}/src/${path}${line ? `#lines-${line}${end ? `:${end}` : ""}` : ""}`;
   }
 }
 

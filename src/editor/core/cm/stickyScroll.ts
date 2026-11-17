@@ -3,6 +3,7 @@
  * line stay pinned at the top (IDEA 2023+ / VS Code). Scopes come from the
  * backend folding ranges, or from the syntax tree when there are none.
  * Clicking a sticky line scrolls to it, the caret where it was clicked.
+ * With rainbow brackets on, its brackets keep their colours from the editor.
  */
 import { EditorSelection, Facet, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
@@ -11,6 +12,7 @@ import { highlightTree } from "@lezer/highlight";
 import { backendFolds } from "./folding";
 import { openideaHighlightStyle } from "./highlight";
 import { LINE_INSET } from "./lineInset";
+import { bracketClass, bracketScanner, DEFAULT_BRACKET_COLORS, type BracketMark } from "./rainbowBrackets";
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -49,22 +51,50 @@ export function enclosingHeaders(state: EditorState, lineNo: number): number[] {
     .slice(-state.facet(stickyMaxLines));
 }
 
-function renderLineContent(state: EditorState, lineNo: number, target: HTMLElement) {
+/** Characters of a sticky line rendered at most. */
+const MAX_TEXT = 400;
+
+/**
+ * Renders line `lineNo` highlighted into `target`; `brackets` (ascending, as from the
+ * rainbow bracket scanner) are wrapped in their rainbow class, outside the token's span
+ * as in the editor.
+ */
+export function renderLineContent(
+  state: EditorState,
+  lineNo: number,
+  target: HTMLElement,
+  brackets: readonly BracketMark[] = [],
+  colors = DEFAULT_BRACKET_COLORS,
+) {
   const line = state.doc.line(lineNo);
-  const text = line.text.length > 400 ? line.text.slice(0, 400) : line.text;
+  const text = line.text.length > MAX_TEXT ? line.text.slice(0, MAX_TEXT) : line.text;
   const end = line.from + text.length;
   const tree = syntaxTree(state);
   let pos = line.from;
-  const push = (to: number, cls: string) => {
-    if (to <= pos) return;
+  let next = 0;
+  const node = (to: number, cls: string): Node => {
     const s = state.doc.sliceString(pos, to);
-    if (cls) {
-      const span = document.createElement("span");
-      span.className = cls;
-      span.textContent = s;
-      target.appendChild(span);
-    } else target.appendChild(document.createTextNode(s));
     pos = to;
+    if (!cls) return document.createTextNode(s);
+    const span = document.createElement("span");
+    span.className = cls;
+    span.textContent = s;
+    return span;
+  };
+  const push = (to: number, cls: string) => {
+    while (to > pos) {
+      while (next < brackets.length && brackets[next]!.from < pos) next++;
+      const bracket = brackets[next];
+      if (!bracket || bracket.from >= to) {
+        target.appendChild(node(to, cls));
+        return;
+      }
+      if (bracket.from > pos) target.appendChild(node(bracket.from, cls));
+      const wrap = document.createElement("span");
+      wrap.className = bracketClass(bracket.depth, colors);
+      wrap.appendChild(node(bracket.from + 1, cls));
+      target.appendChild(wrap);
+    }
   };
   if (tree.length >= end) {
     highlightTree(
@@ -137,8 +167,11 @@ function xAtOffset(inner: HTMLElement, offset: number): number {
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
-  /** Text and syntax tree the rows were rendered from (re-render when either changes). */
-  private renderedFrom: { texts: string[]; tree: unknown } | null = null;
+  /**
+   * Text and syntax tree the rows were rendered from (re-render when either changes), and
+   * the document while bracket colours are on (an edit above may change their depth).
+   */
+  private renderedFrom: { texts: string[]; tree: unknown; doc: unknown; scanner: unknown } | null = null;
   private gutterWidth = 0;
   private numberLeft = 0;
   private scheduled = false;
@@ -164,6 +197,7 @@ class StickyScroll {
       u.focusChanged ||
       u.viewportChanged ||
       u.geometryChanged ||
+      u.transactions.some((tr) => tr.reconfigured) ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
       u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false)
     )
@@ -212,12 +246,15 @@ class StickyScroll {
         const state = this.view.state;
         const texts = lines.map((n) => (n <= state.doc.lines ? state.doc.line(n).text : ""));
         const tree = syntaxTree(state);
+        const scanner = bracketScanner(this.view);
         const prev = this.renderedFrom;
         const same =
           lines.length === this.lines.length &&
           lines.every((n, i) => n === this.lines[i]) &&
           !!prev &&
           prev.tree === tree &&
+          prev.doc === (scanner ? state.doc : null) &&
+          prev.scanner === scanner &&
           texts.every((t, i) => t === prev.texts[i]);
         if (!lines.length) {
           this.dom.style.display = "none";
@@ -229,7 +266,7 @@ class StickyScroll {
         const rebuild = !same || gutterWidth !== this.gutterWidth || numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, tree };
+          this.renderedFrom = { texts, tree, doc: scanner ? state.doc : null, scanner };
           this.gutterWidth = gutterWidth;
           this.numberLeft = numberLeft;
           const frag = document.createDocumentFragment();
@@ -249,7 +286,14 @@ class StickyScroll {
             inner.className = "cm-openidea-stickyInner";
             inner.style.display = "inline-block";
             inner.style.paddingLeft = `${LINE_INSET}px`;
-            renderLineContent(this.view.state, n, inner);
+            const line = state.doc.line(n);
+            renderLineContent(
+              state,
+              n,
+              inner,
+              scanner?.marks(state, line.from, line.from + Math.min(MAX_TEXT, line.length)),
+              scanner?.colors,
+            );
             text.appendChild(inner);
             row.append(num, text);
             frag.appendChild(row);

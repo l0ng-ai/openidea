@@ -17,6 +17,8 @@
 pub(crate) mod discover;
 mod normalize;
 
+pub(crate) use normalize::base64 as normalize_base64;
+
 use ide_jsonrpc::{Handler, Peer, RpcError, codes};
 use normalize::Normalizer;
 use parking_lot::Mutex;
@@ -25,7 +27,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::oneshot;
 
 /// ACP's error code for a request that needs the user to sign in.
@@ -58,6 +60,8 @@ fn client_capabilities() -> Value {
         "terminal": false,
         // Subagents as sessions of their own (ACP subagents RFD; v2 baseline).
         "subagents": {},
+        // Forms the agent asks the user to fill in (`elicitation/create`); not URL mode.
+        "elicitation": { "form": {} },
         // Cursor exposes model parameters (e.g. Composer `fast`) as separate config options
         // only when the client advertises this flag (undocumented Cursor ACP extension).
         "_meta": { "parameterizedModelPicker": true },
@@ -158,9 +162,16 @@ impl Negotiated {
         Self { generation: 2, capabilities, agent_info: response.get("info").cloned(), auth_methods, meta }
     }
 
-    /// Whether a saved session can be reopened (`session/load` on v1, `session/resume` on v2).
+    /// Whether a saved session can be reopened: `loadSession`, or a v1 agent's
+    /// `sessionCapabilities.resume` (DeepSeek Harness), which stands in for it.
     pub fn load_session(&self) -> bool {
-        self.capabilities.get("loadSession").and_then(Value::as_bool) == Some(true)
+        self.capabilities.get("loadSession").and_then(Value::as_bool) == Some(true) || self.session("resume")
+    }
+
+    /// Whether `session/load` must be sent as `session/resume`: a v1 agent that advertises
+    /// `sessionCapabilities.resume` instead of `loadSession` (DeepSeek Harness).
+    pub fn resume_instead_of_load(&self) -> bool {
+        self.capabilities.get("loadSession").and_then(Value::as_bool) != Some(true) && self.session("resume")
     }
 
     /// `promptCapabilities.<name>` (`image`, `audio`, `embeddedContext`).
@@ -201,6 +212,8 @@ pub(crate) struct Dialect {
     inner: Arc<dyn Handler>,
     /// 0 until `initialize` answers; then 1 or 2.
     generation: AtomicU8,
+    /// Set by `initialize`: a v1 agent's `session/load` is sent as `session/resume`.
+    resume_load: AtomicBool,
     normalizer: Mutex<Normalizer>,
     /// Running v2 prompts, by session id.
     turns: Mutex<HashMap<String, Turn>>,
@@ -218,6 +231,7 @@ impl Dialect {
         Arc::new(Self {
             inner,
             generation: AtomicU8::new(0),
+            resume_load: AtomicBool::new(false),
             normalizer: Mutex::new(Normalizer::default()),
             turns: Mutex::new(HashMap::new()),
         })
@@ -225,6 +239,10 @@ impl Dialect {
 
     pub fn generation(&self) -> u8 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    fn resume_load(&self) -> bool {
+        self.resume_load.load(Ordering::Acquire)
     }
 
     fn v2(&self) -> bool {
@@ -320,6 +338,13 @@ impl Handler for Dialect {
         }
         self.inner.on_request(method, params)
     }
+
+    fn on_request_raw(&self, method: &str, params: Value, raw: &[u8]) -> Result<Value, (i64, String, Option<Value>)> {
+        if self.v2() && method == "session/request_permission" {
+            return self.on_request_with_data(method, params);
+        }
+        self.inner.on_request_raw(method, params, raw)
+    }
 }
 
 /// A v2 permission request with the v1 `toolCall` (its subject's, titled with the request's title).
@@ -369,6 +394,7 @@ impl Conn {
         let response: Value = self.peer.request("initialize", initialize_params(client_info), None).await?;
         let negotiated = Negotiated::from_initialize(&response);
         self.dialect.generation.store(negotiated.generation, Ordering::Release);
+        self.dialect.resume_load.store(negotiated.resume_instead_of_load(), Ordering::Release);
         Ok(negotiated)
     }
 
@@ -382,6 +408,9 @@ impl Conn {
         let params = serde_json::to_value(params).map_err(|e| RpcError::Protocol(e.to_string()))?;
         let value = if self.dialect.v2() {
             self.request_v2(method, params, cancel).await?
+        } else if method == "session/load" && self.dialect.resume_load() {
+            // Same request shape, without a replay and without v2's setup translation.
+            self.peer.request("session/resume", params, cancel).await?
         } else {
             self.peer.request(method, params, cancel).await?
         };

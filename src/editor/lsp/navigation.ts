@@ -86,6 +86,7 @@ import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { enclosingType } from "@/editor/navigation/lineMarkers";
 import { projectPythonHierarchy, pythonImplementationTargets } from "@/editor/navigation/pythonHierarchy";
+import { importBindings } from "@/editor/navigation/inheritanceGraph";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import { isAddCaretGesture } from "@/editor/core/cm/multiCaret";
@@ -194,27 +195,25 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
   const root = useProject.getState().project?.root ?? "";
   const names = locs.map((l) => targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col));
   const indexed = await indexContainers(locs, names);
-  return locs.map((l, i) => {
+  const rows = locs.map((l, i) => {
     const where = chooserWhere(root, l.path, l.range.start.line + 1);
     // Index symbols carry their container; server targets take the index's answer or the enclosing type.
-    if (l.kind && l.name)
-      return {
-        id: `${i}`,
-        label: l.name,
-        detail: [l.container, where].filter(Boolean).join(" · "),
-        symbol: l.kind,
-        location: { path: l.path, line: l.range.start.line },
-        run: () => navigateTo(l),
-      };
-    return {
-      id: `${i}`,
-      label: names[i] ?? basename(l.path),
-      detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
-      icon: fileIconName(basename(l.path), l.path),
-      location: { path: l.path, line: l.range.start.line },
-      run: () => navigateTo(l),
-    };
+    const indexSymbol = !!(l.kind && l.name);
+    const label = indexSymbol ? l.name! : (l.name ?? names[i] ?? basename(l.path));
+    const container = indexSymbol ? l.container : (indexed.get(i) ?? enclosingType(files.get(l.path), l));
+    return { l, where, label, container: container || null, indexSymbol };
   });
+  // Targets that all share one name (the implementations of a method) are told apart, and
+  // speed-searched, by their containers, which become the rows' text.
+  const byContainer = rows.length > 1 && rows.every((r) => r.container && r.label === rows[0]!.label);
+  return rows.map(({ l, where, label, container, indexSymbol }, i) => ({
+    id: `${i}`,
+    label: byContainer ? container! : label,
+    detail: (byContainer ? [where] : [container, where]).filter(Boolean).join(" · "),
+    ...(indexSymbol ? { symbol: l.kind! } : { icon: fileIconName(basename(l.path), l.path) }),
+    location: { path: l.path, line: l.range.start.line },
+    run: () => navigateTo(l),
+  }));
 }
 
 /** "Choose Implementation of foo (3 found)". */
@@ -387,6 +386,48 @@ async function pythonImplementations(doc: EditorDocContext, pos: Pos): Promise<D
   return pythonImplementationTargets(hierarchy, doc.path, pos, outline).catch(() => []);
 }
 
+/** Whether `line` (0-based) of `text` is an import statement. */
+function isImportLine(text: Text, line: number): boolean {
+  return line < text.lines && /^\s*(from|import)\s/.test(text.line(line + 1).text);
+}
+
+/**
+ * The declaration of a name this file imports, from the project index. A server that analyses
+ * only its own root answers the import statement instead, and an attached dependency project
+ * is outside that root — the import names the module the declaration lives in.
+ */
+async function importedDeclarationTargets(
+  view: EditorView,
+  doc: EditorDocContext,
+  name: string,
+): Promise<DeclarationTarget[]> {
+  const binding = importBindings(view.state.doc.toString().split("\n")).get(name);
+  if (!binding) return [];
+  const module = await moduleFile(doc, binding.module).catch(() => null);
+  if (!module) return [];
+  const found = await indexDefinitions(doc.path, binding.name).catch(() => []);
+  const inModule = found.filter((t) => t.path === module.path);
+  return inModule.length ? inModule : [module];
+}
+
+/** Replaces a server answer that is only this file's import line with the declaration it binds. */
+async function withImportedDeclaration(
+  view: EditorView,
+  doc: EditorDocContext,
+  offset: number,
+  locs: DeclarationTarget[],
+): Promise<DeclarationTarget[]> {
+  const only = locs[0];
+  if (locs.length !== 1 || !only || only.path !== doc.path || !isImportLine(view.state.doc, only.range.start.line))
+    return locs;
+  // A caret placed on the import itself already has an answer: the module (or the submodule)
+  // the statement names, handled below.
+  if (importedModulePath(view, offset)) return locs;
+  const name = nameAt(view, offset);
+  const resolved = name ? await importedDeclarationTargets(view, doc, name) : [];
+  return resolved.length ? resolved : locs;
+}
+
 /** `more` after `first`, without a target whose declaration line is already there. */
 function mergeTargets(first: readonly DeclarationTarget[], more: readonly DeclarationTarget[]): DeclarationTarget[] {
   return dedupeLocations([
@@ -488,6 +529,9 @@ async function gotoResolved(
       fromSyntax = true;
     }
   }
+  // A server that only sees its own root answers the import statement for a name it cannot
+  // resolve; the import names the module that declares it, also in an attached project.
+  if (declaration && doc.language === "python") locs = await withImportedDeclaration(view, doc, offset, locs);
   if (graphTargets) locs = mergeTargets(locs, await graphTargets);
   if (streamed && (await streamed.opened())) {
     await streamed.complete(locs);
@@ -792,6 +836,7 @@ const linkField = StateField.define<LinkState | null>({
       return {
         pos: v.from,
         above: true,
+        arrow: true,
         create: (view) => {
           const dom = document.createElement("div");
           dom.className = "cm-lsp-hover cm-lsp-nav-info";

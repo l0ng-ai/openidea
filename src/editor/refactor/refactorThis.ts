@@ -40,9 +40,11 @@ import {
 } from "./serverIntroduce";
 import { safeDelete } from "./safeDelete";
 import { startHierarchyRefactoring } from "./hierarchy";
+import { SIGNATURE_LANGUAGES, startChangeSignature } from "./signature";
+import { EXTRACT_INTERFACE_LANGUAGES, startExtractInterface } from "./extractInterface";
 
-/** Languages whose server runs the class-hierarchy refactorings (the app-owned JDT extension). */
-const HIERARCHY_LANGUAGES = new Set(["java"]);
+/** Languages with a server that runs the class-hierarchy refactorings (the app-owned JDT extension; Phoxite for PHP). */
+const HIERARCHY_LANGUAGES = new Set(["java", "php"]);
 
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =
@@ -153,6 +155,15 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
     showHint(view, cannotPerform("The file is read-only"));
     return;
   }
+  if (id === "changeSignature" && SIGNATURE_LANGUAGES.has(ctx.language)) {
+    await startChangeSignature(view);
+    return;
+  }
+  if (id === "extractInterface") {
+    if (EXTRACT_INTERFACE_LANGUAGES.has(ctx.language)) await startExtractInterface(view);
+    else showHint(view, cannotPerform(`Extract Interface is not supported for ${await languageName(ctx.language)}`));
+    return;
+  }
   // IDEA picks the expression first (and the server then extracts exactly that one).
   if (EXPRESSION_REFACTORINGS.has(id) && view.state.selection.main.empty) {
     if (await chooseExpressionFirst(view, () => runRefactoring(view, id))) return;
@@ -219,11 +230,13 @@ async function expressionAtCaret(view: EditorView, signal: AbortSignal): Promise
 export function refactorThisItems(
   view: EditorView,
   answer: ServerAnswer,
-  facts: { symbol: boolean; expression: boolean; hierarchy?: boolean },
+  facts: { symbol: boolean; expression: boolean; hierarchy?: boolean; signature?: boolean; extractInterface?: boolean },
   run: {
     rename: (view: EditorView) => unknown;
     safeDelete: (view: EditorView) => unknown;
     hierarchy?: (view: EditorView, kind: "pullUp" | "pushDown") => unknown;
+    signature?: (view: EditorView) => unknown;
+    extractInterface?: (view: EditorView) => unknown;
   },
 ): ListPopupItem[] {
   const { mapped, other } = groupActions(answer.status === "ok" ? answer.query.actions : []);
@@ -237,6 +250,10 @@ export function refactorThisItems(
     // With only a caret the expression is chosen first, then the server asked for it.
     if (expression && caretOnly && serverUsable && (actions.length || facts.expression))
       go = () => runRefactoring(view, r.id);
+    else if (r.id === "changeSignature" && facts.signature && serverUsable && run.signature)
+      go = () => run.signature!(view);
+    else if (r.id === "extractInterface" && facts.extractInterface && serverUsable && run.extractInterface)
+      go = () => run.extractInterface!(view);
     else if (actions.length) go = () => runActions(view, r.label.replace(/…$/, ""), actions, r.id);
     else if (r.id === "rename" && facts.symbol) go = () => run.rename(view);
     else if (r.id === "safeDelete" && facts.symbol && !docOf(view)?.readOnly) go = () => run.safeDelete(view);
@@ -278,11 +295,19 @@ export async function refactorThis(view: EditorView, rename: (view: EditorView) 
       expressionAtCaret(view, run.signal),
     ]);
     const hierarchy = HIERARCHY_LANGUAGES.has(ctx.language) && !ctx.readOnly;
+    const signature = SIGNATURE_LANGUAGES.has(ctx.language) && !ctx.readOnly && symbol;
+    const extractInterface = EXTRACT_INTERFACE_LANGUAGES.has(ctx.language) && !ctx.readOnly;
     items = refactorThisItems(
       view,
       answer,
-      { symbol, expression, hierarchy },
-      { rename, safeDelete, hierarchy: startHierarchyRefactoring },
+      { symbol, expression, hierarchy, signature, extractInterface },
+      {
+        rename,
+        safeDelete,
+        hierarchy: startHierarchyRefactoring,
+        signature: startChangeSignature,
+        extractInterface: startExtractInterface,
+      },
     );
   } catch (e) {
     if (isCancelled(e)) return;

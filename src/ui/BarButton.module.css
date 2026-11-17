@@ -1,7 +1,7 @@
 .button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   white-space: nowrap;
   border-radius: var(--radius-small);

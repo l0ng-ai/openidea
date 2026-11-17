@@ -6,7 +6,7 @@
   padding: 6px 12px 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 .title {
@@ -31,13 +31,13 @@
 .groups {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 20px;
+  gap: var(--space-1) 20px;
 }
 
 .group {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 .groupTitle {
@@ -49,6 +49,6 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 22px;
 }

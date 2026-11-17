@@ -51,4 +51,29 @@ describe("fileWebUrl", () => {
       "https://bitbucket.org/team/repo/src/main/a.py#lines-5",
     );
   });
+
+  it("selects a range of lines in each hosting's syntax", () => {
+    const opts = { line: 9, endLine: 19 };
+    expect(fileWebUrl("git@github.com:o/r.git", "main", "a.ts", opts)).toBe(
+      "https://github.com/o/r/blob/main/a.ts#L10-L20",
+    );
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "a.ts", opts)).toBe(
+      "https://gitlab.com/g/r/-/blob/main/a.ts#L10-20",
+    );
+    expect(fileWebUrl("git@bitbucket.org:o/r.git", "main", "a.ts", opts)).toBe(
+      "https://bitbucket.org/o/r/src/main/a.ts#lines-10:20",
+    );
+  });
+
+  it("keeps a single line when the range ends on it or before, and none for directories", () => {
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "a.ts", { line: 4, endLine: 4 })).toBe(
+      "https://gitlab.com/g/r/-/blob/main/a.ts#L5",
+    );
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "a.ts", { line: 4, endLine: 2 })).toBe(
+      "https://gitlab.com/g/r/-/blob/main/a.ts#L5",
+    );
+    expect(fileWebUrl("git@gitlab.com:g/r.git", "main", "src", { dir: true, line: 4, endLine: 8 })).toBe(
+      "https://gitlab.com/g/r/-/tree/main/src",
+    );
+  });
 });

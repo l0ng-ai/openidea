@@ -151,6 +151,13 @@ export const openideaTheme = EditorView.theme({
         return [`--openidea-guide-${i + 1}`, `linear-gradient(${color}, ${color})`];
       }),
     ),
+    // A rainbow guide of a bracket block takes its bracket's colour (rainbow brackets).
+    ...Object.fromEntries(
+      Array.from({ length: BRACKET_COLORS }, (_, i) => {
+        const color = `var(--syn-bracket-${i + 1}, var(--editor-indent-guide))`;
+        return [`--openidea-guide-bracket-${i + 1}`, `linear-gradient(${color}, ${color})`];
+      }),
+    ),
     ...findLocals,
     "--editor-brace": "var(--bg-matched-brace, color-mix(in srgb, var(--accent) 22%, transparent))",
     "--editor-fold-chip": "var(--bg-fold-placeholder, color-mix(in srgb, var(--fg-muted) 14%, transparent))",

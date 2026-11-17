@@ -45,7 +45,7 @@
   align-items: center;
 }
 .row {
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 8px;
   border-radius: var(--radius-selection, 5px);
   color: var(--fg-strong);

@@ -78,7 +78,9 @@ export function appActions(): Action[] {
     id,
     title: t(key),
     category: t("app.category.edit"),
+    // The native ⌘C / Ctrl+C keep working unbound; listed so another key can be added (IDEA's $Copy…).
     hidden: true,
+    keymap: true,
     run: editCommand(command),
   });
   return [

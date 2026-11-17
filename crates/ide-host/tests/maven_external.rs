@@ -69,3 +69,47 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     assert_eq!(std::fs::read_to_string(sibling.join("pom.xml")).unwrap(), b_pom);
     host.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reactor_module_beside_a_trusted_project_is_a_content_root_until_removed() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("aggregator");
+    let service = base.join("service-a");
+    std::fs::create_dir_all(root.join("core")).unwrap();
+    std::fs::create_dir_all(&service).unwrap();
+    let reactor = |modules: &str| {
+        format!(
+            "<project><artifactId>aggregator</artifactId><packaging>pom</packaging><modules>{modules}</modules></project>"
+        )
+    };
+    std::fs::write(root.join("pom.xml"), reactor("<module>core</module><module>../service-a</module>")).unwrap();
+    std::fs::write(root.join("core/pom.xml"), "<project><artifactId>core</artifactId></project>").unwrap();
+    std::fs::write(service.join("pom.xml"), "<project><artifactId>service-a</artifactId></project>").unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |window| window,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.open_project("main", &root).unwrap();
+    let project = || host.project("main").unwrap();
+    assert!(project().content_roots().is_empty(), "Restricted Mode does not widen the index");
+    assert!(project().lsp.jdtls_import_roots().is_empty());
+
+    host.set_project_trust(&root, true, false).await.unwrap();
+    assert_eq!(project().content_roots(), vec![service.clone()]);
+    assert_eq!(project().lsp.jdtls_import_roots(), vec![service.clone()]);
+
+    std::fs::write(root.join("pom.xml"), reactor("<module>core</module>")).unwrap();
+    project().refresh_index_scope();
+    assert!(project().content_roots().is_empty());
+    assert!(project().lsp.jdtls_import_roots().is_empty());
+    assert!(service.join("pom.xml").is_file());
+    host.shutdown().await;
+}

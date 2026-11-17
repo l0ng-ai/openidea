@@ -79,4 +79,75 @@ describe("preview-only scroll position", () => {
     expect(screen.getByRole("document", { name: "Markdown preview" }).scrollTop).toBe(300);
     second.unmount();
   });
+
+  it("re-applies a restore that clamped to not-yet-drawn content", async () => {
+    open(mdCtx);
+    activate(views[0]!);
+    act(() => useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, previewTop: 300 } })));
+    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    const preview = screen.getByRole("document", { name: "Markdown preview" });
+
+    // While images load, the document is short and the browser clamps the offset.
+    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    let top = 0;
+    let maxTop = 100;
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = Math.min(v, maxTop);
+      },
+    });
+    try {
+      // Re-running the restore (mode toggle) hits the clamp…
+      act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "split" } })));
+      act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+      expect(preview.scrollTop).toBe(100);
+      // The browser reports the clamped write as a scroll; the saved offset stays.
+      act(() => preview.dispatchEvent(new Event("scroll")));
+      expect(useLiveMarkdown.getState()[mdCtx.path]?.previewTop).toBe(300);
+
+      // …and the settle after the heights arrive applies the saved offset again.
+      await act(async () => {
+        maxTop = 1000;
+        useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, fontZoom: 2 } }));
+      });
+      expect(preview.scrollTop).toBe(300);
+    } finally {
+      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+      else delete (HTMLElement.prototype as unknown as { scrollTop?: unknown }).scrollTop;
+    }
+  });
+
+  it("hands the position back to the reader once they scroll", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 0;
+    });
+    open(mdCtx);
+    activate(views[0]!);
+    act(() => useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, previewTop: 300 } })));
+    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    render(
+      <MarkdownEditor path={mdCtx.path} tabId="t">
+        <div />
+      </MarkdownEditor>,
+    );
+    const preview = screen.getByRole("document", { name: "Markdown preview" });
+
+    await act(async () => {
+      preview.scrollTop = 60;
+      preview.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => {
+      useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, fontZoom: 2 } }));
+    });
+    expect(preview.scrollTop).toBe(60);
+    expect(useLiveMarkdown.getState()[mdCtx.path]?.previewTop).toBe(60);
+  });
 });

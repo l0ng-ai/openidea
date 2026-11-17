@@ -1,9 +1,18 @@
 /**
  * PyCharm's top-level "Python" group (Interpreter) and
- * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
+ * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript / Zig. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
-import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import {
+  GoPage,
+  JavaPage,
+  NodePage,
+  PhpPage,
+  RubyPage,
+  RustPage,
+  TypeScriptPage,
+  ZigPage,
+} from "../languages/LanguagePages";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
@@ -267,5 +276,15 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 405,
     keywords: ["typescript version", "tsdk", "tsserver", "node_modules", "vtsls"],
     component: TypeScriptPage,
+  },
+  {
+    id: "languages.zig",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Zig",
+    group: LANGUAGES_GROUP,
+    order: 406,
+    keywords: ["zig toolchain", "zls", "zig build", "build.zig", "build.zig.zon"],
+    component: ZigPage,
   },
 ];

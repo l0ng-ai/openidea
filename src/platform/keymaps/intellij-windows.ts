@@ -57,6 +57,7 @@ export const intellijWindows: Record<string, string[]> = {
   "navigate.nextEditLocation": [],
   "navigate.gotoTest": ["Ctrl+Shift+T"],
   "navigate.superMethod": ["Ctrl+U"],
+  "navigate.relatedSymbol": ["Ctrl+Alt+Home"],
   "navigate.nextMethod": ["Alt+Down"],
   "navigate.previousMethod": ["Alt+Up"],
   "navigate.nextOccurrence": ["Ctrl+Alt+Down"],
@@ -172,6 +173,7 @@ export const intellijWindows: Record<string, string[]> = {
   "refactor.inline": ["Ctrl+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Alt+Delete"],
+  "refactor.extractInterface": [],
   "refactor.pullMembersUp": [],
   "refactor.pushMembersDown": [],
 
@@ -212,6 +214,7 @@ export const intellijWindows: Record<string, string[]> = {
   "project.paste": ["Ctrl+V", "Shift+Insert"],
   "project.copyAbsolutePath": ["Ctrl+Shift+C"],
   "project.open": ["F4"],
+  "project.openInRightSplit": ["Shift+Enter"],
   "project.findUsages": ["Alt+F7"],
   "project.reformatCode": ["Ctrl+Alt+L"],
   "project.optimizeImports": ["Ctrl+Alt+O"],
@@ -219,6 +222,9 @@ export const intellijWindows: Record<string, string[]> = {
   "project.reloadFromDisk": ["Ctrl+Alt+Y"],
   "project.expandAll": ["Ctrl+="],
   "project.collapseAll": ["Ctrl+-"],
+  // In the test results tree (keyWhen).
+  "run.expandAllTests": ["Ctrl+="],
+  "run.collapseAllTests": ["Ctrl+-"],
 
   // Tool windows
   "toolwindow.project": ["Alt+1"],
@@ -333,6 +339,7 @@ export const intellijWindows: Record<string, string[]> = {
   "diff.nextFile": ["Alt+Shift+Right"],
   "diff.prevFile": ["Alt+Shift+Left"],
   "diff.showSettings": ["Ctrl+Shift+D"],
+  "diff.focusOppositePane": ["Ctrl+Shift+Tab"],
   // After Show Diff: Ctrl+D is Compare With… in the project view.
   "project.compareWith": ["Ctrl+D"],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
@@ -368,9 +375,21 @@ export const intellijWindows: Record<string, string[]> = {
   "db.goToColumn": ["Ctrl+F12"],
   "db.submitChanges": ["Ctrl+Enter"],
   "db.revertChanges": ["Ctrl+Alt+Z"],
+  // Data editor (table editor / result grid), IDEA's Console.TableResult.* defaults.
+  "db.reloadPage": ["Ctrl+F5"],
+  "db.firstPage": [],
+  "db.previousPage": ["Ctrl+Alt+Up"],
+  "db.nextPage": ["Ctrl+Alt+Down"],
+  "db.lastPage": [],
+  "db.addRow": ["Alt+Insert"],
+  "db.deleteRows": ["Ctrl+Y", "Alt+Delete"],
+  "db.restoreRows": [],
+  "db.exportData": [],
+  "db.editCell": [],
   "db.showToolWindow": [],
   "agents.newTask": ["Ctrl+Alt+Shift+I"],
   "agents.focusInput": ["Ctrl+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).

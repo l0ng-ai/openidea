@@ -1,0 +1,13 @@
+id = "editor-panel"
+name = "Editor Panel Probe"
+version = "0.1.0"
+description = "Test fixture for [[contributes.editorPanels]]: a minimal minimap page, no code."
+engines.openidea = "^1.9"
+
+[capabilities]
+required = ["editor.read"]
+
+[[contributes.editorPanels]]
+id = "minimap"
+web = "web/index.html"
+width = 110

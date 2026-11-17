@@ -1,7 +1,7 @@
 /** Notification center: balloons + history, backing `NotificationService`. */
 import type { ReactNode } from "react";
 import { create } from "zustand";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -37,6 +37,7 @@ export const NOTIFICATION_GROUPS: ReadonlyArray<{ id: string; title: string }> =
   { id: "tools", title: "External Tools" },
   { id: "search", title: "Find in Files" },
   { id: "plugins", title: "Plugins" },
+  { id: "terminal", title: "Terminal" },
   { id: "updates", title: "IDE Updates" },
   { id: "distractionFree", title: "Distraction Free Mode" },
 ];
@@ -154,7 +155,16 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     const rest = n.key ? s.items.filter((x) => x.key !== n.key) : s.items;
     return { items: [item, ...rest].slice(0, MAX_HISTORY) };
   });
-  if (balloon && prefs.sound) playSound();
+  // OS toast owns the chime when system notifications are on and the app is backgrounded.
+  const systemOn = useProject.getState().settings?.notifications?.systemNotifications !== false;
+  const backgrounded = typeof document !== "undefined" && !document.hasFocus();
+  if (balloon && prefs.sound && !n.silent && !(systemOn && backgrounded)) playSound();
+  if (balloon && isTauri()) {
+    // In the UI language, as the balloon shows it; a plugin's own text stays as written.
+    const shown = (text: string) => (n.verbatim ? text : txTemplate(text));
+    const plain = typeof n.body === "string" ? shown(n.body) : "";
+    void call(commands.showSystemNotification(shown(n.title), plain)).catch(() => {});
+  }
   return id;
 }
 

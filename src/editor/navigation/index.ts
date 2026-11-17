@@ -1,6 +1,6 @@
 /**
- * Navigate › Test / Test Subject (⇧⌘T), Super Method (⌘U), Next / Previous
- * Method (⌃⇧↓ / ⌃⇧↑). Editor-side like editor/lsp (whose popups it uses);
+ * Navigate › Test / Test Subject (⇧⌘T), Super Method (⌘U), Related Symbol (⌃⌘↑), Next /
+ * Previous Method (⌃⇧↓ / ⌃⇧↑). Editor-side like editor/lsp (whose popups it uses);
  * the file templates are reached through the `templates.newFromTemplate` action.
  */
 import { EditorSelection } from "@codemirror/state";
@@ -13,12 +13,14 @@ import { dedupeLocations, locationItems, navigateTo } from "@/editor/lsp/navigat
 import { showHint } from "@/editor/lsp/hint";
 import { registerActions, executeAction, type Action } from "@/platform/actions";
 import { call, commands, isCancelled, type Location, type OutlineItem, type Pos } from "@/platform/ipc";
-import { basename, useProject } from "@/platform/project";
+import { basename, relativePath, useProject } from "@/platform/project";
 import { currentRoots } from "@/platform/projectRoots";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
+import { registerRelatedProvider, relatedItems } from "@/editor/relatedProviders";
 import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
+import { headerSourceItems } from "./headerSource";
 import { projectPythonHierarchy, pythonSuperDeps } from "./pythonHierarchy";
 import { baseName, memberAt, methodStop, superMethods, type SuperDeps } from "./structureNav";
 import { tx } from "@/platform/i18n";
@@ -195,15 +197,68 @@ function editorAction(
   };
 }
 
+/** Navigate › Related Symbol: one target opens, several open a chooser. */
+async function gotoRelated(view: EditorView) {
+  const ctx = docOf(view);
+  if (!ctx || isVirtualUri(ctx.path)) return;
+  const head = view.state.selection.main.head;
+  const items = await relatedItems({
+    path: ctx.path,
+    language: ctx.language,
+    text: view.state.doc.toString(),
+    offset: head,
+  });
+  if (!items.length) {
+    showHint(view, tx("No related symbols"), { tone: "error" });
+    return;
+  }
+  const open = (item: (typeof items)[number]) =>
+    editorService().openFile(item.path, {
+      selection: item.line === undefined ? undefined : { line: item.line, col: item.col ?? 0 },
+      focus: true,
+    });
+  if (items.length === 1) {
+    await open(items[0]!);
+    return;
+  }
+  const root = useProject.getState().project?.root ?? "";
+  openPopup({
+    kind: "list",
+    anchor: caretAnchor(view, head),
+    title: tx("Choose Target"),
+    items: items.map((item, i) => {
+      const where = relativePath(root, item.path) + (item.line === undefined ? "" : `:${item.line + 1}`);
+      return {
+        id: `${i}`,
+        label: item.label ?? basename(item.path),
+        detail: `${item.group} · ${where}`,
+        icon: fileIconName(basename(item.path), item.path),
+        location: { path: item.path, line: item.line ?? 0 },
+        run: () => open(item),
+      };
+    }),
+  });
+}
+
+const findFilesNamed = async (name: string) => call(commands.findFilesNamed(name));
+
 export function registerNavigationActions(): () => void {
-  return registerActions([
+  const unregisterHeaders = registerRelatedProvider((ctx) => headerSourceItems(ctx.path, findFilesNamed));
+  const unregister = registerActions([
     editorAction("navigate.gotoTest", "Test", gotoTest, { keywords: ["go to test", "test subject", "create test"] }),
     editorAction("navigate.superMethod", "Super Method", superMethod, {
       keywords: ["go to super", "overridden", "parent"],
     }),
     editorAction("navigate.nextMethod", "Next Method", (v) => gotoMethod(v, 1)),
     editorAction("navigate.previousMethod", "Previous Method", (v) => gotoMethod(v, -1)),
+    editorAction("navigate.relatedSymbol", "Related Symbol…", gotoRelated, {
+      keywords: ["go to related", "header", "source", "switch header source", "view", "controller"],
+    }),
   ]);
+  return () => {
+    unregister();
+    unregisterHeaders();
+  };
 }
 
 export { implementationGutter } from "./implementationGutter";

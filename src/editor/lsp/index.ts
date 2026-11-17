@@ -22,7 +22,7 @@ import { diagnosticsExtension, installDiagnosticsEvents } from "./diagnostics";
 import { hoverExtension } from "./hover";
 import { parameterTabKeys, signatureExtension } from "./signature";
 import { navigationExtension } from "./navigation";
-import { intentionsExtension } from "./intentions";
+import { intentionsExtension, registerClientCommand } from "./intentions";
 import { inlayExtension } from "./inlay";
 import { inlineCompletionExtension, registerInlineCompletionActions } from "./inlineCompletion";
 import { semanticExtension } from "./semantic";
@@ -42,7 +42,13 @@ import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
 import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
-import { HierarchyDialog } from "@/editor/refactor";
+import {
+  ChangeSignatureDialog,
+  ExtractInterfaceDialog,
+  HierarchyDialog,
+  JAVA_REFACTORING_COMMAND,
+  runJavaRefactoringCommand,
+} from "@/editor/refactor";
 
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
   return [
@@ -89,11 +95,13 @@ export function cellLspExtensions(ctx: EditorDocContext): Extension[] {
 }
 
 /**
- * A diff pane showing a file's open document: hover / quick docs and ⌘/Ctrl-click navigation,
- * so references can be followed while reviewing. Editing features stay with text editors.
+ * A diff pane showing a file's open document: hover / quick docs, ⌘/Ctrl-click
+ * navigation and semantic highlighting, so colours match the editor while
+ * reviewing. Editing features stay with text editors; panes without a document
+ * (revisions) get nothing from the semantic extension (`docOf` is null).
  */
 export function diffLspExtensions(ctx: EditorDocContext): Extension[] {
-  return [lspDoc.of(ctx), lspTheme, hintExtension(), hoverExtension(), navigationExtension()];
+  return [lspDoc.of(ctx), lspTheme, hintExtension(), hoverExtension(), navigationExtension(), semanticExtension()];
 }
 
 export function activate(): () => void {
@@ -114,6 +122,9 @@ export function activate(): () => void {
     registerEditorContribution({ id: "lsp.parameterTab", order: 95, extensions: () => parameterTabKeys }),
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
+    registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
+    registerOverlay({ id: "editor-lsp.extractInterfaceDialog", component: ExtractInterfaceDialog }),
+    registerClientCommand(JAVA_REFACTORING_COMMAND, runJavaRefactoringCommand),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.

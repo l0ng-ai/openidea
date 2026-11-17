@@ -88,7 +88,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.13.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.15.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -133,6 +133,9 @@ its reproducible SHA-256 is
 Version 1.12.0 caches usages answers until the Java model or an unsaved edit changes and adds
 `openidea.workspace.coveredRoots`; its reproducible SHA-256 is
 `c1bd28d7b956cb64af3e936aac0553413a5dc5fd373a043ddba003009e0ea783`.
+Version 1.15.0 adds `openidea.java.implementationLocations`, which resolves the method an
+implementation in a dependency declares (the standard request starts at its class file); its
+reproducible SHA-256 is `c29e5455c02c245523b2e7a5861e00ae670cefc66cda33ec19fdce280f94c40c`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

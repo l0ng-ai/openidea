@@ -53,7 +53,7 @@ import {
 } from "./model";
 import { groupIcon, groupPath, groupRank } from "./groups";
 import { KeymapNameDialog } from "./KeymapDialogs";
-import { parseIdeaKeymap } from "./ideaKeymapImport";
+import { parseIdeaKeymap } from "@/platform/ideaKeymap";
 import { RecordShortcutDialog } from "./RecordShortcutDialog";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";

@@ -504,6 +504,74 @@ pub struct HierarchyRefactored {
     pub edit: Option<WorkspaceEdit>,
 }
 
+/// A parameter in Change Signature: its type, name, the value passed at existing calls when it is
+/// added, and its index in the current signature (-1 for an added one).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureParameter {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub name: String,
+    pub default_value: String,
+    pub original_index: i32,
+}
+
+/// A declared exception (`throws`), with the server's handle of its type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureException {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub type_handle_identifier: String,
+}
+
+/// The signature of the method at a position, as Change Signature edits it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MethodSignature {
+    /// The server's handle of the method, passed back unchanged.
+    pub method_identifier: String,
+    /// `public`, `protected`, `private`, or empty for package-private.
+    pub modifier: String,
+    pub return_type: String,
+    pub method_name: String,
+    pub parameters: Vec<SignatureParameter>,
+    pub exceptions: Vec<SignatureException>,
+}
+
+/// A member Extract Interface can declare in the new interface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceMember {
+    pub name: String,
+    /// The method's return type or the field's type.
+    pub type_name: String,
+    /// The method's parameter types; `None` for a field.
+    pub parameters: Option<Vec<String>>,
+    /// The server's handle of the member, passed back unchanged.
+    pub handle_identifier: String,
+}
+
+/// What Extract Interface starts from: the file's class, the members the interface can declare and
+/// the packages it can go to (as JSON, passed back unchanged).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractInterfaceInfo {
+    pub class_name: String,
+    pub members: Vec<InterfaceMember>,
+    pub packages: Vec<String>,
+}
+
+/// A refactoring checked by the server (Change Signature, Move, Extract Interface): problems to show, the edit when
+/// none is fatal, and the token that confirms going on despite warnings.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerRefactored {
+    pub problems: Vec<RefactoringProblem>,
+    pub edit: Option<WorkspaceEdit>,
+    pub confirmation: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CallHierarchy {

@@ -4,6 +4,7 @@ import { useEditorBanners, type EditorBannerContribution } from "@/workbench/con
 import { useDocMeta } from "../model/document";
 import styles from "./EditorArea.module.css";
 import { classFileBreakpointReason } from "@/platform/classFiles";
+import { gitRevisionOf } from "@/platform/virtualDocs";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { useLibrarySources } from "../librarySources";
@@ -50,7 +51,9 @@ export function VirtualBanner({
           ? path.startsWith("csharp:")
             ? tx("Decompiled assembly (read-only).")
             : tx("Decompiled .class file: sources are not available.")
-          : tx("Library source (read-only).")}
+          : gitRevisionOf(path)
+            ? tx("File at a Git revision (read-only).")
+            : tx("Library source (read-only).")}
         {reason && ` ${tx(reason)}`}
       </span>
       {sources.message && <span>{tx(sources.message)}</span>}

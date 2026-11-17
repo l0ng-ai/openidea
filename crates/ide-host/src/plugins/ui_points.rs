@@ -13,6 +13,7 @@
 //! [[contributes.keymaps]]
 //! command = "check"
 //! key = "Ctrl+Alt+C"               # `mac` for a different binding on macOS (`Meta+Alt+C`)
+//! # key = "Escape" + when = "…"     # API 1.10: Escape in an editor that the IDE had no use for
 //!
 //! [[contributes.statusBar]]
 //! id = "branch"
@@ -36,6 +37,12 @@
 //! layout = "tab"                   # or "split" / "preview": beside the text editor
 //! web = "web/index.html"           # a web page from the package instead of rendered content
 //!
+//! [[contributes.editorPanels]]
+//! id = "minimap"
+//! web = "web/index.html"           # beside each editor group's text editor; needs `editor.read`
+//! width = 110                      # pixels, 40–400
+//! when = "plugin.<id>.enabled"     # optional
+//!
 //! [[contributes.fileIcons]]
 //! id = "drawing"
 //! patterns = ["*.excalidraw"]
@@ -45,6 +52,11 @@
 //! [[contributes.commitChecks]]
 //! id = "conventional"
 //! title = "Conventional Commits"   # Commit Options › Before Commit; `commit-checker.check` runs it
+//!
+//! [[contributes.serverCommands]]
+//! server = "phoxite"               # the language server whose results carry the command
+//! command = "laravel.modelView"    # a command the server leaves to the client
+//! run = "model-view"               # this plugin's command; needs `lsp:phoxite`
 //!
 //! [[contributes.fileTemplates]]
 //! id = "drawing"
@@ -68,10 +80,14 @@ pub const STATUS_BAR: &str = "statusBar";
 pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
+pub const EDITOR_PANELS: &str = "editorPanels";
+/// The points whose declarations can name a `web` page (served, messaged, sent view events).
+pub const WEB_POINTS: [&str; 3] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS];
 pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 pub const COMMIT_CHECKS: &str = "commitChecks";
+pub const SERVER_COMMANDS: &str = "serverCommands";
 
 const VIEW_ITEM_MENU: &str = "viewItem.context";
 /// The toolbar above the commit message (Commit tool window and dialog).
@@ -188,7 +204,15 @@ struct KeymapDecl {
     key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mac: Option<String>,
+    /// Only with an `Escape` binding (API 1.10): when the command clears something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<String>,
 }
+
+/// The one plain key a plugin may bind (API 1.10): in a focused editor, after the IDE's own uses of
+/// Escape (popups, completion, rename, selection, extra carets, Vim) found nothing to do, like a
+/// handler at the end of IDEA's EditorEscape chain.
+const ESCAPE: &str = "Escape";
 
 const MODIFIERS: [&str; 4] = ["Meta", "Ctrl", "Alt", "Shift"];
 const NAMED_KEYS: [&str; 22] = [
@@ -247,9 +271,21 @@ pub fn validate_binding(binding: &str) -> Result<(), String> {
 pub(super) fn keymap(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: KeymapDecl = decode(KEYMAPS, decl)?;
     declared_command(pkg, KEYMAPS, &d.command)?;
-    validate_binding(&d.key).map_err(|e| format!("contributes.keymaps: {e}"))?;
-    if let Some(m) = &d.mac {
-        validate_binding(m).map_err(|e| format!("contributes.keymaps: {e}"))?;
+    let escape = d.key == ESCAPE || d.mac.as_deref() == Some(ESCAPE);
+    if escape {
+        if d.key != ESCAPE || d.mac.as_deref().is_some_and(|m| m != ESCAPE) {
+            return Err("contributes.keymaps: an Escape binding is Escape on every platform".into());
+        }
+        pkg.manifest.needs_api("contributes.keymaps key = \"Escape\"", 10)?;
+        let when = d.when.as_deref().ok_or("contributes.keymaps: an Escape binding needs a `when` clause")?;
+        validate_when(when).map_err(|e| format!("contributes.keymaps: {e}"))?;
+    } else if d.when.is_some() {
+        return Err("contributes.keymaps: `when` is only for an Escape binding".into());
+    }
+    for binding in std::iter::once(&d.key).chain(&d.mac) {
+        if binding != ESCAPE {
+            validate_binding(binding).map_err(|e| format!("contributes.keymaps: {e}"))?;
+        }
     }
     Ok(UiDecl::new(d.command.clone(), d.key.clone(), json(&d)?))
 }
@@ -739,6 +775,41 @@ pub(super) fn custom_editor(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
     Ok(out)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct EditorPanelDecl {
+    id: String,
+    web: String,
+    width: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<String>,
+}
+
+const EDITOR_PANEL_WIDTH: std::ops::RangeInclusive<u32> = 40..=400;
+
+/// `[[contributes.editorPanels]]` (API 1.9): a web page at the right edge of every
+/// editor group, beside its text editor. It sees each file the group shows, so it
+/// needs `editor.read`.
+pub(super) fn editor_panel(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: EditorPanelDecl = decode(EDITOR_PANELS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{EDITOR_PANELS}"), 9)?;
+    validate_item_id(&d.id, "editor panel id")?;
+    let what = format!("editor panel {:?}", d.id);
+    if !EDITOR_PANEL_WIDTH.contains(&d.width) {
+        return Err(format!("{what}: `width` is {}–{} pixels", EDITOR_PANEL_WIDTH.start(), EDITOR_PANEL_WIDTH.end()));
+    }
+    if let Some(when) = &d.when {
+        validate_when(when).map_err(|e| format!("{what}: {e}"))?;
+    }
+    if !pkg.manifest.capabilities.all().any(|c| *c == ide_extension::Capability::EditorRead) {
+        return Err(format!("{what}: needs the `editor.read` capability (the page sees the files editors show)"));
+    }
+    let files = super::web::web_files(pkg, &d.web, &what)?;
+    let mut out = UiDecl::new(d.id.clone(), d.id.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FileIconDecl {
@@ -964,6 +1035,37 @@ pub(super) fn commit_check(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
     Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
 }
 
+/// A command a language server's code lens, code action or inlay hint carries and
+/// leaves to the client, and the plugin command that runs it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ServerCommandDecl {
+    /// The server's name in its language definition.
+    pub(super) server: String,
+    pub(super) command: String,
+    /// The plugin's command (`[[contributes.commands]]`); it gets the arguments as JSON.
+    pub(super) run: String,
+}
+
+/// `[[contributes.serverCommands]]` (API 1.9): routes a command no server executes
+/// itself to the plugin's own command.
+pub(super) fn server_command(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: ServerCommandDecl = decode(SERVER_COMMANDS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{SERVER_COMMANDS}"), 9)?;
+    if d.command.is_empty() || d.command.len() > 256 {
+        return Err(format!("contributes.{SERVER_COMMANDS}: command names are 1–256 bytes"));
+    }
+    declared_command(pkg, SERVER_COMMANDS, &d.run)?;
+    let grant: ide_extension::Capability =
+        format!("lsp:{}", d.server).parse().map_err(|e| format!("contributes.{SERVER_COMMANDS}: {e}"))?;
+    if !pkg.manifest.capabilities.all().any(|c| *c == grant) {
+        return Err(format!(
+            "contributes.{SERVER_COMMANDS}: needs the `{grant}` capability (the command comes from that server)"
+        ));
+    }
+    Ok(UiDecl::new(format!("{}:{}", d.server, d.command), d.command.clone(), json(&d)?))
+}
+
 const MAX_CATALOG_ENTRIES: usize = 20_000;
 
 pub fn locale_asset(tag: &str) -> String {
@@ -1031,6 +1133,37 @@ mod tests {
                 assert!(menu(&pkg, toml::from_str(&format!("menu='{location}'\ncommand='foreign'")).unwrap()).is_err());
             }
         }
+    }
+
+    #[test]
+    fn escape_bindings_need_api_1_10_and_a_when_clause() {
+        let pkg = |api: &str| {
+            let manifest = ide_extension::Manifest::parse(&format!(
+                "id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='{api}'\n[[contributes.commands]]\nid='clear'\ntitle='Clear'"
+            ))
+            .unwrap();
+            Package::new(manifest, std::path::PathBuf::from("/unused"))
+        };
+        let check = |api: &str, decl: &str| keymap(&pkg(api), toml::from_str(decl).unwrap());
+        let escape = "command='clear'\nkey='Escape'\nwhen='plugin.test.active'";
+        let ok = check("^1.10", escape).unwrap();
+        assert_eq!(ok.json["when"], "plugin.test.active");
+        assert!(check("^1.10", &format!("{escape}\nmac='Escape'")).is_ok());
+        for (api, decl, error) in [
+            ("^1.9", escape, "1.10"),
+            ("^1.10", "command='clear'\nkey='Escape'", "when"),
+            ("^1.10", "command='clear'\nkey='Escape'\nwhen='a &&'", "when"),
+            ("^1.10", &format!("{escape}\nmac='Meta+K'") as &str, "every platform"),
+            ("^1.10", "command='clear'\nkey='Ctrl+K'\nmac='Escape'\nwhen='x'", "every platform"),
+            ("^1.10", "command='clear'\nkey='Ctrl+K'\nwhen='x'", "only for an Escape"),
+            ("^1.10", "command='clear'\nkey='Enter'", "needs Ctrl"),
+            ("^1.10", "command='clear'\nkey='Shift+Escape'", "needs Ctrl"),
+        ] {
+            let err = check(api, decl).unwrap_err();
+            assert!(err.contains(error), "{api} {decl}\n→ {err}");
+        }
+        // Other bindings are unchanged.
+        assert!(check("^1.9", "command='clear'\nkey='Ctrl+Alt+C'").is_ok());
     }
 
     #[test]
@@ -1157,6 +1290,47 @@ mod tests {
                 assert_eq!(settings(&Package::new(manifest, dir.path().to_path_buf()), decl).is_ok(), valid);
             }
         }
+    }
+
+    #[test]
+    fn editor_panels_validate_api_width_when_capability_and_page() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/editor-panel");
+        // A Windows checkout may have CRLF line ends; the edits below match on `\n`.
+        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap().replace("\r\n", "\n");
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(EDITOR_PANELS).into_iter().next().unwrap();
+            editor_panel(&Package::new(manifest, root.clone()), decl)
+        };
+        let valid = check(&source).unwrap();
+        assert_eq!(valid.key, "minimap");
+        assert_eq!(valid.json, serde_json::json!({ "id": "minimap", "web": "web/index.html", "width": 110 }));
+        assert_eq!(valid.files, [PathBuf::from("web/index.html")]);
+        let when = source.replace("width = 110", "width = 110\nwhen = \"plugin.editor-panel.enabled\"");
+        assert_eq!(check(&when).unwrap().json["when"], "plugin.editor-panel.enabled");
+        for width in ["40", "400"] {
+            assert!(check(&source.replace("width = 110", &format!("width = {width}"))).is_ok(), "{width}");
+        }
+        for (bad, error) in [
+            (source.replace("^1.9", "^1.8"), "1.9"),
+            (source.replace("width = 110", "width = 39"), "40–400"),
+            (source.replace("width = 110", "width = 401"), "40–400"),
+            (source.replace("width = 110", "width = -1"), "u32"),
+            (source.replace("width = 110\n", ""), "width"),
+            (source.replace("width = 110", "width = 110\nwhen = \"a &&\""), "when"),
+            (source.replace("width = 110", "width = 110\nside = \"left\""), "side"),
+            (source.replace(r#"required = ["editor.read"]"#, "required = []"), "editor.read"),
+            (source.replace("web/index.html", "index.html"), "directory of its own"),
+            (source.replace("web/index.html", "web/missing.html"), "no such file"),
+            (source.replace("web/index.html", "../web/index.html"), "web"),
+            (source.replace(r#"id = "minimap""#, r#"id = "Mini Map""#), "id"),
+        ] {
+            let err = check(&bad).unwrap_err();
+            assert!(err.contains(error), "{bad}\n→ {err}");
+        }
+        // Declared as optional, the capability is still shown at install.
+        let optional = source.replace("required = [", "optional = [");
+        assert!(check(&optional).is_ok());
     }
 
     fn package_with_catalogs(files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {

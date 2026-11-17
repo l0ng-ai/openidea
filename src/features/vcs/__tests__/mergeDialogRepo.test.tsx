@@ -11,7 +11,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   const ok = (data: unknown) => Promise.resolve({ status: "ok" as const, data });
   const head = (repo: string | null) => (repo === "/p/b" ? "dev" : "main");
   const local = (repo: string | null) =>
-    repo === "/p/b" ? ["dev", "feature-b", "shared"] : ["main", "feature-a", "shared"];
+    repo === "/p/b"
+      ? ["dev", "feature-b", "shared"]
+      : ["main", "feature-a", "shared", "feature/REQ-126-明细汇总多选", "develop"];
   return {
     ...real,
     commands: {
@@ -103,4 +105,31 @@ it("clears the chosen branch when another repository is picked", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(mocks.merges).toEqual([]);
+});
+
+it("filters the branch list as the user types and picks the top match with Enter", async () => {
+  useVcs.setState({ roots: ["/p"], repo: null });
+  render(<VcsDialogHost />);
+  await act(() => showMergeDialog());
+  expect(await screen.findByText("Merge into main")).toBeInTheDocument();
+
+  // Typing on the closed picker opens it with that text as the search.
+  const trigger = screen.getByRole("button", { name: "Branch to merge" });
+  trigger.focus();
+  fireEvent.keyDown(trigger, { key: "1" });
+  const search = await screen.findByRole("textbox");
+  expect(search).toHaveValue("1");
+  for (const query of ["126", "明细", "req"]) {
+    fireEvent.change(search, { target: { value: query } });
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["feature/REQ-126-明细汇总多选"]);
+  }
+  fireEvent.keyDown(search, { key: "Enter" });
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(trigger).toHaveTextContent("feature/REQ-126-明细汇总多选");
+  // Enter chose the branch; it did not also run the dialog's Merge button.
+  expect(mocks.merges).toEqual([]);
+
+  fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+  await waitFor(() => expect(mocks.merges).toHaveLength(1));
+  expect(mocks.merges[0]).toMatchObject({ branches: ["feature/REQ-126-明细汇总多选"] });
 });

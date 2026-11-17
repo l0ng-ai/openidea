@@ -18,6 +18,7 @@ const KIND_LABELS: Record<string, string> = {
   make: "Make",
   cmake: "CMake",
   just: "Just",
+  sbt: "sbt Task",
   shell: "Shell Script",
   program: "Program",
   compound: "Compound",
@@ -63,6 +64,7 @@ export const KIND_CATEGORIES: Record<string, string> = {
   cmake: "Build Tools",
   make: "Build Tools",
   just: "Build Tools",
+  sbt: "Build Tools",
   npm: "JavaScript",
   node: "JavaScript",
   bun: "JavaScript",
@@ -165,6 +167,7 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "elixir":
       return "file-elixir";
     case "scala-cli":
+    case "sbt":
       return "file-scala";
     case "kotlinc":
       return "file-kotlin";

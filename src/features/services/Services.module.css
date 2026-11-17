@@ -9,7 +9,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
 }
 .sep {
@@ -22,7 +22,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 28px;
   padding: 2px 6px 2px 10px;
   font-size: var(--fs-small);
@@ -54,14 +54,14 @@
 .loading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px;
   color: var(--fg-muted);
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
   white-space: nowrap;
@@ -135,7 +135,7 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 14px;
 }
 .fieldLabel {
@@ -143,14 +143,6 @@
   font-size: var(--fs-small);
 }
 /* Dockerfile / Compose gutter run icons */
-.gutter {
-  width: 14px;
-}
-.gutter :global(.cm-gutterElement) {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 .marker {
   padding: 0;
   border: 0;
@@ -167,7 +159,7 @@
 
 .fieldRow {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .fieldRow > :first-child {
   flex: 1;
@@ -184,13 +176,13 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }
 .link {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0;
   border: 0;
   background: none;
@@ -207,7 +199,7 @@
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   padding: 12px;
   margin: 0;
 }
@@ -223,7 +215,7 @@
 }
 .detailActions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 12px 12px;
 }
 
@@ -246,7 +238,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -269,7 +261,7 @@
 .propRow {
   display: grid;
   grid-template-columns: 140px 1fr;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: baseline;
   padding: 5px 12px;
   border-bottom: 1px solid var(--border);
@@ -287,7 +279,7 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .mono {
   font-family: var(--font-mono);
@@ -345,7 +337,7 @@
 .metricBlock {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 320px;
 }
 .lineProgress {
@@ -371,18 +363,18 @@
 .chipGroup {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 12px;
 }
 .chipGroupInline {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .entityChip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 8px;
   border-radius: var(--radius-small);
   border: 1px solid var(--border-strong);
@@ -415,7 +407,7 @@ button.entityChip:not(:disabled):hover {
   font-size: var(--fs-small);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .kvTable {
   display: flex;
@@ -447,7 +439,7 @@ button.entityChip:not(:disabled):hover {
 .dataRow {
   display: grid;
   grid-template-columns: 72px minmax(120px, 1fr) minmax(140px, 1.3fr) 56px;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   padding: 4px 12px;
   border-bottom: 1px solid var(--border);

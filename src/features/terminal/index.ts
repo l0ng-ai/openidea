@@ -3,9 +3,11 @@
  * "Terminal" tool window (tabs, split tab groups, links, IDEA-style shortcuts),
  * plus the CLI editor tabs (#2202): full-size agent CLIs as editor-area tabs.
  */
+import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { useSystemFontStore } from "@/platform/systemFonts";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import {
   provideEmbeddedTerminal,
@@ -15,7 +17,7 @@ import {
   toolWindowService,
 } from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
-import { CLI_KIND, cliData, moveTerminalToEditor } from "./cli";
+import { CLI_KIND, CliDoneMark, cliData, moveTerminalToEditor } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
@@ -128,6 +130,8 @@ export function activate(): () => void {
       component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.CliEditor)),
       title: (input) => cliData(input)?.name ?? "Terminal",
       icon: () => "terminal",
+      // A finished command not seen yet (#3712).
+      trailing: (input) => createElement(CliDoneMark, { inputKey: input.key }),
       // A reopened tab shows Start: nothing runs on its own.
       restorable: true,
       keepAlive: true,
@@ -316,6 +320,14 @@ export function activate(): () => void {
         terminalRuntime()?.applySettingsToAll();
         terminalRuntime()?.applySettingsToClis();
       }
+    }),
+    // Prompt-theme icons (oh-my-posh, starship) come from the user's installed Nerd Font.
+    // Faces beyond the known list are discovered once the native font catalog loads (off
+    // startup), so open terminals re-apply their font stack then (#3723).
+    useSystemFontStore.subscribe((s, prev) => {
+      if (s.fonts === prev.fonts) return;
+      terminalRuntime()?.applySettingsToAll();
+      terminalRuntime()?.applySettingsToClis();
     }),
     onIdeEvent("terminalExited", (e) => {
       const rt = terminalRuntime();

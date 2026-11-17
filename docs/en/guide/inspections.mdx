@@ -52,6 +52,7 @@ These commands are in the **Code** menu:
 - **Code › Inspect Code…** runs the language servers' diagnostics over a scope and lists the results in the **Inspection Results** tool window, grouped by severity, inspection and file. The scope can be the whole project, a module or directory, the current file, the uncommitted files or a custom scope. Files whose language has no server are skipped.
 - **Code › Analyze Code › Inspect Current File** does the same for the open file.
 - **Code › Code Cleanup…** applies the language servers' automatic fixes, optimizes imports and reformats over a scope, file by file, and saves the files. Above 100 files it asks first. It can be cancelled from the background tasks popup.
+- **Reformat Code** (`⌥⌘L` / `Ctrl+Alt+L`, or the context menu) on a directory or on several files in the Project view opens the **Reformat Code** dialog: include subdirectories, optimize imports, a file mask (`*.sh, *.py`) and **Only VCS changed text**. The files are reformatted and saved the same way; files without a formatter are skipped and listed in the result. A single file is reformatted at once.
 - **Code › Analyze Code › Locate Duplicates…** finds repeated code with a token-based clone detector. Set the minimum size in tokens and whether identifiers and literals are anonymized (so that code differing only in names still matches). Results open in the **Duplicates** tool window.
 
 ## Structural search and replace

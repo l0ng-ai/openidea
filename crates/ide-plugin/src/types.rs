@@ -959,6 +959,28 @@ pub struct BlameLine {
     pub summary: String,
 }
 
+/// How an occurrence in a build's dependency graph was resolved (API 1.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyStatus {
+    Resolved,
+    OmittedForConflict,
+    OmittedForDuplicate,
+    VersionManaged,
+}
+
+/// One occurrence in the flat dependency graph of `build.dependencies` (API 1.10);
+/// `parent` indexes the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyNode {
+    pub group: String,
+    pub artifact: String,
+    pub version: String,
+    pub scope: String,
+    pub status: DependencyStatus,
+    pub requested_version: Option<String>,
+    pub parent: Option<u32>,
+}
+
 /// Non-secret settings of a plugin-owned project database source (API 1.4).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

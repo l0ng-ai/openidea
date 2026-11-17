@@ -48,7 +48,7 @@ import {
   toggleGroupServer,
   updateMapping,
 } from "./deploymentModel";
-import { choosePath } from "../languages/api";
+import { choosePath } from "@/platform/choosePath";
 import { BUILD_GROUP } from "./execution";
 import type { PageSpec } from "./spec";
 import { parseSshPort, sshTestRemedy } from "./sshConnection";

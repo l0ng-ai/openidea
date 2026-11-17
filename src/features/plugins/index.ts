@@ -35,6 +35,7 @@ import { startViewUi } from "./uiPoints";
 import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
 import { startPluginDecorations } from "./decorations";
+import { startOneDarkNotice } from "./oneDarkNotice";
 import { startIndexedMarkers } from "./indexedMarkers";
 import { startRunTargets } from "./runTargets";
 import { startPluginNavigation } from "./navigation";
@@ -46,6 +47,7 @@ function registerPluginsPage(): () => void {
     title: "Plugins",
     // After Editor, as in IntelliJ IDEA.
     order: 250,
+    bleed: true,
     keywords: ["plugin", "extension", "wasm", "install", "theme", "marketplace"],
     component: lazyComponent(() => import("./PluginsPage").then((m) => m.PluginsPage)),
   });
@@ -154,6 +156,7 @@ export function activate(): () => void {
     ]),
     startPluginBridge(),
     startPluginNavigation(),
+    startOneDarkNotice(),
     startIndexedMarkers(),
     startPluginDecorations(),
     // Plugin custom editors (tab kind) and context menu entries.

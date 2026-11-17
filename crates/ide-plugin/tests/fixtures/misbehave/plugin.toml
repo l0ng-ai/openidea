@@ -105,7 +105,3 @@ title = "childtrap"
 [[contributes.commands]]
 id = "patient"
 title = "patient"
-
-[[contributes.commands]]
-id = "cpu-task"
-title = "cpu-task"

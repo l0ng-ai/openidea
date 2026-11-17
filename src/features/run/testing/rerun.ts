@@ -250,18 +250,17 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
       args = goArgs(config.args, paths, config.params?.scope === "file" ? config.params.target : undefined);
       break;
     case "zig": {
-      // Only a standalone `zig test <file>` can filter: `zig build` forwards no args to the test binary.
-      const file = config.args[0] === "test" ? config.args[1] : undefined;
+      // `zig test <file>` filters directly. A build-based run (`zig build test`) forwards no
+      // args to the test binary, so it re-runs through the module root the detection recorded
+      // — exact for projects whose tests live in one module's import graph.
+      const file = config.args[0] === "test" ? config.args[1] : config.params?.testRoot;
       const names = unique(paths.map((p) => p[p.length - 1]!).filter(Boolean));
-      args =
-        file && names.length
-          ? [
-              config.args[0]!,
-              file,
-              ...dropFlag(config.args.slice(2), ["--test-filter"]),
-              ...names.flatMap((n) => ["--test-filter", n]),
-            ]
-          : null;
+      if (!file || !names.length) {
+        args = null;
+        break;
+      }
+      const rest = dropFlag(config.args[0] === "test" ? config.args.slice(2) : [], ["--test-filter"]);
+      args = ["test", file, ...rest, ...names.flatMap((n) => ["--test-filter", n])];
       break;
     }
     case "jvm":

@@ -132,6 +132,24 @@ mac = "Meta+Alt+C"        # optional; macOS uses `key` as written when it is mis
   the user already uses that keystroke, or when the action already has a binding. The user
   can rebind it in **Settings › Keymap**.
 
+### Escape in the editor
+
+API 1.10 lets a command answer a plain <kbd>Escape</kbd> in a focused editor, to clear
+something the plugin shows there (a highlight, a mode):
+
+```toml
+[[contributes.keymaps]]
+command = "clear-highlight"
+key = "Escape"
+when = "plugin.my-plugin.highlighting"   # required; set it with set-context while there is something to clear
+```
+
+- It runs only after everything the IDE does with Escape in the editor found nothing to do:
+  closing a popup, completion or rename, collapsing a selection or extra carets, Vim.
+- `when` is required and `key` (and `mac`, if given) must be `Escape`. Escape is the only plain
+  key a plugin can bind, and `when` is accepted only on such a binding.
+- When several plugins' `when` hold, the most recently loaded one runs.
+
 ## Menus
 
 ```toml

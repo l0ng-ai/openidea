@@ -43,11 +43,13 @@ pub enum SyntaxHighlightKind {
     Operator,
     Punctuation,
     Parameter,
+    /// A shell command name (`pgrep`, a script's own function).
+    Command,
 }
 
 impl SyntaxHighlightKind {
     /// Every kind, in `as u32` order: the legend for [`SyntaxHighlights::data`].
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Keyword,
         Self::String,
         Self::StringSpecial,
@@ -73,6 +75,7 @@ impl SyntaxHighlightKind {
         Self::Operator,
         Self::Punctuation,
         Self::Parameter,
+        Self::Command,
     ];
 
     /// The kebab-case name plugins use (`doc-comment`, `function-call`, …).
@@ -153,6 +156,7 @@ const CAPTURES: &[(&str, Paint)] = {
         ("function.builtin", Kind(K::Builtin)),
         ("function.macro", Kind(K::Macro)),
         ("function.definition", Kind(K::Function)),
+        ("function.command", Kind(K::Command)),
         ("function", Kind(K::FunctionCall)),
         ("method", Kind(K::FunctionCall)),
         ("constructor", Kind(K::Type)),
@@ -406,6 +410,30 @@ mod tests {
                 "missing {text}: {expected:?} in {got:?}"
             );
         }
+    }
+
+    #[test]
+    fn shell_scripts_highlight_declarations_commands_and_function_names() {
+        use SyntaxHighlightKind as K;
+        let src = "this::check_process() {\n  local process\n  process=\"${1:?}\"\n  if [ -x \"$(command -v pgrep)\" ]; then\n    if pgrep -f -q \"${process}\"; then\n      functions::exit 1 \"'${process}' is running\"\n    fi\n  fi\n}\n# done\n";
+        let got = spans("shellscript", src);
+        for (text, expected) in [
+            ("this::check_process", K::Function),
+            ("local", K::Keyword),
+            ("if", K::Keyword),
+            ("command", K::Command),
+            ("pgrep", K::Command),
+            ("functions::exit", K::Command),
+            ("process", K::Variable),
+            ("# done", K::Comment),
+        ] {
+            assert!(
+                got.iter().any(|(word, kind)| word == text && *kind == expected),
+                "missing {text}: {expected:?} in {got:?}"
+            );
+        }
+        // An expansion inside a string is not string-coloured.
+        assert!(!got.iter().any(|(word, kind)| word.contains("${process}") && *kind == K::String), "{got:?}");
     }
 
     #[test]

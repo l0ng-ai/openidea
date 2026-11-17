@@ -2,7 +2,11 @@
 //! translated to and from ACP. A codex thread is an ACP session; a subagent's thread is
 //! a subagent session of the thread that spawned it.
 
+mod commands;
 mod translate;
+mod trust;
+
+pub(crate) use commands::BUILTIN_COMMANDS;
 
 #[cfg(test)]
 mod tests;
@@ -10,6 +14,8 @@ mod tests;
 use super::Shim;
 use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
+use crate::{AgentCommand, AgentCommandSource};
+use commands::{BuiltinCommand, ParsedCommand};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -31,6 +37,19 @@ const EXIT_GRACE: Duration = Duration::from_millis(100);
 /// What a thread's name is asked for with, after its first turn.
 const NAME_PROMPT: &str = "Name this conversation for a list of tasks: a short title of at most six words, in the \
     language the user writes in. Reply with the title only, without quotes or a closing period.";
+
+/// Slash-command metadata for provider discovery and sessions without an advertised list.
+pub(crate) fn builtin_commands() -> Vec<AgentCommand> {
+    BUILTIN_COMMANDS
+        .iter()
+        .map(|command| AgentCommand {
+            name: command.name.to_owned(),
+            description: command.description.to_owned(),
+            hint: command.hint.map(str::to_owned),
+            source: AgentCommandSource::Command,
+        })
+        .collect()
+}
 
 pub(crate) fn connect(
     spec: &ProviderSpec,
@@ -183,6 +202,8 @@ struct State {
     threads: HashMap<String, Thread>,
     /// The last `account/rateLimits/updated` snapshot.
     rate_limits: Option<Value>,
+    /// Project trust has been checked (and, when needed, asked about) on this connection.
+    trust_checked: HashSet<String>,
     /// Codex exited.
     gone: bool,
 }
@@ -215,6 +236,8 @@ struct Thread {
     early_cancel: Option<Instant>,
     /// The latest agent message (a subagent's answer).
     answer: String,
+    /// The latest `thread/tokenUsage/updated` payload, for the `/status` command.
+    token_usage: Option<Value>,
     /// The thread has a name.
     named: bool,
     /// A name is being asked for.
@@ -320,6 +343,12 @@ impl CodexShim {
         self.codex().request(method, params, None).await.map_err(from_codex)
     }
 
+    fn warning(&self, message: impl Into<String>) {
+        if let Some(client) = self.client.get() {
+            let _ = client.notify(crate::WARNING_NOTIFICATION, json!({ "message": message.into() }));
+        }
+    }
+
     async fn handle(&self, method: &str, params: Value) -> Result<Value, ResponseError> {
         match method {
             "initialize" => self.initialize().await,
@@ -403,6 +432,7 @@ impl CodexShim {
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let models = self.models().await?;
+        self.prepare_project_trust(params).await;
         let mut request = json!({ "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
             request["config"] = config;
@@ -420,6 +450,7 @@ impl CodexShim {
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
         let models = self.models().await?;
+        self.prepare_project_trust(params).await;
         let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
             request["config"] = config;
@@ -438,6 +469,7 @@ impl CodexShim {
     async fn fork_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let source = str_param(params, "sessionId")?;
         let models = self.models().await?;
+        self.prepare_project_trust(params).await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
@@ -471,11 +503,18 @@ impl CodexShim {
 
     async fn prompt(&self, params: &Value) -> Result<Value, ResponseError> {
         let session = str_param(params, "sessionId")?.to_owned();
-        let input = translate::user_input(params.get("prompt").unwrap_or(&Value::Null));
+        let prompt = params.get("prompt").unwrap_or(&Value::Null);
+        let command = commands::parse(prompt);
+        if let Some(command) = command.as_ref()
+            && !command.starts_turn()
+        {
+            return self.local_command(&session, command).await;
+        }
+        let input = translate::user_input(prompt);
         if input.is_empty() {
             return Err(invalid("empty prompt"));
         }
-        let models = self.models().await?;
+        let models = if command.is_none() { Some(self.models().await?) } else { None };
         let (done, ended) = oneshot::channel();
         let settings = {
             let mut state = self.state.lock();
@@ -491,31 +530,211 @@ impl CodexShim {
             t.error = None;
             t.settings.clone()
         };
-        let mut request = json!({ "threadId": session, "input": input, "summary": "auto" });
-        if let Some(s) = settings {
-            request["model"] = json!(s.model_slug(&models));
-            request["approvalPolicy"] = json!(s.mode.approval_policy());
-            request["sandboxPolicy"] = s.mode.sandbox_policy();
-            if let Some(effort) = &s.effort {
-                request["effort"] = json!(effort);
+        let started = match command.as_ref() {
+            Some(command) => match command.command {
+                BuiltinCommand::Compact => {
+                    // Codex reports compaction as its own turn, using the same started/completed
+                    // notifications that finish the pending session/prompt above.
+                    self.call("thread/compact/start", json!({ "threadId": session })).await
+                }
+                BuiltinCommand::Review | BuiltinCommand::ReviewBranch | BuiltinCommand::ReviewCommit => {
+                    self.call("review/start", json!({ "threadId": session, "target": review_target(command) })).await
+                }
+                _ => unreachable!("local commands return before a pending turn is created"),
+            },
+            None => {
+                let models = models.expect("ordinary prompts load the model catalog");
+                let mut request = json!({ "threadId": session, "input": input, "summary": "auto" });
+                if let Some(s) = &settings {
+                    request["model"] = json!(s.model_slug(&models));
+                    request["approvalPolicy"] = json!(s.mode.approval_policy());
+                    request["sandboxPolicy"] = s.mode.sandbox_policy();
+                    // Omit the default so older app-server versions keep accepting normal
+                    // turns; selecting Plan opts into this newer request field.
+                    if s.collaboration_mode == translate::PLAN_COLLABORATION_MODE
+                        || s.collaboration_mode_override.is_some()
+                    {
+                        request["collaborationMode"] = translate::collaboration_mode(s, &models);
+                    }
+                    if let Some(effort) = &s.effort {
+                        request["effort"] = json!(effort);
+                    }
+                }
+                self.call("turn/start", request).await
             }
+        };
+        if let Ok(started) = &started
+            && let Some(turn) = started.pointer("/turn/id").and_then(Value::as_str)
+        {
+            self.turn_known(&session, turn, false);
         }
-        match self.call("turn/start", request).await {
-            Ok(started) => {
-                if let Some(turn) = started.pointer("/turn/id").and_then(Value::as_str) {
-                    self.turn_known(&session, turn, false);
-                }
+        if started.is_ok()
+            && command.is_none()
+            && let Some(thread) = self.state.lock().threads.get_mut(&session)
+            && let Some(settings) = thread.settings.as_mut()
+        {
+            // A Default override is needed only for the first turn that resets a resumed
+            // Plan thread; omitting it afterwards preserves compatibility with older Codex.
+            settings.collaboration_mode_override = None;
+        }
+        if let Err(e) = started {
+            if let Some(t) = self.state.lock().threads.get_mut(&session) {
+                t.prompt = None;
             }
-            Err(e) => {
-                if let Some(t) = self.state.lock().threads.get_mut(&session) {
-                    t.prompt = None;
-                }
-                return Err(e);
-            }
+            return Err(e);
         }
         let (turn, last_error) = ended.await.map_err(|_| error(codes::INTERNAL_ERROR, "Codex exited"))?;
         let rate_limits = self.state.lock().rate_limits.clone();
         stop_reason(&turn, last_error, rate_limits.as_ref())
+    }
+
+    /// Runs commands that codex-acp historically handled locally: configuration, status,
+    /// inventory, naming and account actions. They complete without starting a model turn.
+    async fn local_command(&self, session: &str, command: &ParsedCommand) -> Result<Value, ResponseError> {
+        let (settings, cwd, token_usage, rate_limits) = {
+            let state = self.state.lock();
+            if state.gone {
+                return Err(error(codes::INTERNAL_ERROR, "Codex exited"));
+            }
+            let thread = state.threads.get(session).ok_or_else(|| invalid(format!("no session {session}")))?;
+            if thread.prompt.is_some() || thread.turn.is_some() {
+                return Err(invalid("a turn is already running"));
+            }
+            (thread.settings.clone(), thread.cwd.clone(), thread.token_usage.clone(), state.rate_limits.clone())
+        };
+
+        match command.command {
+            BuiltinCommand::Plan => {
+                if !command.rest.is_empty() {
+                    self.say(session, command_usage(BuiltinCommand::Plan));
+                    return Ok(json!({ "stopReason": "end_turn" }));
+                }
+                let models = self.models().await?;
+                let options = {
+                    let mut state = self.state.lock();
+                    let thread =
+                        state.threads.get_mut(session).ok_or_else(|| invalid(format!("no session {session}")))?;
+                    let settings = thread.settings.as_mut().ok_or_else(|| invalid(format!("no session {session}")))?;
+                    settings.collaboration_mode = if settings.collaboration_mode == translate::PLAN_COLLABORATION_MODE {
+                        translate::DEFAULT_COLLABORATION_MODE.to_owned()
+                    } else {
+                        translate::PLAN_COLLABORATION_MODE.to_owned()
+                    };
+                    settings.collaboration_mode_override = Some(settings.collaboration_mode.clone());
+                    translate::config_options(&models, settings)
+                };
+                self.emit(session, json!({ "sessionUpdate": "config_option_update", "configOptions": options }));
+            }
+            BuiltinCommand::Status => {
+                let text =
+                    status_text(session, settings.as_ref(), cwd.as_deref(), token_usage.as_ref(), rate_limits.as_ref());
+                self.say(session, text);
+            }
+            BuiltinCommand::Skills => {
+                let cwd = cwd.ok_or_else(|| invalid(format!("no session {session}")))?;
+                let found = self.call("skills/list", json!({ "cwds": [cwd] })).await?;
+                self.say(session, skills_text(&found));
+            }
+            BuiltinCommand::Mcp => match command.rest.as_str() {
+                "" => self.say(session, self.mcp_text(session).await?),
+                rest if rest.eq_ignore_ascii_case("reconnect") => {
+                    self.call("config/mcpServer/reload", json!({})).await?;
+                    self.say(session, self.mcp_text(session).await?);
+                }
+                _ => self.say(session, command_usage(BuiltinCommand::Mcp)),
+            },
+            BuiltinCommand::Rename => {
+                if command.rest.is_empty() {
+                    self.say(session, command_usage(BuiltinCommand::Rename));
+                } else {
+                    self.call("thread/name/set", json!({ "threadId": session, "name": command.rest })).await?;
+                    // User commands are authoritative over the automatic title, so the manager
+                    // must retain this title through later generated-name updates.
+                    self.emit(
+                        session,
+                        json!({ "sessionUpdate": "session_info_update", "title": command.rest, "userNamed": true }),
+                    );
+                }
+            }
+            BuiltinCommand::Logout => {
+                self.call("account/logout", Value::Null).await?;
+                self.say(session, "Logged out from Codex account.");
+            }
+            BuiltinCommand::Goal => self.goal_command(session, &command.rest).await?,
+            BuiltinCommand::ReviewBranch | BuiltinCommand::ReviewCommit if command.rest.is_empty() => {
+                self.say(session, command_usage(command.command));
+            }
+            BuiltinCommand::ReviewBranch | BuiltinCommand::ReviewCommit => {
+                return Err(invalid("review command did not start a turn"));
+            }
+            BuiltinCommand::Review | BuiltinCommand::Compact => {
+                return Err(invalid("turn command reached the local command path"));
+            }
+        }
+        Ok(json!({ "stopReason": "end_turn" }))
+    }
+
+    async fn goal_command(&self, session: &str, rest: &str) -> Result<(), ResponseError> {
+        let argument = rest.trim();
+        if argument.is_empty() {
+            self.say(session, command_usage(BuiltinCommand::Goal));
+            return Ok(());
+        }
+        match argument.to_ascii_lowercase().as_str() {
+            "clear" => {
+                self.call("thread/goal/clear", json!({ "threadId": session })).await?;
+                self.say(session, "Goal cleared.");
+            }
+            "pause" => {
+                let response = self
+                    .call("thread/goal/set", json!({ "threadId": session, "status": "paused", "origin": "user" }))
+                    .await?;
+                self.say(
+                    session,
+                    format!(
+                        "Goal is now {}.",
+                        response.pointer("/goal/status").and_then(Value::as_str).unwrap_or("paused")
+                    ),
+                );
+            }
+            "resume" => {
+                let response = self
+                    .call("thread/goal/set", json!({ "threadId": session, "status": "active", "origin": "user" }))
+                    .await?;
+                self.say(
+                    session,
+                    format!(
+                        "Goal is now {}.",
+                        response.pointer("/goal/status").and_then(Value::as_str).unwrap_or("active")
+                    ),
+                );
+            }
+            _ if argument.chars().count() > 4000 => {
+                self.say(session, "Command \"/goal\" requires goal text of at most 4000 characters.");
+            }
+            _ => {
+                let response = self
+                    .call(
+                        "thread/goal/set",
+                        json!({ "threadId": session, "objective": argument, "status": "active", "origin": "user" }),
+                    )
+                    .await?;
+                let status = response.pointer("/goal/status").and_then(Value::as_str).unwrap_or("active");
+                self.say(session, format!("Goal set and {status}."));
+            }
+        }
+        Ok(())
+    }
+
+    async fn mcp_text(&self, session: &str) -> Result<String, ResponseError> {
+        let response = self
+            .call("mcpServerStatus/list", json!({ "threadId": session, "detail": "toolsAndAuthOnly", "limit": 100 }))
+            .await?;
+        Ok(mcp_text(&response))
+    }
+
+    fn say(&self, session: &str, text: impl AsRef<str>) {
+        self.emit(session, translate::chunk("agent_message_chunk", text.as_ref()));
     }
 
     async fn steer(&self, params: &Value) -> Result<Value, ResponseError> {
@@ -643,6 +862,25 @@ impl CodexShim {
     fn on_codex_notification(self: &Arc<Self>, method: &str, params: &Value) {
         let thread = params.get("threadId").and_then(Value::as_str).unwrap_or_default();
         match method {
+            "configWarning" => {
+                let Some(summary) = params.get("summary").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+                else {
+                    return;
+                };
+                let mut message = summary.trim().to_owned();
+                for key in ["details", "path"] {
+                    if let Some(value) = params.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                        message.push_str("\n\n");
+                        message.push_str(value.trim());
+                    }
+                }
+                self.warning(message);
+            }
+            "warning" => {
+                if let Some(message) = params.get("message").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                    self.warning(message);
+                }
+            }
             "skills/changed" => {
                 let shim = self.clone();
                 let sessions: Vec<String> = self
@@ -693,7 +931,12 @@ impl CodexShim {
                 t.last_chunk = None;
                 Some(translate::plan(params))
             }),
-            "thread/tokenUsage/updated" => self.with_thread(thread, |_, _| translate::usage(params)),
+            "thread/tokenUsage/updated" => self.with_thread(thread, |t, _| {
+                if let Some(usage) = params.get("tokenUsage") {
+                    t.token_usage = Some(usage.clone());
+                }
+                translate::usage(params)
+            }),
             "thread/name/updated" => self.with_thread(thread, |t, _| {
                 let title = params.get("threadName").and_then(Value::as_str)?;
                 t.named = true;
@@ -1181,4 +1424,115 @@ fn stop_reason(turn: &Value, last_error: Option<Value>, rate_limits: Option<&Val
         _ => "end_turn",
     };
     Ok(json!({ "stopReason": stop }))
+}
+
+/// The `review/start` target of a parsed review command.
+fn review_target(command: &ParsedCommand) -> Value {
+    match command.command {
+        BuiltinCommand::Review if command.rest.is_empty() => json!({ "type": "uncommittedChanges" }),
+        BuiltinCommand::Review => json!({ "type": "custom", "instructions": command.rest }),
+        BuiltinCommand::ReviewBranch => json!({ "type": "baseBranch", "branch": command.rest }),
+        BuiltinCommand::ReviewCommit => json!({ "type": "commit", "sha": command.rest, "title": null }),
+        _ => unreachable!("only review commands have review targets"),
+    }
+}
+
+fn command_usage(command: BuiltinCommand) -> String {
+    match command {
+        BuiltinCommand::Plan => "Command \"/plan\" accepts no arguments.".to_owned(),
+        BuiltinCommand::Mcp => "Command \"/mcp\" accepts no arguments, or `reconnect`.".to_owned(),
+        BuiltinCommand::ReviewBranch => "Command \"/review-branch\" requires branch name.".to_owned(),
+        BuiltinCommand::ReviewCommit => "Command \"/review-commit\" requires commit sha.".to_owned(),
+        BuiltinCommand::Goal => "Command \"/goal\" requires [<objective>|clear|pause|resume].".to_owned(),
+        BuiltinCommand::Rename => "Command \"/rename\" requires new name.".to_owned(),
+        _ => "This command does not accept arguments.".to_owned(),
+    }
+}
+
+fn status_text(
+    session: &str,
+    settings: Option<&Settings>,
+    cwd: Option<&str>,
+    token_usage: Option<&Value>,
+    rate_limits: Option<&Value>,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some(settings) = settings {
+        lines.push(format!("**Model:** {}", settings.model));
+        lines.push(format!("**Collaboration:** {}", settings.collaboration_mode));
+        lines.push(format!("**Approval:** {}", settings.mode.approval_policy()));
+        lines.push(format!("**Sandbox:** {}", settings.mode.sandbox_mode()));
+    }
+    if let Some(cwd) = cwd {
+        lines.push(format!("**Directory:** {cwd}"));
+    }
+    lines.push(format!("**Session:** `{session}`"));
+    if let Some(usage) = token_usage {
+        let total = usage.pointer("/total/totalTokens").and_then(Value::as_u64);
+        let used = usage.pointer("/last/totalTokens").and_then(Value::as_u64);
+        let window = usage.get("modelContextWindow").and_then(Value::as_u64).filter(|window| *window > 0);
+        if let (Some(total), Some(used), Some(window)) = (total, used, window) {
+            let percent = (used.saturating_mul(100) + window / 2) / window;
+            lines.push(format!("**Token usage:** {total} total"));
+            lines.push(format!("**Context window:** {used} / {window} ({percent}%)"));
+        }
+    }
+    if let Some(primary) = rate_limits.and_then(|r| r.get("primary"))
+        && let Some(used) = primary.get("usedPercent").and_then(Value::as_f64)
+    {
+        lines.push(format!("**Rate limit:** {used:.0}% used"));
+    }
+    lines.join("  \n")
+}
+
+fn skills_text(response: &Value) -> String {
+    let mut seen = HashSet::new();
+    let names: Vec<String> = response
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("skills").and_then(Value::as_array))
+        .flatten()
+        .filter(|skill| skill.get("enabled") != Some(&Value::Bool(false)))
+        .filter_map(|skill| {
+            let name = skill.get("name").and_then(Value::as_str)?.trim();
+            if name.is_empty() || !seen.insert(name.to_owned()) {
+                return None;
+            }
+            let description = skill
+                .pointer("/interface/shortDescription")
+                .or_else(|| skill.get("shortDescription"))
+                .or_else(|| skill.get("description"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Some(if description.is_empty() { name.to_owned() } else { format!("{name}: {description}") })
+        })
+        .collect();
+    if names.is_empty() {
+        "No skills configured.".to_owned()
+    } else {
+        format!("Available skills:\n{}", names.iter().map(|name| format!("- {name}")).collect::<Vec<_>>().join("\n"))
+    }
+}
+
+fn mcp_text(response: &Value) -> String {
+    let servers = response.get("data").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    if servers.is_empty() {
+        return "No MCP servers configured.".to_owned();
+    }
+    let lines = servers
+        .iter()
+        .filter_map(|server| {
+            let name = server.get("name").and_then(Value::as_str)?;
+            let status = server
+                .get("runtimeStatus")
+                .and_then(Value::as_str)
+                .or_else(|| server.get("authStatus").and_then(Value::as_str))
+                .unwrap_or("unknown");
+            let tools = server.get("tools").and_then(Value::as_object).map_or(0, serde_json::Map::len);
+            Some(format!("- {name}: {status}, {tools} tools"))
+        })
+        .collect::<Vec<_>>();
+    format!("MCP servers:\n{}", lines.join("\n"))
 }

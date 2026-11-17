@@ -170,6 +170,8 @@ struct Session {
     id: String,
     cwd: PathBuf,
     mcp_config: Option<tempfile::TempPath>,
+    /// MCP servers switched off for this session (`--disallowedTools`), its own config's too.
+    mcp_off: Vec<String>,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -344,9 +346,10 @@ impl Shim {
         cwd: PathBuf,
         start: Start,
         pending: bool,
-        mcp_config: Option<String>,
+        params: &Value,
     ) -> Arc<Session> {
-        let mcp_config = mcp_config.and_then(|json| match write_mcp_config(&json) {
+        let mcp_off = mcp_off(params);
+        let mcp_config = mcp_config(params).and_then(|json| match write_mcp_config(&json) {
             Ok(path) => Some(path),
             Err(e) => {
                 tracing::warn!("Claude Code session {id}: cannot write its MCP configuration: {e}");
@@ -356,6 +359,7 @@ impl Shim {
         let session = Arc::new(Session {
             id: id.to_owned(),
             mcp_config,
+            mcp_off,
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
                 proc: None,
@@ -411,13 +415,8 @@ impl Shim {
             }
             "session/new" => {
                 let id = new_uuid(false);
-                let session = self.add_session(
-                    &id,
-                    self.cwd_of(&params),
-                    Start::New { id: id.clone() },
-                    false,
-                    mcp_config(&params),
-                );
+                let session =
+                    self.add_session(&id, self.cwd_of(&params), Start::New { id: id.clone() }, false, &params);
                 rt.block_on(session.ensure()).map_err(|e| self.start_error(&session, e))?;
                 session.announce_commands();
                 Ok(json!({ "sessionId": id, "configOptions": session.st.lock().settings.options() }))
@@ -433,7 +432,7 @@ impl Shim {
                     None => return Err(invalid(format!("no Claude Code session {id} in {}", cwd.display()))),
                 };
                 let chain = self.base_chain(&cwd, &start).map_err(internal)?;
-                let session = self.add_session(id, cwd, start, pending, mcp_config(&params));
+                let session = self.add_session(id, cwd, start, pending, &params);
                 rt.block_on(session.ensure()).map_err(|e| self.start_error(&session, e))?;
                 if method == "session/load" {
                     session.replay(&chain);
@@ -459,7 +458,7 @@ impl Shim {
                     (start, st.settings.clone())
                 };
                 self.save_pending(&id, Some(&start));
-                let session = self.add_session(&id, source.cwd.clone(), start, true, mcp_config(&params));
+                let session = self.add_session(&id, source.cwd.clone(), start, true, &params);
                 session.st.lock().settings = settings;
                 let options = session.st.lock().settings.options();
                 Ok(json!({ "sessionId": id, "configOptions": options }))
@@ -665,6 +664,9 @@ impl Session {
         let mut args = shim.config.args.clone();
         if let Some(config) = &self.mcp_config {
             args.extend(["--mcp-config".to_owned(), config.to_string_lossy().into_owned()]);
+        }
+        if !self.mcp_off.is_empty() {
+            args.extend(["--disallowedTools".to_owned(), self.mcp_off.join(",")]);
         }
         args.extend(start.args());
         let launch =
@@ -1495,6 +1497,24 @@ fn write_mcp_config(json: &str) -> std::io::Result<tempfile::TempPath> {
     let mut file = tempfile::Builder::new().prefix("openidea-mcp-").suffix(".json").tempfile()?;
     std::io::Write::write_all(&mut file, json.as_bytes())?;
     Ok(file.into_temp_path())
+}
+
+/// The servers switched off for the session (`_meta.openidea.mcpServersOff`) as Claude Code
+/// permission rules that deny all of a server's tools (`mcp__<server>`), so a server of
+/// Claude Code's own configuration stays off too.
+fn mcp_off(params: &Value) -> Vec<String> {
+    params
+        .pointer("/_meta/openidea/mcpServersOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|name| {
+            let name: String =
+                name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+            format!("mcp__{name}")
+        })
+        .collect()
 }
 
 /// ACP `mcpServers` as Claude Code's `--mcp-config` JSON (`None` when there are none).

@@ -17,6 +17,8 @@ const tooltipSurface = {
  * the hover and signature tooltips.
  */
 const completionRowMetrics = {
+  // Rows grow with the editor font size (lookup text uses the editor font, as typed text does).
+  "--cm-completion-row": "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))",
   "--cm-completion-edge": "4px",
   "--cm-completion-inset": "6px",
   "--cm-completion-icon": "16px",
@@ -100,7 +102,7 @@ export const lspTheme = EditorView.theme({
     ...completionRowMetrics,
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-code)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     // CodeMirror anchors the popup at the completed word's start. Pull it left by one row's
     // leading inset so the labels, not the icon column, sit on the text. CodeMirror's horizontal
     // clamp measures the border box (margins excluded), so this offset sits outside its math:
@@ -109,22 +111,23 @@ export const lspTheme = EditorView.theme({
     // (gutter + project sidebar) keeps the word well clear of that edge.
     marginLeft:
       "calc(-1 * (1px + var(--cm-completion-edge) + var(--cm-completion-inset) + var(--cm-completion-icon) + var(--cm-completion-gap)))",
-    overflow: "hidden",
+    // No overflow clipping: CodeMirror nests the documentation pane in this box and
+    // positions it outside it (see `positionCompletionInfo`). The footer rounds itself.
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     minWidth: "420px",
     maxWidth: "min(720px, 80vw)",
-    maxHeight: "calc(var(--h-list-row) * 11 + 8px)",
+    maxHeight: "calc(var(--cm-completion-row) * 11 + 8px)",
     padding: "4px 0",
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > li": {
     display: "flex",
     alignItems: "center",
     gap: "var(--cm-completion-gap)",
-    height: "var(--h-list-row)",
-    lineHeight: "var(--h-list-row)",
+    height: "var(--cm-completion-row)",
+    lineHeight: "var(--cm-completion-row)",
     margin: "0 var(--cm-completion-edge)",
     padding: "0 8px 0 var(--cm-completion-inset)",
     borderRadius: "var(--radius-small)",
@@ -194,6 +197,7 @@ export const lspTheme = EditorView.theme({
     whiteSpace: "nowrap",
     gap: "12px",
     justifyContent: "space-between",
+    borderRadius: "0 0 calc(var(--radius-popup) - 1px) calc(var(--radius-popup) - 1px)",
   },
   ".cm-lsp-completion-sort": {
     padding: "0",
@@ -263,11 +267,11 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-signature": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-code)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     padding: "6px 10px",
     maxWidth: "640px",
   },
-  ".cm-lsp-signature-row": { color: "var(--fg-subtle)", whiteSpace: "pre-wrap", lineHeight: "20px" },
+  ".cm-lsp-signature-row": { color: "var(--fg-subtle)", whiteSpace: "pre-wrap", lineHeight: "max(20px, 1.5em)" },
   ".cm-lsp-signature-active": {
     color: "var(--fg-strong)",
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
@@ -293,9 +297,10 @@ export const lspTheme = EditorView.theme({
     padding: "6px 10px",
     borderRadius: "var(--radius-popup)",
     boxShadow: "var(--shadow-popup)",
-    maxWidth: "480px",
     whiteSpace: "pre-wrap",
   },
+  // The hint is the tooltip element itself: beat the editor theme's `.cm-tooltip` width.
+  ".cm-tooltip.cm-lsp-hint": { maxWidth: "min(480px, 100%)" },
   ".cm-lsp-hint-error": {
     backgroundColor: "var(--bg-feedback-error, color-mix(in srgb, var(--danger) 8%, var(--bg-popup)))",
     borderColor: "color-mix(in srgb, var(--danger) 35%, var(--border-popup))",
@@ -325,7 +330,26 @@ export const lspTheme = EditorView.theme({
     backgroundImage:
       "linear-gradient(to right, transparent var(--lsp-occurrence-from), var(--lsp-occurrence-bg) var(--lsp-occurrence-from))",
   },
-  ".cm-lsp-nav-info": { padding: "4px 8px" },
+  // IDEA's ⌘-hover hint: a rounded popup pointing at the word. Styled here in full, as diff
+  // viewers lack the editor theme and would show CodeMirror's default tooltip. A few lines at
+  // most, so no scrolling, which would clip the arrow.
+  ".cm-tooltip.cm-lsp-nav-info": {
+    ...tooltipSurface,
+    borderRadius: "var(--radius-popup-large)",
+    width: "max-content",
+    maxWidth: "100%",
+    maxHeight: "none",
+    overflow: "visible",
+  },
+  ".cm-lsp-nav-info .cm-lsp-code": { overflowWrap: "anywhere" },
+  ".cm-tooltip.cm-lsp-nav-info .cm-tooltip-arrow:before": {
+    borderTopColor: "var(--border-popup)",
+    borderBottomColor: "var(--border-popup)",
+  },
+  ".cm-tooltip.cm-lsp-nav-info .cm-tooltip-arrow:after": {
+    borderTopColor: "var(--bg-popup)",
+    borderBottomColor: "var(--bg-popup)",
+  },
   // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
   ".cm-lsp-chooser-highlight": { backgroundColor: "var(--bg-text-search-result)" },
 

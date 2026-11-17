@@ -9,7 +9,7 @@ import { shortcutLabel } from "@/platform/keymap";
 import { editorCorner } from "@/editor/api";
 import { toolWindowService } from "@/workbench/contributions";
 import { gotoDiagnostic } from "./diagnostics";
-import { iconNode } from "./iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 
 interface Counts {
   error: number;

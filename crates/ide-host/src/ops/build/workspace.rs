@@ -88,6 +88,10 @@ pub(super) fn load_scopes(root: &Path, scopes: &[Scope]) -> BuildModel {
             }
         }
         combined.gradle.extend(model.gradle);
+        for b in model.sbt.iter_mut().filter(|_| scope.root != root) {
+            b.dir = absolute(&scope.root, &b.dir);
+        }
+        combined.sbt.extend(model.sbt);
     }
     combined
 }

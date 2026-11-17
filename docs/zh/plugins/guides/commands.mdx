@@ -119,6 +119,21 @@ mac = "Meta+Alt+C"        # 可选；缺省时 macOS 原样使用 `key`
 - 插件快捷键只是默认值，优先级低于 IDE：按键映射预设或用户已经占用该按键、或该动作已有绑定时，
   插件的快捷键会被丢弃。用户可以在 **设置 › 按键映射** 中重新绑定。
 
+### 编辑器中的 Escape
+
+API 1.10 起，命令可以响应焦点编辑器中单独按下的 <kbd>Escape</kbd>，用来清除插件在编辑器里显示的内容（高亮、某种模式）：
+
+```toml
+[[contributes.keymaps]]
+command = "clear-highlight"
+key = "Escape"
+when = "plugin.my-plugin.highlighting"   # 必填；有内容可清除时用 set-context 设置
+```
+
+- 只有 IDE 在编辑器里对 Escape 的处理都没有生效时才会执行：关闭弹窗、补全或重命名，收起选区或多余的光标，Vim。
+- 必须写 `when`，且 `key`（以及给出的 `mac`）必须是 `Escape`。Escape 是插件唯一能绑定的单独按键，`when` 也只用于这种绑定。
+- 多个插件的 `when` 同时成立时，执行最后加载的那个插件的命令。
+
 ## 菜单
 
 ```toml

@@ -5,7 +5,8 @@
  * runtime application of keymap / UI font size / high-contrast settings.
  *
  * On the desktop Settings open in a native child window (`activateSettingsWindow`
- * runs there); in the browser build they open as an in-page dialog.
+ * runs there) unless Appearance › "Open Settings in a separate window" is off;
+ * then, and in the browser build, they open as an in-page dialog.
  *
  * `executeAction("file.settings", "keymap")` opens a specific page;
  * `file.newProjectsSettings` (IDEA's Settings for New Projects) edits the
@@ -97,9 +98,11 @@ function settingsActions(open: (page?: string, newProjects?: boolean) => void): 
   ];
 }
 
-/** Native Settings window when the backend can make one, else the dialog. */
+const separateWindow = () => useProject.getState().settings?.appearance?.settingsInSeparateWindow !== false;
+
+/** The native Settings window when it is enabled and the backend can make one, else the dialog. */
 async function showSettings(page?: string, newProjects = false) {
-  if (isTauri()) {
+  if (isTauri() && separateWindow()) {
     try {
       await call(commands.windowOpenSettings(page ?? null, newProjects, windowBackgroundHex()));
       return;
@@ -108,7 +111,9 @@ async function showSettings(page?: string, newProjects = false) {
     }
   }
   await loadBuiltinPages();
-  openSettings(page, { newProjects });
+  // Like a launch into the open window: go to the page, keep the edits not applied yet.
+  if (useSettingsDialog.getState().open) relaunch({ page, newProjects });
+  else openSettings(page, { newProjects });
 }
 
 const useAssignShortcutOpen = () => useAssignShortcut((s) => s.actionId !== null);

@@ -104,3 +104,16 @@ describe("run target interpreter", () => {
     expect(mocks.container).not.toHaveBeenCalled();
   });
 });
+
+describe("missing interpreter", () => {
+  it("reports the applied interpreter gone, not one chosen and not applied yet", async () => {
+    const { stage } = await import("../model/staging");
+    mocks.effective.mockResolvedValue(ok("/usr/bin/python3"));
+    mount("/gone/bin/python");
+    expect(await screen.findByRole("alert")).toHaveTextContent("no longer exists");
+    // An environment just created, staged until Apply: the backend still resolves the old setting.
+    stage("python.interpreter", "project", "languages.python.interpreter", "/p/.venv/bin/python");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});

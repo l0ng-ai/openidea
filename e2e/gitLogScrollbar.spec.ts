@@ -40,7 +40,11 @@ test.beforeEach(async ({ workbench: page }) => {
     h.vcs_commit_files = () => [];
     h.vcs_log_details_batch = ({ revisions }) =>
       (revisions as string[]).map((revision) => ({
-        message: `Commit ${parseInt(revision, 16)}`,
+        // Commit 2 carries a message longer than its tooltip.
+        message:
+          parseInt(revision, 16) === 2
+            ? `Commit 2\n\n${Array.from({ length: 80 }, (_, i) => `Line ${i + 1}`).join("\n")}`
+            : `Commit ${parseInt(revision, 16)}`,
         containingBranches: [],
         signature: "N",
         signer: "",
@@ -191,4 +195,21 @@ test("keeps recycled commit tooltips closed until the pointer moves after fast s
   const index = await list.evaluate((element) => Math.ceil(element.scrollTop / 26) + 2);
   await list.getByText(`Commit ${index}`, { exact: true }).hover();
   await expect(page.getByRole("tooltip")).toContainText(`Commit ${index}`);
+});
+
+test("keeps a commit tooltip open while its long message scrolls, and closes it when the log scrolls", async ({
+  workbench: page,
+}) => {
+  const list = page.getByRole("listbox", { name: "Commits" });
+  await list.getByText("Commit 2", { exact: true }).hover();
+  const tooltip = page.getByRole("tooltip");
+  await expect(tooltip).toContainText("Line 80");
+  const box = (await tooltip.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.wheel(0, 400);
+  await expect.poll(() => tooltip.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  await expect(tooltip).toBeVisible();
+  await list.evaluate((element) => (element.scrollTop += 260));
+  await expect(tooltip).toHaveCount(0);
 });

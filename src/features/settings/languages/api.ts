@@ -63,6 +63,11 @@ export function detectSdks(kind: SdkKind, force = false): Promise<Sdk[]> {
   return p;
 }
 
+/** Drops an SDK (e.g. a JDK added by hand, then removed) from the cached list. */
+export function forgetSdk(kind: SdkKind, path: string) {
+  useSdks.setState((s) => ({ byKind: { ...s.byKind, [kind]: (s.byKind[kind] ?? []).filter((x) => x.path !== path) } }));
+}
+
 /** Adds an SDK (e.g. a just-created virtualenv) to the cached list. */
 export function rememberSdk(kind: SdkKind, sdk: Sdk) {
   const remember = () =>
@@ -80,13 +85,39 @@ export interface Streamed<T> {
   cancel: () => void;
 }
 
+/**
+ * A line of tool output as a terminal shows it: backspaces erase (conda's `-\|/` spinner),
+ * a carriage return starts the line over (pip's progress bar), colour and other control
+ * sequences go. Null when nothing visible is left.
+ */
+export function terminalLine(raw: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  const plain = raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]/g, "");
+  let line = "";
+  for (const segment of plain.split("\r")) {
+    if (!segment) continue;
+    let text = "";
+    for (const ch of segment) {
+      if (ch === "\b") text = text.slice(0, -1);
+      // eslint-disable-next-line no-control-regex
+      else if (ch === "\t" || !/[\x00-\x1f\x7f]/.test(ch)) text += ch;
+    }
+    // A carriage return overwrites from the line start; the last non-empty rewrite wins.
+    if (text.trim()) line = text.length >= line.length ? text : text + line.slice(text.length);
+  }
+  return line.trim() ? line.trimEnd() : null;
+}
+
 function streamed<T>(
   run: (request: ReturnType<typeof nextRequestId>, ch: Channel<string>) => Promise<T>,
   onLine: (line: string) => void,
 ): Streamed<T> {
   const request = nextRequestId();
   const channel = new Channel<string>();
-  channel.onmessage = onLine;
+  channel.onmessage = (raw) => {
+    const line = terminalLine(raw);
+    if (line !== null) onLine(line);
+  };
   return { promise: run(request, channel), cancel: () => void commands.cancelRequest(request) };
 }
 
@@ -168,21 +199,4 @@ export function refreshContainerPython(): Promise<ContainerPython | null> {
 /** The PHP language level of the project `path` belongs to; null outside Tauri. */
 export function phpLanguageLevel(path: string): Promise<PhpLanguageLevels | null> {
   return isTauri() ? call(commands.sdkPhpLanguageLevel(path)) : Promise.resolve(null);
-}
-
-/** File / folder chooser (Tauri dialog); null when cancelled or outside Tauri. */
-export async function choosePath(opts: {
-  directory: boolean;
-  title: string;
-  defaultPath?: string;
-}): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { open } = await import("@/platform/dialog");
-  const picked = await open({
-    directory: opts.directory,
-    multiple: false,
-    title: opts.title,
-    defaultPath: opts.defaultPath || undefined,
-  });
-  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
 }

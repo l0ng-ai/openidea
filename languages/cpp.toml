@@ -15,6 +15,10 @@ int main() {
 }
 '''
 
+# Rainbow brackets › angle: editor syntax nodes whose `<` `>` pair up (never comparisons).
+[rainbow-brackets]
+angle = ["TemplateArgumentList", "TemplateParameterList"]
+
 [[language-servers]]
 name = "clangd"
 command = "clangd"

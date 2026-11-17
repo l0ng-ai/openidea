@@ -1,0 +1,5 @@
+doctrine-mapping.xsd is from Doctrine ORM (https://github.com/doctrine/orm),
+MIT License. Copyright (c) Doctrine Project.
+The copy published at https://www.doctrine-project.org/schemas/orm/doctrine-mapping.xsd
+is broken (wrong targetNamespace / XMLSchema URI after an http→https rewrite);
+this file is the upstream schema with the correct namespace.

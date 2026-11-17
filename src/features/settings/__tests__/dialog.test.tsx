@@ -27,7 +27,7 @@ import { useProject } from "@/platform/project";
 import { useKeymap } from "@/platform/keymap";
 import { ContextMenuHost, hideContextMenu, useContextMenuStore } from "@/ui";
 import { PageContext, useSetting } from "../components/context";
-import { DEFAULT_SETTINGS, setAt } from "../model/schema";
+import { DEFAULT_SETTINGS, setAt, validateSettings } from "../model/schema";
 import { openSettings, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
 import { ProjectStructureDialog } from "../languages/ProjectStructurePage";
@@ -760,6 +760,71 @@ describe("native Settings window background", () => {
       computed.mockRestore();
       native.mockRestore();
     }
+  });
+});
+
+describe("Open Settings in a separate window (#3797)", () => {
+  // Action, its argument, the page it shows, Settings for New Projects.
+  const actions: Array<[string, string | undefined, string | null, boolean]> = [
+    ["file.settings", undefined, null, false],
+    ["file.settings", "editor.inlayHints", "editor.inlayHints", false],
+    ["settings.keymap", undefined, "keymap", false],
+    ["settings.appearance", undefined, "appearance", false],
+    ["file.newProjectsSettings", undefined, "languages.java", true],
+  ];
+
+  it.each(actions)("off: %s %s opens the in-page dialog, with no new window", async (id, arg, page, newProjects) => {
+    current = setAt(current, "appearance.settingsInSeparateWindow", false);
+    useProject.setState({ settings: current });
+    const native = vi.spyOn(commands, "windowOpenSettings").mockResolvedValue({ status: "ok", data: null });
+    try {
+      await act(async () => executeAction(id, arg));
+      expect(native).not.toHaveBeenCalled();
+      const s = useSettingsDialog.getState();
+      expect(s.open).toBe(true);
+      if (page) expect(s.pageId).toBe(page);
+      expect(s.newProjects).toBe(newProjects);
+    } finally {
+      native.mockRestore();
+    }
+  });
+
+  it.each(actions)("on (default): %s %s opens the native window", async (id, arg, page, newProjects) => {
+    expect(validateSettings(current).appearance.settingsInSeparateWindow).toBe(true);
+    const native = vi.spyOn(commands, "windowOpenSettings").mockResolvedValue({ status: "ok", data: null });
+    try {
+      await act(async () => executeAction(id, arg));
+      expect(native).toHaveBeenCalledWith(page, newProjects, null);
+      expect(useSettingsDialog.getState().open).toBe(false);
+    } finally {
+      native.mockRestore();
+    }
+  });
+
+  it("a link into the open dialog goes to its page and keeps the edits, as in the window", async () => {
+    current = setAt(current, "appearance.settingsInSeparateWindow", false);
+    useProject.setState({ settings: current });
+    await openDialog("appearance");
+    act(() => {
+      stage("appearance", "global", "appearance.compactMode", true);
+      useSettingsDialog.setState({ query: "compact" });
+    });
+    await act(async () => executeAction("file.settings", "tools.sshConfigurations"));
+    const s = useSettingsDialog.getState();
+    expect(s.pageId).toBe("tools.sshConfigurations");
+    expect(s.query).toBe("");
+    expect(Object.values(s.staged)).toEqual([expect.objectContaining({ key: "appearance.compactMode", value: true })]);
+  });
+
+  it("is a toggle under Appearance › UI Options", async () => {
+    current = setAt(current, "appearance.settingsInSeparateWindow", false);
+    useProject.setState({ settings: current });
+    const dialog = await openDialog("appearance");
+    const toggle = within(dialog).getByRole("checkbox", { name: /Open Settings in a separate window/ });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.settingsInSeparateWindow", "true");
   });
 });
 
