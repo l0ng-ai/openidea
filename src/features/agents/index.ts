@@ -47,6 +47,7 @@ import {
   openHome,
   refreshModels,
   refreshProviders,
+  releaseClosedTaskCache,
   useAgents,
 } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
@@ -175,6 +176,10 @@ export function activate(): () => void {
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
       onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
+      onClose: (input) => {
+        const task = (input.data as { task?: string } | undefined)?.task;
+        if (task) releaseClosedTaskCache(task);
+      },
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
