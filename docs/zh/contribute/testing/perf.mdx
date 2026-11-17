@@ -42,6 +42,14 @@ pnpm perf -- --only typing --profile --unminified   # CPU profile 和耗时最�
 
 `perf/scenarios.ts` 中的场景包含 `id`、`title` 和 `run(h)`：通过 harness（`perf/lib/harness.ts`：打开文件、设置光标、输入并测量、读取编辑器状态）驱动页面并返回指标。需要强制检查的指标，在 `budgets.json` 中以 `"<scenario>.<metric>"` 加上预算。
 
+### 当前操作的正确性检查
+
+已显示的结果不能证明被测操作成功。交互等待必须观察到当前输入及目标状态变化；打开文件会核对活动编辑器的完整路径，输入会核对最终文本、光标和按键样本数，滚动及补全导航会核对目标位置。
+
+代码智能 eval 也会等待动作成功结束。重命名只使用当前匹配请求的结果：跨文件预览验证拟议的修改，已应用的局部重命名验证实际文档。不完整的答复按降级结果处理。干净文件的诊断必须收到针对该文档的新后端发布，包括明确的空发布；仅有安静且为空的 UI 不能通过。
+
+诊断确认匹配路径、后端来源和本地打开令牌。后端发布不携带文档版本，因此重新打开后延迟到达的同路径发布，无法与新计算的发布区分。
+
 ## 后端：`pnpm perf:rust`
 
 `perf/rust.ts` 对 `ide-text`、`ide-language`、`ide-index`、`ide-search` 和 `ide-host` 运行 `cargo bench`，从 `target/criterion` 读取 Criterion 结果，检查每个基准的平均值（µs）。

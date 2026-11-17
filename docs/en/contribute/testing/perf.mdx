@@ -42,6 +42,14 @@ Latencies are measured from input to the start of the first frame that shows the
 
 A scenario in `perf/scenarios.ts` has an `id`, a `title` and a `run(h)` that drives the page through the harness (`perf/lib/harness.ts`: open files, set the cursor, type and measure, read editor state) and returns metrics. Add a budget for each metric you want enforced as `"<scenario>.<metric>"` in `budgets.json`.
 
+### Current-operation checks
+
+An already-visible result is not evidence that the measured action worked. Interaction waits require a current input and the requested state transition; file opening checks the active full path, typing checks the resulting text/caret and key-sample count, and scroll/completion navigation checks its destination.
+
+Code-intelligence evals also wait for successful action completion. Rename correctness uses the current matching request only: multi-file previews validate proposed edits, while applied local renames validate the edited document. Incomplete answers are degraded results. Clean-file diagnostics require a fresh backend publication for that document, including an explicitly empty publication; a quiet empty UI alone cannot pass.
+
+Diagnostics acknowledgements match the path, backend source and local opening token. Backend publications carry no document version, so a delayed same-path publication after reopening cannot be distinguished from a newly computed one.
+
 ## Backend: `pnpm perf:rust`
 
 `perf/rust.ts` runs `cargo bench` for `ide-text`, `ide-language`, `ide-index`, `ide-search` and `ide-host`, reads the Criterion results from `target/criterion`, and checks each bench's mean (in µs).
