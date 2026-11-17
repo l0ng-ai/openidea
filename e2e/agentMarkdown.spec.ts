@@ -128,6 +128,44 @@ test("opens Windows file links in the editor at their line and column", async ({
   await expect.poll(cursor).toMatchObject({ path, cursor: { line: 6, col: 0 } });
 });
 
+test("opens slash-prefixed Windows Markdown links with preview content and hover targets", async ({ page }) => {
+  const spec = "E:/work/feature/spec.md";
+  const skill = "E:/work/.agents/skills/work-spec/SKILL.md";
+  const reply = await openReply(page, `[Specification](/${spec})\n\n[Work skill](/${skill})`);
+  await page.evaluate(
+    async ({ spec, skill }) => {
+      const backendPath = "/src/editor/core/backend.ts";
+      const modePath = "/src/features/viewers/markdown/modes.ts";
+      const { docBackend } = await import(backendPath);
+      const { setMarkdownMode } = await import(modePath);
+      docBackend().files.set(spec, "# Windows specification\n\nThe specification is not empty.");
+      docBackend().files.set(skill, "# Work specification skill\n\nThe skill is not empty.");
+      setMarkdownMode(spec, "preview");
+      setMarkdownMode(skill, "preview");
+    },
+    { spec, skill },
+  );
+
+  for (const [label, path, heading] of [
+    ["Specification", spec, "Windows specification"],
+    ["Work skill", skill, "Work specification skill"],
+  ]) {
+    const link = reply.getByRole("link", { name: label, exact: true });
+    await link.hover();
+    await expect(link).toHaveAttribute("title", path);
+    await link.click();
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(async () => {
+          const servicePath = "/src/workbench/contributions.ts";
+          return (await import(servicePath)).editorService().activePath();
+        }),
+      )
+      .toBe(path);
+  }
+});
+
 test("styles tables so a reply reads as a table", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   expect(await css(reply, "td", "border-top-width")).toBe("1px");

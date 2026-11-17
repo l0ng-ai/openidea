@@ -92,6 +92,9 @@ describe("fileHref", () => {
     ["e:/work/my%20notes.md#L7", "e:/work/my notes.md", 6, undefined],
     ["E:\\work\\notes.md:3:5", "E:/work/notes.md", 2, 4],
     ["E%3A%2Fwork%2Fnotes.md", "E:/work/notes.md", undefined, undefined],
+    ["/E:/work/spec.md", "E:/work/spec.md", undefined, undefined],
+    ["/E:/work/my%20notes.md#L7", "E:/work/my notes.md", 6, undefined],
+    ["%2FE:%5Cwork%5Cnotes.md:3:5", "E:/work/notes.md", 2, 4],
   ])("opens an absolute Windows path: %s", (href, path, line, col) => {
     expect(fileHref(href, cwd)).toEqual({
       path,
@@ -118,6 +121,8 @@ describe("fileHref", () => {
       "/\\evil/share/x.md",
       "/%5Cevil/share/x.md",
       "%5C%5Cevil%5Cshare%5Cx.md",
+      "//E:/work/spec.md",
+      "/%2FE:/work/spec.md",
     ]) {
       expect(fileHref(href, cwd), href).toBeNull();
     }

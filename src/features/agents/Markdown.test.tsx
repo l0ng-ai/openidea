@@ -112,6 +112,9 @@ it.each([
   ["E:%5Cwork%5Cnotes.md:3:5", "E:/work/notes.md", { line: 2, col: 4 }],
   ["E%3A%2Fwork%2Fnotes.md", "E:/work/notes.md", undefined],
   ["E:/工作/笔记%20清单.md:3", "E:/工作/笔记 清单.md", { line: 2, col: 0 }],
+  ["/E:/work/spec.md", "E:/work/spec.md", undefined],
+  ["/E:/work/my%20notes.md#L7", "E:/work/my notes.md", { line: 6, col: 0 }],
+  ["%2FE:%5Cwork%5Cnotes.md:3:5", "E:/work/notes.md", { line: 2, col: 4 }],
 ])("opens a Markdown file link: %s", (href, path, selection) => {
   render(<Markdown text={`[查看文件](${href})`} cwd="/repo" />);
   fireEvent.click(screen.getByRole("link", { name: "查看文件" }));
@@ -124,6 +127,21 @@ it("keeps web links external", () => {
   fireEvent.click(screen.getByRole("link"));
   expect(openExternalUrl).toHaveBeenCalledWith("https://example.com/image.jpg");
   expect(openFile).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["/E:/work/my%20notes.md#L7", "E:/work/my notes.md:7"],
+  ["/E:/work/spec.md:3:5", "E:/work/spec.md:3:5"],
+  ["docs/spec.md", "C:/repo/docs/spec.md"],
+  ["https://example.com/docs?q=1#section", "https://example.com/docs?q=1#section"],
+])("shows the full link target on hover: %s", (href, target) => {
+  render(<Markdown text={`[Details](${href})`} cwd="C:/repo" />);
+  expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute("title", target);
+});
+
+it("keeps an explicit Markdown link title beside its target", () => {
+  render(<Markdown text={'[Details](docs/spec.md "Specification")'} cwd="C:/repo" />);
+  expect(screen.getByRole("link")).toHaveAttribute("title", "Specification\nC:/repo/docs/spec.md");
 });
 
 it.each([

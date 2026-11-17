@@ -236,6 +236,14 @@ async function linkSymbols(root: HTMLElement, spans: HTMLElement[], cwd: string)
 function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => void {
   let alive = true;
   const disposeImages = loadImages(root, cwd, images);
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
+    const href = anchor.getAttribute("href")!;
+    const link = fileHref(href, cwd);
+    const location =
+      link?.line === undefined ? "" : `:${link.line + 1}${link.col === undefined ? "" : `:${link.col + 1}`}`;
+    const target = link ? `${link.path}${location}` : href;
+    anchor.title = anchor.title && anchor.title !== target ? `${anchor.title}\n${target}` : target;
+  });
   const copies: HTMLButtonElement[] = [];
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement!;

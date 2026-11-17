@@ -34,6 +34,7 @@ export function fileHref(href: string, cwd: string): PathLink | null {
   } catch {
     return null;
   }
+  decoded = decoded.replace(/^\/(?=[a-z]:[\\/])/i, "");
   const windows = /^[a-z]:[\\/]/i.test(decoded);
   if (!windows && /^[a-z][a-z\d+.-]*:/i.test(decoded)) return null;
   const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(decoded);
