@@ -480,10 +480,10 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
     toggle("Commit Timestamp", o, "commitTimestamp"),
     toggle("References on the Left", o, "refsOnLeft"),
     toggle("Details", o, "showDetails"),
-    toggle("Repository", o, "showRepository"),
     {
       label: "Columns",
       submenu: [
+        toggle("Repository", o, "showRepository"),
         toggle("Author", o, "showAuthor"),
         toggle("Date", o, "showDate"),
         toggle("Hash", o, "showHash"),

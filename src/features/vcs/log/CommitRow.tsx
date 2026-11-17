@@ -8,7 +8,6 @@ import { IssueText } from "../issueLinks";
 import { type LogOptions } from "../logOptions";
 import { selectedCommits } from "../logStore";
 import { commitKey, commitRepo } from "../multiRoot";
-import { repoName, useVcs } from "../store";
 import { CommitMessage, RefLabels } from "./CommitMessage";
 import { GraphCell } from "./GraphCell";
 import { RowResizeHandle } from "./RowResizeHandle";
@@ -170,11 +169,6 @@ function CommitRowView({
         showContextMenu(e, commitMenu(c, selectedCommits(), fileHistoryTarget));
       }}
     >
-      {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (
-        <span className={styles.colRepository} title={commitRepo(c)!}>
-          {repoName(commitRepo(c)!)}
-        </span>
-      )}
       {columnSequence(opts.columnOrder, columns).map((cid, _index, ids) => {
         if (cid === SUBJECT_COLUMN.id) return subjectCell;
         const column = columns.find((col) => col.id === cid);
@@ -186,11 +180,18 @@ function CommitRowView({
             className={clsx(
               styles.columnCell,
               styles.muted,
+              column.id === "repository" && styles.colRepository,
               column.id === "author" && mine && styles.mine,
               column.id === "hash" && styles.hash,
             )}
             style={{ width }}
-            title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
+            title={
+              column.id === "author"
+                ? `${c.author} <${c.email}>`
+                : column.id === "repository"
+                  ? (commitRepo(c) ?? undefined)
+                  : undefined
+            }
           >
             {column.render(c)}
             <RowResizeHandle target={{ id: column.id, width, ...columnPrev(ids, column.id, opts, columns) }} />

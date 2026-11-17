@@ -5,7 +5,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "../GitLog.module.css";
 import { type LogOptions } from "../logOptions";
 import { updateLogOptions } from "../logStore";
-import { useVcs } from "../store";
 import { ColumnResizeHandle } from "./ColumnResizeHandle";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
 import { columnPrev, resetColumnWidth, type ResizeTarget } from "./useColumnResize";
@@ -51,9 +50,6 @@ export function ColumnHeaders({
       className={clsx(styles.row, styles.columnHeader, options.showColumnDividers && styles.showDividers)}
       style={{ minWidth }}
     >
-      {options.showRepository && useVcs.getState().roots.length > 1 && (
-        <span className={styles.colRepository}>{tx("Repository")}</span>
-      )}
       {ids.map((cid) => {
         const column = cid === SUBJECT_COLUMN.id ? SUBJECT_COLUMN : columns.find((c) => c.id === cid);
         if (!column) return null;
@@ -213,8 +209,8 @@ function LogColumnHeader({
     >
       {tx(column.title)}
       {subject ? (
-        // Commit's left divider exists only in the header. It is decorative when
-        // Commit is the first column; otherwise it resizes the neighbour on its left.
+        // Commit is flex:1 — dragging its left divider only resizes the left neighbour.
+        // It is decorative while Commit leads the row (no left neighbour to resize).
         <ColumnResizeHandle target={resizeTarget} title={column.title} disabled={isFirst} />
       ) : (
         <ColumnResizeHandle

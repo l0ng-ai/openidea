@@ -39,11 +39,11 @@ import {
 } from "../logStore";
 import { formatTime } from "../model";
 import { commitKey, commitRepo, graphCommit, type RepoCommit } from "../multiRoot";
-import { currentRepo, currentRepoRoot, useVcs } from "../store";
+import { currentRepo, currentRepoRoot, repoName, useVcs } from "../store";
 import { ColumnHeaders } from "./ColumnHeaders";
 import { CommitSignature } from "./CommitMessage";
 import { CommitRow } from "./CommitRow";
-import { LANE, ROW, type LogColumn, type RowEvents } from "./shared";
+import { LANE, REPOSITORY_COLUMN, ROW, type LogColumn, type RowEvents } from "./shared";
 
 const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
@@ -88,8 +88,12 @@ export function CommitList() {
   const speedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(speedTimer.current), []);
   useEffect(() => () => setContext("vcsLogRevisionFocus", false), []);
+  const multiRoot = useVcs.getState().roots.length > 1;
   const columns = useMemo(() => {
     const builtins: LogColumn[] = [
+      ...(opts.showRepository && multiRoot
+        ? [{ ...REPOSITORY_COLUMN, render: (c: Commit) => repoName(commitRepo(c) ?? "") }]
+        : []),
       ...(opts.showAuthor ? [{ id: "author", title: "Author", width: 130, render: (c: Commit) => c.author }] : []),
       ...(opts.showDate
         ? [
@@ -123,6 +127,8 @@ export function CommitList() {
     const order = [...new Set([...opts.columnOrder, ...builtins.map((c) => c.id)])];
     return builtins.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   }, [
+    opts.showRepository,
+    multiRoot,
     opts.showAuthor,
     opts.showDate,
     opts.showHash,
@@ -200,11 +206,8 @@ export function CommitList() {
   const minWidth = useMemo(
     () =>
       rows.reduce((width, row) => Math.max(width, row.width * LANE), 100) +
-      columns.reduce(
-        (width, column) => width + (opts.columnWidths[column.id] ?? column.width ?? 120),
-        opts.showRepository && useVcs.getState().roots.length > 1 ? 220 : 120,
-      ),
-    [rows, columns, opts.columnWidths, opts.showRepository],
+      columns.reduce((width, column) => width + (opts.columnWidths[column.id] ?? column.width ?? 120), 120),
+    [rows, columns, opts.columnWidths],
   );
   const filterBranches = useGitLog((s) => s.filters.branches);
   const currentBranch = useVcs((s) => s.branch?.head ?? null);
@@ -569,7 +572,6 @@ export function CommitList() {
                 [
                   c.summary,
                   c.refs.join(" "),
-                  ...(opts.showRepository ? [commitRepo(c) ?? ""] : []),
                   ...columns.map((column) => (typeof column.render(c) === "string" ? column.render(c) : "")),
                 ].join("\t"),
               )

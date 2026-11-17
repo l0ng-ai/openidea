@@ -18,10 +18,20 @@ export interface LogColumn {
 // The flexible "Commit" column shares the same order and can be dragged like the rest.
 export const SUBJECT_COLUMN: LogColumn = { id: "subject", title: "Commit", width: 0, render: () => "" };
 
-// Until the user drags the commit column somewhere, it leads the row.
+// Repositories only differ in multi-root logs; until then the column stays first,
+// leading the row like IDEA's Repository column.
+export const REPOSITORY_COLUMN: LogColumn = { id: "repository", title: "Repository", width: 100, render: () => "" };
+
 export const columnSequence = (columnOrder: string[], builtins: LogColumn[]): string[] => {
+  // Keep saved ids (even hidden/unknown ones) so a drag never drops them.
   const ids = [...new Set([...columnOrder, ...builtins.map((c) => c.id)])];
-  return columnOrder.includes(SUBJECT_COLUMN.id) ? ids : [SUBJECT_COLUMN.id, ...ids];
+  // Repository leads by default like IDEA, and Commit follows it — until the user
+  // drags either to an explicit place in columnOrder.
+  const leading: string[] = [];
+  if (builtins.some((c) => c.id === REPOSITORY_COLUMN.id) && !columnOrder.includes(REPOSITORY_COLUMN.id))
+    leading.push(REPOSITORY_COLUMN.id);
+  if (!columnOrder.includes(SUBJECT_COLUMN.id)) leading.push(SUBJECT_COLUMN.id);
+  return [...leading, ...ids.filter((id) => !leading.includes(id))];
 };
 
 export type RowEvents = {

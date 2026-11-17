@@ -31,6 +31,7 @@ vi.mock("@/platform/ipc", async (original) => {
 import { LogView } from "../GitLog";
 import { LogScope } from "../LogScope";
 import { CommitDetails } from "../log/CommitDetails";
+import { viewOptionsMenu } from "../log/FilterBar";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
 import { emptyFilters, openLogTab, reloadLog, selectGitTab, useGitLog } from "../logStore";
 import { commitKey } from "../multiRoot";
@@ -393,6 +394,45 @@ describe("log controls", () => {
     expect(useLogOptions.getState().columnOrder).toEqual(["hash", "author", "unknown", "date", "subject"]);
     fireEvent.keyDown(list, { key: "b" });
     expect(useGitLog.getState().selected).toBe("/repo\0base");
+  });
+
+  it("puts the Repository toggle inside the Columns submenu, not at the top level", () => {
+    const items = viewOptionsMenu(DEFAULT_LOG_OPTIONS);
+    expect(items.some((i) => "label" in i && i.label === "Repository")).toBe(false);
+    const columns = items.find((i) => "label" in i && i.label === "Columns")! as {
+      submenu: Array<{ label?: string }>;
+    };
+    expect(columns.submenu.some((i) => i.label === "Repository")).toBe(true);
+  });
+
+  it("renders Repository as a real, draggable column that leads by default in multi-root logs", async () => {
+    useVcs.setState({ roots: ["/repo", "/other"] });
+    useLogOptions.setState({ showColumnHeaders: true, showRepository: true });
+    render(<LogView />);
+    await screen.findByRole("listbox", { name: "Commits" });
+    // Header and every data row carry the Repository column, so it can be reordered.
+    const headers = [...document.querySelectorAll<HTMLElement>('[data-log-column="repository"]')];
+    expect(headers.length).toBeGreaterThan(0);
+    expect(screen.getByRole("separator", { name: "Resize Repository column" })).toBeTruthy();
+    const order = [...document.querySelectorAll<HTMLElement>("[data-log-column]")].map((el) => el.dataset.logColumn);
+    expect(order[0]).toBe("repository");
+    expect(order[1]).toBe("subject");
+
+    // Drag Repository to the right of Author.
+    const repo = document.querySelector<HTMLElement>('[data-log-column="repository"]')!;
+    const author = document.querySelector<HTMLElement>('[data-log-column="author"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => author;
+    try {
+      fireEvent.pointerDown(repo, { button: 0, pointerId: 9, clientX: 10, clientY: 10 });
+      fireEvent.pointerMove(repo, { pointerId: 9, clientX: 100, clientY: 10 });
+      fireEvent.pointerUp(repo, { pointerId: 9, clientX: 100, clientY: 10 });
+    } finally {
+      document.elementFromPoint = original;
+    }
+    expect(useLogOptions.getState().columnOrder.indexOf("repository")).toBeGreaterThan(
+      useLogOptions.getState().columnOrder.indexOf("author"),
+    );
   });
 });
 
