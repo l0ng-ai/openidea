@@ -355,6 +355,7 @@ export class BracketScanner {
     while (s.pos < end) {
       const line = doc.lineAt(s.pos);
       if (line.length >= LONG_LINE && s.pos < line.to) {
+        // Intentionally leave minified lines unmarked and exclude their brackets from nesting.
         // Resume at its line break, which ends a line comment or string as on a short line.
         s.pos = line.to;
         continue;
