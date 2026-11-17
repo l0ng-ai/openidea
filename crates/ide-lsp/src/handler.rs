@@ -370,11 +370,16 @@ impl ClientHandler {
                 items.iter().filter_map(|item| item.get("title").and_then(Value::as_str).map(str::to_owned)).collect()
             })
             .unwrap_or_default();
+        let sink = mgr.sink();
         let Some((id, answer)) = crate::message_requests::begin() else {
             tracing::warn!("[{}] too many pending message requests; dismissing", self.server.name);
+            sink.emit(IdeEvent::Notify {
+                level: NotifyLevel::Warning,
+                title: self.server.name.clone(),
+                body: Some("Too many open questions; try again".into()),
+            });
             return Ok(Value::Null);
         };
-        let sink = mgr.sink();
         struct Guard {
             id: u32,
             sink: ide_core::SharedSink,
