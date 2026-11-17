@@ -158,7 +158,15 @@ pub(crate) fn stashes(r: &Repo) -> IdeResult<Vec<Stash>> {
     for (index, line) in lines.enumerate() {
         let line = line.map_err(gx)?;
         let time_ms = line.signature.time.seconds as f64 * 1000.0;
-        out.push(Stash { index: index as u32, message: to_string(line.message.as_ref()), time_ms });
+        let id = line.new_oid.to_owned();
+        let base = repo.find_commit(id).ok().and_then(|c| c.parent_ids().next().map(|p| p.to_string()));
+        out.push(Stash {
+            index: index as u32,
+            message: to_string(line.message.as_ref()),
+            time_ms,
+            id: id.to_string(),
+            base,
+        });
     }
     Ok(out)
 }

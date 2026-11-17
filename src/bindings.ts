@@ -10797,6 +10797,10 @@ export type Stash = {
 	index: number,
 	message: string,
 	timeMs: number | null,
+	/**  The stash commit; its changes are those against `base`. */
+	id: string,
+	/**  The commit the stash was made on (the stash commit's first parent). */
+	base: string | null,
 };
 
 /**  A plugin's status bar item. */
