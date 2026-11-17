@@ -56,6 +56,7 @@ export const intellijMacos: Record<string, string[]> = {
   "navigate.nextEditLocation": [],
   "navigate.gotoTest": ["Meta+Shift+T"],
   "navigate.superMethod": ["Meta+U"],
+  "navigate.relatedSymbol": ["Ctrl+Meta+Up"],
   "navigate.nextMethod": ["Ctrl+Shift+Down"],
   "navigate.previousMethod": ["Ctrl+Shift+Up"],
   "navigate.nextOccurrence": ["Meta+Alt+Down"],
@@ -171,6 +172,7 @@ export const intellijMacos: Record<string, string[]> = {
   "refactor.inline": ["Meta+Alt+N"],
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Meta+Delete"],
+  "refactor.extractInterface": [],
   "refactor.pullMembersUp": [],
   "refactor.pushMembersDown": [],
 
@@ -211,6 +213,7 @@ export const intellijMacos: Record<string, string[]> = {
   "project.paste": ["Meta+V"],
   "project.copyAbsolutePath": ["Meta+Shift+C"],
   "project.open": ["F4", "Meta+Down"],
+  "project.openInRightSplit": ["Shift+Enter"],
   "project.findUsages": ["Alt+F7"],
   "project.reformatCode": ["Meta+Alt+L"],
   "project.optimizeImports": ["Ctrl+Alt+O"],
@@ -218,6 +221,9 @@ export const intellijMacos: Record<string, string[]> = {
   "project.reloadFromDisk": ["Meta+Alt+Y"],
   "project.expandAll": ["Meta+="],
   "project.collapseAll": ["Meta+-"],
+  // In the test results tree (keyWhen).
+  "run.expandAllTests": ["Meta+="],
+  "run.collapseAllTests": ["Meta+-"],
 
   // Tool windows
   "toolwindow.project": ["Meta+1"],
@@ -335,6 +341,7 @@ export const intellijMacos: Record<string, string[]> = {
   "diff.nextFile": ["Ctrl+Shift+Right"],
   "diff.prevFile": ["Ctrl+Shift+Left"],
   "diff.showSettings": ["Meta+Shift+D"],
+  "diff.focusOppositePane": ["Ctrl+Shift+Tab"],
   // After Show Diff: ⌘D is Compare With… in the project view.
   "project.compareWith": ["Meta+D"],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
@@ -370,9 +377,21 @@ export const intellijMacos: Record<string, string[]> = {
   "db.goToColumn": ["Meta+F12"],
   "db.submitChanges": ["Meta+Enter"],
   "db.revertChanges": ["Meta+Alt+Z"],
+  // Data editor (table editor / result grid), IDEA's Console.TableResult.* defaults.
+  "db.reloadPage": ["Meta+R"],
+  "db.firstPage": [],
+  "db.previousPage": ["Meta+Alt+Up"],
+  "db.nextPage": ["Meta+Alt+Down"],
+  "db.lastPage": [],
+  "db.addRow": ["Meta+N"],
+  "db.deleteRows": [],
+  "db.restoreRows": [],
+  "db.exportData": [],
+  "db.editCell": [],
   "db.showToolWindow": [],
   "agents.newTask": ["Meta+Shift+I"],
   "agents.focusInput": ["Meta+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).

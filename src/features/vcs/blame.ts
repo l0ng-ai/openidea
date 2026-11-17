@@ -352,6 +352,16 @@ export async function toggleAnnotations(view: EditorView, path: string, text?: s
   }
   try {
     const lines = await call(commands.vcsBlame(path, text ?? null, revision ?? null));
+    // A file Git has no commit of (unversioned, ignored, added) would get an empty column.
+    if (revision === undefined && lines.every(isUncommitted)) {
+      notifications().notify({
+        group: "vcs",
+        level: "info",
+        title: "Nothing to annotate",
+        body: "The file has no committed history in Git.",
+      });
+      return;
+    }
     setAnnotations(view, lines, path, text === undefined);
   } catch (e) {
     notifications().notify({

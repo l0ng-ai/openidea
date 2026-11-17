@@ -68,7 +68,7 @@ done
     }
     for _ in 0..20 {
         for window in ["first", "second"] {
-            let state = ops::agent::refresh_models(&host, window, "catalog-test".into(), true).unwrap();
+            let state = ops::agent::refresh_models(&host, window, "catalog-test".into(), true, None).unwrap();
             assert!(state.refreshing);
         }
     }
@@ -87,7 +87,7 @@ done
     assert!(completed.is_ok(), "both windows must receive the completed catalog");
     for _ in 0..20 {
         for window in ["first", "second"] {
-            let catalog = ops::agent::refresh_models(&host, window, "catalog-test".into(), true).unwrap();
+            let catalog = ops::agent::refresh_models(&host, window, "catalog-test".into(), true, None).unwrap();
             assert!(!catalog.refreshing);
             assert!(catalog.retry_at_ms.is_some());
             let models = catalog.config.iter().find(|o| o.category.as_deref() == Some("model")).unwrap();

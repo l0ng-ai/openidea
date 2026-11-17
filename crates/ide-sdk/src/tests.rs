@@ -1,7 +1,7 @@
 use crate::apply::{
-    apply_to_run_configs, apply_to_run_configs_in, configure_server, jdtls_jdk, maven_command, maven_options,
-    project_jdk, python_interpreter, ruff_configuration, terminal_activation, tool_install_environment, tsdk,
-    without_derived, without_derived_in,
+    apply_to_run_configs, apply_to_run_configs_in, configure_server, configure_vue_module_resolution, jdtls_jdk,
+    maven_command, maven_options, project_jdk, python_interpreter, ruff_configuration, terminal_activation,
+    tool_install_environment, tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -35,6 +35,7 @@ pub(crate) fn server(name: &str) -> LanguageServerConfig {
         install_hint: None,
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -187,6 +188,18 @@ fn pyright_gets_python_path_and_venv_env() {
     assert_eq!(opts["python"]["pythonPath"], py.to_string_lossy().as_ref());
     assert_eq!(cfg.env["VIRTUAL_ENV"], tmp.path().join(".venv").to_string_lossy());
     assert!(cfg.env["PATH"].starts_with(&*tmp.path().join(".venv").join(bin_dir()).to_string_lossy()));
+}
+
+#[test]
+fn djlsp_reads_django_from_the_project_environment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let python = fake_venv(tmp.path(), "venvs/web");
+    let mut s = Settings::default();
+    s.languages.python.interpreter = python.to_string_lossy().into_owned();
+    let mut cfg = server("djlsp");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
+    assert_eq!(opts["env_directories"], serde_json::json!([tmp.path().join("venvs/web").to_string_lossy()]));
 }
 
 #[test]
@@ -1307,6 +1320,59 @@ fn an_existing_conda_environment_is_not_recreated() {
 }
 
 #[test]
+fn conda_creates_named_environments_in_its_envs_directory() {
+    use crate::python::conda_create_args;
+    use std::path::Path;
+    assert_eq!(conda_create_args(Path::new("demo"), Some("3.12.4")), ["create", "-n", "demo", "-y", "python=3.12"]);
+    assert_eq!(conda_create_args(Path::new("/work/app/.conda"), None), ["create", "-p", "/work/app/.conda", "-y"]);
+    for path in [r"C:\envs\demo", "envs/demo", "D:demo", ".."] {
+        assert_eq!(conda_create_args(Path::new(path), None)[1], "-p", "{path}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_named_conda_environment_is_found_where_conda_put_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("miniconda3");
+    let conda = tmp.path().join("conda");
+    // `create -n <name>` makes <root>/envs/<name> with a copy of the base python; `env list` names every env.
+    let python = tmp.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        &conda,
+        format!(
+            "#!/bin/sh\nroot='{root}'\nif [ \"$1\" = env ]; then echo '# conda environments:'; echo \"base  $root\"; \
+             for e in \"$root\"/envs/*/; do [ -d \"$e\" ] && echo \"$(basename \"$e\")  ${{e%/}}\"; done; exit 0; fi\n\
+             [ \"$1 $2\" = 'create -n' ] || exit 2\nmkdir -p \"$root/envs/$3/bin\"\ncp '{python}' \"$root/envs/$3/bin/python\"\necho created\n",
+            root = root.display(),
+            python = python.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&conda, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    let base = python.clone();
+    let which = |tool: &str| (tool == "conda").then(|| conda.clone());
+    let create = || {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Conda,
+            &base,
+            Path::new("ds"),
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let sdk = create().unwrap();
+    assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
+    let again = create().unwrap_err();
+    assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
 fn neutral_dir_is_fresh_and_empty() {
     let a = crate::python::neutral_dir().unwrap();
     let b = crate::python::neutral_dir().unwrap();
@@ -1587,6 +1653,85 @@ fn go_modules_skip_the_main_module_and_missing_downloads() {
             std::path::PathBuf::from("/gopath/pkg/mod/golang.org/x/text@v0.14.0")
         )]
     );
+}
+
+#[test]
+fn build_zig_zon_dependencies_are_parsed() {
+    let zon = r#"// the manifest is a Zig struct literal
+.{
+    .name = .app,
+    .version = "0.1.0",
+    .fingerprint = 0x348e9ddfb4b9e03c,
+    .dependencies = .{
+        .zap = .{ .url = "https://example.com/zap.tar.gz", .hash = "zap-0.1.0-AAA" },
+        .@"weird name" = .{
+            .url = "https://example.com/w.tar.gz",
+            .hash = "weird-2.0.0-BBB",
+            .lazy = true,
+        },
+        .shared = .{ .path = "../shared" },
+    },
+    .paths = .{ "build.zig", "src" },
+}
+"#;
+    assert_eq!(
+        crate::zig::zon_dependencies(zon),
+        [
+            crate::zig::ZonDependency {
+                name: "zap".into(),
+                hash: Some("zap-0.1.0-AAA".into()),
+                path: None,
+                lazy: false
+            },
+            crate::zig::ZonDependency {
+                name: "weird name".into(),
+                hash: Some("weird-2.0.0-BBB".into()),
+                path: None,
+                lazy: true
+            },
+            crate::zig::ZonDependency {
+                name: "shared".into(),
+                hash: None,
+                path: Some("../shared".into()),
+                lazy: false
+            },
+        ]
+    );
+    assert!(crate::zig::zon_dependencies(".{ .name = .app, .dependencies = .{} }").is_empty());
+    assert!(crate::zig::zon_dependencies(".{ .name = .app }").is_empty());
+    assert!(crate::zig::zon_dependencies("{ broken").is_empty());
+    assert_eq!(
+        crate::zig::zon_string_field(".{ .name = .probe_pkg, .version = \"0.1.0\" }", "name").as_deref(),
+        Some("probe_pkg")
+    );
+}
+
+#[test]
+fn zig_env_is_parsed_from_json_and_struct_literals() {
+    let env = crate::zig::parse_zig_env(
+        r#"{"zig_exe":"/opt/zig/zig","lib_dir":"/opt/zig/lib","std_dir":"/opt/zig/lib/std","global_cache_dir":"/home/u/.cache/zig","version":"0.14.1"}"#,
+    )
+    .unwrap();
+    assert_eq!(env.std_sources().as_deref(), Some(std::path::Path::new("/opt/zig/lib/std")));
+    assert_eq!(env.global_cache_dir.as_deref(), Some(std::path::Path::new("/home/u/.cache/zig")));
+
+    // Zig ≥ 0.15 prints a struct literal; a relative std_dir resolves against the install dir.
+    let env = crate::zig::parse_zig_env(
+        r#".{
+    .zig_exe = "/opt/zig/zig",
+    .lib_dir = "/opt/zig/lib",
+    .std_dir = "lib/std",
+    .global_cache_dir = "/home/u/.cache/zig",
+    .version = "0.16.0",
+    .target = "aarch64-macos",
+    .env = .{ .ZIG_GLOBAL_CACHE_DIR = null, .HOME = "/home/u" },
+}"#,
+    )
+    .unwrap();
+    assert_eq!(env.std_sources().as_deref(), Some(std::path::Path::new("/opt/zig/lib/std")));
+    assert_eq!(env.version.as_deref(), Some("0.16.0"));
+    assert_eq!(env.global_cache_dir.as_deref(), Some(std::path::Path::new("/home/u/.cache/zig")));
+    assert!(crate::zig::parse_zig_env("error: nothing").is_none());
 }
 
 #[test]
@@ -2366,11 +2511,11 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
         assert_eq!(reloaded, loaded, "{} {}: runs the same after a save", user.kind, user.command);
     }
 
-    // Bare interpreter aliases normalize to a portable name.
+    // Another bare name for the interpreter comes back as the interpreter's own.
     let mut loaded = saved("python", "python3", &["app.py"], &[]);
     apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
     let mut normalized = without_derived(&loaded, root, &s);
-    assert_eq!(normalized.command, "python");
+    assert_eq!(normalized.command, exe("python"));
     apply_to_run_configs(std::slice::from_mut(&mut normalized), root, &s);
     assert_eq!(normalized, loaded, "normalizing the name must preserve the resolved configuration");
 
@@ -2496,7 +2641,7 @@ fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
     assert_eq!(config.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
     // Saving strips what settings derived, so the fallback keeps following settings.
     let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
-    assert_eq!(stored.command, "python");
+    assert_eq!(stored.command, "python", "the bare program, also on Windows");
     assert!(!stored.env.contains_key("VIRTUAL_ENV"));
     let mut reloaded = stored.clone();
     apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &settings);
@@ -2659,4 +2804,51 @@ fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigu
     std::fs::write(&real, "").unwrap();
     s.languages.python.interpreter = real.to_string_lossy().into_owned();
     assert_eq!(tool_install_environment(root, &s).commands["python"], real);
+}
+
+#[test]
+fn vue_module_resolution_plugin_follows_the_vue_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    crate::apply::merge_init_options(
+        &mut cfg,
+        serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [crate::vue::tsserver_plugin(Path::new("/vue"))] } } }),
+    );
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+    assert_eq!(plugins[0]["name"], "@vue/typescript-plugin");
+    assert_eq!(plugins[1]["name"], "openidea-vue-module-resolution");
+    let index = tmp.path().join("tsplugins/node_modules/openidea-vue-module-resolution/index.js");
+    assert_eq!(std::fs::read_to_string(&index).unwrap(), include_str!("vue-module-resolution.js"));
+    // Running again replaces its own entry instead of stacking copies.
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+}
+
+#[test]
+fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    assert!(!configure_vue_module_resolution(&mut cfg, tmp.path()));
+    assert!(cfg.initialization_options.is_none());
 }

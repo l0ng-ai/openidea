@@ -53,6 +53,12 @@ struct JavaProbe {
 
 static JAVA_PROBES: Mutex<BTreeMap<PathBuf, JavaProbe>> = Mutex::new(BTreeMap::new());
 
+/// How long `java -version` may take before the JDK counts as unable to run. The first
+/// run of a JDK can be slow: Rosetta translates an x86_64 JDK on Apple silicon, and
+/// malware scans check a freshly downloaded one. Excluded, a project's JDK 8 leaves its
+/// `JavaSE-1.8` to a newer JDK, and APIs JDK 8 has (`jdk.nashorn`) stop resolving.
+const JAVA_PROBE_TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(8) } else { Duration::from_secs(30) };
+
 /// Metadata can describe a JDK built for another architecture. Probe the executable
 /// before giving it to JDT, with a short cache shared by server and project selection.
 pub(crate) fn java_runs(java: &Path) -> bool {
@@ -72,7 +78,7 @@ pub(crate) fn java_runs(java: &Path) -> bool {
             return probe.runnable;
         }
     }
-    let runnable = crate::exec::query(java, &["-version"], Duration::from_secs(5)).is_some();
+    let runnable = crate::exec::query(java, &["-version"], JAVA_PROBE_TIMEOUT).is_some();
     JAVA_PROBES.lock().unwrap_or_else(|e| e.into_inner()).insert(
         java.to_path_buf(),
         JavaProbe { modified, len: metadata.len(), permissions: metadata.permissions(), at: Instant::now(), runnable },
@@ -138,6 +144,26 @@ pub fn add_jdk_root(dir: &Path) {
     }
 }
 
+/// JDK homes added by hand (Settings › SDKs › Add JDK from Disk…).
+static ADDED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Sets the JDK homes added by hand; the next scan lists them (a change drops the cached scan).
+pub fn set_added_jdks(homes: impl IntoIterator<Item = PathBuf>) {
+    let homes: Vec<PathBuf> = homes.into_iter().filter(|h| !h.as_os_str().is_empty()).collect();
+    let mut added = ADDED.lock().unwrap_or_else(|e| e.into_inner());
+    if *added != homes {
+        *added = homes;
+        drop(added);
+        *JDKS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// Whether `home` is a JDK added by hand.
+pub fn is_added(home: &Path) -> bool {
+    let added = ADDED.lock().unwrap_or_else(|e| e.into_inner());
+    added.iter().any(|h| jdk_at(h).is_some_and(|j| j.home == home))
+}
+
 /// Whether `home` lies in a folder registered with [`add_jdk_root`].
 pub fn is_downloaded(home: &Path) -> bool {
     let roots = EXTRA_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -190,6 +216,7 @@ fn scan() -> Vec<Jdk> {
     for (dir, _) in ide_core::version_managers::installs(ide_core::version_managers::Tool::Java) {
         homes.extend([dir.join("Contents/Home"), dir]);
     }
+    homes.extend(ADDED.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
     let mut out: Vec<Jdk> = Vec::new();
     for h in homes {
         if let Some(jdk) = jdk_at(&h)
@@ -961,6 +988,26 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_jdk_8_slow_on_its_first_run_stays_the_java_8_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk8 = test_jdk(tmp.path(), 8, "rosetta8");
+        let jdk25 = test_jdk(tmp.path(), 25, "native25");
+        // Longer than the 5 seconds a first run under Rosetta used to be allowed.
+        std::fs::write(
+            java_executable(&jdk8.home),
+            "#!/bin/sh
+/bin/sleep 6
+echo 'openjdk version 1.8'
+",
+        )
+        .unwrap();
+        let rt = runtimes(&[jdk8.clone(), jdk25.clone()]);
+        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": jdk8.home }));
+        assert_eq!(rt[1]["name"], "JavaSE-25");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn slow_java_probe_does_not_hold_the_cache_lock() {
         let tmp = tempfile::tempdir().unwrap();
         let jdk = test_jdk(tmp.path(), 25, "slow25");
@@ -1365,6 +1412,26 @@ mod tests {
     }
 
     #[test]
+    fn jdks_added_by_hand_are_listed_until_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A macOS bundle picked as its folder: listed by its `Contents/Home`.
+        let bundle = tmp.path().join("odd place/my-jdk.jdk");
+        let home = bundle.join("Contents/Home");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("release"), "JAVA_VERSION=\"17.0.9\"\nIMPLEMENTOR=\"Acme\"\n").unwrap();
+        std::fs::write(home.join("bin").join(crate::exe("java")), "").unwrap();
+        let home = dunce::canonicalize(&home).unwrap();
+        set_added_jdks([bundle.clone()]);
+        assert!(installed_jdks().iter().any(|j| j.home == home && j.major == 17));
+        assert!(is_added(&home));
+        let sdk = crate::jdk_sdk(&jdk_at(&bundle).unwrap());
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Acme 17.0.9", "added"));
+        set_added_jdks(Vec::new());
+        assert!(!installed_jdks().iter().any(|j| j.home == home));
+        assert!(!is_added(&home));
+    }
+
+    #[test]
     fn jdtls_runs_on_the_chosen_server_jdk() {
         let fixtures = tempfile::tempdir().unwrap();
         let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
@@ -1547,7 +1614,7 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "java-usages",
-        "1.14.0",
+        "1.15.0",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
     )
 }
@@ -1557,7 +1624,7 @@ pub fn jvm_inspect_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "jvm-inspect",
-        "1.0.0",
+        "1.1.0",
         include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"),
     )
 }
@@ -1653,7 +1720,7 @@ mod usages_bundle_tests {
             std::fs::write(dir.path().join(name), b"old").unwrap();
         }
         let jar = super::jvm_inspect_bundle(dir.path()).unwrap();
-        assert_eq!(jar, dir.path().join("jvm-inspect-1.0.0.jar"));
+        assert_eq!(jar, dir.path().join("jvm-inspect-1.1.0.jar"));
         assert_eq!(std::fs::read(&jar).unwrap(), include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"));
         assert!(!dir.path().join("jvm-inspect-0.9.0.jar").exists());
         assert_eq!(std::fs::read(dir.path().join("java-usages-1.7.0.jar")).unwrap(), b"old");

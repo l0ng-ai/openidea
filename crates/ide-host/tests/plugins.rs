@@ -31,6 +31,8 @@ struct TestWorkspace {
     /// plugin → its settings as the user set them.
     settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
     global_settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+    /// What plugins sent the language server `mock`: (method, params, whether a notification).
+    server_messages: Mutex<Vec<(String, Option<serde_json::Value>, bool)>>,
 }
 
 impl TestWorkspace {
@@ -49,6 +51,7 @@ impl TestWorkspace {
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
             global_settings: Mutex::default(),
+            server_messages: Mutex::default(),
         })
     }
 
@@ -175,6 +178,58 @@ impl PluginWorkspace for TestWorkspace {
     }
     fn trusted(&self, _root: &Path) -> bool {
         self.trusted
+    }
+    /// One language server runs for the project, `mock`: it answers with what it was sent.
+    fn lsp_request(
+        &self,
+        _root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+        notify: bool,
+        _cancel: &ide_core::CancellationToken,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        if server != "mock" {
+            return Err(HostError::NotFound(format!("no language server `{server}` is running for this project")));
+        }
+        self.server_messages.lock().push((method.into(), params.clone(), notify));
+        Ok(if notify { serde_json::Value::Null } else { serde_json::json!({ "method": method, "params": params }) })
+    }
+    /// A Maven module with a lost version conflict, and a Gradle project with one report.
+    fn build_graph(&self, _root: &Path) -> Result<BuildGraph, HostError> {
+        let dep = |artifact: &str, version: &str| ide_build::MavenDependency {
+            group_id: "org.apache.commons".into(),
+            artifact_id: artifact.into(),
+            version: Some(version.into()),
+            scope: "compile".into(),
+            ..Default::default()
+        };
+        let mut text = dep("commons-text", "1.11.0");
+        text.children = vec![ide_build::MavenDependency {
+            omitted: Some(ide_build::Omission::Conflict),
+            conflict_with: Some("3.14.0".into()),
+            ..dep("commons-lang3", "3.12.0")
+        }];
+        let app = ide_build::MavenProject {
+            group_id: "com.example".into(),
+            artifact_id: "app".into(),
+            version: "1.0".into(),
+            dependencies: vec![text],
+            ..Default::default()
+        };
+        let snakeyaml = ide_build::GradleDependency {
+            group: "org.yaml".into(),
+            name: "snakeyaml".into(),
+            requested: Some("2.2".into()),
+            ..Default::default()
+        };
+        let report = ide_build::GradleReport {
+            project: ":web".into(),
+            configuration: "runtimeClasspath".into(),
+            dependencies: vec![snakeyaml],
+        };
+        Ok(BuildGraph { maven: vec![app], gradle: vec![GradleModule { path: ":web".into(), reports: vec![report] }] })
     }
     fn project_windows(&self, root: &Path) -> Vec<String> {
         // `main` shows the fixture project; other open roots have no window left.
@@ -821,10 +876,11 @@ fn a_reporting_task_outlives_its_background_budget() {
 
 #[test]
 fn background_tasks_scale_and_renew_cpu_fuel_budget() {
-    // Room for activation (about 3_100 on macOS, more on Windows) but not for `patient`'s
-    // whole run (about 9_000) without the refill on each report.
+    // Room for activation (about 3_100 on macOS, more on Windows). A background task gets ten
+    // times it (5 s / 500 ms): enough for each step of `patient` with its CPU work (32_000 to
+    // 80_000), not for the whole run without the refill on each report.
     let f = fixture(Limits {
-        fuel: 6_000,
+        fuel: 40_000,
         timeout: Duration::from_millis(500),
         background: Duration::from_millis(5_000),
         ..Limits::default()
@@ -836,11 +892,11 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
     // Warm up activation in its own call so `patient` starts with a fresh budget.
     assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
 
-    let out = f.run("misbehave", "patient", None).expect("background task succeeds").expect("output");
+    let out = f.run("misbehave", "patient", Some("4000")).expect("background task succeeds").expect("output");
     assert_eq!(out, "still here");
 
     let err = f.run("misbehave", "spin", None).unwrap_err();
-    assert!(err.contains("exceeded its CPU budget (6000 fuel per call)"), "{err}");
+    assert!(err.contains("exceeded its CPU budget (40000 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -2130,6 +2186,60 @@ fn run_detectors_offer_granted_commands_in_marked_projects() {
     assert!(detection.launch(config).unwrap_err().contains("no longer enabled"));
 }
 
+/// A plugin's Java agent (`[[contributes.javaAgents]]`, the `java-agent` fixture): an optional
+/// high-risk `java.agent` capability; refusing or revoking it keeps the plugin working and the
+/// launch gets no agent; granting it pins the jar, which may not change afterwards.
+#[test]
+fn java_agent_loads_only_while_granted_and_unchanged() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("java-agent");
+    copy_dir(&sample("java-agent"), &pkg);
+    let preview = f.host.preview_install(&pkg).unwrap();
+    let cap = preview.capabilities.iter().find(|c| c.id == "java.agent").expect("derived from the declaration");
+    assert!(cap.optional && cap.risk == ide_extension::Risk::High && !cap.granted);
+    assert_eq!(cap.description, "Run code inside the Java applications you start");
+
+    // Refused on install: the plugin is on, Java launches get no agent.
+    let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert!(info.contributions.iter().any(|c| c.point == "javaAgents" && c.label == "fixture agent.jar=mode=test"));
+    let source = f.host.java_agents();
+    let launch = || {
+        let agents = ide_run::java_agent::approved(&source.agents());
+        let mut args: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+        ide_run::java_agent::add_to_args(&mut args, &agents.options);
+        (args, agents.notes)
+    };
+    let plain: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+    assert_eq!(launch(), (plain.clone(), vec![]));
+
+    // Granted: the installed jar with its arguments, one argument after the VM options.
+    let info = f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "java.agent" && c.granted));
+    let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
+    let option = format!("-javaagent:{}=mode=test", jar.display());
+    let mut with_agent = plain.clone();
+    with_agent.insert(3, option.clone());
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // The jar changed since it was granted: left out, with a reason, until approved again.
+    std::fs::write(&jar, "swapped").unwrap();
+    let (args, notes) = launch();
+    assert_eq!(args, plain);
+    assert!(notes.len() == 1 && notes[0].contains("changed since it was approved"), "{notes:?}");
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // Revoked, then the plugin disabled: no agent either way.
+    f.host.set_capability("java-agent", "java.agent", false).unwrap();
+    assert_eq!(f.status("java-agent"), PluginStatus::Static);
+    assert_eq!(launch(), (plain.clone(), vec![]));
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    f.host.set_enabled("java-agent", false).unwrap();
+    assert_eq!(launch(), (plain, vec![]));
+}
+
 /// Compiled components are cached across runs (keyed by module and
 /// engine), so a cold activation only deserializes.
 #[test]
@@ -2606,6 +2716,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
         diagnostics: Mutex::default(),
         settings: Mutex::default(),
         global_settings: Mutex::default(),
+        server_messages: Mutex::default(),
     });
     f.host.set_workspace(Some(untrusted));
     let err = f.run("openidea.git-toolbox", "fetch", None).unwrap_err();
@@ -6249,10 +6360,15 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert!(f.host.wait_events(Duration::from_secs(5)));
     let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
-    assert_eq!(events.len(), 3, "{received}");
+    assert_eq!(events.len(), 4, "{received}");
+    // The first synthetic post hands over the current keys ("enabled": false);
+    // the second is a real diff to true. Keys come from the recomputed
+    // snapshot, never from the event payload ("another-plugin-key").
     assert_eq!(events[0]["kind"], "settings-changed");
     assert_eq!(events[0]["data"], "[\"enabled\"]");
-    assert_eq!(events[2]["kind"], "input-mode-changed");
+    assert_eq!(events[1]["kind"], "settings-changed");
+    assert_eq!(events[1]["data"], "[\"enabled\"]");
+    assert_eq!(events[3]["kind"], "input-mode-changed");
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
 }
@@ -6450,7 +6566,13 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
     let configs = f.host.run_detection().detect(&f.project);
     assert!(configs.iter().any(|c| c.id == "plugin:execution:dynamic"
         && c.is_test
-        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")));
+        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")
+        && c.env.get("OPENIDEA_EXECUTION_FIXTURE").map(String::as_str) == Some("1")
+        && c.extras.params.get("debugLanguage").map(String::as_str) == Some("python")));
+    let worker = configs.iter().find(|c| c.id == "plugin:execution:worker").unwrap();
+    assert_eq!(worker.extras.params.get("debugAttach").map(String::as_str), Some("dotnet"));
+    assert_eq!(worker.extras.params.get("debugAttachContains").map(String::as_str), Some("Worker.dll"));
+    assert!(worker.env.is_empty() && !worker.is_test);
     assert_eq!(
         f.host.parse_test_results("main", "plugin:execution:dynamic", "batch".into()).unwrap().unwrap().len(),
         3
@@ -6485,8 +6607,8 @@ fn a_plugin_command_opens_a_diff_in_its_window() {
             client.as_deref() == Some("main")
                 && matches!(event, PluginEvent::OpenDiff { plugin_id, diff, file_name }
                     if plugin_id == "execution"
-                        && diff.left == "before\n"
-                        && diff.right == "after\n"
+                        && diff.left.as_deref() == Some("before\n")
+                        && diff.right.as_deref() == Some("after\n")
                         && diff.title.as_deref() == Some("Review")
                         && file_name.as_deref() == Some("src/review.rs"))
         })
@@ -6923,4 +7045,140 @@ fn project_write_judges_a_link_by_its_target() {
         assert!(err.contains("outside the project root"), "{rel}: {err}");
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "top secret", "{rel}");
     }
+}
+
+/// A plugin reaches a running language server only with `lsp:<server>`, in a trusted
+/// project, and only with the server's own methods (API 1.9).
+#[test]
+fn language_server_requests_need_the_servers_grant_and_its_own_methods() {
+    use serde_json::json;
+    let f = fixture(Limits::default());
+    let pkg = repo().join("crates/ide-plugin/tests/fixtures/lsp-requests");
+    let id = "test.lsp-requests";
+    let info = f.install(&pkg);
+    assert!(info.capabilities.iter().any(|c| c.id == "lsp:mock" && c.granted && c.risk == ide_extension::Risk::High));
+
+    // The request and its JSON params reach the server; its answer comes back as JSON.
+    let answer = f.run(id, "request", Some(r#"{"verb":"GET"}"#)).unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap(),
+        json!({ "method": "mock/routes", "params": { "verb": "GET" } })
+    );
+    assert_eq!(f.run(id, "notify", None).unwrap(), None);
+    assert_eq!(
+        *f.workspace.server_messages.lock(),
+        [("mock/routes".to_owned(), Some(json!({ "verb": "GET" })), false), ("mock/changed".to_owned(), None, true)]
+    );
+
+    // Params that are not JSON and LSP's own methods stop at the host.
+    assert!(f.run(id, "request", Some("{")).unwrap_err().contains("params are not JSON"));
+    assert!(f.run(id, "standard", None).unwrap_err().contains("not one of the server's own methods"));
+    assert_eq!(f.workspace.server_messages.lock().len(), 2);
+
+    // The grant names one server: another one is denied, not merely absent.
+    let err = f.host.run_command(id, "ungranted", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("lsp:other"), "{err:?}");
+
+    // Without the grant the call is denied and nothing is sent.
+    f.host.set_capability(id, "lsp:mock", false).unwrap();
+    let err = f.host.run_command(id, "request", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("lsp:mock"), "{err:?}");
+    f.host.set_capability(id, "lsp:mock", true).unwrap();
+    f.run(id, "request", None).unwrap();
+
+    // A server acts on the project's files: not in an untrusted project.
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted.clone()));
+    let err = f.host.run_command(id, "request", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(untrusted.server_messages.lock().is_empty());
+    assert_eq!(f.host.info_of(id).unwrap().stats.crashes, 0);
+}
+
+/// The grant is new in API 1.9: an older `engines.openidea` can't ask for it.
+#[test]
+fn the_language_server_grant_needs_api_1_9() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("lsp-requests");
+    copy_dir(&repo().join("crates/ide-plugin/tests/fixtures/lsp-requests"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.9\"", "\"^1.8\"")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.9"), "{err:?}");
+}
+
+/// `build.dependencies` hands a plugin the resolved Maven / Gradle graph as a flat list, each
+/// module a root, with `build.read` in a trusted project (API 1.10).
+#[test]
+fn build_dependencies_need_the_grant_and_a_trusted_project() {
+    let f = fixture(Limits::default());
+    let id = "test.build-graph";
+    let info = f.install(&sample("build-graph"));
+    assert!(info.capabilities.iter().any(|c| c.id == "build.read" && c.granted && c.risk == ide_extension::Risk::Low));
+
+    // `parent group:artifact:version scope status requested`, as the fixture prints them.
+    assert_eq!(
+        f.run(id, "dependencies", None).unwrap().unwrap(),
+        "- com.example:app:1.0  resolved -\n\
+         0 org.apache.commons:commons-text:1.11.0 compile resolved -\n\
+         1 org.apache.commons:commons-lang3:3.14.0 compile conflict 3.12.0\n\
+         - ::web:  resolved -\n\
+         3 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    assert_eq!(
+        f.run(id, "dependencies", Some(":web")).unwrap().unwrap(),
+        "- ::web:  resolved -\n0 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    let err = f.host.run_command(id, "dependencies", Some("app"), f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
+
+    f.host.set_capability(id, "build.read", false).unwrap();
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("build.read"), "{err:?}");
+    f.host.set_capability(id, "build.read", true).unwrap();
+
+    // The graph comes from running the project's build: not in an untrusted project.
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted));
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert_eq!(f.host.info_of(id).unwrap().stats.crashes, 0);
+}
+
+/// The grant is new in API 1.10: an older `engines.openidea` can't ask for it.
+#[test]
+fn the_build_grant_needs_api_1_10() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("build-graph");
+    copy_dir(&sample("build-graph"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.10\"", "\"^1.9\"")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.10"), "{err:?}");
+}
+
+/// The UI's synthetic post-install `SettingsChanged([])` reaches a plugin that
+/// subscribes to `on-event:settings-changed`, though it carries no keys.
+#[test]
+fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    use ide_plugin::WorkbenchEvent as E;
+    // What refreshEventKinds() posts right after commandsChanged (install).
+    f.host.post_events(Some("main"), vec![E::SettingsChanged(Vec::new())]);
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(2));
+    assert!(f.host.wait_events(Duration::from_secs(5)));
+    let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
+    let events = received.as_array().unwrap();
+    assert!(
+        events.iter().any(|e| e["kind"] == "settings-changed"),
+        "freshly installed plugin got no post-install event: {received}"
+    );
 }

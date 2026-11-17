@@ -13,6 +13,7 @@ import {
   joinJavaArgs,
   parseJavaArgs,
   prepareJavaLaunch,
+  remoteJavaAgentNote,
   type JavaPreparation,
 } from "@/platform/javaLaunch";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
@@ -168,6 +169,8 @@ export async function javaLaunchConfig(
   // java-debug starts the JVM itself, bypassing the Run process that echoes its
   // command line. Echo the equivalent launch here so Debug and Run stay comparable.
   preparation?.report?.(`${joinJavaArgs([resolved.command, ...resolved.args])}\n`);
+  const agentNote = await remoteJavaAgentNote(rc);
+  if (agentNote) preparation?.report?.(agentNote);
   if (kotlin) {
     return {
       name: rc.name,

@@ -2,6 +2,7 @@
 // the list_directory_tree part of FileToolset.kt, src/com/intellij/mcpserver/util/fs.util.kt), Apache-2.0.
 //! Reading files and listing directories.
 
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use crate::mcp::util::{
     self, RELATIVE_PATH_IN_PROJECT_DESCRIPTION, TIMED_OUT_DESCRIPTION, TIMEOUT_MILLISECONDS_DESCRIPTION,
@@ -17,6 +18,8 @@ const MAX_READ_LIMIT: i64 = 5000;
 /// Longer lines are cut (minified files would flood the context), in UTF-16 units.
 const MAX_LINE_LENGTH: usize = 2000;
 const DEFAULT_TREE_DEPTH: i64 = 5;
+/// Entries `list_directory_tree` lists by default.
+const TREE_LIMIT: usize = 100;
 
 pub fn tools() -> Vec<Tool> {
     vec![read_file(), list_directory_tree()]
@@ -149,6 +152,12 @@ struct DirectoryTreeInfo {
     errors: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     listing_timed_out: bool,
+    /// Entries under the directory within `maxDepth`.
+    total: usize,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<usize>,
 }
 
 fn list_directory_tree() -> Tool {
@@ -156,10 +165,12 @@ fn list_directory_tree() -> Tool {
         "list_directory_tree",
         "Provides a tree representation of the specified directory in the pseudo graphic format like `tree` utility does.
 Use this tool to explore the contents of a directory or the whole project.
-You MUST prefer this tool over listing directories via command line utilities like `ls` or `dir`.",
+You MUST prefer this tool over listing directories via command line utilities like `ls` or `dir`.
+A page that starts inside a directory repeats the lines of the directories above it.",
         |call| async move {
             let directory = call.str("directoryPath")?;
             let max_depth = call.opt_i64("maxDepth")?.unwrap_or(DEFAULT_TREE_DEPTH);
+            let page = Page::of(&call, TREE_LIMIT)?;
             let timeout = call.opt_i64("timeout")?.unwrap_or(util::MEDIUM_TIMEOUT.as_millis() as i64);
             let dir = call.resolve_readable(&directory).await?;
             if !dir.exists() {
@@ -170,8 +181,16 @@ You MUST prefer this tool over listing directories via command line utilities li
             }
             let deadline = Instant::now() + Duration::from_millis(timeout.max(0) as u64);
             let cancel = call.cancel.clone();
-            let mut tree =
-                TreeRender { out: String::new(), errors: Vec::new(), timed_out: false, deadline, cancel: cancel.clone() };
+            let mut tree = TreeRender {
+                out: String::new(),
+                errors: Vec::new(),
+                timed_out: false,
+                deadline,
+                cancel: cancel.clone(),
+                page,
+                seen: 0,
+                above: Vec::new(),
+            };
             let tree = call
                 .host()
                 .blocking(move || {
@@ -187,11 +206,16 @@ You MUST prefer this tool over listing directories via command line utilities li
                 tree: tree.out,
                 errors: tree.errors,
                 listing_timed_out: tree.timed_out,
+                total: tree.seen,
+                more: tree.seen > page.end(),
+                next_offset: (tree.seen > page.end()).then_some(page.end()),
             })
         },
     )
     .param(Param::required("directoryPath", ParamType::String, RELATIVE_PATH_IN_PROJECT_DESCRIPTION))
     .param(Param::optional("maxDepth", ParamType::Integer, "Maximum recursion depth"))
+    .param(Param::optional("limit", ParamType::Integer, "Entries to return at most (default 100)"))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .param(Param::optional("timeout", ParamType::Integer, TIMEOUT_MILLISECONDS_DESCRIPTION))
     .output(json!({
         "type": "object",
@@ -200,19 +224,28 @@ You MUST prefer this tool over listing directories via command line utilities li
             "tree": { "type": "string" },
             "errors": { "type": "array", "items": { "type": "string" } },
             "listingTimedOut": { "type": "boolean", "description": TIMED_OUT_DESCRIPTION },
+            "total": { "type": "integer" },
+            "more": { "type": "boolean" },
+            "nextOffset": { "type": "integer" },
         },
-        "required": ["traversedDirectory", "tree", "errors"],
+        "required": ["traversedDirectory", "tree", "errors", "total"],
     }))
 }
 
 /// The `tree`-like listing: the directory's absolute path, then every entry (hidden and
-/// ignored ones too) by lower-cased name, directories marked with `/`.
+/// ignored ones too) by lower-cased name, directories marked with `/`; entries outside the
+/// page are counted, not listed.
 struct TreeRender {
     out: String,
     errors: Vec<String>,
     timed_out: bool,
     deadline: Instant,
     cancel: CancellationToken,
+    page: Page,
+    /// Entries met so far.
+    seen: usize,
+    /// The lines of the directories above the entry, and whether this page shows them yet.
+    above: Vec<(String, bool)>,
 }
 
 impl TreeRender {
@@ -235,7 +268,13 @@ impl TreeRender {
             path.file_name().unwrap_or_default().to_string_lossy().into_owned()
         };
         let is_dir = path.is_dir() && !path.is_symlink();
-        self.out.push_str(&format!("{indent}{prefix}{name}{}\n", if is_dir { "/" } else { "" }));
+        let line = format!("{indent}{prefix}{name}{}\n", if is_dir { "/" } else { "" });
+        let shown = if is_root {
+            self.out.push_str(&line);
+            true
+        } else {
+            self.entry(&line)
+        };
         if !is_dir {
             return;
         }
@@ -250,9 +289,32 @@ impl TreeRender {
         children.sort_by_cached_key(|p| (key(p).to_lowercase(), key(p)));
         let child_indent = format!("{indent}{}", if is_last { "    " } else { "│   " });
         let n = children.len();
+        if !is_root {
+            self.above.push((line, shown));
+        }
         for (i, child) in children.iter().enumerate() {
             self.render(child, &child_indent, i + 1 == n, max_depth - 1, false);
         }
+        if !is_root {
+            self.above.pop();
+        }
+    }
+
+    /// Counts an entry and lists it when on the page, after the directories above it.
+    fn entry(&mut self, line: &str) -> bool {
+        let n = self.seen;
+        self.seen += 1;
+        if n < self.page.offset || n >= self.page.end() {
+            return false;
+        }
+        for (above, shown) in &mut self.above {
+            if !*shown {
+                self.out.push_str(above);
+                *shown = true;
+            }
+        }
+        self.out.push_str(line);
+        true
     }
 }
 
@@ -301,5 +363,37 @@ mod tests {
         assert!(format_line(&pair).ends_with('😀'));
         let short = format!("{}😀", "x".repeat(1998));
         assert_eq!(format_line(&short), short);
+    }
+
+    #[test]
+    fn a_tree_page_repeats_the_directories_above_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        for file in ["a/x.txt", "a/y.txt", "b.txt"] {
+            let path = tmp.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        let render = |offset, limit| {
+            let mut tree = TreeRender {
+                out: String::new(),
+                errors: Vec::new(),
+                timed_out: false,
+                deadline: Instant::now() + Duration::from_secs(10),
+                cancel: CancellationToken::new(),
+                page: Page { offset, limit },
+                seen: 0,
+                above: Vec::new(),
+            };
+            tree.render(tmp.path(), "", true, 5, true);
+            let root = format!("{}/\n", tmp.path().display());
+            (tree.out.strip_prefix(&root).unwrap().to_owned(), tree.seen)
+        };
+        assert_eq!(render(0, 2), ("    ├── a/\n    │   ├── x.txt\n".to_owned(), 4));
+        assert_eq!(
+            render(2, 2).0,
+            "    ├── a/\n    │   └── y.txt\n    └── b.txt\n",
+            "the page in `a/` repeats its line"
+        );
+        assert_eq!(render(0, 100).0, "    ├── a/\n    │   ├── x.txt\n    │   └── y.txt\n    └── b.txt\n");
     }
 }

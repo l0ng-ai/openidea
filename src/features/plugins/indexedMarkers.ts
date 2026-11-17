@@ -2,11 +2,11 @@
  * Gutter markers from plugins' document indexers, resolved by the host from
  * its cached graph. A click goes to the marker's targets (a chooser when there
  * are several); an edit keeps them on their lines until the edited text is indexed,
- * so the column keeps its width while typing.
+ * so the icon area keeps its width while typing.
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { registerEditorContribution } from "@/editor/api";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource, registerEditorContribution } from "@/editor/api";
 import { rangeToOffsets } from "@/editor/lsp/positions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
@@ -87,7 +87,12 @@ export function markersOf(
 export function indexedMarkers(path: string): Extension {
   return [
     markersField,
-    gutter({ class: "cm-plugin-mapping-gutter", markers: (v) => v.state.field(markersField) }),
+    // In the shared icon area, after the plugins' line markers and gutter actions.
+    iconAreaSource.of({
+      order: 70,
+      markers: (view) => view.state.field(markersField),
+      reserve: (state) => state.field(markersField).size > 0,
+    }),
     EditorView.baseTheme({
       ".cm-plugin-mapping-button": {
         border: "none",
@@ -99,10 +104,6 @@ export function indexedMarkers(path: string): Extension {
         display: "flex",
         alignItems: "center",
       },
-      // Only the indexed-marker column sizes its icons to 16px. Line markers reuse the button class
-      // in their own 14px column (lineMarkerGutter.ts, LineMarkers.module.css), whose `overflow: hidden`
-      // would clip an icon this size at its edges.
-      ".cm-plugin-mapping-gutter .cm-plugin-mapping-button svg": { width: "16px", height: "16px" },
       ".cm-plugin-mapping-button:focus-visible": { outline: "1px solid var(--accent)" },
     }),
     ViewPlugin.fromClass(

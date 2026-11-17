@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
 import { Channel } from "@tauri-apps/api/core";
-import { commands, type HeapProgress, type InstallEvent } from "@/bindings";
+import { commands, type HeapProgress, type InstallEvent, type TraceProgress } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useBuildModel } from "@/platform/buildModel";
@@ -20,7 +20,7 @@ import { openProject, useProject } from "@/platform/project";
 import { activate as activateBuildTools } from "@/features/build-tools";
 import { useBuild } from "@/features/build-tools/store";
 import { activate as activateDebugger } from "@/features/debugger";
-import { addBreakpoint } from "@/features/debugger/breakpoints/store";
+import { addBreakpoint, flushBreakpoints } from "@/features/debugger/breakpoints/store";
 import { activeSession, evaluate, rootOf, sessionSupports, useDebug } from "@/features/debugger/state";
 import { activate as activateRun } from "@/features/run";
 import { resetRuns, useRun } from "@/features/run/store";
@@ -63,6 +63,12 @@ interface Case {
   heap?: { className: string; instances: number };
   /** JVM languages: that class's instances, a field of the first one and its referrers (Show Instances). */
   instances?: { className: string; count: number; field: string };
+  /**
+   * Java: after Step Over, the session runs to the line of `file` holding `at`, traces the
+   * stream chain there by running it, then still stops at the breakpoint on the entry point's
+   * line holding `next`.
+   */
+  streamTrace?: { file: string; at: string; next: string };
 }
 
 /** Debugging the Kotlin fixture, with either debugger. */
@@ -123,6 +129,11 @@ const CASES: Record<string, Case> = {
     memory: { className: "com.example.orders.OrderBook", instances: 1 },
     heap: { className: "com.example.orders.OrderBook", instances: 1 },
     instances: { className: "com.example.orders.OrderBook", count: 1, field: "orders" },
+    streamTrace: {
+      file: "src/main/java/com/example/orders/OrderBook.java",
+      at: "return orders.stream().filter(",
+      next: 'System.out.println("alice placed',
+    },
   },
   kotlin: {
     ...kotlin,
@@ -163,6 +174,17 @@ const CASES: Record<string, Case> = {
     file: "src/main.cpp",
     variable: "line",
     evaluate: ["print line", / = /],
+  },
+  // Zig ships no debugger of its own: CodeLLDB debugs the binary `zig build` produces.
+  // The breakpoint lands on the last use of `sum`: zig's debuginfo gives a const local a
+  // location only within its live range, so `prices` (used earlier) is not in the frame.
+  zig: {
+    fixture: "zig-app",
+    tools: ["codelldb"],
+    adapter: "codelldb",
+    file: "src/main.zig",
+    variable: "sum",
+    evaluate: ["sum", /13497/],
   },
   php: {
     fixture: "php-app",
@@ -505,6 +527,8 @@ async function smoke(language: string) {
       `${timedOutRetries} timedOut retries`,
   );
 
+  if (c.streamTrace) await traceStream(language, c.streamTrace, root, path);
+
   await executeAction("debug.resume");
   if (c.request) {
     await until("the request to be served", () => useDebug.getState().sessions[s.id]?.status === "running");
@@ -512,6 +536,69 @@ async function smoke(language: string) {
   }
   // Every session ends (a JVM that listens again as its debugger detaches may be attached once more).
   await until("the end", () => Object.values(useDebug.getState().sessions).every((d) => d.status === "terminated"));
+}
+
+/** The line of `path` holding `text`, 0-based like every IPC line. */
+function lineOf(path: string, text: string): number {
+  const index = readFileSync(path, "utf8")
+    .split("\n")
+    .findIndex((l) => l.includes(text));
+  if (index < 0) throw new Error(`no line of ${path} holds ${text}`);
+  return index;
+}
+
+/** Waits for the active session's next stop after `stops` of them. */
+const stoppedAfter = (stops: number) => () => useDebug.getState().stopSeq > stops && pausedOrEnded();
+
+async function traceStream(language: string, t: NonNullable<Case["streamTrace"]>, root: string, entry: string) {
+  const file = join(root, t.file);
+  const at = lineOf(file, t.at);
+  const next = lineOf(entry, t.next);
+  addBreakpoint(file, at);
+  addBreakpoint(entry, next);
+  // Edits reach the adapter debounced; Resume must not outrun them.
+  await flushBreakpoints();
+  let stops = useDebug.getState().stopSeq;
+  await executeAction("debug.resume");
+  const s = await until("the stream chain's breakpoint", stoppedAfter(stops));
+  const top = s.frames[0]!;
+  expect([top.path, top.line, s.stopReason], shown()).toEqual([file, at, "breakpoint"]);
+
+  const chains = await call(commands.debugStreamChains(s.id, top, true));
+  const chain = chains.find((ch) => ch.available);
+  if (!chain) throw new Error(`no chain to trace at ${t.file}:${at}: ${JSON.stringify(chains)}\n${shown()}`);
+  const phases: string[] = [];
+  const progress = new Channel<TraceProgress>();
+  progress.onmessage = (p) => {
+    if (phases.at(-1) !== p.phase) phases.push(p.phase);
+  };
+  stops = useDebug.getState().stopSeq;
+  const since = Date.now();
+  const thread = s.stoppedThread!;
+  const traced = await call(
+    commands.debugStreamTrace(s.id, nextRequestId(), thread, top, chain.index, chain.range, progress),
+  );
+  const traceMs = Date.now() - since;
+  if (traced.status !== "ready") throw new Error(`stream trace: ${JSON.stringify(traced)}\n${shown()}`);
+  expect(traced.records.length, "recorded values").toBeGreaterThan(0);
+  expect(traced.links, "a link per record").toHaveLength(traced.records.length);
+  console.info(
+    `${language}: traced ${chain.text.replace(/\s*\n\s*/g, "")} in ${traceMs} ms (${phases.join(" → ")}): ` +
+      `${traced.records.length} records over [${traced.steps.join(", ")}], terminal ${traced.terminal.kind}, ` +
+      `banners [${traced.banners.map((b) => b.kind).join(", ")}]`,
+  );
+
+  // The trace leaves its thread stopped after the terminal operation, its breakpoints back on.
+  const after = await until("the stop the trace ends in", stoppedAfter(stops));
+  expect(after.stoppedThread, shown()).toBe(thread);
+  stops = useDebug.getState().stopSeq;
+  await executeAction("debug.resume");
+  const reached = await until("the breakpoint after the trace", stoppedAfter(stops));
+  expect([reached.frames[0]!.path, reached.frames[0]!.line, reached.stopReason], shown()).toEqual([
+    entry,
+    next,
+    "breakpoint",
+  ]);
 }
 
 for (const language of Object.keys(CASES)) {

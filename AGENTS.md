@@ -42,6 +42,7 @@ Visual style: dark, low-contrast greys, one cool accent
   shortcuts live in `src/platform/keymaps/`.
 - Styling: CSS Modules + tokens only (no hex literals in components). Inline SVG
   icons from `src/ui/icons.tsx`, never emoji. Real `<button>`/`<input>`; `aria-label` on icon buttons.
+  `gap` uses the `--space-*` scale (`src/styles/tokens.css`, 4px grid) where a value is on it.
 - User-visible text goes through the text catalog: add every new string to both
   `src/platform/locales/text/en.json` and `zh.json` (`textCatalog.test.ts` enforces it).
   Other locales may lack entries; their UI shows the English text until a translator adds it.

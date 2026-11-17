@@ -21,7 +21,7 @@ const EXEC = "openidea://settings/exec";
 
 export type ActionInfo = Pick<
   Action,
-  "id" | "title" | "category" | "description" | "icon" | "when" | "keywords" | "hidden"
+  "id" | "title" | "category" | "description" | "icon" | "when" | "keywords" | "hidden" | "keymap"
 >;
 
 function currentLabel(): string | null {
@@ -39,7 +39,7 @@ export function settingsWindowParent(label = currentLabel()): string | null {
 }
 
 export function describeActions(actions: Iterable<Action> = allActions()): ActionInfo[] {
-  return [...actions].map(({ id, title, category, description, icon, when, keywords, hidden }) => ({
+  return [...actions].map(({ id, title, category, description, icon, when, keywords, hidden, keymap }) => ({
     id,
     title,
     category,
@@ -48,6 +48,7 @@ export function describeActions(actions: Iterable<Action> = allActions()): Actio
     when,
     keywords,
     hidden,
+    keymap,
   }));
 }
 

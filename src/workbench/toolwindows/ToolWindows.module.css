@@ -437,7 +437,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 6px 0 8px;
   color: var(--fg-emphasis);
 }
@@ -459,7 +459,7 @@
   height: 24px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 4px;
   border-radius: var(--radius-small);
   transition: background var(--dur-fast) var(--ease);
@@ -488,7 +488,7 @@
 .headerActions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   opacity: 0;
   transition: opacity var(--dur) var(--ease);
 }

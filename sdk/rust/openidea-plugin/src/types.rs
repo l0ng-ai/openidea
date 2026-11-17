@@ -713,6 +713,39 @@ pub struct BlameLine {
     pub summary: String,
 }
 
+/// How an occurrence in a build's dependency graph was resolved (API 1.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyStatus {
+    /// Part of the resolved graph.
+    Resolved,
+    /// Another version won: `version` is the winner, `requested_version` what this occurrence asked for.
+    OmittedForConflict,
+    /// Listed with its dependencies elsewhere in the graph; its children are not repeated.
+    OmittedForDuplicate,
+    /// Dependency management (a BOM, a platform, a constraint) supplies the version.
+    VersionManaged,
+}
+
+/// One occurrence in a build's flat dependency graph ([`crate::Project::build_dependencies`]).
+/// Each module is a root (`parent` is `None`, `scope` is empty) with its direct
+/// dependencies under it; walk `parent` up to see why an artifact is there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyNode {
+    /// Empty for a Gradle project of the build.
+    pub group: String,
+    /// Artifact id, or a Gradle project's path (`:core`).
+    pub artifact: String,
+    /// The version in use; empty for a Gradle project of the build or one Gradle could not resolve.
+    pub version: String,
+    /// Maven scope, or the Gradle configuration (`runtimeClasspath`).
+    pub scope: String,
+    pub status: DependencyStatus,
+    /// What this occurrence asked for, when it differs from `version`.
+    pub requested_version: Option<String>,
+    /// Index of the occurrence bringing this one in.
+    pub parent: Option<u32>,
+}
+
 /// Non-secret settings of a plugin-owned project database source (API 1.4).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

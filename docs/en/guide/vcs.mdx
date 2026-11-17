@@ -49,6 +49,8 @@ OpenIDEA finds the repository that contains the project and nested repositories 
 
 The **Commit** tool window lists your changes in groups: **Merge Conflicts**, **Changes** (one group per changelist) and **Unversioned Files**. With **View Options › Group By › Staging State**, the changes split into **Staged Changes** and **Unstaged Changes**.
 
+Turn off **View Options › Show Unversioned Files Separately** to list untracked files under **Changes** (the active changelist), or **Unstaged Changes** when grouping by staging state. This only changes the display; the files remain untracked and excluded from commits by default. The option is on by default and is remembered independently of **Staging State**.
+
 <Steps>
   <Step title="Choose what to commit">
     Check the files to include. Unversioned files and conflicts are not included by default, and only the active
@@ -145,7 +147,7 @@ With several repositories, the popup shows branches common to all of them, plus 
 
 ## Sync with remotes
 
-- **Fetch** fetches all repositories. OpenIDEA also checks for incoming commits in the background (after 20 seconds, then every 15 minutes); see **Explicitly check for incoming commits on remotes** in the Git settings.
+- **Fetch** fetches all repositories. OpenIDEA also checks for incoming commits in the background, fetching every repository whose branch has an upstream one after another (after 20 seconds, then every 15 minutes by default); see **Explicitly check for incoming commits on remotes** and **Check for incoming commits every** in the Git settings.
 - **Update Project…** (`⌘T` / `Ctrl+T`) pulls all repositories, by merge or by rebase. Uncommitted changes are stashed and restored. The **Update Project** dialog only shows when **Show options before Update** is on.
 - **Pull…** pulls a chosen remote branch into the current branch, with `--rebase`, `--ff-only`, `--no-ff`, `--squash` and other options.
 - **Push…** (`⇧⌘K` / `Ctrl+Shift+K`) lists outgoing commits and their files. Edit the target branch, pick a remote, and choose **Force (with lease)**, **Set upstream** or push tags. Force push is not allowed to protected branches (`master; main` by default). If the push is rejected, OpenIDEA offers to merge or rebase and push again.
@@ -212,7 +214,7 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 
 ## Blame and history
 
-- **Annotate with Git Blame** shows author and date per line in the gutter (also from the gutter's context menu). Click an entry to open the commit in the log. **Show inline blame for the current line** in the Git settings shows the author at the end of the caret line.
+- **Annotate with Git Blame** shows author and date per line in the gutter (also from the gutter's context menu). Click an entry to open the commit in the log. **Show inline blame for the current line** in the Git settings shows the author at the end of the caret line; a click on it opens the commit unless **Open the commit when the inline blame is clicked** is off.
 - **Annotate Previous Revision** in an annotated line's menu opens the file as it was before that commit, annotated, next to the commit's version.
 - **Annotate at Revision…** picks any revision the file has and shows it annotated next to the working copy.
 - **Show History** opens the file's history in a tab of the Git tool window.

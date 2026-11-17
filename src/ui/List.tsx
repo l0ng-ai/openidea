@@ -49,6 +49,8 @@ export interface ListProps<T> {
   focusable?: boolean;
   /** Move the active row with the pointer (popup choosers). */
   hoverSelects?: boolean;
+  /** The list takes the focus when its popup opens, before any button in the popup's header. */
+  autoFocus?: boolean;
   empty?: ReactNode;
   /**
    * Body of a `role="grid"`: a `rowgroup` of `row`s numbered after the grid's `headerRows`,
@@ -136,6 +138,7 @@ export function List<T>({
   sectionHeightOf,
   focusable = true,
   hoverSelects = false,
+  autoFocus = false,
   empty,
   tableBody,
   className,
@@ -190,7 +193,8 @@ export function List<T>({
     else if (next !== active) setActive(next);
   };
 
-  if (!items.length && empty) return <div className={clsx(styles.list, styles.emptyWrap, className)}>{empty}</div>;
+  // The empty state stays in the focusable list, so a speed search that matches nothing keeps the keyboard.
+  const showEmpty = !items.length && !!empty;
 
   return (
     <div
@@ -206,52 +210,57 @@ export function List<T>({
           : undefined
       }
       tabIndex={focusable ? 0 : -1}
-      className={clsx(styles.list, className)}
+      data-autofocus={autoFocus ? "" : undefined}
+      className={clsx(styles.list, showEmpty && styles.emptyWrap, className)}
       onKeyDown={focusable ? onKeyDown : undefined}
     >
-      <div className={styles.sizer} style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((v) => {
-          const item = items[v.index]!;
-          const section = isSection?.(item) ?? false;
-          const style = { transform: `translateY(${v.start}px)`, height: v.size };
-          if (section) {
+      {showEmpty ? (
+        empty
+      ) : (
+        <div className={styles.sizer} style={{ height: virtualizer.getTotalSize() }}>
+          {virtualizer.getVirtualItems().map((v) => {
+            const item = items[v.index]!;
+            const section = isSection?.(item) ?? false;
+            const style = { transform: `translateY(${v.start}px)`, height: v.size };
+            if (section) {
+              return (
+                <div key={v.key} role="presentation" className={styles.section} style={style}>
+                  {renderSection ? renderSection(item) : String(item)}
+                </div>
+              );
+            }
+            const isActive = v.index === active;
+            const selected = isActive || (isSelected?.(item, v.index) ?? false);
             return (
-              <div key={v.key} role="presentation" className={styles.section} style={style}>
-                {renderSection ? renderSection(item) : String(item)}
+              <div
+                key={v.key}
+                id={`${baseId}-${v.index}`}
+                role={tableBody ? "row" : "option"}
+                aria-selected={selected}
+                data-lead={isActive || undefined}
+                aria-posinset={tableBody ? undefined : optionIndex.idx[v.index]}
+                aria-setsize={tableBody ? undefined : optionIndex.count}
+                aria-rowindex={tableBody ? tableBody.headerRows + optionIndex.idx[v.index]! : undefined}
+                className={clsx(styles.row, selected && styles.active)}
+                style={style}
+                onPointerMove={hoverSelects && !isActive ? () => setActive(v.index) : undefined}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  if (!focusable) e.preventDefault();
+                  if (!onSelect) setActive(v.index);
+                }}
+                onClick={(e) => {
+                  onSelect?.(v.index, e);
+                  if (!onSelect || rowSelectionMode(e) === "single") onActivate?.(item, v.index, e);
+                }}
+                onContextMenu={onContextMenu ? (e) => onContextMenu(item, v.index, e) : undefined}
+              >
+                {renderItem(item, { active: isActive, index: v.index })}
               </div>
             );
-          }
-          const isActive = v.index === active;
-          const selected = isActive || (isSelected?.(item, v.index) ?? false);
-          return (
-            <div
-              key={v.key}
-              id={`${baseId}-${v.index}`}
-              role={tableBody ? "row" : "option"}
-              aria-selected={selected}
-              data-lead={isActive || undefined}
-              aria-posinset={tableBody ? undefined : optionIndex.idx[v.index]}
-              aria-setsize={tableBody ? undefined : optionIndex.count}
-              aria-rowindex={tableBody ? tableBody.headerRows + optionIndex.idx[v.index]! : undefined}
-              className={clsx(styles.row, selected && styles.active)}
-              style={style}
-              onPointerMove={hoverSelects && !isActive ? () => setActive(v.index) : undefined}
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                if (!focusable) e.preventDefault();
-                if (!onSelect) setActive(v.index);
-              }}
-              onClick={(e) => {
-                onSelect?.(v.index, e);
-                if (!onSelect || rowSelectionMode(e) === "single") onActivate?.(item, v.index, e);
-              }}
-              onContextMenu={onContextMenu ? (e) => onContextMenu(item, v.index, e) : undefined}
-            >
-              {renderItem(item, { active: isActive, index: v.index })}
-            </div>
-          );
-        })}
-      </div>
+          })}
+        </div>
+      )}
     </div>
   );
 }

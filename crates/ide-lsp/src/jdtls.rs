@@ -19,10 +19,14 @@ use std::time::{Duration, Instant};
 pub(crate) const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
+mod extract_interface;
 mod formatter;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
+mod move_refactoring;
 pub(crate) mod reserved_names;
+mod signature;
+pub(crate) mod stream_trace;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
@@ -1021,36 +1025,38 @@ impl LspManager {
             .map_err(|e| IdeError::internal(e.to_string()))
     }
 
+    /// jdtls' document for class file `entry` of archive `jar`, from its Java model. With
+    /// `any_archive`, the one class of that name the model has when it knows `jar` by another path.
+    pub(crate) async fn archive_class(&self, jar: PathBuf, entry: String, any_archive: bool) -> IdeResult<String> {
+        let cancel = CancellationToken::new();
+        self.jdtls(&self.project_root, &cancel).await?;
+        let entry =
+            entry.strip_prefix("META-INF/versions/").and_then(|s| s.split_once('/').map(|(_, s)| s)).unwrap_or(&entry);
+        let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
+        let outer = class.split('$').next().unwrap_or(class);
+        let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
+        let query = outer.replace('/', ".");
+        let symbols = self.workspace_symbols(&query, cancel).await?;
+        let package = package.replace('/', ".");
+        let name = name.to_owned();
+        let outer = outer.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let uris = symbols.into_iter().filter_map(|s| s.location.uri);
+            crate::virtual_doc::pick_class(uris, &jar, &package, &name, any_archive)
+                .ok_or_else(|| IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display())))
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+    }
+
     /// Resolve a disk/archive class to project source or the server's binary document.
     /// Archive URIs must come from JDT's Java model: fabricated handles cannot map debug lines.
     pub async fn java_class_file(&self, path: &Path, archive: Option<(PathBuf, String)>) -> IdeResult<String> {
+        if let Some((jar, entry)) = archive {
+            return self.archive_class(jar, entry, false).await;
+        }
         let cancel = CancellationToken::new();
         self.jdtls(&self.project_root, &cancel).await?;
-        if let Some((jar, entry)) = archive {
-            let entry = entry
-                .strip_prefix("META-INF/versions/")
-                .and_then(|s| s.split_once('/').map(|(_, s)| s))
-                .unwrap_or(&entry);
-            let class = entry.strip_suffix(".class").ok_or_else(|| IdeError::not_found("expected a class file"))?;
-            let outer = class.split('$').next().unwrap_or(class);
-            let (package, name) = outer.rsplit_once('/').unwrap_or(("", outer));
-            let query = outer.replace('/', ".");
-            let symbols = self.workspace_symbols(&query, cancel).await?;
-            let package = package.replace('/', ".");
-            let name = name.to_owned();
-            let outer = outer.to_owned();
-            return tokio::task::spawn_blocking(move || {
-                symbols
-                    .into_iter()
-                    .filter_map(|s| s.location.uri)
-                    .find(|uri| crate::virtual_doc::matches_class(uri, &jar, &package, &name))
-                    .ok_or_else(|| {
-                        IdeError::not_found(format!("jdtls could not resolve {} in {}", outer, jar.display()))
-                    })
-            })
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?;
-        }
         let uri = crate::uri::path_to_uri_string(path);
         // classFileContents accepts file URIs, but java-debug's line mapping only accepts JDT handles.
         let doc = self.virtual_document(&uri).await?;

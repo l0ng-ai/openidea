@@ -57,7 +57,8 @@ final class ConnectedVms {
         }
     }
 
-    private static Field field(Class<?> type, String name) throws NoSuchFieldException {
+    /** Declared in {@code type} or a superclass, made accessible. */
+    static Field field(Class<?> type, String name) throws NoSuchFieldException {
         for (Class<?> k = type; k != null; k = k.getSuperclass()) {
             try {
                 Field f = k.getDeclaredField(name);

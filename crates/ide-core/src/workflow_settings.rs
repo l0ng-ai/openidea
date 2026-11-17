@@ -43,6 +43,9 @@ impl Default for VcsSettings {
 pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
+    /// A click (or Enter / Space) on the inline blame label opens its commit; off, the
+    /// label is plain text and a click on it places the caret as past the line end.
+    pub inline_blame_clickable: bool,
     pub show_branch_in_project_view: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
@@ -54,6 +57,8 @@ pub struct GitSettings {
     pub warn_detached_head: bool,
     /// Background check for incoming commits: `auto` | `always` | `never`.
     pub incoming_check: String,
+    /// Minutes between background checks for incoming commits.
+    pub incoming_check_interval: u32,
     /// Branch name globs, `;`/`,`-separated; force push to them is prohibited.
     pub protected_branches: String,
     /// Initial state of Commit Options › Sign-off Commit.
@@ -69,12 +74,16 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// The non-modal Commit tool window works on the index: Staged / Unstaged groups,
+    /// stage and unstage instead of inclusion checkboxes, and no change lists.
+    pub staging_area: bool,
 }
 
 impl Default for GitSettings {
     fn default() -> Self {
         Self {
             inline_blame: false,
+            inline_blame_clickable: true,
             show_branch_in_project_view: false,
             executable: String::new(),
             update_method: "merge".into(),
@@ -82,6 +91,7 @@ impl Default for GitSettings {
             warn_crlf: true,
             warn_detached_head: true,
             incoming_check: "auto".into(),
+            incoming_check_interval: 15,
             protected_branches: "master; main".into(),
             sign_off: false,
             warn_large_files: true,
@@ -90,6 +100,7 @@ impl Default for GitSettings {
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            staging_area: false,
         }
     }
 }
@@ -175,6 +186,24 @@ impl Default for VcsConfirmationSettings {
     }
 }
 
+/// Tools › Diff & Merge › External Diff Tools: a program that shows two files' differences.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExternalDiffSettings {
+    /// Offer Show Diff in External Tool in diff viewers.
+    pub enabled: bool,
+    /// The program to start.
+    pub path: String,
+    /// Its arguments: `%1` the left file, `%2` the right file, `%3` the diff's title.
+    pub parameters: String,
+}
+
+impl Default for ExternalDiffSettings {
+    fn default() -> Self {
+        Self { enabled: false, path: String::new(), parameters: "%1 %2 %3".into() }
+    }
+}
+
 /// Version Control › Shelf.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -217,6 +246,30 @@ impl Default for LogLevelColors {
             trace: "var(--ansi-magenta)".into(),
         }
     }
+}
+
+/// Database settings: Query Execution and SQL Resolution Scopes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DatabaseSettings {
+    /// A console's result sets show under the statements that produced them, in the editor,
+    /// instead of in the Services view's result tabs.
+    pub in_editor_results: bool,
+    /// Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
+    /// resolves against (completion, inspections, navigation), most specific path first.
+    pub resolution_scopes: Vec<SqlResolutionScope>,
+}
+
+/// One row of SQL Resolution Scopes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SqlResolutionScope {
+    /// Project-relative file or folder, `/`-separated; empty for the whole project.
+    pub path: String,
+    /// Data source id.
+    pub data_source: String,
+    /// Schema unqualified names resolve in; empty for the data source's default.
+    pub schema: String,
 }
 
 /// Build, Execution, Deployment › Console.
@@ -327,6 +380,8 @@ pub struct RunSettings {
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
     pub show_on_start: bool,
+    /// New Run/Debug tabs start pinned: a later run doesn't take their place once finished.
+    pub pin_tabs: bool,
     /// Grace period between interrupt and kill when stopping a process.
     pub termination_timeout_ms: u32,
 }
@@ -338,6 +393,7 @@ impl Default for RunSettings {
             confirm_rerun: true,
             confirm_terminate: true,
             show_on_start: true,
+            pin_tabs: false,
             termination_timeout_ms: 3000,
         }
     }

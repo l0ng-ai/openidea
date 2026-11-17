@@ -26,6 +26,17 @@ import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS } from "../model/schema";
 import { openProjectStructure, useSettingsDialog } from "../model/staging";
 import { ProjectStructureDialog } from "../languages/ProjectStructurePage";
+import { useContextMenuStore } from "@/ui/Menu";
+
+/** The Modules toolbar's + menu, then its `label` entry. */
+function addMenuItem(label: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  const item = useContextMenuStore.getState().menu?.items.find((i) => "label" in i && i.label === label) as
+    | { run?: () => void }
+    | undefined;
+  expect(item?.run).toBeDefined();
+  item!.run!();
+}
 
 let disposeAction: () => void = () => {};
 
@@ -59,7 +70,7 @@ describe("Project Structure module overrides", () => {
   it("keeps an outside directory out of module overrides and names the import action", async () => {
     open.mockResolvedValue("/sibling/B");
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Add Module Overrides" }));
+      addMenuItem("Add Module Overrides…");
     });
     expect(open).toHaveBeenCalledWith(
       expect.objectContaining({ directory: true, title: "Select Module Directory", defaultPath: "/project" }),
@@ -73,7 +84,7 @@ describe("Project Structure module overrides", () => {
   it("still stores an in-project directory as a module override", async () => {
     open.mockResolvedValue("/project/mod");
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Add Module Overrides" }));
+      addMenuItem("Add Module Overrides…");
     });
     expect(screen.queryByText(/Module overrides only apply/)).not.toBeInTheDocument();
     expect(screen.getAllByText("mod").length).toBeGreaterThan(0);
@@ -81,7 +92,7 @@ describe("Project Structure module overrides", () => {
 
   it("imports an external Maven project from this page without the directory override picker", async () => {
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Import Module from Existing Sources" }));
+      addMenuItem("Import Module from Existing Sources…");
     });
     expect(imported).toHaveBeenCalledOnce();
     expect(open).not.toHaveBeenCalled();

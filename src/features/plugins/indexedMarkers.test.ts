@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { EditorState, type RangeSet, type StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
 import { offsetsToRange } from "@/editor/lsp/positions";
 import type { FileMarkers } from "@/platform/ipc";
 import { indexedMarkers } from "./indexedMarkers";
@@ -25,7 +26,7 @@ const source = '<mapper>\n<select id="find">SELECT 1</select>\n</mapper>';
 function setup() {
   view = new EditorView({
     parent: document.body,
-    state: EditorState.create({ doc: source, extensions: [indexedMarkers("/p/Query.xml")] }),
+    state: EditorState.create({ doc: source, extensions: [iconAreaExtension, indexedMarkers("/p/Query.xml")] }),
   });
   const range = (from: number, to: number) => offsetsToRange(view!.state.doc, from, to);
   const target = { path: "/p/Query.java", range: range(0, 4) };

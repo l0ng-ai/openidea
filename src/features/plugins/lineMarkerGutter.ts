@@ -1,12 +1,12 @@
 /**
  * Gutter icons from plugins' `line-markers` providers. Asked once per document version
  * (debounced); markers follow their lines in between; a click opens the
- * marker's target. The gutter column exists only while there are markers,
- * so editors without plugin providers keep their usual width.
+ * marker's target. They sit in the shared icon area, which takes no width
+ * while no source has icons.
  */
-import { Compartment, RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { shownAgain, type EditorDocContext } from "@/editor/api";
+import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource, mapLineStart, shownAgain, type EditorDocContext } from "@/editor/api";
 import { navigationButton } from "./navigationButton";
 import { tx } from "@/platform/i18n";
 import { pluginsBackend } from "./backend";
@@ -64,7 +64,7 @@ const markersField = StateField.define<Placed[]>({
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setMarkers)) return e.value;
     if (!tr.docChanged || !value.length) return value;
-    return value.map((m) => ({ ...m, pos: tr.state.doc.lineAt(tr.changes.mapPos(m.pos, -1)).from }));
+    return value.map((m) => ({ ...m, pos: mapLineStart(tr, m.pos) }));
   },
 });
 
@@ -120,19 +120,16 @@ class MarkersPlugin {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
   private skipped = false;
-  private shown = false;
   private off: () => void;
 
   constructor(
     private view: EditorView,
     private doc: number,
-    private column: Compartment,
   ) {
     const offBackend = pluginsBackend().onEvent((event) => {
       if (event.type !== "documentIndexesChanged") return;
       this.generation++;
-      this.shown = false;
-      this.view.dispatch({ effects: [setMarkers.of([]), this.column.reconfigure([])] });
+      this.view.dispatch({ effects: setMarkers.of([]) });
       this.schedule();
     });
     const offIcons = onMarkerIconsChanged(() => {
@@ -174,12 +171,7 @@ class MarkersPlugin {
       if (this.skipped) return;
       const placed = placeMarkers(text, resolved);
       if (!placed.length && !this.view.state.field(markersField).length) return;
-      const effects: StateEffect<unknown>[] = [setMarkers.of(placed)];
-      if (placed.length > 0 !== this.shown) {
-        this.shown = placed.length > 0;
-        effects.push(this.column.reconfigure(this.shown ? markerColumn : []));
-      }
-      this.view.dispatch({ effects });
+      this.view.dispatch({ effects: setMarkers.of(placed) });
     } catch (e) {
       console.debug("[plugin line markers]", e);
     }
@@ -192,8 +184,9 @@ class MarkersPlugin {
   }
 }
 
-const markerColumn: Extension = gutter({
-  class: `${styles.gutter} cm-openidea-gutter-pluginMarkers`,
+/** After the built-in run, request and inheritance icons. */
+const markerSource = iconAreaSource.of({
+  order: 60,
   markers: (view) =>
     RangeSet.of(
       view.state.field(markersField).map((m) => new PluginMarker(m).range(m.pos)),
@@ -204,6 +197,5 @@ const markerColumn: Extension = gutter({
 export function pluginLineMarkerGutter(ctx: EditorDocContext): Extension {
   if (ctx.doc < 0) return [];
   const doc = ctx.doc;
-  const column = new Compartment();
-  return [markersField, column.of([]), ViewPlugin.define((view) => new MarkersPlugin(view, doc, column))];
+  return [markersField, markerSource, ViewPlugin.define((view) => new MarkersPlugin(view, doc))];
 }

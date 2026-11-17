@@ -192,6 +192,23 @@ describe("installRootSync", () => {
     expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
   });
 
+  it("queries again when a HEAD moves or a fetch / pull / push finishes, without a .git event", async () => {
+    enable(true);
+    useVcs.setState({ heads: { "/p": { head: "main", headCommit: "a" } }, remoteBusy: null });
+    dispose = installRootSync();
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(2));
+    useVcs.setState({ remoteBusy: "Fetching…" });
+    await settle();
+    expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
+    useVcs.setState({ remoteBusy: null });
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(4));
+    useVcs.setState({ heads: { "/p": { head: "main", headCommit: "a" } } });
+    await settle();
+    expect(ipc.branchInfo).toHaveBeenCalledTimes(4);
+    useVcs.setState({ heads: { "/p": { head: "main", headCommit: "b" } } });
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(6));
+  });
+
   it("queries the repositories again when the set of roots changes", async () => {
     enable(true);
     dispose = installRootSync();

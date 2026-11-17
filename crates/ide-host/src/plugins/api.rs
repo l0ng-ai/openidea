@@ -97,6 +97,26 @@ pub trait PluginWorkspace: Send + Sync {
     fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
         None
     }
+    /// Sends `method` to the running language server named `server` of the project at
+    /// `root`: a request, or with `notify` a notification (the result is null).
+    #[allow(clippy::too_many_arguments)]
+    fn lsp_request(
+        &self,
+        _root: &Path,
+        server: &str,
+        _method: &str,
+        _params: Option<serde_json::Value>,
+        _notify: bool,
+        _cancel: &CancellationToken,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
+    }
+    /// What the IDE has resolved of the Maven / Gradle builds of the project at `root`;
+    /// never runs a build tool.
+    fn build_graph(&self, _root: &Path) -> Result<super::BuildGraph, HostError> {
+        Ok(super::BuildGraph::default())
+    }
     /// Current index of the project rooted at `root`; never reads disk or calls LSP.
     fn symbols(
         &self,
@@ -219,7 +239,7 @@ fn network_error(error: reqwest::Error) -> HostError {
         }
         source = e.source();
     }
-    HostError::Failed(error.to_string())
+    HostError::Failed(ide_http::client::describe(&error))
 }
 
 fn redirect_capability(from: &reqwest::Url, to: &reqwest::Url) -> Result<Capability, String> {
@@ -662,9 +682,14 @@ impl Shared {
         }
         let previous =
             self.setting_snapshots.lock().insert((client.map(str::to_owned), pkg.id().into()), current.clone());
-        previous
-            .map(|old| current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect())
-            .unwrap_or_default()
+        match previous {
+            // First contact since the plugin loaded (fresh install, update,
+            // re-enable): hand over every current key, so the synthetic
+            // post-install `settings-changed` wakes the plugin instead of being
+            // dropped for having no diff yet.
+            None => current.into_keys().collect(),
+            Some(old) => current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect(),
+        }
     }
 
     pub fn status_snapshot(&self, client: &str) -> Vec<super::PluginStatusItem> {
@@ -1531,13 +1556,8 @@ impl HostApi for PluginApi {
         }
         Ok(())
     }
-    fn open_diff(
-        &self,
-        client: &str,
-        diff: ide_plugin::ContentDiff,
-        file_name: Option<String>,
-    ) -> Result<(), HostError> {
-        super::execution::validate_diff(&diff)?;
+    fn open_diff(&self, client: &str, diff: ide_plugin::FileDiff, file_name: Option<String>) -> Result<(), HostError> {
+        super::execution::validate_file_diff(&diff)?;
         if let Some(name) = &file_name {
             super::execution::label(name, 256)?;
         }
@@ -2180,6 +2200,49 @@ impl HostApi for PluginApi {
         )
     }
 
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        self.require_api("`language-servers`", 9)?;
+        if !ide_lsp::plugin_method_allowed(method) {
+            return Err(HostError::Invalid(format!("`{method}` is not one of the server's own methods")));
+        }
+        let workspace = self
+            .shared
+            .workspace()
+            .ok_or_else(|| HostError::NotFound(format!("no language server `{server}` is running for this project")))?;
+        // The server reads and edits the project on the plugin's behalf, as a process would.
+        if !workspace.trusted(root) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        let params = params
+            .map(|p| serde_json::from_str(&p).map_err(|e| HostError::Invalid(format!("params are not JSON: {e}"))))
+            .transpose()?;
+        let result = workspace.lsp_request(root, server, method, params, notify, cancel, timeout)?;
+        Ok(result.to_string())
+    }
+
+    fn build_dependencies(
+        &self,
+        root: &Path,
+        module: Option<&str>,
+    ) -> Result<Vec<ide_plugin::DependencyNode>, HostError> {
+        self.require_api("`build`", 10)?;
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
+        // The graph comes from running the project's build, as `vcs.read` does git.
+        if !workspace.trusted(root) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        super::build_graph::dependency_nodes(&workspace.build_graph(root)?, module)
+    }
+
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError> {
         let matcher = globset::GlobBuilder::new(glob)
             .literal_separator(true)
@@ -2782,7 +2845,7 @@ impl HostApi for PluginApi {
     }
 
     fn post_view_message(&self, view: &str, message: String) -> Result<(), HostError> {
-        let declared = [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
+        let declared = super::ui_points::WEB_POINTS
             .iter()
             .any(|point| self.shared.ui.items(point, Some(self.id())).iter().any(|i| i.key == view));
         if !declared {
@@ -3047,7 +3110,16 @@ impl PluginWorkspace for HostWorkspace {
             &project.root,
             &project.settings.effective(),
         );
-        if config.debug_adapter.is_none() {
+        if config.debug_adapter.is_none()
+            && let Some(language) = config.extras.params.get(super::run_detectors::DEBUG_LANGUAGE)
+        {
+            config.debug_adapter = project
+                .languages
+                .get(&ide_core::LanguageId::new(language.as_str()))
+                .and_then(|l| l.debugger)
+                .map(|d| d.adapter);
+        }
+        if config.debug_adapter.is_none() && !config.extras.params.contains_key(super::run_detectors::DEBUG_ATTACH) {
             let cwd = config.cwd.as_ref().map(|p| p.as_ref()).unwrap_or(&project.root);
             config.debug_adapter =
                 config.args.iter().map(|arg| cwd.join(arg)).filter(|path| path.is_file()).find_map(|path| {
@@ -3291,6 +3363,41 @@ impl PluginWorkspace for HostWorkspace {
             Err(e) if e.kind == ide_core::error::ErrorKind::InvalidInput => Err(HostError::Invalid(e.message)),
             Err(e) => Err(HostError::Failed(e.message)),
         }
+    }
+
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        use ide_core::error::ErrorKind;
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = HostWorkspace::project_covering(self, root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        let result = if notify {
+            project.lsp.server_notify(root, server, method, params).map(|()| serde_json::Value::Null)
+        } else {
+            host.runtime.block_on(project.lsp.server_request(root, server, method, params, cancel, timeout))
+        };
+        result.map_err(|e| match e.kind {
+            // A server that stopped while the request was on its way is as absent as one never started.
+            ErrorKind::NotFound | ErrorKind::Unavailable => HostError::NotFound(e.message),
+            ErrorKind::InvalidInput => HostError::Invalid(e.message),
+            ErrorKind::Cancelled => HostError::Cancelled,
+            _ => HostError::Failed(e.message),
+        })
+    }
+
+    fn build_graph(&self, root: &Path) -> Result<super::BuildGraph, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = HostWorkspace::project_covering(self, root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        crate::ops::build::analyzed_dependencies(&project, &host.config_dir, root).map_err(failed)
     }
 
     fn trusted(&self, root: &Path) -> bool {

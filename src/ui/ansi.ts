@@ -158,3 +158,12 @@ export function appendSpans(into: Span[], spans: readonly Span[]): Span[] {
   }
   return out;
 }
+
+/** `text` without its escape sequences: for places that show process output as plain text. */
+export function stripAnsi(text: string): string {
+  // `clean` keeps a cut-off sequence at the end for the next chunk; there is none, so it is dropped.
+  return new AnsiStream()
+    .clean(text)
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .replace(/\r(?!\n)/g, "");
+}

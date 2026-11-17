@@ -21,7 +21,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 0;
   padding: 12px;
   text-align: center;
@@ -44,7 +44,7 @@
 .textLink {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   padding: 0;
   border: none;
@@ -73,7 +73,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   padding: 8px 12px;
 }
@@ -97,7 +97,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 8px 0;
 }
 .headRepo > :last-child {
@@ -128,7 +128,7 @@
 .headRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 100%;
   padding: 0 8px;
   overflow: hidden;
@@ -157,7 +157,7 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   max-height: 50%;
   padding: 2px 12px 8px;
   overflow: auto;
@@ -165,7 +165,7 @@
 .commitsHeader {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-height: 28px;
 }
 .commitsTitle {
@@ -177,12 +177,12 @@
 .commitInfo {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .commitTop {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .commitTop > .textLink {
   flex: none;
@@ -213,7 +213,7 @@
 .fileRow {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   white-space: nowrap;
 }
@@ -297,7 +297,7 @@
 .userItem {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 /* Status and the option button */
@@ -312,19 +312,19 @@
 .status {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 100%;
 }
 .statusRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .statusText {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .ellipsis {
@@ -375,7 +375,7 @@
 .dialogForm {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .dialogLabel {
   color: var(--fg);

@@ -22,6 +22,7 @@ import { useChangesOptions } from "./changesOptions";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
+import { PLAYFUL_MIN_MS, PLAYFUL_WORD_MS, PLAYFUL_WORDS } from "./workingStatus";
 import styles from "./Session.module.css";
 import chipStyles from "./ReferenceChip.module.css";
 import { caretOf, textOf, typeIn } from "./composerTesting";
@@ -484,8 +485,127 @@ describe("turn folding", () => {
     // The turn isn't over: its latest message is no final reply yet.
     expect(stream().querySelector(`.${styles.agentMessage} > .${styles.messageFooter}`)).toBeNull();
     // What the agent is doing ends the conversation, below its latest output.
-    const working = within(stream()).getByText("Working…").closest(`.${styles.working}`);
+    const working = stream().querySelector(`.${styles.working}`);
+    expect(working).toHaveRole("status");
     expect(stream().lastElementChild).toBe(working);
+  });
+});
+
+describe("working status", () => {
+  const running = (entries: AgentEntry[]) => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: null },
+      ...entries,
+    ]);
+    useAgents.setState({
+      entries: new Map(backend.entries),
+      tasks: new Map(useAgents.getState().tasks).set("A", {
+        ...useAgents.getState().tasks.get("A")!,
+        status: "running",
+      }),
+    });
+  };
+  const playful = (status: HTMLElement) => status.querySelector("[aria-hidden]")?.textContent ?? null;
+  const playfulOn = (agents: object = {}) =>
+    useProject.setState({ settings: { agents: { playfulStatus: true, ...agents } } as never });
+
+  it("says plainly what the agent does by default", async () => {
+    vi.useFakeTimers();
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS * 2));
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Reading…");
+  });
+
+  it("is playful from the start, holds each word while the work goes on, and turns to the new work's words", async () => {
+    vi.useFakeTimers();
+    playfulOn();
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+    // Screen readers still hear the fact.
+    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Reading…");
+
+    // More of the same work keeps the word its full time.
+    running([tool("one", { status: "running" }), tool("two", { status: "running" })]);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const second = playful(status);
+    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(second);
+
+    // New work leaves the word a moment, then says the new work playfully too.
+    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe(second);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
+    expect(PLAYFUL_WORDS.writing).toContain(playful(status));
+    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Writing…");
+  });
+
+  it("with a quiet time, is factual until the agent reports nothing new for it, and again on progress", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulAfterSeconds: 10 });
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    expect(status).toHaveTextContent("Reading…");
+    expect(playful(status)).toBeNull();
+
+    await act(() => vi.advanceTimersByTimeAsync(9000));
+    expect(playful(status)).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+
+    // Progress right after a word appeared leaves it a moment before the fact returns.
+    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Writing…");
+  });
+
+  it("keeps each word its full time however soon the status turns playful", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulAfterSeconds: 1 });
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(playful(status));
+  });
+
+  it("shows the user's own words of the activity, and none where they left the list empty", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulWords: { reading: ["Squinting really hard…"], working: [] } });
+    running([]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    // Nothing reported yet is `working`, whose list the user emptied.
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Working…");
+
+    running([tool("one", { status: "running" })]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe("Squinting really hard…");
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS));
+    expect(playful(status)).toBe("Squinting really hard…");
   });
 });
 
@@ -540,20 +660,60 @@ describe("opened runs", () => {
 });
 
 describe("folded content", () => {
-  it("is rendered for Find in Conversation, so its text is found", async () => {
-    backend.entries.set("A", [
-      tool("one", { output: "needle in a tool output" }),
-      tool("two"),
-      { type: "agent", text: "Answer A" },
-    ]);
-    useAgents.setState({ entries: new Map(backend.entries) });
-    render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Read 2 files");
-    expect(screen.queryByText("needle in a tool output")).toBeNull();
-    fireEvent.focus(summary);
-    act(() => focusedSession()!.openFind());
-    expect(await screen.findByText("needle in a tool output")).toBeInTheDocument();
-    expect(summary.closest("details")!.open).toBe(false);
+  it("is rendered for Find in Conversation without painting closed <details> highlights until stepped into", async () => {
+    const rectSpy = vi
+      .spyOn(Range.prototype, "getClientRects")
+      .mockImplementation(() => [new DOMRect(0, 0, 20, 12)] as unknown as DOMRectList);
+    const prevCss = (globalThis as { CSS?: unknown }).CSS;
+    const prevHighlight = (globalThis as { Highlight?: unknown }).Highlight;
+    const highlights = new Map<string, Set<Range>>();
+    if (typeof prevHighlight === "undefined") {
+      (globalThis as { Highlight?: unknown }).Highlight = Set;
+    }
+    if (!(prevCss as { highlights?: unknown } | undefined)?.highlights) {
+      (globalThis as { CSS?: unknown }).CSS = {
+        ...(typeof prevCss === "object" && prevCss ? prevCss : {}),
+        highlights,
+      };
+    }
+    try {
+      backend.entries.set("A", [
+        { type: "thought", text: "Reviewing Changes\n\nConfirm the branch state before rebasing." },
+        tool("one", { title: "stop_bash", output: "stopped" }),
+        { type: "agent", text: "Confirmed—PR is merged." },
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      const runSummary = await screen.findByText("Read 1 file");
+      const runDetails = runSummary.closest("details")!;
+      runDetails.open = true;
+      fireEvent(runDetails, new Event("toggle"));
+
+      const thoughtDetails = (await screen.findByText("Reviewing Changes")).closest("details")!;
+      expect(thoughtDetails.open).toBe(false);
+
+      fireEvent.focus(runSummary);
+      act(() => focusedSession()!.openFind());
+      const findBox = await screen.findByLabelText("Find in Conversation");
+      fireEvent.change(findBox, { target: { value: "confirm" } });
+
+      const registry = (globalThis as unknown as { CSS: { highlights: Map<string, Set<Range>> } }).CSS.highlights;
+      await waitFor(() => expect(screen.getByText("1/2")).toBeInTheDocument());
+      await waitFor(() => expect([...(registry.get("agent-find") ?? [])]).toHaveLength(1));
+      expect([...(registry.get("agent-find") ?? [])][0]!.startContainer.textContent).toContain("Confirmed");
+      expect([...(registry.get("agent-find-current") ?? [])]).toHaveLength(0);
+
+      fireEvent.keyDown(findBox, { key: "Enter" });
+      fireEvent.keyDown(findBox, { key: "Enter" });
+      fireEvent(thoughtDetails, new Event("toggle"));
+      expect(thoughtDetails.open).toBe(true);
+      await waitFor(() => expect([...(registry.get("agent-find") ?? [])]).toHaveLength(2));
+      expect([...(registry.get("agent-find-current") ?? [])]).toHaveLength(1);
+    } finally {
+      rectSpy.mockRestore();
+      (globalThis as { CSS?: unknown }).CSS = prevCss;
+      (globalThis as { Highlight?: unknown }).Highlight = prevHighlight;
+    }
   });
 });
 
@@ -1300,6 +1460,68 @@ describe("a pending AskUserQuestion", () => {
   });
 });
 
+describe("a pending agent form", () => {
+  const form = {
+    type: "permission" as const,
+    id: 12,
+    title: "How should I refactor?",
+    chosen: null,
+    options: [{ id: "decline", name: "Decline", kind: "reject_once" }],
+    form: {
+      fields: [
+        {
+          name: "strategy",
+          title: "Strategy",
+          required: true,
+          kind: "choice" as const,
+          options: [
+            { value: "safe", label: "Conservative", description: "Small steps" },
+            { value: "bold", label: "Aggressive" },
+          ],
+        },
+        { name: "count", title: "Files", kind: "integer" as const, min: 1, max: 5 },
+        { name: "tests", title: "Run tests", kind: "boolean" as const },
+      ],
+    },
+  };
+
+  const open = async () => {
+    backend.entries.set("A", [form]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    return screen.findByRole("form", { name: "How should I refactor?" });
+  };
+
+  it("sends the values once every required field is valid", async () => {
+    const card = await open();
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("radio", { name: /^Aggressive/ }));
+    expect(submit).toHaveProperty("disabled", false);
+    const files = within(card).getByRole("spinbutton", { name: /^Files/ });
+    fireEvent.change(files, { target: { value: "9" } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(files, { target: { value: "3" } });
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Run tests/ }));
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 12, JSON.stringify({ strategy: ["bold"], count: ["3"], tests: ["true"] })],
+      ]),
+    );
+  });
+
+  it("declines with Decline and cancels with Escape", async () => {
+    const card = await open();
+    fireEvent.click(within(card).getByRole("button", { name: "Decline" }));
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, "decline"]]));
+    backend.answers = [];
+    fireEvent.keyDown(within(card).getByRole("radio", { name: /^Conservative/ }), { key: "Escape" });
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, null]]));
+  });
+});
+
 describe("a pending permission request above the composer", () => {
   const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
   const options = [
@@ -1794,7 +2016,9 @@ describe("meters in the task header", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
     const usage = screen.getByLabelText(/^Context /);
-    expect(usage).toHaveTextContent("24k/200k (12%)");
+    // The bar and percent show; the counts are in its label and tooltip.
+    expect(usage).toHaveTextContent("12%");
+    expect(usage).toHaveAccessibleName(/24k\/200k \(12%\)/);
     expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({
       width: "12%",
     });
@@ -1815,6 +2039,82 @@ describe("meters in the task header", () => {
     expect(screen.queryByText("24k/200k (12%)")).toBeNull();
     expect(screen.queryByText("5h 19%")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
+  });
+
+  it("toggles fitWidth on the session root and remeasures off-screen rows from settings.agents.fitWindowWidth", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    const flushFrames = () => {
+      for (let pass = 0; pass < 2; pass++) {
+        for (const cb of frames.splice(0)) cb(performance.now());
+      }
+    };
+    try {
+      const { container } = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      const root = container.querySelector(`.${styles.session}`)!;
+      const row = container.querySelector(`.${styles.conversationRow}`)!;
+      act(flushFrames);
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: true,
+            },
+          } as never,
+        }),
+      );
+      expect(root).toHaveClass(styles.fitWidth!);
+      // Cleared synchronously before paint so content-visibility doesn't keep the 900px intrinsic height.
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: false,
+            },
+          } as never,
+        }),
+      );
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  it("hides the status-bar Terminal button in the local checkout and opens the worktree's terminal otherwise", async () => {
+    const opened: unknown[] = [];
+    const disposeTerminal = registerActions([
+      { id: "terminal.openAt", title: "Open in Terminal", run: ({ arg }) => void opened.push(arg) },
+    ]);
+    try {
+      const view = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+
+      act(() =>
+        useAgents.setState({
+          tasks: new Map([["A", { ...task("A"), isolation: "worktree", cwd: "/worktrees/a", branch: "agent/a" }]]),
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+      expect(opened).toEqual(["/worktrees/a"]);
+      view.unmount();
+    } finally {
+      disposeTerminal();
+    }
   });
 });
 

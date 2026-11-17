@@ -218,6 +218,25 @@ pub struct WindowsState {
     restart: AtomicBool,
     /// Numbers windows of kinds that can open several times per project window.
     aux_serial: AtomicU64,
+    /// Logical sizes remembered per [`AuxKind`] on macOS (`auxiliary-windows.json`), avoiding
+    /// `tauri-plugin-window-state`'s physical-pixel scale-factor drift across mixed-DPI displays.
+    #[cfg(target_os = "macos")]
+    aux_geometry: Mutex<Option<HashMap<String, AuxGeometry>>>,
+}
+
+#[cfg(target_os = "macos")]
+const AUX_STATE_FILE: &str = "auxiliary-windows.json";
+/// How long an auxiliary window waits for the main thread to fit it over its parent.
+#[cfg(target_os = "macos")]
+const FIT_ON_MAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AuxGeometry {
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 impl WindowsState {
@@ -360,14 +379,32 @@ impl AuxKind {
         self != AuxKind::Settings
     }
 
-    /// Modal for its parent: menu items other than app-level ones are dropped.
-    pub fn modal(self) -> bool {
+    /// Has no actions of its own: menu items run in its project window.
+    fn runs_menu_in_parent(self) -> bool {
         self == AuxKind::Settings
     }
 
     /// Needs its parent to have a project open.
     fn needs_project(self) -> bool {
         self != AuxKind::Settings
+    }
+
+    pub fn min_size(self) -> (f64, f64) {
+        match self {
+            AuxKind::Settings => SETTINGS_MIN_SIZE,
+            AuxKind::Comparison => COMPARISON_MIN_SIZE,
+            AuxKind::Diff => DIFF_MIN_SIZE,
+            AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
+        }
+    }
+
+    pub fn default_size(self) -> (f64, f64) {
+        match self {
+            AuxKind::Settings => SETTINGS_SIZE,
+            AuxKind::Comparison => COMPARISON_SIZE,
+            AuxKind::Diff => DIFF_SIZE,
+            AuxKind::Deployment => DEPLOYMENT_SIZE,
+        }
     }
 }
 
@@ -384,6 +421,34 @@ pub fn auxiliary(label: &str) -> Option<(AuxKind, &str)> {
         };
         (!parent.is_empty()).then_some((kind, parent))
     })
+}
+
+/// Where a menu item chosen while window `label` is focused runs.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MenuDestination<'a> {
+    /// The window's own frontend.
+    Own,
+    /// The project window `label`; `raise` brings it to the front so what the action shows is seen.
+    Parent { label: &'a str, raise: bool },
+    /// The window itself is the tab: Close Tab closes it.
+    Close,
+}
+
+/// Actions an auxiliary window always leaves to its project window.
+const PARENT_ACTIONS: [&str; 4] = ["app.quit", "file.settings", "file.projectStructure", "file.newProjectsSettings"];
+
+/// Where menu item `action` runs while window `label` is focused. As in IDEA, the menu stays usable
+/// with Settings open: it runs in the project window, whose enablement (no focused editor) the menu shows.
+pub fn menu_destination<'a>(label: &'a str, action: &str) -> MenuDestination<'a> {
+    match auxiliary(label) {
+        None => MenuDestination::Own,
+        Some((_, parent)) if PARENT_ACTIONS.contains(&action) => {
+            MenuDestination::Parent { label: parent, raise: false }
+        }
+        Some((kind, parent)) if kind.runs_menu_in_parent() => MenuDestination::Parent { label: parent, raise: true },
+        Some(_) if action == "editor.closeTab" => MenuDestination::Close,
+        Some(_) => MenuDestination::Own,
+    }
 }
 
 /// The project window an auxiliary window belongs to (`settings-main` → `main`).
@@ -403,11 +468,16 @@ static CREATING: Mutex<()> = Mutex::new(());
 static JOINING_GROUP: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Whether the window-state plugin restores and tracks `label`'s geometry. A window joining a
-/// group takes the group's frame instead; restoring a fullscreen state its label kept from an
-/// earlier window would give it a fullscreen Space of its own.
-#[cfg(target_os = "macos")]
+/// group takes the group's frame instead; auxiliary windows store logical sizes in
+/// `auxiliary-windows.json` and place themselves over their parent, avoiding physical-pixel
+/// scale drift and async restore races across mixed-DPI displays.
+#[cfg(any(target_os = "macos", test))]
 pub fn keeps_window_state(label: &str) -> bool {
-    !JOINING_GROUP.lock().iter().any(|l| l == label)
+    #[cfg(target_os = "macos")]
+    if JOINING_GROUP.lock().iter().any(|l| l == label) {
+        return false;
+    }
+    auxiliary_parent(label).is_none() && !AuxKind::ALL.iter().any(|k| k.name() == label)
 }
 
 /// The window state key: one geometry per auxiliary kind, else the label itself.
@@ -1460,7 +1530,16 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     config.title = aux.title.into();
     // Frameless on Windows and Linux like project windows (tauri.<os>.conf.json): the page draws
     // the title bar in the app theme instead of a system caption that follows the OS theme.
-    (config.width, config.height) = aux.size;
+    #[cfg(target_os = "macos")]
+    let macos_geom = aux_geometry_for(app, &windows, aux.kind, aux.size, aux.min_size);
+    #[cfg(target_os = "macos")]
+    {
+        (config.width, config.height) = (macos_geom.width, macos_geom.height);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (config.width, config.height) = aux.size;
+    }
     (config.min_width, config.min_height) = (Some(aux.min_size.0), Some(aux.min_size.1));
     config.center = false;
     config.visible = false;
@@ -1494,10 +1573,15 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, false);
-    // Restore runs during build; fit its size to the parent's current display before showing.
+    // Fit size and position to the parent's current display before showing.
     #[cfg(target_os = "macos")]
-    if let Err(e) = fit_over_parent(&window, &parent, aux.min_size) {
-        tracing::warn!("cannot fit {} window: {e}", aux.kind.name());
+    {
+        if let Err(e) =
+            fit_over_parent(&window, &parent, (macos_geom.width, macos_geom.height), aux.min_size, macos_geom.maximized)
+        {
+            tracing::warn!("cannot fit {} window: {e}", aux.kind.name());
+        }
+        track_auxiliary_geometry(&window, aux.kind, aux.size, aux.min_size);
     }
     #[cfg(not(target_os = "macos"))]
     if let Err(e) = place_over_parent(&window, &parent) {
@@ -1522,8 +1606,8 @@ pub fn open_settings_window(
         AuxWindow {
             kind: AuxKind::Settings,
             title: "Settings",
-            size: SETTINGS_SIZE,
-            min_size: SETTINGS_MIN_SIZE,
+            size: AuxKind::Settings.default_size(),
+            min_size: AuxKind::Settings.min_size(),
             launch: Launch { settings_page: page, new_projects, ..Default::default() },
             background,
         },
@@ -1544,8 +1628,8 @@ pub fn open_comparison_window(
         AuxWindow {
             kind: AuxKind::Comparison,
             title: "Compare",
-            size: COMPARISON_SIZE,
-            min_size: COMPARISON_MIN_SIZE,
+            size: AuxKind::Comparison.default_size(),
+            min_size: AuxKind::Comparison.min_size(),
             launch: Launch { comparison: Some(Box::new(comparison)), ..Default::default() },
             background,
         },
@@ -1573,8 +1657,8 @@ pub fn open_diff_window(
         AuxWindow {
             kind: AuxKind::Diff,
             title: "Diff",
-            size: DIFF_SIZE,
-            min_size: DIFF_MIN_SIZE,
+            size: AuxKind::Diff.default_size(),
+            min_size: AuxKind::Diff.min_size(),
             launch: Launch { diff_window: Some(Box::new(diff)), ..Default::default() },
             background,
         },
@@ -1597,51 +1681,208 @@ pub fn open_deployment_window(
         AuxWindow {
             kind: AuxKind::Deployment,
             title: "Sync with Deployed",
-            size: DEPLOYMENT_SIZE,
-            min_size: DEPLOYMENT_MIN_SIZE,
+            size: AuxKind::Deployment.default_size(),
+            min_size: AuxKind::Deployment.min_size(),
             launch: Launch { deployment: Some(DeploymentLaunch { server, paths }), ..Default::default() },
             background,
         },
     )
 }
 
-/// Fit outer bounds, including native decorations, using one monitor's logical coordinate space.
+#[cfg(any(target_os = "macos", test))]
+fn resolve_aux_geometry(saved: Option<AuxGeometry>, default_size: (f64, f64), min_size: (f64, f64)) -> AuxGeometry {
+    match saved.filter(|g| g.width.is_finite() && g.height.is_finite() && g.width > 0.0 && g.height > 0.0) {
+        Some(g) => {
+            AuxGeometry { width: g.width.max(min_size.0), height: g.height.max(min_size.1), maximized: g.maximized }
+        }
+        None => AuxGeometry {
+            width: default_size.0.max(min_size.0),
+            height: default_size.1.max(min_size.1),
+            maximized: false,
+        },
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn fit_over_parent(window: &WebviewWindow, parent: &WebviewWindow, min_size: (f64, f64)) -> tauri::Result<()> {
-    let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
-        return Ok(());
+fn aux_state_path(app: &AppHandle) -> Option<PathBuf> {
+    ide_host::data_dirs::config_dir(&app.config().identifier).ok().map(|dir| dir.join(AUX_STATE_FILE))
+}
+
+#[cfg(target_os = "macos")]
+fn load_aux_geometry_map(path: &Path) -> HashMap<String, AuxGeometry> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<HashMap<String, AuxGeometry>>(&bytes).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn aux_geometry_for(
+    app: &AppHandle,
+    windows: &WindowsState,
+    kind: AuxKind,
+    default_size: (f64, f64),
+    min_size: (f64, f64),
+) -> AuxGeometry {
+    let mut guard = windows.aux_geometry.lock();
+    let map = guard.get_or_insert_with(|| aux_state_path(app).map_or_else(HashMap::new, |p| load_aux_geometry_map(&p)));
+    resolve_aux_geometry(map.get(kind.name()).copied(), default_size, min_size)
+}
+
+#[cfg(target_os = "macos")]
+pub fn flush_auxiliary_geometry(app: &AppHandle) {
+    let Some(path) = aux_state_path(app) else { return };
+    let Some(snapshot) = app.try_state::<WindowsState>().and_then(|w| w.aux_geometry.lock().clone()) else {
+        return;
     };
-    let scale = monitor.scale_factor();
-    let area = monitor.work_area();
-    let origin = area.position.to_logical::<f64>(scale);
-    let available = area.size.to_logical::<f64>(scale);
-    // Move to the target display first so native frame metrics use its scale factor.
-    window.set_position(area.position)?;
-    let inner = window.inner_size()?.to_logical::<f64>(scale);
-    let outer = window.outer_size()?.to_logical::<f64>(scale);
-    let frame = (outer.width - inner.width, outer.height - inner.height);
-    let pos = parent.outer_position()?.to_logical::<f64>(scale);
-    let size = parent.outer_size()?.to_logical::<f64>(scale);
-    let bounds = fit_bounds(
-        (pos.x, pos.y, size.width, size.height),
-        (outer.width, outer.height),
-        (origin.x, origin.y, available.width, available.height),
-    );
-    // A small work area takes precedence over the usual minimum window size.
-    window.set_min_size(Some(
-        tauri::LogicalSize::new(
-            min_size.0.min((available.width - frame.0).max(1.0)),
-            min_size.1.min((available.height - frame.1).max(1.0)),
-        )
-        .to_physical::<u32>(scale),
-    ))?;
-    window.set_size(
-        tauri::LogicalSize::new((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0)).to_physical::<u32>(scale),
-    )?;
-    window.set_position(tauri::PhysicalPosition::new(
-        (bounds.0 * scale).round() as i32,
-        (bounds.1 * scale).round() as i32,
-    ))
+    if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = ide_vfs::write_atomic(&path, &bytes);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn same_cocoa_frame(a: objc2_foundation::NSRect, b: objc2_foundation::NSRect) -> bool {
+    (a.origin.x - b.origin.x).abs() <= 2.0
+        && (a.origin.y - b.origin.y).abs() <= 2.0
+        && (a.size.width - b.size.width).abs() <= 2.0
+        && (a.size.height - b.size.height).abs() <= 2.0
+}
+
+#[cfg(target_os = "macos")]
+fn track_auxiliary_geometry(window: &WebviewWindow, kind: AuxKind, default_size: (f64, f64), min_size: (f64, f64)) {
+    let tracked = window.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::Resized(_) => {
+            if objc2::MainThreadMarker::new().is_none() {
+                return;
+            }
+            let Ok(ptr) = tracked.ns_window() else { return };
+            let ns_win = unsafe { &*ptr.cast::<objc2_app_kit::NSWindow>() };
+            if !ns_win.isVisible()
+                || ns_win.isMiniaturized()
+                || ns_win.styleMask().contains(objc2_app_kit::NSWindowStyleMask::FullScreen)
+            {
+                return;
+            }
+            let frame = ns_win.frame();
+            let content = ns_win.contentRectForFrameRect(frame);
+            let maximized = ns_win.screen().is_some_and(|s| same_cocoa_frame(frame, s.visibleFrame()));
+            let Some(state) = tracked.try_state::<WindowsState>() else { return };
+            let mut guard = state.aux_geometry.lock();
+            let map = guard.get_or_insert_with(|| {
+                aux_state_path(tracked.app_handle()).map_or_else(HashMap::new, |p| load_aux_geometry_map(&p))
+            });
+            let entry = map.entry(kind.name().to_owned()).or_insert(AuxGeometry {
+                width: default_size.0.max(min_size.0),
+                height: default_size.1.max(min_size.1),
+                maximized: false,
+            });
+            entry.maximized = maximized;
+            if !maximized && content.size.width >= min_size.0 && content.size.height >= min_size.1 {
+                entry.width = content.size.width;
+                entry.height = content.size.height;
+            }
+        }
+        tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+            let app = tracked.app_handle().clone();
+            let Some(path) = aux_state_path(&app) else { return };
+            let Some(snapshot) = app.try_state::<WindowsState>().and_then(|w| w.aux_geometry.lock().clone()) else {
+                return;
+            };
+            std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
+                if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = ide_vfs::write_atomic(&path, &bytes);
+                }
+            }));
+        }
+        _ => {}
+    });
+}
+
+/// Fit outer bounds in AppKit's global bottom-left point space, centred over `parent` inside
+/// `visible` (`NSScreen::visibleFrame`) and clamped to `[min_size, visible]`.
+#[cfg(any(target_os = "macos", test))]
+fn cocoa_fit_bounds(
+    parent: (f64, f64, f64, f64),
+    size: (f64, f64),
+    min_size: (f64, f64),
+    visible: (f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    let parent_td = (parent.0, -(parent.1 + parent.3), parent.2, parent.3);
+    let work_td = (visible.0, -(visible.1 + visible.3), visible.2, visible.3);
+    let fitted = fit_bounds(parent_td, size, min_size, work_td);
+    (fitted.0, -(fitted.1 + fitted.3), fitted.2, fitted.3)
+}
+
+/// Synchronously fits and centres `window` over `parent` on `parent`'s `NSScreen` in AppKit
+/// logical points, avoiding `tao`'s async main-queue position/size race across mixed-DPI displays.
+#[cfg(target_os = "macos")]
+fn fit_over_parent(
+    window: &WebviewWindow,
+    parent: &WebviewWindow,
+    desired_size: (f64, f64),
+    min_size: (f64, f64),
+    maximized: bool,
+) -> tauri::Result<()> {
+    let target = window.clone();
+    let owner = parent.clone();
+    let apply = move || {
+        let mtm = objc2::MainThreadMarker::new().expect("AppKit main thread");
+        let (Ok(win_ptr), Ok(parent_ptr)) = (target.ns_window(), owner.ns_window()) else {
+            return;
+        };
+        let win_ns = unsafe { &*win_ptr.cast::<objc2_app_kit::NSWindow>() };
+        let parent_ns = unsafe { &*parent_ptr.cast::<objc2_app_kit::NSWindow>() };
+        let Some(screen) = parent_ns.screen().or_else(|| objc2_app_kit::NSScreen::mainScreen(mtm)) else {
+            return;
+        };
+        let visible = screen.visibleFrame();
+        let parent_frame = parent_ns.frame();
+        let win_frame = win_ns.frame();
+        let content = win_ns.contentRectForFrameRect(win_frame);
+        let frame = (
+            (win_frame.size.width - content.size.width).max(0.0),
+            (win_frame.size.height - content.size.height).max(0.0),
+        );
+        let bounds = if maximized {
+            (visible.origin.x, visible.origin.y, visible.size.width, visible.size.height)
+        } else {
+            cocoa_fit_bounds(
+                (parent_frame.origin.x, parent_frame.origin.y, parent_frame.size.width, parent_frame.size.height),
+                (desired_size.0 + frame.0, desired_size.1 + frame.1),
+                (min_size.0 + frame.0, min_size.1 + frame.1),
+                (visible.origin.x, visible.origin.y, visible.size.width, visible.size.height),
+            )
+        };
+        win_ns.setContentMinSize(objc2_foundation::NSSize::new(
+            min_size.0.min((visible.size.width - frame.0).max(1.0)),
+            min_size.1.min((visible.size.height - frame.1).max(1.0)),
+        ));
+        win_ns.setFrame_display(
+            objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(bounds.0, bounds.1),
+                objc2_foundation::NSSize::new(bounds.2.max(1.0), bounds.3.max(1.0)),
+            ),
+            false,
+        );
+    };
+    if objc2::MainThreadMarker::new().is_some() {
+        apply();
+        return Ok(());
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    window.run_on_main_thread(move || {
+        apply();
+        let _ = tx.send(());
+    })?;
+    // A stopped event loop never runs the closure: don't block this thread forever.
+    rx.recv_timeout(FIT_ON_MAIN_TIMEOUT).map_err(|_| tauri::Error::FailedToReceiveMessage)
 }
 
 /// Centres the settings window over its owner, inside the owner's monitor work area. The window
@@ -1676,9 +1917,11 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     let inner = window.inner_size()?;
     let inner = inner.to_logical::<f64>(own_scale);
     let frame = (own.width - inner.width, own.height - inner.height);
+    let minimum = auxiliary(window.label()).map_or(SETTINGS_MIN_SIZE, |(kind, _)| kind.min_size());
     let bounds = fit_bounds(
         (pos.x, pos.y, size.width, size.height),
         (own.width, own.height),
+        (minimum.0 + frame.0, minimum.1 + frame.1),
         (origin.x, origin.y, available.width, available.height),
     );
     window.set_position(tauri::PhysicalPosition::new(
@@ -1688,11 +1931,6 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     if (bounds.2, bounds.3) != (own.width, own.height) {
         // Sizes are set on the client area, and even an undecorated window has a resize frame.
         let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
-        let minimum = match auxiliary(window.label()) {
-            Some((AuxKind::Comparison, _)) => COMPARISON_MIN_SIZE,
-            Some((AuxKind::Deployment, _)) => DEPLOYMENT_MIN_SIZE,
-            _ => SETTINGS_MIN_SIZE,
-        };
         window.set_min_size(Some(tauri::LogicalSize::new(minimum.0.min(width), minimum.1.min(height))))?;
         window.set_size(tauri::LogicalSize::new(width, height))?;
     }
@@ -1702,13 +1940,18 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     Ok(())
 }
 
-fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
-    let width = size.0.min(work.2);
-    let height = size.1.min(work.3);
+fn fit_bounds(
+    parent: (f64, f64, f64, f64),
+    size: (f64, f64),
+    min_size: (f64, f64),
+    work: (f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    let width = size.0.max(min_size.0).min(work.2);
+    let height = size.1.max(min_size.1).min(work.3);
     let at = centered(parent.0, parent.1, parent.2, parent.3, width, height);
     (
-        work.0 + (at.0 - work.0).clamp(0.0, work.2 - width),
-        work.1 + (at.1 - work.1).clamp(0.0, work.3 - height),
+        work.0 + (at.0 - work.0).clamp(0.0, (work.2 - width).max(0.0)),
+        work.1 + (at.1 - work.1).clamp(0.0, (work.3 - height).max(0.0)),
         width,
         height,
     )
@@ -2350,6 +2593,27 @@ mod tests {
     }
 
     #[test]
+    fn menu_items_chosen_in_settings_run_in_its_project_window() {
+        use MenuDestination::*;
+        for (label, action, expected) in [
+            ("main", "app.about", Own),
+            ("main", "editor.closeTab", Own),
+            // #3625: Settings has no actions of its own; the rest of the menu runs in the project window.
+            ("settings-main", "app.checkForUpdates", Parent { label: "main", raise: true }),
+            ("settings-project-2", "file.newFile", Parent { label: "project-2", raise: true }),
+            ("settings-main", "editor.closeTab", Parent { label: "main", raise: true }),
+            ("settings-main", "file.settings", Parent { label: "main", raise: false }),
+            ("settings-main", "app.quit", Parent { label: "main", raise: false }),
+            ("comparison-main-0", "app.quit", Parent { label: "main", raise: false }),
+            ("comparison-main-0", "editor.closeTab", Close),
+            ("diff-main-1", "vcs.diff.next", Own),
+            ("deployment-main", "app.about", Own),
+        ] {
+            assert_eq!(menu_destination(label, action), expected, "{label} {action}");
+        }
+    }
+
+    #[test]
     fn settings_bounds_fit_current_work_area() {
         for (parent, size, work, expected) in [
             // 1920×1080 at 150% scaling, with a 40-physical-pixel taskbar.
@@ -2374,9 +2638,84 @@ mod tests {
             ((1700.0, 900.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 1920.0, 1040.0), (940.0, 320.0, 980.0, 720.0)),
             // Work area smaller than the normal minimum size.
             ((0.0, 0.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 600.0, 360.0), (0.0, 0.0, 600.0, 360.0)),
+            // Restored geometry shrunk below minimum size (e.g. from a lower-DPI monitor) clamps up to min_size.
+            ((100.0, 60.0, 1440.0, 900.0), (350.0, 177.0), (0.0, 0.0, 1728.0, 1080.0), (370.0, 160.0, 900.0, 700.0)),
         ] {
-            assert_eq!(fit_bounds(parent, size, work), expected);
+            assert_eq!(fit_bounds(parent, size, SETTINGS_MIN_SIZE, work), expected);
         }
+    }
+
+    #[test]
+    fn macos_auxiliary_windows_bypass_physical_window_state_and_clamp_cocoa_bounds() {
+        assert!(keeps_window_state("main"));
+        assert!(keeps_window_state("project-2"));
+        for label in [
+            "settings",
+            "comparison",
+            "diff",
+            "deployment",
+            "settings-main",
+            "comparison-project-2-0",
+            "diff-main-9",
+            "deployment-main",
+        ] {
+            assert!(!keeps_window_state(label), "{label} must not use physical window-state");
+        }
+
+        // Undersized or invalid saved auxiliary geometry clamps up to min_size.
+        assert_eq!(
+            resolve_aux_geometry(
+                Some(AuxGeometry { width: 350.0, height: 177.0, maximized: false }),
+                SETTINGS_SIZE,
+                SETTINGS_MIN_SIZE,
+            ),
+            AuxGeometry { width: 900.0, height: 700.0, maximized: false },
+        );
+        assert_eq!(
+            resolve_aux_geometry(None, SETTINGS_SIZE, SETTINGS_MIN_SIZE),
+            AuxGeometry { width: 980.0, height: 720.0, maximized: false },
+        );
+        assert_eq!(
+            resolve_aux_geometry(
+                Some(AuxGeometry { width: 1180.0, height: 820.0, maximized: true }),
+                SETTINGS_SIZE,
+                SETTINGS_MIN_SIZE,
+            ),
+            AuxGeometry { width: 1180.0, height: 820.0, maximized: true },
+        );
+
+        // Cocoa bottom-left visibleFrame: y=50..1090 (Dock=50, menu=37 on 1127pt display),
+        // parent=(100, 140, 1440, 900) -> top=1040, centre=(820, 590).
+        // Settings (980×720) centres at x=330, y=590 - 360 = 230.
+        assert_eq!(
+            cocoa_fit_bounds(
+                (100.0, 140.0, 1440.0, 900.0),
+                (980.0, 720.0),
+                SETTINGS_MIN_SIZE,
+                (0.0, 50.0, 1728.0, 1040.0)
+            ),
+            (330.0, 230.0, 980.0, 720.0),
+        );
+        // Secondary QHD display at negative x=(-2560, 0, 2560, 1415), undersized 350×177 clamps to 900×700.
+        assert_eq!(
+            cocoa_fit_bounds(
+                (-2200.0, 200.0, 1600.0, 1000.0),
+                (350.0, 177.0),
+                SETTINGS_MIN_SIZE,
+                (-2560.0, 0.0, 2560.0, 1415.0),
+            ),
+            (-1850.0, 350.0, 900.0, 700.0),
+        );
+        // Taller than parent: top edge aligns with parent's top edge (y + h == 200 + 500 = 700 -> y = 0).
+        assert_eq!(
+            cocoa_fit_bounds(
+                (0.0, 200.0, 1000.0, 500.0),
+                (900.0, 700.0),
+                SETTINGS_MIN_SIZE,
+                (0.0, 0.0, 1728.0, 1040.0)
+            ),
+            (50.0, 0.0, 900.0, 700.0),
+        );
     }
 
     #[test]

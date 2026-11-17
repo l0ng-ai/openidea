@@ -76,7 +76,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 6px 0 14px;
   cursor: default;
   user-select: none;
@@ -85,14 +85,14 @@
 .macTitleBar {
   height: var(--h-dialog-titlebar-mac, 28px);
   padding: 0 12px 0 8px;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .popupHeader {
   height: 32px;
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 14px;
 }
 .title {
@@ -112,7 +112,7 @@
 .lights {
   flex: none;
   display: inline-flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .light {
   position: relative;
@@ -184,7 +184,7 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 12px 16px;
 }
 .footerStart {
@@ -193,13 +193,16 @@
   max-width: 100%;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .buttons {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-end;
+  gap: var(--space-3);
   margin-left: auto;
 }
 /* macOS round help button. */
@@ -230,7 +233,7 @@
   min-height: 0;
   overflow: auto;
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   padding: 20px 24px 4px 20px;
   cursor: default;
   touch-action: none;
@@ -264,7 +267,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding-top: 4px;
 }
 .messageTitle {
@@ -281,7 +284,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 8px;
 }
 .messageFooter {

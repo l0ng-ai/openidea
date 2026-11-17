@@ -4,7 +4,7 @@ import { tx } from "@/platform/i18n";
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { setFileDecorations, type DecorationSegment, type FileDecoration } from "@/workbench/contributions";
 import { rootOf } from "./model";
-import { useVcs } from "./store";
+import { useVcs, type RepoHead } from "./store";
 
 const PROVIDER = "vcs-root-sync";
 const GIT_CHANGE_DELAY_MS = 250;
@@ -95,6 +95,18 @@ async function branchInfoOf(root: string): Promise<[string, BranchInfo] | null> 
   }
 }
 
+/** Whether a repository's branch or HEAD commit differs between two refreshes. */
+export function headsMoved(a: Readonly<Record<string, RepoHead>>, b: Readonly<Record<string, RepoHead>>): boolean {
+  if (a === b) return false;
+  const roots = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const root of roots) {
+    const x = a[root];
+    const y = b[root];
+    if (x?.head !== y?.head || x?.headCommit !== y?.headCommit) return true;
+  }
+  return false;
+}
+
 function sameDecorations(a: ReadonlyMap<string, FileDecoration>, b: ReadonlyMap<string, FileDecoration>): boolean {
   if (a.size !== b.size) return false;
   for (const [root, d] of a) if (JSON.stringify(d) !== JSON.stringify(b.get(root))) return false;
@@ -167,7 +179,14 @@ export function installRootSync(): () => void {
   };
 
   const unsubVcs = useVcs.subscribe((s, prev) => {
-    if (s.available !== prev.available || s.roots.join("\n") !== prev.roots.join("\n")) schedule();
+    if (
+      s.available !== prev.available ||
+      s.roots.join("\n") !== prev.roots.join("\n") ||
+      // A commit, checkout or update moved a HEAD; a fetch or push finished.
+      headsMoved(s.heads, prev.heads) ||
+      (prev.remoteBusy && !s.remoteBusy)
+    )
+      schedule();
     // The changed-file counts follow the working tree as the status refreshes, without asking git.
     else if (s.status !== prev.status) render();
   });

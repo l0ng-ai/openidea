@@ -341,11 +341,13 @@ mod tests {
                 {"lineNumber":41,"columnNumber":21,"source":{"path":"localhost꞉5173/src/App.vue","sourceReference":7}}]},
               {"locations":[{"lineNumber":10,"columnNumber":1,"source":{"path":"localhost꞉5173/","sourceReference":9}}]},
               {"locations":[]}]}}"#;
+        let app = if cfg!(windows) { r"C:\work\shop\src\App.vue" } else { "/work/shop/src/App.vue" };
+        let json = json.replace("\"/work/shop/src/App.vue\"", &serde_json::to_string(app).unwrap());
         let mut b = TreeBuilder::new();
-        add_cpuprofile(&mut b, json).unwrap();
+        add_cpuprofile(&mut b, &json).unwrap();
         let p = b.finish("node", "samples", ProfileMode::Cpu);
         let frame = |name: &str| p.frames.iter().find(|f| f.name == name).unwrap();
-        assert_eq!(frame("increment").file.as_deref(), Some(Path::new("/work/shop/src/App.vue")));
+        assert_eq!(frame("increment").file.as_deref(), Some(Path::new(app)));
         assert_eq!(frame("increment").line, Some(12));
         // No file on disk behind the frame: it stays without one.
         assert_eq!((frame("inline").file.as_deref(), frame("inline").line), (None, None));

@@ -8,8 +8,15 @@ import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { onIdeEvent } from "@/platform/ipc";
-import { registerActions } from "@/platform/actions";
-import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
+import { registerActions, type ActionContext } from "@/platform/actions";
+import { activeCellGrid } from "./cellActions";
+import {
+  activeTableEditor,
+  focusedTableEditor,
+  installTableEditorFocus,
+  type TableCommand,
+  type TableCommandTarget,
+} from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
 import {
   registerEditorKind,
@@ -32,6 +39,8 @@ import {
   RESULTS_VIEW,
   consoleSource,
   consoleTints,
+  inEditorResults,
+  setInEditorResults,
   loadSources,
   connect,
   loadSchemas,
@@ -52,6 +61,27 @@ function useDatabaseHeaderMenu(): MenuItem[] {
 }
 
 const useDialogOpen = () => useDatabase((s) => !!s.dialog);
+
+/** Table editor / result grid commands as actions (IDEA's data editor actions). */
+const TABLE_COMMANDS: Array<[TableCommand, string, string, string[]]> = [
+  ["reload", "db.reloadPage", "Reload Page", ["refresh", "rerun"]],
+  ["firstPage", "db.firstPage", "First Page", ["pagination"]],
+  ["previousPage", "db.previousPage", "Previous Page", ["pagination"]],
+  ["nextPage", "db.nextPage", "Next Page", ["pagination"]],
+  ["lastPage", "db.lastPage", "Last Page", ["pagination"]],
+  ["addRow", "db.addRow", "Add Row", ["insert row", "new row"]],
+  ["exportData", "db.exportData", "Export Data", ["export", "save as"]],
+  ["deleteRows", "db.deleteRows", "Delete Rows", ["remove rows"]],
+  ["restoreRows", "db.restoreRows", "Restore Rows", ["undelete rows"]],
+];
+
+/** The editor and rows a menu passed (focus has moved to the menu), else the focused grid's. */
+function tableTarget(arg: unknown): TableCommandTarget {
+  if (arg && typeof arg === "object" && "rows" in arg) return arg as TableCommandTarget;
+  return { rows: activeCellGrid()?.selectedRows() ?? [], editor: null };
+}
+
+export { activateSettingsPages } from "./settingsPages";
 
 export function activate(): () => void {
   const disposers = [
@@ -94,6 +124,14 @@ export function activate(): () => void {
         () => import("./console").then((m) => m.consoleExtension),
       ),
     }),
+    registerEditorContribution({
+      id: "database.mybatis",
+      order: 58,
+      extensions: lazyEditorExtension(
+        (ctx) => /\.xml$/i.test(ctx.path) && !ctx.virtual,
+        () => import("./mybatis").then((m) => m.mapperExtension),
+      ),
+    }),
     // A reopened project starts with a fresh backend: forget the old one's state.
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
@@ -109,6 +147,7 @@ export function activate(): () => void {
         objects: {},
         completion: {},
         results: [],
+        inline: [],
         output: [],
         activeResult: null,
         selectedSource: null,
@@ -237,6 +276,16 @@ export function activate(): () => void {
         },
       },
       {
+        id: "db.toggleInEditorResults",
+        title: "In-Editor Results",
+        description: "Show query results in the editor, under the statements that produced them",
+        category: "Tools",
+        icon: "db-in-editor-results",
+        keywords: ["inline", "results", "console", "grid"],
+        toggled: () => inEditorResults(),
+        run: () => setInEditorResults(!inEditorResults()),
+      },
+      {
         id: "db.executeScript",
         title: "Execute SQL Script",
         category: "Tools",
@@ -280,6 +329,23 @@ export function activate(): () => void {
         when: "dbTableEditorFocus && dbTableEditorChanges",
         run: () => activeTableEditor()?.revert(),
       },
+      ...TABLE_COMMANDS.map(([command, id, title, keywords]) => ({
+        id,
+        title,
+        category: "Tools",
+        keywords: ["table editor", "data editor", ...keywords],
+        keyWhen: "dbTableEditorFocus",
+        enabled: ({ arg }: ActionContext) => {
+          const { rows, editor } = tableTarget(arg);
+          const handler = (editor ?? focusedTableEditor())?.commands?.[command];
+          return !!handler && handler.enabled(rows);
+        },
+        run: ({ arg }: ActionContext) => {
+          const { rows, editor } = tableTarget(arg);
+          const handler = (editor ?? activeTableEditor())?.commands?.[command];
+          if (handler?.enabled(rows)) handler.run(rows);
+        },
+      })),
       {
         id: "db.explainPlan",
         title: "Explain Plan",

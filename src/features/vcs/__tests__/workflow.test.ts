@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BranchInfo } from "@/bindings";
-import { messageProblems, wrapAtMargin } from "../CommitView";
+import { addBlankLineAfterSubject, messageProblems, wrapAtMargin } from "../CommitView";
 import { linkifyIssues } from "../issueLinks";
 import {
-  defaultPushChecked,
   isProtectedBranch,
   isLeaseRejected,
   isPushRejected,
@@ -40,6 +39,14 @@ describe("commit message inspections", () => {
     ]);
     expect(messageProblems("ok\n\nthis body line is long", cfg)).toEqual(["Body line 3 is longer than 8 characters"]);
     expect(messageProblems("x".repeat(20), { ...cfg, limitSubject: false })).toEqual([]);
+  });
+
+  it("adds the missing blank line after the subject", () => {
+    const fixed = addBlankLineAfterSubject("111\n111");
+    expect(fixed).toBe("111\n\n111");
+    expect(messageProblems(fixed, cfg)).toEqual([]);
+    expect(addBlankLineAfterSubject("subject\nline 2\nline 3")).toBe("subject\n\nline 2\nline 3");
+    expect(addBlankLineAfterSubject("subject")).toBe("subject");
   });
 
   it("wraps body lines at the last space before the margin", () => {
@@ -105,7 +112,7 @@ describe("several repositories", () => {
     expect(attentionRepo("/p", {}, {})).toBeNull();
   });
 
-  it("lists repositories with something to push", () => {
+  it("lists every repository on a branch, up-to-date ones too", () => {
     const branch = (head: string | null, upstream: string | null) => ({
       head,
       headCommit: "c1",
@@ -121,30 +128,7 @@ describe("several repositories", () => {
       { root: "/p/b", branch: branch("feature", null), commits: [commit] },
       { root: "/p/c", branch: branch(null, null), commits: [] },
     ];
-    const candidates = pushCandidates(repos);
-    expect(candidates.map((r) => r.root)).toEqual(["/p", "/p/b"]);
-    expect([...defaultPushChecked(candidates, "/p")]).toEqual(["/p"]);
-    expect([...defaultPushChecked(candidates, "/p/b")]).toEqual(["/p", "/p/b"]);
-  });
-
-  it("checks only the repository Push was invoked from", () => {
-    const branch = (head: string, upstream: string | null) => ({
-      head,
-      headCommit: "c1",
-      upstream,
-      ahead: 0,
-      behind: 0,
-      operation: null,
-    });
-    const commit = { id: "c1", shortId: "c1" } as RepoPush["commits"][number];
-    const candidates: RepoPush[] = [
-      { root: "/p", branch: branch("main", "origin/main"), commits: [commit] },
-      { root: "/p/a", branch: branch("main", "origin/main"), commits: [commit] },
-      { root: "/p/b", branch: branch("feature", null), commits: [commit] },
-    ];
-    expect([...defaultPushChecked(candidates, "/p/a", true)]).toEqual(["/p/a"]);
-    expect([...defaultPushChecked(candidates, "/p/b", true)]).toEqual(["/p/b"]);
-    expect([...defaultPushChecked(candidates, "/p/c", true)]).toEqual([]);
+    expect(pushCandidates(repos).map((r) => r.root)).toEqual(["/p", "/p/a", "/p/b"]);
   });
 });
 
@@ -200,6 +184,23 @@ describe("pushRepoCommits", () => {
     vcsBranches.mockReset().mockResolvedValue({ status: "error", error: "boom" });
     await expect(pushRepoCommits("/p", branch("feature", "origin/feature"))).resolves.toEqual([{ id: "c1" }]);
     expect(vcsLog).toHaveBeenLastCalledWith("/p", expect.objectContaining({ branch: "HEAD", range: null, limit: 50 }));
+  });
+
+  it("lists the commits no remote branch has for a branch without upstream", async () => {
+    vcsLog.mockReset().mockResolvedValue({ status: "ok", data: [{ id: "c1" }] });
+    vcsBranches.mockReset().mockResolvedValue({
+      status: "ok",
+      data: [
+        { name: "feature", remote: false },
+        { name: "origin/main", remote: true },
+      ],
+    });
+    await expect(pushRepoCommits("/p", branch("feature", null))).resolves.toEqual([{ id: "c1" }]);
+    expect(vcsLog).toHaveBeenCalledTimes(1);
+    expect(vcsLog).toHaveBeenCalledWith(
+      "/p",
+      expect.objectContaining({ branch: "HEAD", range: "HEAD ^refs/remotes/origin/main", limit: 1000 }),
+    );
   });
 
   it("passes the upstream range through when it resolves", async () => {

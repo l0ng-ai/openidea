@@ -56,6 +56,7 @@ describe("file naming", () => {
     expect(styleName("UserService", "snake")).toBe("user_service");
     expect(styleName("user service", "pascal")).toBe("UserService");
     expect(planFile(tpl("rust"), "/p/src", "HttpClient")?.path).toBe("/p/src/http_client.rs");
+    expect(planFile(tpl("zig"), "/p/src", "HttpServer")?.path).toBe("/p/src/http_server.zig");
     expect(planFile(tpl("tsx"), "/p/src", "user-card.tsx")?.path).toBe("/p/src/UserCard.tsx");
     expect(planFile(tpl("java"), "/p/src/main/java", "com.acme.Foo")).toMatchObject({
       path: "/p/src/main/java/com/acme/Foo.java",
@@ -88,6 +89,12 @@ describe("file naming", () => {
       const ext = t.extension ? `.${t.extension}` : "";
       expect(planFile(t, "/p", t.defaultName!)?.path).toBe(`/p/${name}${ext}`);
     }
+  });
+
+  it("renders a Zig test block from the Test file kind", () => {
+    const test = tpl("zig").kinds.find((k) => k.id === "test")!;
+    const { text } = renderFileTemplate(test.body, { name: "http_server", fileName: "http_server.zig" });
+    expect(text.trim()).toBe('test "http_server" {\n    \n}');
   });
 
   it("offers IDEA's common file kinds", () => {

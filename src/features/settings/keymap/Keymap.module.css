@@ -30,7 +30,7 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   margin-bottom: 6px;
 }
 .search {
@@ -43,7 +43,7 @@
   max-width: 360px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: var(--h-control);
   margin-right: 4px;
   padding: 0 2px 0 8px;
@@ -85,7 +85,7 @@
 .actionRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
 }
@@ -94,10 +94,6 @@
 }
 .catName {
   color: var(--fg-emphasis);
-}
-.count {
-  color: var(--fg-faint);
-  font-size: var(--fs-small);
 }
 .actionIcon {
   display: inline-flex;
@@ -116,7 +112,7 @@
 }
 .bindings {
   display: inline-flex;
-  gap: 4px;
+  gap: var(--space-1);
   padding-right: 10px;
 }
 .kbd {
@@ -169,14 +165,14 @@
 .recordBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 14px;
 }
 .recordRow {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .recordLabel {
   color: var(--fg);
@@ -197,7 +193,7 @@
 .conflictTitle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-emphasis);
 }
 .conflictIcon {
@@ -214,7 +210,7 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--h-row);
 }
 .conflictAction {

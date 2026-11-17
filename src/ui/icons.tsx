@@ -89,6 +89,7 @@ const ICONS = {
   exception: "nodes/exception",
   "jvm-test": "nodes/test",
   "runnable-mark": "nodes/runnableMark",
+  "symlink-mark": "nodes/symlink",
   "kotlin-object": "kotlin/objectKotlin",
   "spring-config": "openidea/runConfigurations/springBoot",
   "gradle-project": "gradle/gradle",
@@ -103,6 +104,8 @@ const ICONS = {
   "file-text": "fileTypes/text",
   "file-json": "fileTypes/json",
   "file-md": "fileTypes/markdown",
+  "file-word": "openidea/fileTypes/word",
+  "file-pdf": "openidea/fileTypes/pdf",
   "file-image": "fileTypes/image",
   paperclip: "openidea/general/paperclip",
   image: "openidea/general/image",
@@ -178,6 +181,7 @@ const ICONS = {
   "file-gdshader": "openidea/fileTypes/gdshader",
   "file-asciidoc": "openidea/fileTypes/asciidoc",
   "file-d": "openidea/fileTypes/d",
+  "file-gherkin": "openidea/fileTypes/gherkin",
   "file-prisma": "openidea/fileTypes/prisma",
   "file-slint": "openidea/fileTypes/slint",
   "file-dart": "openidea/fileTypes/dart",
@@ -246,6 +250,7 @@ const ICONS = {
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
   "toolwindow-graphql": "openidea/toolwindows/graphql",
+  "toolwindow-sbt": "openidea/toolwindows/sbt",
   // Coding agents (logos via Paseo)
   "agent-claude": "openidea/agents/claude",
   "agent-codex": "openidea/agents/codex",
@@ -262,6 +267,7 @@ const ICONS = {
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
   "agent-omp": "openidea/agents/omp",
+  "agent-deepseek-harness": "brands/deepseek",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
@@ -278,6 +284,8 @@ const ICONS = {
   "chevron-up": "general/chevronUp",
   "chevron-left": "general/chevronLeft",
   close: "general/close",
+  "project-tab-close": "general/windowClose",
+  "project-tab-close-hovered": "general/windowCloseHovered",
   plus: "general/add",
   minus: "general/remove",
   check: "actions/checked",
@@ -306,6 +314,8 @@ const ICONS = {
   split: "general/splitVertically",
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
+  "swap-panels": "actions/swapPanels",
+  "external-tools": "general/externalTools",
   "editor-preview": "general/editorPreview",
   "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",
@@ -380,6 +390,7 @@ const ICONS = {
   "db-sequence": "openidea/database/sequence",
   "db-plan": "openidea/database/plan",
   "db-chart": "openidea/database/chart",
+  "db-in-editor-results": "openidea/database/inEditorResults",
   "db-sort": "openidea/database/sort",
   "db-folder": "openidea/database/folder",
   "db-add": "openidea/database/addDropdown",
@@ -405,6 +416,7 @@ const ICONS = {
   "db-timescale": "openidea/database/timescale",
   "db-yugabyte": "openidea/database/yugabyte",
   export: "openidea/general/export",
+  artifact: "openidea/general/artifact",
   web: "openidea/general/web",
   "browser-chrome": "openidea/browsers/chrome",
   "browser-chromium": "openidea/browsers/chromium",
@@ -479,6 +491,7 @@ const ICONS = {
   "mute-breakpoint": "run/muteBreakpoints",
   "view-breakpoints": "run/viewBreakpoints",
   "heap-snapshot": "actions/profileMemory",
+  "stream-trace": "openidea/general/streamTrace",
   // Build tools (Maven / Gradle tool windows)
   "maven-project": "maven/mavenProject",
   "maven-module": "maven/mavenModule",
@@ -547,6 +560,8 @@ const ICONS = {
   "github-timeline": "github/timeline",
   "github-issue-open": "github/issueOpened",
   "github-issue-closed": "github/issueClosed",
+  "issue-open": "openidea/vcs/issueOpen",
+  "issue-closed": "openidea/vcs/issueClosed",
   "github-local-branch": "github/localBranch",
   "github-warning": "github/githubWarning",
   "add-emoji": "github/addEmoji",
@@ -816,8 +831,19 @@ const withIds = (p: Prepared, prefix: string) => (p.hasIds ? p.html.replace(/__I
 
 // ---------------------------------------------------------------------------
 
+/** Largest `data:` image accepted as an icon (an avatar or a status badge a plugin fetched). */
+const MAX_IMAGE_ICON = 64 * 1024;
+
+/** A small raster image given as a `data:` URI (PNG, JPEG, GIF, WebP), shown in place of an icon. */
+function isImageIcon(name: string): boolean {
+  return name.length <= MAX_IMAGE_ICON && /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/.test(name);
+}
+
 export interface IconProps {
-  /** Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon. */
+  /**
+   * Icon name; unknown names render the generic file icon. `symbol-<kind>` renders a symbol node icon,
+   * and a raster `data:` image URI (see `isImageIcon`) renders that image.
+   */
   name: IconName | (string & {});
   size?: number;
   className?: string;
@@ -826,7 +852,26 @@ export interface IconProps {
   label?: string;
 }
 
-export function Icon({ name, size = 16, className, style, label }: IconProps) {
+export function Icon(props: IconProps) {
+  return isImageIcon(props.name) ? <ImageIcon {...props} /> : <SvgIcon {...props} />;
+}
+
+function ImageIcon({ name, size = 16, className, style, label }: IconProps) {
+  return (
+    <img
+      className={clsx(styles.icon, styles.image, className)}
+      style={style}
+      src={name}
+      width={size}
+      height={size}
+      alt={label ?? ""}
+      aria-hidden={label ? undefined : true}
+      draggable={false}
+    />
+  );
+}
+
+function SvgIcon({ name, size = 16, className, style, label }: IconProps) {
   useFileIconRevision();
   const uid = useId();
   const path = iconPath(name);
@@ -1056,6 +1101,8 @@ const EXT_ICONS = table({
   "file-astro": "astro",
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
+  "file-word": "doc docx rtf odt",
+  "file-pdf": "pdf",
   "file-rst": "rst",
   "file-yaml": "yaml yml gotmpl",
   "file-toml": "toml",
@@ -1114,6 +1161,7 @@ const EXT_ICONS = table({
   "file-gdshader": "gdshader gdshaderinc",
   "file-asciidoc": "adoc asciidoc",
   "file-d": "d di",
+  "file-gherkin": "feature",
   "file-prisma": "prisma",
   "file-slint": "slint",
   "file-dart": "dart",

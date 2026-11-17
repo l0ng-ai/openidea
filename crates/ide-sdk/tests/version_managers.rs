@@ -61,6 +61,9 @@ fn mise_and_asdf_installs_are_detected_and_pinned_versions_used() {
     script(&maven.join("bin/mvn"), "Apache Maven 3.9.6");
     write(&maven.join("lib/maven-core-3.9.6.jar"), "");
     script(&installs.join("gradle/8.7/bin/gradle"), "Gradle 8.7");
+    // Zig: asdf keeps the executable at the install root, zvm under ~/.zvm.
+    script(&asdf.join("installs/zig/0.14.1/zig"), "0.14.1");
+    script(&tmp.join("home/.zvm/0.13.0/zig"), "0.13.0");
 
     let project = tmp.join("project");
     write(
@@ -90,6 +93,13 @@ fn mise_and_asdf_installs_are_detected_and_pinned_versions_used() {
     let mavens = detect(SdkKind::Maven, Some(&project));
     let mvn = find(&mavens, &maven);
     assert_eq!((mvn.source.as_str(), mvn.version.as_deref()), ("mise", Some("3.9.6")));
+
+    let zigs = detect(SdkKind::Zig, Some(&project));
+    let zig = find(&zigs, &asdf.join("installs/zig"));
+    assert_eq!((zig.source.as_str(), zig.version.as_deref()), ("asdf", Some("0.14.1")));
+    assert_eq!(zig.path, asdf.join("installs/zig/0.14.1"), "the setting stores the directory");
+    let zvm = find(&zigs, &tmp.join("home/.zvm"));
+    assert_eq!((zvm.source.as_str(), zvm.version.as_deref()), ("zvm", Some("0.13.0")));
 
     // Nothing configured in Settings: the pinned versions apply.
     let s = Settings::default();

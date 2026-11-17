@@ -11,6 +11,7 @@ import {
   showCodeCleanupDialog,
   showDuplicatesDialog,
   showInspectCodeDialog,
+  showReformatCodeDialog,
   showStructuralDialog,
 } from "./AnalysisDialogs";
 import { AnalysisDialogHost } from "./dialogs";
@@ -79,6 +80,23 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["fix all", "cleanup", "organize imports", "reformat"],
         run: () => void showCodeCleanupDialog(),
+      },
+      {
+        id: "code.reformatFiles",
+        title: "Reformat Code…",
+        description: "Reformat Code dialog for `{ files?, directories? }`, as for a project view selection.",
+        category: "Code",
+        hidden: true,
+        when: "projectOpen",
+        run: ({ arg }) => {
+          const a = (arg ?? {}) as { files?: unknown; directories?: unknown };
+          const paths = (v: unknown) => (Array.isArray(v) ? v.filter((p): p is string => typeof p === "string") : []);
+          const targets = [
+            ...paths(a.directories).map((path) => ({ path, dir: true })),
+            ...paths(a.files).map((path) => ({ path, dir: false })),
+          ];
+          if (targets.length) showReformatCodeDialog(targets);
+        },
       },
       {
         id: "analyze.locateDuplicates",

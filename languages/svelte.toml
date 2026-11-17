@@ -7,6 +7,10 @@ indent = { tab-size = 2, insert-spaces = true }
 # parses <script> as TypeScript and <style> as CSS, so components get highlighted.
 ui-mode = "HTML"
 
+# Rainbow brackets › angle: editor syntax nodes of markup tags, whose `<` `>` pair up.
+[rainbow-brackets]
+tags = ["OpenTag", "CloseTag", "SelfClosingTag"]
+
 [[language-servers]]
 name = "svelte-language-server"
 command = "svelteserver"

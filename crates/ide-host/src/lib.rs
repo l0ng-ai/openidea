@@ -190,6 +190,13 @@ impl Host {
             open_locks: Default::default(),
         };
         host.apply_proxy();
+        host.apply_added_jdks();
+        // Before any project starts jdtls; the deleting itself can take a while.
+        let unused =
+            ide_sdk::jdtls_workspaces::take_unused(&host.local_data_dir, ide_sdk::jdtls_workspaces::UNUSED_FOR);
+        if !unused.is_empty() {
+            std::thread::spawn(move || ide_sdk::jdtls_workspaces::remove(unused));
+        }
         ops::agent::move_user_mcp_values(&host);
         host
     }
@@ -528,6 +535,14 @@ impl Host {
 
     pub(crate) fn insert_project(&self, window: &str, project: Arc<Project>) {
         self.projects.write().insert(window.to_owned(), project);
+    }
+}
+
+impl Host {
+    /// Lists the JDKs added by hand (global Settings › SDKs) with the detected ones.
+    pub fn apply_added_jdks(&self) {
+        let homes = self.global_settings.effective().languages.java.added_jdks;
+        ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
     }
 }
 

@@ -114,7 +114,11 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
       }
       if (opening && style !== "comment" && style !== "string.special") {
         stream.pos = from + opening.length;
-        base.token(new StringStream('""', 4, state.indentUnit), frame.code);
+        // Let the base tokenizer see an empty string at the literal's own column: a stream
+        // at column 0 would read as a new line and reset the base's line indentation.
+        const empty = new StringStream(stream.string.slice(0, from) + '""', 4, state.indentUnit);
+        empty.pos = empty.start = from;
+        base.token(empty, frame.code);
         frame.literal = {
           quote,
           braces,
@@ -148,7 +152,34 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
         frame.doc = depth > 0 && doc;
         return doc ? "docComment" : result;
       }
+      if (dialect === "Kotlin" && result === "keyword" && !kotlinKeywordAt(stream.string, from, stream.pos))
+        return "variable";
       return result;
     },
   };
+}
+
+/** Kotlin's hard keywords: never names, wherever they appear (except after a dot). */
+const KOTLIN_HARD_KEYWORDS = new Set(
+  "as as? break class continue do else false for fun if in !in interface is !is null object package return super this throw true try typealias typeof val var when while".split(
+    " ",
+  ),
+);
+/** Soft keywords that open a block or a parameter list rather than precede a name. */
+const KOTLIN_BLOCK_SOFT_KEYWORDS = new Set(["catch", "finally", "init", "constructor", "get", "set"]);
+
+/**
+ * Whether the word the base mode calls a keyword is one here. A word after `.` is a member or
+ * package name (`import a.data.b`, `result.data`). Soft keywords (`data`, `open`, `get`…) are
+ * keywords only where they act as one, before a declaration or another modifier (`data class`,
+ * `get() = …`); elsewhere they are ordinary names (`val data = …`), as IDEA colours them.
+ */
+function kotlinKeywordAt(line: string, from: number, to: number): boolean {
+  if (/\??\.\s*$/.test(line.slice(0, from))) return false;
+  const word = line.slice(from, to);
+  if (KOTLIN_HARD_KEYWORDS.has(word)) return true;
+  const next = line.slice(to).match(/^\s*(.)/u)?.[1];
+  if (next === undefined) return false;
+  if (/[\p{L}_`@]/u.test(next)) return true;
+  return KOTLIN_BLOCK_SOFT_KEYWORDS.has(word) && (next === "(" || next === "{");
 }

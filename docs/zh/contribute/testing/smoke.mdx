@@ -7,12 +7,12 @@ description: "在 fixtures 示例项目上，用真实语言服务器跑语言�
 
 由于需要安装这些工具，冒烟测试不包含在 `cargo nextest run` 或 `pnpm test` 中。CI 在 **Language smoke** 工作流里用固定版本运行它们。
 
-| 套件                                      | 检查内容                                                     | 语言                                                    |
-| ----------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------- |
-| `crates/ide-host/tests/language_smoke.rs` | 经由应用命令所调用的 `ops` 检查代码智能                      | typescript、python、rust、go、java、kotlin、php         |
-| `crates/ide-host/tests/project_smoke.rs`  | 用构建工具和 SDK 打开示例项目                                | `maven_sync`、`jdk`、`gradle_sync`、`python_venv`       |
-| `smoke/run.test.ts`                       | 通过 run store 和真实的 `openidea-server` 执行运行与测试配置 | typescript、python、rust、go、java、kotlin、php         |
-| `smoke/debug.test.ts`                     | 用 IDE 安装的调试器调试入口点                                | typescript、python、rust、go、java、kotlin、c、cpp、php |
+| 套件                                      | 检查内容                                                     | 语言                                                         |
+| ----------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `crates/ide-host/tests/language_smoke.rs` | 经由应用命令所调用的 `ops` 检查代码智能                      | typescript、python、rust、go、java、kotlin、php              |
+| `crates/ide-host/tests/project_smoke.rs`  | 用构建工具和 SDK 打开示例项目                                | `maven_sync`、`jdk`、`gradle_sync`、`python_venv`            |
+| `smoke/run.test.ts`                       | 通过 run store 和真实的 `openidea-server` 执行运行与测试配置 | typescript、python、rust、go、java、kotlin、php、zig         |
+| `smoke/debug.test.ts`                     | 用 IDE 安装的调试器调试入口点                                | typescript、python、rust、go、java、kotlin、c、cpp、zig、php |
 
 ## 语言冒烟测试
 

@@ -9,6 +9,7 @@ import {
   produceContextChoices,
   produceDirectory,
   produceFile,
+  produceFuzz,
   shebang,
   shellWord,
   fileTargets,
@@ -423,7 +424,12 @@ describe("single-file producers (scratches)", () => {
     expect(main.debug!.build.command).toMatch(
       /^mkdir -p \/tmp\/openidea-run && \/bin\/zig build-exe calc\.zig -femit-bin=\/tmp\/openidea-run\/calc-\w+$/,
     );
-    expect(main.debug!.config).toMatchObject({ kind: "native", debugAdapter: "codelldb", args: [] });
+    expect(main.debug!.config).toMatchObject({
+      kind: "native",
+      debugAdapter: "codelldb",
+      args: [],
+      params: { language: "zig" },
+    });
 
     const test = produceContext(scratch("calc.zig", src, 3), e)!;
     expect(test).toMatchObject({ name: "adds two numbers", scope: "element" });
@@ -1134,6 +1140,57 @@ describe("Go test names (GoLand)", () => {
     )!;
     expect(p.name).toBe("TestAdd in example.com/api");
     expect(p.config!.args).toEqual(["test", ".", "-run", "^TestAdd$"]);
+  });
+});
+
+describe("Go Run with Fuzzing (GoLand)", () => {
+  const GO = [
+    cfg({ id: "go:test", kind: "go", command: "go", args: ["test", "./..."], isTest: true, debugAdapter: "delve" }),
+  ];
+  const src = [
+    "package parse", // 0
+    'import "testing"',
+    "func TestParse(t *testing.T) {}", // 2
+    "func BenchmarkParse(b *testing.B) {}",
+    "func ExampleParse() {}",
+    "func FuzzParse(f *testing.F) {", // 5
+    '\tf.Add("x")',
+    "\tf.Fuzz(func(t *testing.T, s string) {", // 7
+    "\t})",
+    "}",
+    "func helper() {}", // 10
+  ].join("\n");
+  const modules = (dir: string) => (dir === ROOT ? "example.com/fixture" : undefined);
+  const at = (line: number | undefined, path = `${ROOT}/internal/parse/parse_test.go`, content = src) =>
+    produceFuzz({ path, root: ROOT, configs: GO, content, line, goModule: modules }, ALL);
+
+  it("the Fuzz function at the caret, its body included, fuzzes its package", () => {
+    for (const line of [5, 7]) {
+      const p = at(line)!;
+      expect(p.name).toBe("FuzzParse in example.com/fixture/internal/parse");
+      expect(p.config).toMatchObject({
+        args: ["test", "./internal/parse", "-run", "^FuzzParse$", "-fuzz", "^FuzzParse$"],
+        name: "FuzzParse in example.com/fixture/internal/parse (fuzzing)",
+        isTest: true,
+      });
+    }
+    expect(at(5, `${ROOT}/parse_test.go`)!.config!.args).toEqual([
+      "test",
+      ".",
+      "-run",
+      "^FuzzParse$",
+      "-fuzz",
+      "^FuzzParse$",
+    ]);
+  });
+
+  it("nothing for tests, benchmarks, examples, other code or the file", () => {
+    for (const line of [0, 2, 3, 4, 10, undefined]) expect(at(line)).toBeNull();
+    // Not a test file: `go test` doesn't build its Fuzz functions as fuzz targets.
+    expect(at(5, `${ROOT}/internal/parse/parse.go`)).toBeNull();
+    // `Fuzzer` is not a fuzz target name; a Fuzz function needs a *testing.F.
+    const misnamed = "package p\nfunc Fuzzer(f *testing.F) {}\nfunc FuzzT(t *testing.T) {}";
+    for (const line of [1, 2]) expect(at(line, undefined, misnamed)).toBeNull();
   });
 });
 

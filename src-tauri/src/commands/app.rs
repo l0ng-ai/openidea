@@ -20,6 +20,8 @@ pub struct AppInfo {
     pub data_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
+    /// Caption buttons of the frameless title bar: the desktop's layout on Linux.
+    pub window_buttons: ide_core::platform::WindowButtonLayout,
 }
 
 pub use ide_host::ops::project::ProjectInfo;
@@ -38,6 +40,12 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         wayland: crate::linux_window_state::is_wayland(),
         #[cfg(not(target_os = "linux"))]
         wayland: false,
+        #[cfg(target_os = "linux")]
+        window_buttons: crate::linux_window_state::decoration_layout()
+            .and_then(|layout| ide_core::platform::WindowButtonLayout::from_gtk_decoration_layout(&layout))
+            .unwrap_or_default(),
+        #[cfg(not(target_os = "linux"))]
+        window_buttons: Default::default(),
     }
 }
 
@@ -119,6 +127,33 @@ pub async fn light_edit_open(window: Window, path: PathBuf) -> IdeResult<Setting
     Ok(project.settings.effective())
 }
 
+/// LightEdit without a file (File › New File from a welcome window); returns
+/// the effective (global) settings.
+#[tauri::command]
+#[specta::specta]
+pub async fn light_edit_open_untitled(window: Window) -> IdeResult<Settings> {
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    let log_label = label.clone();
+    let result = async {
+        if app.state::<AppState>().project(&label).is_ok_and(|p| !p.light) {
+            crate::windows::close_auxiliary_windows(&app, &label);
+            crate::window_groups::detach(&app, &label)?;
+            crate::window_groups::persist(&app).await?;
+        }
+        tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().open_light_empty(&label))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    match result.await {
+        Ok(project) => Ok(project.settings.effective()),
+        Err(e) => {
+            tracing::warn!("light_edit_open_untitled ({log_label}): {e}");
+            Err(e)
+        }
+    }
+}
+
 fn project_info(project: &crate::state::Project) -> ProjectInfo {
     ide_host::ops::project::info(project)
 }
@@ -180,6 +215,16 @@ pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
 #[specta::specta]
 pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
     state.host.with_proxy_password(state.global_settings.effective())
+}
+
+/// The removed built-in theme id a settings file of this window still names, if any:
+/// `settings_get` reports the built-in that stands in for it, so the notice about
+/// a theme that moved to a plugin can address the installs it concerns.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Option<String> {
+    state.note_ipc();
+    ide_host::ops::project::settings_removed_theme(&state.host, window.label())
 }
 
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project

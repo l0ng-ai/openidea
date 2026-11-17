@@ -372,6 +372,124 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(narrow.reply).toBeLessThanOrEqual((narrow.width - narrow.padding) * 0.96);
 });
 
+test("fits conversation stream, composer, question card and off-screen rows live from Settings without restarting", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1800, height: 900 });
+  await openReply(page, "Initial reply");
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    const filler = Array.from({ length: 8 }, (_, i) => ({
+      type: "agent" as const,
+      text: `Earlier paragraph ${i + 1}: ` + "wrapped words across the column ".repeat(35),
+    }));
+    store.useAgents.setState({
+      tasks: new Map([[task.id, { ...task, status: "needsInput" as const }]]),
+      entries: new Map([
+        [
+          task.id,
+          [
+            ...filler,
+            {
+              type: "user",
+              text: "Long prompt ".repeat(40),
+              attachments: [],
+              sentMs: 1,
+              doneMs: 2,
+              steered: false,
+            },
+            { type: "agent", text: "Wide reply body." },
+            {
+              type: "permission",
+              id: 1,
+              title: "Choose layout",
+              options: [],
+              chosen: null,
+              questions: [
+                {
+                  header: "Width",
+                  question: "Use full window width?",
+                  multiSelect: false,
+                  options: [{ label: "Yes", description: "Fill the pane", preview: null }],
+                },
+              ],
+            },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  await expect(page.getByRole("form", { name: "Choose layout" })).toBeVisible();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
+
+  const measure = () =>
+    stream.evaluate((root) => {
+      const conversation = root.closest<HTMLElement>("[class*='_conversation_']")!;
+      const rows = [...root.querySelectorAll<HTMLElement>("[class*='_conversationRow_']")];
+      const column = [...root.querySelectorAll<HTMLElement>("[class*='_agentMessage_']")]
+        .at(-1)!
+        .getBoundingClientRect();
+      const bubble = root.querySelector<HTMLElement>("[class*='_user_']")!.getBoundingClientRect();
+      const composer = conversation.querySelector<HTMLElement>("[class*='_composerArea_']")!.getBoundingClientRect();
+      const question = conversation.querySelector<HTMLElement>("[class*='_questionCard_']")!.getBoundingClientRect();
+      const padding =
+        Number.parseFloat(getComputedStyle(root).paddingLeft) + Number.parseFloat(getComputedStyle(root).paddingRight);
+      return {
+        conversationWidth: conversation.clientWidth,
+        streamInnerWidth: root.clientWidth - padding,
+        columnWidth: column.width,
+        bubbleWidth: bubble.width,
+        composerWidth: composer.width,
+        questionWidth: question.width,
+        offscreenRowHeight: rows[0]!.getBoundingClientRect().height,
+        scrollHeight: root.scrollHeight,
+      };
+    });
+
+  const capped = await measure();
+  expect(capped.conversationWidth).toBeGreaterThan(1000);
+  expect(Math.abs(capped.columnWidth - 900)).toBeLessThan(1);
+  expect(Math.abs(capped.bubbleWidth - 720)).toBeLessThan(1);
+  expect(Math.abs(capped.composerWidth - 924)).toBeLessThan(1);
+  expect(Math.abs(capped.questionWidth - 900)).toBeLessThan(1);
+
+  // Toggle on through Settings › Agents › Chat › Apply and verify live re-layout including off-screen rows.
+  await page.evaluate(async () => {
+    const actionsPath = "/src/platform/actions.ts";
+    const { executeAction } = await import(actionsPath);
+    await executeAction("file.settings", "agents.chat");
+  });
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  const toggle = dialog.getByRole("checkbox", { name: "Fit conversation to the window width" });
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
+
+  const fitted = await measure();
+  expect(Math.abs(fitted.columnWidth - fitted.streamInnerWidth)).toBeLessThan(1);
+  expect(fitted.bubbleWidth).toBeGreaterThan(720);
+  expect(Math.abs(fitted.bubbleWidth - fitted.streamInnerWidth * 0.8)).toBeLessThan(1);
+  expect(Math.abs(fitted.composerWidth - fitted.conversationWidth)).toBeLessThan(1);
+  expect(Math.abs(fitted.questionWidth - fitted.streamInnerWidth)).toBeLessThan(1);
+  expect(fitted.offscreenRowHeight).toBeLessThan(capped.offscreenRowHeight);
+  expect(fitted.scrollHeight).toBeLessThan(capped.scrollHeight);
+
+  // Toggle back off and click OK: dialog closes and conversation returns to the 900px column live.
+  await toggle.click();
+  await dialog.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
+
+  const restored = await measure();
+  expect(Math.abs(restored.columnWidth - 900)).toBeLessThan(1);
+  expect(Math.abs(restored.offscreenRowHeight - capped.offscreenRowHeight)).toBeLessThan(1);
+});
+
 test("keeps hover actions reachable when the pointer leaves the message body", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const reply = await openReply(page, "A short answer.");
@@ -576,4 +694,269 @@ test("draws a diagram without reaching the hosts its configuration names", async
     "https://example.com/after",
   );
   expect(asked).toEqual(["/after"]);
+});
+
+test("Find in Conversation skips user-select:none summaries and closed <details> until stepped into", async ({
+  page,
+}) => {
+  await openReply(page, "Confirmed—PR is merged.");
+  await page.evaluate(async (task) => {
+    const path = "/src/features/agents/store.ts";
+    const store = await import(path);
+    store.useAgents.setState({
+      entries: new Map([
+        [
+          task.id,
+          [
+            {
+              type: "thought",
+              text: "**Confirming Active Watch Shell**\n\nCheck background shell before rebasing.",
+            },
+            {
+              type: "tool",
+              id: "t1",
+              title: "stop_bash",
+              kind: "other",
+              status: "completed",
+              locations: [],
+              output: "<command with id: 60 had already stopped>",
+              diffs: [],
+            },
+            { type: "agent", text: "Confirmed—PR is merged." },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const runSummary = stream.locator("details[class*='_processRun_'] > summary");
+  await runSummary.click();
+  await expect(stream.getByText("stop_bash")).toBeVisible();
+
+  await stream.focus();
+  await page.keyboard.press("Meta+f");
+  const findBox = page.getByLabel("Find in Conversation");
+  await findBox.fill("confirm");
+
+  // 2 matches total (1 inside collapsed thought body, 1 in visible reply); unselectable <summary> is excluded.
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const initialHighlights = await page.evaluate(() => ({
+    find: [...(CSS.highlights.get("agent-find") ?? [])].map((r) => (r as Range).startContainer.textContent),
+    current: [...(CSS.highlights.get("agent-find-current") ?? [])].map((r) => (r as Range).startContainer.textContent),
+  }));
+  expect(initialHighlights.find).toEqual(["Confirmed—PR is merged."]);
+  expect(initialHighlights.current).toEqual([]);
+
+  // Stepping to match 2/2 opens the collapsed thought <details> and highlights it.
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("2/2");
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const expandedHighlights = await page.evaluate(() => ({
+    thoughtOpen: document.querySelector<HTMLDetailsElement>("details[class*='_thought_']")?.open,
+    findCount: CSS.highlights.get("agent-find")?.size ?? 0,
+    currentCount: CSS.highlights.get("agent-find-current")?.size ?? 0,
+  }));
+  expect(expandedHighlights).toEqual({ thoughtOpen: true, findCount: 2, currentCount: 1 });
+});
+
+test("keeps ordered, bulleted and task list markers unclipped inside measured rows when zoomed in", async ({
+  page,
+}) => {
+  const numbered = Array.from({ length: 10 }, (_, i) => `${i + 1}. **Item ${i + 1}**\n   - Nested bullet`).join("\n");
+  await openReply(page, `## Feature Gaps\n\n${numbered}\n\n- [x] Checked task\n- [ ] Open task`);
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const actionsPath = "/src/platform/actions.ts";
+    const store = await import(storePath);
+    const { executeAction } = await import(actionsPath);
+    store.openTaskInEditorLocation(task.id);
+    await new Promise((r) => setTimeout(r, 150));
+    const stream = document.querySelector<HTMLElement>("[class*='_stream_']");
+    stream?.focus();
+    for (let i = 0; i < 12; i++) await executeAction("editor.increaseFontSize");
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const row = stream.locator("[class*='_conversationRow_'][data-measured]", { has: page.locator("ol") });
+  await expect(row).toBeVisible();
+
+  const bounds = await row.evaluate((rowEl) => {
+    const rowLeft = rowEl.getBoundingClientRect().left;
+    const items = [...rowEl.querySelectorAll<HTMLElement>("ol > li, ul > li")];
+    const markers = items
+      .filter((li) => getComputedStyle(li, "::before").content !== "none")
+      .map((li) => {
+        const rect = li.getBoundingClientRect();
+        const before = getComputedStyle(li, "::before");
+        const lineHeight = Number.parseFloat(getComputedStyle(li).lineHeight);
+        const markerRight = rect.right - Number.parseFloat(before.right);
+        const markerLeft = markerRight - Number.parseFloat(before.width);
+        return {
+          text: li.firstChild?.textContent?.trim() ?? "",
+          offsetFromRowLeft: Math.round((markerLeft - rowLeft) * 100) / 100,
+          singleLine: Number.parseFloat(before.height) <= lineHeight * 1.15,
+        };
+      });
+    const checkboxes = [...rowEl.querySelectorAll<HTMLInputElement>('li > input[type="checkbox"]')].map((input) => ({
+      offsetFromRowLeft: Math.round((input.getBoundingClientRect().left - rowLeft) * 100) / 100,
+    }));
+    return { fontSize: getComputedStyle(streamElement()!).fontSize, markers, checkboxes };
+    function streamElement() {
+      return rowEl.closest<HTMLElement>("[class*='_stream_']");
+    }
+  });
+
+  expect(bounds.fontSize).toBe("25px");
+  expect(bounds.markers.length).toBeGreaterThanOrEqual(10);
+  for (const m of bounds.markers) {
+    expect(m.singleLine, `single-line marker for ${m.text}`).toBe(true);
+    expect(m.offsetFromRowLeft, `marker for ${m.text}`).toBeGreaterThanOrEqual(0);
+  }
+  for (const cb of bounds.checkboxes) {
+    expect(cb.offsetFromRowLeft).toBeGreaterThanOrEqual(0);
+  }
+});
+
+test("indents process-run thoughts and tool calls clearly and aligns output-less tool icons", async ({ page }) => {
+  await openReply(page, "All checks passed.");
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    store.useAgents.setState({
+      tasks: new Map([[task.id, { ...task, status: "running" as const }]]),
+      entries: new Map([
+        [
+          task.id,
+          [
+            { type: "thought", text: "**Checking CI Status**\n\nInspecting workflow runs." },
+            {
+              type: "tool",
+              id: "t1",
+              title: "gh pr checks 3631 --repo l0ng-ai/openidea",
+              kind: "execute",
+              status: "completed",
+              locations: [],
+              output: "All checks pending",
+              diffs: [],
+            },
+            { type: "thought", text: "**Tracking Continuous Integration**\n\nWaiting for E2E." },
+            {
+              type: "tool",
+              id: "t2",
+              title: "read_bash",
+              kind: "other",
+              status: "completed",
+              locations: [],
+              output: "E2E pass",
+              diffs: [],
+            },
+            {
+              type: "tool",
+              id: "t3",
+              title: "read_bash",
+              kind: "other",
+              status: "running",
+              locations: [],
+              output: "",
+              diffs: [],
+            },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const summary = stream.locator("[class*='_processSummary_']").first();
+  await summary.click();
+  await expect(stream.getByText("Checking CI Status")).toBeVisible();
+
+  const layout = await stream.evaluate((root) => {
+    const summaryChevron = root.querySelector<SVGElement>("[class*='_processChevron_']")!.getBoundingClientRect();
+    const processBody = root.querySelector<HTMLElement>("[class*='_processBody_']")!.getBoundingClientRect();
+    const thoughtChevron = root.querySelector<SVGElement>("[class*='_thoughtChevron_']")!.getBoundingClientRect();
+    const toolRows = [...root.querySelectorAll<HTMLElement>("[class*='_tool_']")];
+    const expandableToolChevron = toolRows[0]!
+      .querySelector<SVGElement>("[class*='_toolChevron_']")!
+      .getBoundingClientRect();
+    const completedReadIcon = [...toolRows[1]!.querySelectorAll("svg")].at(-1)!.getBoundingClientRect();
+    const runningReadIcon = toolRows[2]!.querySelector("svg")!.getBoundingClientRect();
+    return {
+      summaryChevronCenter: summaryChevron.left + summaryChevron.width / 2,
+      guideLeft: processBody.left,
+      summaryToThoughtIndent: thoughtChevron.left - summaryChevron.left,
+      thoughtToToolIndent: expandableToolChevron.left - thoughtChevron.left,
+      iconLeftDiff: Math.abs(completedReadIcon.left - runningReadIcon.left),
+    };
+  });
+
+  // Guide line drops from the center of the process summary chevron.
+  expect(Math.abs(layout.guideLeft - layout.summaryChevronCenter)).toBeLessThanOrEqual(1.5);
+  // Thoughts indent clearly inside the process run, and tool calls indent under their thought step.
+  expect(layout.summaryToThoughtIndent).toBeGreaterThanOrEqual(20);
+  expect(layout.thoughtToToolIndent).toBeGreaterThanOrEqual(14);
+  // Output-less running tool rows align their kind icon with expandable tool rows.
+  expect(layout.iconLeftDiff).toBeLessThanOrEqual(1);
+});
+
+test("aligns Mermaid diagrams in replies to their container align attribute", async ({ page }) => {
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await openReply(
+    page,
+    [
+      "Summary across the full width of the reply column so diagrams sit inside a wider message body.",
+      "",
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+  await page.evaluate(async (id) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    store.openTaskInEditorLocation(id);
+  }, TASK.id);
+
+  const reply = page.locator("[class*='_stream_']:visible [class*='_markdown_']").first();
+  const outputs = reply.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
 });

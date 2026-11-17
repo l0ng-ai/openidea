@@ -12,11 +12,13 @@ afterEach(() => {
 describe("custom editor close lifecycle", () => {
   it("notifies once when the last split showing an input closes", async () => {
     const close = vi.fn();
+    const tabClose = vi.fn();
     const dispose = registerEditorKind({
       kind: "close-probe",
       title: () => "Probe",
       component: () => null,
       onClose: close,
+      onTabClose: tabClose,
     });
     controller = new EditorController(createMemoryBackend({}));
     controller.start();
@@ -26,9 +28,14 @@ describe("custom editor close lifecycle", () => {
       controller.split(useTabs.getState().activePane, "row");
       const panes = Object.values(useTabs.getState().panes);
       expect(panes).toHaveLength(2);
-      await controller.closeTab(panes[0]!.id, panes[0]!.tabs[0]!.id);
+      const firstTabId = panes[0]!.tabs[0]!.id;
+      const secondTabId = panes[1]!.tabs[0]!.id;
+      await controller.closeTab(panes[0]!.id, firstTabId);
+      expect(tabClose).toHaveBeenCalledExactlyOnceWith(firstTabId, input);
       expect(close).not.toHaveBeenCalled();
       await controller.closeInput(input.key);
+      expect(tabClose).toHaveBeenCalledTimes(2);
+      expect(tabClose).toHaveBeenLastCalledWith(secondTabId, input);
       expect(close).toHaveBeenCalledExactlyOnceWith(input);
     } finally {
       dispose();

@@ -1304,6 +1304,25 @@ pub async fn vcs_create_patch(
     .await
 }
 
+/// The changes a commit with `options` would make in `repo`, as one patch (what Commit
+/// commits: the index with the selection applied, partial files' chosen hunks only).
+pub async fn vcs_pending_patch(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    options: CommitOptions,
+) -> IdeResult<String> {
+    const MAX_PATCH: usize = 1 << 20;
+    let project = host.project(window)?;
+    blocking(move || {
+        project.with_repo_at(repo.as_deref(), |r| {
+            let changes = r.pending_changes(&options, MAX_PATCH, &|path| project.vcs_encoding(path, None))?;
+            Ok(changes.into_iter().filter_map(|c| c.diff).collect())
+        })
+    })
+    .await
+}
+
 pub async fn vcs_patch_preview(
     host: &Host,
     window: &str,
@@ -1662,6 +1681,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("vcs_create_patch", |c| async move {
         vcs_create_patch(&c.host, &c.window, c.arg("repo")?, c.arg("source")?).await
+    });
+    d.add("vcs_pending_patch", |c| async move {
+        vcs_pending_patch(&c.host, &c.window, c.arg("repo")?, c.arg("options")?).await
     });
     d.add("vcs_patch_preview", |c| async move {
         vcs_patch_preview(&c.host, &c.window, c.arg("repo")?, c.arg("patch")?).await

@@ -1,8 +1,9 @@
 /**
  * CodeMirror setup for the VCS viewers (diff, merge, local history): token
- * based theme + syntax colours and lazy language loading by file name.
+ * based theme + syntax colours and lazy language loading through the editor's
+ * language pipeline, so colours match the editor.
  */
-import { HighlightStyle, LanguageDescription, syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
+import { syntaxHighlighting, type LanguageSupport } from "@codemirror/language";
 import {
   Compartment,
   EditorState,
@@ -25,6 +26,7 @@ import {
   lineNumberMarkers,
   lineNumberWidgetMarker,
   lineNumbers,
+  tooltips,
   WidgetType,
   type DecorationSet,
   type ViewUpdate,
@@ -32,13 +34,14 @@ import {
 import { getChunks, mergeViewSiblings, type Chunk } from "@codemirror/merge";
 import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
-import { tags as t } from "@lezer/highlight";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
+import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
 import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
 import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
-import { fontExtension } from "@/editor/core/cm/setup";
+import { fontExtension, tooltipBounds } from "@/editor/core/cm/setup";
 import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
@@ -294,26 +297,6 @@ export const diffWords: Extension = [
   EditorView.editorAttributes.of({ class: "cm-diffWords" }),
 ];
 
-export const viewerHighlight = HighlightStyle.define([
-  {
-    tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword],
-    color: "var(--syn-keyword)",
-  },
-  { tag: [t.string, t.special(t.string), t.regexp, t.character], color: "var(--syn-string)" },
-  { tag: [t.typeName, t.className, t.namespace, t.tagName], color: "var(--syn-type)" },
-  { tag: [t.function(t.variableName), t.function(t.propertyName)], color: "var(--syn-function)" },
-  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: "var(--syn-comment)", fontStyle: "italic" },
-  { tag: [t.annotation, t.meta, t.attributeName], color: "var(--syn-annotation)" },
-  { tag: [t.number, t.bool, t.null, t.atom], color: "var(--syn-number)" },
-  { tag: [t.constant(t.variableName), t.standard(t.variableName)], color: "var(--syn-constant)" },
-  { tag: [t.punctuation, t.bracket, t.operator], color: "var(--syn-punct)" },
-  { tag: [t.propertyName], color: "var(--syn-property)" },
-  { tag: [t.variableName], color: "var(--syn-variable)" },
-  { tag: t.invalid, color: "var(--syn-invalid)" },
-  { tag: t.heading, fontWeight: "var(--fw-code-bold, 700)", color: "var(--fg-strong)" },
-  { tag: t.link, color: "var(--link)", textDecoration: "underline" },
-]);
-
 export const viewerTheme = EditorView.theme(
   {
     ...overviewStyles,
@@ -530,7 +513,7 @@ export function viewerBase(opts: {
     opts.findBar
       ? [findExtension(), keymap.of(defaultKeymap)]
       : [search({ top: true }), keymap.of([...searchKeymap, ...defaultKeymap])],
-    syntaxHighlighting(viewerHighlight),
+    syntaxHighlighting(openideaHighlightStyle),
     viewerTheme,
     changedLines,
     EditorState.readOnly.of(opts.readOnly),
@@ -540,19 +523,28 @@ export function viewerBase(opts: {
   ];
 }
 
-let languagesPromise: Promise<readonly LanguageDescription[]> | null = null;
-const cache = new Map<string, Promise<LanguageSupport | null>>();
+/**
+ * Tooltips of a pane showing an open document (quick docs, ⌘-hover info), parented to the
+ * body as the editor's are, so the pane neither clips them nor keeps them under the tool
+ * window stripes, and they move left to fit.
+ */
+export const documentTooltips: Extension = tooltips({
+  parent: typeof document === "undefined" ? undefined : document.body,
+  tooltipSpace: tooltipBounds,
+});
 
-/** Loads the language for `fileName` (by extension / name), or null. */
-export function languageFor(fileName: string): Promise<LanguageSupport | null> {
-  const name = fileName.slice(fileName.lastIndexOf("/") + 1);
-  const hit = cache.get(name);
-  if (hit) return hit;
-  languagesPromise ??= import("@codemirror/language-data").then((m) => m.languages);
-  const p = languagesPromise
-    .then((langs) => LanguageDescription.matchFilename(langs, name))
-    .then((desc) => (desc ? desc.load() : null))
+/** The first line of a side's text, which decides hashbang-only scripts' language. */
+export const firstLineOf = (text: string): string => text.slice(0, text.search(/\r?\n|$/));
+
+/**
+ * Loads the language `path` is shown with in the editor (`languageDescriptionFor`: Override
+ * File Type, File Types patterns, hashbangs, framework modes, then the extension) through
+ * the editor's pipeline (`loadSupport`): the same modes, tag patches and `data-language`
+ * attribute, so colours match. `firstLine` is the shown text's (`firstLineOf`); without it
+ * the file's own counts.
+ */
+export function languageFor(path: string, firstLine?: string | null): Promise<LanguageSupport | null> {
+  return languageDescriptionFor(path, firstLine ?? undefined)
+    .then((desc) => (desc ? loadSupport(desc) : null))
     .catch(() => null);
-  cache.set(name, p);
-  return p;
 }

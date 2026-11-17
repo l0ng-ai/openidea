@@ -3,7 +3,7 @@
  * the diagram's top-right. `./mermaid` attaches them after every drawing; they
  * are plain DOM, like the rest of the renderer, so both Markdown hosts get them.
  */
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { tx } from "@/platform/i18n";
 import { invokeLocal } from "@/platform/tauriCore";
@@ -11,6 +11,7 @@ import { openLayer, trapTab } from "@/ui/popupState";
 import { notifications } from "@/workbench/contributions";
 import { attachPanZoom } from "../panZoom";
 import { reid } from "./svgIds";
+import { svgElementSize } from "@/ui/svgSize";
 import styles from "./MermaidTools.module.css";
 
 /** Marks the tool strip, so a redrawing block replaces it rather than stacking one. */
@@ -161,11 +162,8 @@ function fittedCopy(svg: SVGSVGElement, availW: number, availH: number): SVGSVGE
 }
 
 function naturalSize(svg: SVGSVGElement): { w: number; h: number } {
-  const box = (svg as SVGSVGElement & { viewBox?: SVGAnimatedRect }).viewBox?.baseVal;
-  if (box && box.width > 0 && box.height > 0) return { w: box.width, h: box.height };
-  const width = Number(svg.getAttribute("width"));
-  const height = Number(svg.getAttribute("height"));
-  if (width > 0 && height > 0) return { w: width, h: height };
+  const declared = svgElementSize(svg);
+  if (declared) return declared;
   const rect = svg.getBoundingClientRect();
   return { w: rect.width > 0 ? rect.width : 800, h: rect.height > 0 ? rect.height : 600 };
 }

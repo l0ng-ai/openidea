@@ -62,6 +62,7 @@ import { useProject } from "@/platform/project";
 import { openExternalUrl } from "@/platform/openUrl";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
+import { useSettingsPageFocus } from "@/workbench/contributions";
 import styles from "./PluginsPage.module.css";
 import { pluginsBackend } from "./backend";
 import { confirm } from "@/workbench/messages";
@@ -98,6 +99,7 @@ const POINT_TITLES: Record<string, string> = {
   iconThemes: "File Icon Themes",
   languages: "Languages",
   providers: "Editor Providers",
+  javaAgents: "Java Agents",
   locales: "Translations",
 };
 
@@ -265,12 +267,12 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
             {update && <Badge tone="accent">{tx("Update")}</Badge>}
             {plugin.status === "failed" && (
               <Badge dot tone="danger">
-                <T>Failed</T>
+                {tx("Failed")}
               </Badge>
             )}
             {plugin.status === "needsConsent" && (
               <Badge dot tone="warning">
-                <T>Needs permission</T>
+                {tx("Needs permission")}
               </Badge>
             )}
           </span>
@@ -580,7 +582,11 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
           key={c.id}
           cap={c}
           program={
-            c.id.startsWith("process:") && <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
+            c.id.startsWith("process:") ? (
+              <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
+            ) : (
+              c.id === "java.agent" && <JavaAgentDetail plugin={plugin} />
+            )
           }
         >
           <Checkbox
@@ -595,6 +601,19 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
         <NetHostRow key={host} plugin={plugin} host={host} disabled={busy || !confirmed} />
       ))}
     </ul>
+  );
+}
+
+/** The agent a `java.agent` grant loads: its jar's file name and arguments, as `-javaagent:` takes them. */
+function JavaAgentDetail({ plugin }: { plugin: PluginInfo }) {
+  const agent = plugin.contributions.find((c) => c.point === "javaAgents");
+  if (!agent) return null;
+  return (
+    <div className={styles.programPermission}>
+      <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("Java agent")}>
+        {agent.label}
+      </span>
+    </div>
   );
 }
 
@@ -1291,6 +1310,14 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
   }, []);
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const [category, setCategory] = useState<Category | "all">("all");
+  // Opened as `plugins#themes` (Appearance › Get more themes): browse the marketplace's themes.
+  const { focus, consume } = useSettingsPageFocus();
+  useEffect(() => {
+    if (focus !== "themes") return;
+    setTab("marketplace");
+    setCategory("themes");
+    consume();
+  }, [focus, consume]);
   const marketShown = useMemo(
     () =>
       (market ?? []).filter((m) => {

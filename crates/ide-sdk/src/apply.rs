@@ -141,6 +141,12 @@ pub(crate) fn goroot(root: &Path, s: &Settings) -> Option<PathBuf> {
         .or_else(|| pinned::pinned_install(root, Tool::Go).and_then(|(dir, _)| pinned::goroot_in_install(&dir)))
 }
 
+/// The directory of the configured Zig install (holding `zig`), else `None` for `PATH`.
+pub(crate) fn zig_bin(root: &Path, s: &Settings) -> Option<PathBuf> {
+    setting_path(root, &s.languages.zig.zig)
+        .map(|p| if p.is_file() { p.parent().map(Path::to_path_buf).unwrap_or(p) } else { p })
+}
+
 /// Runtime choices for package-manager based IDE tool installs.
 #[derive(Default)]
 pub struct ToolInstallEnvironment {
@@ -739,7 +745,8 @@ pub fn native_tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
     }
 }
 
-const PYTHON_SERVERS: [&str; 7] = ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff"];
+const PYTHON_SERVERS: [&str; 8] =
+    ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff", "djlsp"];
 
 pub(crate) fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
@@ -973,6 +980,16 @@ pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
     }
 }
 
+/// The environment folder holding `python` (`<env>/bin/python`, `<env>/Scripts/python.exe`):
+/// a virtualenv, or a conda or pixi environment.
+fn environment_of(python: &Path) -> Option<PathBuf> {
+    venv_of(python).or_else(|| {
+        let bin = python.parent()?;
+        let env = bin.parent()?;
+        matches!(bin.file_name()?.to_str()?, "bin" | "Scripts").then(|| env.to_path_buf())
+    })
+}
+
 pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
     let mut path_dirs: Vec<PathBuf> = Vec::new();
     if let Some(custom) = tool_command(root, s, &cfg.command) {
@@ -996,6 +1013,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 "basedpyright" | "pyright" => merge_init_options(cfg, json!({ "python": { "pythonPath": p } })),
                 "pylsp" => merge_init_options(cfg, json!({ "pylsp": { "plugins": { "jedi": { "environment": p } } } })),
                 "jedi-language-server" => merge_init_options(cfg, json!({ "workspace": { "environmentPath": p } })),
+                // Django's template tags, filters and template folders are read by running a script
+                // with the interpreter in one of these environment folders.
+                "djlsp" => {
+                    if let Some(env) = environment_of(&python) {
+                        merge_init_options(cfg, json!({ "env_directories": [env.to_string_lossy()] }));
+                    }
+                }
                 _ => {}
             }
             if let Some(venv) = venv_of(&python) {
@@ -1253,6 +1277,40 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     }
 }
 
+/// Registers the companion module-resolution plugin for the Vue hybrid mode's tsserver.
+/// The Vue plugin only resolves imports that name the
+/// `.vue` file: a directory `index.js` re-exporting a sibling `.vue`
+/// (`import ChildButton from './ChildButton'`) leaves the component `any`, and with it every
+/// `@event="method"` handler type in the project's templates (#3728; VS Code patches tsserver
+/// itself for this). The companion plugin retries only what tsserver and the Vue plugin left
+/// unresolved, so it is registered after theirs. No-op without it (no Vue language server).
+pub fn configure_vue_module_resolution(cfg: &mut LanguageServerConfig, data_dir: &Path) -> bool {
+    let Some(vue_at) = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).and_then(|v| {
+        v.pointer("/vtsls/tsserver/globalPlugins")
+            .and_then(Value::as_array)
+            .and_then(|plugins| plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(vue::PLUGIN)))
+    }) else {
+        return false;
+    };
+    let Some(plugin) = vue::module_resolution_plugin(data_dir) else {
+        return false;
+    };
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    let Some(plugins) = current.pointer_mut("/vtsls/tsserver/globalPlugins").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    match plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(vue::MODULE_RESOLUTION_PLUGIN)) {
+        Some(at) => plugins[at] = plugin,
+        None => plugins.insert(vue_at + 1, plugin),
+    }
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
+    }
+    true
+}
+
 /// The servers `language` uses after Settings › Language Servers: the
 /// definition's ones that aren't disabled, then the ones defined in settings for it.
 pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Settings) -> Vec<LanguageServerConfig> {
@@ -1300,6 +1358,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         }),
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,

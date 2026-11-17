@@ -9,6 +9,7 @@ import {
   Spinner,
   SymbolBadge,
   Tabs,
+  showContextMenu,
   Tree,
   badgeKind,
   type TreeHandle,
@@ -17,8 +18,11 @@ import {
 } from "@/ui";
 import { openLocation } from "./ipc";
 import {
-  closeHierarchy,
+  closeHierarchyTab,
+  pinHierarchyTab,
   ROOT_ID,
+  selectHierarchyTab,
+  tabHierarchy,
   directionLabel,
   hierarchyTitle,
   hierarchyTarget,
@@ -54,22 +58,44 @@ useHierarchyOptions.subscribe((s) => {
   }
 });
 
-/** Tool window header: `Callers of foo` content tab. */
+/** Tool window header: the `Callers of foo` content tabs. */
 export function HierarchyTabs() {
-  const mode = useHierarchy((s) => s.mode);
-  const direction = useHierarchy((s) => s.direction);
-  const root = useHierarchy((s) => s.root);
-  if (!root) return null;
-  const label = hierarchyTitle(mode, direction, root.name);
+  const state = useHierarchy();
+  const tabs = state.tabs.flatMap((tab) => {
+    const h = tabHierarchy(state, tab);
+    return h.root ? [{ tab, label: hierarchyTitle(h.mode, h.direction, h.root.name) }] : [];
+  });
+  if (!tabs.length || state.active === null) return null;
   return (
     <Tabs
       variant="compact"
       className={styles.tabs}
       aria-label="Hierarchies"
-      items={[{ id: "current", label, closable: true }]}
-      activeId="current"
-      onSelect={() => undefined}
-      onClose={closeHierarchy}
+      items={tabs.map(({ tab, label }) => ({ id: String(tab.id), label, closable: true, pinned: tab.pinned }))}
+      activeId={String(state.active)}
+      onSelect={(id) => selectHierarchyTab(Number(id))}
+      onClose={(id) => closeHierarchyTab(Number(id))}
+      onTogglePin={(id) => {
+        const tab = tabs.find((t) => t.tab.id === Number(id))?.tab;
+        if (tab) pinHierarchyTab(tab.id, !tab.pinned);
+      }}
+      onContextMenu={(id, e) => {
+        const tab = tabs.find((t) => t.tab.id === Number(id))?.tab;
+        if (!tab) return;
+        // IDEA's content tab menu.
+        showContextMenu(e, [
+          { id: "close", label: "Close Tab", run: () => closeHierarchyTab(tab.id) },
+          { id: "closeAll", label: "Close All Tabs", run: () => tabs.forEach((t) => closeHierarchyTab(t.tab.id)) },
+          {
+            id: "closeOthers",
+            label: "Close Other Tabs",
+            disabled: tabs.length < 2,
+            run: () => tabs.forEach((t) => t.tab.id !== tab.id && closeHierarchyTab(t.tab.id)),
+          },
+          { kind: "separator" },
+          { id: "pin", label: tab.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinHierarchyTab(tab.id, !tab.pinned) },
+        ]);
+      }}
     />
   );
 }
@@ -114,7 +140,7 @@ function HierarchyToolbar() {
 }
 
 export function HierarchyView() {
-  const { mode, direction, root, children, failed, notes, loading, generation } = useHierarchy();
+  const { mode, direction, root, children, failed, notes, loading, expanded, generation } = useHierarchy();
   const projectRoot = useProject((s) => s.project?.root ?? "");
   const roots = useMemo<Node[]>(() => (root ? [{ kind: "root", id: ROOT_ID }] : []), [root]);
 
@@ -160,6 +186,7 @@ export function HierarchyView() {
         <span className={styles.row}>
           <SymbolBadge kind={mode === "call" ? "function" : "class"} />
           <span className={styles.name}>{root.name}</span>
+          {root.detail && <span className={styles.detail}>{root.detail}</span>}
           <span className={styles.muted}>
             {basename(root.path)}:{root.line + 1}
           </span>
@@ -223,11 +250,12 @@ export function HierarchyView() {
           getChildren={getChildren}
           isExpandable={isExpandable}
           loadChildren={(n) => (n.kind === "item" ? loadChildren(n.node) : undefined)}
-          onExpandedChange={(_expanded, n, open) => {
+          onExpandedChange={(opened, n, open) => {
+            useHierarchy.setState({ expanded: [...opened] });
             const shown = open ? children.get(n.id) : undefined;
             if (shown) prefetchLevels(shown);
           }}
-          defaultExpanded={[ROOT_ID]}
+          defaultExpanded={expanded}
           handleRef={tree}
           isOccurrence={() => true}
           onSelectionChange={(_sel, n) => {

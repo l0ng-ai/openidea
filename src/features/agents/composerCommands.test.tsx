@@ -170,6 +170,18 @@ describe("New Task composer commands", () => {
     expect((await screen.findByRole("listbox", { name: "Commands" })).textContent).toBe("Commands/compact");
   });
 
+  it("opens the per-session MCP picker when /mcp is completed in the composer", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "/mc");
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/mcp");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("");
+    expect(await screen.findByText("Session MCP Servers")).toBeInTheDocument();
+  });
+
   it("names the icon-only Start action and disables it while starting", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     let finish!: (value: unknown) => void;

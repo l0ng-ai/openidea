@@ -1,8 +1,8 @@
 .indicator {
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .panel {
-  width: 340px;
+  width: 380px;
   padding: 6px 0;
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
@@ -23,7 +23,7 @@
   align-items: center;
   min-height: var(--h-list-row);
   padding: 0 12px;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .label {
   color: var(--fg-secondary);
@@ -44,7 +44,7 @@
   align-items: center;
   min-height: var(--h-list-row);
   padding: 0 12px;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .groupTitle {
   flex: 1;
@@ -61,6 +61,50 @@
   color: var(--fg-emphasis);
   white-space: nowrap;
 }
+.columns {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.columns .groupTitle {
+  color: var(--fg-subtle);
+}
+/* Values in every section end where the process rows' Memory column ends, before their End Process slot. */
+.panel .row,
+.panel .groupRow {
+  padding-right: calc(4px + 20px + var(--space-2));
+}
+.panel .processRow,
+.columns {
+  padding-right: 4px;
+}
+.cpu,
+.memory {
+  flex: none;
+  text-align: right;
+}
+.cpu {
+  width: 44px;
+}
+.memory {
+  width: 60px;
+}
+.processRow .value {
+  margin-left: 0;
+}
+.end {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  width: 20px;
+}
+.end button {
+  opacity: 0;
+}
+.processRow:hover .end button,
+.end button:focus-visible {
+  opacity: 1;
+}
 .error {
   padding: 2px 12px;
   color: var(--danger);
@@ -68,7 +112,7 @@
 }
 .actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 12px 2px;
   justify-content: flex-end;
 }
@@ -92,7 +136,7 @@
   display: flex;
   align-items: center;
   padding: 0 4px 4px 12px;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .overlayTitle {
   flex: 1;

@@ -1,10 +1,11 @@
 import type { AgentTask } from "@/bindings";
 import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import type { MenuItem } from "@/ui";
 import { confirm, showError, confirmChecked } from "@/workbench/messages";
 import { promptInput } from "@/workbench/inputDialogs";
-import { isBusy } from "./model";
+import { hasTaskTerminal, isBusy } from "./model";
 import { groupNameError, type OrganizeGroup } from "./organize";
 import {
   archiveTask,
@@ -387,6 +388,7 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
   if (!tasks.length) return [];
   const ids = tasks.map((task) => task.id);
   const task = tasks[0]!;
+  const projectRoot = task.projectRoot ?? useProject.getState().project?.root ?? null;
   const multiple = tasks.length > 1;
   const archived = tasks.filter((task) => task.status === "archived").length;
   const archivable = tasks.filter(canArchive).length;
@@ -394,7 +396,11 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
     ...(!multiple
       ? ([
           { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
-          { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },
+          ...(hasTaskTerminal(task, projectRoot)
+            ? ([
+                { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },
+              ] satisfies MenuItem[])
+            : []),
           ...(task.capabilities?.fork && task.status !== "archived"
             ? ([
                 {

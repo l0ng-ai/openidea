@@ -415,6 +415,29 @@ function withLast(args: string[], f: (last: string) => string): string[] {
   return args.length ? [...args.slice(0, -1), f(args[args.length - 1]!)] : args;
 }
 
+/**
+ * GoLand's "Run with Fuzzing" of a `Fuzz` function: its `go test` configuration with
+ * `-fuzz` added. Null for other targets, and when the configuration doesn't test one
+ * package (`go test -fuzz` refuses several).
+ */
+export function goFuzzConfig(config: RunConfig, target: RunTarget): RunConfig | null {
+  if (target.kind !== "test" || target.path.length !== 1 || !/^Fuzz/.test(target.name)) return null;
+  if (config.kind !== "go" || config.args[0] !== "test") return null;
+  const parts = goTestParts(config.args);
+  if (parts.targets.length !== 1 || /(^|\/)\.\.\.$/.test(parts.targets[0]!)) return null;
+  const pattern = `^${escapeRegExp(target.name)}$`;
+  const flags = withoutGoSelection(parts.flags);
+  return {
+    ...config,
+    id: `${config.id}:fuzz`,
+    name: `${config.name} (fuzzing)`,
+    args: ["test", ...flags, ...parts.targets, "-run", pattern, "-fuzz", pattern, ...withoutGoSelection(parts.program)],
+    ...(config.params?.goKind
+      ? { params: { ...config.params, pattern, toolArgs: formatArgs([...flags, "-fuzz", pattern]) } }
+      : {}),
+  };
+}
+
 /** Run configuration for one target, or null when the project has no matching runner. */
 export function targetConfig(
   target: RunTarget,
