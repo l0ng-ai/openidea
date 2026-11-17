@@ -57,6 +57,7 @@ import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
 import { codeLensPositions } from "./codeLens";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -452,9 +453,10 @@ export function resetConfiguredEditorsFontZoom(origin: EditorView): void {
 /** Exported for tests: the ⌘/Ctrl+wheel handler of the prefs compartment. */
 export const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
-    if (!e.metaKey && !e.ctrlKey) return false;
+    const step = wheelZoomStep(e);
+    if (step === null) return false;
     e.preventDefault();
-    stepConfiguredEditorsFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    if (step) stepConfiguredEditorsFontZoom(view, step);
     return true;
   },
 });
