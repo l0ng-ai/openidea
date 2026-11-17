@@ -406,7 +406,10 @@ export function windowActions(): Action[] {
       title: "Move Tab to New Window",
       category: t("app.category.window"),
       when: "windowGrouped",
-      run: () => call(commands.windowGroupDetach()),
+      run: async ({ arg }) => {
+        const label = typeof arg === "string" ? arg : useWindowGroup.getState().tabs.find((tab) => tab.current)?.label;
+        if (label) await call(commands.windowGroupDetach(label));
+      },
     },
     {
       id: "window.selectTab",
