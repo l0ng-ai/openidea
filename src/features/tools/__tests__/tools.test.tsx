@@ -472,6 +472,33 @@ describe("LanguageServersPage", () => {
     expect(screen.queryByRole("button", { name: /^Install Missing/ })).toBeNull();
   });
 
+  it("offers an IDE copy only for a tool found on PATH", async () => {
+    backend.tools.push({
+      ...sampleTools().find((t) => t.name === "gopls")!,
+      name: "golangci-lint-langserver",
+      displayName: "golangci-lint-langserver",
+      status: "custom",
+      path: "/opt/bin/golangci-lint-langserver",
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await open(user, "TypeScript");
+    await user.click(toolItem("typescript-language-server"));
+    const onPath = within(screen.getByLabelText("typescript-language-server details")).getByRole("button", {
+      name: "Install typescript-language-server",
+    });
+    expect(onPath).toHaveTextContent("Install IDE Copy");
+    expect(onPath).toHaveAttribute("title", expect.stringContaining("/opt/homebrew/bin/typescript-language-server"));
+    // The executable chosen in settings wins over an IDE copy, so it is a plain Install.
+    await open(user, "Go");
+    await user.click(toolItem("golangci-lint-langserver"));
+    expect(
+      within(screen.getByLabelText("golangci-lint-langserver details")).getByRole("button", {
+        name: "Install golangci-lint-langserver",
+      }),
+    ).toHaveTextContent(/^Install$/);
+  });
+
   it("notes the other languages a shared tool serves", async () => {
     const user = userEvent.setup();
     renderPage();

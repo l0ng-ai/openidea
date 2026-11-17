@@ -435,9 +435,9 @@ function ToolDetails({ tool, language, pending }: { tool: ToolInfo; language: st
               ? tx("Update")
               : tool.status === "installed"
                 ? tx("Reinstall")
-                : tool.status === "missing"
-                  ? tx("Install")
-                  : tx("Install IDE Copy")}
+                : tool.status === "onPath"
+                  ? tx("Install IDE Copy")
+                  : tx("Install")}
           </Button>
         )}
         {tool.canUninstall && (
