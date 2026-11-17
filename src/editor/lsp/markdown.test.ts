@@ -52,6 +52,17 @@ describe("markdown rendering", () => {
     expect(el.querySelector("img")?.getAttribute("onerror")).toBeNull();
   });
 
+  it("puts the names a grammar can't parse in spans too (signature links find them)", async () => {
+    const md = await freshMarkdown();
+    await md.loadMarkdown();
+    const el = md.renderMarkup({
+      kind: "markdown",
+      value: "```typescript\n(method) Cart.add(product: Product, quantity?: number): Cart\n```",
+    });
+    await vi.waitFor(() => expect(el.querySelector(".tok-name")?.textContent).toBe("Product"));
+    expect(el.querySelector("code")?.textContent).toBe("(method) Cart.add(product: Product, quantity?: number): Cart");
+  });
+
   it("renders synchronously once loaded", async () => {
     const md = await freshMarkdown();
     await md.loadMarkdown();
