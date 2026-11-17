@@ -2586,6 +2586,9 @@
   "Search in comments and strings": "在注释和字符串中搜索",
   "Search packages": "搜索软件包",
   "Search plugins": "搜索插件",
+  "Search installed plugins": "搜索已安装的插件",
+  "Plugin sources": "插件来源",
+  "No plugins installed.": "尚未安装任何插件。",
   "Search projects": "搜索项目",
   "Search pull requests": "搜索拉取请求",
   "Search query": "搜索查询",
@@ -8727,7 +8730,7 @@
   "Discussions": "讨论",
   "Session references and artifacts": "会话引用与制品",
   "Copy Link": "复制链接",
-  "Add to Message": "添加到消息"
+  "Add to Message": "添加到消息",
   "Java Agents": "Java 代理",
   "File at a Git revision (read-only).": "Git 修订版中的文件（只读）。",
   "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.": "已开启「针对红绿色觉缺陷调整颜色」，此方案显示的是红绿色觉变体的颜色。",

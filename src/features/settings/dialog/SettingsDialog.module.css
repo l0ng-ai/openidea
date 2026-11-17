@@ -78,12 +78,21 @@
   min-height: 40px;
   padding: 0 12px 0 20px;
 }
+/* Controls a page puts beside its title (e.g. Plugins' tabs), centred in the header. */
+.headerSlot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
 .history {
   display: inline-flex;
   gap: var(--space-0-5);
 }
 .crumbs {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -160,6 +169,10 @@
   padding: 4px 20px 20px;
   -webkit-user-select: text;
   user-select: text;
+}
+.pageBodyBleed {
+  padding: 0;
+  overflow: hidden;
 }
 
 .groupPage {
