@@ -64,6 +64,12 @@ const CHUNK = 4096;
 const LOOKAHEAD = 64_000;
 /** Longest comment / quote token the lexical scanner needs to see past a chunk end. */
 const TOKEN_SLACK = 8;
+/**
+ * Lines at least this long (minified code) are jumped over: their brackets are neither
+ * coloured nor counted, and they get no indent guides. Scanning one would cost time in
+ * proportion to its length after every keystroke, since the viewport always holds all of it.
+ */
+export const LONG_LINE = 10_000;
 
 /** Closer char code of each opener char code: `(` `[` `{`. */
 const CLOSER: Record<number, number> = { 40: 41, 91: 93, 123: 125 };
@@ -347,7 +353,19 @@ export class BracketScanner {
     const blockFirst = comments.block ? comments.block.open.charCodeAt(0) : -1;
     const angles: AngleEvents | undefined = tree && this.angleNames ? { doc, kindOf: this.kindOf, out: [] } : undefined;
     while (s.pos < end) {
-      const chunkEnd = Math.min(end, (Math.floor(s.pos / CHUNK) + 1) * CHUNK);
+      const line = doc.lineAt(s.pos);
+      if (line.length >= LONG_LINE && s.pos < line.to) {
+        // Intentionally leave minified lines unmarked and exclude their brackets from nesting.
+        // Resume at its line break, which ends a line comment or string as on a short line.
+        s.pos = line.to;
+        continue;
+      }
+      let chunkEnd = Math.min(end, (Math.floor(s.pos / CHUNK) + 1) * CHUNK);
+      // A long line can start inside this chunk only on the chunk's last line: stop before it.
+      if (chunkEnd < doc.length) {
+        const last = doc.lineAt(chunkEnd);
+        if (last.from > s.pos && last.length >= LONG_LINE) chunkEnd = last.from;
+      }
       const base = s.pos;
       const text = doc.sliceString(base, Math.min(doc.length, chunkEnd + TOKEN_SLACK));
       const stop = chunkEnd - base;
@@ -552,7 +570,9 @@ const plugin = ViewPlugin.fromClass(
       if (reconfigured) this.scanner = new BracketScanner(options);
       else if (u.docChanged) {
         let first = Infinity;
-        u.changes.iterChangedRanges((fromA) => (first = Math.min(first, fromA)));
+        // From the line start: a line grown past `LONG_LINE` must not keep checkpoints inside it.
+        const old = u.startState.doc;
+        u.changes.iterChangedRanges((fromA) => (first = Math.min(first, old.lineAt(fromA).from)));
         this.scanner.invalidate(first);
       }
       if (reconfigured || u.docChanged || u.viewportChanged || syntaxTree(u.startState) !== syntaxTree(u.state))

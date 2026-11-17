@@ -222,11 +222,24 @@ impl Shared {
             if builtin_off { Vec::new() } else { mcp_servers_for(init.mcp_stdio(), &self.paths.project_root) };
         let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
         servers.extend(mcp::acp_mcp_servers(&configured, provider, init, overrides));
-        let mut off = mcp::servers_off(&configured, overrides);
-        if builtin_off {
-            off.push(BUILTIN_SERVER.to_owned());
-        }
+        let off = Self::mcp_off(&configured, provider, overrides);
         McpForSession { servers, off }
+    }
+
+    fn mcp_servers_off_for_session(&self, provider: &str, overrides: &BTreeMap<String, bool>) -> Vec<String> {
+        let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
+        Self::mcp_off(&configured, provider, overrides)
+    }
+
+    fn mcp_off(configured: &[McpServer], provider: &str, overrides: &BTreeMap<String, bool>) -> Vec<String> {
+        let mut off = mcp::servers_off(configured, provider, overrides);
+        if overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false) {
+            off.push(BUILTIN_SERVER.to_owned());
+            off.push(mcp::BUILTIN_MCP_NAME.to_owned());
+            off.sort();
+            off.dedup();
+        }
+        off
     }
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
@@ -922,29 +935,50 @@ impl AgentManager {
         Ok(item)
     }
 
-    /// Sends queued message `queued` next, cancelling the current turn if there is one.
-    pub fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
+    /// Sends queued message `queued` now: into the running turn when the agent takes
+    /// messages mid-turn, else next, cancelling the current turn if there is one.
+    pub async fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
         let task = self.task(id)?;
-        let idle = {
+        let (item, busy) = {
             let mut s = task.state.lock();
             let i =
                 s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
             let item = s.task.queue.remove(i);
-            if s.busy {
-                s.task.queue.insert(0, item);
-                None
-            } else {
+            let busy = s.busy;
+            if !busy {
                 s.busy = true;
-                Some(item)
             }
+            (item, busy)
         };
         task.persist();
         task.emit_task();
-        match idle {
-            Some(item) => {
-                self.shared.runtime.spawn(async move { task.run(item.prompt).await });
+        if !busy {
+            self.shared.runtime.spawn(async move { task.run(item.prompt).await });
+            return Ok(());
+        }
+        // Out of the queue while it is steered, so the turn ending meanwhile doesn't send it twice.
+        let prompt = match task.steer(item.prompt).await {
+            Ok(()) => return Ok(()),
+            Err(prompt) => prompt,
+        };
+        let start = {
+            let mut s = task.state.lock();
+            if s.busy {
+                s.task.queue.insert(0, AgentQueued { id: item.id, prompt });
+                None
+            } else {
+                // The turn ended while steering was tried: nothing is left to interrupt.
+                s.busy = true;
+                Some(prompt)
+            }
+        };
+        match start {
+            Some(prompt) => {
+                self.shared.runtime.spawn(async move { task.run(prompt).await });
             }
             None => {
+                task.persist();
+                task.emit_task();
                 task.send_now.store(true, Ordering::Release);
                 task.cancel();
             }
@@ -1618,6 +1652,26 @@ impl AgentManager {
         Ok(out)
     }
 
+    /// Recycles idle resumable live sessions (or schedules reload after the running turn) when
+    /// global, workspace, or built-in IDE MCP server settings change.
+    pub fn notify_mcp_servers_changed(&self) {
+        let tasks: Vec<Arc<Task>> = self.tasks.read().values().cloned().collect();
+        for task in tasks {
+            let (archived, busy, has_bg) = {
+                let s = task.state.lock();
+                (s.task.status == AgentStatus::Archived, s.busy, !s.background_tasks.is_empty())
+            };
+            if archived {
+                continue;
+            }
+            if busy || has_bg || !task.permissions.lock().is_empty() {
+                task.mcp_reload_pending.store(true, Ordering::Release);
+            } else {
+                task.recycle_resumable_session();
+            }
+        }
+    }
+
     /// Stops every agent (project closed).
     pub fn shutdown(&self) {
         for task in self.tasks.read().values() {
@@ -2218,9 +2272,16 @@ impl Task {
         saved: Option<String>,
     ) -> Result<Live, SessionOpenError> {
         let launch_cwd = cwd.to_path_buf();
-        let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
+        let mut spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
             .await
             .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?;
+        if spec.driver == provider::Driver::Acp && provider::is_copilot_provider(provider_id) {
+            let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
+            for name in self.shared.mcp_servers_off_for_session(provider_id, &mcp_overrides) {
+                spec.args.push("--disable-mcp-server".into());
+                spec.args.push(name);
+            }
+        }
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);

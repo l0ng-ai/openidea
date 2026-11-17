@@ -3193,7 +3193,7 @@ async fn stream_commands_send_target_then_named_fields() {
     let plan = json!({"root": {"line": 14}});
 
     s.respond("workspace/executeCommand", json!({"ok": {"traceId": 3}}));
-    assert_eq!(tracer.arm(&target, 7, &plan, 500).await.unwrap(), 3);
+    assert_eq!(tracer.arm(&target, 7, &plan, 500, "t1").await.unwrap(), 3);
     s.respond(
         "workspace/executeCommand",
         json!({"ok": {"state": "running", "records": 1, "dropped": 0, "elapsedMs": 2}}),
@@ -3211,18 +3211,24 @@ async fn stream_commands_send_target_then_named_fields() {
     tracer.collect(&target, 3, 2).await.unwrap();
     s.respond("workspace/executeCommand", json!({"ok": {}}));
     tracer.release(&target, 3).await.unwrap();
+    s.respond("workspace/executeCommand", json!({"ok": {}}));
+    tracer.release_armed(&target, "t1").await.unwrap();
 
     let asked = s.requested("workspace/executeCommand");
     let seen: Vec<_> = asked.iter().map(|p| (p["command"].clone(), p["arguments"].clone())).collect();
     assert_eq!(
         seen,
         vec![
-            (json!("openidea.jvm.stream.arm"), json!([target_json, {"threadId": 7, "plan": plan, "budget": 500}])),
+            (
+                json!("openidea.jvm.stream.arm"),
+                json!([target_json, {"threadId": 7, "plan": plan, "budget": 500, "token": "t1"}])
+            ),
             (json!("openidea.jvm.stream.wait"), json!([target_json, {"traceId": 3, "ms": 250}])),
             (json!("openidea.jvm.stream.stop"), json!([target_json, {"traceId": 3}])),
             (json!("openidea.jvm.stream.abort"), json!([target_json, {"traceId": 3}])),
             (json!("openidea.jvm.stream.collect"), json!([target_json, {"traceId": 3}])),
             (json!("openidea.jvm.stream.release"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.release"), json!([target_json, {"token": "t1"}])),
         ]
     );
 }
@@ -3303,7 +3309,7 @@ async fn stream_errors_map() {
     ];
     for (reply, expected) in cases {
         s.respond("workspace/executeCommand", reply.clone());
-        assert_eq!(tracer.arm(&target, 1, &json!({}), 10).await.unwrap_err(), expected, "{reply}");
+        assert_eq!(tracer.arm(&target, 1, &json!({}), 10, "t").await.unwrap_err(), expected, "{reply}");
     }
 }
 

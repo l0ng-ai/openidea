@@ -64,6 +64,7 @@ import { setChangesOptions, useChangesOptions } from "./changesOptions";
 import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
 import { ReferencedText } from "./ReferenceChip";
+import { SessionAssets } from "./SessionAssets";
 import { selectionIn } from "./selection";
 import { SubmitButton } from "./SubmitButton";
 import {
@@ -2843,6 +2844,7 @@ function SessionComposer({
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
   const [sending, setSending] = useState(false);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
   // ↑ recalls this conversation's messages, newest first.
@@ -2900,9 +2902,10 @@ function SessionComposer({
         <BackgroundTasks task={task} />
         {task.queue.length > 0 && <Queue task={task} />}
       </Tray>
+      <SessionAssets task={task} entries={entries} head={head} onFocusComposer={() => setAssetFocus((n) => n + 1)} />
       <Composer
         id={task.id}
-        focusRequest={focusRequest}
+        focusRequest={focusRequest + assetFocus}
         placeholder={
           !busy
             ? "Reply to the agent"

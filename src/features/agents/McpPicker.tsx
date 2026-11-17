@@ -120,7 +120,7 @@ export function McpPicker({
         ? String(resolved.activeCount)
         : `${resolved.activeCount}/${resolved.totalCount}`;
 
-  const handleToggleItem = (item: SessionMcpItem, nextEnabled: boolean) => {
+  const handleToggleItem = (item: Pick<SessionMcpItem, "name" | "defaultEnabled">, nextEnabled: boolean) => {
     onChange(nextSessionOverrides(overrides, item, nextEnabled));
   };
 
@@ -317,9 +317,17 @@ export function McpPicker({
                       <div className={styles.rowTitle}>
                         <span className={styles.name}>{item.name}</span>
                         <span className={styles.pill}>{item.server.transport.toUpperCase()}</span>
+                        {item.overridden && (
+                          <span className={clsx(styles.pill, styles.pillSession)}>
+                            <T>Session</T>
+                          </span>
+                        )}
                       </div>
                       <span className={styles.sub} title={item.sourcePath}>
-                        {formatMessage(tx("Active via {source}"), { source: item.sourceLabel })}
+                        {formatMessage(
+                          tx(item.enabled ? "Active via {source}" : "Disabled for this session ({source})"),
+                          { source: item.sourceLabel },
+                        )}
                       </span>
                     </div>
                     <div className={styles.rowControls}>
@@ -334,7 +342,12 @@ export function McpPicker({
                           <T>Import</T>
                         </button>
                       )}
-                      <span className={clsx(styles.dot, styles.dotOn)} aria-hidden />
+                      <Toggle
+                        checked={item.enabled}
+                        aria-label={formatMessage(tx("Enable {name} for this session"), { name: item.name })}
+                        onChange={(on) => handleToggleItem(item, on)}
+                      />
+                      <span className={clsx(styles.dot, item.enabled && styles.dotOn)} aria-hidden />
                     </div>
                   </div>
                 );

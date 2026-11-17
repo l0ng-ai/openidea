@@ -18,6 +18,7 @@ import { firstLineOf, languageFor, viewerBase } from "./cm";
 import { ideaDiffConfig } from "./diffOptions";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
+import { mergeDividers } from "./mergeDividers";
 import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles } from "./conflicts";
 import {
@@ -123,6 +124,8 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   const oursRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const theirsRef = useRef<HTMLDivElement>(null);
+  const leftDividerRef = useRef<HTMLDivElement>(null);
+  const rightDividerRef = useRef<HTMLDivElement>(null);
   const resultView = useRef<EditorView | null>(null);
   const oursView = useRef<EditorView | null>(null);
   const theirsView = useRef<EditorView | null>(null);
@@ -233,8 +236,12 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     }
     // Scroll the three panes together, lined up through their changes.
     const stopSync = syncMergeScroll({ ours, result, theirs });
+    const left = leftDividerRef.current;
+    const right = rightDividerRef.current;
+    const stopDividers = left && right ? mergeDividers({ ours, result, theirs }, { left, right }) : () => {};
     return () => {
       stopSync();
+      stopDividers();
       ours.destroy();
       theirs.destroy();
       result.destroy();
@@ -623,6 +630,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           role="region"
           onContextMenu={(e) => oursView.current && showSideMenu(e, oursView.current, "left")}
         />
+        <div ref={leftDividerRef} className={styles.divider} aria-hidden />
         <div
           ref={resultRef}
           className={styles.pane}
@@ -630,6 +638,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           role="region"
           onContextMenu={(e) => resultView.current && showResultMenu(e, resultView.current)}
         />
+        <div ref={rightDividerRef} className={styles.divider} aria-hidden />
         <div
           ref={theirsRef}
           className={styles.pane}

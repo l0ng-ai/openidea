@@ -348,6 +348,35 @@ mod imp {
         paths
     }
 
+    /// `Preferred DropEffect`: a `DWORD` saying whether the files were copied or cut.
+    /// Explorer writes it with every file list, and paste targets that move files
+    /// between machines (Remote Desktop's clipboard redirection, #3863) read it.
+    fn drop_effect_format() -> u32 {
+        let name: Vec<u16> = "Preferred DropEffect\0".encode_utf16().collect();
+        unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+    }
+
+    /// `DROPEFFECT_COPY`.
+    const DROPEFFECT_COPY: u32 = 1;
+
+    /// An `HGLOBAL` holding a copy of `bytes`. Null when the allocation failed.
+    fn global_bytes(bytes: &[u8]) -> Handle {
+        unsafe {
+            let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
+            if memory.is_null() {
+                return ptr::null_mut();
+            }
+            let data = GlobalLock(memory);
+            if data.is_null() {
+                GlobalFree(memory);
+                return ptr::null_mut();
+            }
+            ptr::copy_nonoverlapping(bytes.as_ptr(), data as *mut u8, bytes.len());
+            GlobalUnlock(memory);
+            memory
+        }
+    }
+
     /// An `HGLOBAL` holding `text` as UTF-16 with a terminating NUL, and its
     /// byte size. Null when the allocation failed.
     fn global_text(text: &str) -> (Handle, usize) {
@@ -429,6 +458,13 @@ mod imp {
             let taken = !SetClipboardData(CF_HDROP, memory).is_null();
             if !taken {
                 GlobalFree(memory);
+            }
+            let effect = drop_effect_format();
+            if effect != 0 {
+                let effect_memory = global_bytes(&DROPEFFECT_COPY.to_le_bytes());
+                if !effect_memory.is_null() && SetClipboardData(effect, effect_memory).is_null() {
+                    GlobalFree(effect_memory);
+                }
             }
             let (text_memory, _) = global_text(&text);
             if !text_memory.is_null() {

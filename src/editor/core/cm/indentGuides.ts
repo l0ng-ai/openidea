@@ -20,7 +20,7 @@ import { countColumn, Facet, RangeSetBuilder, type EditorState, type Extension }
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { getIndentUnit, matchBrackets, syntaxTree } from "@codemirror/language";
 import { LINE_INSET } from "./lineInset";
-import { BRACKET_COLORS, bracketScanner, type BracketScanner } from "./rainbowBrackets";
+import { BRACKET_COLORS, LONG_LINE, bracketScanner, type BracketScanner } from "./rainbowBrackets";
 
 /** How far (px) a guide sits left of its column, so a caret in that column is right of it (IDEA's indent guide shift). */
 const GUIDE_SHIFT = 2;
@@ -187,9 +187,6 @@ export function braceGuide(state: EditorState, step: number): Guide | null {
   const col = indentColumns(openLine.text, state.tabSize) ?? 0;
   return blockGuide(state, openLine.number, col, step);
 }
-
-/** Lines at least this long get no guides, and open no bracket block for them. */
-const LONG_LINE = 10_000;
 
 /**
  * Bracket colour (depth within the palette) per guide level on each of the lines `first`..`last` (index `n - first`).

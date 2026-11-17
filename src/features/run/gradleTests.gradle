@@ -2,6 +2,10 @@
 // build's output, for the Run window's test tree: Gradle itself prints only failures (or a
 // project's own format), and writes its XML reports when a task ends. Test tasks always run,
 // so a rerun never ends UP-TO-DATE without results.
+import org.gradle.util.GradleVersion
+
+// `configureEach` (lazy) is Gradle 4.9+; older ones configure each task as it is added.
+def each = { tasks, Closure action -> GradleVersion.current() >= GradleVersion.version('4.9') ? tasks.configureEach(action) : tasks.all(action) }
 
 def tc = { String s ->
     s == null ? '' : s.replace('|', '||').replace("'", "|'").replace('\n', '|n').replace('\r', '|r')
@@ -9,7 +13,7 @@ def tc = { String s ->
 }
 
 allprojects {
-    tasks.withType(Test).configureEach { Test task ->
+    each(tasks.withType(Test)) { Test task ->
         task.outputs.upToDateWhen { false }
         task.addTestListener(new TestListener() {
             void beforeSuite(TestDescriptor suite) {}
@@ -48,9 +52,9 @@ allprojects {
 // Replace build-configured agents only for this debug launch, after project configuration.
 gradle.projectsEvaluated {
     allprojects {
-        tasks.withType(Test).configureEach { Test task ->
+        each(tasks.withType(Test)) { Test task ->
             if (System.getProperty('openidea.run.debug') == 'true') {
-                task.debugOptions.enabled = false
+                task.debug = false
                 task.doFirst {
                     task.setJvmArgs(task.jvmArgs.findAll {
                         !it.startsWith('-agentlib:jdwp=') && !it.startsWith('-Xrunjdwp:')

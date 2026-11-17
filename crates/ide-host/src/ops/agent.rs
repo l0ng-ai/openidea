@@ -251,9 +251,9 @@ pub fn unqueue(host: &Host, window: &str, task: String, queued: String) -> IdeRe
 }
 
 /// Sends a queued message now, interrupting the current turn.
-pub fn send_queued_now(host: &Host, window: &str, task: String, queued: String) -> IdeResult<()> {
+pub async fn send_queued_now(host: &Host, window: &str, task: String, queued: String) -> IdeResult<()> {
     host.require_trust(window)?;
-    host.project(window)?.agents.send_queued_now(&task, &queued)
+    host.project(window)?.agents.send_queued_now(&task, &queued).await
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
@@ -457,6 +457,7 @@ fn persist_mcp_map(
             host.global_settings.set(ide_workspace::settings::SettingsScope::Global, "agents.mcpServers", value)?;
             for p in host.projects() {
                 p.settings.reload();
+                p.agents.notify_mcp_servers_changed();
                 p.sink.emit(event.clone());
                 if kept == Kept::LocalFile {
                     host.agent_secrets.notify_kept_locally(&p.sink);
@@ -466,6 +467,7 @@ fn persist_mcp_map(
         McpScope::Workspace => {
             let p = project.ok_or_else(|| IdeError::invalid("Open a project to configure workspace MCP servers"))?;
             p.settings.set(ide_workspace::settings::SettingsScope::Project, "agents.mcpServers", value)?;
+            p.agents.notify_mcp_servers_changed();
             p.sink.emit(event);
         }
     }
@@ -533,9 +535,17 @@ pub(crate) fn session_mcp_servers(
     use ide_workspace::settings::SettingsScope;
     let mut user = settings.layer(SettingsScope::Global).agents.mcp_servers;
     fill_mcp_values(secrets, &mut user);
-    let mut workspace = settings.layer(SettingsScope::Project).agents.mcp_servers;
-    workspace.retain(|name, srv| approvals.approved(root, name, srv));
-    ide_agent::mcp::servers_from_settings(&user, &workspace)
+    let raw_workspace = settings.layer(SettingsScope::Project).agents.mcp_servers;
+    let workspace = approvals.apply(root, raw_workspace.clone());
+    let mut out = ide_agent::mcp::servers_from_settings(&user, &workspace);
+    for srv in &mut out {
+        if srv.scope == McpScope::Workspace
+            && let Some(raw) = raw_workspace.get(&srv.name)
+        {
+            srv.unapproved = !approvals.approved(root, &srv.name, raw);
+        }
+    }
+    out
 }
 
 /// Lists configured MCP servers across User (`settings.toml`) and Workspace (`.openidea/settings.toml`) scopes.
@@ -877,10 +887,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         prompt(&c.host, &c.window, c.arg("task")?, c.arg("prompt")?, c.arg("now")?).await
     });
     d.add("agent_unqueue", |c| async move { unqueue(&c.host, &c.window, c.arg("task")?, c.arg("queued")?) });
-    d.add(
-        "agent_send_queued_now",
-        |c| async move { send_queued_now(&c.host, &c.window, c.arg("task")?, c.arg("queued")?) },
-    );
+    d.add("agent_send_queued_now", |c| async move {
+        send_queued_now(&c.host, &c.window, c.arg("task")?, c.arg("queued")?).await
+    });
     d.add("agent_set_config", |c| async move {
         set_config(&c.host, &c.window, c.arg("task")?, c.arg("option")?, c.arg("value")?).await
     });

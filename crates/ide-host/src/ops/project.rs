@@ -238,6 +238,11 @@ pub fn set_settings(
     if is_proxy {
         host.apply_proxy();
     }
+    if key == "agents" || key == "agents.mcpServers" || key.starts_with("agents.mcpServers.") {
+        for project in affected() {
+            project.agents.notify_mcp_servers_changed();
+        }
+    }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
     // So do inspections that are compiler options (`ide-sdk` `configure_java_compiler`).
     let code_style = key == "editor"
