@@ -19,7 +19,15 @@
   const listeners = [];
   const themeListeners = [];
   const documentListeners = [];
-  const editorListeners = { target: [], viewport: [], highlights: [], problems: [], layout: [] };
+  const editorListeners = {
+    target: [],
+    viewport: [],
+    highlights: [],
+    problems: [],
+    layout: [],
+    selections: [],
+    changes: [],
+  };
   const editorPanel = /(?:^|[?&])openidea=editor-panel(?:&|$)/.test(location.search.slice(1));
   const pending = new Map();
   const root = document.documentElement;
@@ -131,9 +139,9 @@
   };
   /** The text editor of the editor group the panel is in. */
   const editorApi = Object.freeze({
-    /** `{ path, language, version, lineCount }` of the group's file, or null. */
+    /** `{ path, language, version, lineCount, tabSize }` of the group's file, or null. */
     get: () => call("editor.get"),
-    /** Called with the new `get()` value when the group shows another file, or none. */
+    /** Called with the new `get()` value when the group shows another file, or none, or the file's tab size changes. */
     onTarget: listen(editorListeners.target),
     /** The group's document, read-only (`edit` / `replace` reject). */
     document: documentApi,
@@ -159,6 +167,14 @@
     wrapped: (fromLine, toLine) => call("editor.wrapped", { fromLine: Number(fromLine), toLine: Number(toLine) }),
     /** Called with `{ folded, softWrap }` when folds change, soft wrap turns on or off, or wrapped rows may have changed, at most once a frame. */
     onLayout: listen(editorListeners.layout),
+    /** The caret and selections: `[{ anchor: { line, column }, head: { line, column } }]`, the main one first; a caret has `anchor` equal to `head`. */
+    selections: () => call("editor.selections"),
+    /** Called with `selections()` when the caret moves, a selection changes, or the group shows another file, at most once a frame. */
+    onSelections: listen(editorListeners.selections),
+    /** The VCS changes beside the line numbers: `[{ line, lastLine, kind }]`, kind `added`, `modified` or `deleted` (`lastLine` equals `line`, the line below the deleted text). */
+    changes: () => call("editor.changes"),
+    /** Called with `changes()` when the changes are recomputed or edits move them, or the group shows another file, at most once a frame. */
+    onChanges: listen(editorListeners.changes),
   });
 
   window.openidea = Object.freeze({

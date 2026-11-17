@@ -651,6 +651,37 @@ export function ProjectView() {
     // uses and the editor leaves them out.
     let files: DragSession | null = null;
     let endDrag: (() => void) | null = null;
+    // While dragging, the tree scrolls only when the pointer is near its top or bottom edge
+    // (IDEA's DnD autoscroll). Leaving the tree toward a drop target elsewhere (the terminal,
+    // an editor) keeps it where it is: WebKit's own autoscroll of the pressed scroll container
+    // would otherwise keep scrolling it toward the pointer.
+    const scroller = containerRef.current?.querySelector<HTMLElement>('[role="tree"]') ?? null;
+    let held = scroller?.scrollTop ?? 0;
+    let pointer: { x: number; y: number } | null = null;
+    let frame = 0;
+    const inside = (p: { x: number; y: number }) => {
+      const r = scroller?.getBoundingClientRect();
+      return !!r && p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+    };
+    const keep = () => {
+      if (!scroller) return;
+      if (pointer && !inside(pointer)) scroller.scrollTop = held;
+      else held = scroller.scrollTop;
+    };
+    const edgeScroll = () => {
+      frame = 0;
+      if (!scroller || !pointer || !inside(pointer)) return;
+      const r = scroller.getBoundingClientRect();
+      const delta = pointer.y < r.top + 24 ? -8 : pointer.y > r.bottom - 24 ? 8 : 0;
+      const before = scroller.scrollTop;
+      scroller.scrollTop = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, before + delta));
+      held = scroller.scrollTop;
+      if (held !== before) {
+        const target = folderAt(containerRef.current, pointer.x, pointer.y);
+        setDropTarget(target && !paths.some((p) => target.path === p || isInside(target.path, p)) ? target.key : null);
+        frame = requestAnimationFrame(edgeScroll);
+      }
+    };
     const move = (ev: PointerEvent) => {
       // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
       if (!(ev.buttons & 1)) {
@@ -673,6 +704,10 @@ export function ProjectView() {
           payload: nodes.map((n) => (n.dir ? `${n.path}/` : n.path)).join("\n"),
         });
       }
+      if (!pointer) scroller?.addEventListener("scroll", keep, { passive: true });
+      pointer = { x: ev.clientX, y: ev.clientY };
+      keep();
+      if (!frame) frame = requestAnimationFrame(edgeScroll);
       const target = folderAt(containerRef.current, ev.clientX, ev.clientY);
       const valid = target && !paths.some((p) => target.path === p || isInside(target.path, p));
       setDropTarget(valid ? target.key : null);
@@ -703,6 +738,10 @@ export function ProjectView() {
       }
     };
     const cleanup = () => {
+      scroller?.removeEventListener("scroll", keep);
+      cancelAnimationFrame(frame);
+      frame = 0;
+      pointer = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cleanup);

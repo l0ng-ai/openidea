@@ -6,6 +6,7 @@ import { basename, relDir, symbolDisplayName } from "../common/open";
 import type { RecentLocation } from "../common/locations";
 import { matchText } from "../common/rank";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
+import { toolWindowTitle } from "@/workbench/toolwindows/title";
 
 export interface RecentFileItem {
   path: string;
@@ -127,7 +128,7 @@ export function switcherToolWindows(
   windows: Iterable<ToolWindowContribution>,
   projectOpen: boolean,
   query: string,
-): Array<{ tw: ToolWindowContribution; indices: number[] }> {
+): Array<{ tw: ToolWindowContribution; title: string; indices: number[] }> {
   const list = [...windows]
     .filter((tw) => projectOpen || tw.requiresProject === false)
     .sort(
@@ -135,12 +136,15 @@ export function switcherToolWindows(
         ANCHOR_ORDER[a.anchor] - ANCHOR_ORDER[b.anchor] ||
         Number(!!a.secondary) - Number(!!b.secondary) ||
         (a.order ?? 0) - (b.order ?? 0),
-    );
-  if (!query.trim()) return list.map((tw) => ({ tw, indices: [] }));
-  const out: Array<{ tw: ToolWindowContribution; indices: number[] }> = [];
-  for (const tw of list) {
-    const hit = matchText(tw.title, query);
-    if (hit) out.push({ tw, indices: hit.indices });
+    )
+    .map((tw) => ({ tw, title: toolWindowTitle(tw), indices: [] as number[] }));
+  if (!query.trim()) return list;
+  const out: Array<{ tw: ToolWindowContribution; title: string; indices: number[] }> = [];
+  for (const row of list) {
+    const hit = matchText(row.title, query);
+    // The English name still finds a translated window, without highlights.
+    if (hit) out.push({ ...row, indices: hit.indices });
+    else if (row.title !== row.tw.title && matchText(row.tw.title, query)) out.push(row);
   }
   return out;
 }

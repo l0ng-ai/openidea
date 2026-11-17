@@ -1,9 +1,10 @@
 //! Diagnostics for the memory indicator / performance overlay.
 
-use crate::commands::doc::blocking;
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::IdeResult;
 use ide_core::event::ServerStatus;
+use ide_host::ops::doc::blocking;
 use ide_language::SyntaxCacheStats;
 use ide_workspace::memory::{self, CpuSampler, MemoryCategory, MemoryRoot, ProcessMemory, ProcessTable};
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,7 @@ static CPU: LazyLock<Mutex<CpuSampler>> = LazyLock::new(Default::default);
 
 /// Snapshot of process memory and subsystem sizes, summed over all projects.
 /// Async: the process walk runs on the blocking pool, not the main thread.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_metrics(app: AppHandle, state: State<'_, AppState>) -> IdeResult<AppMetrics> {
@@ -228,12 +230,14 @@ pub struct ClearCachesResult {
 /// Ends a process OpenIDEA started (a row of the memory breakdown) and its
 /// children; its owner (language server, run, terminal) sees it exit. Returns
 /// false for a process that isn't ours.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn end_process(pid: u32) -> IdeResult<bool> {
     blocking(move || Ok(memory::end_process_tree(std::process::id(), pid, std::time::Duration::from_secs(3)))).await
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clear_caches(window: Window, state: State<'_, AppState>) -> IdeResult<ClearCachesResult> {
@@ -271,3 +275,5 @@ mod tests {
         assert_eq!(project_name(&megatron), "Megatron-LM");
     }
 }
+
+ide_command::desktop_domain!(app_metrics, clear_caches, end_process);

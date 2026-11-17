@@ -32,8 +32,7 @@
     "perf": "node perf/run.ts",
     "perf:rust": "node perf/rust.ts",
     "eval": "node evals/run.ts",
-    "release:prepare": "node scripts/release-prepare.ts",
-    "nightly:prepare": "node scripts/nightly-prepare.ts"
+    "release:prepare": "node scripts/release-prepare.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"

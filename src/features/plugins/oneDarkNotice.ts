@@ -1,8 +1,8 @@
 /**
  * The one-time notice for installs whose settings file still names the removed
  * `one-dark` built-in (#2981): One Dark now ships as the One Dark Pro marketplace
- * plugin, and the notice offers to install it. Shown once (a `localStorage` flag,
- * like the nightly update prompt); the backend only reports the raw id, the notice
+ * plugin, and the notice offers to install it. Shown once (a `localStorage` flag);
+ * the backend only reports the raw id, the notice
  * decides what it means.
  */
 import { tx } from "@/platform/i18n";

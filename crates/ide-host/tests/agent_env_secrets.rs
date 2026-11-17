@@ -31,7 +31,7 @@ fn open(host: &Host, tmp: &tempfile::TempDir) {
 }
 
 fn env_of(host: &Host, id: &str) -> BTreeMap<String, String> {
-    let providers = ide_host::ops::agent::providers(host, "main").unwrap();
+    let providers = ide_host::ops::agent::agent_providers(host, "main").unwrap();
     providers.into_iter().find(|p| p.id == id).unwrap_or_else(|| panic!("{id}")).env
 }
 
@@ -42,7 +42,7 @@ async fn agent_environment_values_stay_out_of_agent_files() {
     let host = host(tmp.path());
     open(&host, &tmp);
     let env = BTreeMap::from([("ANTHROPIC_API_KEY".to_owned(), VALUE.to_owned())]);
-    ide_host::ops::agent::set_env(&host, "main", "claude".into(), env.clone()).unwrap();
+    ide_host::ops::agent::agent_set_env(&host, "main", "claude".into(), env.clone()).unwrap();
     ide_host::ops::agent::save_custom_agent(
         &host,
         "main",
@@ -63,7 +63,7 @@ async fn agent_environment_values_stay_out_of_agent_files() {
     assert_eq!(env_of(&host, "claude"), env);
     assert_eq!(env_of(&host, "mine"), env);
     ide_host::ops::agent::remove_custom_agent(&host, "main", "mine".into()).unwrap();
-    ide_host::ops::agent::set_env(&host, "main", "claude".into(), BTreeMap::new()).unwrap();
+    ide_host::ops::agent::agent_set_env(&host, "main", "claude".into(), BTreeMap::new()).unwrap();
     assert_eq!(host.agent_secrets.keys("agent/"), Vec::<String>::new());
     host.close_project("main");
 }

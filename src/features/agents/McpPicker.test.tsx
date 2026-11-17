@@ -59,11 +59,11 @@ const SOURCES: McpExternalSource[] = [
     nativeProvider: "copilot",
     servers: [
       {
-        name: "workiq",
+        name: "playwright",
         transport: "stdio",
         enabled: true,
         command: "npx",
-        args: ["-y", "@microsoft/workiq", "mcp"],
+        args: ["-y", "@playwright/mcp@latest"],
         url: null,
         envKeys: [],
         headerKeys: [],
@@ -102,31 +102,37 @@ describe("McpPicker", () => {
   it("resolves IDE, Project override over Global, agent-scoped defaults, and native CLI configs", async () => {
     render(<Harness provider="copilot" />);
 
-    // Active by default for copilot: openidea (IDE) + shared (Project) + workiq (Copilot CLI) = 3 of 4 (claude-only is off).
+    // Active by default for copilot: openidea (IDE) + shared (Project) + playwright (Copilot CLI) = 3 of 4 (claude-only is off).
     const trigger = screen.getByRole("button", { name: "MCP servers" });
     expect(trigger).toHaveTextContent("MCP3/4");
 
     fireEvent.click(trigger);
     expect(await screen.findByText("Session MCP Servers")).toBeInTheDocument();
     expect(screen.getByText("Overrides Global")).toBeInTheDocument();
-    expect(screen.getByText("workiq")).toBeInTheDocument();
+    expect(screen.getByText("playwright")).toBeInTheDocument();
     expect(screen.getByText("Active via GitHub Copilot CLI")).toBeInTheDocument();
 
-    // Toggle `shared` off and `claude-only` on for this session only, then Reset.
+    // Toggle `shared` off, `playwright` (native CLI) off, and `claude-only` on for this session only, then Reset.
     const sharedSwitch = screen.getByRole("switch", { name: "Enable shared for this session" });
     const claudeSwitch = screen.getByRole("switch", { name: "Enable claude-only for this session" });
+    const playwrightSwitch = screen.getByRole("switch", { name: "Enable playwright for this session" });
     expect(sharedSwitch).toHaveAttribute("aria-checked", "true");
     expect(claudeSwitch).toHaveAttribute("aria-checked", "false");
+    expect(playwrightSwitch).toHaveAttribute("aria-checked", "true");
 
     fireEvent.click(sharedSwitch);
     fireEvent.click(claudeSwitch);
+    fireEvent.click(playwrightSwitch);
     expect(sharedSwitch).toHaveAttribute("aria-checked", "false");
     expect(claudeSwitch).toHaveAttribute("aria-checked", "true");
-    expect(screen.getAllByText("Session")).toHaveLength(2);
+    expect(playwrightSwitch).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("Disabled for this session (GitHub Copilot CLI)")).toBeInTheDocument();
+    expect(screen.getAllByText("Session")).toHaveLength(3);
 
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     expect(sharedSwitch).toHaveAttribute("aria-checked", "true");
     expect(claudeSwitch).toHaveAttribute("aria-checked", "false");
+    expect(playwrightSwitch).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
   });
 
@@ -149,7 +155,7 @@ describe("McpPicker", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Import" }));
     await waitFor(() =>
-      expect(importSelected).toHaveBeenCalledWith("user", [{ sourceId: "copilot-cli", name: "workiq" }], false),
+      expect(importSelected).toHaveBeenCalledWith("user", [{ sourceId: "copilot-cli", name: "playwright" }], false),
     );
   });
 });

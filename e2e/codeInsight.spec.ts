@@ -309,7 +309,9 @@ test("⌘B goes to the declaration in another file", async ({ workbench: page })
   expect(args).toMatchObject({ pos: at(20, 27), kind: "definition" });
 });
 
-test("Find Usages lists every usage by file and opens one", async ({ workbench: page }) => {
+test("Find Usages from the editor context menu lists every usage by file and opens one", async ({
+  workbench: page,
+}) => {
   const editor = await openSample(page);
   await page.evaluate(
     ({ file, other }) => {
@@ -325,7 +327,10 @@ test("Find Usages lists every usage by file and opens one", async ({ workbench: 
     { file: FILE, other: `${ROOT}/settings.gradle.kts` },
   );
   await caretAt(editor, page, "val order: Order", "service");
-  await page.keyboard.press("Alt+F7");
+  const caret = await editor.locator(".cm-cursor").boundingBox();
+  await page.mouse.click(caret!.x + 2, caret!.y + caret!.height / 2, { button: "right" });
+  await page.getByRole("menuitem", { name: /^Find Usages/ }).click();
+  expect((await ipcCalls(page, "lsp_references"))[0]).toMatchObject({ pos: at(20, 27) });
   const usages = page.getByRole("tree", { name: /usages/i });
   await expect(usages.getByRole("treeitem", { name: "Found usages 3 results" })).toBeVisible();
   await expect(usages.getByRole("treeitem", { name: "build.gradle.kts 2 usages" })).toBeVisible();

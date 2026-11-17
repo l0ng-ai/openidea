@@ -38,7 +38,7 @@ import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
 import { findExtension } from "@/editor/core/cm/find";
-import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
+import { overviewLane } from "@/editor/core/cm/lanes";
 import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
 import { fontExtension, tooltipBounds } from "@/editor/core/cm/setup";
@@ -236,7 +236,7 @@ const changedLines = chunkDecorations(lineDeco);
 const stripeColor = byKind((kind) => `var(--diff-${kind}-stripe)`);
 
 /** The diff viewer's layouts, as the overview lane sees them. */
-export type DiffLayout = "split" | "aligned" | "unified";
+export type DiffLayout = "split" | "unified";
 
 /**
  * The changes on the overview lane as marks across its width, after IDEA's diff error stripe
@@ -278,14 +278,11 @@ const chunkMarks = (unified: boolean) =>
   });
 
 /**
- * The overview lane with the diff's changes, over the pane's scrollbar. The panes of an aligned
- * side-by-side diff scroll together in the MergeView, whose scrollbar the right pane's lane takes.
+ * The overview lane with the diff's changes, over the pane's scrollbar. Every
+ * diff pane scrolls itself, so each carries its own lane.
  */
 export function diffOverview(layout: DiffLayout): Extension {
-  return [
-    chunkMarks(layout === "unified"),
-    layout === "aligned" ? overviewLaneIn((view) => view.dom.closest<HTMLElement>(".cm-mergeView")) : overviewLane,
-  ];
+  return [chunkMarks(layout === "unified"), overviewLane];
 }
 
 /**

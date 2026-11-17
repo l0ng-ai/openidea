@@ -2,6 +2,7 @@
 
 use crate::state::AppState;
 use crate::windows::WindowsState;
+use ide_command::desktop_command;
 use ide_core::IdeResult;
 use ide_host::data_dirs;
 use ide_workspace::caches::{self, InvalidateCachesOptions};
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, State};
 
 /// Schedules the invalidation for the next start (`None` cancels a pending one).
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn caches_schedule_invalidation(app: AppHandle, options: Option<InvalidateCachesOptions>) -> IdeResult<()> {
@@ -24,6 +26,7 @@ pub fn caches_schedule_invalidation(app: AppHandle, options: Option<InvalidateCa
 }
 
 /// Quits through every window's unsaved-changes check, then starts again.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn app_restart(app: AppHandle, windows: State<'_, WindowsState>) {
@@ -45,6 +48,7 @@ pub struct LocalDataInfo {
     pub env_override: bool,
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn caches_local_data_info(app: AppHandle, state: State<'_, AppState>) -> IdeResult<LocalDataInfo> {
@@ -62,6 +66,7 @@ pub fn caches_local_data_info(app: AppHandle, state: State<'_, AppState>) -> Ide
 /// local-data root; with `migrate`, the current tree moves at the next start.
 /// Returns the directory that takes effect after a restart. The caller
 /// restarts the IDE (see `app_restart`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn caches_set_local_data_dir(
@@ -79,3 +84,10 @@ pub fn caches_set_local_data_dir(
     }
     Ok(next.display().to_string())
 }
+
+ide_command::desktop_domain!(
+    app_restart,
+    caches_local_data_info,
+    caches_schedule_invalidation,
+    caches_set_local_data_dir,
+);
