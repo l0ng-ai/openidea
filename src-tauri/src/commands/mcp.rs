@@ -205,9 +205,7 @@ pub fn mcp_regenerate_token(state: State<'_, AppState>) -> IdeResult<()> {
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_set_open_editors(window: Window, state: State<'_, AppState>, paths: Vec<IpcPath>) -> IdeResult<()> {
-    state.project(window.label())?;
-    state.host.mcp_reports.set_open_editors(window.label(), paths.into_iter().map(PathBuf::from).collect());
-    Ok(())
+    ide_host::mcp::mcp_set_open_editors(&state.host, window.label(), paths)
 }
 
 #[tauri::command]
@@ -218,9 +216,7 @@ pub fn mcp_set_focused_editor(
     editor: Option<FocusedEditor>,
     focused: bool,
 ) -> IdeResult<()> {
-    state.project(window.label())?;
-    state.host.mcp_reports.set_focused_editor(window.label(), editor, focused);
-    Ok(())
+    ide_host::mcp::mcp_set_focused_editor(&state.host, window.label(), editor, focused)
 }
 
 #[tauri::command]
@@ -231,9 +227,7 @@ pub fn mcp_report_problems(
     reset: bool,
     files: Vec<FileProblems>,
 ) -> IdeResult<()> {
-    state.project(window.label())?;
-    state.host.mcp_reports.report_problems(window.label(), reset, files);
-    Ok(())
+    ide_host::mcp::mcp_report_problems(&state.host, window.label(), reset, files)
 }
 
 #[tauri::command]

@@ -49,8 +49,8 @@ pub fn index_status(host: &Host, window: &str) -> IdeResult<IndexStatus> {
     Ok(host.project(window)?.index.status())
 }
 
-/// The project's file extensions, most common first.
 pub fn index_file_extensions(host: &Host, window: &str) -> IdeResult<Vec<ExtensionCount>> {
+    // Most common first.
     Ok(host.project(window)?.index.file_extensions())
 }
 
@@ -64,6 +64,7 @@ pub async fn find_files_named(host: &Host, window: &str, name: String) -> IdeRes
     blocking(move || Ok(project.index.files_named(&name).into_iter().map(Into::into).collect())).await
 }
 
+/// Folders holding indexed files, for `@` references.
 pub async fn find_dirs(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
     let project = host.project(window)?;
     blocking(move || Ok(project.index.find_dirs(&query, limit as usize))).await
@@ -80,14 +81,14 @@ pub async fn find_symbols(
     blocking(move || Ok(project.index.find_symbols(&query, filter, limit as usize))).await
 }
 
-/// Index symbols named exactly one of `names` inside `within` (an agent task's folder),
-/// at most `SYMBOLS_PER_NAME` each: every name an agent reply shows, in one lookup.
+/// Index symbols named exactly one of `names` inside `within` (an agent task's folder).
 pub async fn find_symbols_named(
     host: &Host,
     window: &str,
     names: Vec<String>,
     within: IpcPath,
 ) -> IdeResult<Vec<SymbolMatch>> {
+    // At most `SYMBOLS_PER_NAME` each: every name an agent reply shows, in one lookup.
     const SYMBOLS_PER_NAME: usize = 50;
     let project = host.project(window)?;
     blocking(move || Ok(project.index.symbols_named_any(&names, &PathBuf::from(within), SYMBOLS_PER_NAME))).await
@@ -145,12 +146,13 @@ pub async fn web_goto(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeRes
     .await
 }
 
-/// The file a Python import path names: `a.b.c` is `a/b/c.py(i)` or `a/b/c/__init__.py(i)`
-/// in the project or one of its content roots (an attached dependency project included);
-/// `.x` names it relative to `from`'s directory. Neither the language server (it analyses a
-/// single root) nor the definition index resolves a package segment, so ⌘B on the `a.b` of
-/// `from a.b import x` needs this.
+/// The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
+/// no project or content root has it.
 pub async fn nav_resolve_module(host: &Host, window: &str, name: String, from: IpcPath) -> IdeResult<Option<IpcPath>> {
+    // `a.b.c` is `a/b/c.py(i)` or `a/b/c/__init__.py(i)` in the project or one of its content roots
+    // (an attached dependency project included). Neither the language server (it analyses a single
+    // root) nor the definition index resolves a package segment, so ⌘B on the `a.b` of
+    // `from a.b import x` needs this.
     let project = host.project(window)?;
     blocking(move || {
         let dots = name.len() - name.trim_start_matches('.').len();
@@ -182,17 +184,18 @@ pub async fn nav_resolve_module(host: &Host, window: &str, name: String, from: I
     .await
 }
 
-/// Index definitions named `name` in the other roots `from` may navigate into (its configured
-/// dependencies and extra content roots — see `navigation_roots`): the cross-root answer when
-/// the language server cannot resolve an import into an attached dependency project. `from`'s
-/// own root is left out: the server sees it, so a name it could not resolve there is not
-/// answered by every declaration that happens to share it (any `save` for `repo.save()`).
+/// Index definitions named `name` within the roots `from` may navigate into (its own root
+/// plus its configured dependencies).
 pub async fn nav_index_definitions(
     host: &Host,
     window: &str,
     name: String,
     from: IpcPath,
 ) -> IdeResult<Vec<SymbolMatch>> {
+    // The cross-root answer when the language server cannot resolve an import into an attached
+    // dependency project. `from`'s own root is left out: the server sees it, so a name it could
+    // not resolve there is not answered by every declaration that happens to share it (any `save`
+    // for `repo.save()`).
     let project = host.project(window)?;
     blocking(move || {
         let roots = crate::project::navigation_roots(&project, &from);
@@ -207,11 +210,11 @@ pub async fn nav_index_definitions(
     .await
 }
 
-/// Every Python class in the project (attached dependency roots included) and its base
-/// names, answered from the project index: its symbols already carry the bases, and it
-/// covers content roots, so this is the whole-project answer the UI uses for inheritance
-/// gutter markers when no type-hierarchy provider exists. No file is parsed here.
+/// Every Python class in the project (attached dependency roots included) and its base names,
+/// for native inheritance gutter markers.
 pub async fn nav_inheritance(host: &Host, window: &str) -> IdeResult<Vec<ClassInheritance>> {
+    // The index covers content roots, so this is the whole-project answer when no type-hierarchy
+    // provider exists.
     let project = host.project(window)?;
     let syntax = host.syntax();
     blocking(move || {

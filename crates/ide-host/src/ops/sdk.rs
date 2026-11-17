@@ -61,9 +61,9 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
     .map_err(join_err)
 }
 
-/// The Python interpreters of the projects opened recently (newest first), each with the
-/// project it belongs to. The open project is skipped: [`sdk_detect`] lists its own.
+/// The Python interpreters of the recently opened projects, each with its project.
 pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeResult<Vec<ProjectInterpreter>> {
+    // Newest first. The open project is skipped: `sdk_detect` lists its own.
     host.require_trust(window)?;
     let current = host.project(window).ok().map(|p| p.root.clone());
     let config = host.config_dir.clone();
@@ -177,6 +177,7 @@ pub struct PhpLanguageLevels {
     pub member: Option<ide_core::IpcPath>,
 }
 
+/// The PHP language level of the project `path` belongs to: the effective one and Auto's.
 pub async fn sdk_php_language_level(host: &Host, window: &str, path: PathBuf) -> IdeResult<PhpLanguageLevels> {
     let project = host.project(window)?;
     let (project_root, project_settings) = (project.root.clone(), project.settings.effective());
@@ -207,12 +208,13 @@ pub struct ComposerInstallState {
     pub reason: ide_sdk::php::ComposerInstall,
 }
 
-/// `None` in an untrusted project too: `composer install` runs the project's scripts.
+/// The Composer project `path` belongs to, when its dependencies need `composer install`.
 pub async fn sdk_php_composer_install(
     host: &Host,
     window: &str,
     path: PathBuf,
 ) -> IdeResult<Option<ComposerInstallState>> {
+    // `None` in an untrusted project too: `composer install` runs the project's scripts.
     let project = host.project(window)?;
     if !project.is_trusted() {
         return Ok(None);
@@ -375,9 +377,9 @@ pub async fn sdk_python_pip(
     result?
 }
 
-/// The JDK whose home is `path` (a macOS bundle too), as the SDK list shows it; `None` when
-/// `path` is no JDK home (Add JDK from Disk…).
+/// The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home.
 pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
+    // A macOS bundle too (Add JDK from Disk…).
     tokio::task::spawn_blocking(move || {
         ide_sdk::java::jdk_at(std::path::Path::new(&path)).map(|j| ide_sdk::jdk_sdk(&j))
     })

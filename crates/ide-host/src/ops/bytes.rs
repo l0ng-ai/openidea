@@ -8,27 +8,26 @@ use ide_vfs::{ByteRange, FileProbe};
 use std::path::PathBuf;
 
 /// Size and text/binary classification, from the file's head only.
-pub async fn fs_probe(_host: &Host, _window: &str, path: PathBuf) -> IdeResult<FileProbe> {
+pub async fn fs_probe(path: PathBuf) -> IdeResult<FileProbe> {
     blocking(move || ide_vfs::probe(&path)).await
 }
 
 /// Up to `len` bytes from `offset` (capped per call), base64-encoded.
-pub async fn fs_read_range(_host: &Host, _window: &str, path: PathBuf, offset: u64, len: u32) -> IdeResult<ByteRange> {
+pub async fn fs_read_range(path: PathBuf, offset: u64, len: u32) -> IdeResult<ByteRange> {
     blocking(move || ide_vfs::read_range(&path, offset, len)).await
 }
 
-/// An image file as a `data:` URL. A network path is read only from a share an open project is
-/// on: the path may come from Markdown, and opening a share signs in to its server.
-pub async fn fs_read_image(host: &Host, _window: &str, path: PathBuf) -> IdeResult<String> {
+/// An image file as a `data:` URL.
+pub async fn fs_read_image(host: &Host, path: PathBuf) -> IdeResult<String> {
+    // A network path is read only from a share an open project is on: the path may come from
+    // Markdown, and opening a share signs in to its server.
     let opened: Vec<PathBuf> = host.projects().iter().map(|project| project.root.clone()).collect();
     blocking(move || ide_vfs::read_data_url(&path, &opened)).await
 }
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("fs_probe", |c| async move { fs_probe(&c.host, &c.window, c.arg("path")?).await });
-    d.add("fs_read_range", |c| async move {
-        fs_read_range(&c.host, &c.window, c.arg("path")?, c.arg("offset")?, c.arg("len")?).await
-    });
-    d.add("fs_read_image", |c| async move { fs_read_image(&c.host, &c.window, c.arg("path")?).await });
+    d.add("fs_probe", |c| async move { fs_probe(c.arg("path")?).await });
+    d.add("fs_read_range", |c| async move { fs_read_range(c.arg("path")?, c.arg("offset")?, c.arg("len")?).await });
+    d.add("fs_read_image", |c| async move { fs_read_image(&c.host, c.arg("path")?).await });
 }

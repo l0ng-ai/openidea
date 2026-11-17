@@ -281,7 +281,7 @@ pub fn run() {
                 if let Some(state) = window.try_state::<AppState>() {
                     #[cfg(target_os = "macos")]
                     if let Some(w) = window.try_state::<WindowsState>() {
-                        let settings = ide_host::ops::project::settings(&state.host, window.label());
+                        let settings = ide_host::ops::project::settings_get(&state.host, window.label());
                         w.keep_alive.store(settings.general.close_without_welcome, std::sync::atomic::Ordering::SeqCst);
                     }
                     state.updates.forget_window(window.label());

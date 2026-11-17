@@ -276,17 +276,18 @@ async fn wait_for_source(events: &Events, window: &str, source: &str, predicate:
     }
 }
 
-fn replace(host: &Host, window: &str, info: &ide_workspace::DocumentInfo, text: &str) -> u32 {
+async fn replace(host: &Host, window: &str, info: &ide_workspace::DocumentInfo, text: &str) -> u32 {
     let project = host.project(window).unwrap();
     let snapshot = project.documents.snapshot(info.id).unwrap();
     let len = snapshot.text.encode_utf16().count() as u32;
-    ops::doc::edit(
+    ops::doc::doc_edit(
         host,
         window,
         info.id,
         snapshot.version,
         ChangeSet { changes: vec![TextChange { from: 0, to: len, insert: text.into() }] },
     )
+    .await
     .unwrap()
 }
 
@@ -303,18 +304,18 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
     set_editor_providers(Some(&plugins));
     let left = host.open_light("left", &path).unwrap();
     host.open_light("right", &path).unwrap();
-    let a = ops::doc::open(&host, "left", path.clone()).await.unwrap();
-    let b = ops::doc::open(&host, "right", path.clone()).await.unwrap();
-    let second_tab = ops::doc::open(&host, "right", path.clone()).await.unwrap();
+    let a = ops::doc::doc_open(&host, "left", path.clone()).await.unwrap();
+    let b = ops::doc::doc_open(&host, "right", path.clone()).await.unwrap();
+    let second_tab = ops::doc::doc_open(&host, "right", path.clone()).await.unwrap();
     assert_eq!(b.id, second_tab.id);
     wait_for(&events, "left", |items| items.is_empty()).await;
     wait_for(&events, "right", |items| items.is_empty()).await;
 
     let calls: u64 = plugins.run_command(ID, "calls", None, Invocation::default()).unwrap().unwrap().parse().unwrap();
     events.lock().clear();
-    replace(&host, "left", &a, "BAD");
+    replace(&host, "left", &a, "BAD").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let version = replace(&host, "left", &a, "😀BAD");
+    let version = replace(&host, "left", &a, "😀BAD").await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(latest(&events, "left", SOURCE).is_none(), "300ms after the latest edit");
     wait_for(&events, "left", |items| !items.is_empty()).await;
@@ -330,40 +331,40 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
     plugins.run_command(ID, "publish", path.to_str(), Invocation::default()).unwrap();
     let manual_window = events.lock().iter().find_map(|(window, event)| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == "plugin:test.diagnostics" && !items.is_empty()).then(|| window.clone())).unwrap();
     assert_eq!(latest(&events, &manual_window, "plugin:test.diagnostics").unwrap()[0].message, "Manual problem");
-    replace(&host, "left", &a, "clean again");
+    replace(&host, "left", &a, "clean again").await;
     wait_for(&events, "left", |items| items.is_empty()).await;
     assert_eq!(latest(&events, &manual_window, "plugin:test.diagnostics").unwrap()[0].message, "Manual problem");
 
     events.lock().clear();
-    replace(&host, "left", &a, "slow BAD");
+    replace(&host, "left", &a, "slow BAD").await;
     tokio::time::sleep(Duration::from_millis(350)).await;
-    replace(&host, "left", &a, "latest clean");
+    replace(&host, "left", &a, "latest clean").await;
     wait_for(&events, "left", |items| items.is_empty()).await;
     assert!(
         !events.lock().iter().any(|(_, e)| matches!(e, IdeEvent::Diagnostics { items, .. } if !items.is_empty())),
         "superseded in-flight answers never publish"
     );
 
-    replace(&host, "right", &b, "BAD right");
+    replace(&host, "right", &b, "BAD right").await;
     wait_for(&events, "right", |items| !items.is_empty()).await;
-    ops::doc::close(&host, "right", b.id).unwrap();
+    ops::doc::doc_close(&host, "right", b.id).await.unwrap();
     assert!(!latest(&events, "right", SOURCE).unwrap().is_empty(), "another pane still owns this document");
-    ops::doc::close(&host, "right", second_tab.id).unwrap();
+    ops::doc::doc_close(&host, "right", second_tab.id).await.unwrap();
     wait_for(&events, "right", |items| items.is_empty()).await;
-    replace(&host, "left", &a, "BAD left");
+    replace(&host, "left", &a, "BAD left").await;
     wait_for(&events, "left", |items| !items.is_empty()).await;
     plugins.set_enabled(ID, false).unwrap();
     wait_for(&events, "left", |items| items.is_empty()).await;
     plugins.set_enabled(ID, true).unwrap();
 
     events.lock().clear();
-    replace(&host, "left", &a, "slow BAD closing");
+    replace(&host, "left", &a, "slow BAD closing").await;
     tokio::time::sleep(Duration::from_millis(350)).await;
     host.close_project("left");
     // Keep the old Project alive deliberately: window reuse must still cancel it.
     assert_eq!(left.documents.snapshot(a.id).unwrap().text, "slow BAD closing");
     host.open_light("left", &path).unwrap();
-    let reopened = ops::doc::open(&host, "left", path.clone()).await.unwrap();
+    let reopened = ops::doc::doc_open(&host, "left", path.clone()).await.unwrap();
     wait_for(&events, "left", |items| items.is_empty()).await;
     assert!(!events.lock().iter().any(|(_, e)| matches!(e, IdeEvent::Diagnostics { items, .. } if !items.is_empty())));
     // Project plugins receive only snapshots from the project that owns their declaration.
@@ -375,7 +376,7 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
     plugins.set_project_policy(Arc::new(|_| true));
     plugins.sync_project(&root);
     plugins.grant("project.diagnostics", &Consent::all()).unwrap();
-    replace(&host, "left", &reopened, "BAD in project");
+    replace(&host, "left", &reopened, "BAD in project").await;
     wait_for(&events, "left", |items| !items.is_empty()).await;
     let project_source = "plugin-provider:project.diagnostics";
     wait_for_source(&events, "left", project_source, |items| !items.is_empty()).await;
@@ -384,7 +385,7 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
     let other_path = elsewhere.join("other.txt");
     std::fs::write(&other_path, "BAD outside").unwrap();
     host.open_light("elsewhere", &other_path).unwrap();
-    ops::doc::open(&host, "elsewhere", other_path).await.unwrap();
+    ops::doc::doc_open(&host, "elsewhere", other_path).await.unwrap();
     wait_for(&events, "elsewhere", |items| !items.is_empty()).await;
     assert!(latest(&events, "elsewhere", project_source).is_none());
     plugins.restrict_project(&root);
@@ -403,7 +404,7 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
     plugins.run_command("test.slow", "calls", None, Invocation::default()).unwrap();
     let calls = plugins.run_command(ID, "calls", None, Invocation::default()).unwrap();
     events.lock().clear();
-    replace(&host, "left", &reopened, "BAD completed before crash");
+    replace(&host, "left", &reopened, "BAD completed before crash").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let waiter = {
         let plugins = plugins.clone();
@@ -426,7 +427,7 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
         latest(&events, "left", SOURCE).is_none_or(|items| items.is_empty()),
         "a crash invalidates completed answers"
     );
-    ops::doc::close(&host, "left", reopened.id).unwrap();
+    ops::doc::doc_close(&host, "left", reopened.id).await.unwrap();
     host.shutdown().await;
     set_editor_providers(None);
 }

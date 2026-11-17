@@ -47,14 +47,14 @@ pub async fn analysis_locate_duplicates(
 #[tauri::command]
 #[specta::specta]
 pub async fn structural_languages(state: State<'_, AppState>) -> IdeResult<Vec<StructuralLanguage>> {
-    ide_host::ops::analysis::structural_languages(&state.host, "").await
+    ide_host::ops::analysis::structural_languages(&state.host).await
 }
 
 /// Checks a structural search template (and language) while the user types.
 #[tauri::command]
 #[specta::specta]
 pub async fn structural_validate(state: State<'_, AppState>, query: StructuralQuery) -> IdeResult<()> {
-    ide_host::ops::analysis::structural_validate(&state.host, "", query).await
+    ide_host::ops::analysis::structural_validate(&state.host, query).await
 }
 
 /// Search Structurally over `scope`; files with matches stream through

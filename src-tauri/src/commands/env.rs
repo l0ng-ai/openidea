@@ -10,5 +10,5 @@ use tauri::{State, Window};
 #[tauri::command]
 #[specta::specta]
 pub async fn env_reload(window: Window, state: State<'_, AppState>) -> IdeResult<EnvReloaded> {
-    ide_host::ops::env::reload(&state.host, window.label()).await
+    ide_host::ops::env::env_reload(&state.host, window.label()).await
 }

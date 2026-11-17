@@ -26,13 +26,13 @@ pub async fn debug_set_breakpoints(
     path: PathBuf,
     breakpoints: Vec<Breakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
-    ide_host::ops::debug::debug_set_breakpoints(&state.host, "", path, breakpoints).await
+    ide_host::ops::debug::debug_set_breakpoints(&state.host, path, breakpoints).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_threads(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<Vec<ThreadInfo>> {
-    ide_host::ops::debug::debug_threads(&state.host, "", session).await
+    ide_host::ops::debug::debug_threads(&state.host, session).await
 }
 
 #[tauri::command]
@@ -42,13 +42,13 @@ pub async fn debug_stack_trace(
     session: DebugSessionId,
     thread_id: i64,
 ) -> IdeResult<Vec<StackFrame>> {
-    ide_host::ops::debug::debug_stack_trace(&state.host, "", session, thread_id).await
+    ide_host::ops::debug::debug_stack_trace(&state.host, session, thread_id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_scopes(state: State<'_, AppState>, session: DebugSessionId, frame_id: i64) -> IdeResult<Vec<Scope>> {
-    ide_host::ops::debug::debug_scopes(&state.host, "", session, frame_id).await
+    ide_host::ops::debug::debug_scopes(&state.host, session, frame_id).await
 }
 
 #[tauri::command]
@@ -58,7 +58,7 @@ pub async fn debug_variables(
     session: DebugSessionId,
     reference: i64,
 ) -> IdeResult<Vec<Variable>> {
-    ide_host::ops::debug::debug_variables(&state.host, "", session, reference).await
+    ide_host::ops::debug::debug_variables(&state.host, session, reference).await
 }
 
 #[tauri::command]
@@ -69,7 +69,7 @@ pub async fn debug_evaluate(
     frame_id: Option<i64>,
     expression: String,
 ) -> IdeResult<Variable> {
-    ide_host::ops::debug::debug_evaluate(&state.host, "", session, frame_id, expression).await
+    ide_host::ops::debug::debug_evaluate(&state.host, session, frame_id, expression).await
 }
 
 /// Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16).
@@ -83,38 +83,38 @@ pub async fn debug_completions(
     line: u32,
     column: u32,
 ) -> IdeResult<Vec<ide_dap::DebugCompletion>> {
-    ide_host::ops::debug::debug_completions(&state.host, "", session, frame_id, text, line, column).await
+    ide_host::ops::debug::debug_completions(&state.host, session, frame_id, text, line, column).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_resume(state: State<'_, AppState>, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
-    ide_host::ops::debug::debug_resume(&state.host, "", session, thread_id).await
+    ide_host::ops::debug::debug_resume(&state.host, session, thread_id).await
 }
 
 /// Types `text` into the session's program (a `runInTerminal` program).
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_send_input(state: State<'_, AppState>, session: DebugSessionId, text: String) -> IdeResult<()> {
-    ide_host::ops::debug::debug_send_input(&state.host, "", session, text).await
+    ide_host::ops::debug::debug_send_input(&state.host, session, text).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_pause(state: State<'_, AppState>, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
-    ide_host::ops::debug::debug_pause(&state.host, "", session, thread_id).await
+    ide_host::ops::debug::debug_pause(&state.host, session, thread_id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_hot_reload(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
-    ide_host::ops::debug::debug_hot_reload(&state.host, "", session).await
+    ide_host::ops::debug::debug_hot_reload(&state.host, session).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_hot_restart(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
-    ide_host::ops::debug::debug_hot_restart(&state.host, "", session).await
+    ide_host::ops::debug::debug_hot_restart(&state.host, session).await
 }
 
 #[tauri::command]
@@ -125,7 +125,7 @@ pub async fn debug_step(
     thread_id: i64,
     kind: StepKind,
 ) -> IdeResult<()> {
-    ide_host::ops::debug::debug_step(&state.host, "", session, thread_id, kind).await
+    ide_host::ops::debug::debug_step(&state.host, session, thread_id, kind).await
 }
 
 #[tauri::command]
@@ -138,13 +138,13 @@ pub async fn debug_run_to(
     line: u32,
     force: bool,
 ) -> IdeResult<()> {
-    ide_host::ops::debug::debug_run_to(&state.host, "", session, thread_id, path, line, force).await
+    ide_host::ops::debug::debug_run_to(&state.host, session, thread_id, path, line, force).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_stop(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
-    ide_host::ops::debug::debug_stop(&state.host, "", session).await
+    ide_host::ops::debug::debug_stop(&state.host, session).await
 }
 
 /// Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`.
@@ -157,14 +157,14 @@ pub async fn debug_evaluate_in(
     expression: String,
     context: Option<String>,
 ) -> IdeResult<Variable> {
-    ide_host::ops::debug::debug_evaluate_in(&state.host, "", session, frame_id, expression, context).await
+    ide_host::ops::debug::debug_evaluate_in(&state.host, session, frame_id, expression, context).await
 }
 
 /// Last known verification states of a file's breakpoints (refetch on `breakpointsChanged`).
 #[tauri::command]
 #[specta::specta]
 pub fn debug_breakpoint_states(state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<BreakpointState>> {
-    ide_host::ops::debug::debug_breakpoint_states(&state.host, "", path)
+    ide_host::ops::debug::debug_breakpoint_states(&state.host, path)
 }
 
 /// This window's live sessions, including adapter-started child sessions.
@@ -186,7 +186,7 @@ pub async fn debug_set_exception_breakpoints(
     state: State<'_, AppState>,
     choices: std::collections::BTreeMap<String, bool>,
 ) -> IdeResult<()> {
-    ide_host::ops::debug::debug_set_exception_breakpoints(&state.host, "", choices).await
+    ide_host::ops::debug::debug_set_exception_breakpoints(&state.host, choices).await
 }
 
 #[tauri::command]
@@ -200,7 +200,7 @@ pub async fn debug_set_variable(
     frame_id: Option<i64>,
     value: String,
 ) -> IdeResult<Variable> {
-    ide_host::ops::debug::debug_set_variable(&state.host, "", session, container, name, evaluate_name, frame_id, value)
+    ide_host::ops::debug::debug_set_variable(&state.host, session, container, name, evaluate_name, frame_id, value)
         .await
 }
 
@@ -212,7 +212,7 @@ pub async fn debug_force_step_over(
     session: DebugSessionId,
     thread_id: i64,
 ) -> IdeResult<()> {
-    ide_host::ops::debug::debug_force_step_over(&state.host, "", session, thread_id).await
+    ide_host::ops::debug::debug_force_step_over(&state.host, session, thread_id).await
 }
 
 /// Smart Step Into: the calls on the current line of `frame_id`.
@@ -223,7 +223,7 @@ pub async fn debug_step_in_targets(
     session: DebugSessionId,
     frame_id: i64,
 ) -> IdeResult<Vec<StepInTarget>> {
-    ide_host::ops::debug::debug_step_in_targets(&state.host, "", session, frame_id).await
+    ide_host::ops::debug::debug_step_in_targets(&state.host, session, frame_id).await
 }
 
 #[tauri::command]
@@ -234,14 +234,14 @@ pub async fn debug_step_in_target(
     thread_id: i64,
     target_id: i64,
 ) -> IdeResult<()> {
-    ide_host::ops::debug::debug_step_in_target(&state.host, "", session, thread_id, target_id).await
+    ide_host::ops::debug::debug_step_in_target(&state.host, session, thread_id, target_id).await
 }
 
 /// Reset Frame (Drop Frame).
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_restart_frame(state: State<'_, AppState>, session: DebugSessionId, frame_id: i64) -> IdeResult<()> {
-    ide_host::ops::debug::debug_restart_frame(&state.host, "", session, frame_id).await
+    ide_host::ops::debug::debug_restart_frame(&state.host, session, frame_id).await
 }
 
 /// The responses a debugged page gets in place of the server's, by a part of the URL; none
@@ -253,7 +253,7 @@ pub async fn debug_js_response_overrides(
     session: DebugSessionId,
     rules: Vec<ide_dap::JsResponseRule>,
 ) -> IdeResult<()> {
-    ide_host::ops::debug::debug_js_response_overrides(&state.host, "", session, rules).await
+    ide_host::ops::debug::debug_js_response_overrides(&state.host, session, rules).await
 }
 
 /// The body of a response a debugged page received.
@@ -264,7 +264,7 @@ pub async fn debug_js_response_body(
     session: DebugSessionId,
     request_id: String,
 ) -> IdeResult<ide_dap::JsResponseBody> {
-    ide_host::ops::debug::debug_js_response_body(&state.host, "", session, request_id).await
+    ide_host::ops::debug::debug_js_response_body(&state.host, session, request_id).await
 }
 
 /// Breakpoints of a debugged page on DOM events and on requests (js-debug).
@@ -276,14 +276,14 @@ pub async fn debug_js_custom_breakpoints(
     ids: Vec<String>,
     xhr: Vec<String>,
 ) -> IdeResult<()> {
-    ide_host::ops::debug::debug_js_custom_breakpoints(&state.host, "", session, ids, xhr).await
+    ide_host::ops::debug::debug_js_custom_breakpoints(&state.host, session, ids, xhr).await
 }
 
 /// Starts recording a debugged page's CPU profile.
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_js_start_profile(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
-    ide_host::ops::debug::debug_js_start_profile(&state.host, "", session).await
+    ide_host::ops::debug::debug_js_start_profile(&state.host, session).await
 }
 
 /// Ends the recording: a directory holding the profile as `page.cpuprofile`.
@@ -293,13 +293,13 @@ pub async fn debug_js_stop_profile(
     state: State<'_, AppState>,
     session: DebugSessionId,
 ) -> IdeResult<ide_core::IpcPath> {
-    ide_host::ops::debug::debug_js_stop_profile(&state.host, "", session).await
+    ide_host::ops::debug::debug_js_stop_profile(&state.host, session).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn debug_capabilities(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<DebugCapabilities> {
-    ide_host::ops::debug::debug_capabilities(&state.host, "", session)
+    ide_host::ops::debug::debug_capabilities(&state.host, session)
 }
 
 /// Method breakpoints (all files); states aligned with `breakpoints`.
@@ -309,7 +309,7 @@ pub async fn debug_set_function_breakpoints(
     state: State<'_, AppState>,
     breakpoints: Vec<FunctionBreakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
-    ide_host::ops::debug::debug_set_function_breakpoints(&state.host, "", breakpoints).await
+    ide_host::ops::debug::debug_set_function_breakpoints(&state.host, breakpoints).await
 }
 
 /// Field watchpoints; states aligned with `breakpoints`.
@@ -319,7 +319,7 @@ pub async fn debug_set_data_breakpoints(
     state: State<'_, AppState>,
     breakpoints: Vec<DataBreakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
-    ide_host::ops::debug::debug_set_data_breakpoints(&state.host, "", breakpoints).await
+    ide_host::ops::debug::debug_set_data_breakpoints(&state.host, breakpoints).await
 }
 
 #[tauri::command]
@@ -331,14 +331,14 @@ pub async fn debug_data_breakpoint_info(
     name: String,
     frame_id: Option<i64>,
 ) -> IdeResult<DataBreakpointInfo> {
-    ide_host::ops::debug::debug_data_breakpoint_info(&state.host, "", session, container, name, frame_id).await
+    ide_host::ops::debug::debug_data_breakpoint_info(&state.host, session, container, name, frame_id).await
 }
 
 /// Attach to Process: the user's processes a debugger can attach to.
 #[tauri::command]
 #[specta::specta]
-pub async fn debug_attachable_processes(state: State<'_, AppState>) -> IdeResult<Vec<attach::AttachableProcess>> {
-    ide_host::ops::debug::debug_attachable_processes(&state.host, "").await
+pub async fn debug_attachable_processes(_state: State<'_, AppState>) -> IdeResult<Vec<attach::AttachableProcess>> {
+    ide_host::ops::debug::debug_attachable_processes().await
 }
 
 /// A loopback port that is free right now, for a debug agent the launch line starts.
@@ -375,7 +375,7 @@ pub async fn debug_listen_for_jvm(
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_redefine_classes(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<HotSwapResult> {
-    ide_host::ops::debug::debug_redefine_classes(&state.host, "", session).await
+    ide_host::ops::debug::debug_redefine_classes(&state.host, session).await
 }
 
 /// The debuggee JVM's loaded classes (instances and shallow bytes), or why they cannot be read.

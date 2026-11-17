@@ -9,8 +9,8 @@ use tauri::{State, Window};
 /// The project generators File › New Project offers, in list order.
 #[tauri::command]
 #[specta::specta]
-pub fn scaffold_catalog(window: Window, state: State<'_, AppState>) -> Vec<GeneratorInfo> {
-    ide_host::ops::scaffold::scaffold_catalog(&state.host, window.label())
+pub fn scaffold_catalog(_window: Window, _state: State<'_, AppState>) -> Vec<GeneratorInfo> {
+    ide_host::ops::scaffold::scaffold_catalog()
 }
 
 /// The fields a generator's project service adds for `values`; cancellable with
@@ -18,25 +18,25 @@ pub fn scaffold_catalog(window: Window, state: State<'_, AppState>) -> Vec<Gener
 #[tauri::command]
 #[specta::specta]
 pub async fn scaffold_options(
-    window: Window,
+    _window: Window,
     state: State<'_, AppState>,
     generator: String,
     values: Values,
     request: RequestId,
 ) -> IdeResult<Vec<Field>> {
-    ide_host::ops::scaffold::scaffold_options(&state.host, window.label(), generator, values, request).await
+    ide_host::ops::scaffold::scaffold_options(&state.host, generator, values, request).await
 }
 
 /// The programs a generator needs for `values`, and whether they are installed.
 #[tauri::command]
 #[specta::specta]
 pub async fn scaffold_requirements(
-    window: Window,
-    state: State<'_, AppState>,
+    _window: Window,
+    _state: State<'_, AppState>,
     generator: String,
     values: Values,
 ) -> IdeResult<Vec<Requirement>> {
-    ide_host::ops::scaffold::scaffold_requirements(&state.host, window.label(), generator, values).await
+    ide_host::ops::scaffold::scaffold_requirements(generator, values).await
 }
 
 /// Creates a project, streaming progress through `on_event`, and returns its directory,
@@ -44,18 +44,11 @@ pub async fn scaffold_requirements(
 #[tauri::command]
 #[specta::specta]
 pub async fn scaffold_create(
-    window: Window,
+    _window: Window,
     state: State<'_, AppState>,
     req: CreateRequest,
     request: RequestId,
     on_event: Channel<ScaffoldEvent>,
 ) -> IdeResult<IpcPath> {
-    ide_host::ops::scaffold::scaffold_create(
-        &state.host,
-        window.label(),
-        req,
-        request,
-        crate::commands::sender(on_event),
-    )
-    .await
+    ide_host::ops::scaffold::scaffold_create(&state.host, req, request, crate::commands::sender(on_event)).await
 }

@@ -20,10 +20,8 @@ pub async fn search_start(
     query: SearchQuery,
     on_event: Channel<SearchEvent>,
 ) -> IdeResult<()> {
-    let emit = std::sync::Arc::new(move |e| {
-        let _ = on_event.send(e);
-    });
-    ide_host::ops::search::start(&state.host, window.label(), request, query, emit).await
+    ide_host::ops::search::search_start(&state.host, window.label(), request, query, crate::commands::sender(on_event))
+        .await
 }
 /// Replace in Files. Runs off the command thread; progress streams through
 /// `on_event` and ends with `Done`. Cancel with `cancel_request(request)`.
@@ -77,6 +75,6 @@ pub async fn replace_preview(
 /// Validates a query (e.g. regex syntax) while the user types.
 #[tauri::command]
 #[specta::specta]
-pub fn search_validate(state: State<'_, AppState>, query: SearchQuery) -> IdeResult<()> {
-    ide_host::ops::search::search_validate(&state.host, "", query)
+pub fn search_validate(_state: State<'_, AppState>, query: SearchQuery) -> IdeResult<()> {
+    ide_host::ops::search::search_validate(query)
 }

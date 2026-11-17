@@ -193,7 +193,6 @@ fn go_source(project: &crate::Project, config_dir: &Path, path: &Path) -> IdeRes
     Ok(GoModules { root, env })
 }
 
-/// `offset` limits a completion request to its version string; inspections omit it.
 pub async fn dependency_versions(
     host: &Host,
     window: &str,
@@ -201,6 +200,7 @@ pub async fn dependency_versions(
     offset: Option<u32>,
     request: RequestId,
 ) -> IdeResult<Vec<DependencyVersions>> {
+    // `offset` limits a completion request to its version string; inspections omit it.
     let project = host.project(window)?;
     let cache = host.dependency_versions.clone();
     let config_dir = host.config_dir.clone();

@@ -28,7 +28,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
     std::fs::create_dir(&root).unwrap();
     let host = host(&tmp.path().join("app"), false);
     assert!(host.project("welcome").is_err());
-    assert!(ide_host::ops::project::roots(&host, "welcome").is_err());
+    assert!(ide_host::ops::project::project_roots(&host, "welcome").is_err());
     assert!(!host.open_project("main", &root).unwrap().is_trusted());
     for command in [
         "app_info",
@@ -119,29 +119,21 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         assert!(host.authorize_command("welcome", command).is_ok(), "{command}");
     }
     // These requests validate the vendor before any network access, independently of project trust.
-    for window in ["main", "welcome"] {
-        let error = ide_host::ops::tools::jdk_download_releases(
-            &host,
-            window,
-            "unknown-vendor".into(),
-            ide_core::RequestId(901),
-        )
+    let error = ide_host::ops::tools::jdk_download_releases(&host, "unknown-vendor".into(), ide_core::RequestId(901))
         .await
         .unwrap_err();
-        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
-        let error = ide_host::ops::tools::jdk_download(
-            &host,
-            window,
-            "unknown-vendor".into(),
-            25,
-            None,
-            ide_core::RequestId(902),
-            ide_host::ops::Channel::new(|_| {}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
-    }
+    assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+    let error = ide_host::ops::tools::jdk_download(
+        &host,
+        "unknown-vendor".into(),
+        25,
+        None,
+        ide_core::RequestId(902),
+        ide_host::ops::Channel::new(|_| {}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
     host.shutdown().await;
 }
 
@@ -271,8 +263,8 @@ async fn malicious_project_stays_editable_then_starts_in_place_after_trust() {
     let host = host(&tmp.path().join("app"), true);
     let project = host.open_project("main", &root).unwrap();
     assert!(!project.is_trusted());
-    let doc = ops::doc::open(&host, "main", root.join("main.py")).await.unwrap();
-    ops::doc::save(&host, "main", doc.id).await.unwrap();
+    let doc = ops::doc::doc_open(&host, "main", root.join("main.py")).await.unwrap();
+    ops::doc::doc_save(&host, "main", doc.id).await.unwrap();
     assert!(project.index.wait_idle(Duration::from_secs(10)));
     assert!(project.index.status().files > 0);
     let sync = || {
@@ -322,7 +314,7 @@ async fn malicious_project_stays_editable_then_starts_in_place_after_trust() {
     host.set_project_trust(&root, false, false).await.unwrap();
     assert!(!project.is_trusted());
     assert!(sync().await.is_err());
-    ops::doc::save(&host, "main", doc.id).await.unwrap();
+    ops::doc::doc_save(&host, "main", doc.id).await.unwrap();
     host.shutdown().await;
 }
 
@@ -341,7 +333,7 @@ async fn restricted_terminal_keeps_user_input_but_ignores_project_startup_comman
         )
         .unwrap();
     host.open_project("main", &root).unwrap();
-    let terminal = ops::term::spawn(
+    let terminal = ops::term::term_spawn(
         &host,
         "main",
         ide_terminal::TerminalOptions {
@@ -353,8 +345,9 @@ async fn restricted_terminal_keeps_user_input_but_ignores_project_startup_comman
             rows: 24,
             shell_integration: false,
         },
-        Arc::new(|_| {}),
+        ops::Channel::new(|_| {}),
     )
+    .await
     .unwrap();
     host.terminals.write(terminal.id, "printf user > terminal.marker; exit\n").unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -506,7 +499,6 @@ async fn a_project_created_with_new_project_is_trusted() {
     .unwrap();
     let dir = ide_host::ops::scaffold::scaffold_create(
         &host,
-        "welcome",
         req,
         ide_core::RequestId(902),
         ide_host::ops::Channel::new(|_| {}),

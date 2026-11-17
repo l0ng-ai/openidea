@@ -15,15 +15,13 @@ use tauri::{Manager, State, Window};
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_open(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<DocumentInfo> {
-    ide_host::ops::doc::open(&state.host, window.label(), path).await
+    ide_host::ops::doc::doc_open(&state.host, window.label(), path).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_close(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<()> {
-    let host = state.host.clone();
-    let window = window.label().to_owned();
-    blocking(move || ide_host::ops::doc::close(&host, &window, doc)).await
+    ide_host::ops::doc::doc_close(&state.host, window.label(), doc).await
 }
 
 /// Opens an editable untitled buffer (a new-file tab); it reaches the disk
@@ -35,7 +33,7 @@ pub async fn doc_open_untitled(
     state: State<'_, AppState>,
     name: Option<String>,
 ) -> IdeResult<DocumentInfo> {
-    ide_host::ops::doc::open_untitled(&state.host, window.label(), name).await
+    ide_host::ops::doc::doc_open_untitled(&state.host, window.label(), name).await
 }
 
 /// Save As for an untitled buffer: writes it to `path` and re-keys the buffer
@@ -48,7 +46,7 @@ pub async fn doc_save_as(
     doc: DocId,
     path: PathBuf,
 ) -> IdeResult<DocumentInfo> {
-    ide_host::ops::doc::save_as(&state.host, window.label(), doc, path).await
+    ide_host::ops::doc::doc_save_as(&state.host, window.label(), doc, path).await
 }
 
 /// Applies a CodeMirror change set; returns the new version. Rejects with
@@ -66,7 +64,7 @@ pub async fn doc_edit(
     let label = window.label().to_owned();
     let peers = crate::events::document_edit_peers(window.app_handle(), &label);
     let mirrored = (!peers.is_empty()).then(|| changes.changes.clone());
-    let version = blocking(move || ide_host::ops::doc::edit(&host, &label, doc, base_version, changes)).await?;
+    let version = ide_host::ops::doc::doc_edit(&host, &label, doc, base_version, changes).await?;
     if let Some(changes) = mirrored {
         crate::events::emit_document_edit(window.app_handle(), peers, doc, base_version, version, changes);
     }
@@ -76,25 +74,25 @@ pub async fn doc_edit(
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_save(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<()> {
-    ide_host::ops::doc::save(&state.host, window.label(), doc).await
+    ide_host::ops::doc::doc_save(&state.host, window.label(), doc).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_save_all(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
-    ide_host::ops::doc::save_all(&state.host, window.label()).await
+    ide_host::ops::doc::doc_save_all(&state.host, window.label()).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_sync_from_disk(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
-    ide_host::ops::doc::sync_from_disk(&state.host, window.label()).await
+    ide_host::ops::doc::doc_sync_from_disk(&state.host, window.label()).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_snapshot(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<DocumentInfo> {
-    ide_host::ops::doc::snapshot(&state.host, window.label(), doc).await
+    ide_host::ops::doc::doc_snapshot(&state.host, window.label(), doc).await
 }
 /// Opens a read-only virtual document (see `lsp_virtual_document`) as an
 /// editor buffer, so syntax features and language-server requests work in it.
@@ -150,9 +148,7 @@ pub async fn doc_set_line_ending(
     doc: DocId,
     line_ending: LineEnding,
 ) -> IdeResult<()> {
-    let host = state.host.clone();
-    let window = window.label().to_owned();
-    blocking(move || ide_host::ops::doc::doc_set_line_ending(&host, &window, doc, line_ending)).await
+    ide_host::ops::doc::doc_set_line_ending(&state.host, window.label(), doc, line_ending).await
 }
 
 /// Structure view: LSP document symbols when available (with tree-sitter
@@ -206,13 +202,11 @@ pub async fn doc_selection_ranges(
 #[tauri::command]
 #[specta::specta]
 pub async fn history_list(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    blocking(move || ide_host::ops::doc::history_list(&host, &label, path)).await
+    ide_host::ops::doc::history_list(&state.host, window.label(), path).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn history_content(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<String> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    blocking(move || ide_host::ops::doc::history_content(&host, &label, id)).await
+    ide_host::ops::doc::history_content(&state.host, window.label(), id).await
 }

@@ -6,9 +6,11 @@ use crate::rpc::Dispatcher;
 use ide_core::IdeResult;
 use std::sync::Arc;
 
-/// Re-reads the login shell (and the window's project `remoteEnv` where it applies);
-/// running terminals and processes keep their environment.
-pub async fn reload(host: &Arc<Host>, window: &str) -> IdeResult<EnvReloaded> {
+/// Reload Environment: new child processes get the login shell's current environment
+/// (and the project's `remoteEnv` on a remote host); running ones keep theirs.
+pub async fn env_reload(host: &Arc<Host>, window: &str) -> IdeResult<EnvReloaded> {
+    // Re-reads the login shell (and the window's project `remoteEnv` where it applies);
+    // running terminals and processes keep their environment.
     let root = host.project(window).ok().filter(|p| !p.light && p.is_trusted()).map(|p| p.root.clone());
     let sink = host.window_sink(window);
     let h = host.clone();
@@ -16,5 +18,5 @@ pub async fn reload(host: &Arc<Host>, window: &str) -> IdeResult<EnvReloaded> {
 }
 
 pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("env_reload", |c| async move { reload(&c.host, &c.window).await });
+    d.add("env_reload", |c| async move { env_reload(&c.host, &c.window).await });
 }

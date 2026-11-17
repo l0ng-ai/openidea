@@ -6,17 +6,18 @@ use super::{CommitSelection, PluginCommitCheckRef, PluginCommitCheckResult, Plug
 use ide_core::{IdeError, IdeResult, RequestId};
 use std::sync::Arc;
 
-/// Runs the plugins' before-commit checks `checks` on what `selection` commits,
-/// until request `request` is cancelled.
-pub async fn commit_checks(
+/// Runs plugins' before-commit checks on what `selection` commits, until
+/// `request` is cancelled.
+pub async fn plugin_commit_checks(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     selection: CommitSelection,
     checks: Vec<PluginCommitCheckRef>,
     request: RequestId,
 ) -> IdeResult<Vec<PluginCommitCheckResult>> {
     host.require_trust(window)?;
+    let plugins = plugins.clone();
     let invocation = super::views::view_invocation(host, window, None, None)?;
     let cancel = host.begin_project_read_request(window, request);
     let result = tokio::task::spawn_blocking(move || plugins.commit_checks(invocation, selection, checks, &cancel))

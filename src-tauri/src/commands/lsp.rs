@@ -93,8 +93,15 @@ pub async fn lsp_goto_implementation(
     pos: Pos,
     on_partial: tauri::ipc::Channel<Vec<Location>>,
 ) -> IdeResult<Vec<Location>> {
-    let on_partial = super::sender(on_partial);
-    ide_host::ops::lsp::lsp_goto_implementation(&state.host, window.label(), request, doc, pos, on_partial).await
+    ide_host::ops::lsp::lsp_goto_implementation(
+        &state.host,
+        window.label(),
+        request,
+        doc,
+        pos,
+        crate::commands::sender(on_partial),
+    )
+    .await
 }
 
 /// Refines the implementations `targets` of the method at `pos` to their declarations (Java
@@ -189,7 +196,6 @@ pub async fn lsp_references(
     libraries: bool,
     on_partial: tauri::ipc::Channel<References>,
 ) -> IdeResult<References> {
-    let on_partial = super::sender(on_partial);
     ide_host::ops::lsp::lsp_references(
         &state.host,
         window.label(),
@@ -199,7 +205,7 @@ pub async fn lsp_references(
         include_declaration,
         project_wide,
         libraries,
-        on_partial,
+        crate::commands::sender(on_partial),
     )
     .await
 }
@@ -655,5 +661,5 @@ pub async fn plugin_color_presentations(
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_formatters() -> IdeResult<Vec<ide_host::plugins::language_features::FormatterChoice>> {
-    Ok(ide_host::ops::lsp::plugin_formatters())
+    ide_host::ops::lsp::plugin_formatters()
 }

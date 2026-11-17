@@ -100,7 +100,7 @@ pub(crate) fn library_group(host: &Host, root: &Path, settings: &Settings) -> Op
     snapshots::library_group(name, &dir, &snapshot)
 }
 
-/// The project interpreter when it is a run target's, with its snapshot.
+/// The project interpreter when it is a Docker or Compose run target's, with its snapshot.
 pub fn sdk_container_python(host: &Host, window: &str) -> IdeResult<Option<ContainerPython>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -129,9 +129,9 @@ fn describe(host: &Host, root: &Path, settings: &Settings) -> Option<ContainerPy
     Some(out)
 }
 
-/// Takes a new snapshot of the project interpreter's container (also of an image that
-/// has one already), then the language servers pick it up.
+/// Copies the container's Python libraries again (after the image changed).
 pub async fn sdk_container_python_refresh(host: &Host, window: &str) -> IdeResult<Option<ContainerPython>> {
+    // A new snapshot even of an image that has one already; the language servers then pick it up.
     host.require_trust(window)?;
     let project = host.project(window)?;
     update(Dirs::of(host), &project, true).await?;

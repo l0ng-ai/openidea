@@ -17,7 +17,7 @@ pub async fn web_browsers() -> IdeResult<Vec<Browser>> {
 #[tauri::command]
 #[specta::specta]
 pub async fn web_url(window: Window, state: State<'_, AppState>, path: IpcPath) -> IdeResult<String> {
-    ide_host::ops::web::url(&state.host, window.label(), &path).await
+    ide_host::ops::web::web_url(&state.host, window.label(), path).await
 }
 
 /// Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open.

@@ -55,27 +55,27 @@ pub async fn tools_uninstall(window: Window, state: State<'_, AppState>, name: S
 /// JDK distributions Download JDK offers.
 #[tauri::command]
 #[specta::specta]
-pub fn jdk_download_vendors(state: State<'_, AppState>) -> Vec<JdkVendor> {
-    ide_host::ops::tools::jdk_download_vendors(&state.host, "")
+pub fn jdk_download_vendors(_state: State<'_, AppState>) -> Vec<JdkVendor> {
+    ide_host::ops::tools::jdk_download_vendors()
 }
 
 /// Java versions `vendor` publishes; cancellable with `cancel_request(request)`.
 #[tauri::command]
 #[specta::specta]
 pub async fn jdk_download_releases(
-    window: Window,
+    _window: Window,
     state: State<'_, AppState>,
     vendor: String,
     request: RequestId,
 ) -> IdeResult<JdkReleases> {
-    ide_host::ops::tools::jdk_download_releases(&state.host, window.label(), vendor, request).await
+    ide_host::ops::tools::jdk_download_releases(&state.host, vendor, request).await
 }
 
 /// Where Download JDK puts JDKs unless told otherwise.
 #[tauri::command]
 #[specta::specta]
 pub fn jdk_download_location(state: State<'_, AppState>) -> IdeResult<ide_core::IpcPath> {
-    ide_host::ops::tools::jdk_download_location(&state.host, "")
+    ide_host::ops::tools::jdk_download_location(&state.host)
 }
 
 /// The Java version the window's jdtls needs; `None` while it isn't installed or doesn't tell.
@@ -93,7 +93,7 @@ pub async fn jdtls_required_java(window: Window, state: State<'_, AppState>) -> 
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
 pub async fn jdk_download(
-    window: Window,
+    _window: Window,
     state: State<'_, AppState>,
     vendor: String,
     version: u32,
@@ -103,7 +103,6 @@ pub async fn jdk_download(
 ) -> IdeResult<Sdk> {
     ide_host::ops::tools::jdk_download(
         &state.host,
-        window.label(),
         vendor,
         version,
         location,

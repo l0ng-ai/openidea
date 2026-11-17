@@ -230,5 +230,5 @@ pub async fn docker_run_env(
     state: State<'_, AppState>,
     endpoint: DockerEndpoint,
 ) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    ide_host::ops::docker::run_env(&state.host, endpoint).await
+    ide_host::ops::docker::docker_run_env(&state.host, endpoint).await
 }

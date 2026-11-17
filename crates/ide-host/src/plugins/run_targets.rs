@@ -1,9 +1,11 @@
 //! Project-owned registrations, retained across idle instance reclamation.
 use super::api::{PluginApi, Shared};
 use super::{PluginEvent, PluginHost};
+use crate::Host;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::{HostError, PluginRunTarget};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -149,6 +151,25 @@ impl PluginHost {
         }
         Ok(wrapped)
     }
+}
+
+pub async fn plugin_run_targets(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+) -> IdeResult<Vec<RegisteredRunTarget>> {
+    list(host, plugins, window)
+}
+
+pub async fn plugin_answer_run_target(
+    host: &Arc<Host>,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    id: String,
+    use_target: bool,
+) -> IdeResult<ide_core::settings::Settings> {
+    let (shared, plugins, window) = (host.clone(), plugins.clone(), window.to_owned());
+    host.blocking(move || answer(&shared, &plugins, &window, &id, use_target)).await
 }
 
 pub fn list(host: &crate::Host, plugins: &PluginHost, window: &str) -> IdeResult<Vec<RegisteredRunTarget>> {

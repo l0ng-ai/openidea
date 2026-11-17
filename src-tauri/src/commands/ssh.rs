@@ -16,50 +16,48 @@ pub async fn ssh_test(
     config: SshConfiguration,
     secret: Option<String>,
 ) -> IdeResult<String> {
-    let ssh = state.ssh.clone();
-    ssh.test(&config, secret).await
+    ide_host::ops::ssh::ssh_test(&state.host, config, secret).await
 }
 
 /// Remembers the password / passphrase of configuration `id` (`None` forgets it).
 #[tauri::command]
 #[specta::specta]
 pub fn ssh_set_secret(state: State<'_, AppState>, id: String, secret: Option<String>, save: bool) {
-    state.ssh.set_secret(&id, secret, save);
+    ide_host::ops::ssh::ssh_set_secret(&state.host, id, secret, save)
 }
 
 /// Whether a password is saved under `key` (an FTP deployment server's).
 #[tauri::command]
 #[specta::specta]
 pub fn ssh_password_saved(state: State<'_, AppState>, key: String) -> bool {
-    state.ssh.password_saved(&key)
+    ide_host::ops::ssh::ssh_password_saved(&state.host, key)
 }
 
 /// Whether connecting with configuration `id` needs a password first.
 #[tauri::command]
 #[specta::specta]
 pub fn ssh_needs_secret(state: State<'_, AppState>, id: String) -> IdeResult<bool> {
-    Ok(state.ssh.needs_secret(&state.ssh.config(&id)?))
+    ide_host::ops::ssh::ssh_needs_secret(&state.host, id)
 }
 
 /// Trusts the host key that failed the last connection of configuration `id`.
 #[tauri::command]
 #[specta::specta]
 pub async fn ssh_trust_host(state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    let ssh = state.ssh.clone();
-    ssh.trust_host(&id).await
+    ide_host::ops::ssh::ssh_trust_host(&state.host, id).await
 }
 
 /// Ids of the configurations with an open connection.
 #[tauri::command]
 #[specta::specta]
 pub fn ssh_connected(state: State<'_, AppState>) -> Vec<String> {
-    state.ssh.connected()
+    ide_host::ops::ssh::ssh_connected(&state.host)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn ssh_disconnect(state: State<'_, AppState>, id: String) {
-    state.ssh.disconnect(&id);
+    ide_host::ops::ssh::ssh_disconnect(&state.host, id)
 }
 
 /// Answers an `IdeEvent::Askpass` prompt (`None`: cancelled); every window drops it.

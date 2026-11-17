@@ -1,6 +1,5 @@
 //! IPC commands of `ide_host::ops::run` (the shared implementation).
 
-use super::doc::blocking;
 use crate::state::AppState;
 use ide_core::{IdeResult, RunId};
 #[allow(unused_imports)]
@@ -47,11 +46,7 @@ pub async fn run_application_publish(
 #[tauri::command]
 #[specta::specta]
 pub async fn run_configs(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<RunConfig>> {
-    // Detection reads build files (and Spring Boot sources): off the command thread.
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    tauri::async_runtime::spawn_blocking(move || ide_host::ops::run::configs(&host, &label))
-        .await
-        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+    ide_host::ops::run::run_configs(&state.host, window.label()).await
 }
 
 #[tauri::command]
@@ -62,9 +57,7 @@ pub async fn run_save_configs(
     configs: Vec<RunConfig>,
     removed_detected_ids: Option<Vec<String>>,
 ) -> IdeResult<()> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    let removed = removed_detected_ids.unwrap_or_default();
-    blocking(move || ide_host::ops::run::save_configs(&host, &label, &configs, &removed)).await
+    ide_host::ops::run::run_save_configs(&state.host, window.label(), configs, removed_detected_ids).await
 }
 
 /// Temporary configurations as they are kept between sessions: without what settings derived.
@@ -75,10 +68,7 @@ pub async fn run_without_derived(
     state: State<'_, AppState>,
     configs: Vec<RunConfig>,
 ) -> IdeResult<Vec<RunConfig>> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    tauri::async_runtime::spawn_blocking(move || ide_host::ops::run::without_derived(&host, &label, configs))
-        .await
-        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+    ide_host::ops::run::run_without_derived(&state.host, window.label(), configs).await
 }
 
 /// Kept temporary configurations with the current settings applied.
@@ -89,10 +79,7 @@ pub async fn run_apply_settings(
     state: State<'_, AppState>,
     configs: Vec<RunConfig>,
 ) -> IdeResult<Vec<RunConfig>> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    tauri::async_runtime::spawn_blocking(move || ide_host::ops::run::apply_settings(&host, &label, configs))
-        .await
-        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+    ide_host::ops::run::run_apply_settings(&state.host, window.label(), configs).await
 }
 
 #[tauri::command]
@@ -104,48 +91,45 @@ pub async fn run_start(
     on_output: Channel<OutputChunk>,
     request: Option<ide_core::RequestId>,
 ) -> IdeResult<RunInfo> {
-    let emit = std::sync::Arc::new(move |chunk| {
-        let _ = on_output.send(chunk);
-    });
-    ide_host::ops::run::start_request(&state.host, window.label(), config, emit, request).await
+    ide_host::ops::run::run_start(&state.host, window.label(), config, crate::commands::sender(on_output), request)
+        .await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_stop(window: Window, state: State<'_, AppState>, id: RunId) -> IdeResult<()> {
-    ide_host::ops::run::stop(&state.host, window.label(), id)
+    ide_host::ops::run::run_stop(&state.host, window.label(), id)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_stdin(state: State<'_, AppState>, id: RunId, data: String) -> IdeResult<()> {
-    ide_host::ops::run::stdin(&state.host, id, &data)
+    ide_host::ops::run::run_stdin(&state.host, id, data)
 }
 
 /// Terminal size of a run started with "Emulate terminal in output console".
 #[tauri::command]
 #[specta::specta]
 pub fn run_resize(state: State<'_, AppState>, id: RunId, cols: u16, rows: u16) -> IdeResult<()> {
-    ide_host::ops::run::resize(&state.host, id, cols, rows)
+    ide_host::ops::run::run_resize(&state.host, id, cols, rows)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_list(state: State<'_, AppState>) -> Vec<RunInfo> {
-    ide_host::ops::run::list(&state.host)
+    ide_host::ops::run::run_list(&state.host)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn run_close_stdin(state: State<'_, AppState>, id: RunId) -> IdeResult<()> {
-    ide_host::ops::run::close_stdin(&state.host, id)
+    ide_host::ops::run::run_close_stdin(&state.host, id)
 }
 /// Configuration templates: per-type defaults applied to new configurations.
 #[tauri::command]
 #[specta::specta]
 pub async fn run_templates(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<RunConfig>> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    blocking(move || ide_host::ops::run::run_templates(&host, &label)).await
+    ide_host::ops::run::run_templates(&state.host, window.label()).await
 }
 
 #[tauri::command]
@@ -155,8 +139,7 @@ pub async fn run_save_templates(
     state: State<'_, AppState>,
     templates: Vec<RunConfig>,
 ) -> IdeResult<()> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    blocking(move || ide_host::ops::run::run_save_templates(&host, &label, templates)).await
+    ide_host::ops::run::run_save_templates(&state.host, window.label(), templates).await
 }
 
 /// Project files run configurations can be imported from (`.vscode/launch.json`).
@@ -166,8 +149,7 @@ pub async fn run_import_sources(
     window: Window,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<ide_run::import::RunImportSource>> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    blocking(move || ide_host::ops::run::run_import_sources(&host, &label)).await
+    ide_host::ops::run::run_import_sources(&state.host, window.label()).await
 }
 
 /// Configurations read from `source`, not saved; names already in `existing` are skipped.
@@ -179,50 +161,48 @@ pub async fn run_import_configs(
     source: ide_run::import::RunImportSource,
     existing: Vec<RunConfig>,
 ) -> IdeResult<ide_run::import::RunImport> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    blocking(move || ide_host::ops::run::run_import_configs(&host, &label, source, existing)).await
+    ide_host::ops::run::run_import_configs(&state.host, window.label(), source, existing).await
 }
 
 /// The environment runs inherit when "Include system environment variables" is on.
 #[tauri::command]
 #[specta::specta]
-pub fn run_system_env(state: State<'_, AppState>) -> std::collections::BTreeMap<String, String> {
-    ide_host::ops::run::run_system_env(&state.host, "")
+pub fn run_system_env(_state: State<'_, AppState>) -> std::collections::BTreeMap<String, String> {
+    ide_host::ops::run::run_system_env()
 }
 
 /// Variables of the `.env` files a debug launch names, for the debugger to start with.
 #[tauri::command]
 #[specta::specta]
 pub async fn run_env_files(
-    window: Window,
-    state: State<'_, AppState>,
+    _window: Window,
+    _state: State<'_, AppState>,
     files: Vec<std::path::PathBuf>,
 ) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    let (host, label) = (state.host.clone(), window.label().to_owned());
-    blocking(move || ide_host::ops::run::run_env_files(&host, &label, files)).await
+    ide_host::ops::run::run_env_files(files).await
 }
 
 /// Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path.
 #[tauri::command]
 #[specta::specta]
 pub async fn run_gradle_jvm_args_script(
-    window: Window,
-    state: State<'_, AppState>,
+    _window: Window,
+    _state: State<'_, AppState>,
     jvm_args: Vec<String>,
 ) -> IdeResult<String> {
-    ide_host::ops::run::run_gradle_jvm_args_script(&state.host, window.label(), jvm_args).await
+    ide_host::ops::run::run_gradle_jvm_args_script(jvm_args).await
 }
 
 /// Writes one of the IDE's Gradle init scripts where the build runs; returns its path.
 #[tauri::command]
 #[specta::specta]
 pub async fn run_gradle_init_script(
-    window: Window,
-    state: State<'_, AppState>,
+    _window: Window,
+    _state: State<'_, AppState>,
     name: String,
     text: String,
 ) -> IdeResult<String> {
-    ide_host::ops::run::run_gradle_init_script(&state.host, window.label(), name, text).await
+    ide_host::ops::run::run_gradle_init_script(name, text).await
 }
 
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at

@@ -96,54 +96,54 @@ pub async fn run_application_publish(
 }
 
 /// Configuration templates: per-type defaults applied to new configurations.
-pub fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
+pub async fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let root = host.project(window)?.root.clone();
-    ide_run::load_templates(&root)
+    crate::ops::doc::blocking(move || ide_run::load_templates(&root)).await
 }
 
-pub fn run_save_templates(host: &Host, window: &str, templates: Vec<RunConfig>) -> IdeResult<()> {
+pub async fn run_save_templates(host: &Host, window: &str, templates: Vec<RunConfig>) -> IdeResult<()> {
     let root = host.project(window)?.root.clone();
-    ide_run::save_templates(&root, &templates)
+    crate::ops::doc::blocking(move || ide_run::save_templates(&root, &templates)).await
 }
 
 /// Project files run configurations can be imported from (`.vscode/launch.json`).
-pub fn run_import_sources(host: &Host, window: &str) -> IdeResult<Vec<RunImportSource>> {
+pub async fn run_import_sources(host: &Host, window: &str) -> IdeResult<Vec<RunImportSource>> {
     let root = host.project(window)?.root.clone();
-    Ok(ide_run::import::available(&root))
+    crate::ops::doc::blocking(move || Ok(ide_run::import::available(&root))).await
 }
 
-/// Configurations read from `source`, not saved; names already in `existing` (the
-/// configurations being edited) are skipped.
-pub fn run_import_configs(
+/// Configurations read from `source`, not saved; names already in `existing` are skipped.
+pub async fn run_import_configs(
     host: &Host,
     window: &str,
     source: RunImportSource,
     existing: Vec<RunConfig>,
 ) -> IdeResult<RunImport> {
+    // `existing`: the configurations being edited.
     host.require_trust(window)?;
     let root = host.project(window)?.root.clone();
-    ide_run::import_configs(&root, source, &existing)
+    crate::ops::doc::blocking(move || ide_run::import_configs(&root, source, &existing)).await
 }
 
 /// The environment runs inherit when "Include system environment variables" is on.
-pub fn run_system_env(_host: &Host, _window: &str) -> std::collections::BTreeMap<String, String> {
+pub fn run_system_env() -> std::collections::BTreeMap<String, String> {
     ide_run::system_env()
 }
 
-/// Variables of the `.env` files a debug launch names, in order (later files win):
-/// the same files a run loads, over the system environment debug adapters inherit.
-pub fn run_env_files(
-    _host: &Host,
-    _window: &str,
-    files: Vec<std::path::PathBuf>,
-) -> IdeResult<std::collections::BTreeMap<String, String>> {
-    ide_run::envfile::load(&files, &ide_run::system_env())
-        .map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))
+/// Variables of the `.env` files a debug launch names, for the debugger to start with.
+pub async fn run_env_files(files: Vec<std::path::PathBuf>) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    // In order (later files win): the same files a run loads, over the system environment
+    // debug adapters inherit.
+    crate::ops::doc::blocking(move || {
+        ide_run::envfile::load(&files, &ide_run::system_env())
+            .map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))
+    })
+    .await
 }
 
-/// Writes the Gradle init script that adds `jvm_args` to the JVMs the build forks
-/// (`bootRun`, `run`, tests) and returns its path, for `--init-script`.
-pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: Vec<String>) -> IdeResult<String> {
+/// Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path.
+pub async fn run_gradle_jvm_args_script(jvm_args: Vec<String>) -> IdeResult<String> {
+    // The forked JVMs: `bootRun`, `run`, tests; the path is for `--init-script`.
     tokio::task::spawn_blocking(move || {
         ide_run::gradle_jvm::write_init_script(&ide_run::gradle_jvm::default_dir(), &jvm_args)
             .map(|p| p.to_string_lossy().into_owned())
@@ -153,9 +153,9 @@ pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: V
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Writes one of the IDE's Gradle init scripts (`text`; the file is named `<name>-<hash>`) on
-/// the machine that runs the build, for `--init-script`, and returns its path.
-pub async fn run_gradle_init_script(_host: &Host, _window: &str, name: String, text: String) -> IdeResult<String> {
+/// Writes one of the IDE's Gradle init scripts where the build runs; returns its path.
+pub async fn run_gradle_init_script(name: String, text: String) -> IdeResult<String> {
+    // `text`; the file is named `<name>-<hash>`, for `--init-script`.
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err(IdeError::invalid(format!("invalid init script name {name:?}")));
     }
@@ -366,8 +366,6 @@ pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mod
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Updates a running Tomcat artifact deployment from the module's compiled output and web
-/// resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
 pub async fn run_tomcat_sync(
     host: &Host,
     window: &str,
@@ -376,6 +374,8 @@ pub async fn run_tomcat_sync(
     class_paths: Vec<String>,
     resources_only: bool,
 ) -> IdeResult<bool> {
+    // Updates a running Tomcat artifact deployment from the module's compiled output and web
+    // resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
     host.require_trust(window)?;
     let project = host.project(window)?;
     if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
@@ -424,20 +424,30 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("run_tomcat_update", |c| async move {
         run_tomcat_update(&c.host, &c.window, c.arg("config")?, c.arg("mode")?).await
     });
-    d.add("run_templates", |c| async move { run_templates(&c.host, &c.window) });
-    d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?) });
-    d.add("run_import_sources", |c| async move { run_import_sources(&c.host, &c.window) });
+    d.add("run_templates", |c| async move { run_templates(&c.host, &c.window).await });
+    d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?).await });
+    d.add("run_import_sources", |c| async move { run_import_sources(&c.host, &c.window).await });
     d.add("run_import_configs", |c| async move {
-        run_import_configs(&c.host, &c.window, c.arg("source")?, c.arg("existing")?)
+        run_import_configs(&c.host, &c.window, c.arg("source")?, c.arg("existing")?).await
     });
-    d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
-    d.add("run_env_files", |c| async move { run_env_files(&c.host, &c.window, c.arg("files")?) });
-    d.add("run_gradle_jvm_args_script", |c| async move {
-        run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
+    d.add("run_system_env", |_| async move { Ok(run_system_env()) });
+    d.add("run_env_files", |c| async move { run_env_files(c.arg("files")?).await });
+    d.add("run_gradle_jvm_args_script", |c| async move { run_gradle_jvm_args_script(c.arg("jvmArgs")?).await });
+    d.add("run_gradle_init_script", |c| async move { run_gradle_init_script(c.arg("name")?, c.arg("text")?).await });
+    d.add("run_configs", |c| async move { run_configs(&c.host, &c.window).await });
+    d.add("run_save_configs", |c| async move {
+        run_save_configs(&c.host, &c.window, c.arg("configs")?, c.arg("removedDetectedIds")?).await
     });
-    d.add("run_gradle_init_script", |c| async move {
-        run_gradle_init_script(&c.host, &c.window, c.arg("name")?, c.arg("text")?).await
+    d.add("run_without_derived", |c| async move { run_without_derived(&c.host, &c.window, c.arg("configs")?).await });
+    d.add("run_apply_settings", |c| async move { run_apply_settings(&c.host, &c.window, c.arg("configs")?).await });
+    d.add("run_start", |c| async move {
+        run_start(&c.host, &c.window, c.arg("config")?, c.sender("onOutput")?, c.arg("request")?).await
     });
+    d.add("run_stop", |c| async move { run_stop(&c.host, &c.window, c.arg("id")?) });
+    d.add("run_stdin", |c| async move { run_stdin(&c.host, c.arg("id")?, c.arg("data")?) });
+    d.add("run_resize", |c| async move { run_resize(&c.host, c.arg("id")?, c.arg("cols")?, c.arg("rows")?) });
+    d.add("run_close_stdin", |c| async move { run_close_stdin(&c.host, c.arg("id")?) });
+    d.add("run_list", |c| async move { Ok(run_list(&c.host)) });
     d.add("run_test_reports", |c| async move {
         run_test_reports(&c.host, &c.window, c.arg("module")?, c.arg("sinceMs")?).await
     });

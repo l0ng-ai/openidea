@@ -103,6 +103,14 @@ pub async fn jvm_file_presentations(
     .await
 }
 
+/// Commands of this module the remote server answers.
+pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
+    d.add(
+        "jvm_file_presentations",
+        |c| async move { jvm_file_presentations(&c.host, &c.window, c.arg("paths")?).await },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

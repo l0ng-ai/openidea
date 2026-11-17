@@ -13,13 +13,13 @@ use tauri::{State, Window};
 #[tauri::command]
 #[specta::specta]
 pub fn db_sources(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<DataSource>> {
-    ide_host::ops::db::sources(&state.host, window.label())
+    ide_host::ops::db::db_sources(&state.host, window.label())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_save_sources(window: Window, state: State<'_, AppState>, sources: Vec<DataSource>) -> IdeResult<()> {
-    ide_host::ops::db::save_sources(&state.host, window.label(), sources).await
+    ide_host::ops::db::db_save_sources(&state.host, window.label(), sources).await
 }
 
 #[tauri::command]
@@ -31,7 +31,7 @@ pub async fn db_set_password(
     password: Option<String>,
     save: bool,
 ) -> IdeResult<()> {
-    ide_host::ops::db::set_password(&state.host, window.label(), &id, password, save).await
+    ide_host::ops::db::db_set_password(&state.host, window.label(), id, password, save).await
 }
 
 #[tauri::command]
@@ -43,7 +43,7 @@ pub async fn db_test(
     password: Option<String>,
     ssh_secret: Option<String>,
 ) -> IdeResult<String> {
-    ide_host::ops::db::test(&state.host, window.label(), source, password, ssh_secret).await
+    ide_host::ops::db::db_test(&state.host, window.label(), source, password, ssh_secret).await
 }
 
 /// Data Source › SSH/SSL › Test SSH Tunnel.
@@ -55,7 +55,7 @@ pub async fn db_test_tunnel(
     source: DataSource,
     ssh_secret: Option<String>,
 ) -> IdeResult<String> {
-    ide_host::ops::db::test_tunnel(&state.host, window.label(), source, ssh_secret).await
+    ide_host::ops::db::db_test_tunnel(&state.host, window.label(), source, ssh_secret).await
 }
 
 #[tauri::command]
@@ -67,25 +67,25 @@ pub async fn db_set_ssh_secret(
     secret: Option<String>,
     save: bool,
 ) -> IdeResult<()> {
-    ide_host::ops::db::set_ssh_secret(&state.host, window.label(), &id, secret, save).await
+    ide_host::ops::db::db_set_ssh_secret(&state.host, window.label(), id, secret, save).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_trust_ssh_host(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    ide_host::ops::db::trust_ssh_host(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_trust_ssh_host(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn db_connected(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<String>> {
-    ide_host::ops::db::connected(&state.host, window.label())
+    ide_host::ops::db::db_connected(&state.host, window.label())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_connect(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    ide_host::ops::db::connect(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_connect(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
@@ -96,7 +96,7 @@ pub async fn db_set_manual_commit(
     id: String,
     manual: bool,
 ) -> IdeResult<()> {
-    ide_host::ops::db::set_manual_commit(&state.host, window.label(), &id, manual).await
+    ide_host::ops::db::db_set_manual_commit(&state.host, window.label(), id, manual).await
 }
 
 #[tauri::command]
@@ -107,19 +107,19 @@ pub async fn db_finish_transaction(
     id: String,
     commit: bool,
 ) -> IdeResult<()> {
-    ide_host::ops::db::finish_transaction(&state.host, window.label(), &id, commit).await
+    ide_host::ops::db::db_finish_transaction(&state.host, window.label(), id, commit).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_disconnect(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    ide_host::ops::db::disconnect(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_disconnect(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_databases(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<ide_db::Databases> {
-    ide_host::ops::db::databases(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_databases(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
@@ -130,7 +130,7 @@ pub async fn db_database_catalog(
     id: String,
     database: String,
 ) -> IdeResult<Vec<ide_db::CatalogSchema>> {
-    ide_host::ops::db::database_catalog(&state.host, window.label(), &id, &database).await
+    ide_host::ops::db::db_database_catalog(&state.host, window.label(), id, database).await
 }
 
 #[tauri::command]
@@ -140,7 +140,7 @@ pub async fn db_saved_catalog(
     state: State<'_, AppState>,
     id: String,
 ) -> IdeResult<Option<ide_db::SourceCatalog>> {
-    ide_host::ops::db::saved_catalog(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_saved_catalog(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
@@ -151,7 +151,7 @@ pub async fn db_retain_catalog(
     id: String,
     databases: Vec<String>,
 ) -> IdeResult<()> {
-    ide_host::ops::db::retain_catalog(&state.host, window.label(), &id, databases).await
+    ide_host::ops::db::db_retain_catalog(&state.host, window.label(), id, databases).await
 }
 
 #[tauri::command]
@@ -161,13 +161,13 @@ pub async fn db_session_context(
     state: State<'_, AppState>,
     id: String,
 ) -> IdeResult<ide_db::SessionContext> {
-    ide_host::ops::db::session_context(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_session_context(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn db_schemas(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<String>> {
-    ide_host::ops::db::schemas(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_schemas(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
@@ -178,7 +178,7 @@ pub async fn db_tables(
     id: String,
     schema: String,
 ) -> IdeResult<Vec<ide_db::TableInfo>> {
-    ide_host::ops::db::tables(&state.host, window.label(), &id, &schema).await
+    ide_host::ops::db::db_tables(&state.host, window.label(), id, schema).await
 }
 
 #[tauri::command]
@@ -190,7 +190,7 @@ pub async fn db_table_details(
     schema: String,
     table: String,
 ) -> IdeResult<ide_db::TableDetails> {
-    ide_host::ops::db::table_details(&state.host, window.label(), &id, &schema, &table).await
+    ide_host::ops::db::db_table_details(&state.host, window.label(), id, schema, table).await
 }
 
 #[tauri::command]
@@ -202,7 +202,7 @@ pub async fn db_ddl(
     schema: String,
     table: String,
 ) -> IdeResult<String> {
-    ide_host::ops::db::ddl(&state.host, window.label(), &id, &schema, &table).await
+    ide_host::ops::db::db_ddl(&state.host, window.label(), id, schema, table).await
 }
 
 #[tauri::command]
@@ -213,7 +213,7 @@ pub async fn db_schema_objects(
     id: String,
     schema: String,
 ) -> IdeResult<ide_db::SchemaObjects> {
-    ide_host::ops::db::schema_objects(&state.host, window.label(), &id, &schema).await
+    ide_host::ops::db::db_schema_objects(&state.host, window.label(), id, schema).await
 }
 
 #[tauri::command]
@@ -226,7 +226,7 @@ pub async fn db_object_ddl(
     kind: DbObjectKind,
     name: String,
 ) -> IdeResult<String> {
-    ide_host::ops::db::object_ddl(&state.host, window.label(), &id, &schema, kind, &name).await
+    ide_host::ops::db::db_object_ddl(&state.host, window.label(), id, schema, kind, name).await
 }
 
 #[tauri::command]
@@ -239,7 +239,7 @@ pub async fn db_explain(
     statement: String,
     schema: Option<String>,
 ) -> IdeResult<Vec<ide_db::PlanNode>> {
-    ide_host::ops::db::explain(&state.host, window.label(), request, &id, &statement, schema.as_deref()).await
+    ide_host::ops::db::db_explain(&state.host, window.label(), request, id, statement, schema).await
 }
 
 #[tauri::command]
@@ -249,7 +249,7 @@ pub async fn db_history(
     state: State<'_, AppState>,
     id: String,
 ) -> IdeResult<Vec<ide_db::HistoryEntry>> {
-    ide_host::ops::db::history(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_history(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
@@ -260,7 +260,7 @@ pub async fn db_remove_history(
     id: String,
     texts: Option<Vec<String>>,
 ) -> IdeResult<()> {
-    ide_host::ops::db::remove_history(&state.host, window.label(), &id, texts).await
+    ide_host::ops::db::db_remove_history(&state.host, window.label(), id, texts).await
 }
 
 /// Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -283,7 +283,7 @@ pub async fn db_completion(
     state: State<'_, AppState>,
     id: String,
 ) -> IdeResult<ide_db::CompletionModel> {
-    ide_host::ops::db::completion(&state.host, window.label(), &id).await
+    ide_host::ops::db::db_completion(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
@@ -296,7 +296,7 @@ pub fn db_statements(
     from: u32,
     to: u32,
 ) -> IdeResult<Vec<SqlStatement>> {
-    ide_host::ops::db::statements(&state.host, window.label(), &id, &text, from, to)
+    ide_host::ops::db::db_statements(&state.host, window.label(), id, text, from, to)
 }
 
 #[tauri::command]
@@ -312,8 +312,7 @@ pub async fn db_execute(
     max_rows: u32,
     schema: Option<String>,
 ) -> IdeResult<Vec<StatementOutcome>> {
-    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, skip, max_rows, schema.as_deref())
-        .await
+    ide_host::ops::db::db_execute(&state.host, window.label(), request, id, statements, skip, max_rows, schema).await
 }
 
 #[tauri::command]
@@ -331,13 +330,13 @@ pub async fn db_table_page(
     offset: u32,
     limit: u32,
 ) -> IdeResult<ide_db::TablePage> {
-    ide_host::ops::db::table_page(
+    ide_host::ops::db::db_table_page(
         &state.host,
         window.label(),
         request,
-        &id,
-        &schema,
-        &table,
+        id,
+        schema,
+        table,
         filter,
         sort,
         offset,
@@ -356,20 +355,20 @@ pub async fn db_apply_edits(
     table: String,
     edits: Vec<DbRowEdit>,
 ) -> IdeResult<f64> {
-    ide_host::ops::db::apply_edits(&state.host, window.label(), &id, &schema, &table, edits).await
+    ide_host::ops::db::db_apply_edits(&state.host, window.label(), id, schema, table, edits).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn db_console_path(state: State<'_, AppState>, id: String) -> IdeResult<IpcPath> {
-    ide_host::ops::db::console_path(&state.host, &id)
+    ide_host::ops::db::db_console_path(&state.host, id)
 }
 
 /// The query consoles of data source `id`; `create` adds the next one first.
 #[tauri::command]
 #[specta::specta]
 pub fn db_consoles(state: State<'_, AppState>, id: String, create: bool) -> IdeResult<Vec<IpcPath>> {
-    ide_host::ops::db::consoles(&state.host, &id, create)
+    ide_host::ops::db::db_consoles(&state.host, id, create)
 }
 
 /// Installed copies of `tool`, newest first.

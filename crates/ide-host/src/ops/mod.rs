@@ -32,7 +32,7 @@ pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
-mod ssh;
+pub mod ssh;
 pub mod stream_trace;
 pub mod syntax;
 pub mod term;
@@ -71,6 +71,12 @@ impl<T> Clone for Channel<T> {
 
 /// Registers the commands of every module with the remote server.
 pub fn register_all(d: &mut crate::rpc::Dispatcher) {
+    project::register(d);
+    fs::register(d);
+    term::register(d);
+    web::register(d);
+    jvm_icons::register(d);
+    vcs::register_status(d);
     agent::register(d);
     lsp::register(d);
     notebook::register(d);

@@ -13,10 +13,9 @@ use ide_run::BuildPolicy;
 use std::path::PathBuf;
 
 /// Cancellable with `cancel_request(request)`.
-/// Builds the workspace (when `build`), then resolves the runtime (or test)
+/// Builds according to `policy`, then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
-/// Resources a Gradle build filters or renames are processed by Gradle, replacing the language server's plain copies.
 pub async fn java_resolve_launch(
     host: &Host,
     window: &str,
@@ -25,6 +24,8 @@ pub async fn java_resolve_launch(
     policy: BuildPolicy,
     request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
+    // Resources a Gradle build filters or renames are processed by Gradle, replacing the language
+    // server's plain copies.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = resolve_launch(host, window, module, test, policy, &cancel).await;

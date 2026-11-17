@@ -46,8 +46,6 @@ pub async fn doc_language(
 }
 
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
-/// Virtual documents re-read their origin (archive, language server, Git blob)
-/// instead of a disk file; converting them would write to it, so it stays refused.
 pub async fn doc_set_encoding(
     host: &Host,
     window: &str,
@@ -55,6 +53,8 @@ pub async fn doc_set_encoding(
     encoding: String,
     reload: bool,
 ) -> IdeResult<DocumentEncoding> {
+    // Virtual documents re-read their origin (archive, language server, Git blob)
+    // instead of a disk file; converting them would write to it, so it stays refused.
     let project = host.project(window)?;
     if reload
         && !project.documents.is_untitled(doc)?
@@ -70,14 +70,15 @@ pub async fn doc_set_encoding(
     host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
 }
 
-/// Adds or removes the BOM on a UTF-8 document; the change is written on save.
 pub async fn doc_set_bom(host: &Host, window: &str, doc: DocId, has_bom: bool) -> IdeResult<DocumentEncoding> {
+    // Adds or removes the BOM on a UTF-8 document; the change is written on save.
     let project = host.project(window)?;
     host.blocking(move || project.documents.set_bom(doc, has_bom)).await
 }
 
-pub fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
-    host.project(window)?.documents.set_line_ending(doc, line_ending)
+pub async fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_ending: LineEnding) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || project.documents.set_line_ending(doc, line_ending)).await
 }
 
 /// Structure view: LSP document symbols when available (with tree-sitter
@@ -168,9 +169,9 @@ pub async fn doc_highlights(host: &Host, window: &str, doc: DocId) -> IdeResult<
     .await
 }
 
-/// Python class facts the inheritance inspections read: base names as written, a method's
-/// parameters, decorator semantics and its body shape. Tree-sitter answers; no LSP.
+/// Python class facts for the inheritance inspections: tree-sitter, no language server.
 pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResult<ide_language::PythonFacts> {
+    // Base names as written, a method's parameters, decorator semantics and its body shape.
     let project = host.project(window)?;
     let syntax = host.syntax();
     let snap = project.documents.text_snapshot(doc)?;
@@ -204,16 +205,29 @@ pub async fn doc_selection_ranges(host: &Host, window: &str, doc: DocId, offset:
     .await
 }
 
-pub fn history_list(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
-    host.project(window)?.history.list(&path)
+pub async fn history_list(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<HistoryEntry>> {
+    let project = host.project(window)?;
+    blocking(move || project.history.list(&path)).await
 }
 
-pub fn history_content(host: &Host, window: &str, id: String) -> IdeResult<String> {
-    host.project(window)?.history.content(&id)
+pub async fn history_content(host: &Host, window: &str, id: String) -> IdeResult<String> {
+    let project = host.project(window)?;
+    blocking(move || project.history.content(&id)).await
 }
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
+    d.add("doc_open", |c| async move { doc_open(&c.host, &c.window, c.arg("path")?).await });
+    d.add("doc_close", |c| async move { doc_close(&c.host, &c.window, c.arg("doc")?).await });
+    d.add("doc_open_untitled", |c| async move { doc_open_untitled(&c.host, &c.window, c.arg("name")?).await });
+    d.add("doc_save_as", |c| async move { doc_save_as(&c.host, &c.window, c.arg("doc")?, c.arg("path")?).await });
+    d.add("doc_edit", |c| async move {
+        doc_edit(&c.host, &c.window, c.arg("doc")?, c.arg("baseVersion")?, c.arg("changes")?).await
+    });
+    d.add("doc_save", |c| async move { doc_save(&c.host, &c.window, c.arg("doc")?).await });
+    d.add("doc_save_all", |c| async move { doc_save_all(&c.host, &c.window).await });
+    d.add("doc_sync_from_disk", |c| async move { doc_sync_from_disk(&c.host, &c.window).await });
+    d.add("doc_snapshot", |c| async move { doc_snapshot(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_open_virtual", |c| async move { doc_open_virtual(&c.host, &c.window, c.arg("uri")?).await });
     d.add(
         "doc_language",
@@ -224,7 +238,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("doc_set_bom", |c| async move { doc_set_bom(&c.host, &c.window, c.arg("doc")?, c.arg("hasBom")?).await });
     d.add("doc_set_line_ending", |c| async move {
-        blocking(move || doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?)).await
+        doc_set_line_ending(&c.host, &c.window, c.arg("doc")?, c.arg("lineEnding")?).await
     });
     d.add("doc_outline", |c| async move { doc_outline(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_folding", |c| async move { doc_folding(&c.host, &c.window, c.arg("doc")?).await });
@@ -233,6 +247,6 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_selection_ranges", |c| async move {
         doc_selection_ranges(&c.host, &c.window, c.arg("doc")?, c.arg("offset")?).await
     });
-    d.add("history_list", |c| async move { history_list(&c.host, &c.window, c.arg("path")?) });
-    d.add("history_content", |c| async move { history_content(&c.host, &c.window, c.arg("id")?) });
+    d.add("history_list", |c| async move { history_list(&c.host, &c.window, c.arg("path")?).await });
+    d.add("history_content", |c| async move { history_content(&c.host, &c.window, c.arg("id")?).await });
 }

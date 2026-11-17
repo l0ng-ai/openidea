@@ -109,17 +109,12 @@ pub async fn tools_uninstall(host: &Host, window: &str, name: String) -> IdeResu
 }
 
 /// JDK distributions Download JDK offers.
-pub fn jdk_download_vendors(_host: &Host, _window: &str) -> Vec<JdkVendor> {
+pub fn jdk_download_vendors() -> Vec<JdkVendor> {
     ide_tools::jdk::vendors()
 }
 
 /// Java versions `vendor` publishes; cancellable with `cancel_request(request)`.
-pub async fn jdk_download_releases(
-    host: &Host,
-    _window: &str,
-    vendor: String,
-    request: RequestId,
-) -> IdeResult<JdkReleases> {
+pub async fn jdk_download_releases(host: &Host, vendor: String, request: RequestId) -> IdeResult<JdkReleases> {
     let tools = Tools::new(&host.local_data_dir);
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || tools.jdk_releases(&vendor, &cancel)).await.map_err(join_err);
@@ -128,7 +123,7 @@ pub async fn jdk_download_releases(
 }
 
 /// Where Download JDK puts JDKs unless told otherwise.
-pub fn jdk_download_location(host: &Host, _window: &str) -> IdeResult<ide_core::IpcPath> {
+pub fn jdk_download_location(host: &Host) -> IdeResult<ide_core::IpcPath> {
     Ok(ide_tools::jdk::jdks_dir(&host.local_data_dir).into())
 }
 
@@ -136,10 +131,8 @@ pub fn jdk_download_location(host: &Host, _window: &str) -> IdeResult<ide_core::
 /// [`jdk_download_location`]), streaming progress through `on_event`; cancellable
 /// with `cancel_request(request)`. The JDK is then detected like an installed one,
 /// and language servers waiting for a JDK (jdtls) start on it.
-#[allow(clippy::too_many_arguments)]
 pub async fn jdk_download(
     host: &Host,
-    _window: &str,
     vendor: String,
     version: u32,
     location: Option<PathBuf>,
@@ -171,8 +164,7 @@ pub async fn jdk_download(
     Ok(sdk)
 }
 
-/// The Java version the jdtls this window launches needs; `None` while it isn't
-/// installed or doesn't tell.
+/// The Java version the window's jdtls needs; `None` while it isn't installed or doesn't tell.
 pub async fn jdtls_required_java(host: &Host, window: &str) -> IdeResult<Option<u32>> {
     let settings = match host.project(window) {
         Ok(project) => project.settings.effective(),
@@ -196,16 +188,15 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("tools_uninstall", |c| async move { tools_uninstall(&c.host, &c.window, c.arg("name")?).await });
     d.add("tools_updates", |c| async move { tools_updates(&c.host, &c.window, c.arg("request")?).await });
-    d.add("jdk_download_vendors", |c| async move { Ok(jdk_download_vendors(&c.host, &c.window)) });
+    d.add("jdk_download_vendors", |_| async move { Ok(jdk_download_vendors()) });
     d.add("jdk_download_releases", |c| async move {
-        jdk_download_releases(&c.host, &c.window, c.arg("vendor")?, c.arg("request")?).await
+        jdk_download_releases(&c.host, c.arg("vendor")?, c.arg("request")?).await
     });
-    d.add("jdk_download_location", |c| async move { jdk_download_location(&c.host, &c.window) });
+    d.add("jdk_download_location", |c| async move { jdk_download_location(&c.host) });
     d.add("jdtls_required_java", |c| async move { jdtls_required_java(&c.host, &c.window).await });
     d.add("jdk_download", |c| async move {
         jdk_download(
             &c.host,
-            &c.window,
             c.arg("vendor")?,
             c.arg("version")?,
             c.arg("location")?,

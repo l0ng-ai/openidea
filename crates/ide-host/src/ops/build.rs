@@ -5,7 +5,7 @@ mod workspace;
 use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
 use crate::ops::Channel;
 use crate::rpc::Dispatcher;
-use crate::{Host, Project, apply_workspace_edit};
+use crate::{Host, Project};
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
 use ide_build::maven::PomGoto;
@@ -202,13 +202,13 @@ async fn set_gradle_projects(host: &Host, window: &str, paths: Vec<String>, link
     .map_err(join_err)?
 }
 
-/// Links independent builds without changing their Gradle scripts.
 pub async fn gradle_link_projects(host: &Host, window: &str, paths: Vec<String>) -> IdeResult<BuildModel> {
+    // Links independent builds without changing their Gradle scripts.
     set_gradle_projects(host, window, paths, true).await
 }
 
-/// Stops importing the selected independent builds; files and saved run configurations stay intact.
 pub async fn gradle_unlink_projects(host: &Host, window: &str, paths: Vec<String>) -> IdeResult<BuildModel> {
+    // Stops importing the selected independent builds; files and saved run configurations stay intact.
     set_gradle_projects(host, window, paths, false).await
 }
 
@@ -419,7 +419,7 @@ fn declaring_pom(
 }
 
 /// The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
-/// build has downloaded it (`ide_sdk::libraries::published_version_catalog`).
+/// build has downloaded it.
 pub async fn gradle_published_catalog(
     host: &Host,
     window: &str,
@@ -434,8 +434,7 @@ pub async fn gradle_published_catalog(
     .map_err(join_err)
 }
 
-/// The resolved dependency tree of the Gradle project `gradle_path` (`:`, `:app`) for
-/// `configuration`, from Gradle's `dependencies` report; cancellable with `cancel_request(request)`.
+/// The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer).
 pub async fn gradle_dependencies(
     host: &Host,
     window: &str,
@@ -445,6 +444,7 @@ pub async fn gradle_dependencies(
     request: RequestId,
     build_dir: Option<String>,
 ) -> IdeResult<Vec<ide_build::GradleDependency>> {
+    // `gradle_path` is `:`, `:app`…; the tree comes from Gradle's `dependencies` report.
     host.require_trust(window)?;
     let project = host.project(window)?;
     let config = host.config_dir.clone();
@@ -534,14 +534,14 @@ pub async fn maven_dependency_declaration(
     .map_err(join_err)?
 }
 
-/// The go-to-declaration target at `pos` of the Maven POM `pom` (project-relative, or
-/// absolute for a parent POM opened from the local repository): the definition of the
+/// The go-to-declaration target at `pos` of a Maven POM: the definition of the
 /// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
-/// entry providing the dependency's / plugin's version, along the parent chain (into
-/// the local repository when a parent is not in the project), else the artifact's own
-/// POM (a project module's, or the local repository's). `None` when nothing
-/// resolvable is under the caret.
+/// entry providing the dependency's / plugin's version, along the parent chain.
 pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
+    // `pom` is project-relative, or absolute for a parent POM opened from the local repository.
+    // The parent chain reaches into the local repository when a parent is not in the project;
+    // without a managed version the target is the artifact's own POM (a project module's, or the
+    // local repository's). `None` when nothing resolvable is under the caret.
     let project = host.project(window)?;
     tokio::task::spawn_blocking(move || {
         let given = Path::new(&pom);
@@ -572,12 +572,7 @@ pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos:
 const CENTRAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
-/// in the value of in the POM `doc`: the coordinates installed in the local
-/// repository (Settings › Maven's, else `~/.m2/repository`) — group ids,
-/// the chosen group's artifacts, the chosen artifact's versions — topped up
-/// with Maven Central's (the search endpoint's popular coordinates, the
-/// published version metadata), which the shared version cache keeps for the
-/// session. `None` when the caret is not in a `<dependency>` coordinate element.
+/// in the value of in the POM `doc`, from the local repository and Maven Central.
 pub async fn maven_dependency_completion(
     host: &Host,
     window: &str,
@@ -585,6 +580,10 @@ pub async fn maven_dependency_completion(
     offset: u32,
     request: RequestId,
 ) -> IdeResult<Option<PomCompletion>> {
+    // The local repository is Settings › Maven's, else `~/.m2/repository` (group ids, the chosen
+    // group's artifacts, the chosen artifact's versions), topped up with Maven Central's (the search
+    // endpoint's popular coordinates, the published version metadata), which the shared version
+    // cache keeps for the session. `None` when the caret is not in a `<dependency>` coordinate element.
     use ide_build::maven::completion::{PomCompletionKind, local_options};
     let project = host.project(window)?;
     let cache = host.dependency_versions.clone();
@@ -671,7 +670,7 @@ pub async fn maven_exclude_dependency(
                     files: vec![FileEdit::Edit { path: path.clone().into(), edits: vec![edit], version: None }],
                     ..Default::default()
                 };
-                apply_workspace_edit(&project.documents, &edit)?;
+                project.documents.apply_workspace_edit(&edit)?;
             }
             Some(Exclusion::Present) => {}
             None => return Err(IdeError::not_found(format!("{dependency} is not declared in {}", path.display()))),

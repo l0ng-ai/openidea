@@ -171,8 +171,8 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         };
     }
     let calls: Vec<Call> = vec![
-        call!("vcs_status", "", ops::vcs::status(host, w)),
-        call!("vcs_status_paths", "", ops::vcs::status_paths(host, w, vec![file.clone()])),
+        call!("vcs_status", "", ops::vcs::vcs_status(host, w)),
+        call!("vcs_status_paths", "", ops::vcs::vcs_status_paths(host, w, vec![file.clone()])),
         sync!("vcs_roots", "", vcs::vcs_roots(host, w)),
         call!("vcs_branch_info", "", vcs::vcs_branch_info(host, w, root())),
         call!("vcs_line_hunks", "", vcs::vcs_line_hunks(host, w, file.clone())),
@@ -248,7 +248,7 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         call!("vcs_revision_files", "external", vcs::vcs_revision_files(host, w, log(), external.head.clone())),
         call!("vcs_commit_files", "external", vcs::vcs_commit_files(host, w, log(), external.head.clone())),
         // Last: it rewrites nothing of an existing repository, but it does touch it.
-        call!("vcs_init", "", vcs::vcs_init(host, w, project.root.clone())),
+        call!("vcs_init", "", vcs::vcs_init(host, project.root.clone())),
     ];
 
     // The sweep covers what `trust.rs` allows: a newly allowed `vcs_*` command fails here until

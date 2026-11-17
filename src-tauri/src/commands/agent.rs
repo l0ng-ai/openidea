@@ -11,7 +11,6 @@ use ide_agent::{
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
 use ide_tools::InstallEvent;
-use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::{State, Window};
 
@@ -23,19 +22,13 @@ pub fn agent_subscribe(
     state: State<'_, AppState>,
     on_event: Channel<AgentEvent>,
 ) -> IdeResult<Vec<AgentTask>> {
-    agent::subscribe(
-        &state.host,
-        window.label(),
-        Arc::new(move |e| {
-            let _ = on_event.send(e);
-        }),
-    )
+    agent::agent_subscribe(&state.host, window.label(), crate::commands::sender(on_event))
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_providers(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<AgentProvider>> {
-    agent::providers(&state.host, window.label())
+    agent::agent_providers(&state.host, window.label())
 }
 
 /// Refreshes the model catalog; force bypasses freshness, not the cooldown.
@@ -48,7 +41,7 @@ pub fn agent_refresh_models(
     force: bool,
     model: Option<String>,
 ) -> IdeResult<AgentModelCatalog> {
-    agent::refresh_models(&state.host, window.label(), provider, force, model)
+    agent::agent_refresh_models(&state.host, window.label(), provider, force, model)
 }
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
@@ -61,7 +54,7 @@ pub fn agent_set_command(
     id: String,
     command: Option<String>,
 ) -> IdeResult<()> {
-    agent::set_command(&state.host, window.label(), id, command)
+    agent::agent_set_command(&state.host, window.label(), id, command)
 }
 
 /// Environment variables built-in agent `id` starts with (saved in its agent file);
@@ -74,7 +67,7 @@ pub fn agent_set_env(
     id: String,
     env: std::collections::BTreeMap<String, String>,
 ) -> IdeResult<()> {
-    agent::set_env(&state.host, window.label(), id, env)
+    agent::agent_set_env(&state.host, window.label(), id, env)
 }
 
 /// Saves a new custom ACP agent through its agent file; refuses built-in and
@@ -108,11 +101,11 @@ pub fn agent_custom_import(
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_registry_list(
-    window: Window,
+    _window: Window,
     state: State<'_, AppState>,
     request: RequestId,
 ) -> IdeResult<AgentRegistry> {
-    agent::registry_list(&state.host, window.label(), request).await
+    agent::agent_registry_list(&state.host, request).await
 }
 
 /// Installs the registry's current version of agent `id` (also to update it), streaming
@@ -120,34 +113,34 @@ pub async fn agent_registry_list(
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_registry_install(
-    window: Window,
+    _window: Window,
     state: State<'_, AppState>,
     id: String,
     request: RequestId,
     on_event: Channel<InstallEvent>,
 ) -> IdeResult<()> {
-    agent::registry_install(&state.host, window.label(), id, request, crate::commands::sender(on_event)).await
+    agent::agent_registry_install(&state.host, id, request, crate::commands::sender(on_event)).await
 }
 
 /// Removes a registry agent: its agent file and installed files.
 #[tauri::command]
 #[specta::specta]
-pub async fn agent_registry_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    agent::registry_remove(&state.host, window.label(), id).await
+pub async fn agent_registry_remove(_window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
+    agent::agent_registry_remove(&state.host, id).await
 }
 
 /// Lists configured and discovered MCP servers across User, Workspace, Plugin, and Built-In scopes.
 #[tauri::command]
 #[specta::specta]
 pub fn agent_mcp_list(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<McpServer>> {
-    agent::mcp_list(&state.host, window.label())
+    agent::agent_mcp_list(&state.host, window.label())
 }
 
 /// Creates or updates a User or Workspace MCP server and returns the updated list.
 #[tauri::command]
 #[specta::specta]
 pub fn agent_mcp_save(window: Window, state: State<'_, AppState>, input: McpServerInput) -> IdeResult<Vec<McpServer>> {
-    agent::mcp_save(&state.host, window.label(), input)
+    agent::agent_mcp_save(&state.host, window.label(), input)
 }
 
 /// Enables or disables an MCP server and returns the updated list.
@@ -159,21 +152,21 @@ pub fn agent_mcp_set_enabled(
     id: String,
     enabled: bool,
 ) -> IdeResult<Vec<McpServer>> {
-    agent::mcp_set_enabled(&state.host, window.label(), id, enabled)
+    agent::agent_mcp_set_enabled(&state.host, window.label(), id, enabled)
 }
 
 /// Removes a User or Workspace MCP server and returns the updated list.
 #[tauri::command]
 #[specta::specta]
 pub fn agent_mcp_remove(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<Vec<McpServer>> {
-    agent::mcp_remove(&state.host, window.label(), id)
+    agent::agent_mcp_remove(&state.host, window.label(), id)
 }
 
 /// Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once.
 #[tauri::command]
 #[specta::specta]
 pub fn agent_mcp_import(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<McpServer>> {
-    agent::mcp_import(&state.host, window.label())
+    agent::agent_mcp_import(&state.host, window.label())
 }
 
 /// Parses and saves one or more MCP servers from a pasted JSON snippet (`{"mcpServers": {...}}` or
@@ -188,7 +181,7 @@ pub fn agent_mcp_save_json(
     fallback_name: Option<String>,
     agents: Vec<String>,
 ) -> IdeResult<Vec<McpServer>> {
-    agent::mcp_save_json(&state.host, window.label(), scope, raw_json, fallback_name, agents)
+    agent::agent_mcp_save_json(&state.host, window.label(), scope, raw_json, fallback_name, agents)
 }
 
 /// Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`).
@@ -198,7 +191,7 @@ pub async fn agent_mcp_discover_sources(
     window: Window,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<McpExternalSource>> {
-    agent::mcp_discover_sources(&state.host, window.label()).await
+    agent::agent_mcp_discover_sources(&state.host, window.label()).await
 }
 
 /// Imports selected servers from discovered external MCP configuration files into User or Workspace scope.
@@ -211,14 +204,14 @@ pub async fn agent_mcp_import_selected(
     selections: Vec<McpImportSelection>,
     overwrite: bool,
 ) -> IdeResult<Vec<McpServer>> {
-    agent::mcp_import_selected(&state.host, window.label(), scope, selections, overwrite).await
+    agent::agent_mcp_import_selected(&state.host, window.label(), scope, selections, overwrite).await
 }
 
 /// Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`).
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_mcp_test(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<McpProbeResult> {
-    agent::mcp_test(&state.host, window.label(), id).await
+    agent::agent_mcp_test(&state.host, window.label(), id).await
 }
 
 /// Updates per-session MCP server enable/disable overrides on `task`.
@@ -230,7 +223,7 @@ pub fn agent_set_mcp_overrides(
     task: String,
     overrides: std::collections::BTreeMap<String, bool>,
 ) -> IdeResult<AgentTask> {
-    agent::set_mcp_overrides(&state.host, window.label(), task, overrides)
+    agent::agent_set_mcp_overrides(&state.host, window.label(), task, overrides)
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project
@@ -243,7 +236,7 @@ pub async fn agent_commands(
     provider: String,
     task: Option<String>,
 ) -> IdeResult<Vec<AgentCommand>> {
-    agent::commands(&state.host, window.label(), provider, task).await
+    agent::agent_commands(&state.host, window.label(), provider, task).await
 }
 
 /// Entries of `task`'s conversation, or of its subagent `subagent`'s.
@@ -255,20 +248,20 @@ pub fn agent_entries(
     task: String,
     subagent: Option<String>,
 ) -> IdeResult<Vec<AgentEntry>> {
-    agent::entries(&state.host, window.label(), task, subagent)
+    agent::agent_entries(&state.host, window.label(), task, subagent)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_create(window: Window, state: State<'_, AppState>, request: NewAgentTask) -> IdeResult<AgentTask> {
-    agent::create(&state.host, window.label(), request).await
+    agent::agent_create(&state.host, window.label(), request).await
 }
 
 /// Sessions of the project on this machine that no task holds yet, newest first.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_external_sessions(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ExternalSession>> {
-    agent::external_sessions(&state.host, window.label()).await
+    agent::agent_external_sessions(&state.host, window.label()).await
 }
 
 /// Imports an external session as a task: its first turn loads and replays it.
@@ -280,7 +273,7 @@ pub async fn agent_import_session(
     provider: String,
     session_id: String,
 ) -> IdeResult<AgentTask> {
-    agent::import_session(&state.host, window.label(), provider, session_id).await
+    agent::agent_import_session(&state.host, window.label(), provider, session_id).await
 }
 
 /// Sends a message; while the agent works it is queued, or with `now` it interrupts the turn.
@@ -293,7 +286,7 @@ pub async fn agent_prompt(
     prompt: AgentPrompt,
     now: bool,
 ) -> IdeResult<()> {
-    agent::prompt(&state.host, window.label(), task, prompt, now).await
+    agent::agent_prompt(&state.host, window.label(), task, prompt, now).await
 }
 
 /// Drops a queued message and returns it (to edit it).
@@ -305,7 +298,7 @@ pub fn agent_unqueue(
     task: String,
     queued: String,
 ) -> IdeResult<AgentQueued> {
-    agent::unqueue(&state.host, window.label(), task, queued)
+    agent::agent_unqueue(&state.host, window.label(), task, queued)
 }
 
 /// Sends a queued message now, interrupting the current turn.
@@ -317,7 +310,7 @@ pub async fn agent_send_queued_now(
     task: String,
     queued: String,
 ) -> IdeResult<()> {
-    agent::send_queued_now(&state.host, window.label(), task, queued).await
+    agent::agent_send_queued_now(&state.host, window.label(), task, queued).await
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
@@ -330,7 +323,7 @@ pub async fn agent_set_config(
     option: String,
     value: String,
 ) -> IdeResult<()> {
-    agent::set_config(&state.host, window.label(), task, option, value).await
+    agent::agent_set_config(&state.host, window.label(), task, option, value).await
 }
 
 /// Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`).
@@ -342,7 +335,7 @@ pub async fn agent_fork(
     task: String,
     turns: Option<u32>,
 ) -> IdeResult<AgentTask> {
-    agent::fork(&state.host, window.label(), task, turns).await
+    agent::agent_fork(&state.host, window.label(), task, turns).await
 }
 
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
@@ -354,7 +347,7 @@ pub async fn agent_rollback(
     task: String,
     turns: u32,
 ) -> IdeResult<Option<AgentPrompt>> {
-    agent::rollback(&state.host, window.label(), task, turns).await
+    agent::agent_rollback(&state.host, window.label(), task, turns).await
 }
 
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
@@ -367,7 +360,7 @@ pub async fn agent_probe(
     provider: String,
     refresh: bool,
 ) -> IdeResult<AgentProbe> {
-    agent::probe(&state.host, window.label(), provider, refresh).await
+    agent::agent_probe(&state.host, window.label(), provider, refresh).await
 }
 
 /// Stops the task's current turn, or with `subagent` only that subagent's work.
@@ -379,7 +372,7 @@ pub fn agent_cancel(
     task: String,
     subagent: Option<String>,
 ) -> IdeResult<()> {
-    agent::cancel(&state.host, window.label(), task, subagent)
+    agent::agent_cancel(&state.host, window.label(), task, subagent)
 }
 
 /// Stops one of the task's background tasks.
@@ -391,7 +384,7 @@ pub async fn agent_stop_background(
     task: String,
     background: String,
 ) -> IdeResult<()> {
-    agent::stop_background(&state.host, window.label(), task, background).await
+    agent::agent_stop_background(&state.host, window.label(), task, background).await
 }
 
 /// Answers a permission request; `option: null` cancels it.
@@ -404,25 +397,25 @@ pub fn agent_respond(
     permission: u32,
     option: Option<String>,
 ) -> IdeResult<()> {
-    agent::respond(&state.host, window.label(), task, permission, option)
+    agent::agent_respond(&state.host, window.label(), task, permission, option)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_archive(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
-    agent::archive(&state.host, window.label(), task)
+    agent::agent_archive(&state.host, window.label(), task)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_unarchive(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<()> {
-    agent::unarchive(&state.host, window.label(), task)
+    agent::agent_unarchive(&state.host, window.label(), task)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn agent_rename(window: Window, state: State<'_, AppState>, task: String, title: String) -> IdeResult<()> {
-    agent::rename(&state.host, window.label(), task, title)
+    agent::agent_rename(&state.host, window.label(), task, title)
 }
 
 #[tauri::command]
@@ -433,13 +426,13 @@ pub async fn agent_delete(
     task: String,
     remove_worktree: bool,
 ) -> IdeResult<()> {
-    agent::delete(&state.host, window.label(), task, remove_worktree).await
+    agent::agent_delete(&state.host, window.label(), task, remove_worktree).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_changes(window: Window, state: State<'_, AppState>, task: String) -> IdeResult<Vec<AgentChange>> {
-    agent::changes(&state.host, window.label(), task).await
+    agent::agent_changes(&state.host, window.label(), task).await
 }
 
 /// The task's uncommitted changes and the commits made since it started.
@@ -450,7 +443,7 @@ pub async fn agent_grouped_changes(
     state: State<'_, AppState>,
     task: String,
 ) -> IdeResult<AgentChanges> {
-    agent::grouped_changes(&state.host, window.label(), task).await
+    agent::agent_grouped_changes(&state.host, window.label(), task).await
 }
 
 /// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.
@@ -463,7 +456,7 @@ pub async fn agent_rollback_changes(
     paths: Option<Vec<String>>,
     view: Option<AgentChangesView>,
 ) -> IdeResult<()> {
-    agent::rollback_changes(&state.host, window.label(), task, paths, view).await
+    agent::agent_rollback_changes(&state.host, window.label(), task, paths, view).await
 }
 
 /// Accept: copies a worktree task's changed files among `paths` (all without) into the
@@ -476,7 +469,7 @@ pub async fn agent_accept_changes(
     task: String,
     paths: Option<Vec<String>>,
 ) -> IdeResult<AgentAcceptOutcome> {
-    agent::accept_changes(&state.host, window.label(), task, paths).await
+    agent::agent_accept_changes(&state.host, window.label(), task, paths).await
 }
 
 /// Content of `path` when the task started (left side of its diff).
@@ -488,5 +481,5 @@ pub async fn agent_base_text(
     task: String,
     path: IpcPath,
 ) -> IdeResult<Option<String>> {
-    agent::base_text(&state.host, window.label(), task, path).await
+    agent::agent_base_text(&state.host, window.label(), task, path).await
 }

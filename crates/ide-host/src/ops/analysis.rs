@@ -217,7 +217,7 @@ pub async fn analysis_locate_duplicates(
 }
 
 /// Languages Search Structurally supports (those with a bundled grammar).
-pub async fn structural_languages(host: &Host, _window: &str) -> IdeResult<Vec<StructuralLanguage>> {
+pub async fn structural_languages(host: &Host) -> IdeResult<Vec<StructuralLanguage>> {
     let syntax = host.syntax();
     let mut out: Vec<StructuralLanguage> = host
         .languages
@@ -231,7 +231,7 @@ pub async fn structural_languages(host: &Host, _window: &str) -> IdeResult<Vec<S
 }
 
 /// Checks a structural search template (and language) while the user types.
-pub async fn structural_validate(host: &Host, _window: &str, query: StructuralQuery) -> IdeResult<()> {
+pub async fn structural_validate(host: &Host, query: StructuralQuery) -> IdeResult<()> {
     let syntax = host.syntax();
     blocking(move || ide_analysis::validate_structural(&syntax, &query)).await
 }
@@ -273,8 +273,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("analysis_locate_duplicates", |c| async move {
         analysis_locate_duplicates(&c.host, &c.window, c.arg("request")?, c.arg("scope")?, c.arg("options")?).await
     });
-    d.add("structural_languages", |c| async move { structural_languages(&c.host, &c.window).await });
-    d.add("structural_validate", |c| async move { structural_validate(&c.host, &c.window, c.arg("query")?).await });
+    d.add("structural_languages", |c| async move { structural_languages(&c.host).await });
+    d.add("structural_validate", |c| async move { structural_validate(&c.host, c.arg("query")?).await });
     d.add("structural_search", |c| async move {
         structural_search(&c.host, &c.window, c.arg("request")?, c.arg("scope")?, c.arg("query")?, c.sender("onEvent")?)
             .await

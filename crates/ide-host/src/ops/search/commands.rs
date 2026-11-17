@@ -98,7 +98,7 @@ pub async fn replace_preview(
 }
 
 /// Validates a query (e.g. regex syntax) while the user types.
-pub fn search_validate(_host: &Host, _window: &str, query: SearchQuery) -> IdeResult<()> {
+pub fn search_validate(query: SearchQuery) -> IdeResult<()> {
     ide_search::validate_query(&query)
 }
 
@@ -129,5 +129,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
         )
         .await
     });
-    d.add("search_validate", |c| async move { search_validate(&c.host, &c.window, c.arg("query")?) });
+    d.add("search_validate", |c| async move { search_validate(c.arg("query")?) });
+    d.add("search_start", |c| async move {
+        search_start(&c.host, &c.window, c.arg("request")?, c.arg("query")?, c.sender("onEvent")?).await
+    });
 }

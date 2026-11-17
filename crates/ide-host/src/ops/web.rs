@@ -2,8 +2,8 @@
 
 use crate::Host;
 use ide_core::IdeResult;
+use ide_core::IpcPath;
 use ide_core::proxy_settings::{ProxyMode, ProxySettings};
-use std::path::Path;
 use std::time::Duration;
 
 /// Whether `url` names this machine (`localhost` or a loopback address).
@@ -46,10 +46,16 @@ pub async fn serves_page(url: &str) -> bool {
     response.status().is_success() && html
 }
 
-/// The URL serving `file`, under the window's project when it holds the file.
-pub async fn url(host: &Host, window: &str, file: &Path) -> IdeResult<String> {
+/// The built-in server's URL for `path` (started on first use).
+pub async fn web_url(host: &Host, window: &str, path: IpcPath) -> IdeResult<String> {
+    // Under the window's project when it holds the file.
     let root = host.project(window).ok().map(|p| p.root.clone());
-    host.web.url_for(root.as_deref(), file).await
+    host.web.url_for(root.as_deref(), &path).await
+}
+
+/// Commands of this module the remote server answers.
+pub(crate) fn register(d: &mut crate::rpc::Dispatcher) {
+    d.add("web_url", |c| async move { web_url(&c.host, &c.window, c.arg("path")?).await });
 }
 
 #[cfg(test)]

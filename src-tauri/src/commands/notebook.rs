@@ -9,13 +9,13 @@ use tauri::{State, Window};
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_open(window: Window, state: State<'_, AppState>, path: String) -> IdeResult<NotebookSnapshot> {
-    notebook::open(&state.host, window.label(), path).await
+    notebook::notebook_open(&state.host, window.label(), path).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn notebook_get(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<NotebookSnapshot> {
-    notebook::get(&state.host, window.label(), id)
+    notebook::notebook_get(&state.host, window.label(), id)
 }
 
 #[tauri::command]
@@ -25,7 +25,7 @@ pub fn notebook_cell_docs(
     state: State<'_, AppState>,
     id: String,
 ) -> IdeResult<Vec<ide_lsp::NotebookCellDoc>> {
-    notebook::cell_docs(&state.host, window.label(), id)
+    notebook::notebook_cell_docs(&state.host, window.label(), id)
 }
 
 #[tauri::command]
@@ -37,49 +37,49 @@ pub async fn notebook_edit(
     version: u32,
     edit: NotebookEdit,
 ) -> IdeResult<NotebookSnapshot> {
-    notebook::edit(&state.host, window.label(), id, version, edit).await
+    notebook::notebook_edit(&state.host, window.label(), id, version, edit).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_save(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<NotebookSnapshot> {
-    notebook::save(&state.host, window.label(), id).await
+    notebook::notebook_save(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_reload(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<NotebookSnapshot> {
-    notebook::reload(&state.host, window.label(), id).await
+    notebook::notebook_reload(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_undo(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<NotebookSnapshot> {
-    notebook::undo(&state.host, window.label(), id).await
+    notebook::notebook_undo(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_redo(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<NotebookSnapshot> {
-    notebook::redo(&state.host, window.label(), id).await
+    notebook::notebook_redo(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_close(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    notebook::close(&state.host, window.label(), id).await
+    notebook::notebook_close(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_interrupt(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<()> {
-    notebook::interrupt(&state.host, window.label(), id).await
+    notebook::notebook_interrupt(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn notebook_restart(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<NotebookSnapshot> {
-    notebook::restart(&state.host, window.label(), id).await
+    notebook::notebook_restart(&state.host, window.label(), id).await
 }
 
 #[tauri::command]
@@ -94,5 +94,5 @@ pub async fn notebook_execute(
     request: RequestId,
     on_output: Channel<NotebookOutputEvent>,
 ) -> IdeResult<NotebookSnapshot> {
-    notebook::execute(&state.host, window.label(), id, cells, python, request, super::sender(on_output)).await
+    notebook::notebook_execute(&state.host, window.label(), id, cells, python, request, super::sender(on_output)).await
 }

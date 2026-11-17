@@ -1,4 +1,4 @@
-use super::Emit;
+use super::Channel;
 use crate::Host;
 use ide_core::{IdeResult, RequestId};
 use ide_search::{FileMatches, ProjectFileSet, SearchQuery, SearchSummary};
@@ -23,12 +23,12 @@ pub fn literal_range(l: ide_language::Literal) -> ide_search::LiteralRange {
 
 /// Find in Files. Results stream through `on_event`; ends with `Done`.
 /// Cancel with `cancel_request(request)`.
-pub async fn start(
+pub async fn search_start(
     host: &Host,
     window: &str,
     request: RequestId,
     mut query: SearchQuery,
-    on_event: Emit<SearchEvent>,
+    on_event: Channel<SearchEvent>,
 ) -> IdeResult<()> {
     let project = host.project(window)?;
     // Excluded roots (Project Structure marks and detected `target`, `node_modules`, …) and
@@ -39,11 +39,13 @@ pub async fn start(
     let syntax = host.syntax();
     let summary = host
         .blocking(move || {
-            search_project(&project, &syntax, &query, &cancel, &|file| events(SearchEvent::File { file }))
+            search_project(&project, &syntax, &query, &cancel, &|file| {
+                let _ = events.send(SearchEvent::File { file });
+            })
         })
         .await;
     host.end_request(request);
-    on_event(SearchEvent::Done { summary: summary? });
+    let _ = on_event.send(SearchEvent::Done { summary: summary? });
     Ok(())
 }
 

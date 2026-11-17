@@ -206,7 +206,7 @@ pub fn languages(state: State<'_, AppState>) -> Vec<LanguageInfo> {
 #[specta::specta]
 pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
     state.note_ipc();
-    ide_host::ops::project::settings(&state.host, window.label())
+    ide_host::ops::project::settings_get(&state.host, window.label())
 }
 
 /// Defaults plus the global layer, without any project's values: what new
@@ -326,7 +326,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     state.host.apply_proxy();
     state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
-    let settings = ide_host::ops::project::settings(&state.host, window.label());
+    let settings = ide_host::ops::project::settings_get(&state.host, window.label());
     Ok(SettingsImport { settings, storage })
 }
 
@@ -354,7 +354,7 @@ pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::
 #[tauri::command]
 #[specta::specta]
 pub fn project_roots(window: Window, state: State<'_, AppState>) -> IdeResult<ide_workspace::ProjectRoots> {
-    ide_host::ops::project::roots(&state.host, window.label())
+    ide_host::ops::project::project_roots(&state.host, window.label())
 }
 
 /// The project open in this window (a settings window: its parent's), if any.
@@ -367,7 +367,7 @@ pub fn project_current(window: Window, state: State<'_, AppState>) -> Option<Pro
 #[tauri::command]
 #[specta::specta]
 pub fn cancel_request(state: State<'_, AppState>, id: RequestId) {
-    state.cancel_request(id);
+    ide_host::ops::project::cancel_request(&state.host, id)
 }
 
 /// Stops a background task the backend reported with `cancellable` set; false when it
@@ -375,7 +375,7 @@ pub fn cancel_request(state: State<'_, AppState>, id: RequestId) {
 #[tauri::command]
 #[specta::specta]
 pub fn cancel_task(id: TaskId) -> bool {
-    ide_core::task::cancel(id)
+    ide_host::ops::project::cancel_task(id)
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -402,13 +402,13 @@ pub fn log_frontend(level: LogLevel, message: String) {
 #[tauri::command]
 #[specta::specta]
 pub fn project_trust_status(state: State<'_, AppState>, path: PathBuf) -> IdeResult<ide_host::trust::TrustStatus> {
-    state.trust.status(&path)
+    ide_host::ops::project::project_trust_status(&state.host, path)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn project_trust_list(state: State<'_, AppState>) -> IdeResult<ide_host::trust::TrustDecisions> {
-    state.trust.decisions()
+    ide_host::ops::project::project_trust_list(&state.host)
 }
 
 #[tauri::command]
