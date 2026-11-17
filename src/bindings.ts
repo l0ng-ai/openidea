@@ -640,6 +640,8 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("lsp_prepare_rename", { doc, pos })),
 	/**  Computes the rename edit without applying it, so the UI can preview conflicts. */
 	lspRename: (request: RequestId, doc: DocId, pos: Pos, newName: string) => typedError<Renamed, IdeError>(__TAURI_INVOKE("lsp_rename", { request, doc, pos, newName })),
+	/**  Answers a server's `window/showMessageRequest` question (`null`: dismissed). */
+	lspMessageRequestAnswer: (id: number, choice: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_message_request_answer", { id, choice })),
 	/**  The class at `pos` and the members Pull Members Up / Push Members Down can move. */
 	lspHierarchyMembers: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring) => typedError<HierarchyMembers, IdeError>(__TAURI_INVOKE("lsp_hierarchy_members", { request, doc, pos, kind })),
 	/**  Checks Pull Members Up / Push Members Down and computes the edit without applying it. */
@@ -6612,7 +6614,15 @@ label?: string | null; status: ServerStatus; message: string | null } |
  *  A language server asked clients to re-request one kind of data for its
  *  open documents (`workspace/inlayHint/refresh`, …), e.g. after indexing.
  */
-{ type: "lspRefresh"; server: ServerId; kind: LspRefreshKind } | { type: "terminalExited"; terminal: TerminalId; code: number | null } | { type: "runExited"; run: RunId; code: number | null } | { type: "debug"; session: DebugSessionId; event: DebugEvent } | { type: "notify"; level: NotifyLevel; title: string; body: string | null } | 
+{ type: "lspRefresh"; server: ServerId; kind: LspRefreshKind } | 
+/**
+ *  A language server asked the user to choose an action, e.g. Dart's
+ *  "Renamed field will be invisible in …" warning during a rename. Answered
+ *  with `lsp_message_request_answer`; the server cancels if we reply null.
+ */
+{ type: "lspMessageRequest"; id: number; server: string; message: string; actions: string[] } | 
+/**  The request was answered or timed out; every window drops its dialog. */
+{ type: "lspMessageRequestDone"; id: number } | { type: "terminalExited"; terminal: TerminalId; code: number | null } | { type: "runExited"; run: RunId; code: number | null } | { type: "debug"; session: DebugSessionId; event: DebugEvent } | { type: "notify"; level: NotifyLevel; title: string; body: string | null } | 
 /**
  *  A setting was written (any window); the windows it concerns (all for a
  *  global value, the project's for a project value) re-read their effective settings.

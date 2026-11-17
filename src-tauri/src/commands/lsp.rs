@@ -7,6 +7,14 @@ pub use ide_host::ops::lsp::*;
 use ide_lsp::types::*;
 use tauri::{State, Window};
 
+/// Answers a server's `window/showMessageRequest` question (`null`: dismissed).
+#[tauri::command]
+#[specta::specta]
+pub fn lsp_message_request_answer(id: u32, choice: Option<String>) -> IdeResult<()> {
+    ide_lsp::answer_message_request(id, choice);
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn lsp_completion(

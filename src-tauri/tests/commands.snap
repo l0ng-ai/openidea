@@ -330,6 +330,7 @@ lsp_java_move                                trusted            project_host bin
 lsp_java_move_destinations                   trusted            project_host bindings async
 lsp_java_source_types                        trusted            project_host bindings async
 lsp_library_sources                          trusted            project_host bindings async
+lsp_message_request_answer                   trusted            desktop      bindings sync
 lsp_prepare_rename                           trusted            project_host bindings async
 lsp_prepare_type_hierarchy                   trusted            project_host bindings async
 lsp_references                               trusted            project_host bindings async
