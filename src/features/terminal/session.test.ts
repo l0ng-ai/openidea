@@ -6,6 +6,7 @@ import { FIT_SETTLE_MS } from "./fit";
 import { findTerminalLinks, type TerminalLink } from "./links";
 import { openFileLink, resolveStartCwd, TerminalSession } from "./session";
 import { usePlatform } from "@/platform/platformInfo";
+import { resetWheelZoomGesture } from "@/platform/wheelZoom";
 
 const ipc = vi.hoisted(() => ({
   call: vi.fn(async (v: unknown) => v),
@@ -419,6 +420,7 @@ describe("terminal font zoom", () => {
     wheel(session.host, { metaKey: true, deltaY: 100 });
     wheel(session.host, { ctrlKey: true, deltaY: 100 });
     expect(session.term.options.fontSize).toBe(13);
+    resetWheelZoomGesture();
     const plain = wheel(session.host, { deltaY: -100 });
     expect(plain.defaultPrevented).toBe(false);
     expect(session.term.options.fontSize).toBe(13);
