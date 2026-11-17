@@ -264,7 +264,6 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
             {plugin.source !== "installed" && (
               <span className={styles.devTag}>{plugin.source === "linked" ? tx("linked") : tx("dev")}</span>
             )}
-            {update && <Badge tone="accent">{tx("Update")}</Badge>}
             {plugin.status === "failed" && (
               <Badge dot tone="danger">
                 {tx("Failed")}
@@ -277,6 +276,11 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
             )}
           </span>
         </span>
+        {update && (
+          <Badge tone="accent" className={styles.rowBadge}>
+            {tx("Update")}
+          </Badge>
+        )}
       </button>
       <Checkbox
         className={styles.rowCheck}
