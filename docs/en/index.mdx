@@ -1,58 +1,259 @@
 ---
-title: "Introduction"
-description: "OpenIDEA is an open-source IDE with the IntelliJ IDEA way of working, built as a native app with a Rust core."
+title: "OpenIDEA"
+sidebarTitle: "Home"
+description: "The IDE you know, rebuilt in Rust. Open source, native, and fast on macOS, Windows and Linux."
+mode: "custom"
 ---
 
-OpenIDEA brings the IntelliJ IDEA way of working (its keymap, its tool windows, its search-everything habits) to a native desktop app with a Rust core. It runs on macOS, Windows and Linux and is licensed under Apache 2.0.
+import { pluginCatalog } from "/snippets/plugin-catalog.jsx";
+import { FeaturedPlugins } from "/snippets/marketplace.jsx";
 
-If you have used IntelliJ IDEA, PyCharm or another JetBrains IDE, most of what you know carries over: pressing <kbd>Shift</kbd> twice opens Search Everywhere, `⌥↵` / `Alt+Enter` shows context actions, and the default keymap matches IDEA's. Coming from VS Code or Eclipse? Their keymaps are built in too.
+export const Kbd = ({ children }) => <span className="oi-kbd">{children}</span>;
 
-## Highlights
+<div className="oi-home">
 
-- **One IDE for many languages.** Editor and code insight for 60+ languages, and a one-click install of the language servers a project needs. See [Languages](/en/languages/index).
-- **The tools you expect.** Debugger, Git, terminal, database client, HTTP client, test runner, coverage and profiler, each in its own tool window.
-- **Search everything.** Search Everywhere, Find Action, Go to Class / File / Symbol and Find in Files across the indexed project.
-- **Refactorings and inspections.** Rename, extract, inline, change signature, safe delete, quick fixes and Inspect Code.
-- **Remote development.** Work on a machine over SSH or in a dev container with the `openidea-server` backend.
-- **AI agents.** Run coding agents in a tool window, and give them the IDE's own tools through the built-in MCP server.
-- **Plugins.** Plugins add actions, completion, quick fixes, tool windows, custom editors, themes, file icons and languages. They run as sandboxed WebAssembly components; themes, icon themes and languages need no code. The plugin API is still a preview.
+<section className="oi-hero">
+  <div className="oi-hero-glow" aria-hidden="true" />
+  <div className="oi-grid-bg" aria-hidden="true" />
+  <div className="oi-wrap oi-hero-inner">
+    <a className="oi-pill" href="https://github.com/l0ng-ai/openidea">
+      <span className="oi-pill-dot" />
+      Open source · Apache 2.0
+      <span className="oi-pill-arrow">→</span>
+    </a>
+    <h1 className="oi-title">
+      The IDE you know,
+      <br />
+      <span className="oi-title-accent">rebuilt in Rust.</span>
+    </h1>
+    <p className="oi-lead">
+      Keymap, tool windows and search-everything habits you already have, in a native desktop app that opens in
+      under a second and idles at a fraction of the memory.
+    </p>
+    <div className="oi-actions">
+      <a className="oi-btn oi-btn-primary" href="https://github.com/l0ng-ai/openidea/releases/latest">
+        Download
+      </a>
+      <a className="oi-btn oi-btn-ghost" href="/en/introduction">
+        Read the docs
+      </a>
+    </div>
+    <p className="oi-platforms">macOS · Windows · Linux</p>
+  </div>
 
-## Benchmark
+  <div className="oi-wrap">
+    <img
+      className="oi-shot"
+      src="/images/ide-dark.webp"
+      alt="OpenIDEA in the dark theme: a Java project with the project tree and the editor"
+      width="2880"
+      height="1800"
+      noZoom
+    />
+  </div>
+</section>
 
-Opening [freqtrade](https://github.com/freqtrade/freqtrade) (Python, about 770 files) with warm caches, median of 5 runs:
+<section className="oi-section">
+  <div className="oi-wrap">
+    <div className="oi-eyebrow">Benchmark</div>
+    <h2 className="oi-h2">Native speed, measured from the outside.</h2>
+    <p className="oi-sub">
+      Opening freqtrade (Python, ~770 files) with warm caches, median of 5 runs, against IntelliJ IDEA 2026.2.3 with
+      default settings.
+    </p>
+    <div className="oi-stats">
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          0.9<small>s</small>
+        </div>
+        <div className="oi-stat-label">Window with the project</div>
+        <div className="oi-bar">
+          <span style={{ width: "29%" }} />
+        </div>
+        <div className="oi-stat-vs">3.1 s in IntelliJ IDEA</div>
+      </div>
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          1.1<small>s</small>
+        </div>
+        <div className="oi-stat-label">Ready, CPU settled</div>
+        <div className="oi-bar">
+          <span style={{ width: "8%" }} />
+        </div>
+        <div className="oi-stat-vs">13.2 s in IntelliJ IDEA</div>
+      </div>
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          169<small>MB</small>
+        </div>
+        <div className="oi-stat-label">Memory, all processes</div>
+        <div className="oi-bar">
+          <span style={{ width: "8%" }} />
+        </div>
+        <div className="oi-stat-vs">2011 MB in IntelliJ IDEA</div>
+      </div>
+      <div className="oi-stat">
+        <div className="oi-stat-num">
+          0.3<small>s</small>
+        </div>
+        <div className="oi-stat-label">Quit</div>
+        <div className="oi-bar">
+          <span style={{ width: "5%" }} />
+        </div>
+        <div className="oi-stat-vs">5.9 s in IntelliJ IDEA</div>
+      </div>
+    </div>
+    <p className="oi-footnote">
+      Windows 11, 32-core AMD, 62 GB RAM. IDEA analyses Python more deeply, so "ready" isn't the same work on both
+      sides. Reproduce it with <a href="https://github.com/l0ng-ai/openidea/blob/main/perf/compare">perf/compare</a>.
+    </p>
+  </div>
+</section>
 
-|                             | OpenIDEA          | IntelliJ IDEA 2026.2.3 |
-| --------------------------- | ----------------- | ---------------------- |
-| Window with the project     | **0.9 s**         | 3.1 s                  |
-| Ready (CPU settled)         | **1.1 s**         | 13.2 s                 |
-| Memory (USS, all processes) | **169 MB**        | 2011 MB                |
-| CPU time until ready        | **2.4 s**         | 47.9 s                 |
-| Idle CPU                    | **4 %** of a core | 7 % of a core          |
-| Quit                        | **0.3 s**         | 5.9 s                  |
+<section className="oi-section">
+  <div className="oi-wrap">
+    <div className="oi-eyebrow">Everything in one window</div>
+    <h2 className="oi-h2">A full IDE, not an editor with extensions.</h2>
+    <div className="oi-features">
+      <a className="oi-feature" href="/en/languages/index">
+        <Icon icon="code" size={18} />
+        <h3>60+ languages</h3>
+        <p>
+          Editor and code insight for every language, with one-click install of the language servers a project needs.
+        </p>
+      </a>
+      <a className="oi-feature" href="/en/guide/search">
+        <Icon icon="magnifying-glass" size={18} />
+        <h3>Search everything</h3>
+        <p>Search Everywhere, Find Action, Go to Class / File / Symbol and Find in Files across the indexed project.</p>
+      </a>
+      <a className="oi-feature" href="/en/guide/refactoring">
+        <Icon icon="wand-magic-sparkles" size={18} />
+        <h3>Refactor with confidence</h3>
+        <p>Rename, extract, inline, change signature and safe delete, plus inspections with quick fixes.</p>
+      </a>
+      <a className="oi-feature" href="/en/guide/debugging">
+        <Icon icon="bug" size={18} />
+        <h3>Run, test, debug</h3>
+        <p>Debugger, test runner, coverage and profiler, each in its own tool window.</p>
+      </a>
+      <a className="oi-feature" href="/en/guide/vcs">
+        <Icon icon="code-branch" size={18} />
+        <h3>Git, terminal, database</h3>
+        <p>Commit, log and branches, a real terminal, a database client and an HTTP client built in.</p>
+      </a>
+      <a className="oi-feature" href="/en/guide/remote/ssh">
+        <Icon icon="server" size={18} />
+        <h3>Remote development</h3>
+        <p>
+          Work on a machine over SSH or in a dev container, backed by <code>openidea-server</code>.
+        </p>
+      </a>
+      <a className="oi-feature" href="/en/guide/agents">
+        <Icon icon="sparkles" size={18} />
+        <h3>AI agents</h3>
+        <p>Run coding agents in a tool window and give them the IDE's own tools through the built-in MCP server.</p>
+      </a>
+      <a className="oi-feature" href="/en/plugins/index">
+        <Icon icon="puzzle-piece" size={18} />
+        <h3>WebAssembly plugins</h3>
+        <p>Sandboxed plugins add actions, completion, tool windows and editors. Themes and languages need no code.</p>
+      </a>
+    </div>
+  </div>
+</section>
 
-Measured with a release build of OpenIDEA from `main` and IDEA with default settings and plugins, on Windows 11, 32-core AMD, 62 GB RAM. IDEA analyses Python more deeply, so "ready" doesn't mean the same work on both sides. Both are measured from the outside, the same way: see [`perf/compare`](https://github.com/l0ng-ai/openidea/blob/main/perf/compare) to run the comparison on your own machine and projects.
+<section className="oi-section">
+  <div className="oi-wrap">
+    <div className="oi-plug-head">
+      <div>
+        <div className="oi-eyebrow">Plugin Marketplace</div>
+        <h2 className="oi-h2">{pluginCatalog.plugins.length} plugins and counting.</h2>
+        <p className="oi-sub">
+          Spring, Laravel, Symfony, Kubernetes, AI commit messages, themes and more, from {pluginCatalog.publishers}{" "}
+          publishers. Every package is signed and runs in a WebAssembly sandbox.
+        </p>
+      </div>
+      <a className="oi-btn oi-btn-ghost" href="/plugins">
+        Browse the marketplace →
+      </a>
+    </div>
+    <FeaturedPlugins catalog={pluginCatalog} href="/plugins" />
+  </div>
+</section>
 
-## Where to go next
+<section className="oi-section">
+  <div className="oi-wrap oi-split">
+    <div>
+      <div className="oi-eyebrow">Muscle memory included</div>
+      <h2 className="oi-h2">Your shortcuts already work.</h2>
+      <p className="oi-sub">
+        The default keymap matches IntelliJ IDEA, and VS Code and Eclipse keymaps are built in. Settings import brings
+        the rest.
+      </p>
+      <a className="oi-link" href="/en/guide/migrate">
+        Coming from another IDE →
+      </a>
+    </div>
+    <div className="oi-keys">
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⇧</Kbd>
+          <Kbd>⇧</Kbd>
+        </span>
+        Search Everywhere
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⌥</Kbd>
+          <Kbd>↵</Kbd>
+        </span>
+        Show context actions
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⌘</Kbd>
+          <Kbd>⇧</Kbd>
+          <Kbd>A</Kbd>
+        </span>
+        Find Action
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⇧</Kbd>
+          <Kbd>F6</Kbd>
+        </span>
+        Rename
+      </div>
+      <div className="oi-key-row">
+        <span>
+          <Kbd>⌃</Kbd>
+          <Kbd>⇧</Kbd>
+          <Kbd>D</Kbd>
+        </span>
+        Debug
+      </div>
+    </div>
+  </div>
+</section>
 
-<CardGroup cols={2}>
-  <Card title="Install" icon="download" href="/en/guide/install">
-    Download OpenIDEA for macOS, Windows or Linux.
-  </Card>
-  <Card title="Quickstart" icon="rocket" href="/en/guide/quickstart">
-    Open a project, find your way around, run and debug.
-  </Card>
-  <Card title="Coming from another IDE" icon="right-left" href="/en/guide/migrate">
-    Keymaps, settings import and concepts for IntelliJ IDEA, VS Code and Eclipse users.
-  </Card>
-  <Card title="Languages" icon="code" href="/en/languages/index">
-    What each language supports and what it needs installed.
-  </Card>
-  <Card title="Plugins" icon="puzzle-piece" href="/en/plugins/index">
-    Write themes, languages and WebAssembly plugins.
-  </Card>
-  <Card title="Contribute" icon="code-branch" href="/en/contribute/setup">
-    Build OpenIDEA from source and send a pull request.
-  </Card>
-</CardGroup>
+<section className="oi-cta">
+  <div className="oi-hero-glow oi-cta-glow" aria-hidden="true" />
+  <div className="oi-wrap oi-cta-inner">
+    <h2 className="oi-h2">Open a project in under a second.</h2>
+    <p className="oi-sub">Free and open source, for macOS, Windows and Linux.</p>
+    <div className="oi-actions">
+      <a className="oi-btn oi-btn-primary" href="https://github.com/l0ng-ai/openidea/releases/latest">
+        Download
+      </a>
+      <a className="oi-btn oi-btn-ghost" href="/en/guide/quickstart">
+        Quickstart
+      </a>
+    </div>
+    <p className="oi-disclaimer">
+      OpenIDEA is not affiliated with JetBrains. IntelliJ IDEA is a trademark of JetBrains s.r.o.
+    </p>
+  </div>
+</section>
 
-<Note>OpenIDEA is not affiliated with JetBrains. IntelliJ IDEA is a trademark of JetBrains s.r.o.</Note>
+</div>
