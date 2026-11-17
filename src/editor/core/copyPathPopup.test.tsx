@@ -154,6 +154,18 @@ describe("editor Copy Path/Reference chooser", () => {
     expect(writeText).toHaveBeenCalledExactlyOnceWith(path);
   });
 
+  it("copies a selection over several lines as path:first-last", async () => {
+    const view = ctrl.activeSlot!.view!;
+    view.dispatch({ selection: { anchor: 0, head: documentText.indexOf("A {}") } });
+    await executeAction("editor.copyPathReference");
+    const item = popup().items.find((item) => item.id === "editor.copyPathWithLineNumber")!;
+    expect(item.preview).toBe("src/A.java:1-2");
+    // A selection that ends at the start of a line leaves that line out.
+    view.dispatch({ selection: { anchor: 0, head: documentText.indexOf("class") } });
+    await executeAction("editor.copyPathWithLineNumber");
+    await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith("src/A.java:1"));
+  });
+
   it("uses path:line off a symbol and ignores stale reference resolution", async () => {
     ctrl.activeSlot!.view!.dispatch({ selection: { anchor: documentText.length - 1 } });
     await executeAction("editor.copyPathReference");
