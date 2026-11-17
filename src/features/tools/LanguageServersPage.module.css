@@ -123,6 +123,10 @@
   flex: 1;
 }
 .banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
   padding: 6px 8px;
   border-radius: var(--radius-small);
   background: var(--bg-control);
@@ -197,6 +201,34 @@
   color: var(--fg-muted);
   font-size: var(--fs-tiny);
   line-height: 16px;
+}
+.runTag {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+.lead {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding-left: 10px;
+}
+.lead + .tableMain {
+  padding-left: 6px;
+}
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.groupTitle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--fg-strong);
+}
+.groupHint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
 .updateTag {
   background: color-mix(in srgb, var(--accent) 18%, transparent);

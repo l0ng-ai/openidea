@@ -4,7 +4,7 @@
 
 use crate::Host;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{CancellationToken, DebugSessionId, IdeError, IdeResult, IpcPath, RequestId};
 use ide_dap::{JvmHeapOutcome, JvmHeapUnavailable};
 use ide_heap::{AnalyzeOptions, HeapError, HeapOrigin, OpenSnapshot};
@@ -55,8 +55,8 @@ pub enum HeapOpenResult {
     Cancelled,
 }
 
-/// Dumps the session's JVM into a new snapshot directory and analyzes the dump there; cancel with
-/// `request`. Anything but `Ready` leaves no directory behind.
+/// Dumps the session's JVM and analyzes the dump; cancel with `request`.
+#[command(trust = trusted)]
 pub async fn debug_heap_capture(
     host: &Host,
     window: &str,
@@ -64,6 +64,7 @@ pub async fn debug_heap_capture(
     request: RequestId,
     on_progress: Channel<HeapProgress>,
 ) -> IdeResult<HeapCaptureResult> {
+    // Dumps into a new snapshot directory; anything but `Ready` leaves no directory behind.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let running = Running::begin(host, request, &cancel);
@@ -119,8 +120,8 @@ async fn capture(
     })
 }
 
-/// Analyzes the `.hprof` at `path` into a new snapshot directory; the file itself is never
-/// changed or deleted. Cancel with `request`.
+/// Analyzes an `.hprof` file; cancel with `request`.
+#[command(trust = trusted)]
 pub async fn debug_heap_open(
     host: &Host,
     window: &str,
@@ -128,6 +129,7 @@ pub async fn debug_heap_open(
     request: RequestId,
     on_progress: Channel<HeapProgress>,
 ) -> IdeResult<HeapOpenResult> {
+    // Analyzes into a new snapshot directory; the file itself is never changed or deleted.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let running = Running::begin(host, request, &cancel);
@@ -297,14 +299,14 @@ fn reporter<'a>(
     }
 }
 
-/// The class table of a snapshot.
+#[command(trust = trusted)]
 pub async fn debug_heap_classes(host: &Host, window: &str, snapshot: HeapSnapshotId) -> IdeResult<Vec<HeapClassRow>> {
     let snapshot = open_snapshot(host, window, snapshot)?;
     host.blocking(move || Ok(snapshot.index().class_rows())).await
 }
 
-/// A page of the dominator tree; see [`ide_heap::HeapIndex::dominated`] for what `parent` and
-/// `class_index` select.
+/// A page of the dominator tree: under `parent`, of type `classIndex`, or both.
+#[command(trust = trusted)]
 pub async fn debug_heap_dominators(
     host: &Host,
     window: &str,
@@ -314,11 +316,13 @@ pub async fn debug_heap_dominators(
     offset: u32,
     limit: u32,
 ) -> IdeResult<HeapObjectPage> {
+    // See `ide_heap::HeapIndex::dominated` for what `parent` and `class_index` select.
     let snapshot = open_snapshot(host, window, snapshot)?;
     host.blocking(move || Ok(snapshot.index().dominated(parent, class_index, offset, limit))).await
 }
 
-/// The shortest path from `object` to a GC root; `None` when it is unreachable.
+/// The shortest path from `object` to a GC root; `null` when it is unreachable.
+#[command(trust = trusted)]
 pub async fn debug_heap_path(
     host: &Host,
     window: &str,
@@ -329,27 +333,30 @@ pub async fn debug_heap_path(
     host.blocking(move || Ok(snapshot.index().path_to_root(object))).await
 }
 
-/// Class-by-class differences from `base` to `current`.
+#[command(trust = trusted)]
 pub async fn debug_heap_compare(
     host: &Host,
     window: &str,
     base: HeapSnapshotId,
     current: HeapSnapshotId,
 ) -> IdeResult<Vec<HeapClassDiff>> {
+    // Class-by-class differences from `base` to `current`.
     let base = open_snapshot(host, window, base)?;
     let current = open_snapshot(host, window, current)?;
     host.blocking(move || Ok(ide_heap::compare(base.index(), current.index()))).await
 }
 
-/// Copies the snapshot's dump to `path`, replacing a file there (the UI has asked).
+/// Copies the snapshot's dump to `path`, replacing a file there.
+#[command(trust = trusted)]
 pub async fn debug_heap_save(host: &Host, window: &str, snapshot: HeapSnapshotId, path: IpcPath) -> IdeResult<()> {
     let snapshot = open_snapshot(host, window, snapshot)?;
     let target = path.into_path_buf();
     host.blocking(move || copy_replacing(&snapshot.dump, &target)).await
 }
 
-/// Forgets the snapshot and deletes its directory once no query is using it.
+#[command(trust = trusted)]
 pub async fn debug_heap_close(host: &Host, window: &str, snapshot: HeapSnapshotId) -> IdeResult<()> {
+    // Forgets the snapshot and deletes its directory once no query is using it.
     open_snapshot(host, window, snapshot)?;
     close(host, snapshot).await
 }
@@ -483,38 +490,17 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("debug_heap_capture", |c| async move {
-        debug_heap_capture(&c.host, &c.window, c.arg("session")?, c.arg("request")?, c.sender("onProgress")?).await
-    });
-    d.add("debug_heap_open", |c| async move {
-        debug_heap_open(&c.host, &c.window, c.arg("path")?, c.arg("request")?, c.sender("onProgress")?).await
-    });
-    d.add("debug_heap_classes", |c| async move { debug_heap_classes(&c.host, &c.window, c.arg("snapshot")?).await });
-    d.add("debug_heap_dominators", |c| async move {
-        debug_heap_dominators(
-            &c.host,
-            &c.window,
-            c.arg("snapshot")?,
-            c.arg("parent")?,
-            c.arg("classIndex")?,
-            c.arg("offset")?,
-            c.arg("limit")?,
-        )
-        .await
-    });
-    d.add("debug_heap_path", |c| async move {
-        debug_heap_path(&c.host, &c.window, c.arg("snapshot")?, c.arg("object")?).await
-    });
-    d.add("debug_heap_compare", |c| async move {
-        debug_heap_compare(&c.host, &c.window, c.arg("base")?, c.arg("current")?).await
-    });
-    d.add("debug_heap_save", |c| async move {
-        debug_heap_save(&c.host, &c.window, c.arg("snapshot")?, c.arg("path")?).await
-    });
-    d.add("debug_heap_close", |c| async move { debug_heap_close(&c.host, &c.window, c.arg("snapshot")?).await });
-}
-
 #[cfg(test)]
 mod tests;
+
+ide_command::domain!(
+    heap:
+    debug_heap_capture,
+    debug_heap_classes,
+    debug_heap_close,
+    debug_heap_compare,
+    debug_heap_dominators,
+    debug_heap_open,
+    debug_heap_path,
+    debug_heap_save,
+);

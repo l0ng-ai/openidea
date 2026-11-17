@@ -3,7 +3,7 @@
 
 use crate::Host;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{CancellationToken, DebugSessionId, IdeError, IdeResult, LanguageId, Range, RequestId};
 use ide_dap::{StackFrame, TraceRun};
 pub use ide_dap::{TracePhase, TraceProgress, TraceUnavailable};
@@ -102,8 +102,8 @@ pub enum TerminalView {
     Threw { exception: JvmValue },
 }
 
-/// The stream chains around `frame`'s line, in source order, with why each cannot be traced.
-/// `top`: `frame` is the thread's top frame, the only one a trace can run from.
+/// The stream chains around `frame`'s line; `top`: it is the thread's top frame.
+#[command(trust = trusted)]
 pub async fn debug_stream_chains(
     host: &Host,
     window: &str,
@@ -111,17 +111,16 @@ pub async fn debug_stream_chains(
     frame: StackFrame,
     top: bool,
 ) -> IdeResult<Vec<StreamChainInfo>> {
+    // In source order, with why each cannot be traced; only the top frame can run a trace.
     host.require_trust(window)?;
     let backend = host.debugger.capabilities(session)?.stream_trace;
     Ok(candidates(host, window, frame, top, backend).await?.into_iter().map(|c| c.info).collect())
 }
 
-/// Runs the program from `thread_id`, stopped in `frame`, through the chain `chain_index` of
-/// [`debug_stream_chains`], recording each element, and leaves it stopped after the chain's
-/// terminal operation. `range` is that chain's [`StreamChainInfo::range`]: an edit in between
-/// can move another chain to the same index. Cancelling `request` stops recording while the
-/// program runs on.
+/// Traces chain `chain_index` of [`debug_stream_chains`], whose `range` the UI showed, while the
+/// program runs it; cancelling `request` stops recording.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn debug_stream_trace(
     host: &Host,
     window: &str,
@@ -133,6 +132,9 @@ pub async fn debug_stream_trace(
     range: Range,
     on_progress: Channel<TraceProgress>,
 ) -> IdeResult<StreamTraceResult> {
+    // Runs the program from `thread_id`, stopped in `frame`, and leaves it stopped after the
+    // chain's terminal operation. `range` is that chain's [`StreamChainInfo::range`]: an edit in
+    // between can move another chain to the same index. The program runs on after a cancel.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let chain = ChainRef { frame, index: chain_index, range };
@@ -195,12 +197,14 @@ async fn trace(
     })
 }
 
-/// Ends the running trace's terminal operation (Abort Operation); `None` when no trace runs.
+/// Ends the running trace's terminal operation; `None` when no trace runs.
+#[command(trust = trusted)]
 pub async fn debug_stream_trace_abort(
     host: &Host,
     window: &str,
     session: DebugSessionId,
 ) -> IdeResult<Option<AbortState>> {
+    // Backs the debugger's Abort Operation action.
     host.require_trust(window)?;
     host.debugger.stream_trace_abort(session).await
 }
@@ -438,29 +442,12 @@ fn box_kind(type_name: &str) -> Option<BoxKind> {
     })
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("debug_stream_chains", |c| async move {
-        debug_stream_chains(&c.host, &c.window, c.arg("session")?, c.arg("frame")?, c.arg("top")?).await
-    });
-    d.add("debug_stream_trace", |c| async move {
-        debug_stream_trace(
-            &c.host,
-            &c.window,
-            c.arg("session")?,
-            c.arg("request")?,
-            c.arg("threadId")?,
-            c.arg("frame")?,
-            c.arg("chainIndex")?,
-            c.arg("range")?,
-            c.sender("onProgress")?,
-        )
-        .await
-    });
-    d.add("debug_stream_trace_abort", |c| async move {
-        debug_stream_trace_abort(&c.host, &c.window, c.arg("session")?).await
-    });
-}
-
 #[cfg(test)]
 mod tests;
+
+ide_command::domain!(
+    stream_trace:
+    debug_stream_chains,
+    debug_stream_trace,
+    debug_stream_trace_abort,
+);

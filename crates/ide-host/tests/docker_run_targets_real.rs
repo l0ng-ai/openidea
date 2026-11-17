@@ -50,15 +50,16 @@ type Output = Arc<Mutex<String>>;
 async fn start(host: &Host, config: RunConfig) -> (ide_core::RunId, Output) {
     let out: Output = Arc::default();
     let sink = out.clone();
-    let info = ops::run::start(
+    let info = ops::run::run_start(
         host,
         "main",
         config,
-        Arc::new(move |chunk| match chunk {
+        ide_host::ops::Channel::new(move |chunk| match chunk {
             OutputChunk::Stdout { text } | OutputChunk::Stderr { text } | OutputChunk::System { text } => {
                 sink.lock().push_str(&text)
             }
         }),
+        None,
     )
     .await
     .unwrap();
@@ -145,7 +146,7 @@ async fn runs_in_docker_and_compose_containers() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_ne!(containers("label=openidea.run=sleep"), "", "{}", out.lock());
-    ops::run::stop(&host, "main", id).unwrap();
+    ops::run::run_stop(&host, "main", id).unwrap();
     let out = finished(&out, 30).await;
     assert!(out.contains(" stop openidea-sleep-"), "{out}");
     for _ in 0..100 {

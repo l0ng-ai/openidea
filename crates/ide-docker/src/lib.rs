@@ -483,6 +483,7 @@ pub fn endpoint_is_local(ep: &DockerEndpoint) -> IdeResult<bool> {
             |name| context_host(&DockerEndpoint::Default, name),
         )?,
         DockerEndpoint::Context { name } => context_host(&DockerEndpoint::Default, Some(name.trim()))?,
+        DockerEndpoint::Ssh { .. } => return Ok(false),
     };
     Ok(daemon_url_is_local(&url))
 }

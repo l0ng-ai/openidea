@@ -2,7 +2,7 @@
 pub(crate) mod cache;
 
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
 use super::build::load;
 use ide_build::compile;
@@ -13,10 +13,10 @@ use ide_run::BuildPolicy;
 use std::path::PathBuf;
 
 /// Cancellable with `cancel_request(request)`.
-/// Builds the workspace (when `build`), then resolves the runtime (or test)
+/// Builds according to `policy`, then resolves the runtime (or test)
 /// classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 /// A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
-/// Resources a Gradle build filters or renames are processed by Gradle, replacing the language server's plain copies.
+#[command(trust = trusted)]
 pub async fn java_resolve_launch(
     host: &Host,
     window: &str,
@@ -25,6 +25,8 @@ pub async fn java_resolve_launch(
     policy: BuildPolicy,
     request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
+    // Resources a Gradle build filters or renames are processed by Gradle, replacing the language
+    // server's plain copies.
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = resolve_launch(host, window, module, test, policy, &cancel).await;
@@ -373,6 +375,7 @@ fn use_snapshot_on(
 }
 
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
+#[command(trust = trusted)]
 pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> IdeResult<u16> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -381,6 +384,7 @@ pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> Id
 }
 
 /// Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap).
+#[command(trust = trusted)]
 pub async fn java_build_workspace(
     host: &Host,
     window: &str,
@@ -397,18 +401,6 @@ pub async fn java_build_workspace(
         host.end_request(id);
     }
     result
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("java_resolve_launch", |c| async move {
-        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("policy")?, c.arg("request")?)
-            .await
-    });
-    d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });
-    d.add("java_build_workspace", |c| async move {
-        java_build_workspace(&c.host, &c.window, c.arg("module")?, c.arg("request")?).await
-    });
 }
 
 /// An annotation processor's error for writing a file this build already wrote (JDT's
@@ -678,3 +670,5 @@ mod tests {
         }
     }
 }
+
+ide_command::domain!(java: java_build_workspace, java_debug_server, java_resolve_launch);
