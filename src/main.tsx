@@ -28,6 +28,7 @@ import { call, commands, isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
 import { installWindowDrag } from "./workbench/window-drag";
+import { installFullscreenEscapeGuard } from "./workbench/fullscreenEscape";
 
 if (import.meta.env.DEV && isTauri()) {
   // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
@@ -71,6 +72,8 @@ if (aux?.kind === "settings") {
   activateSecondaryWindow();
   activateDeploymentWindowFeatures(aux.parent);
 } else {
+  // Before the features' and the dispatcher's key handlers: it wraps the Escape they see.
+  installFullscreenEscapeGuard();
   activateWorkbench();
   // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
   const perfBuild = import.meta.env.MODE === "perf";
