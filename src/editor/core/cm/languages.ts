@@ -196,6 +196,10 @@ const OWN_MODES = [
     },
   }),
   LanguageDescription.of({
+    name: "Properties files",
+    load: async () => new LanguageSupport((await import("./properties")).propertiesLanguage),
+  }),
+  LanguageDescription.of({
     name: "Markdown",
     extensions: ["md", "markdown", "mkd"],
     load: () => import("./markdown").then((m) => m.markdownSupport(fencedCodeMode)),
