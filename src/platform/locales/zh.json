@@ -47,7 +47,6 @@
   "app.keymap.filter": "按操作或快捷键筛选",
   "app.keymap.other": "其他",
   "app.keymap.preset": "键位映射：{preset}",
-  "app.keymap.rectangularSelectionOr": "或者",
   "app.keymap.title": "快捷键参考",
   "app.lightEdit.openProject": "作为项目打开",
   "app.lightEdit.openProjectTooltip": "将 {folder} 作为项目打开",

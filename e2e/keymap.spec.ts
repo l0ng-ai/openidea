@@ -29,8 +29,6 @@ for (const activation of ["double-click", "Enter"] as const) {
       .getByRole("button", { name: "Leave", exact: true })
       .click();
     await expect(row).toContainText("Click");
-    await expect.poll(() => row.locator("kbd").count()).toBeGreaterThan(1);
-    await expect(row.getByText("or", { exact: true })).toHaveCount(0);
     await activate();
     await keyboard.click();
     const keyboardDialog = page.getByRole("dialog", { name: "Keyboard Shortcut: Find Action…", exact: true });
@@ -51,7 +49,6 @@ test("rectangular drag remains configurable after removal and saves a middle mou
   await settings.getByRole("treeitem", { name: "Keymap", exact: true }).click();
   await settings.getByRole("textbox", { name: "Search actions", exact: true }).fill(title);
   const row = settings.getByRole("tree", { name: "Actions" }).getByRole("treeitem", { name: new RegExp(title) });
-  await expect(row.getByText("or", { exact: true })).toHaveCount(1);
   for (let i = 0; i < 2; i++) {
     await row.click({ button: "right" });
     await page
@@ -60,7 +57,6 @@ test("rectangular drag remains configurable after removal and saves a middle mou
       .click();
   }
   await expect(row).toBeVisible();
-  await expect(row.getByText("or", { exact: true })).toHaveCount(0);
   await row.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Add Mouse Shortcut", exact: true }).click();
   const recorder = page.getByRole("dialog", { name: `Mouse Shortcut: ${title}`, exact: true });
@@ -82,6 +78,5 @@ test("rectangular drag remains configurable after removal and saves a middle mou
   await settings.getByRole("treeitem", { name: "Keymap", exact: true }).click();
   await settings.getByRole("textbox", { name: "Search actions", exact: true }).fill(title);
   await expect(row).toContainText("Middle Click");
-  await expect(row.getByText("or", { exact: true })).toHaveCount(0);
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
 });

@@ -6,7 +6,7 @@
  * remove or reset shortcuts. Edits are staged as the `keymap`, `keymapOverrides`
  * (bundled keymaps) and `customKeymaps` (user keymaps) settings, global scope.
  */
-import { Fragment, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { useActions, allActions, type Action } from "@/platform/actions";
 import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS, useKeymap } from "@/platform/keymap";
@@ -57,7 +57,7 @@ import { parseIdeaKeymap } from "@/platform/ideaKeymap";
 import { RecordShortcutDialog } from "./RecordShortcutDialog";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
-import { tx, useT } from "@/platform/i18n";
+import { tx } from "@/platform/i18n";
 
 type KNode =
   | { kind: "group"; key: string; name: string; path: string[]; children: KNode[] }
@@ -166,7 +166,6 @@ function groupKeys(nodes: readonly KNode[], out: string[] = []): string[] {
 type NameDialog = { mode: "duplicate" | "rename"; initial: string } | null;
 
 export function KeymapPage() {
-  const t = useT();
   const [selected, setSelected] = useSetting<string>("keymap", "global");
   const [overrides, setOverrides] = useSetting<Keymap>("keymapOverrides", "global");
   const [customsRaw, setCustoms] = useSetting<CustomKeymaps | undefined>("customKeymaps", "global");
@@ -521,13 +520,8 @@ export function KeymapPage() {
                   tone={state.selected ? "accent" : "strong"}
                 />
                 <span className={styles.bindings}>
-                  {n.bindings.map((b, i) => (
-                    <Fragment key={b}>
-                      {i > 0 && n.action.id === "editor.createRectangularSelectionOnMouseDrag" && (
-                        <span className={styles.kbd}> {t("app.keymap.rectangularSelectionOr")} </span>
-                      )}
-                      <Kbd binding={b} className={styles.kbd} />
-                    </Fragment>
+                  {n.bindings.map((b) => (
+                    <Kbd key={b} binding={b} className={styles.kbd} />
                   ))}
                 </span>
               </span>
