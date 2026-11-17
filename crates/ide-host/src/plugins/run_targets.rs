@@ -1,9 +1,12 @@
 //! Project-owned registrations, retained across idle instance reclamation.
 use super::api::{PluginApi, Shared};
 use super::{PluginEvent, PluginHost};
+use crate::Host;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::{HostError, PluginRunTarget};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +154,27 @@ impl PluginHost {
     }
 }
 
+#[command(trust = trusted)]
+pub async fn plugin_run_targets(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+) -> IdeResult<Vec<RegisteredRunTarget>> {
+    list(host, plugins, window)
+}
+
+#[command(trust = trusted)]
+pub async fn plugin_answer_run_target(
+    host: &Arc<Host>,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    id: String,
+    use_target: bool,
+) -> IdeResult<ide_core::settings::Settings> {
+    let (shared, plugins, window) = (host.clone(), plugins.clone(), window.to_owned());
+    host.blocking(move || answer(&shared, &plugins, &window, &id, use_target)).await
+}
+
 pub fn list(host: &crate::Host, plugins: &PluginHost, window: &str) -> IdeResult<Vec<RegisteredRunTarget>> {
     Ok(plugins.run_targets(&host.project(window)?.root))
 }
@@ -194,3 +218,5 @@ pub fn answer(
     plugins.shared.sink.emit(None, PluginEvent::RunTargetsChanged);
     Ok(project.settings.effective())
 }
+
+ide_command::domain!(plugins_run_targets: plugin_answer_run_target, plugin_run_targets);

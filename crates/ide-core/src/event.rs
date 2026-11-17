@@ -147,6 +147,19 @@ pub enum IdeEvent {
         server: ServerId,
         kind: LspRefreshKind,
     },
+    /// A language server asked the user to choose an action, e.g. Dart's
+    /// "Renamed field will be invisible in …" warning during a rename. Answered
+    /// with `lsp_message_request_answer`; the server cancels if we reply null.
+    LspMessageRequest {
+        id: u32,
+        server: String,
+        message: String,
+        actions: Vec<String>,
+    },
+    /// The request was answered or timed out; every window drops its dialog.
+    LspMessageRequestDone {
+        id: u32,
+    },
     TerminalExited {
         terminal: TerminalId,
         code: Option<i32>,

@@ -77,6 +77,39 @@ describe("foldsFromRanges", () => {
     ]);
   });
 
+  it("hides the closing line of a multiline import at the end of an import run", () => {
+    const s = EditorState.create({
+      doc: [
+        "import { ZodError } from 'zod'",
+        "import { Library } from './library.js'",
+        "import {",
+        "  creationPromptVersion,",
+        "  generateCreationIntent,",
+        "  validateCreationIntent,",
+        "  validationPromptVersion,",
+        "  type CreationAgentConfig,",
+        "  type CreationIntent,",
+        "  type IntentValidation,",
+        "} from './mastra/agents/creation-assistant.js'",
+        "",
+      ].join("\n"),
+    });
+    expect(foldsFromRanges(s, [{ start_line: 0, end_line: 10, kind: "imports" }])).toEqual([
+      { from: s.doc.line(1).to, to: s.doc.line(11).to, kind: "imports" },
+    ]);
+  });
+
+  it("keeps a bare closing delimiter of an import block visible", () => {
+    const go = EditorState.create({ doc: 'package main\n\nimport (\n  "fmt"\n  "os"\n)\n' });
+    expect(foldsFromRanges(go, [{ start_line: 2, end_line: 5, kind: "imports" }])).toEqual([
+      { from: go.doc.line(3).to, to: go.doc.line(6).from, kind: "imports" },
+    ]);
+    const rust = EditorState.create({ doc: "use a::{\n  b,\n  c,\n};\n" });
+    expect(foldsFromRanges(rust, [{ start_line: 0, end_line: 3, kind: "imports" }])).toEqual([
+      { from: rust.doc.line(1).to, to: rust.doc.line(4).from, kind: "imports" },
+    ]);
+  });
+
   it("folds a custom region from its start marker through its end marker", () => {
     const s = EditorState.create({
       doc: "class A {\n  //region Fields\n  int a;\n  //endregion\n}\n",

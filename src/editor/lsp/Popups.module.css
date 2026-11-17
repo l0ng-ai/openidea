@@ -232,16 +232,35 @@
   color: var(--fg-faint);
 }
 
+/* Fits its content up to a cap; resized (`data-resized`), it keeps that size and the body scrolls. */
 .docPopup {
-  max-width: min(600px, 90vw);
-  max-height: 420px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .docScope {
   display: contents;
 }
 .docFrame {
   outline: none;
+}
+.docPopup .docFrame {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.docPopup:not([data-resized]) .docFrame {
+  max-width: min(600px, 90vw);
+  max-height: 420px;
+}
+.docPopup .docBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.docPopup .docToolbar {
+  flex: none;
 }
 .docWindowFrame {
   height: 100%;
@@ -270,6 +289,13 @@
 }
 .docBody {
   padding: 10px 14px;
+}
+/* Go signatures: a type name opens its documentation (`linkSignatureTypes` in docs.ts). */
+.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName) {
+  cursor: pointer;
+}
+.docBody :global(.cm-lsp-markdown > pre:first-of-type > code.language-go .tok-typeName:hover) {
+  text-decoration: underline;
 }
 .defPopup {
   width: min(640px, 90vw);

@@ -124,7 +124,7 @@ fn server_environment_from_login_shell_and_devcontainer() {
 
     // Reload Environment: the edited rc file and the project file apply to new children.
     write(&rc, "export OPENIDEA_RC_VAR=three\nexport OPENIDEA_RC_NEW=new\nexport PATH=/start-two/bin:/usr/bin:/bin\n");
-    let reloaded = runtime.block_on(ide_host::ops::env::reload(&host, "main")).unwrap();
+    let reloaded = runtime.block_on(ide_host::ops::env::env_reload(&host, "main")).unwrap();
     assert!(reloaded.shell_read);
     for name in ["FROM_PROJECT", "OPENIDEA_RC_NEW", "OPENIDEA_RC_VAR"] {
         assert!(reloaded.changed.iter().any(|c| c == name), "{name} in {:?}", reloaded.changed);
@@ -140,7 +140,7 @@ fn server_environment_from_login_shell_and_devcontainer() {
     // A variable the rc file stops exporting goes away for new children, whether this
     // process started with it or a reload added it.
     write(&rc, "export PATH=/start-two/bin:/usr/bin:/bin\n");
-    let reloaded = runtime.block_on(ide_host::ops::env::reload(&host, "main")).unwrap();
+    let reloaded = runtime.block_on(ide_host::ops::env::env_reload(&host, "main")).unwrap();
     for name in ["FROM_PROJECT", "OPENIDEA_RC_NEW", "OPENIDEA_RC_VAR"] {
         assert!(reloaded.changed.iter().any(|c| c == name), "{name} in {:?}", reloaded.changed);
     }
@@ -151,9 +151,9 @@ fn server_environment_from_login_shell_and_devcontainer() {
     // The shell starts from the environment this process started with: an rc file that
     // prepends to PATH does so once, however often it is reloaded.
     write(&rc, "export PATH=/prepended/bin:$PATH\n");
-    let first = runtime.block_on(ide_host::ops::env::reload(&host, "main")).unwrap();
+    let first = runtime.block_on(ide_host::ops::env::env_reload(&host, "main")).unwrap();
     assert!(first.changed.iter().any(|c| c == "PATH"), "{:?}", first.changed);
-    let again = runtime.block_on(ide_host::ops::env::reload(&host, "main")).unwrap();
+    let again = runtime.block_on(ide_host::ops::env::env_reload(&host, "main")).unwrap();
     assert!(again.changed.is_empty(), "{:?}", again.changed);
     assert_eq!(child_var("PATH").matches("/prepended/bin").count(), 1, "{}", child_var("PATH"));
 

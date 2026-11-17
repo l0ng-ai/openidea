@@ -318,15 +318,16 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
         allow_parallel: false,
         extras: Default::default(),
     };
-    let run = ide_host::ops::run::start(
+    let run = ide_host::ops::run::run_start(
         &f.host,
         "main",
         config.clone(),
-        Arc::new(move |chunk| {
+        ide_host::ops::Channel::new(move |chunk| {
             if let ide_run::OutputChunk::Stdout { text } = chunk {
                 captured.lock().push_str(&text);
             }
         }),
+        None,
     )
     .await
     .unwrap();
@@ -342,10 +343,18 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
     assert!(!f.root.join("forbidden").exists());
     // Pin checks are repeated at launch, not only at registration.
     std::fs::write(&tool, "#!/bin/sh\nexit 99\n").unwrap();
-    assert!(ide_host::ops::run::start(&f.host, "main", config.clone(), Arc::new(|_| {})).await.is_err());
+    assert!(
+        ide_host::ops::run::run_start(&f.host, "main", config.clone(), ide_host::ops::Channel::new(|_| {}), None)
+            .await
+            .is_err()
+    );
     plugins.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(plugins.run_targets(&f.root).is_empty());
-    assert!(ide_host::ops::run::start(&f.host, "main", config, Arc::new(|_| {})).await.is_err());
+    assert!(
+        ide_host::ops::run::run_start(&f.host, "main", config, ide_host::ops::Channel::new(|_| {}), None)
+            .await
+            .is_err()
+    );
     plugins.choose_program("execution", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
     plugins.run_command("execution", "target", None, invocation()).unwrap();
     f.host.set_project_trust(&f.root, false, false).await.unwrap();
@@ -508,7 +517,9 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
         let mut config = config.clone();
         config.is_test = is_test;
         config.extras.target = Some(selected.clone());
-        let error = ide_host::ops::run::start(&f.host, "main", config, Arc::new(|_| {})).await.unwrap_err();
+        let error = ide_host::ops::run::run_start(&f.host, "main", config, ide_host::ops::Channel::new(|_| {}), None)
+            .await
+            .unwrap_err();
         assert!(error.message.contains("Plugin execution tests: Project runtime is stopped"), "{error}");
         assert!(f.host.processes.list().is_empty());
         assert!(!f.root.join("spawned").exists());
@@ -524,7 +535,7 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
     cfg.extras.target = Some(id("timeout"));
     let worker = f.host.clone();
     let pending = tokio::spawn(async move {
-        ide_host::ops::run::start_request(&worker, "main", cfg, Arc::new(|_| {}), Some(request)).await
+        ide_host::ops::run::run_start(&worker, "main", cfg, ide_host::ops::Channel::new(|_| {}), Some(request)).await
     });
     tokio::time::sleep(Duration::from_millis(30)).await;
     f.host.cancel_request(request);

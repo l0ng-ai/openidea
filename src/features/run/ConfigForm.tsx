@@ -49,6 +49,7 @@ import { EnvDialog } from "./EnvDialog";
 import { useBuildModel } from "@/platform/buildModel";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
 import { TomcatSettings } from "./TomcatSettings";
+import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import styles from "./Run.module.css";
 
 /**
@@ -363,8 +364,13 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     {
       label: TASK_LABELS.toolWindow,
       submenu: [...toolWindows.values()]
-        .sort((a, b) => a.title.localeCompare(b.title))
-        .map((w) => ({ label: w.title, icon: w.icon, run: () => addTask("toolWindow", w.id) })),
+        .map((w) => ({
+          label: toolWindowTitle(w),
+          verbatim: true,
+          icon: w.icon,
+          run: () => addTask("toolWindow", w.id),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
     },
   ];
   const moveTask = (i: number, d: -1 | 1) => {

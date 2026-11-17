@@ -42,6 +42,7 @@ import {
   type TerminalFontSettings,
   MIN_CONTRAST_RATIO,
 } from "./theme";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 export interface TerminalSearchOptions {
   caseSensitive: boolean;
@@ -464,10 +465,12 @@ export class TerminalSession {
   }
 
   private onWheelZoom = (e: WheelEvent) => {
-    if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+    if (!editorPrefs().general.wheelZoom) return;
+    const zoom = wheelZoomStep(e);
+    if (zoom === null) return;
     e.preventDefault();
     e.stopPropagation();
-    this.stepFontSize(e.deltaY < 0 ? 1 : -1);
+    if (zoom) this.stepFontSize(zoom);
   };
 
   private onMiddleClick = (e: MouseEvent) => {

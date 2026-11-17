@@ -20,6 +20,9 @@
     <delegateCommandHandler class="ai.openidea.archives.RefreshArchivesCommand">
       <command id="openidea.java.refreshArchives"/>
     </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.sources.GeneratedSourcesCommand">
+      <command id="openidea.java.generatedSources"/>
+    </delegateCommandHandler>
     <delegateCommandHandler class="ai.openidea.implementations.ImplementationTargetsCommand">
       <command id="openidea.java.implementationLocations"/>
     </delegateCommandHandler>

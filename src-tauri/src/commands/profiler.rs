@@ -1,13 +1,15 @@
 //! Run with Profiler: launch plans and profiles.
 
-use super::coverage::{KEEP_RUNS, blocking};
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeResult, RunId};
+use ide_host::ops::coverage::{KEEP_RUNS, blocking};
 use ide_profiler::{Profile, ProfileMode, ProfilePrepared, ProfileSpec};
 use ide_run::{RunConfig, RunInfo};
 use tauri::{State, Window};
 
 /// How to run `config` under a sampling profiler, or which profiler is missing.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn profiler_prepare(
@@ -26,6 +28,7 @@ pub async fn profiler_prepare(
 }
 
 /// Reads the profile a profiled run left behind.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn profiler_collect(spec: ProfileSpec) -> IdeResult<Profile> {
@@ -35,6 +38,7 @@ pub async fn profiler_collect(spec: ProfileSpec) -> IdeResult<Profile> {
 /// Runs a full garbage collection in the JVMs of a running local run, so a live-object profile
 /// written when it stops holds only reachable objects. Returns how many JVMs collected; 0 for a
 /// run that is gone, remote, or has no JVM with an attach listener.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn profiler_gc_before_stop(window: Window, state: State<'_, AppState>, run: RunId) -> IdeResult<u32> {
@@ -92,3 +96,5 @@ mod tests {
         assert_eq!(local_pid(true, &runs, RunId(1)), None);
     }
 }
+
+ide_command::desktop_domain!(profiler_collect, profiler_gc_before_stop, profiler_prepare);
