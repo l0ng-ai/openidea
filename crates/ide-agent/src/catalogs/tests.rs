@@ -775,6 +775,33 @@ async fn selected_model_uses_legacy_set_model_and_authoritative_notifications() 
 }
 
 #[tokio::test]
+async fn selected_legacy_model_without_settings_has_no_levels_instead_of_failing() {
+    let tmp = tempfile::tempdir().unwrap();
+    configure(tmp.path(), "one");
+    let mut harness = Harness::new();
+    let manager = make_manager(tmp.path(), Arc::default(), &harness);
+    let mut events = events(&manager);
+    manager.refresh_models(PROVIDER, false, Some("second")).unwrap();
+    harness
+        .next()
+        .await
+        .reply
+        .send(Ok(json!({
+            "sessionId": "discovery-only",
+            "models": { "currentModelId": "default", "availableModels": [
+                { "modelId": "default", "name": "Default" }, { "modelId": "second", "name": "Second" }
+            ] }
+        })))
+        .unwrap();
+    let selected = harness.next().await;
+    assert_eq!(selected.method, "session/set_model");
+    selected.reply.send(Ok(json!({}))).unwrap();
+    let catalog = completed(&mut events).await;
+    assert!(catalog.error.is_none(), "{:?}", catalog.error);
+    assert_eq!(catalog.thought_levels.get("second"), Some(&Vec::new()));
+}
+
+#[tokio::test]
 async fn catalog_replacement_removes_selected_metadata_for_models_no_longer_listed() {
     let tmp = tempfile::tempdir().unwrap();
     configure(tmp.path(), "one");
