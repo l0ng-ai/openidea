@@ -19,6 +19,7 @@ pub mod archive;
 mod bundled;
 pub mod formatter;
 pub mod jdk;
+pub mod mirror;
 mod moved_venv;
 pub mod platform;
 #[cfg(any(windows, test))]
@@ -29,6 +30,7 @@ pub mod server;
 pub mod sources;
 
 use ide_core::error::ErrorKind;
+use ide_core::settings::ToolDownloadSettings;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use ide_language::LanguageConfig;
 use parking_lot::Mutex;
@@ -465,6 +467,8 @@ pub struct Tools {
     /// The project the tools are used for: tools that install into "the active runtime" (gems) run here,
     /// so a version manager picks the project's Ruby.
     work_dir: Option<PathBuf>,
+    /// Tools › Download sources: the mirror prefix and its fallback behaviour.
+    downloads: ToolDownloadSettings,
 }
 
 impl Tools {
@@ -489,7 +493,14 @@ impl Tools {
             runtime_env: BTreeMap::new(),
             version_timeout: Duration::from_secs(4),
             work_dir: None,
+            downloads: ToolDownloadSettings::default(),
         }
+    }
+
+    /// [`Self::downloads`] from Tools › Download sources.
+    pub fn with_downloads(mut self, downloads: ToolDownloadSettings) -> Self {
+        self.downloads = downloads;
+        self
     }
 
     /// Applies the project's SDKs to prerequisite lookup, probes and installer children.
@@ -1454,7 +1465,7 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let archive = fetch_verified(http, dl, staging, cancel, emit)?;
+        let archive = fetch_verified(&self.downloads, http, dl, staging, cancel, emit)?;
         emit(InstallEvent::Line { text: "Extracting…".into() });
         let pkg = staging.join("pkg");
         let kind = archive::ArchiveKind::from_name(&dl.name);
@@ -1676,9 +1687,14 @@ impl Tools {
     }
 }
 
-/// Downloads `dl` into `staging` and checks its SHA-256 when one is published;
-/// returns the downloaded file.
+/// Downloads `dl` from the best source that answers (Tools › Download sources) and checks its
+/// SHA-256 when one is published; returns the downloaded file.
+///
+/// A mirror may only deliver bytes that can be checked: when neither the release nor its
+/// checksum file gives a hash, an archive from a mirror is discarded and the official host is
+/// tried, because a third party must not be the only word on what gets installed.
 fn fetch_verified(
+    downloads: &ToolDownloadSettings,
     http: &Http,
     dl: &sources::Download,
     staging: &Path,
@@ -1686,33 +1702,88 @@ fn fetch_verified(
     emit: Emit,
 ) -> IdeResult<PathBuf> {
     let archive = staging.join(&dl.name);
-    http.download(&dl.url, &archive, dl.size, cancel, emit)?;
-    let expected = match (&dl.sha256, &dl.checksum_url) {
-        (Some(h), _) => Some(h.clone()),
-        (None, Some(url)) => match http.get_text(url, cancel) {
-            Ok(text) => sources::parse_checksum(&text, &dl.name),
-            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-            Err(_) => None,
-        },
-        (None, None) => None,
-    };
-    match expected {
-        Some(expected) => {
-            let actual = sources::sha256_file(&archive)?;
-            if actual != expected {
-                return Err(IdeError::new(
-                    ErrorKind::Io,
-                    format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
-                ));
-            }
-            emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
+    let candidates = mirror::candidates(&dl.url, downloads);
+    let expected = expected_sha256(http, dl, cancel)?;
+    let mut failures: Vec<String> = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
         }
-        None => emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() }),
+        // Bytes a failed source left behind must not be resumed or mistaken for this one's.
+        if index > 0 {
+            let _ = std::fs::remove_file(&archive);
+        }
+        emit(InstallEvent::Line {
+            text: format!("Trying {} ({} of {})…", candidate.describe(), index + 1, candidates.len()),
+        });
+        let attempt = http.download(&candidate.url, &archive, dl.size, cancel, emit);
+        match attempt {
+            Ok(()) => match check_sha256(&archive, dl, expected.as_deref(), candidate.mirror.is_some(), emit) {
+                Ok(()) => {
+                    if cancel.is_cancelled() {
+                        return Err(IdeError::cancelled());
+                    }
+                    return Ok(archive);
+                }
+                // A mismatch from a mirror is that mirror's failure: the official host below
+                // still gets its chance. From the official host it is the download's failure.
+                Err(e) if candidate.mirror.is_some() => {
+                    failures.push(format!("{}: {}", candidate.describe(), e.message))
+                }
+                Err(e) => return Err(e),
+            },
+            // Cancelling stops the install: the remaining sources are not tried.
+            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
+            Err(e) => failures.push(format!("{}: {}", candidate.describe(), e.message)),
+        }
     }
-    if cancel.is_cancelled() {
-        return Err(IdeError::cancelled());
+    Err(IdeError::new(ErrorKind::Io, format!("could not download {} ({})", dl.name, failures.join("; "))))
+}
+
+/// The SHA-256 `dl` must match, when one is published.
+///
+/// The checksum file is read from its official URL, never through the mirror: otherwise a
+/// mirror could vouch for bytes it chose itself.
+fn expected_sha256(http: &Http, dl: &sources::Download, cancel: &CancellationToken) -> IdeResult<Option<String>> {
+    match (&dl.sha256, &dl.checksum_url) {
+        (Some(h), _) => Ok(Some(h.clone())),
+        (None, Some(url)) => match http.get_text(url, cancel) {
+            Ok(text) => Ok(sources::parse_checksum(&text, &dl.name)),
+            Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+            Err(_) => Ok(None),
+        },
+        (None, None) => Ok(None),
     }
-    Ok(archive)
+}
+
+/// Checks `archive` against `expected`, if any. `via_mirror` refuses an archive nothing can
+/// vouch for rather than installing unverifiable bytes from a third party.
+fn check_sha256(
+    archive: &Path,
+    dl: &sources::Download,
+    expected: Option<&str>,
+    via_mirror: bool,
+    emit: Emit,
+) -> IdeResult<()> {
+    let Some(expected) = expected else {
+        if via_mirror {
+            return Err(IdeError::new(
+                ErrorKind::Io,
+                format!("{} has no published checksum, so the mirror's copy is not trusted", dl.name),
+            ));
+        }
+        emit(InstallEvent::Line { text: "No checksum published; skipping verification".into() });
+        return Ok(());
+    };
+    let actual = sources::sha256_file(archive)?;
+    if actual != expected {
+        return Err(IdeError::new(
+            ErrorKind::Io,
+            format!("checksum mismatch for {}: expected {expected}, got {actual}", dl.name),
+        ));
+    }
+    emit(InstallEvent::Line { text: "Checksum verified (SHA-256)".into() });
+    Ok(())
 }
 
 /// Removes the quarantine flag archives may carry, so macOS runs what was unpacked.

@@ -7482,7 +7482,7 @@
   "Reformat": "重新格式化",
   "Open in Window": "在窗口中打开",
   "JSON validation failed": "JSON 验证失败",
-  "Download Sources": "下载源代码",
+  "Download Sources": "下载源",
   "Choose Sources…": "选择源代码…",
   "Source archives": "源代码归档",
   "Loading library sources…": "正在加载库源代码…",
@@ -8750,5 +8750,8 @@
   "Additional servers": "附加服务器",
   "Run alongside the one above": "与上面选中的服务器同时运行",
   "The agent jar changed since you approved it. Approve the new jar before the next launch.": "Agent jar 在授权后发生了变化。请先批准新的 jar，再启动应用。",
-  "Approve new jar": "批准新的 jar"
+  "Approve new jar": "批准新的 jar",
+  "GitHub": "GitHub",
+  "Mirror prefix for GitHub downloads": "GitHub 下载镜像前缀",
+  "Only downloads from github.com (most language servers and debuggers) are accelerated. Eclipse JDT LS, Open VSX and Maven Central are not affected — reach them through System Settings › HTTP Proxy instead. A public proxy such as https://gh-proxy.com/ works as the prefix.": "仅加速来自 github.com 的下载（多数语言服务器和调试器）。Eclipse JDT LS、Open VSX 和 Maven Central 不受影响，请改用“系统设置 › HTTP 代理”。可使用 https://gh-proxy.com/ 这类公共代理作为前缀。"
 }
