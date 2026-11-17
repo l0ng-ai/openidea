@@ -25,6 +25,21 @@ export function untitledTitle(uri: string): string {
   return isUntitledUri(uri) ? uri.slice(UNTITLED_SCHEME.length) : uri;
 }
 
+/** A file at a Git revision, as the VCS views open it: `git-revision:<hex of its JSON>/<name>`. */
+export function gitRevisionOf(uri: string): { repo: string; revision: string; path: string } | null {
+  const hex = /^git-revision:([0-9a-fA-F]+)\//.exec(uri)?.[1];
+  if (!hex || hex.length % 2) return null;
+  try {
+    const bytes = Uint8Array.from(hex.match(/../g)!, (h) => parseInt(h, 16));
+    const v = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+    return typeof v.repo === "string" && typeof v.revision === "string" && typeof v.path === "string"
+      ? { repo: v.repo, revision: v.revision, path: v.path }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Last path segment of a URI (without query / fragment), e.g. `SpringApplication.class`. */
 export function virtualName(uri: string): string {
   const rest = uri.replace(/^[^:]+:(\/\/)?/, "").split(/[?#]/)[0]!;
@@ -48,6 +63,9 @@ export function virtualParent(uri: string): string {
  * for `jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot/SpringApplication.class?=…`.
  */
 export function virtualContainer(uri: string): string {
+  // `c74989a1 › web › src`: the revision, then the file's folders.
+  const revision = gitRevisionOf(uri);
+  if (revision) return [revision.revision.slice(0, 8), ...revision.path.split("/").slice(0, -1)].join(" › ");
   const scheme = uri.slice(0, uri.indexOf(":"));
   // `jar:///…/spring-boot-3.5.16.jar!/org/springframework/boot/X.class` → `spring-boot-3.5.16.jar › org.springframework.boot`
   const jar = scheme === "jar" ? /^jar:(?:file:)?(?:\/\/)?(.*?)!\/(.*)$/.exec(uri.split(/[?#]/)[0]!) : null;

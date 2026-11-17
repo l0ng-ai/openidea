@@ -125,6 +125,7 @@ public class Chains {
         } else if (list.stream().anyMatch(x -> x.isEmpty())) { // C_PLAN_ELSE_IF_BODY
             base--;
         }
+        if (names.stream().anyMatch(x -> x.isEmpty())) base++; else if (list.stream().noneMatch(x -> x.isEmpty())) base--; // C_PLAN_ELSE_IF_ONE_LINE
         List<String> out = nums.stream() // C_PLAN_FIRST_LINE
                 .filter(x -> x > 0)
                 .map(x -> x * 2)

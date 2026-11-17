@@ -805,6 +805,17 @@ pub async fn vcs_create_patch(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_pending_patch(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    options: CommitOptions,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_pending_patch(&state.host, window.label(), repo, options).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_patch_preview(
     window: Window,
     state: State<'_, AppState>,

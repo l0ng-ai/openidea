@@ -273,3 +273,22 @@ it("shows only the name of a new-file buffer", () => {
   expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("Untitled-1");
   view.unmount();
 });
+
+it("shows the revision and the file's folders for a file at a Git revision", () => {
+  useProject.setState({
+    project: { root: "/repo", name: "repo", settings: {}, trusted: true, isGit: true },
+    settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
+  });
+  const target = JSON.stringify({
+    repo: "/repo",
+    revision: "617f744a0123456789abcdef0123456789abcdef",
+    path: "web/src/app.ts",
+  });
+  const hex = Array.from(new TextEncoder().encode(target), (b) => b.toString(16).padStart(2, "0")).join("");
+  useEditorStatus.setState({ status: { ...caret(0, 0), path: `git-revision:${hex}/app.ts` } });
+  const view = render(<Breadcrumbs className="nav" />);
+  const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
+  expect(crumbs.textContent).toBe("617f744awebsrcapp.ts");
+  view.unmount();
+  useProject.setState({ project: null, settings: null });
+});

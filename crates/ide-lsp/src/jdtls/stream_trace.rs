@@ -182,9 +182,10 @@ impl StreamTracer for JdtStreamTracer {
         thread_id: i64,
         plan: &'a Value,
         budget: u32,
+        token: &'a str,
     ) -> InspectFuture<'a, TraceId> {
         Box::pin(async move {
-            let args = json!({"threadId": thread_id, "plan": plan, "budget": budget});
+            let args = json!({"threadId": thread_id, "plan": plan, "budget": budget, "token": token});
             Ok(self.call::<Armed>("arm", target, args, COMMAND_TIMEOUT).await?.trace_id)
         })
     }
@@ -221,6 +222,13 @@ impl StreamTracer for JdtStreamTracer {
     fn release<'a>(&'a self, target: &'a VmTarget, trace: TraceId) -> InspectFuture<'a, ()> {
         Box::pin(async move {
             self.call::<Value>("release", target, json!({"traceId": trace}), COMMAND_TIMEOUT).await.map(drop)
+        })
+    }
+
+    fn release_armed<'a>(&'a self, target: &'a VmTarget, token: &'a str) -> InspectFuture<'a, ()> {
+        Box::pin(async move {
+            // Waits for an arm still setting up: as long as an arm may take.
+            self.call::<Value>("release", target, json!({"token": token}), COMMAND_TIMEOUT).await.map(drop)
         })
     }
 }

@@ -8712,5 +8712,6 @@
   "Run code inside the Java applications you start": "在你启动的 Java 应用中运行代码",
   "Java agents of {list} were not added: they load only in local projects.": "未添加 {list} 的 Java 代理：Java 代理只加载到本地项目中。",
   "Java agent": "Java 代理",
-  "Java Agents": "Java 代理"
+  "Java Agents": "Java 代理",
+  "File at a Git revision (read-only).": "Git 修订版中的文件（只读）。"
 }

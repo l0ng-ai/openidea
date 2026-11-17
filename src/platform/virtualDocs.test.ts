@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isVirtualUri, libraryEntryPaths, virtualContainer, virtualName, virtualParent } from "./virtualDocs";
+import {
+  gitRevisionOf,
+  isVirtualUri,
+  libraryEntryPaths,
+  virtualContainer,
+  virtualName,
+  virtualParent,
+} from "./virtualDocs";
 import { basename, dirname, relativeDir, relativePath } from "./project";
 
 const JDT =
@@ -122,5 +129,19 @@ describe("libraryEntryPaths", () => {
         `${GRADLE}/binaryHash/a-1.0.jar`,
       ]),
     ).toEqual([`${SOURCES}!/org/x/Y.java`, `${GRADLE}/sourceHash/a-1.0.jar!/org/x/Y.class`]);
+  });
+});
+
+describe("Git revision URIs", () => {
+  const hex = (s: string) => Array.from(new TextEncoder().encode(s), (b) => b.toString(16).padStart(2, "0")).join("");
+  const target = { repo: "/p", revision: "c74989a1b5d1a53d357a9eee0cf16c599dc6e0a7", path: "web/src/app.ts" };
+  const uri = `git-revision:${hex(JSON.stringify(target))}/app.ts`;
+
+  it("shows the revision and folders instead of the encoded target", () => {
+    expect(gitRevisionOf(uri)).toEqual(target);
+    expect(virtualContainer(uri)).toBe("c74989a1 › web › src");
+    expect(virtualName(uri)).toBe("app.ts");
+    expect(gitRevisionOf("git-revision:zz/app.ts")).toBeNull();
+    expect(gitRevisionOf("jdt://contents/x.jar/a/B.class")).toBeNull();
   });
 });

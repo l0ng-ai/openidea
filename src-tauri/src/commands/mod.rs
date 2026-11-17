@@ -402,6 +402,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_has_hook,
         vcs::vcs_merge_base,
         vcs::vcs_create_patch,
+        vcs::vcs_pending_patch,
         vcs::vcs_patch_preview,
         vcs::vcs_apply_patch,
         vcs::vcs_shelve,

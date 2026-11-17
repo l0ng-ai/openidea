@@ -8,7 +8,7 @@
 /// `fs` and `workspace`, and everything else goes through the imports below,
 /// gated by the capabilities granted in `plugin.toml` (a missing one returns
 /// `error::denied`).
-package openidea:plugin@1.9.0;
+package openidea:plugin@1.10.0;
 
 world plugin {
     import log;
@@ -20,6 +20,7 @@ world plugin {
     import decorations;
     import invocation;
     import vcs;
+    import build;
     import commit;
     import events;
     import tasks;

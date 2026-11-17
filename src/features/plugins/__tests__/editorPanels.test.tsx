@@ -1,21 +1,34 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import { javascript } from "@codemirror/lang-javascript";
-import { syntaxHighlighting } from "@codemirror/language";
-import { EditorState } from "@codemirror/state";
+import { codeFolding, foldEffect, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
+import { EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import type { PluginInfo } from "@/bindings";
+import type { Diagnostic, PluginInfo } from "@/bindings";
 import type { TextEditorHandle } from "@/editor/api";
+import { diagnosticsExtension, setFileDiagnostics } from "@/editor/lsp/diagnostics";
+import { lspDoc } from "@/editor/lsp/lsp";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { setContext } from "@/platform/context";
 import { useEditorGroupPanels } from "@/workbench/contributions";
+import type { SemanticTokens } from "@/platform/ipc";
 import { createMemoryPluginsBackend, setPluginsBackend } from "../backend";
 import { usePlugins } from "../store";
 import { FRAME_TAG, frameDocument } from "../views/frame";
 import { PanelEditor, editorPanelUpdates, projectEditorPanel } from "../views/editorPanel";
 import { WebView, type FrameEditor, type FrameEditorEvent } from "../views/WebView";
 
+// The language server's semantic tokens, for the editor's semantic highlighting.
+const lsp = vi.hoisted(() => ({ tokens: { data: [], tokenTypes: [], tokenModifiers: [] } as SemanticTokens }));
+const lspSemanticTokens = vi.hoisted(() => async () => ({ status: "ok" as const, data: lsp.tokens }));
+vi.mock("@/platform/ipc", async (orig) => {
+  const actual = await orig<typeof import("@/platform/ipc")>();
+  return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspSemanticTokens } };
+});
+const { semanticExtension } = await import("@/editor/lsp/semantic");
+
 afterEach(() => {
+  vi.useRealTimers();
   setPluginsBackend(null);
   usePlugins.setState({ plugins: [] });
 });
@@ -64,9 +77,14 @@ describe("frame bridge: openidea.editor", () => {
       scrollTo(line: number): Promise<unknown>;
       scrollBy(pixels: number): Promise<unknown>;
       highlights(from: number, to: number): Promise<unknown>;
+      problems(): Promise<unknown>;
+      folded(): Promise<unknown>;
+      wrapped(from: number, to: number): Promise<unknown>;
       onTarget(fn: (v: unknown) => void): void;
       onViewport(fn: (v: unknown) => void): void;
       onHighlights(fn: (v: unknown) => void): void;
+      onProblems(fn: (v: unknown) => void): void;
+      onLayout(fn: (v: unknown) => void): void;
       document: unknown;
     };
     expect(editor.document).toBe(api.document);
@@ -86,19 +104,33 @@ describe("frame bridge: openidea.editor", () => {
     expect(sent.at(-1)).toMatchObject({ op: "editor.highlights", args: { fromLine: 0, toLine: 3000 } });
     send({ reply: sent.at(-1)!.call, error: "at most 2000 lines at a time" });
     await expect(lines).rejects.toThrow("2000");
+    const problems = editor.problems();
+    expect(sent.at(-1)).toMatchObject({ op: "editor.problems" });
+    send({ reply: sent.at(-1)!.call, value: [{ line: 2, lastLine: 2, severity: "error" }] });
+    await expect(problems).resolves.toEqual([{ line: 2, lastLine: 2, severity: "error" }]);
+    void editor.folded();
+    expect(sent.at(-1)).toMatchObject({ op: "editor.folded" });
+    void editor.wrapped(4, 9);
+    expect(sent.at(-1)).toMatchObject({ op: "editor.wrapped", args: { fromLine: 4, toLine: 9 } });
 
     const events: unknown[] = [];
     editor.onTarget((v) => events.push(["target", v]));
     editor.onViewport((v) => events.push(["viewport", v]));
     editor.onHighlights((v) => events.push(["highlights", v]));
+    editor.onProblems((v) => events.push(["problems", v]));
+    editor.onLayout((v) => events.push(["layout", v]));
     send({ editor: "target", value: null });
     send({ editor: "viewport", value: { firstLine: 1.5 } });
     send({ editor: "highlights", value: { fromLine: 0, toLine: 4 } });
+    send({ editor: "problems", value: [] });
+    send({ editor: "layout", value: { folded: [], softWrap: true } });
     send({ editor: "constructor", value: 1 });
     expect(events).toEqual([
       ["target", null],
       ["viewport", { firstLine: 1.5 }],
       ["highlights", { fromLine: 0, toLine: 4 }],
+      ["problems", []],
+      ["layout", { folded: [], softWrap: true }],
     ]);
   });
 
@@ -123,6 +155,12 @@ describe("WebView as an editor panel", () => {
       highlights: (from, to) => {
         calls.push(["highlights", from, to]);
         return [[{ from: 0, to: 5, color: "rgb(1, 2, 3)" }]];
+      },
+      problems: () => [{ line: 1, lastLine: 2, severity: "warning" }],
+      folded: () => [{ fromLine: 0, toLine: 2 }],
+      wrapped: (from, to) => {
+        calls.push(["wrapped", from, to]);
+        return [1, 3];
       },
       subscribe: (l) => {
         listeners.add(l);
@@ -178,6 +216,17 @@ describe("WebView as an editor panel", () => {
     // Read-only: the page cannot edit the group's file.
     send({ call: 8, op: "document.edit", args: { version: 0, edits: [] } });
     expect((await reply(8)).error).toBeDefined();
+    send({ call: 9, op: "editor.problems" });
+    expect((await reply(9)).value).toEqual([{ line: 1, lastLine: 2, severity: "warning" }]);
+    send({ call: 10, op: "editor.folded" });
+    expect((await reply(10)).value).toEqual([{ fromLine: 0, toLine: 2 }]);
+    send({ call: 11, op: "editor.wrapped", args: { fromLine: 1, toLine: 3 } });
+    expect((await reply(11)).value).toEqual([1, 3]);
+    send({ call: 12, op: "editor.wrapped", args: { fromLine: 0, toLine: 2001 } });
+    expect(String((await reply(12)).error)).toContain("2000");
+    send({ call: 13, op: "editor.wrapped", args: { fromLine: 0.5, toLine: 2 } });
+    expect((await reply(13)).error).toBeDefined();
+    expect(calls.at(-1)).toEqual(["wrapped", 1, 3]);
 
     editor.fire({ editor: "highlights", value: { fromLine: 0, toLine: 3 } });
     expect(posted.at(-1)).toEqual({ tag: FRAME_TAG, editor: "highlights", value: { fromLine: 0, toLine: 3 } });
@@ -269,6 +318,245 @@ describe("PanelEditor", () => {
     await nextFrame();
     expect(events).toEqual([]);
     expect(() => panel.document.read()).toThrow();
+    view.destroy();
+  });
+});
+
+describe("PanelEditor semantic highlights", () => {
+  it("layers the semantic colours over the syntax colours and follows the tokens", async () => {
+    vi.useFakeTimers();
+    const PATH = "/p/src/semantic.js";
+    lsp.tokens = { data: [1, 0, 5, 0, 0], tokenTypes: ["property"], tokenModifiers: [] };
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: "let total = 1;\ntotal;\nend",
+        extensions: [
+          lspDoc.of({ doc: 1, path: PATH, language: "javascript", uiMode: null, readOnly: false }),
+          javascript(),
+          syntaxHighlighting(openideaHighlightStyle),
+          semanticExtension(),
+          EditorView.theme({ ".cm-sem-property": { color: "rgb(1, 2, 3)" } }),
+          editorPanelUpdates,
+        ],
+      }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: PATH, language: "javascript", uiMode: "JavaScript", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    const syntaxOnly = panel.highlights(0, 3);
+    const semantic = "rgb(1, 2, 3)";
+    expect(syntaxOnly.flat().map((s) => s.color)).not.toContain(semantic);
+
+    // The tokens arrive: line 1's `total` takes the semantic colour; the other lines keep theirs.
+    events.length = 0;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(view.contentDOM.querySelector(".cm-sem-property")).not.toBeNull();
+    expect(events).toContainEqual({ editor: "highlights", value: { fromLine: 1, toLine: 2 } });
+    const lines = panel.highlights(0, 3);
+    expect(lines[1]).toContainEqual({ from: 0, to: 5, color: semantic });
+    expect(lines[1]!.filter((s) => s.from < 5)).toHaveLength(1);
+    expect(lines[0]).toEqual(syntaxOnly[0]);
+    expect(lines[2]).toEqual(syntaxOnly[2]);
+
+    // Refreshed after an edit at the end: the token moved to line 0, whose colours are reported.
+    lsp.tokens = { data: [0, 4, 5, 0, 0], tokenTypes: ["property"], tokenModifiers: [] };
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    await vi.advanceTimersByTimeAsync(20);
+    events.length = 0;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(events).toContainEqual({ editor: "highlights", value: { fromLine: 0, toLine: 2 } });
+    expect(panel.highlights(0, 1)[0]).toContainEqual({ from: 4, to: 9, color: semantic });
+    expect(panel.highlights(1, 2)).toEqual([syntaxOnly[1]]);
+
+    panel.dispose();
+    view.destroy();
+  });
+});
+
+describe("PanelEditor layout", () => {
+  it("reports the folded lines and the rows of wrapped lines, and follows them", async () => {
+    const long = "x".repeat(200);
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: `function f() {\n  a;\n  b;\n}\n${long}\nend`,
+        extensions: [codeFolding(), editorPanelUpdates],
+      }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: "/p/src/a.js", language: "javascript", uiMode: "JavaScript", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    await nextFrame();
+    // Neither: no folds, no rows (switching to a file says so).
+    expect(panel.folded()).toEqual([]);
+    expect(panel.wrapped(0, 6)).toBeNull();
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: [], softWrap: false } },
+    ]);
+
+    // Folding lines 1–2 (the `{` line stays, `}` joins it), and a fold inside it.
+    events.length = 0;
+    const open = view.state.doc.line(1).to;
+    const close = view.state.doc.line(4).from;
+    view.dispatch({
+      effects: [foldEffect.of({ from: open, to: close }), foldEffect.of({ from: open + 3, to: open + 6 })],
+    });
+    await nextFrame();
+    const folds = [{ fromLine: 0, toLine: 3 }];
+    expect(panel.folded()).toEqual(folds);
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: folds, softWrap: false } },
+    ]);
+
+    // Soft wrap on: the long line takes several rows, the folded ones none. jsdom lays nothing
+    // out, so the measured state stands in: wrapping on, the long line's block three rows high.
+    events.length = 0;
+    let wrapping = false;
+    Object.defineProperty(view, "lineWrapping", { get: () => wrapping });
+    const lineBlockAt = view.lineBlockAt.bind(view);
+    vi.spyOn(view, "lineBlockAt").mockImplementation((pos) => {
+      const b = lineBlockAt(pos);
+      return b.from === view.state.doc.line(5).from
+        ? Object.assign(Object.create(b), { height: 3 * view.defaultLineHeight })
+        : b;
+    });
+    wrapping = true;
+    view.dispatch({ effects: StateEffect.appendConfig.of(EditorView.lineWrapping) });
+    await nextFrame();
+    const rows = panel.wrapped(0, 6)!;
+    expect(rows).toEqual([1, 0, 0, 0, 3, 1]);
+    expect(panel.wrapped(4, 99)).toEqual(rows.slice(4));
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: folds, softWrap: true } },
+    ]);
+
+    // The outer fold opened: the lines come back, but for the inner fold's.
+    events.length = 0;
+    view.dispatch({ effects: unfoldEffect.of({ from: open, to: close }) });
+    await nextFrame();
+    const inner = [{ fromLine: 1, toLine: 2 }];
+    expect(panel.folded()).toEqual(inner);
+    expect(panel.wrapped(0, 4)).toEqual([1, 1, 0, 1]);
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: inner, softWrap: true } },
+    ]);
+
+    // Soft wrap off: no rows.
+    events.length = 0;
+    wrapping = false;
+    view.dispatch({ effects: StateEffect.reconfigure.of([codeFolding(), editorPanelUpdates]) });
+    await nextFrame();
+    expect(panel.wrapped(0, 4)).toBeNull();
+    expect(events.filter((e) => e.editor === "layout")).toEqual([
+      { editor: "layout", value: { folded: inner, softWrap: false } },
+    ]);
+
+    // Selecting alone says nothing.
+    events.length = 0;
+    view.dispatch({ selection: { anchor: 2 } });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "layout")).toEqual([]);
+
+    panel.dispose();
+    view.destroy();
+  });
+});
+
+describe("PanelEditor problems", () => {
+  const PATH = "/p/src/problems.js";
+  const at = (line: number, col: number, endLine = line, endCol = col + 1) => ({
+    start: { line, col },
+    end: { line: endLine, col: endCol },
+  });
+  const diag = (range: ReturnType<typeof at>, severity: Diagnostic["severity"], extra: Partial<Diagnostic> = {}) =>
+    ({ range, severity, message: severity, source: null, code: null, ...extra }) as Diagnostic;
+
+  it("reports the marker bar's problems by line and follows them", async () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: "let a = 1;\nlet b = 2;\nfoo(\n  bar);\nend",
+        extensions: [
+          lspDoc.of({ doc: 1, path: PATH, language: "javascript", uiMode: null, readOnly: false }),
+          diagnosticsExtension(),
+          editorPanelUpdates,
+        ],
+      }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: PATH, language: "javascript", uiMode: "JavaScript", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    await nextFrame();
+    // Switching to a file: its problems (none yet).
+    expect(events).toContainEqual({ editor: "problems", value: [] });
+
+    events.length = 0;
+    setFileDiagnostics(PATH, "test", [
+      diag(at(2, 0, 3, 6), "error"),
+      diag(at(0, 4), "warning"),
+      diag(at(1, 4), "info"),
+      // Not on the marker bar: hints, unused code.
+      diag(at(4, 0), "hint"),
+      diag(at(0, 0), "warning", { unnecessary: true }),
+    ]);
+    await Promise.resolve();
+    await nextFrame();
+    const shown = [
+      { line: 0, lastLine: 0, severity: "warning" },
+      { line: 1, lastLine: 1, severity: "weakWarning" },
+      { line: 2, lastLine: 3, severity: "error" },
+    ];
+    expect(panel.problems()).toEqual(shown);
+    expect(events.filter((e) => e.editor === "problems")).toEqual([{ editor: "problems", value: shown }]);
+
+    // An edit above moves them.
+    events.length = 0;
+    view.dispatch({ changes: { from: 0, insert: "\n" } });
+    await nextFrame();
+    expect(events).toContainEqual({
+      editor: "problems",
+      value: shown.map((p) => ({ ...p, line: p.line + 1, lastLine: p.lastLine + 1 })),
+    });
+
+    // Fixed: gone.
+    events.length = 0;
+    setFileDiagnostics(PATH, "test", []);
+    await Promise.resolve();
+    await nextFrame();
+    expect(events).toEqual([{ editor: "problems", value: [] }]);
+
+    // Scrolling or selecting alone says nothing.
+    events.length = 0;
+    view.dispatch({ selection: { anchor: 2 } });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "problems")).toEqual([]);
+
+    panel.dispose();
     view.destroy();
   });
 });

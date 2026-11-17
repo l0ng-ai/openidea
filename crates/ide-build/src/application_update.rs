@@ -47,13 +47,20 @@ pub fn plan(root: &Path, model: &BuildModel, module: &Path, cache: &Path) -> Ide
         fs::write(
             &script,
             format!(
-                r#"gradle.projectsEvaluated {{
+                r#"import org.gradle.util.GradleVersion
+
+gradle.projectsEvaluated {{
     def p = gradle.rootProject.project({})
-    def resources = p.tasks.named('processResources')
-    p.tasks.register('openideaUpdateResources') {{
-        dependsOn resources
-        doLast {{ new File({}).setText(resources.get().destinationDir.absolutePath, 'UTF-8') }}
+    def update = {{ t ->
+        t.dependsOn 'processResources'
+        // Resolved here so the action holds no task or project (configuration cache).
+        def dir = p.tasks.getByName('processResources').destinationDir
+        def manifest = new File({})
+        t.doLast {{ manifest.setText(dir.absolutePath, 'UTF-8') }}
     }}
+    // `register` is Gradle 4.9+.
+    if (GradleVersion.current() >= GradleVersion.version('4.9')) p.tasks.register('openideaUpdateResources', update)
+    else p.tasks.create('openideaUpdateResources', update)
 }}
 "#,
                 literal(&p.path),
@@ -172,7 +179,16 @@ mod tests {
         assert_eq!(gradle.command, "/tools/gradlew");
         assert_eq!(gradle.args.last().unwrap(), ":app:openideaUpdateResources");
         let script = fs::read_to_string(cache.join("resources.init.gradle")).unwrap();
-        assert!(script.contains("processResources") && script.contains("destinationDir.absolutePath"));
+        assert!(
+            script.contains("processResources")
+                && script.contains(".destinationDir\n")
+                && script.contains("setText(dir.absolutePath")
+        );
+        // `register` is Gradle 4.9+ (#3864).
+        assert!(script.contains("else p.tasks.create('openideaUpdateResources', update)"), "{script}");
+        // The configuration cache can't serialize a task or project the action refers to.
+        let action = &script[script.find("doLast").unwrap()..script.find("// `register`").unwrap()];
+        assert!(!action.contains("p.") && !action.contains("tasks"), "{action}");
         assert!(!script.contains("build/resources/main")); // The task owns custom output locations.
     }
 
