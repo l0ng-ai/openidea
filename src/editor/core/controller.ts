@@ -52,7 +52,7 @@ import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
+import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
   changeSplitOrientation,
@@ -2255,7 +2255,7 @@ export class EditorController implements SlotHost {
   }
 }
 
-/** Open In › for a file: Project View, Finder / Explorer / Files, Terminal. */
+/** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */
 function openInMenu(path: string, line?: number): MenuItem {
   return {
     label: "Open In",
@@ -2263,6 +2263,16 @@ function openInMenu(path: string, line?: number): MenuItem {
       { kind: "action", action: "navigate.selectIn", arg: { path }, label: "Project View" },
       ...(canRevealInFileManager()
         ? [{ kind: "action" as const, action: "project.revealInFinder", arg: path, label: fileManagerName() }]
+        : []),
+      ...(canOpenWithSystemApp()
+        ? [
+            {
+              kind: "action" as const,
+              action: "project.openWithAssociatedApp",
+              arg: path,
+              label: "Associated Application",
+            },
+          ]
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
