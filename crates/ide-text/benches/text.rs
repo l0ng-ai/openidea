@@ -1,14 +1,15 @@
-//! `cargo bench -p ide-text`: change sets and coordinate conversion on a 1 MB document.
+//! `cargo bench -p ide-text`: change sets and coordinate conversion on a 1 MB document
+//! (and a 5 MB one where whole-document copies would show).
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use ide_core::{ChangeSet, Pos, TextChange};
 use ide_text::Document;
 
-/// ~1 MB of code-like text with some non-ASCII content.
-fn sample_text() -> String {
-    let mut s = String::with_capacity(1 << 20);
+/// ~`bytes` of code-like text with some non-ASCII content.
+fn sample_text(bytes: usize) -> String {
+    let mut s = String::with_capacity(bytes);
     let mut i = 0u32;
-    while s.len() < 1 << 20 {
+    while s.len() < bytes {
         s.push_str(&format!("    let value_{i} = compute(\"héllo 😀\", {i}) + other_{i};\n"));
         i += 1;
     }
@@ -47,7 +48,7 @@ fn change_set(doc: &Document, rng: &mut Lcg, n: usize) -> ChangeSet {
 }
 
 fn bench(c: &mut Criterion) {
-    let text = sample_text();
+    let text = sample_text(1 << 20);
     c.bench_function("text/open_1mb", |b| b.iter(|| Document::new(black_box(&text))));
 
     let base = Document::new(&text);
@@ -77,6 +78,11 @@ fn bench(c: &mut Criterion) {
     c.bench_function("text/diff_two_edits_1mb", |b| b.iter(|| base.diff(black_box(&two_edits))));
     let every_line = text.replace("compute", "calculate");
     c.bench_function("text/diff_every_line_1mb", |b| b.iter(|| base.diff(black_box(&every_line))));
+    let large_text = sample_text(5 << 20);
+    let large = Document::new(&large_text);
+    let one_edit = large_text.replacen("value_40000 ", "renamed_40000 ", 1);
+    assert_ne!(one_edit, large_text);
+    c.bench_function("text/diff_one_edit_5mb", |b| b.iter(|| large.diff(black_box(&one_edit))));
     c.bench_function("text/offset_to_pos_round_trip", |b| {
         let mut rng = Lcg(3);
         let len = base.len_utf16();

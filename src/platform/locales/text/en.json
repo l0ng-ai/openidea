@@ -1333,6 +1333,7 @@
   "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.": "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
   "No matching remote branches": "No matching remote branches",
   "Remote branches": "Remote branches",
+  "Branch name prefixes": "Branch name prefixes",
   "Maven project could not be configured": "Maven project could not be configured",
   "Change font size with Ctrl/Command+Mouse Wheel": "Change font size with Ctrl/Command+Mouse Wheel",
   "Active editor": "Active editor",
@@ -2473,5 +2474,9 @@
   "Cannot drop database {database}": "Cannot drop database {database}",
   "Cannot create database": "Cannot create database",
   "Database…": "Database…",
-  "Schema…": "Schema…"
+  "Schema…": "Schema…",
+  "Alignment": "Alignment",
+  "Align key-value pairs": "Align key-value pairs",
+  "Align consecutive assignments": "Align consecutive assignments",
+  "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines."
 }

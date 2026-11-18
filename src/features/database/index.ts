@@ -111,6 +111,8 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./TableEditor").then((m) => m.TableEditor)),
       title: tableTitle,
       icon: () => "database",
+      // Switching tabs keeps the rows, filters, page and unsubmitted edits without querying again.
+      keepAlive: true,
     }),
     registerOverlay({
       id: "database.dialogs",

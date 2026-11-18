@@ -271,6 +271,26 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("keeps the buffer dirty when the backend declines an autosave", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 0, to: 1, insert: "X" } });
+    backend.autosave = vi.fn(async () => false);
+    const save = vi.spyOn(backend, "save");
+    try {
+      await model.save("auto");
+      expect(backend.autosave).toHaveBeenCalledTimes(1);
+      expect(save).not.toHaveBeenCalled();
+      expect(model.getMeta().dirty).toBe(true);
+      await model.save("explicit");
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(model.getMeta().dirty).toBe(false);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("closes the backend document when the last slot goes away", async () => {
     const { backend, manager } = setup({ "/p/a.txt": "x" });
     const model = await manager.acquire("/p/a.txt");

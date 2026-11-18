@@ -6020,6 +6020,7 @@
   "Copy Branch Name": "复制分支名称",
   "Remote branches are not available for private forks": "私有派生仓库的远程分支不可用",
   "Remote branches": "远程分支",
+  "Branch name prefixes": "分支名称前缀",
   "Show Diff in a New Tab or Window": "在新标签页或窗口中显示差异",
   "Pull request does not contain any changes": "拉取请求不包含任何更改",
   "Mark as Viewed": "标记为已查看",
@@ -8848,5 +8849,9 @@
   "Cannot drop database {database}": "无法删除数据库 {database}",
   "Cannot create database": "无法创建数据库",
   "Database…": "数据库…",
-  "Schema…": "架构…"
+  "Schema…": "架构…",
+  "Alignment": "对齐",
+  "Align key-value pairs": "对齐键值对",
+  "Align consecutive assignments": "对齐连续赋值",
+  "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "在语言服务器或 PHP-CS-Fixer 格式化文件后，对齐多行数组中的 => 和连续赋值语句中的 =；格式化选区时只对齐选中的行。"
 }

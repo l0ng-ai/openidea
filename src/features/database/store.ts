@@ -330,6 +330,8 @@ function sourceMutation(id: string): () => boolean {
 }
 
 export async function loadSources(): Promise<void> {
+  // Closing the project resets `loaded` while its SQL consoles are still mounted.
+  if (!useProject.getState().project) return;
   const request = ++sourcesRequest;
   const current = projectRequest();
   const intents = new Map(connectionIntents);

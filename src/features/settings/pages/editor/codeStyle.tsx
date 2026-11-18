@@ -204,6 +204,32 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
           />
         </Row>
       </section>
+      {lang.id === "php" && (
+        <section aria-label={tx("Alignment")}>
+          <div className={styles.previewTitle}>
+            <T>Alignment</T>
+          </div>
+          <div className={styles.check}>
+            <Checkbox
+              checked={own.alignKeyValuePairs ?? false}
+              onChange={(v) => set({ alignKeyValuePairs: v })}
+              label="Align key-value pairs"
+            />
+          </div>
+          <div className={styles.check}>
+            <Checkbox
+              checked={own.alignConsecutiveAssignments ?? false}
+              onChange={(v) => set({ alignConsecutiveAssignments: v })}
+              label="Align consecutive assignments"
+            />
+          </div>
+          <div className={styles.note}>
+            {tx(
+              "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.",
+            )}
+          </div>
+        </section>
+      )}
       {lang.lineComment && (
         <section aria-label={tx("Comment Code")}>
           <div className={styles.previewTitle}>
@@ -321,6 +347,7 @@ export async function codeStyleLanguagePages(): Promise<PageSpec[]> {
         ...(lang.id === "java"
           ? ["Formatting profile", "IntelliJ IDEA", "Custom Eclipse formatter XML", "Eclipse formatter XML"]
           : []),
+        ...(lang.id === "php" ? ["Alignment", "Align key-value pairs", "Align consecutive assignments"] : []),
       ],
       component: () => <LanguageStyle lang={lang} />,
     }));

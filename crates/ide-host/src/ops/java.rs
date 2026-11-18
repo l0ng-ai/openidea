@@ -34,7 +34,7 @@ pub async fn java_resolve_launch(
     result
 }
 
-async fn resolve_launch(
+pub(crate) async fn resolve_launch(
     host: &Host,
     window: &str,
     module: PathBuf,
