@@ -906,7 +906,11 @@ pub async fn build_run(
         if result.success && single && kind == BuildKind::Build {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
             compile::record_menu_build(&cache, &root, &model, file.as_deref(), &token);
-            compile::record_module_build(&cache, &root, &model, &token);
+            // Only a project build covers every changed module; after Build Module the
+            // others may still be stale.
+            if file.is_none() {
+                compile::record_module_build(&cache, &root, &model, &token);
+            }
         }
         for (path, items) in compile::diagnostics(&result.messages) {
             sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });

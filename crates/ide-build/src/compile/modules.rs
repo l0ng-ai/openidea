@@ -42,10 +42,9 @@ fn load_record(cache: &Path, top_dir: &str) -> Option<ReactorRecord> {
 }
 
 /// Projects of `reactor` that (transitively) depend on one of `changed`, through
-/// non-test dependencies whose version matches the provider. The reverse of the
-/// launch upstream walk: a changed module's new classes force its consumers to
-/// recompile, while a `test`-scoped consumer compiles against the provider only
-/// for its own tests, which the selected module's own `test-compile` covers.
+/// dependencies whose version matches the provider. The reverse of the launch
+/// upstream walk: a changed module's new classes force its consumers to recompile,
+/// `test`-scoped ones included, since the project build compiles every module's tests.
 fn affected_projects(reactor: &[&maven::MavenProject], changed: &HashSet<String>) -> HashSet<String> {
     let mut affected = changed.clone();
     let mut pending: Vec<&str> = changed.iter().map(String::as_str).collect();
@@ -57,7 +56,6 @@ fn affected_projects(reactor: &[&maven::MavenProject], changed: &HashSet<String>
             }
             let depends = consumer.dependencies.iter().any(|d| {
                 d.resolved()
-                    && d.scope != "test"
                     && upstream.group_id == d.group_id
                     && upstream.artifact_id == d.artifact_id
                     && d.version.as_ref().is_none_or(|v| *v == upstream.version)
@@ -301,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scoped_consumer_and_version_mismatch_do_not_spread() {
+    fn test_scoped_consumers_are_rebuilt_and_version_mismatch_does_not_spread() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(
@@ -332,7 +330,8 @@ mod tests {
         record_module_build(&cache, root, &model, &CancellationToken::new());
         write(root, "lib/src/main/java/t/L.java", "package t; public class L {}");
         let steps = steps(&cache, root, &model).unwrap();
-        assert_eq!(pl_arg(&steps[0]), "lib");
+        // `tester`'s tests compile against `lib`.
+        assert_eq!(pl_arg(&steps[0]), "lib,tester");
     }
 
     #[test]
