@@ -683,13 +683,14 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   const [groups, setGroups] = useState<RepoWorktrees[]>([]);
   /** The selected tree row (`r:` repository, `w:` worktree). */
   const [selected, setSelected] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<{ project: string | undefined; message: string } | null>(null);
   /** The last reload wins: a scan of the roots may change them while it runs. */
   const run = useRef(0);
+  const mutationRun = useRef(0);
   const reload = () => {
     const id = ++run.current;
     return Promise.all(
-      repos.map((root) =>
+      useVcs.getState().roots.map((root) =>
         call(commands.vcsWorktrees(root)).then(
           (worktrees): RepoWorktrees => ({ root, worktrees }),
           (e): RepoWorktrees => ({ root, worktrees: [], error: errorMessage(e) }),
@@ -698,7 +699,6 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     ).then((lists) => {
       if (id !== run.current) return;
       setGroups(groupWorktrees(lists));
-      setError(null);
     });
   };
   useEffect(() => {
@@ -738,6 +738,23 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     return [...flags, w.path].join("  ");
   };
 
+  const mutate = async (task: () => Promise<unknown>, selection: string | null) => {
+    if (projectRoot !== useProject.getState().project?.root) return;
+    const id = ++mutationRun.current;
+    let failure: string | null = null;
+    try {
+      await task();
+    } catch (e) {
+      failure = errorMessage(e);
+    }
+    if (projectRoot !== useProject.getState().project?.root) return;
+    if (id === mutationRun.current) {
+      setMutationError(failure === null ? null : { project: projectRoot, message: failure });
+      if (failure === null) setSelected(selection);
+    }
+    await reload();
+  };
+
   const remove = async () => {
     if (!current || !currentGroup || current.main || containsProject) return;
     const ok = await confirmDialog({
@@ -747,22 +764,22 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
       danger: true,
     });
     if (!ok) return;
-    try {
-      await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, false));
-    } catch (e) {
-      const force = await confirmDialog({
-        title: "Remove Worktree",
-        message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
-        okLabel: "Force Remove",
-        danger: true,
-      });
-      if (force)
-        await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, true)).catch((x) =>
-          setError(errorMessage(x)),
-        );
-    }
-    setSelected(null);
-    await reload();
+    await mutate(async () => {
+      try {
+        await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, false));
+      } catch (e) {
+        if (projectRoot !== useProject.getState().project?.root) return;
+        const force = await confirmDialog({
+          title: "Remove Worktree",
+          message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
+          okLabel: "Force Remove",
+          danger: true,
+        });
+        if (!force) throw e;
+        if (projectRoot === useProject.getState().project?.root)
+          await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, true));
+      }
+    }, null);
   };
 
   const move = async () => {
@@ -784,13 +801,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
       okLabel: "Move",
     });
     if (!ok) return;
-    try {
-      await call(commands.vcsMoveWorktree(currentGroup.root, current.path, to));
-      setSelected(`w:${to}`);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-    await reload();
+    await mutate(() => call(commands.vcsMoveWorktree(currentGroup.root, current.path, to)), `w:${to}`);
   };
 
   return (
@@ -858,7 +869,11 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
             </div>
           ),
       )}
-      {error && <div className={styles.error}>{error}</div>}
+      {mutationError && mutationError.project === projectRoot && (
+        <div className={styles.error} role="alert">
+          {mutationError.message}
+        </div>
+      )}
     </div>
   );
 }
