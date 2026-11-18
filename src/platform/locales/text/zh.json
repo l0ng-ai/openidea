@@ -8853,5 +8853,6 @@
   "Alignment": "对齐",
   "Align key-value pairs": "对齐键值对",
   "Align consecutive assignments": "对齐连续赋值",
-  "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "在语言服务器或 PHP-CS-Fixer 格式化文件后，对齐多行数组中的 => 和连续赋值语句中的 =；格式化选区时只对齐选中的行。"
+  "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "在语言服务器或 PHP-CS-Fixer 格式化文件后，对齐多行数组中的 => 和连续赋值语句中的 =；格式化选区时只对齐选中的行。",
+  "Are you sure you want to delete {name}?": "确定要删除 {name} 吗？"
 }
