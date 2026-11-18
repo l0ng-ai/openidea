@@ -522,7 +522,10 @@ fn missing_bundle(e: &IdeError) -> bool {
 }
 
 /// Cancel local waits without interrupting a shared server's startup or import.
-async fn cancellable_wait<T>(cancel: &CancellationToken, wait: impl std::future::Future<Output = T>) -> IdeResult<T> {
+pub(crate) async fn cancellable_wait<T>(
+    cancel: &CancellationToken,
+    wait: impl std::future::Future<Output = T>,
+) -> IdeResult<T> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(IdeError::cancelled()),
