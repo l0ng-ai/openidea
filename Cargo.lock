@@ -4871,6 +4871,7 @@ version = "0.1.47"
 dependencies = [
  "dirs 6.0.0",
  "flate2",
+ "getrandom 0.4.3",
  "ide-core",
  "keyring",
  "keyring-core",
@@ -4882,6 +4883,7 @@ dependencies = [
  "serde",
  "serde_json",
  "specta",
+ "ssh-key",
  "suppaftp",
  "tempfile",
  "tokio",
@@ -5889,6 +5891,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ml-dsa"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f6d49c3f3f0e10e18ca975ffda66f8da0ec36521c1d911adcbc521bf0743f5c"
+dependencies = [
+ "crypto-common 0.2.2",
+ "ctutils",
+ "hybrid-array",
+ "module-lattice",
+ "pkcs8",
+ "shake",
+ "signature",
+]
+
+[[package]]
 name = "ml-kem"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5905,9 +5922,9 @@ dependencies = [
 
 [[package]]
 name = "module-lattice"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c61b87c9683ab7cb1c6871d261ad5479b6b10ceb52c4352aaca3b5d35a8febe"
+checksum = "c4a1e412c8ee83a1c678f427806219c49c96b2511b9f07497514f0e43fb26155"
 dependencies = [
  "ctutils",
  "hybrid-array",
@@ -8992,8 +9009,6 @@ dependencies = [
 [[package]]
 name = "ssh-key"
 version = "0.7.0-rc.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9a32fae177b74a22aa9c5b01bf7e68b33545be32d9e381e248058d2adc15ce3"
 dependencies = [
  "argon2",
  "bcrypt-pbkdf",
@@ -9001,6 +9016,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hmac",
+ "ml-dsa",
  "p256",
  "p384",
  "p521",
