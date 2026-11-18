@@ -41,6 +41,12 @@ describe("Find in Files module and custom scopes", () => {
       path: "/p/web",
     });
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "" }, inputs)).toEqual({ kind: "project" });
+    // A Windows workspace member is a drive-letter path, not one under the first project (#4069).
+    const windows = { ...inputs, root: "C:/tmp/alpha" };
+    expect(resolveFindScope({ ...base, scopeTab: "module", module: "C:/tmp/beta" }, windows)).toEqual({
+      kind: "directory",
+      path: "C:/tmp/beta",
+    });
   });
 
   it("named scopes resolve to file sets, files and custom patterns", () => {
