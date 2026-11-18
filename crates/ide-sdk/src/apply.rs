@@ -537,6 +537,16 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
     merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
 }
 
+/// Settings › Build Tools › Maven › Automatically download sources → jdtls
+/// `java.maven.downloadSources`.
+pub fn configure_maven_sources(cfg: &mut LanguageServerConfig, s: &Settings) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let download = s.languages.java.maven.download_sources;
+    merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"maven": {"downloadSources": download}}}));
+}
+
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
 /// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
@@ -2348,6 +2358,25 @@ mod maven_linkage_tests {
         assert_eq!(default_maven_repository_in(home), Some(home.join("m2repo")));
         std::fs::write(&settings, "<settings><localRepository>${env.REPO}</localRepository></settings>").unwrap();
         assert_eq!(default_maven_repository_in(home), Some(home.join(".m2/repository")));
+    }
+
+    #[test]
+    fn maven_sources_download_follows_the_setting() {
+        let mut settings = Settings::default();
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"maven": {"downloadSources": true, "updateSnapshots": false}}}));
+        configure_maven_sources(&mut cfg, &settings);
+        assert_eq!(
+            cfg.settings,
+            Some(json!({"java": {"maven": {"downloadSources": false, "updateSnapshots": false}}}))
+        );
+        settings.languages.java.maven.download_sources = true;
+        configure_maven_sources(&mut cfg, &settings);
+        assert_eq!(cfg.settings.unwrap()["java"]["maven"]["downloadSources"], json!(true));
+
+        let mut other = custom_server("kotlin", &LanguageServerSettings::default());
+        configure_maven_sources(&mut other, &settings);
+        assert_eq!(other.settings, None);
     }
 
     #[test]

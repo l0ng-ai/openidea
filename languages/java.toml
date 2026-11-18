@@ -47,7 +47,7 @@ moveRefactoringSupport = true
 [language-servers.initialization-options.settings.java]
 autobuild = { enabled = true }
 contentProvider = { preferred = "fernflowerContentProvider" }
-maven = { downloadSources = true, updateSnapshots = false }
+maven = { downloadSources = false, updateSnapshots = false }
 eclipse = { downloadSources = true }
 references = { includeDecompiledSources = true }
 # The editor's usage lenses count usages; the server's own lenses would search every
