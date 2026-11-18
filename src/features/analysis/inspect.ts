@@ -13,6 +13,7 @@ import {
   type InspectEvent,
   type InspectSummary,
   type RequestId,
+  type SearchScope,
 } from "@/platform/ipc";
 import {
   activeProfileId,
@@ -97,6 +98,12 @@ export function groupInspection(files: Iterable<InspectedFileResult>): Inspectio
   });
 }
 
+interface InspectionTarget {
+  root: string;
+  scope: SearchScope;
+  label: string;
+}
+
 interface InspectState {
   running: boolean;
   total: number;
@@ -108,8 +115,8 @@ interface InspectState {
   summary: InspectSummary | null;
   scopeLabel: string | null;
   error: string | null;
-  /** Scope of the last run (Rerun). */
-  last: ScopeChoice | null;
+  /** Resolved target of the last run (Rerun). */
+  last: InspectionTarget | null;
   /** Inspection profile of the last run. */
   profile: ProfileId | null;
   /** Problems excluded from the results (⌫), by `problemId`. */
@@ -168,6 +175,7 @@ export function installInspectionProfileSync() {
 }
 
 let inflight: RequestId | null = null;
+let startSeq = 0;
 
 export function cancelInspection() {
   if (inflight === null) return;
@@ -176,18 +184,32 @@ export function cancelInspection() {
 
 /** The window switched projects: stops the run and forgets its results. */
 export function resetInspection() {
+  ++startSeq;
   cancelInspection();
   inflight = null;
   useInspection.setState(initialInspection());
 }
 
+function inspectionRoot(): string | undefined {
+  const { project, opening } = useProject.getState();
+  return opening ? undefined : project?.root;
+}
+
 /** Inspect Code over `choice` with `profileId` (default: the profile in effect). */
 export async function runInspection(choice: ScopeChoice, profileId: ProfileId = activeProfileId()): Promise<void> {
+  const root = inspectionRoot();
+  if (!root) return;
+  const seq = ++startSeq;
   const scope = await resolveScope(choice);
+  if (seq !== startSeq || inspectionRoot() !== root) return;
   if (typeof scope === "string") {
     notifications().notify({ group: "analysis", level: "warning", title: "Inspect Code", body: scope });
     return;
   }
+  await inspectTarget({ root, scope, label: describeScope(choice, scope) }, profileId);
+}
+
+async function inspectTarget(target: InspectionTarget, profileId: ProfileId): Promise<void> {
   cancelInspection();
   const id = nextRequestId();
   inflight = id;
@@ -199,8 +221,8 @@ export async function runInspection(choice: ScopeChoice, profileId: ProfileId = 
     files: new Map(),
     summary: null,
     error: null,
-    scopeLabel: describeScope(choice, scope),
-    last: choice,
+    scopeLabel: target.label,
+    last: target,
     profile: profileId,
     excluded: new Set(),
   });
@@ -246,7 +268,7 @@ export async function runInspection(choice: ScopeChoice, profileId: ProfileId = 
     }
   };
   try {
-    await call(commands.inspectCode(id, scope, channel));
+    await call(commands.inspectCode(id, target.scope, channel));
   } catch (e) {
     if (inflight === id) {
       inflight = null;
@@ -257,5 +279,7 @@ export async function runInspection(choice: ScopeChoice, profileId: ProfileId = 
 
 export function rerunInspection() {
   const { last, profile } = useInspection.getState();
-  if (last) void runInspection(last, profile ?? undefined);
+  if (!last || inspectionRoot() !== last.root) return;
+  ++startSeq;
+  void inspectTarget(last, profile ?? activeProfileId());
 }

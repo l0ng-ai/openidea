@@ -1,9 +1,24 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Diagnostic, InspectEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { installInspectionProfileSync, resetInspection, runInspection, useInspection } from "./inspect";
+import {
+  installInspectionProfileSync,
+  rerunInspection,
+  resetInspection,
+  runInspection,
+  useInspection,
+} from "./inspect";
 
-const mock = vi.hoisted(() => ({ channel: null as null | { onmessage: (event: InspectEvent) => void } }));
+const mock = vi.hoisted(() => ({
+  channel: null as null | { onmessage: (event: InspectEvent) => void },
+  activeEditor: vi.fn(),
+  inspect: vi.fn(),
+  vcsStatus: vi.fn(),
+}));
+vi.mock("@/editor/api", async (original) => ({
+  ...(await original<typeof import("@/editor/api")>()),
+  activeEditor: mock.activeEditor,
+}));
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
     onmessage = () => {};
@@ -14,11 +29,12 @@ vi.mock("@/platform/ipc", async (original) => ({
   isTauri: () => true,
   call: (value: unknown) => value,
   commands: {
-    inspectCode: (_id: unknown, _scope: unknown, channel: typeof mock.channel) => {
+    inspectCode: (_id: unknown, scope: unknown, channel: typeof mock.channel) => {
       mock.channel = channel;
-      return Promise.resolve();
+      return mock.inspect(scope);
     },
     cancelRequest: () => Promise.resolve(),
+    vcsStatus: () => mock.vcsStatus(),
   },
 }));
 vi.mock("@/workbench/contributions", () => ({
@@ -45,9 +61,80 @@ function file(path = "/p/a.ts") {
 function done() {
   mock.channel!.onmessage({ type: "done", summary: { problems: 1 } } as InspectEvent);
 }
+beforeEach(() => {
+  mock.channel = null;
+  mock.activeEditor.mockReset();
+  mock.inspect.mockReset().mockResolvedValue(undefined);
+  mock.vcsStatus.mockReset();
+  useProject.setState({ project: { root: "/p", name: "p", trusted: true, isGit: true, settings: {} }, settings: {} });
+});
 afterEach(() => {
   resetInspection();
+  useProject.setState({ project: null, settings: null });
   vi.useRealTimers();
+});
+
+it("reruns the inspected file and profile while a fresh inspection follows the editor", async () => {
+  const choice = { kind: "file", directory: "/p" } as const;
+  mock.activeEditor.mockReturnValue({ ctx: { path: "/p/a.ts" } });
+  await runInspection(choice, "project");
+  file();
+  done();
+  mock.activeEditor.mockReturnValue({ ctx: { path: "/p/b.ts" } });
+
+  rerunInspection();
+  await vi.waitFor(() => expect(mock.inspect).toHaveBeenCalledTimes(2));
+  expect(mock.inspect).toHaveBeenNthCalledWith(2, { kind: "files", paths: ["/p/a.ts"] });
+  expect(useInspection.getState()).toMatchObject({ scopeLabel: "File a.ts", profile: "project" });
+  done();
+  mock.activeEditor.mockReturnValue(null);
+  rerunInspection();
+  await vi.waitFor(() => expect(mock.inspect).toHaveBeenCalledTimes(3));
+  expect(mock.inspect).toHaveBeenNthCalledWith(3, { kind: "files", paths: ["/p/a.ts"] });
+
+  mock.activeEditor.mockReturnValue({ ctx: { path: "/p/b.ts" } });
+  await runInspection(choice);
+  expect(mock.inspect).toHaveBeenNthCalledWith(4, { kind: "files", paths: ["/p/b.ts"] });
+  expect(useInspection.getState()).toMatchObject({ scopeLabel: "File b.ts", profile: "default" });
+});
+
+it("keeps the initial file list and label when rerunning an uncommitted-files inspection", async () => {
+  mock.vcsStatus.mockResolvedValue([{ path: "/p/a.ts" }, { path: "/p/b.ts" }]);
+  await runInspection({ kind: "changed", directory: "/p" });
+  done();
+  mock.vcsStatus.mockResolvedValue([{ path: "/p/c.ts" }]);
+
+  rerunInspection();
+  await vi.waitFor(() => expect(mock.inspect).toHaveBeenCalledTimes(2));
+  expect(mock.inspect).toHaveBeenNthCalledWith(2, { kind: "files", paths: ["/p/a.ts", "/p/b.ts"] });
+  expect(mock.vcsStatus).toHaveBeenCalledTimes(1);
+  expect(useInspection.getState().scopeLabel).toBe("2 uncommitted files");
+});
+
+it("keeps the prior target when it disappears and reports the inspection failure", async () => {
+  mock.activeEditor.mockReturnValue({ ctx: { path: "/p/a.ts" } });
+  await runInspection({ kind: "file", directory: "/p" });
+  done();
+  mock.activeEditor.mockReturnValue({ ctx: { path: "/p/b.ts" } });
+  mock.inspect.mockRejectedValueOnce(new Error("File a.ts does not exist"));
+
+  rerunInspection();
+  await vi.waitFor(() => expect(useInspection.getState().error).toBe("File a.ts does not exist"));
+  expect(mock.inspect).toHaveBeenNthCalledWith(2, { kind: "files", paths: ["/p/a.ts"] });
+  expect(useInspection.getState().scopeLabel).toBe("File a.ts");
+});
+
+it("ignores scopes resolved after their project closed and never reruns across projects", async () => {
+  await runInspection({ kind: "project", directory: "/p" });
+  done();
+  let finishStatus!: (files: { path: string }[]) => void;
+  mock.vcsStatus.mockReturnValue(new Promise((resolve) => (finishStatus = resolve)));
+  const pending = runInspection({ kind: "changed", directory: "/p" });
+  useProject.setState({ project: { root: "/other", name: "other", trusted: true, isGit: true, settings: {} } });
+  rerunInspection();
+  finishStatus([{ path: "/p/a.ts" }]);
+  await pending;
+  expect(mock.inspect).toHaveBeenCalledTimes(1);
 });
 
 it("reprojects completed results, counts and original severities without rerunning", async () => {
