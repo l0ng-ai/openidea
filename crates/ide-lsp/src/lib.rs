@@ -25,6 +25,7 @@ mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod maven_placeholder;
 mod message_requests;
 mod notebook;
 mod phoxite;

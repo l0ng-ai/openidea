@@ -96,7 +96,7 @@ Once an agent has run a task, new tasks start in its mode that approves everythi
 
 ### Review the changes
 
-Click **Show changes** in the task header to list the files the task changed. A task in the project's own checkout lists only the files that changed while the agent was working, not what you or another task changed while it was idle. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
+Click **Show changes** in the task header to list the files the task changed. A task in the project's own checkout lists only the files that changed while the agent was working, not what you or another task changed while it was idle. Click a file to open a diff between the task's starting point and now. Switch the list from **Whole Task** to **Last Turn** to see only what the last turn changed, against the files as that turn started; rolling back then undoes only that turn. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
 
 Drag the pane's left edge to resize it. The width applies to every task and is remembered across restarts.
 

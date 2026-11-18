@@ -46,6 +46,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const review = useAgents((s) => s.groupedChanges.get(id));
   const changes = grouped ? (review?.uncommitted ?? null) : (sinceStart ?? null);
   const commits = grouped ? (review?.commits ?? []) : [];
+  const scope = useChangesOptions((s) => s.scope);
+  const lastTurn = useAgents((s) => s.turnChanges.get(id));
   const project = useProject((s) => s.project);
   const head = useLocalHead(
     task?.isolation === "local" ? task.status : null,
@@ -189,9 +191,10 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       {changesOpen && (
         <ChangesPane
           task={task}
-          changes={changes ?? null}
-          commits={commits}
-          grouped={grouped}
+          changes={scope === "turn" ? (lastTurn ?? null) : (changes ?? null)}
+          commits={scope === "turn" ? [] : commits}
+          grouped={grouped && scope === "task"}
+          scope={scope}
           head={head}
           docked={docked}
           onHide={() => setChangesOpen(false)}
