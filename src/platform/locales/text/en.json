@@ -2519,5 +2519,7 @@
   "Slower, but matches git status where encryption or file protection software makes files look modified.": "Slower, but matches git status where encryption or file protection software makes files look modified.",
   "Directory mappings actions": "Directory mappings actions",
   "Select Repository Root": "Select Repository Root",
-  "VCS of {name}": "VCS of {name}"
+  "VCS of {name}": "VCS of {name}",
+  "Remember size for each tool window": "Remember size for each tool window",
+  "Off, the tool windows of one side share its size": "Off, the tool windows of one side share its size"
 }

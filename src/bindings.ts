@@ -2854,6 +2854,8 @@ export type AppearanceSettings_Deserialize = {
 	showToolWindowNames?: boolean,
 	showToolWindowBadges?: boolean,
 	widescreenToolWindows?: boolean,
+	/**  Each tool window keeps its own size; off, the windows of a side share one. */
+	rememberToolWindowSizes?: boolean,
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar?: boolean,
 	showStatusBar?: boolean,
@@ -2925,6 +2927,8 @@ export type AppearanceSettings_Serialize = {
 	showToolWindowNames: boolean,
 	showToolWindowBadges: boolean,
 	widescreenToolWindows: boolean,
+	/**  Each tool window keeps its own size; off, the windows of a side share one. */
+	rememberToolWindowSizes: boolean,
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar: boolean,
 	showStatusBar: boolean,

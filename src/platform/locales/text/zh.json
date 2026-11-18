@@ -8892,5 +8892,7 @@
   "Slower, but matches git status where encryption or file protection software makes files look modified.": "速度较慢，但在加密或文件保护软件导致文件被误判为已修改时，结果与 git status 一致。",
   "Directory mappings actions": "目录映射操作",
   "Select Repository Root": "选择仓库根目录",
-  "VCS of {name}": "{name} 的 VCS"
+  "VCS of {name}": "{name} 的 VCS",
+  "Remember size for each tool window": "记住每个工具窗口的大小",
+  "Off, the tool windows of one side share its size": "关闭时，同一侧的工具窗口共用一个大小"
 }
