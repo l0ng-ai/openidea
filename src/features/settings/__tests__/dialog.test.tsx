@@ -688,6 +688,31 @@ describe("Settings dialog", () => {
     expect(settingsSet).toHaveBeenCalledWith("project", "projectStructure.compilerOutput", '"out/classes"');
   });
 
+  it("drops the previous project's resolved libraries while discovering the next project's libraries", async () => {
+    const setRoot = (root: string) =>
+      useProject.setState({ project: { root, name: root, trusted: true, isGit: false, settings: current } });
+    vi.stubGlobal("__TAURI_INTERNALS__", { transformCallback: () => 1, invoke: async () => {} });
+    let finish!: (result: Awaited<ReturnType<typeof commands.sdkProjectLibraries>>) => void;
+    const discover = vi
+      .spyOn(commands, "sdkProjectLibraries")
+      .mockResolvedValueOnce({ status: "ok", data: [{ name: "Old dependencies", kind: "cargo", roots: [] }] })
+      .mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    try {
+      setRoot("/old");
+      render(<ProjectStructureDialog />);
+      await act(async () => executeAction("file.projectStructure", "libraries"));
+      expect(screen.getByText("Old dependencies")).toBeInTheDocument();
+
+      act(() => setRoot("/new"));
+      expect(screen.queryByText("Old dependencies")).not.toBeInTheDocument();
+      await act(async () => finish({ status: "ok", data: [{ name: "New dependencies", kind: "cargo", roots: [] }] }));
+      expect(screen.getByText("New dependencies")).toBeInTheDocument();
+    } finally {
+      discover.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("disables Project Structure controls whose settings have no execution support", async () => {
     useProject.setState({ project: { name: "demo", root: "/project" } as never });
     render(<ProjectStructureDialog />);

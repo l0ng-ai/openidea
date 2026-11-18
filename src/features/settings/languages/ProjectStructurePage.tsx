@@ -1061,7 +1061,8 @@ function LibrariesSection() {
   const [rawLibs, setRawLibs] = useProjectSetting<ProjectLibraryValid[] | undefined>("projectStructure.libraries");
   const libs = rawLibs ?? [];
   const [selectedIdx, setSelectedIdx] = useState<number>(0);
-  const [detectedGroups, setDetectedGroups] = useState<LibraryGroup[]>([]);
+  const [detected, setDetected] = useState<{ root: string; groups: LibraryGroup[] } | null>(null);
+  const detectedGroups = detected?.root === root ? detected.groups : [];
   const nameId = useId();
 
   useEffect(() => {
@@ -1072,12 +1073,12 @@ function LibrariesSection() {
     let collected: LibraryGroup[] = [];
     channel.onmessage = (groups) => {
       collected = mergeLibraryGroups([...collected, ...groups]);
-      if (live) setDetectedGroups(collected);
+      if (live) setDetected({ root, groups: collected });
     };
     call(commands.sdkProjectLibraries(request, channel))
       .then((groups) => {
         collected = groups;
-        if (live) setDetectedGroups(groups);
+        if (live) setDetected({ root, groups });
       })
       .catch(() => {});
     return () => {

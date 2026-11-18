@@ -149,6 +149,7 @@ export function activate(): () => void {
   /** The last complete result: what a refresh shows for ecosystems that haven't reported yet. */
   let settled: LibraryGroup[] = [];
   let request: RequestId | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const clear = () => {
     disposeRoot();
     disposeReadOnly();
@@ -160,8 +161,8 @@ export function activate(): () => void {
     const id = ++seq;
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     request = undefined;
-    if (!useProject.getState().project || useProject.getState().project?.trusted === false || !isTauri())
-      return clear();
+    const { project } = useProject.getState();
+    if (!project || project.trusted === false || !isTauri()) return clear();
     let collected: LibraryGroup[] = [];
     const show = (groups: LibraryGroup[]) => {
       if (id !== seq) return;
@@ -185,6 +186,7 @@ export function activate(): () => void {
     };
     const channel = new Channel<LibraryGroup[]>();
     channel.onmessage = (groups) => {
+      if (id !== seq) return;
       collected = mergeLibraryGroups([...collected, ...groups]);
       const reported = new Set(collected.map((g) => g.kind));
       show(mergeLibraryGroups([...collected, ...settled.filter((g) => !reported.has(g.kind))]));
@@ -197,7 +199,7 @@ export function activate(): () => void {
         show(groups);
       })
       .catch((e: unknown) => {
-        if (!isCancelled(e)) console.warn("external libraries: cannot list SDK roots", e);
+        if (id === seq && !isCancelled(e)) console.warn("external libraries: cannot list SDK roots", e);
       })
       .finally(() => {
         if (request === current) request = undefined;
@@ -208,9 +210,12 @@ export function activate(): () => void {
     { id: "libraries.reload", title: "Reload External Libraries", category: "Go", hidden: true, run: refresh },
   ]);
   const unsub = useProject.subscribe((s, prev) => {
+    if (s.project?.root !== prev.project?.root) {
+      clearTimeout(timer);
+      clear();
+    }
     if (sdkKey(s) !== sdkKey(prev)) refresh();
   });
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const unsubFs = onIdeEvent("fsChanged", (e) => {
     if (!touchesManifest([...e.created, ...e.modified, ...e.removed])) return;
     clearTimeout(timer);
