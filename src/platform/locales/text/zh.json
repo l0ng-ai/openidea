@@ -1222,6 +1222,7 @@
   "Staged Changes": "已暂存的更改",
   "Unstaged Changes": "未暂存的更改",
   "Directory (relative to project root)": "目录（相对于项目根目录）",
+  "Enter a directory to search": "请输入要搜索的目录",
   "Directory Mappings": "目录映射",
   "Directory mappings": "目录映射",
   "Directory of the current file": "当前文件所在的目录",
