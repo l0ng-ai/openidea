@@ -1,3 +1,4 @@
+import { useI18n } from "@/platform/i18n";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirenvStatus, EnvReloaded, IdeError } from "@/bindings";
 import type { NotificationService } from "@/workbench/contributions";
@@ -78,6 +79,19 @@ describe("direnv", () => {
     notes[0]!.actions!.find((a) => a.label === "Reload Environment")!.run();
     await vi.waitFor(() => expect(envReload).toHaveBeenCalledOnce());
     off();
+  });
+
+  it("translates the changed file's title", () => {
+    const previous = useI18n.getState().texts;
+    useI18n.setState({ texts: { ...previous, "{file} changed": "{file} 已更改" } });
+    const off = installDirenvNotifications();
+    try {
+      emit({ kind: "changed", file: ".envrc" });
+      expect(notes[0]).toMatchObject({ title: ".envrc 已更改" });
+    } finally {
+      off();
+      useI18n.setState({ texts: previous });
+    }
   });
 
   it("asks the user to allow a blocked .envrc instead of allowing it", () => {

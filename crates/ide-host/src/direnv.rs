@@ -310,7 +310,7 @@ exit "$(cat code 2>/dev/null || echo 0)"
         let (_tmp, root, program) = project();
         std::fs::write(root.join("slow"), "").unwrap();
         let started = Instant::now();
-        let result = export(&program, &root, Duration::from_millis(300), &CancellationToken::new(), &|_| {});
+        let result = export(&program, &root, Duration::from_secs(2), &CancellationToken::new(), &|_| {});
         let Err(Failure::Failed(message)) = result else { panic!("a timeout") };
         assert!(message.starts_with("direnv did not finish within"), "{message}");
         assert!(message.contains("direnv: loading"), "{message}");

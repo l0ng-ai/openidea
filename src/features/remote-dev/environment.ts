@@ -108,7 +108,7 @@ export function showDirenvStatus(status: DirenvStatus) {
       notify({
         key: DIRENV_KEY,
         level: "info",
-        title: `${file} changed`,
+        title: tx`${file} changed`,
         body: "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.",
         actions: reload,
       });
