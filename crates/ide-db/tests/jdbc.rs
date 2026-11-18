@@ -1,5 +1,5 @@
 use ide_core::{CancellationToken, IdeResult};
-use ide_db::{DataSource, DbDriver, DbJdbcDriver, DbManager};
+use ide_db::{DataSource, DbDriver, DbJdbcDriver, DbManager, SortKey};
 use std::{path::Path, sync::Arc};
 
 fn manager(dir: &Path) -> DbManager {
@@ -93,6 +93,15 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert_eq!(result.rows, vec![vec![Some("1".into()), None]]);
     assert_eq!(result.columns[1].name, "label");
     assert_eq!(db.completion("test").await?.default_schema, "main");
+    let sort = [SortKey { column: "id".into(), descending: false }];
+    let first = db.table_page("test", "main", "items", None, &sort, 0, 1, &c).await?.result;
+    assert_eq!(first.rows, result.rows);
+    assert!(first.has_more);
+    let last = db.table_page("test", "main", "items", None, &sort, 1, 1, &c).await?.result;
+    assert_eq!(last.rows, vec![vec![Some("2".into()), Some("row".into())]]);
+    assert!(!last.has_more);
+    let past = db.table_page("test", "main", "items", None, &sort, 2, 1, &c).await?.result;
+    assert!(past.rows.is_empty() && !past.has_more);
     db.disconnect("test").await;
     Ok(())
 }
@@ -137,6 +146,12 @@ async fn clickhouse_vendor_driver_reads_catalog_and_results() -> IdeResult<()> {
     let r = db.execute("test", "SELECT number FROM numbers(3) ORDER BY number", 2, &CancellationToken::new()).await?;
     assert_eq!(r.rows.len(), 2);
     assert!(r.has_more);
+    let c = CancellationToken::new();
+    let page = db.table_page("test", "system", "one", None, &[], 0, 1, &c).await?.result;
+    assert_eq!(page.rows.len(), 1);
+    assert!(!page.has_more);
+    let past = db.table_page("test", "system", "one", None, &[], 1, 1, &c).await?.result;
+    assert!(past.rows.is_empty() && !past.has_more);
     db.disconnect("test").await;
     Ok(())
 }

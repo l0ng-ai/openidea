@@ -99,8 +99,12 @@ class OpenIdeaJdbc {
         for (String s : names) row(out, s);
     }
 
-    void metadata(String op, List<String> a, DataOutputStream out) throws Exception {
+    void discoverNamespace() throws Exception {
         if (!namespaceKnown) schemas(new DataOutputStream(OutputStream.nullOutputStream()));
+    }
+
+    void metadata(String op, List<String> a, DataOutputStream out) throws Exception {
+        discoverNamespace();
         var m = connection.getMetaData();
         String name = a.get(0);
         String catalog = catalogs && !name.isEmpty() ? name : connection.getCatalog();
@@ -142,7 +146,7 @@ class OpenIdeaJdbc {
         try (Statement st = connection.createStatement()) {
             long window = skip + limit + 1;
             if (tablePage && window > 0 && window <= Integer.MAX_VALUE) {
-                try { st.setMaxRows((int)window); } catch (SQLFeatureNotSupportedException ignored) {}
+                try { st.setMaxRows((int)window); } catch (SQLException | UnsupportedOperationException ignored) {}
             }
             if (!st.execute(a.get(0))) {
                 header(out);
@@ -198,8 +202,10 @@ class OpenIdeaJdbc {
                     case "namespace" -> {
                         header(reply, "namespace");
                         String name = null;
-                        try { name = catalogs ? connection.getCatalog() : connection.getSchema(); }
-                        catch (SQLFeatureNotSupportedException | AbstractMethodError ignored) {}
+                        try {
+                            discoverNamespace();
+                            name = catalogs ? connection.getCatalog() : connection.getSchema();
+                        } catch (SQLException | AbstractMethodError ignored) {}
                         row(reply, name);
                     }
                     case "page" -> execute(a, reply, true);
@@ -207,7 +213,7 @@ class OpenIdeaJdbc {
                         if (a.size() == 3 || a.get(3).isEmpty()) {
                             execute(a, reply, false);
                         } else {
-                            if (!namespaceKnown) schemas(new DataOutputStream(OutputStream.nullOutputStream()));
+                            discoverNamespace();
                             String previous = catalogs ? connection.getCatalog() : connection.getSchema();
                             String wanted = a.get(3);
                             if (Objects.equals(previous, wanted)) {

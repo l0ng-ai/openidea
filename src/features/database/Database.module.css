@@ -1519,3 +1519,7 @@
 .dumpError {
   color: var(--danger);
 }
+
+.jdbcJarPath {
+  overflow-wrap: anywhere;
+}

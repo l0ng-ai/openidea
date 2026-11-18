@@ -9,9 +9,8 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 const LIMIT: usize = 16 * 1024 * 1024;
@@ -201,10 +200,10 @@ impl DbManager {
 }
 
 struct Bridge {
-    child: Child,
+    stop: tokio::sync::oneshot::Sender<()>,
+    exited: tokio::task::JoinHandle<()>,
     input: ChildStdin,
     output: ChildStdout,
-    _dir: TempDir,
 }
 
 pub struct JdbcPool {
@@ -217,10 +216,7 @@ pub struct JdbcPool {
 impl Bridge {
     fn start() -> IdeResult<Self> {
         let jdks = ide_sdk::java::installed_jdks();
-        let jdk = jdks
-            .iter()
-            .filter(|j| j.major >= 17)
-            .max_by_key(|j| j.major)
+        let jdk = ide_sdk::java::runtime_with_modules(&jdks, 17, &["jdk.compiler", "java.sql"])
             .ok_or_else(|| IdeError::invalid("Install a JDK 17 or newer to use custom JDBC drivers"))?;
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("OpenIdeaJdbc.java");
@@ -230,7 +226,8 @@ impl Bridge {
         ide_core::process::prepare(command.as_std_mut());
         let mut child = command
             .arg("-Xmx192m")
-            .arg(&file)
+            .arg("--enable-native-access=ALL-UNNAMED")
+            .arg("OpenIdeaJdbc.java")
             .env_remove("CLASSPATH")
             .env_remove("JDK_JAVA_OPTIONS")
             .env_remove("JAVA_TOOL_OPTIONS")
@@ -240,12 +237,23 @@ impl Bridge {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-        Ok(Self {
-            input: child.stdin.take().expect("piped"),
-            output: child.stdout.take().expect("piped"),
-            child,
-            _dir: dir,
-        })
+        let input = child.stdin.take().expect("piped");
+        let output = child.stdout.take().expect("piped");
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let exited = tokio::spawn(async move {
+            tokio::select! {
+                _ = stopped => { let _ = child.kill().await; }
+                _ = child.wait() => {}
+            }
+            // Windows keeps the working directory open until the JVM exits.
+            drop(dir);
+        });
+        Ok(Self { input, output, stop, exited })
+    }
+
+    async fn close(self) {
+        drop(self.stop);
+        let _ = self.exited.await;
     }
 
     async fn exchange(&mut self, fields: &[&str]) -> IdeResult<Vec<u8>> {
@@ -312,8 +320,8 @@ impl JdbcPool {
 
     pub(crate) async fn close(&self) {
         self.closed.cancel();
-        if let Some(mut b) = self.bridge.lock().await.take() {
-            let _ = b.child.kill().await;
+        if let Some(bridge) = self.bridge.lock().await.take() {
+            bridge.close().await;
         }
     }
 
@@ -387,7 +395,7 @@ impl JdbcPool {
                 data
             }
             Err(e) => {
-                let _ = bridge.child.kill().await;
+                bridge.close().await;
                 return Err(e);
             }
         };

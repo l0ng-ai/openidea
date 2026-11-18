@@ -6,9 +6,13 @@ use std::path::Path;
 const BUNDLE_MODULES: &[&str] = &["jdk.compiler", "jdk.jdi", "jdk.unsupported"];
 
 /// Require a full JDK, including the modules used by jdtls and its bundles.
+pub fn supports_java_bundles(home: &Path) -> bool {
+    supports_modules(home, BUNDLE_MODULES)
+}
+
 /// Temurin JREs can list the build JDK's modules in `release` even when the runtime
 /// image omits them, so module metadata alone does not establish suitability.
-pub fn supports_java_bundles(home: &Path) -> bool {
+pub fn supports_modules(home: &Path, required: &[&str]) -> bool {
     let Ok(release) = std::fs::read_to_string(home.join("release")) else { return false };
     let property =
         |key: &str| release.lines().find_map(|line| line.trim().strip_prefix(key)).map(|v| v.trim().trim_matches('"'));
@@ -19,7 +23,7 @@ pub fn supports_java_bundles(home: &Path) -> bool {
         return false;
     }
     match property("MODULES=") {
-        Some(modules) => BUNDLE_MODULES.iter().all(|required| modules.split_whitespace().any(|m| m == *required)),
-        None => BUNDLE_MODULES.iter().all(|m| home.join("jmods").join(format!("{m}.jmod")).is_file()),
+        Some(modules) => required.iter().all(|required| modules.split_whitespace().any(|m| m == *required)),
+        None => required.iter().all(|m| home.join("jmods").join(format!("{m}.jmod")).is_file()),
     }
 }

@@ -331,8 +331,8 @@ export function JdbcDriverProfiles({
             {confirm === "trust" && (
               <ul className={styles.formFull}>
                 {draft?.jars.map((jar) => (
-                  <li key={jar} title={jar}>
-                    {baseName(jar)}
+                  <li key={jar} className={styles.jdbcJarPath}>
+                    {jar}
                   </li>
                 ))}
               </ul>

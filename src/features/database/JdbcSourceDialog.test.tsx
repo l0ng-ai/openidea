@@ -97,13 +97,13 @@ describe("custom JDBC data sources", () => {
     render(
       <SourceDialog initial={{ driver: "jdbc", jdbcDriver: driver.id, url: "jdbc:example:local", readOnly: true }} />,
     );
-    await screen.findByText("Use database-enforced read-only access");
+    await screen.findByText("I use a read-only account. Turn off the IDE setting.");
     expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
     fireEvent.click(screen.getByRole("tab", { name: "Options" }));
     expect(screen.queryByRole("checkbox", { name: "Read-only" })).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "General" }));
-    fireEvent.click(screen.getByRole("button", { name: "Use database-enforced read-only access" }));
+    fireEvent.click(screen.getByRole("button", { name: "I use a read-only account. Turn off the IDE setting." }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled());
   });
 
@@ -231,6 +231,9 @@ describe("local JDBC driver profiles", () => {
     const saved = vi.fn();
     render(<JdbcDriverProfiles drivers={[]} selected="" onSave={saved} onRemove={vi.fn()} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Add…" }));
+    expect(
+      screen.getByText("Use {host}, {port}, {database} or {file} for fields on the connection form."),
+    ).toBeVisible();
     const save = screen.getByRole("button", { name: "Save" });
     expect(save).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Name:"), { target: { value: "Example JDBC" } });
@@ -246,6 +249,7 @@ describe("local JDBC driver profiles", () => {
     fireEvent.click(save);
     const trust = screen.getByRole("dialog", { name: "Trust JDBC Driver?" });
     expect(trust).toHaveTextContent("execute local code with your user permissions");
+    for (const jar of driver.jars) expect(within(trust).getByText(jar)).toBeVisible();
     expect(backend.call.mock.calls.some(([[command]]) => command === "save")).toBe(false);
     fireEvent.click(within(trust).getByRole("button", { name: "Cancel" }));
     expect(saved).not.toHaveBeenCalled();

@@ -86,6 +86,15 @@ pub(crate) fn java_runs(java: &Path) -> bool {
     runnable
 }
 
+/// First runnable JDK in discovery order that provides the requested Java modules.
+pub fn runtime_with_modules<'a>(jdks: &'a [Jdk], min_java: u32, modules: &[&str]) -> Option<&'a Jdk> {
+    jdks.iter().find(|jdk| {
+        jdk.major >= min_java
+            && ide_core::java_runtime::supports_modules(&jdk.home, modules)
+            && java_runs(&java_executable(&jdk.home))
+    })
+}
+
 fn project_jdk_is_usable(jdk: &Jdk) -> bool {
     jdk.home.join("bin").join(crate::exe("javac")).is_file()
         && (jdk.major < 9 || ide_core::java_runtime::supports_java_bundles(&jdk.home))
@@ -747,6 +756,18 @@ pub(crate) fn write_test_java(home: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_with_modules_skips_a_newer_jre() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jre = test_jdk(tmp.path(), 25, "jre");
+        std::fs::remove_file(jre.home.join("bin").join(crate::exe("javac"))).unwrap();
+        let older = test_jdk(tmp.path(), 11, "jdk11");
+        let compatible = test_jdk(tmp.path(), 17, "jdk17");
+        let jdks = [jre, older, compatible.clone()];
+        assert_eq!(runtime_with_modules(&jdks, 17, &["jdk.compiler"]), Some(&compatible));
+        assert_eq!(runtime_with_modules(&jdks, 17, &["missing.module"]), None);
+    }
 
     fn test_jdk(root: &Path, major: u32, name: &str) -> Jdk {
         let home = root.join(name.trim_start_matches('/'));

@@ -410,7 +410,7 @@ export function SourceDialog({
       nativeSource.sslCaFile ||
       nativeSource.sslCertFile ||
       nativeSource.sslKeyFile ||
-      nativeSource.properties?.length);
+      (nativeSource.properties?.length ?? 0) > 0);
   const loadedDbs = useDatabase((st) => (initial?.id ? st.databases[initial.id] : undefined));
   const loadedSchemas = useDatabase((st) => (initial?.id ? st.schemas[initial.id] : undefined));
 
@@ -937,13 +937,10 @@ export function SourceDialog({
           {jdbc && s.readOnly && (
             <div className={styles.formWide}>
               <p>
-                <T>
-                  This source requires read-only access. Select a database account with read-only privileges before
-                  switching to JDBC.
-                </T>
+                <T>This source has Read-only enabled. Custom JDBC relies on the database account to restrict writes.</T>
               </p>
               <Button onClick={() => set({ readOnly: false })}>
-                <T>Use database-enforced read-only access</T>
+                <T>I use a read-only account. Turn off the IDE setting.</T>
               </Button>
             </div>
           )}
