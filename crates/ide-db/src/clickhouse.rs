@@ -510,14 +510,15 @@ impl RowReader {
     }
 }
 
-/// The server's message in a failed response: rows already streamed and the
-/// `__exception__` block markers ClickHouse wraps a mid-stream error in are dropped.
+/// Whether a server message reports a named HTTP session this node doesn't have.
 fn session_not_found(detail: &str) -> bool {
     detail.starts_with("Code: 372.")
         || detail.starts_with("Session not found")
         || detail.starts_with("SESSION_NOT_FOUND")
 }
 
+/// The server's message in a failed response: rows already streamed and the
+/// `__exception__` block markers ClickHouse wraps a mid-stream error in are dropped.
 fn exception_text(body: &str) -> &str {
     let Some(at) = body.find("Code:") else { return body.trim() };
     let text = &body[at..];
