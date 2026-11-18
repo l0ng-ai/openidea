@@ -126,7 +126,7 @@ describe("CompareToolWindow", () => {
     expect(mocks.openFile).toHaveBeenCalledWith("/workspace/client/src/app.ts", { focus: true });
   });
 
-  it("shows Java declarations from the compared repository and skips deleted files", async () => {
+  it("shows Java and Kotlin declarations from the compared repository and skips deleted files", async () => {
     const base = "/workspace/client/src/";
     mocks.worktree.mockResolvedValue({
       status: "ok",
@@ -135,6 +135,7 @@ describe("CompareToolWindow", () => {
         { ...modified, path: "src/Order.java" },
         { ...modified, path: "src/OrderTest.java", kind: "added" },
         { ...modified, path: "src/Removed.java", kind: "deleted" },
+        { ...modified, path: "src/Pricing.kt" },
         modified,
       ],
     });
@@ -144,6 +145,7 @@ describe("CompareToolWindow", () => {
         { path: base + "PricingRule.java", presentation: { kind: "interface" } },
         { path: base + "Order.java", presentation: { kind: "class" } },
         { path: base + "OrderTest.java", presentation: { kind: "class" } },
+        { path: base + "Pricing.kt", presentation: { kind: "object" } },
       ],
     });
     render(<CompareToolWindow />);
@@ -152,8 +154,9 @@ describe("CompareToolWindow", () => {
     expect(screen.getByText("Order.java").previousElementSibling).toBe(screen.getByTestId("icon-class"));
     expect(screen.getByText("OrderTest.java").previousElementSibling).toBe(screen.getByTestId("icon-jvm-test"));
     expect(screen.getByText("Removed.java").previousElementSibling).toBe(screen.getByTestId("icon-file-java"));
+    expect(screen.getByText("Pricing.kt").previousElementSibling).toBe(screen.getByTestId("icon-kotlin-object"));
     expect(mocks.presentations.mock.calls.flatMap(([paths]) => paths).sort()).toEqual(
-      ["Order.java", "OrderTest.java", "PricingRule.java"].map((name) => base + name),
+      ["Order.java", "OrderTest.java", "Pricing.kt", "PricingRule.java"].map((name) => base + name),
     );
   });
 

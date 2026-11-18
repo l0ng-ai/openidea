@@ -615,14 +615,15 @@ export interface ComparisonFile extends ChangedFile {
   removed?: number;
 }
 
-function WorktreeJavaIcon({ path }: { path: string }) {
+function WorktreeFileIcon({ path }: { path: string }) {
   const { icon } = useFilePresentation(path);
   return <Icon name={icon} size={14} />;
 }
 
-function renderWorktreeJavaIcon(file: ComparisonFile) {
-  if (!file.root || file.kind === "deleted" || !file.path.endsWith(".java")) return null;
-  return <WorktreeJavaIcon path={repositoryPath(file.root, file.path)} />;
+/** A working-tree file shows the Project tree's icon (Java and Kotlin declarations, Spring config). */
+function renderWorktreeFileIcon(file: ComparisonFile) {
+  if (!file.root || file.kind === "deleted") return null;
+  return <WorktreeFileIcon path={repositoryPath(file.root, file.path)} />;
 }
 
 /**
@@ -815,7 +816,7 @@ export function ChangesBetweenDialog({
           current={current}
           onSelect={setCurrent}
           diffFor={diffFor}
-          renderFileIcon={listOnly && !to ? renderWorktreeJavaIcon : undefined}
+          renderFileIcon={listOnly && !to ? renderWorktreeFileIcon : undefined}
           getColor={(f) => KIND_COLOR[f.kind === "untracked" ? "added" : f.kind]}
           ariaLabel="Changed files"
           inlineDiff={!listOnly}
