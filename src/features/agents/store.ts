@@ -19,19 +19,21 @@ import type {
   AgentTask,
   ExternalSession,
   Isolation,
+  RequestId,
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { confirm, showError } from "@/workbench/messages";
 import {
   bypassDefaults,
   canSend,
+  shellCommand,
   cursorModelDefaults,
   emptyDraft,
   isMentioned,
@@ -87,6 +89,8 @@ export type SessionLocation = "editor" | "toolWindow";
 
 interface AgentsState {
   loaded: boolean;
+  /** Tasks running a `!` command from their composer. */
+  shellRunning: Set<string>;
   /** Why the tasks could not be loaded. */
   error: string | null;
   tasks: Map<string, AgentTask>;
@@ -181,6 +185,7 @@ export function savedDraft(saved: Partial<Draft>): Draft {
 
 export const useAgents = create<AgentsState>(() => ({
   loaded: false,
+  shellRunning: new Set(),
   error: null,
   tasks: new Map(),
   unread: new Set(),
@@ -1337,10 +1342,47 @@ function remember(text: string) {
   save(HISTORY_KEY, history);
 }
 
+/** The `!` commands running per task, so Stop ends them. */
+const shellRuns = new Map<string, Set<RequestId>>();
+
+function trackShell(task: string, request: RequestId, running: boolean) {
+  const runs = shellRuns.get(task) ?? new Set<RequestId>();
+  if (running) runs.add(request);
+  else runs.delete(request);
+  if (runs.size) shellRuns.set(task, runs);
+  else shellRuns.delete(task);
+  useAgents.setState((s) => {
+    const shellRunning = new Set(s.shellRunning);
+    if (runs.size) shellRunning.add(task);
+    else shellRunning.delete(task);
+    return { shellRunning };
+  });
+}
+
+/** Runs a `!` line in the task's folder; its output reaches the agent with the next message. */
+async function runShell(task: string, composer: ComposerDraft, command: string) {
+  const request = nextRequestId();
+  trackShell(task, request, true);
+  clearSubmittedComposer(task, composer, generation);
+  try {
+    await call(commands.agentShell(task, command, request));
+  } finally {
+    trackShell(task, request, false);
+  }
+}
+
+/** Stops the task's turn and the `!` commands it runs. */
+export async function stopTask(task: string): Promise<void> {
+  for (const request of shellRuns.get(task) ?? []) void commands.cancelRequest(request);
+  if (isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready")) await cancelTask(task);
+}
+
 /** Sends the session composer's message: queued while the agent works, or with `now` interrupting it. */
 export async function sendMessage(task: string, now: boolean): Promise<void> {
   const composer = composerDraft(task);
   if (!canSend(composer)) return;
+  const command = shellCommand(composer);
+  if (command !== null) return runShell(task, composer, command);
   const started = generation;
   await call(commands.agentPrompt(task, promptOf(task, composer), now));
   clearSubmittedComposer(task, composer, started);

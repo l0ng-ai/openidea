@@ -135,6 +135,11 @@ export const commands = {
 	agentSetEnv: (id: string, env: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_env", { id, env })),
 	/**  Updates per-session MCP server enable/disable overrides on `task`. */
 	agentSetMcpOverrides: (task: string, overrides: { [key in string]: boolean }) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_set_mcp_overrides", { task, overrides })),
+	/**
+	 *  Runs a `!` line of the composer in the task's folder with the user's shell, without
+	 *  starting a turn; its output goes to the agent with the next message.
+	 */
+	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
 	/**  Streams the project's agent events to this window; returns every task. */

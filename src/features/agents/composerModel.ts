@@ -396,6 +396,15 @@ export function toPrompt(draft: ComposerDraft): AgentPrompt {
   };
 }
 
+/**
+ * The shell command of a message starting with `!` (Claude Code's bash mode): it runs in the
+ * task's folder instead of going to the agent. `null` for any other message.
+ */
+export function shellCommand(d: ComposerDraft): string | null {
+  if (!d.text.startsWith("!") || d.images.length > 0 || d.files.some((f) => f.attached)) return null;
+  return d.text.slice(1).trim() || null;
+}
+
 export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);
 
 /**
