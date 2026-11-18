@@ -47,6 +47,7 @@ async fn find(host: &Host, paths: Vec<PathBuf>, pattern: &str) -> Vec<ide_search
             scope: SearchScope::Files { paths: paths.into_iter().map(Into::into).collect() },
             max_matches: 0,
             context: Default::default(),
+            include_excluded: false,
         },
         ide_host::ops::Channel::new(move |event| {
             if let search::SearchEvent::File { file } = event {
@@ -165,6 +166,7 @@ async fn properties_search_git_and_document_coordinates_agree() {
         scope: SearchScope::Files { paths: vec![closed_path.clone().into()] },
         max_matches: 0,
         context: Default::default(),
+        include_excluded: false,
     };
     search::replace_in_files(
         &host,
@@ -176,7 +178,9 @@ async fn properties_search_git_and_document_coordinates_agree() {
         vec![ide_search::ReplaceTarget {
             path: closed_path.clone().into(),
             only: Some(vec![ide_core::Pos { line: 0, col: 10 }]),
+            skip: None,
         }],
+        false,
         ide_host::ops::Channel::new(|_| {}),
     )
     .await

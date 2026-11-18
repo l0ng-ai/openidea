@@ -17,7 +17,16 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, Location, SearchQuery, RunConfig, RunId, SymbolKind } from "@/bindings";
+import type {
+  CommitSelection,
+  ConsoleRule,
+  FileMatches,
+  Location,
+  SearchQuery,
+  RunConfig,
+  RunId,
+  SymbolKind,
+} from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -1009,6 +1018,24 @@ export function provideFindResults(opener: (source: FindResultsSource) => void):
 
 export function showFindResults(source: FindResultsSource) {
   findResultsOpener?.(source);
+}
+
+// ---------------------------------------------------------------------------
+// Console highlight rules: plugins supply them, the Run and Debug consoles apply
+// them to process output (`ui/consoleRules`).
+
+export const useConsoleRules = create<{ providers: ReadonlyMap<string, readonly ConsoleRule[]> }>(() => ({
+  providers: new Map(),
+}));
+
+/** Replaces the rules of one provider (a plugin id); an empty list removes them. */
+export function setConsoleRules(provider: string, rules: readonly ConsoleRule[]) {
+  useConsoleRules.setState((s) => {
+    const providers = new Map(s.providers);
+    if (rules.length) providers.set(provider, rules);
+    else if (!providers.delete(provider)) return s;
+    return { providers };
+  });
 }
 
 // ---------------------------------------------------------------------------

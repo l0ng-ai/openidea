@@ -28,6 +28,16 @@ pub struct DirectoryCompareEntry {
     pub left_link: Option<String>,
     #[specta(optional)]
     pub right_link: Option<String>,
+    /// File sizes in bytes; directories and symlinks have none.
+    #[specta(optional)]
+    pub left_size: Option<f64>,
+    #[specta(optional)]
+    pub right_size: Option<f64>,
+    /// Last modification, milliseconds since the Unix epoch.
+    #[specta(optional)]
+    pub left_modified: Option<f64>,
+    #[specta(optional)]
+    pub right_modified: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -43,7 +53,14 @@ pub struct DirectoryCompareProgress {
 struct Entry {
     kind: EntryKind,
     size: u64,
+    modified: Option<f64>,
     link: Option<PathBuf>,
+}
+
+impl Entry {
+    fn file_size(&self) -> Option<f64> {
+        (self.kind == EntryKind::File).then_some(self.size as f64)
+    }
 }
 
 fn check(cancel: &CancellationToken) -> IdeResult<()> {
@@ -106,7 +123,12 @@ fn scan(
             let rel = path.strip_prefix(root).map_err(|e| IdeError::internal(e.to_string()))?;
             let rel = ide_core::ipc_path::to_ipc(rel);
             let link = if kind == EntryKind::Symlink { Some(fs::read_link(&path)?) } else { None };
-            result.insert(rel.clone(), Entry { kind, size: meta.len(), link });
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as f64);
+            result.insert(rel.clone(), Entry { kind, size: meta.len(), modified, link });
             progress.scanned += 1;
             progress.path = rel;
             emit(progress.clone());
@@ -178,15 +200,21 @@ pub fn compare_directories(
             }
             _ => unreachable!(),
         };
+        let (a, b) = (l.get(&path), r.get(&path));
+        let link = |e: Option<&Entry>| e.and_then(|e| e.link.as_ref()).map(|p| p.to_string_lossy().into_owned());
         rows.insert(
             path.clone(),
             DirectoryCompareEntry {
                 path: path.clone(),
                 status,
-                left_kind: l.get(&path).map(|e| e.kind),
-                right_kind: r.get(&path).map(|e| e.kind),
-                left_link: l.get(&path).and_then(|e| e.link.as_ref()).map(|p| p.to_string_lossy().into_owned()),
-                right_link: r.get(&path).and_then(|e| e.link.as_ref()).map(|p| p.to_string_lossy().into_owned()),
+                left_kind: a.map(|e| e.kind),
+                right_kind: b.map(|e| e.kind),
+                left_link: link(a),
+                right_link: link(b),
+                left_size: a.and_then(Entry::file_size),
+                right_size: b.and_then(Entry::file_size),
+                left_modified: a.and_then(|e| e.modified),
+                right_modified: b.and_then(|e| e.modified),
             },
         );
         progress.compared += 1;
@@ -249,6 +277,25 @@ pub fn copy_merge(
     let target_base = project.filter(|p| to.starts_with(p)).or(Some(roots.1));
     let rules = Rules::new(from, source_base, excludes);
     let target_rules = Rules::new(to, target_base, excludes);
+    // Find a conflict before writing anything, so declining to overwrite leaves the
+    // destination untouched. Nothing below a missing destination can conflict.
+    if !overwrite {
+        let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
+        while let Some((src, dst)) = pending.pop() {
+            let meta = fs::symlink_metadata(&src)?;
+            if rules.excluded(&src, meta.is_dir()) || target_rules.excluded(&dst, meta.is_dir()) {
+                continue;
+            }
+            let Ok(existing) = fs::symlink_metadata(&dst) else { continue };
+            if !(meta.is_dir() && existing.is_dir()) {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, dst.display().to_string()).into());
+            }
+            for entry in fs::read_dir(&src)? {
+                let entry = entry?;
+                pending.push((entry.path(), dst.join(entry.file_name())));
+            }
+        }
+    }
     let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
     while let Some((src, dst)) = pending.pop() {
         let meta = fs::symlink_metadata(&src)?;
@@ -363,6 +410,24 @@ mod tests {
     }
 
     #[test]
+    fn reports_file_sizes_and_modification_times_per_side() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (left, right) = (tmp.path().join("left"), tmp.path().join("right"));
+        put(&left, "dir/file", b"four");
+        put(&right, "dir/file", b"sixsix");
+        put(&right, "only-right", b"");
+        let rows = compare_directories(&left, &right, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+        let row = |path| rows.iter().find(|r| r.path == path).unwrap();
+        assert_eq!((row("dir/file").left_size, row("dir/file").right_size), (Some(4.0), Some(6.0)));
+        assert_eq!((row("only-right").left_size, row("only-right").right_size), (None, Some(0.0)));
+        assert_eq!((row("dir").left_size, row("dir").right_size), (None, None));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
+        let modified = row("dir/file").left_modified.unwrap();
+        assert!((now - 60_000.0..=now + 60_000.0).contains(&modified), "{modified} vs {now}");
+        assert!(row("only-right").left_modified.is_none() && row("only-right").right_modified.is_some());
+    }
+
+    #[test]
     fn applies_project_anchored_excludes_and_layered_ignores() {
         let tmp = tempfile::tempdir().unwrap();
         let left = tmp.path().join("left");
@@ -446,6 +511,23 @@ mod tests {
                 ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[test]
+    fn a_declined_overwrite_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left");
+        let right = tmp.path().join("right");
+        put(&left, "merge/a-clash.txt", b"source");
+        put(&left, "merge/z-new.txt", b"source only");
+        put(&left, "merge/deep/new.txt", b"new");
+        put(&right, "merge/a-clash.txt", b"destination");
+        let error =
+            copy_merge(&left.join("merge"), &right.join("merge"), false, None, &[], (&left, &right)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(right.join("merge/a-clash.txt")).unwrap(), b"destination");
+        assert!(!right.join("merge/z-new.txt").exists());
+        assert!(!right.join("merge/deep").exists());
     }
 
     #[test]

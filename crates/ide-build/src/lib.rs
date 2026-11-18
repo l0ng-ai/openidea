@@ -13,6 +13,8 @@ pub mod kotlin_bridge;
 pub mod maven;
 pub mod pom_edit;
 mod process;
+#[cfg(test)]
+mod process_numbers;
 pub mod sbt;
 mod sync;
 pub mod web;

@@ -22,7 +22,7 @@ import { registerRelatedProvider, relatedItems } from "@/editor/relatedProviders
 import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
 import { headerSourceItems } from "./headerSource";
 import { projectPythonHierarchy, pythonSuperDeps } from "./pythonHierarchy";
-import { baseName, memberAt, methodStop, superMethods, type SuperDeps } from "./structureNav";
+import { baseName, memberAt, methodStop, superMethods, topLevelTypeAt, type SuperDeps } from "./structureNav";
 import { tx } from "@/platform/i18n";
 
 const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
@@ -150,6 +150,10 @@ function testDeps(view: EditorView, ctx: EditorDocContext): TestNavDeps {
         })),
       }),
     hint: (text) => showHint(view, text),
+    classAtCaret: async () => {
+      const outline = await call(commands.docOutline(ctx.doc));
+      return topLevelTypeAt(outline, offsetToPos(view.state.doc, view.state.selection.main.head))?.name ?? null;
+    },
     createTest: ({ directory, name, extension }) =>
       void executeAction("templates.newFromTemplate", { directory, name, extension, kindId: "test" }),
     createRustTestModule: () => {

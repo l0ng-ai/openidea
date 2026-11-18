@@ -10,7 +10,6 @@ mod files;
 mod http;
 mod page;
 pub mod reports;
-mod scope;
 mod search;
 mod symbols;
 mod tool;

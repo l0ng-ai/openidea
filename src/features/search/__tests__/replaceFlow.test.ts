@@ -8,10 +8,12 @@ import {
   countUsages,
   groupState,
   markDone,
+  mayMatchLineBreak,
   nextPending,
   pendingUsages,
   replacePreviewLines,
   replaceTargets,
+  skipTargets,
   startReplace,
   summaryText,
   toggleExcluded,
@@ -149,6 +151,36 @@ describe("startReplace", () => {
     });
   });
 
+  it("Replace All past the limit syncs every editor and skips excluded or replaced usages", async () => {
+    const d = deps([]);
+    const groups = [
+      {
+        key: "a",
+        path: "/p/a.ts",
+        starts: [
+          { line: 0, col: 0 },
+          { line: 1, col: 2 },
+          { line: 2, col: 0 },
+        ],
+      },
+    ];
+    const marks = { excluded: new Set(["/p/a.ts:0:0"]), done: new Set(["/p/a.ts:2:0"]) };
+    const targets = skipTargets(groups, marks);
+    expect(targets).toEqual([
+      {
+        path: "/p/a.ts",
+        skip: [
+          { line: 0, col: 0 },
+          { line: 2, col: 0 },
+        ],
+      },
+    ]);
+    expect(skipTargets(groups, NO_MARKS)).toEqual([]);
+    await startReplace({ query: q, replacement: "x", preserveCase: false, targets, allInScope: true }, undefined, d)
+      .result;
+    expect(d.synced).toHaveBeenCalledWith(null);
+  });
+
   it("cancel goes to the backend request", async () => {
     const d = deps([]);
     const run = startReplace({ query: q, replacement: "x", preserveCase: false, targets: [] }, undefined, d);
@@ -184,5 +216,16 @@ describe("replace previews", () => {
       { kind: "del", line: 3, text: "foo" },
       { kind: "add", line: 4, text: "z" },
     ]);
+  });
+});
+
+describe("mayMatchLineBreak", () => {
+  it("tells patterns whose matches can span lines (#4082)", () => {
+    expect(mayMatchLineBreak("JOIN\\nTARGET", true)).toBe(true);
+    expect(mayMatchLineBreak("a\\s+b", true)).toBe(true);
+    expect(mayMatchLineBreak("[^x]", true)).toBe(true);
+    expect(mayMatchLineBreak("JOIN.TARGET", true)).toBe(false);
+    expect(mayMatchLineBreak("JOIN\nTARGET", false)).toBe(true);
+    expect(mayMatchLineBreak("a\\nb", false)).toBe(false);
   });
 });

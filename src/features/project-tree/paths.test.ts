@@ -79,6 +79,15 @@ describe("validateName", () => {
     expect(validateName("/abs", { siblings, allowNested: true }).error).toMatch(/start with/);
   });
 
+  it("rejects Windows names that the filesystem would trim", () => {
+    const options = { siblings, allowNested: true };
+    for (const name of ["example.txt.", "example.txt ", "folder./file", "folder /file"]) {
+      expect(validateName(name, { ...options, windows: true }).error).toMatch(/end with a period or space/);
+      expect(validateName(name, options).error).toBeNull();
+    }
+    expect(validateName(".settings/file.txt", { ...options, windows: true }).error).toBeNull();
+  });
+
   it("accepts the current name and case-only renames", () => {
     expect(validateName("Order.kt", { siblings, current: "Order.kt" }).error).toBeNull();
     expect(validateName("order.kt", { siblings, current: "Order.kt", caseInsensitive: true }).error).toBeNull();

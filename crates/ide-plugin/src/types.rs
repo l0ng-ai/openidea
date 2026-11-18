@@ -72,6 +72,22 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// A plugin's highlight rule for Run and Debug console output (API 1.12, `ui.set-console-rules`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleRule {
+    pub pattern: String,
+    pub ignore_case: bool,
+    /// A console palette colour (`red`, `bright-blue`); `None` keeps the text's own.
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    /// `bold`, `italic`, `underline`, `strikethrough`, `dim`.
+    pub styles: Vec<String>,
+    /// The whole line, or only the matched text.
+    pub whole_line: bool,
+    pub enabled: bool,
+}
+
 /// An entry of a plugin's `pick` or `pick-many`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -250,6 +266,9 @@ pub struct DocumentTextChange {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentChanged {
     pub path: String,
+    /// The open project `path` is relative to, set when the event is handed to a plugin
+    /// (the editor posts the absolute path and `null`).
+    pub project: Option<String>,
     pub base_version: u64,
     pub version: u64,
     pub changes: Vec<DocumentTextChange>,
@@ -864,6 +883,14 @@ pub struct Endpoint {
     pub framework: String,
     pub handler: Option<String>,
     pub location: Location,
+}
+
+/// The clipboard as `ui.read-clipboard` returns it (API 1.11): `None` for a kind it doesn't
+/// hold; `image` is PNG bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardContent {
+    pub text: Option<String>,
+    pub image: Option<Vec<u8>>,
 }
 
 /// A notification button that runs one of the publishing plugin's commands.

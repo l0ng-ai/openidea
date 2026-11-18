@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HierarchyItem, OutlineItem, SymbolKind } from "@/platform/ipc";
-import { memberAt, methodStop, methodStops, superMethods } from "./structureNav";
+import { memberAt, methodStop, methodStops, superMethods, topLevelTypeAt } from "./structureNav";
 
 const r = (l1: number, l2: number) => ({ start: { line: l1, col: 0 }, end: { line: l2, col: 1 } });
 function item(name: string, kind: SymbolKind, from: number, to: number, children: OutlineItem[] = []): OutlineItem {
@@ -98,5 +98,14 @@ describe("Super Method", () => {
     // Without a matching signature (or without signatures at all), every overload.
     expect(await lines("eat(T)")).toEqual([2, 4]);
     expect(await lines("eat")).toEqual([2, 4]);
+  });
+});
+
+describe("topLevelTypeAt", () => {
+  it("answers the outermost type, through namespaces, and nothing outside a type", () => {
+    expect(topLevelTypeAt(OUTLINE, { line: 13, col: 2 })?.name).toBe("Foo");
+    expect(topLevelTypeAt(OUTLINE, { line: 23, col: 0 })).toBeNull();
+    const ns = [item("App", "namespace", 0, 30, [item("Widget", "class", 1, 10), item("Helper", "class", 12, 20)])];
+    expect(topLevelTypeAt(ns, { line: 15, col: 0 })?.name).toBe("Helper");
   });
 });

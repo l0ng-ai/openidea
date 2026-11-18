@@ -14,6 +14,7 @@ import { confirmDialog, openDialog } from "./dialogs";
 import { RepoPicker, useBranchInfo } from "./gitMenuDialogs";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
+import { ensureCommitIdentity } from "./commitIdentity";
 import { showCompareRevisions } from "./operations";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -74,6 +75,13 @@ export async function commitChanges(): Promise<string | undefined> {
       return undefined;
     }
   }
+  if (
+    !(await ensureCommitIdentity(
+      selection.repositories.map((r) => r.root || null),
+      amend,
+    ))
+  )
+    return undefined;
   const id = await runOp(
     amend ? "Amend commit" : "Commit",
     async () => {

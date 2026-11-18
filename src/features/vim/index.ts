@@ -8,26 +8,12 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerKeyClaim } from "@/platform/keymap";
 import { registerEditorContribution } from "@/editor/api";
-import { registerSettingsPage, registerStatusItem, showStatusInfo } from "@/workbench/contributions";
-import { lazyComponent } from "@/ui";
+import { registerStatusItem, showStatusInfo } from "@/workbench/contributions";
 import { vimKeyClaim } from "./conflicts";
 import { loadRcFile } from "./rcFile";
 import { setVimEnabled, syncVimSettingsFromStorage, useVimSettings } from "./settings";
+import { activateSettingsPages, VIM_SETTINGS_PAGE } from "./settingsPages";
 import { VimStatus } from "./VimStatus";
-
-export const VIM_SETTINGS_PAGE = "editor.vim";
-
-/** Settings › Editor › Vim (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: VIM_SETTINGS_PAGE,
-    title: "Vim",
-    group: "Editor",
-    order: 45,
-    keywords: ["vim", "ideavim", "ideavimrc", "emulation", "shortcut conflicts", "handler"],
-    component: lazyComponent(() => import("./VimSettingsPage").then((m) => m.VimSettingsPage)),
-  });
-}
 
 type Engine = typeof import("./engine");
 
@@ -40,10 +26,12 @@ export function activate(): () => void {
   const loadEngine = () => (engine ??= import("./engine"));
 
   const reloadRc = async (quiet: boolean) => {
-    const [e, rc] = await Promise.all([loadEngine(), loadRcFile()]);
-    const problems = e.applyRcCommands(rc.commands);
-    rcApplied = true;
-    for (const p of problems) console.warn(`vimrc: ${p}`);
+    const [e, rc] = await Promise.all([useVimSettings.getState().enabled ? loadEngine() : engine, loadRcFile()]);
+    if (e) {
+      const problems = e.applyRcCommands(rc.commands);
+      rcApplied = true;
+      for (const p of problems) console.warn(`vimrc: ${p}`);
+    }
     if (!quiet)
       showStatusInfo(rc.commands.length ? "Vim: rc file reloaded" : "Vim: no ~/.openideavimrc or ~/.ideavimrc");
   };
@@ -101,8 +89,8 @@ export function activate(): () => void {
         title: "Reload .ideavimrc",
         category: "Tools",
         keywords: ["vim", "vimrc", "openideavimrc"],
-        when: "vimMode",
-        run: () => reloadRc(false),
+        enabled: ({ ctx, arg }) => ctx.vimMode === true || arg === "settings",
+        run: ({ arg }) => reloadRc(arg === "settings"),
       },
       {
         id: "vim.settings",

@@ -8,7 +8,15 @@ import { annotationsShown, blameSlot, toggleAnnotations } from "../blame";
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
-const mocks = vi.hoisted(() => ({ blame: vi.fn(), log: vi.fn(), action: vi.fn(), notify: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  blame: vi.fn(),
+  log: vi.fn(),
+  action: vi.fn(),
+  notify: vi.fn(),
+  commitFiles: vi.fn(),
+  openDiff: vi.fn(),
+  menu: vi.fn(),
+}));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
@@ -21,9 +29,17 @@ vi.mock("@/platform/ipc", async (original) => {
   const actual = await original<typeof import("@/platform/ipc")>();
   return {
     ...actual,
-    commands: { ...actual.commands, vcsBlame: mocks.blame, vcsLog: mocks.log },
+    commands: { ...actual.commands, vcsBlame: mocks.blame, vcsLog: mocks.log, vcsCommitFiles: mocks.commitFiles },
   };
 });
+vi.mock("../diffInput", async (original) => ({
+  ...(await original<typeof import("../diffInput")>()),
+  openDiff: mocks.openDiff,
+}));
+vi.mock("@/ui", async (original) => ({
+  ...(await original<typeof import("@/ui")>()),
+  showContextMenu: mocks.menu,
+}));
 
 const sha = "f122f5afd61fa24a16a5e1c76c7ed6cbad833c93";
 const otherSha = "12852f79a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
@@ -120,5 +136,54 @@ describe("git blame gutter and commit popup", () => {
       fireEvent.click(screen.getByRole("button", { name: sha }));
     });
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", sha);
+  });
+
+  it("shows the line's change from the gutter menu's Show Diff", async () => {
+    mocks.commitFiles.mockResolvedValue({
+      status: "ok",
+      data: [{ path: "src/main.py", kind: "added", oldPath: null }],
+    });
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+    });
+    await toggleAnnotations(view, "/repo/src/main.py");
+    const firstLine = [...view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")].find((el) =>
+      el.querySelector(`[data-commit="${sha}"]`),
+    )!;
+    fireEvent.contextMenu(firstLine);
+    const items = mocks.menu.mock.calls[0]![1] as { label?: string; run?: () => void }[];
+    expect(items.map((i) => i.label).slice(0, 2)).toEqual(["Show Commit in Git Log", "Show Diff"]);
+
+    items[1]!.run!();
+    await vi.waitFor(() => expect(mocks.openDiff).toHaveBeenCalled());
+    expect(mocks.commitFiles).toHaveBeenCalledWith("/repo", sha);
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/repo/src/main.py",
+        left: expect.objectContaining({ label: "(does not exist)" }),
+        right: expect.objectContaining({ type: "rev", rev: sha }),
+      }),
+      { preview: false },
+    );
+  });
+
+  it("offers no Show Diff on a line that is not committed yet", async () => {
+    const zero = "0".repeat(40);
+    mocks.blame.mockResolvedValue({
+      status: "ok",
+      data: [{ commit: zero, author: "Not Committed Yet", timeMs: 0, summary: "" }, lines[0]],
+    });
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "edited\nsecond", extensions: [blameSlot()] }),
+    });
+    await toggleAnnotations(view, "/repo/src/main.py");
+    const edited = [...view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")].find((el) =>
+      el.querySelector('[title="Not committed yet"]'),
+    )!;
+    fireEvent.contextMenu(edited);
+    const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
+    expect(items.map((i) => i.label)).toEqual(["Close Annotations"]);
   });
 });

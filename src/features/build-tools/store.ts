@@ -32,6 +32,7 @@ import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks"
 import {
   gradleRoots,
   mavenGoalConfig,
+  mavenPomAtPath,
   profileKey,
   profilesList,
   type GradleRunOptions,
@@ -41,11 +42,14 @@ import {
 export interface BuildSettings {
   maven: MavenRunOptions;
   gradle: GradleRunOptions;
+  /** Unlinked `pom.xml` files (project-relative) whose "not loaded" banner was skipped, with their subfolders. */
+  skippedPoms: string[];
 }
 
 export const DEFAULT_SETTINGS: BuildSettings = {
   maven: { offline: false, skipTests: false, profiles: {} },
   gradle: { offline: false, skipTests: false },
+  skippedPoms: [],
 };
 
 interface SyncState {
@@ -104,6 +108,7 @@ export function readSettings(root: string): BuildSettings {
     return {
       maven: { ...DEFAULT_SETTINGS.maven, ...raw?.maven, profiles: { ...raw?.maven?.profiles } },
       gradle: { ...DEFAULT_SETTINGS.gradle, ...raw?.gradle },
+      skippedPoms: Array.isArray(raw?.skippedPoms) ? raw.skippedPoms.filter((p) => typeof p === "string") : [],
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -272,6 +277,7 @@ async function setLinked(root: string, poms: string[], linked: boolean) {
     } else if (extra.includes(pom)) extra = extra.filter((p) => p !== pom);
     else if (!unlinked.includes(pom)) unlinked = [...unlinked, pom];
   }
+  if (linked) setPomsSkipped(poms, false);
   if (unlinked === unlinkedBefore && extra === linkedBefore) return;
   if (unlinked !== unlinkedBefore)
     await call(commands.settingsSet("project", UNLINKED_PROJECTS, JSON.stringify(unlinked)));
@@ -295,6 +301,51 @@ export async function unlinkProjects(pom: string | null) {
     return;
   cancelSync("maven");
   await setLinked(root, [pom], false);
+  setPomsSkipped([pom], true);
+}
+
+function setPomsSkipped(poms: readonly string[], skipped: boolean) {
+  const before = useBuild.getState().settings.skippedPoms;
+  const after = skipped ? [...new Set([...before, ...poms])] : before.filter((p) => !poms.includes(p));
+  if (after.length !== before.length) updateSettings((s) => ({ ...s, skippedPoms: after }));
+}
+
+/** Folders whose `pom.xml` files are build output, dependencies or test data, not projects to load. */
+const NOT_PROJECT_DIRS = new Set(["target", "build", "out", "node_modules", ".git", ".mvn", "src"]);
+
+/**
+ * The project-relative (or, outside the opened project, absolute) `pom.xml` at `path`
+ * when Maven doesn't load it: neither a linked project nor a module of one.
+ */
+export function unlinkedPom(path: string): string | null {
+  const { model, root } = useBuild.getState();
+  const project = useProject.getState().project;
+  if (!model || !root || project?.root !== root || project.workspace || !isPomFileName(path)) return null;
+  if (mavenPomAtPath(model.maven?.projects ?? [], root, path)) return null;
+  return classifyPickedPoms(root, [path]).link[0] ?? null;
+}
+
+/** Whether to offer loading the unlinked `pom` above its editor: inside the project, not under build output or sources, not skipped. */
+export function suggestsLoadingPom(pom: string, skipped: readonly string[]): boolean {
+  if (pom.startsWith("/") || /^[A-Za-z]:\//.test(pom)) return false;
+  const dirs = pom.split("/").slice(0, -1);
+  if (dirs.some((d) => NOT_PROJECT_DIRS.has(d))) return false;
+  return !skipped.some((s) => {
+    const dir = s.split("/").slice(0, -1).join("/");
+    return s === pom || dir === "" || pom.startsWith(`${dir}/`);
+  });
+}
+
+/** Add as Maven Project: links an unlinked `pom.xml`. */
+export async function addPomAsProject(path: string) {
+  const root = useBuild.getState().root;
+  const pom = unlinkedPom(path);
+  if (root && pom) await setLinked(root, [pom], true);
+}
+
+/** Skip on the "not loaded" banner: stop offering this project and the ones under it. */
+export function skipPom(pom: string) {
+  setPomsSkipped([pom], true);
 }
 
 /** A picked path in one comparable form: slashes unified, `\\?\` prefixes stripped. */
@@ -606,6 +657,8 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
         ...buildToolRecovery(error),
         key: `build-sync-${tool}`,
       });
+    // A clean reload takes down the previous failure's balloon; the log keeps it.
+    else notifications().expire?.(`build-sync-${tool}`);
   } catch (e) {
     if (!isCancelled(e))
       notifications().notify({

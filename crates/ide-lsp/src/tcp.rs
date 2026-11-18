@@ -94,10 +94,9 @@ pub(crate) fn connect_or_start(
     let args = substitute_args(&config.args, port, root);
 
     let mut cmd = tokio::process::Command::new(binary);
+    cmd.current_dir(root).envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(&args)
-        .current_dir(root)
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

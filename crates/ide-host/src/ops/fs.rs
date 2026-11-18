@@ -3,6 +3,7 @@ use crate::Host;
 use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_vfs::FileEntry;
+use ide_workspace::DeletionUndo;
 use std::path::{Path, PathBuf};
 
 #[command(trust = always)]
@@ -163,14 +164,27 @@ pub fn fs_set_writable(host: &Host, window: &str, path: PathBuf, writable: bool)
 /// Moving to the trash can take a while (large trees): kept off the main thread.
 #[command(trust = always)]
 pub async fn fs_delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
-    // Local History keeps the contents so deleted files can be restored.
-    let project = host.project(window).ok();
-    let history = project.as_ref().map(|p| p.history.clone());
+    delete_with_history(host, window, path, false).await.map(|_| ())
+}
+
+/// Moves an item to the Trash and returns the snapshot for Project View Undo.
+#[command(trust = always)]
+pub async fn fs_delete_with_undo(host: &Host, window: &str, path: PathBuf) -> IdeResult<DeletionUndo> {
+    delete_with_history(host, window, path, true).await
+}
+
+async fn delete_with_history(host: &Host, window: &str, path: PathBuf, undoable: bool) -> IdeResult<DeletionUndo> {
+    let project = if undoable { Some(host.project(window)?) } else { host.project(window).ok() };
     host.blocking(move || {
         let paths = ide_workspace::file_ops::deletion_paths(&path)?;
-        if let Some(h) = history {
-            for p in &paths {
-                h.record_deletion(p, DELETE_SNAPSHOT_LIMIT);
+        let mut undo = DeletionUndo::default();
+        if let Some(p) = &project {
+            if undoable {
+                undo = p.history.capture_deletion_undo(&paths, DELETE_SNAPSHOT_LIMIT);
+            } else {
+                for pth in &paths {
+                    p.history.record_deletion(pth, DELETE_SNAPSHOT_LIMIT);
+                }
             }
         }
         ide_workspace::file_ops::delete(&path)?;
@@ -178,9 +192,15 @@ pub async fn fs_delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()
         if let Some(p) = project {
             let _ = p.with_backend_of(&path, |r| r.files_deleted(&paths));
         }
-        Ok(())
+        Ok(undo)
     })
     .await
+}
+
+#[command(trust = always)]
+pub async fn fs_undo_delete(host: &Host, window: &str, undo: DeletionUndo) -> IdeResult<Vec<ide_core::IpcPath>> {
+    let project = host.project(window)?;
+    host.blocking(move || Ok(project.history.restore_deletion_undo(undo))).await
 }
 
 #[command(trust = always)]
@@ -280,9 +300,11 @@ ide_command::domain!(
     fs_create_file,
     fs_create_file_bytes,
     fs_delete,
+    fs_delete_with_undo,
     fs_entry_kind,
     fs_read_dir,
     fs_read_text,
     fs_rename,
     fs_set_writable,
+    fs_undo_delete,
 );

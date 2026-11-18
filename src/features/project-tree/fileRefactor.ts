@@ -6,8 +6,9 @@
  */
 import type { FileMove, UndoOutcome, WorkspaceEdit } from "@/bindings";
 import { openEditorPaths } from "@/editor/api";
-import { notifyFilesMoved } from "@/platform/fileOps";
+import { notifyFilesMoved, trackFileMove } from "@/platform/fileOps";
 import { call, commands, emitLocalIdeEvent, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { projectFs } from "./fs";
 import { isSameOrInside, nameOf, parentOf } from "./paths";
@@ -185,13 +186,19 @@ export function movedPath(path: string, moves: readonly FileMove[]): string {
 
 /** IDEA retargets editors of moved files: unsaved changes are saved first, tabs reopen at the new paths. */
 async function withEditorsFollowing<T>(run: () => Promise<T>, done: (r: T) => FileMove[]): Promise<T> {
+  const projectRoot = () => useProject.getState().project?.root ?? null;
+  const root = projectRoot();
   const editor = maybeEditorService();
   const openBefore = editor ? openEditorPaths() : [];
   if (editor) await saveAllQuietly(editor);
   const active = editor?.activePath() ?? null;
-  const result = await run();
-  const applied = done(result);
-  await notifyFilesMoved(applied);
+  const { result, applied } = await trackFileMove(root, async () => {
+    const result = await run();
+    const applied = done(result);
+    if (root === projectRoot()) await notifyFilesMoved(applied);
+    return { result, applied };
+  });
+  if (root !== projectRoot()) return result;
   const open = openBefore.filter((p) => applied.some((m) => isSameOrInside(p, m.from)));
   if (applied.length)
     emitLocalIdeEvent({

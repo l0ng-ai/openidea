@@ -116,6 +116,7 @@
     "text/apply_100_changes_1mb": 1000,
     "text/diff_two_edits_1mb": 10000,
     "text/diff_every_line_1mb": 100000,
+    "text/diff_one_edit_5mb": 2000,
     "text/offset_to_pos_round_trip": 5,
     "text/pos_to_byte": 5,
     "text/text_for_save_crlf_1mb": 1000,
@@ -141,6 +142,7 @@
     "search_5k/literal": 100000,
     "search_5k/regex": 100000,
     "search_5k/dense_limit": 20000,
+    "search_dense_files/24x40k_limit": 20000,
 
     "plugins/load_50": 20000,
     "plugins/cold_activation": 30000,

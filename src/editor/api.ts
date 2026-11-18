@@ -307,6 +307,17 @@ export const externalHistory = Facet.define<ExternalHistory, ExternalHistory | n
   combine: (values) => values[0] ?? null,
 });
 
+/**
+ * Provided by a host of several editors in a column (notebook cells): moves the caret into the
+ * editor before (`-1`) or after (`1`) this one, at `column` of its nearest line, when a line
+ * motion leaves this editor's first or last line. Returns false when there is none.
+ */
+export type AdjacentEditor = (direction: 1 | -1, column: number) => boolean;
+
+export const adjacentEditor = Facet.define<AdjacentEditor, AdjacentEditor | null>({
+  combine: (values) => values[0] ?? null,
+});
+
 export function whenSynced(view: EditorView): Promise<void> {
   return view.state.facet(documentSynced)?.() ?? Promise.resolve();
 }

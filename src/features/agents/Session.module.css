@@ -1253,7 +1253,7 @@
   content: "";
   position: absolute;
   inset: 0 -3px;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .changesResizer:focus-visible::after {
   background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
@@ -1279,6 +1279,10 @@
 .changesHeader > .muted {
   flex: none;
   white-space: nowrap;
+}
+.changesScope {
+  flex: none;
+  padding: 6px 10px 2px;
 }
 .changesSummary {
   flex: none;

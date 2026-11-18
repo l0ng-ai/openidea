@@ -140,7 +140,7 @@ export const getDiffInsights = (chunks: readonly Chunk[]): DiffInsights => insig
  */
 export const hasInnerFragments = (chunk: Chunk) => !!fragments.get(chunk)?.inner;
 
-/** IDEA's line fragments as chunks; `changes` hold the inner fragments, or the whole block. */
+/** IDEA's line fragments as chunks; `changes` hold the inner fragments, if any. */
 export function ideaChunks(a: Text, b: Text, ignore: IgnorePolicy, highlight: HighlightPolicy): readonly Chunk[] {
   return toChunks(a, b, ideaOf(ideaDiffConfig(ignore, highlight))!);
 }
@@ -160,16 +160,18 @@ function toChunks(a: Text, b: Text, idea: IdeaDiff): readonly Chunk[] {
     compared = compareTexts(textA, textB, idea);
   } catch (error) {
     if (!(error instanceof DiffTooBigError)) throw error;
-    // Repeated lines can exhaust IDEA's search. Keep the viewer usable with a bounded, coarser diff.
-    return remember(build.call(Chunk, a, b, { scanLimit: 500 }));
+    // Repeated lines can exhaust IDEA's search. Keep the viewer usable with a bounded, coarser diff,
+    // its blocks without words as IDEA's own.
+    const coarse = build.call(Chunk, a, b, { scanLimit: 500 });
+    return remember(coarse.map((c) => new Chunk([], c.fromA, c.toA, c.fromB, c.toB, c.precise)));
   }
   const chunks = compared.map((f) => {
     // `to` is one past the last line's end, past the document for its last line.
     const toA = f.startLine1 === f.endLine1 ? f.startOffset1 : f.endLine1 === a.lines ? a.length + 1 : f.endOffset1;
     const toB = f.startLine2 === f.endLine2 ? f.startOffset2 : f.endLine2 === b.lines ? b.length + 1 : f.endOffset2;
-    const changes = f.inner
-      ? f.inner.map((r) => new Change(r.start1, r.end1, r.start2, r.end2))
-      : [new Change(0, f.endOffset1 - f.startOffset1, 0, f.endOffset2 - f.startOffset2)];
+    // A block without inner fragments has no words to mark (the unified viewer marks `changes`).
+    // A fresh array each: @codemirror/merge caches deleted-line widgets by it.
+    const changes = f.inner ? f.inner.map((r) => new Change(r.start1, r.end1, r.start2, r.end2)) : [];
     const chunk = new Chunk(changes, f.startOffset1, toA, f.startOffset2, toB);
     fragments.set(chunk, f);
     return chunk;

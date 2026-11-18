@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react"
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
+import { mathExtension, renderMath } from "@/editor/lsp/markdownMath";
 import { iconNode } from "@/ui/iconNode";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -37,7 +38,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-});
+}).use(mathExtension());
 
 /** Rendered messages by text, least recently used first: reopening a conversation renders it again. */
 const rendered = new Map<string, string>();
@@ -133,10 +134,11 @@ function renderHtml(text: string): string {
     FORBID_TAGS: ["style", "form", "source"],
     FORBID_ATTR: ["style", "srcset"],
     ALLOW_DATA_ATTR: false,
-    // Only the mermaid placeholder written by the renderer above; data attributes
+    // Only the mermaid and math placeholders written by the renderer above; data attributes
     // quoted in a reply stay out.
-    ADD_ATTR: ["data-mermaid"],
+    ADD_ATTR: ["data-mermaid", "data-math"],
   }) as HTMLElement;
+  renderMath(root);
   root.querySelectorAll("li").forEach(wrapLooseText);
   // WebKit cuts controls inside <pre> out of a text selection, even when transparent.
   root.querySelectorAll("pre").forEach((pre) => {

@@ -402,7 +402,7 @@ function SearchEverywhereDialog() {
       e.preventDefault();
       if (e.altKey) openIntentions();
       else if (hasPrimaryModifier(e) && tab === "text")
-        closeThen(() => void executeAction("find.inPath", { query: parsed.text }));
+        closeThen(() => void executeAction("find.inPath", { query: searchQuery.trim() }));
       else if (listing) activate(activeRow);
       else if (!settled && !sel.moved) pendingEnter.current = { side: e.shiftKey };
       else activateSelection(e.shiftKey);
@@ -441,6 +441,7 @@ function SearchEverywhereDialog() {
   // Nothing in the project: retry everywhere (IDEA), unless the user picked the scope.
   const nothingInProject =
     !!showEmpty &&
+    tab !== "actions" &&
     !emptyQuery &&
     !listing &&
     !includeNonProject &&
@@ -493,7 +494,13 @@ function SearchEverywhereDialog() {
       )}
       {showEmpty && (
         <div className={styles.empty}>
-          {tx(emptyQuery ? "Type to search" : includeNonProject ? "Nothing found" : "Nothing found in project files")}
+          {tx(
+            emptyQuery
+              ? "Type to search"
+              : includeNonProject || tab === "actions"
+                ? "Nothing found"
+                : "Nothing found in project files",
+          )}
         </div>
       )}
     </div>
@@ -580,7 +587,7 @@ function SearchEverywhereDialog() {
             className={styles.headerButton}
             title={tx("Open in Find Tool Window")}
             shortcut={tab === "text" ? formatBinding(hostBinding("Meta+Enter")) : undefined}
-            onClick={() => closeThen(() => void executeAction("find.inPath", { query: parsed.text }))}
+            onClick={() => closeThen(() => void executeAction("find.inPath", { query: searchQuery.trim() }))}
           />
         </div>
       </div>

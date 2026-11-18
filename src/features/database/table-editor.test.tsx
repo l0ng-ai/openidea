@@ -4,7 +4,7 @@ import type { DbDriver, DbTablePage } from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { activeCellGrid, installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
-import { TableEditor } from "./TableEditor";
+import { TableEditor, _resetTableViewStates } from "./TableEditor";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { tableInput } from "./tableInput";
 
@@ -59,6 +59,7 @@ const page: DbTablePage = {
 };
 
 beforeEach(() => {
+  _resetTableViewStates();
   backend.driver = "clickhouse";
   backend.page.mockResolvedValue({ status: "ok", data: page });
   backend.applyEdits.mockClear();
@@ -210,4 +211,26 @@ it("omits a reset inserted cell from Submit instead of writing SQL NULL", async 
     disposeKeys();
     disposeActions();
   }
+});
+
+describe("table editor view state", () => {
+  it("queries with the sort it had when its tab mounts again", async () => {
+    const input = tableInput("source", "default", "users");
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<TableEditor input={input} />);
+    });
+    await screen.findByRole("gridcell", { name: "Ann" });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("columnheader", { name: /name/ }));
+    });
+    const sorted = backend.page.mock.calls.at(-1)!;
+    expect(sorted[5]).toEqual([{ column: "name", descending: false }]);
+    view.unmount();
+    backend.page.mockClear();
+    await act(async () => {
+      render(<TableEditor input={input} />);
+    });
+    expect(backend.page.mock.calls[0]![5]).toEqual(sorted[5]);
+  });
 });

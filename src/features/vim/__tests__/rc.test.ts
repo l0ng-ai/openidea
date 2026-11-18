@@ -36,6 +36,22 @@ describe("ideavimrc parsing", () => {
     );
   });
 
+  it("parses the clipboard list option, including the += append form", () => {
+    expect(parseVimrc("set clipboard=unnamedplus").commands).toEqual([
+      { kind: "set", name: "clipboard", value: "unnamedplus" },
+    ]);
+    expect(parseVimrc("set clipboard+=unnamed").commands).toEqual([
+      { kind: "set", name: "clipboard", value: "unnamed", append: true },
+    ]);
+    // Only list options append; other forms stay unsupported syntax.
+    expect(parseVimrc("set textwidth+=4").ignored.map((i) => i.reason)).toEqual([
+      "unsupported option syntax: textwidth+=4",
+    ]);
+    expect(parseVimrc("set clipboard-=unnamed").ignored.map((i) => i.reason)).toEqual([
+      "unsupported option syntax: clipboard-=unnamed",
+    ]);
+  });
+
   it("parses map variants with modes, noremap and the leader in effect at that line", () => {
     const maps = commands.filter((c) => c.kind !== "set");
     expect(maps).toEqual([

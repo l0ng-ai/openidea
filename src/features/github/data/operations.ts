@@ -26,7 +26,7 @@ import {
   setPullRequestData,
   updateTimeline,
 } from "./pullRequest";
-import { requireConnection } from "./repository";
+import { requireConnection, useGhRepository, type GHConnection } from "./repository";
 
 const settle = (ps: Array<Promise<unknown>>) => Promise.allSettled(ps).then(() => undefined);
 
@@ -175,18 +175,26 @@ export async function createReview(
   return review;
 }
 
-/** Submits the pending review `reviewId`. */
-export async function submitReview(number: number, reviewId: string, event: GHPullRequestReviewEvent, body?: string) {
-  await api.submitReview(reviewId, event, body || null);
-  await refreshReview(number);
-  await reloadPullRequestData(number, "mergeability").catch(() => undefined);
-}
-
-/** Submit Review popup: submits the pending review, or creates a submitted one. */
-export async function submitOrCreateReview(number: number, event: GHPullRequestReviewEvent, body: string) {
+/** Submits or creates a review; returns false if the connection changed before it could send. */
+export async function submitOrCreateReview(
+  number: number,
+  event: GHPullRequestReviewEvent,
+  body: string,
+  connection: GHConnection,
+): Promise<boolean> {
+  const isCurrent = () => useGhRepository.getState().connection === connection;
   const pending = await loadPullRequestData(number, "pendingReview");
-  if (pending) await submitReview(number, pending.id, event, body);
-  else await createReview(number, { event, body: body || undefined });
+  if (!isCurrent()) return false;
+  if (pending) {
+    await api.submitReview(pending.id, event, body || null);
+  } else {
+    const id = await pullRequestId(number);
+    if (!isCurrent()) return false;
+    await api.createReview({ pullRequestId: id, event, body: body || undefined });
+  }
+  if (isCurrent()) await refreshReview(number);
+  if (pending && isCurrent()) await reloadPullRequestData(number, "mergeability").catch(() => undefined);
+  return true;
 }
 
 /** Discards a pending review with its comments. */

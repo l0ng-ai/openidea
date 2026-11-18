@@ -38,6 +38,8 @@ pub enum Capability {
     InputEvents,
     /// The system clipboard, from the plugin's web views.
     Clipboard,
+    /// Read the clipboard from commands and view actions the user ran (API 1.11).
+    ClipboardRead,
     /// HTTPS (and loopback HTTP) to one host (`*.example.com` matches subdomains).
     Net(String),
     /// Ask the user when the first request goes to an HTTPS (or loopback) host
@@ -88,7 +90,8 @@ impl Capability {
             | Self::NetHttp(_)
             | Self::Secrets
             | Self::InputEvents
-            | Self::Clipboard => Risk::Medium,
+            | Self::Clipboard
+            | Self::ClipboardRead => Risk::Medium,
             // A trusted project's own files name the programs the IDE starts (its settings, its
             // build scripts), so writing them is running code.
             Self::ProjectWrite
@@ -127,6 +130,7 @@ impl Capability {
             Self::Clipboard => {
                 "Copy to the clipboard from its commands, and read and write it from its web views".into()
             }
+            Self::ClipboardRead => "Read the clipboard's text and images when you run one of its commands".into(),
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
             Self::NetAsk => {
                 "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones"
@@ -262,6 +266,7 @@ impl fmt::Display for Capability {
             Self::Events => f.write_str("events"),
             Self::InputEvents => f.write_str("events.input"),
             Self::Clipboard => f.write_str("clipboard"),
+            Self::ClipboardRead => f.write_str("clipboard.read"),
             Self::Net(h) => write!(f, "net:{h}"),
             Self::NetAsk => f.write_str("net:ask"),
             Self::NetHttp(h) => write!(f, "net.http:{h}"),
@@ -348,6 +353,7 @@ impl FromStr for Capability {
             "events" => Self::Events,
             "events.input" => Self::InputEvents,
             "clipboard" => Self::Clipboard,
+            "clipboard.read" => Self::ClipboardRead,
             "java.agent" => Self::JavaAgent,
             _ => return Err(format!("unknown capability {s:?}")),
         })
@@ -398,6 +404,7 @@ mod tests {
             "project.write",
             "vcs.write",
             "build.read",
+            "clipboard.read",
             "storage",
             "secrets",
             "events",
@@ -439,6 +446,10 @@ mod tests {
         assert_eq!(Capability::InputEvents.risk(), Risk::Medium);
         assert_eq!("clipboard".parse::<Capability>().unwrap(), Capability::Clipboard);
         assert_eq!(Capability::Clipboard.risk(), Risk::Medium);
+        // Reading is its own grant: neither clipboard capability covers the other.
+        assert_eq!(Capability::ClipboardRead.risk(), Risk::Medium);
+        assert!(!Capability::Clipboard.covers(&Capability::ClipboardRead));
+        assert!(!Capability::ClipboardRead.covers(&Capability::Clipboard));
         assert_eq!(Capability::Process("cargo".into()).risk(), Risk::High);
         assert_eq!(Capability::Lsp("phoxite".into()).risk(), Risk::High);
         assert_eq!(Capability::BuildRead.risk(), Risk::Low);

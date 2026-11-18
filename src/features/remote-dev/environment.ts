@@ -1,10 +1,12 @@
 /**
  * Reload Environment: new terminals, runs, language servers and tools get the login
- * shell's current environment (and, on a remote host, the project's `devcontainer.json`
- * `remoteEnv`) without restarting the backend. What is already running keeps its own.
+ * shell's current environment (on a remote host, the project's `devcontainer.json`
+ * `remoteEnv`, and the project's direnv `.envrc`) without restarting the backend. What is
+ * already running keeps its own.
  */
+import type { DirenvStatus } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { call, commands, type EnvReloaded } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type EnvReloaded } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 
 const KEY = "remote.reloadEnvironment";
@@ -61,4 +63,60 @@ export async function reloadEnvironment() {
       ? [{ label: "Restart Language Servers", run: () => void restartLanguageServers() }]
       : [],
   });
+}
+
+const DIRENV_KEY = "remote.direnv";
+
+/**
+ * What the backend reports about the project's direnv environment: it couldn't load (direnv
+ * missing, the `.envrc` not allowed, an error), or a file it is read from changed. The IDE
+ * never runs `direnv allow` itself: approving the `.envrc` is the user's call.
+ */
+export function showDirenvStatus(status: DirenvStatus) {
+  const reload = [{ label: "Reload Environment", run: () => void reloadEnvironment() }];
+  const notify = notifications().notify;
+  switch (status.kind) {
+    case "notInstalled":
+      notify({
+        key: DIRENV_KEY,
+        level: "info",
+        title: "direnv is not installed",
+        body: "This project has an .envrc. Install direnv so terminals, run configurations and language servers get its environment, then reload the environment.",
+        actions: reload,
+      });
+      return;
+    case "blocked":
+      notify({
+        key: DIRENV_KEY,
+        level: "warning",
+        title: "The project's .envrc is blocked",
+        body: "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.",
+        actions: reload,
+      });
+      return;
+    case "failed":
+      notify({
+        key: DIRENV_KEY,
+        level: "error",
+        title: "Could not load the direnv environment",
+        body: status.message,
+        actions: reload,
+      });
+      return;
+    case "changed": {
+      const file = status.file;
+      notify({
+        key: DIRENV_KEY,
+        level: "info",
+        title: tx`${file} changed`,
+        body: "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.",
+        actions: reload,
+      });
+      return;
+    }
+  }
+}
+
+export function installDirenvNotifications(): () => void {
+  return onIdeEvent("direnv", (e) => showDirenvStatus(e.status));
 }

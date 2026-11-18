@@ -38,6 +38,7 @@ export interface GitSettingsValid {
   pushDialogOnlyProtected: boolean;
   combineStashAndShelf: boolean;
   stagingArea: boolean;
+  cliStatus: boolean;
 }
 
 export interface CommitSettingsValid {
@@ -78,6 +79,8 @@ export interface VcsSettingsValid {
   };
   shelf: { removeApplied: boolean };
   issueNavigation: IssueLinkValid[];
+  /** Directory Mappings: repository roots excluded from / added to the detected ones. */
+  mappings: { excluded: string[]; added: string[] };
 }
 
 /** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
@@ -258,6 +261,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       pushDialogOnlyProtected: false,
       combineStashAndShelf: false,
       stagingArea: false,
+      cliStatus: false,
     },
     commit: {
       nonModal: true,
@@ -287,6 +291,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     shelf: { removeApplied: false },
     issueNavigation: [],
+    mappings: { excluded: [], added: [] },
   },
   console: {
     softWrap: false,
@@ -418,6 +423,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       pushDialogOnlyProtected: bool(g.pushDialogOnlyProtected, d.git.pushDialogOnlyProtected),
       combineStashAndShelf: bool(g.combineStashAndShelf, d.git.combineStashAndShelf),
       stagingArea: bool(g.stagingArea, d.git.stagingArea),
+      cliStatus: bool(g.cliStatus, d.git.cliStatus),
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
@@ -452,6 +458,10 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
           .map((x) => ({ pattern: text(x.pattern, ""), link: text(x.link, "") }))
           .filter((x) => x.pattern.trim())
       : [],
+    mappings: {
+      excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
+      added: strings(obj(v.mappings).added, d.mappings.added),
+    },
   };
 }
 

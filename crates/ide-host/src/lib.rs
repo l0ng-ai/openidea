@@ -7,6 +7,7 @@ pub mod agent_secrets;
 pub mod catalogue;
 pub mod data_dirs;
 pub mod diagnostics_store;
+mod direnv;
 pub mod environment;
 mod formatter;
 mod java_runtime;
@@ -252,6 +253,16 @@ impl Host {
         self.project(window)?.require_trust()
     }
 
+    /// [`Self::require_trust`] for IDE-wide toolchain work (SDK detection, tool installs) that
+    /// also runs from a window without a project, such as Settings opened from the Welcome
+    /// screen: there is no project there to trust.
+    pub fn require_trust_if_project(&self, window: &str) -> IdeResult<()> {
+        match self.project(window) {
+            Ok(project) => project.require_trust(),
+            Err(_) => Ok(()),
+        }
+    }
+
     /// The window that owns what `window` starts.
     pub fn owner_window<'a>(&self, window: &'a str) -> &'a str {
         (self.owner)(window)
@@ -318,6 +329,9 @@ impl Host {
         }
         if !project.light {
             self.environment.project_closed();
+            if self.windows_for_root(&project.root).is_empty() {
+                self.environment.direnv_closed(&project.root);
+            }
         }
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();

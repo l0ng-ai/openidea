@@ -219,6 +219,23 @@ pub(crate) fn set_request(option: &AgentConfigOption, value: &str) -> (&'static 
     }
 }
 
+/// Legacy setters and agents that report the change in a notification may return no model.
+pub(super) fn accepts_model(reply: &Value, id: &str, value: &str) -> bool {
+    reply
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("category").and_then(Value::as_str) == Some("model")
+                    || option.get("id").or_else(|| option.get("configId")).and_then(Value::as_str) == Some(id)
+            })
+        })
+        .and_then(|option| option.get("currentValue"))
+        .or_else(|| reply.pointer("/models/currentModelId"))
+        .and_then(Value::as_str)
+        .is_none_or(|current| current == value)
+}
+
 /// `available_commands_update`.
 pub(crate) fn commands_of(update: &Value, provider: &str) -> Vec<AgentCommand> {
     update

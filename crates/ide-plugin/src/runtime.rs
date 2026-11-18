@@ -56,9 +56,11 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.10";
+pub const API_VERSION: &str = "1.12";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
+/// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
+pub const MAX_CLIPBOARD_BYTES: usize = 16 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
 const STDERR_CAPACITY: usize = 256 << 10;
 /// Message of a call interrupted through [`Runtime::cancel_handle`].
@@ -318,6 +320,12 @@ pub trait HostApi: Send + Sync {
         let _ = (client, text);
         Ok(())
     }
+    /// The clipboard of the machine `client`'s window runs on, as that window reads it;
+    /// waits for the window until `cancel` fires.
+    fn read_clipboard(&self, client: &str, cancel: &CancellationToken) -> Result<crate::ClipboardContent, HostError> {
+        let _ = (client, cancel);
+        Err(HostError::Failed("the clipboard is unavailable".into()))
+    }
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let _ = (client, url);
         Ok(())
@@ -382,6 +390,11 @@ pub trait HostApi: Send + Sync {
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
         let _ = (client, id, item);
         Err(HostError::Invalid("window status unavailable".into()))
+    }
+    /// Replaces the plugin's console highlight rules (API 1.12); empty removes them.
+    fn console_rules(&self, rules: Vec<crate::ConsoleRule>) -> Result<(), HostError> {
+        let _ = rules;
+        Err(HostError::Failed("console rules unavailable".into()))
     }
     /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
     /// for window `client` (every window if `None`).
@@ -882,7 +895,9 @@ pub struct StoreData {
     pub(crate) invocation: Invocation,
     /// The running call is a command or an event.
     pub(crate) interactive: bool,
-    pub(crate) net_interactive: bool,
+    /// The user ran it: a command, or a view action other than a web view message.
+    /// Gates what must not happen unattended (`net:ask` prompts, reading the clipboard).
+    pub(crate) user_invoked: bool,
     /// Editor window for pick, pick-many, input and confirm during action resolution.
     pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
@@ -1132,7 +1147,7 @@ impl Runtime {
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
-            net_interactive: false,
+            user_invoked: false,
             action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
@@ -1783,7 +1798,7 @@ impl Runtime {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
-            store.data_mut().net_interactive = true;
+            store.data_mut().user_invoked = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -1909,12 +1924,12 @@ impl Runtime {
         if self.exports.views.is_none() {
             return Err(CallError::missing_export("view-provider"));
         }
-        let net_interactive = !matches!(&event, ViewEvent::Message { .. });
+        let user_invoked = !matches!(&event, ViewEvent::Message { .. });
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
-            store.data_mut().net_interactive = net_interactive;
+            store.data_mut().user_invoked = user_invoked;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -1966,7 +1981,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
-        data.net_interactive = false;
+        data.user_invoked = false;
         data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {

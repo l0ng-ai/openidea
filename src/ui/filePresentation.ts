@@ -163,11 +163,15 @@ export function useFilePresentation(path: string, mtime?: number | null) {
   const root = useProject((s) => s.project?.root ?? null);
   const build = useProjectPresentation();
   const icon = presentationIcon(path, info, roots, root, build.spring);
-  return { icon, runnable: !!info?.runnable && icon !== "spring-boot" && icon !== "jvm-test" };
+  return {
+    icon,
+    runnable: !!info?.runnable && icon !== "spring-boot" && icon !== "jvm-test",
+    deprecated: !!info?.deprecated,
+  };
 }
 
 /** Tab strips resolve their mounted file tabs through the same batch as tree rows. */
-export function useFilePresentationIcons(paths: readonly string[]) {
+export function useFilePresentations(paths: readonly string[]) {
   const key = JSON.stringify(paths);
   useEffect(() => {
     const disposers = (JSON.parse(key) as string[]).map(mount);
@@ -183,7 +187,10 @@ export function useFilePresentationIcons(paths: readonly string[]) {
       new Map(
         (JSON.parse(key) as string[]).map((path) => [
           path,
-          presentationIcon(path, entries.get(path), roots, root, build.spring),
+          {
+            icon: presentationIcon(path, entries.get(path), roots, root, build.spring),
+            deprecated: !!entries.get(path)?.deprecated,
+          },
         ]),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- iconRevision: the file icon theme changed

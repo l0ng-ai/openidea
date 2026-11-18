@@ -141,8 +141,11 @@ impl DependencyVersionSource for GoModules {
     }
 
     fn fetch(&self, package: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
-        let search =
-            self.env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(ide_core::tool_path::search_path);
+        let search = self
+            .env
+            .get("PATH")
+            .map(std::ffi::OsString::from)
+            .unwrap_or_else(|| ide_core::tool_path::search_path_in(&self.root));
         let go = ide_core::tool_path::find_command("go", &search, &self.root)
             .ok_or_else(|| IdeError::unavailable("Go SDK is unavailable"))?;
         // A partially edited go.mod is often invalid. Query outside it while

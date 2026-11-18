@@ -229,6 +229,39 @@ fn dirty_events(events: &[IdeEvent]) -> Vec<bool> {
 }
 
 #[test]
+fn autosave_leaves_a_file_changed_on_disk_after_an_edit() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(&path, "alpha\nbeta external\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+
+    assert!(!f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nbeta external\n");
+    assert!(f.docs.snapshot(info.id).unwrap().dirty);
+
+    // An explicit save overwrites, as the warning says; autosave works again after it.
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
+    f.docs.edit(info.id, 1, change(0, 0, "x")).unwrap();
+    assert!(f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "xedited\nbeta\n");
+}
+
+#[test]
+fn closing_a_modified_buffer_reports_it_clean() {
+    let f = fixture();
+    let info = f.docs.open_untitled(None).unwrap();
+    f.docs.edit(info.id, 0, change(0, 0, "draft")).unwrap();
+    assert_eq!(dirty_events(&f.events.lock()), vec![true]);
+    f.docs.close(info.id);
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false]);
+}
+
+#[test]
 fn open_edit_save_close() {
     let f = fixture();
     let path = f.root.join("main.rs");
