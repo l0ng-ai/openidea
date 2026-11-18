@@ -146,3 +146,52 @@ async fn replace_all_covers_matches_past_the_limit() {
         host.close_project("main");
     }
 }
+
+/// #4202: a file the search preview holds open (no unsaved changes) is saved like a closed
+/// one; a buffer with unsaved edits is replaced in place and left for the editor to save.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replace_all_saves_open_buffers_without_unsaved_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    for name in ["previewed.txt", "edited.txt", "closed.txt"] {
+        std::fs::write(root.join(name), "TOKEN\n").unwrap();
+    }
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&root, true, false).unwrap();
+    host.open_project("main", &root).unwrap();
+    let project = host.project("main").unwrap();
+    project.documents.open(&root.join("previewed.txt")).unwrap();
+    let edited = project.documents.open(&root.join("edited.txt")).unwrap().id;
+    project.documents.replace_all(edited, "TOKEN\nmore\n").unwrap();
+    ops::search::replace_in_files(
+        &host,
+        "main",
+        RequestId::next(),
+        query("TOKEN", false),
+        "DONE".into(),
+        false,
+        vec![],
+        true,
+        ops::Channel::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    let disk = |name: &str| std::fs::read_to_string(root.join(name)).unwrap();
+    assert_eq!(disk("previewed.txt"), "DONE\n");
+    assert_eq!(disk("closed.txt"), "DONE\n");
+    assert_eq!(disk("edited.txt"), "TOKEN\n", "unsaved edits stay unsaved");
+    assert_eq!(project.documents.text_snapshot(edited).unwrap().text, "DONE\nmore\n");
+    host.close_project("main");
+}
