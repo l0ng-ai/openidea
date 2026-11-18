@@ -134,7 +134,7 @@ function Side({ entry, side, folder }: { entry: DirectoryCompareEntry; side: "le
   const name = folder ? entry.path : nameOf(entry.path);
   return (
     <>
-      <span role="gridcell" className={clsx(styles.cell, styles.name)}>
+      <span role="gridcell" className={styles.cell}>
         {kind && (
           <>
             <Icon name={kind === "dir" ? "folder" : fileIconName(name)} size={14} />

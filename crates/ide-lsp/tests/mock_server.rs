@@ -3654,6 +3654,7 @@ async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
     let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
     framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
 
+    #[cfg(unix)]
     let links = tempfile::tempdir().unwrap();
     let mut spellings = Vec::new();
     #[cfg(unix)]
