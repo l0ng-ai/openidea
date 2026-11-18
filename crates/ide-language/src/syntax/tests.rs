@@ -988,6 +988,28 @@ fn folding_typescript_import_run_ending_with_multiline_import() {
 }
 
 #[test]
+fn folding_script_imports_in_web_containers() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+
+    let src = "<template><div/></template>\n<script setup lang=\"ts\">\nimport { ref, normalizeStyle } from 'vue'\nimport { Button, CheckableTagGroup, Divider, Space } from 'antdv-next'\n</script>\n";
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    for id in ["vue", "html", "svelte", "jsp"] {
+        let expected = (2, 3, FoldKind::Imports);
+        assert!(folds(id, src).contains(&expected), "{id}");
+        let doc = DocId::next();
+        cache.open(doc, &lang(id), 0);
+        let cached = cache.folding(doc, &lang(id), 0, src);
+        assert!(cached.iter().any(|f| (f.start_line, f.end_line, f.kind) == expected), "{id}");
+    }
+
+    let js = "<script>\r\nimport a from 'a'\r\nimport b from 'b'\r\n</script>\r\n";
+    assert!(folds("vue", js).contains(&(1, 2, FoldKind::Imports)));
+    let json = "<script type=\"application/json\">\nimport a from 'a'\nimport b from 'b'\n</script>\n";
+    assert!(!folds("vue", json).iter().any(|f| f.2 == FoldKind::Imports));
+}
+
+#[test]
 fn folding_xml_custom_regions() {
     for (start, end) in [
         ("<!--region要折叠的内容-->", "<!-- endregion -->"),

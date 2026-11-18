@@ -1293,8 +1293,12 @@ export const commands = {
 	 *  update live and undo the whole file's replacements in one step. Unsaved
 	 *  editor buffers are replaced in place and left unsaved; files that were not
 	 *  open are opened transiently, saved and closed.
+	 * 
+	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
+	 *  scope is searched again without the limit and every match in it is replaced,
+	 *  as IDEA does: `targets` then only carry the `skip` positions of their files.
 	 */
-	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, onEvent })),
+	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], allInScope: boolean, onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, allInScope, onEvent })),
 	/**  Before / after text of `path` for Replace › Preview (unsaved buffer included). */
 	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
@@ -10035,6 +10039,11 @@ export type ReplaceTarget = {
 	 *  Positions where no match starts any more are skipped.
 	 */
 	only?: Pos[] | null,
+	/**
+	 *  Start positions of matches to leave as they are (excluded or already
+	 *  replaced usages) when every other match in the file is replaced.
+	 */
+	skip?: Pos[] | null,
 };
 
 export type RepositoryComparison = {

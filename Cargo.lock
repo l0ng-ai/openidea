@@ -4589,6 +4589,7 @@ version = "0.1.47"
 dependencies = [
  "blake3",
  "criterion",
+ "dunce",
  "ide-core",
  "ide-extension",
  "ide-text",

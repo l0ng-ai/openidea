@@ -23,6 +23,7 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    omit_server_info: std::sync::atomic::AtomicBool,
     binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
@@ -149,7 +150,11 @@ impl Handler for MockHandler {
                 if let Some(error) = s.errors.lock().get("initialize").cloned() {
                     return Err(error);
                 }
-                Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
+                let mut result = json!({ "capabilities": s.caps.lock().clone() });
+                if !s.omit_server_info.load(Ordering::SeqCst) {
+                    result["serverInfo"] = json!({ "name": "mock" });
+                }
+                Ok(result)
             }
             "shutdown" => Ok(Value::Null),
             _ => {
@@ -3626,6 +3631,51 @@ async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     h.open("a.mk", "x");
     h.wait_status("framework", ServerStatus::Ready).await;
     h.wait_status("alt", ServerStatus::Ready).await;
+}
+
+/// #4061: an Angular template opened under another spelling of the project's
+/// (canonical) path, other letter case on macOS or a symlinked folder, still
+/// gets the Angular server, which answers hover and Go to Declaration there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
+    let h = harness_configured("mock", "html", &[("framework", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["angular.json".into()];
+        cfg.require_root_marker = true;
+    });
+    std::fs::write(h.root.join("angular.json"), "{}").unwrap();
+    let app = h.root.join("apps/myapp/src/app");
+    std::fs::create_dir_all(&app).unwrap();
+    let (template, component) = (app.join("example.component.html"), app.join("example.component.ts"));
+    std::fs::write(&template, "<button (click)=\"onConfirm()\">Confirm</button>\n").unwrap();
+    std::fs::write(&component, "export class ExampleComponent {\n  onConfirm() {}\n}\n").unwrap();
+    let framework = h.launcher.state("framework");
+    framework.respond("textDocument/hover", json!({ "contents": "(method) ExampleComponent.onConfirm(): void" }));
+    let target = Range::new(Pos::new(1, 2), Pos::new(1, 11));
+    let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
+    framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
+
+    let links = tempfile::tempdir().unwrap();
+    let mut spellings = Vec::new();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&h.root, links.path().join("linked")).unwrap();
+        spellings.push(links.path().join("linked").join(template.strip_prefix(&h.root).unwrap()));
+    }
+    // Only on a case-insensitive disk (macOS, Windows).
+    let upper = PathBuf::from(template.to_string_lossy().to_uppercase());
+    if upper.exists() {
+        spellings.push(upper);
+    }
+    for path in spellings {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &path, &h.lang, 1, "<button (click)=\"onConfirm()\">Confirm</button>\n");
+        eventually(|| framework.docs.lock().contains_key(&uri_of(&path))).await;
+        let hover = h.mgr.hover(doc, Pos::new(0, 20), Default::default()).await.unwrap();
+        assert!(hover.is_some_and(|h| h.contents.value.contains("onConfirm")), "{}", path.display());
+        let defs = h.mgr.goto(doc, Pos::new(0, 20), GotoKind::Definition).await.unwrap();
+        assert_eq!((&*defs[0].path, defs[0].range), (component.as_path(), target), "{}", path.display());
+    }
+    assert_eq!(h.statuses("framework").iter().filter(|s| **s == ServerStatus::Starting).count(), 1);
 }
 
 /// A server that `replaces` another (a PHP server with its own Laravel support and
@@ -7772,6 +7822,39 @@ async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
     h.mgr.restart(server).await.unwrap();
     eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
         .await;
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_go_file_reuses_module_and_reopens_after_restart() {
+    let h = harness_configured("go", "go", &[("gopls", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["go.work".into(), "go.mod".into()];
+    });
+    h.launcher.state("gopls").omit_server_info.store(true, Ordering::SeqCst);
+    let module = h.root.join("service");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.test/service\n").unwrap();
+    h.open("service/main.go", "package service\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let cache = tempfile::tempdir().unwrap();
+    let external = cache.path().join("dependency.go");
+    std::fs::write(&external, "package dependency\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &external, &h.lang, 1, "package dependency\n");
+    let state = h.launcher.state("gopls");
+    let opened_external = || {
+        state.notified("textDocument/didOpen").iter().filter(|p| p["textDocument"]["uri"] == uri_of(&external)).count()
+    };
+    eventually(|| opened_external() == 1).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| opened_external() == 2).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    assert_eq!(h.mgr.servers().len(), 1);
+    let inits = state.requested("initialize");
+    assert_eq!(inits.len(), 2);
+    assert!(inits.iter().all(|p| p["rootUri"] == uri_of(&module)));
     h.mgr.shutdown_all().await;
 }
 
