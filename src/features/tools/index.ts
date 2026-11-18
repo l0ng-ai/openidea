@@ -2,7 +2,7 @@
  * Tools installer: Settings › Languages & Frameworks › Language Servers, plus
  * install prompts for missing language servers.
  *
- * Actions: `tools.languageServers` (open the page), `tools.install` (arg: tool name),
+ * Actions: `tools.languageServers` (open the page; arg: a tool name to show), `tools.install` (arg: tool name),
  * `java.downloadJdk` (arg: `DownloadJdkArgs`).
  */
 import { executeAction, registerActions } from "@/platform/actions";
@@ -42,7 +42,11 @@ export function activate(): () => void {
         category: "Tools",
         icon: "package",
         keywords: ["lsp", "install", "debugger", "adapter"],
-        run: () => void executeAction("file.settings", SETTINGS_PAGE_ID),
+        run: ({ arg }) =>
+          void executeAction(
+            "file.settings",
+            typeof arg === "string" ? `${SETTINGS_PAGE_ID}#${arg}` : SETTINGS_PAGE_ID,
+          ),
       },
       {
         id: "tools.install",

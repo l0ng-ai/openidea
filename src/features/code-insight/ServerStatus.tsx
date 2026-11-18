@@ -1,4 +1,4 @@
-/** Status bar widget listing language servers, with a popup to restart them. */
+/** Status bar widget listing language servers, with a popup to restart or configure them. */
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { getAction, executeAction } from "@/platform/actions";
@@ -18,6 +18,7 @@ export function ServerStatus() {
   const summary = serversSummary(servers);
   // features/tools owns installing; without it, fall back to the manual hint text.
   const canInstall = !!getAction("tools.install");
+  const canConfigure = !!getAction("tools.languageServers");
   if (!summary) return null;
   return (
     <>
@@ -91,6 +92,17 @@ export function ServerStatus() {
                         onClick={() => void restartServer(s.id)}
                       />
                     </>
+                  )}
+                  {canConfigure && (
+                    <IconButton
+                      icon="settings"
+                      size="small"
+                      title={tx`Configure ${serverLabel(s)}…`}
+                      onClick={() => {
+                        setOpen(false);
+                        void executeAction("tools.languageServers", s.name);
+                      }}
+                    />
                   )}
                 </div>
                 {(s.languages.length > 0 || s.root) && (
