@@ -2494,5 +2494,6 @@
   "{name} is hidden because {title} is off": "{name} is hidden because {title} is off",
   "{name} did not exist at label '{label}'": "{name} did not exist at label '{label}'",
   "Restore Tool Windows": "Restore Tool Windows",
-  "Configure {name}…": "Configure {name}…"
+  "Configure {name}…": "Configure {name}…",
+  "Check the system Trash for these items. {names}": "Check the system Trash for these items. {names}"
 }
