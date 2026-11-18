@@ -39,6 +39,28 @@ function setup(overrides: Partial<SeDeps> = {}) {
 const fm = (rel: string) => ({ path: `/p/${rel}`, relPath: rel, score: 1, indices: [] });
 
 describe("SeController", () => {
+  it("filters recent actions when disabled actions are excluded", async () => {
+    const { c, last } = setup({
+      actions: () => [
+        { id: "blocked", title: "Blocked", run: () => {} },
+        { id: "available", title: "Available", run: () => {} },
+      ],
+      isEnabled: (a) => a.id === "available",
+      recentActions: () => ["blocked", "available"],
+    });
+    const recent = () => last().sections.get("recentActions")!.items;
+    c.run({ query: "", tab: "actions", includeNonProject: false, includeDisabled: false, extra: {} });
+    await flush();
+    expect(recent()).toMatchObject([{ id: "available", enabled: true }]);
+
+    c.run({ query: "", tab: "actions", includeNonProject: true, includeDisabled: true, extra: {} });
+    await flush();
+    expect(recent()).toMatchObject([
+      { id: "blocked", enabled: false },
+      { id: "available", enabled: true },
+    ]);
+  });
+
   it("streams each section independently", async () => {
     const files = deferred<ReturnType<typeof fm>[]>();
     const { c, last } = setup({

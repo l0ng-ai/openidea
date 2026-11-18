@@ -552,11 +552,18 @@ function ToolWindowsGrid() {
         </>
       }
       right={
-        <BoundToggle
-          k="appearance.widescreenToolWindows"
-          label="Widescreen tool window layout"
-          hint="Side tool windows take the full height; the bottom ones fit between them"
-        />
+        <>
+          <BoundToggle
+            k="appearance.widescreenToolWindows"
+            label="Widescreen tool window layout"
+            hint="Side tool windows take the full height; the bottom ones fit between them"
+          />
+          <BoundToggle
+            k="appearance.rememberToolWindowSizes"
+            label="Remember size for each tool window"
+            hint="Off, the tool windows of one side share its size"
+          />
+        </>
       }
     />
   );
@@ -996,7 +1003,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Show tool window bars",
-            keywords: ["Show tool window names", "Widescreen tool window layout", "stripes"],
+            keywords: [
+              "Show tool window names",
+              "Widescreen tool window layout",
+              "Remember size for each tool window",
+              "stripes",
+            ],
             component: ToolWindowsGrid,
           },
         ],

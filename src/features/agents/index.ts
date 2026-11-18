@@ -11,6 +11,7 @@ import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { call, commands } from "@/platform/ipc";
 import {
+  maybeEditorService,
   registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
@@ -36,6 +37,7 @@ import {
   openHome,
   refreshModels,
   refreshProviders,
+  refreshTaskModels,
   releaseClosedTaskCache,
   useAgents,
 } from "./store";
@@ -214,7 +216,22 @@ export function activate(): () => void {
         title: "Refresh models",
         category: "Agents",
         when: "projectOpen",
-        run: () => refreshModels(),
+        run: ({ arg }) => {
+          if (typeof arg === "string") return refreshTaskModels(arg);
+          if (arg === null) return refreshModels(); // Explicitly invoked by the New Task picker.
+          const { sessionLocation, docked, homeOpen } = useAgents.getState();
+          if (sessionLocation === "toolWindow" && (homeOpen || docked) && toolWindowService().isVisible(TOOL_WINDOW)) {
+            return !homeOpen && docked ? refreshTaskModels(docked) : refreshModels();
+          }
+          const active = maybeEditorService()?.activeInput?.();
+          if (active?.kind === SESSION_KIND) {
+            const data = active.data;
+            if (data && typeof data === "object" && "task" in data && typeof data.task === "string")
+              return refreshTaskModels(data.task);
+            return;
+          }
+          return refreshModels();
+        },
       },
       {
         id: "agents.closeTask",

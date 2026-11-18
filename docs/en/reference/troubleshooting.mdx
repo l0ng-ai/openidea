@@ -47,13 +47,19 @@ The Windows packages aren't code-signed yet, so Microsoft Defender SmartScreen m
 
 ## The window stays blank or stops responding on Linux
 
-WebKitGTK's DMA-BUF renderer fails on some Wayland setups. With the NVIDIA driver on Wayland, OpenIDEA turns the driver's explicit sync off for itself (`__NV_DISABLE_EXPLICIT_SYNC=1`), which avoids the failure and keeps the renderer. If the window stays blank, draws incorrectly, or stops reacting to the keyboard and mouse a few seconds after launch in another setup, quit OpenIDEA and start it from a terminal with the DMA-BUF renderer turned off, for example:
+WebKitGTK's DMA-BUF renderer fails on some Wayland setups. With the NVIDIA driver on Wayland, OpenIDEA turns the driver's explicit sync off for itself (`__NV_DISABLE_EXPLICIT_SYNC=1`), which avoids the failure and keeps the renderer. If the window stays blank, draws incorrectly, or stops reacting to the keyboard and mouse a few seconds after launch in another setup, quit OpenIDEA and start it from a terminal through XWayland first:
+
+```sh
+GDK_BACKEND=x11 ./OpenIDEA_<version>_amd64.AppImage
+```
+
+The page is still drawn on the GPU this way; at a fractional display scale the window may look less sharp. If that does not help, turn the DMA-BUF renderer off instead:
 
 ```sh
 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./OpenIDEA_<version>_amd64.AppImage
 ```
 
-The page is then drawn without the GPU, so dragging large panels can be slower. To keep the setting for launches from the application menu with the deb or rpm package, copy `/usr/share/applications/OpenIDEA.desktop` to `~/.local/share/applications/` and change its `Exec=` line to `Exec=env WEBKIT_DISABLE_DMABUF_RENDERER=1 openidea`.
+The page is then drawn without the GPU, so dragging large panels can be slower. To keep either setting for launches from the application menu with the deb or rpm package, copy `/usr/share/applications/OpenIDEA.desktop` to `~/.local/share/applications/` and change its `Exec=` line, for example to `Exec=env GDK_BACKEND=x11 openidea`.
 
 ## OpenIDEA exits at startup with a data directory error
 

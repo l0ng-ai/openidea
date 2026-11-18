@@ -302,6 +302,15 @@ pub fn set_settings(
             }
         });
     }
+    // Directory Mappings change which repositories the project has.
+    if key == "vcs" || key == "vcs.mappings" || key.starts_with("vcs.mappings.") {
+        let affected = affected();
+        host.runtime.spawn_blocking(move || {
+            for project in affected {
+                project.refresh_repositories();
+            }
+        });
+    }
     if key == "ssh" || key.starts_with("ssh.") {
         host.ssh.set_configs(host.global_settings.effective().ssh.configs);
     }

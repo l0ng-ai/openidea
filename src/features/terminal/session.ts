@@ -16,7 +16,7 @@ import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { OutputActivity } from "./activity";
 import { fitScheduler, settledResize } from "./fit";
-import { watchWindowsPty, windowsPty } from "./windowsPty";
+import { watchWindowsPty, windowsPtyOptions } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
@@ -311,7 +311,7 @@ export class TerminalSession {
     const settings = workflowSettings().terminal;
     const font = fontFor(settings);
     this.term = new Terminal({
-      windowsPty: windowsPty(),
+      ...windowsPtyOptions(),
       fontFamily: font.family,
       fontSize: font.size,
       lineHeight: font.lineHeight,

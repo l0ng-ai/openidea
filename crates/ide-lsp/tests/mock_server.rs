@@ -991,6 +991,33 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.shutdown_all().await;
 }
 
+/// jdtls runs the annotation processors itself and writes their output; a Maven build's
+/// copy of those files must not reach it as an edit, or jdtls recompiles javac's copy and
+/// overwrites its classes with broken ones (#4128).
+#[tokio::test(flavor = "multi_thread")]
+async fn jdtls_does_not_hear_of_annotation_processor_output() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = h.open("Open.java", "class Open {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let source = h.root.join("m/src/main/java/com/x/FooMapping.java");
+    let generated = h.root.join("m/target/generated-sources/annotations/com/x/FooMappingImpl.java");
+    let test_generated = h.root.join("m/target/generated-test-sources/test-annotations/com/x/T.java");
+    h.mgr.watched_files_changed(
+        &[test_generated],
+        &[generated.clone(), source.clone()],
+        std::slice::from_ref(&generated),
+        &[h.root.join("m/target/generated-sources/annotations")],
+    );
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles"),
+        vec![json!({ "changes": [{ "uri": uri_of(&source), "type": 2 }] })]
+    );
+    h.mgr.shutdown_all().await;
+}
+
 /// An external change to a document open on the server's current instance reaches it only
 /// through the reload's `didChange`: a watched-file change for it too would make a server
 /// that re-reads the file on one (csharp-ls) apply the reload and then the diff computed

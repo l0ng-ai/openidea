@@ -1,6 +1,7 @@
 /** Plugin colors use the shared picker and provider-supplied replacement strings. */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, gutter, type EditorView, type ViewUpdate } from "@codemirror/view";
+import { isolateHistory } from "@codemirror/commands";
 import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { rangeToOffsets } from "@/editor/lsp/positions";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
@@ -75,10 +76,14 @@ function pick(view: EditorView, ctx: EditorDocContext, plugin: string, color: Co
       void call(commands.pluginColorPresentations(ctx.doc, plugin, chosen))
         .then((list) => {
           const apply = (insert: string) => {
-            if (view.state.doc === text && !view.state.readOnly)
-              view.dispatch({ changes: { from, to, insert }, userEvent: "input.color" });
+            if (view.dom.isConnected && view.state.doc === text && !view.state.readOnly)
+              view.dispatch({
+                changes: { from, to, insert },
+                userEvent: "input.color",
+                annotations: isolateHistory.of("full"),
+              });
           };
-          if (view.state.doc !== text) return;
+          if (!view.dom.isConnected || view.state.doc !== text) return;
           if (list.length === 1) apply(list[0]!);
           else if (list.length)
             showContextMenu(

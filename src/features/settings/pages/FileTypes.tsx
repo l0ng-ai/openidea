@@ -66,7 +66,8 @@ export function RecognizedFileTypes() {
         )
       : langs;
   }, [langs, filter, assoc]);
-  const selected = langs.find((l) => l.id === selectedId) ?? shown[0] ?? null;
+  // Keep the last explicit choice for when it becomes visible again.
+  const selected = shown.find((l) => l.id === selectedId) ?? shown[0] ?? null;
   if (!isTauri()) return null;
   const current = assoc ?? {};
   const patterns = selected ? effectivePatterns(selected, current).map((p) => p.pattern) : [];
@@ -107,7 +108,7 @@ export function RecognizedFileTypes() {
         </div>
       </div>
       {selected && (
-        <div className={styles.patterns}>
+        <div className={styles.patterns} key={selected.id}>
           <Row label="File name patterns" stacked hint="* matches any characters, ? one (e.g. *.foo, Jenkinsfile).">
             <GlobListEditor
               value={patterns}

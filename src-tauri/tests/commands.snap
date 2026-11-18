@@ -248,6 +248,7 @@ fs_create_dir                                always             project_host bin
 fs_create_file                               always             project_host bindings sync
 fs_create_file_bytes                         always             project_host bindings async
 fs_delete                                    always             project_host bindings async
+fs_delete_with_undo                          always             project_host bindings async
 fs_entry_kind                                always             project_host bindings async
 fs_open_with_system                          always             desktop      bindings async
 fs_probe                                     always             project_host bindings async
@@ -258,6 +259,7 @@ fs_read_text                                 always             project_host bin
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
 fs_set_writable                              always             project_host bindings sync
+fs_undo_delete                               always             project_host bindings async
 gh_account_repos                             trusted            desktop      bindings async
 gh_api                                       trusted            desktop      bindings async
 gh_availability                              trusted            desktop      bindings async
@@ -537,6 +539,7 @@ scaffold_catalog                             always             project_host bin
 scaffold_create                              always             project_host bindings async
 scaffold_options                             always             project_host bindings async
 scaffold_requirements                        always             project_host bindings async
+scope_files                                  always             project_host bindings async
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   outside_restricted project_host bindings async
@@ -628,6 +631,7 @@ vcs_create_tag                               trusted            project_host bin
 vcs_delete_branch                            trusted            project_host bindings async
 vcs_delete_tag                               trusted            project_host bindings async
 vcs_detected_git                             always             project_host bindings sync
+vcs_detected_roots                           always             project_host bindings async
 vcs_diff_hunks                               always             project_host bindings async
 vcs_diff_numstat                             always             project_host bindings async
 vcs_diff_revisions                           always             project_host bindings async
@@ -668,6 +672,7 @@ vcs_revision_children                        always             project_host bin
 vcs_revision_files                           always             project_host bindings async
 vcs_reword                                   trusted            project_host bindings async
 vcs_roots                                    always             project_host bindings sync
+vcs_set_user_identity                        trusted            project_host bindings async
 vcs_shelf_delete                             trusted            project_host bindings async
 vcs_shelf_diff                               trusted            project_host bindings async
 vcs_shelf_import                             trusted            project_host bindings async

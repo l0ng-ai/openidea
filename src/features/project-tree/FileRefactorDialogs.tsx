@@ -21,6 +21,7 @@ import {
 import { useProjectTree } from "./store";
 import styles from "./FileRefactor.module.css";
 import { tx } from "@/platform/i18n";
+import { hostOs } from "@/platform/remote";
 
 export type FileRefactorRequest =
   | {
@@ -189,7 +190,12 @@ function RenameDialog({ request }: { request: Extract<FileRefactorRequest, { kin
     const stem = request.dir ? current : splitExtension(current)[0];
     el.setSelectionRange(0, stem.length || current.length);
   }, [current, request.dir]);
-  const check = validateName(name, { siblings: request.siblings, current, caseInsensitive });
+  const check = validateName(name, {
+    siblings: request.siblings,
+    current,
+    caseInsensitive,
+    windows: hostOs() === "windows",
+  });
   const error = name === current ? null : check.error;
   const submit = () => {
     if (busy || error) return;
@@ -357,7 +363,7 @@ function CopyDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
   const error = request.paths.some((p) => isSameOrInside(dest, p) && dest !== parentOf(p))
     ? "Cannot copy a folder into itself"
     : single
-      ? validateName(name, { siblings, caseInsensitive }).error
+      ? validateName(name, { siblings, caseInsensitive, windows: hostOs() === "windows" }).error
       : null;
   const subject = single
     ? `Copy ${request.dir ? "directory" : "file"} '${nameOf(single)}'`

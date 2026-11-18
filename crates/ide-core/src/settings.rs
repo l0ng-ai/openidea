@@ -772,6 +772,8 @@ pub struct AppearanceSettings {
     pub show_tool_window_names: bool,
     pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
+    /// Each tool window keeps its own size; off, the windows of a side share one.
+    pub remember_tool_window_sizes: bool,
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
@@ -901,6 +903,7 @@ impl Default for AppearanceSettings {
             show_tool_window_names: false,
             show_tool_window_badges: true,
             widescreen_tool_windows: false,
+            remember_tool_window_sizes: false,
             show_main_toolbar: true,
             show_status_bar: true,
             navigation_bar: NavigationBarPosition::StatusBar,

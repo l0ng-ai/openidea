@@ -5298,6 +5298,7 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     let deliver = |path: &str| {
         let change = ide_plugin::DocumentChanged {
             path: to_ipc(&f.project.join(path)),
+            project: None,
             base_version: 1,
             version: 2,
             changes: Vec::new(),
@@ -5311,6 +5312,8 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     // Queued with the absolute path, filtered again at delivery, handed over project-relative.
     deliver("config/app.yaml");
     assert_eq!(f.run("test.path-events", "document", None).unwrap().as_deref(), Some("config/app.yaml"));
+    // With the project it is relative to: another open project may hold the same path.
+    assert_eq!(f.run("test.path-events", "document-project", None).unwrap(), Some(to_ipc(&f.project)));
 }
 
 #[test]

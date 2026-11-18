@@ -93,6 +93,7 @@ export interface AppearanceExtras {
   showToolWindowNames: boolean;
   showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
+  rememberToolWindowSizes: boolean;
   /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
   showMainToolbar: boolean;
   showStatusBar: boolean;
@@ -177,6 +178,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showToolWindowNames: false,
   showToolWindowBadges: true,
   widescreenToolWindows: false,
+  rememberToolWindowSizes: false,
   showMainToolbar: true,
   showStatusBar: true,
   navigationBar: "statusBar",
@@ -261,6 +263,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     showToolWindowNames: b("showToolWindowNames"),
     showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
+    rememberToolWindowSizes: b("rememberToolWindowSizes"),
     showMainToolbar: b("showMainToolbar"),
     showStatusBar: b("showStatusBar"),
     // Legacy settings stored this as `showNavigationBar: bool` (`true` = shown,

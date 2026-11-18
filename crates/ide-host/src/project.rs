@@ -2,6 +2,7 @@
 //! watchers and the per-project services, opened by [`crate::Host::open_project`].
 
 use crate::Host;
+use ide_core::workflow_settings::VcsMappings;
 use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink};
 use ide_index::ProjectIndex;
 use ide_language::{FileTypes, LanguageRegistry, SyntaxCache};
@@ -955,10 +956,27 @@ fn scan_repositories(
     }
 }
 
-/// The repository containing `root` and those nested below it or below a content root.
+/// The repository containing `root` and those nested below it or below a content root,
+/// with the project's Directory Mappings applied.
 /// The project-open scan and the watcher's rescan share these skip rules.
 fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path, trusted: bool) -> IdeResult<Repos> {
-    let ignored = settings.effective().ignored_names();
+    let settings = settings.effective();
+    let found = detect_repositories(root, &settings, build_cache, trusted)?;
+    let mappings = &settings.vcs.mappings;
+    if mappings.is_empty() {
+        return Ok(found);
+    }
+    let resolve = |list: &[String]| -> Vec<PathBuf> { list.iter().map(|p| VcsMappings::resolve(root, p)).collect() };
+    Ok(found.mapped(&resolve(&mappings.excluded), &resolve(&mappings.added), root))
+}
+
+fn detect_repositories(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+    build_cache: &Path,
+    trusted: bool,
+) -> IdeResult<Repos> {
+    let ignored = settings.ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
             let name = n.to_string_lossy();
@@ -968,11 +986,17 @@ fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Pa
         })
     };
     let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root, build_cache, trusted));
+    roots.extend(content_roots(settings, root, build_cache, trusted));
     Repos::discover_roots(&roots, &skip)
 }
 
 impl Project {
+    /// The repository roots detection finds, before Directory Mappings exclude or add any.
+    pub fn detected_repository_roots(&self) -> IdeResult<Vec<PathBuf>> {
+        let settings = self.settings.effective();
+        Ok(detect_repositories(&self.root, &settings, &self.build_cache_dir(), self.is_trusted())?.roots())
+    }
+
     pub fn refresh_repositories(&self) {
         scan_repositories(
             &self.root,
@@ -1076,6 +1100,7 @@ impl Project {
             apply_git_executable(&settings);
         }
         repo.set_ignored_names(settings.ignored_names());
+        repo.set_cli_status(settings.vcs.git.cli_status);
         f(repo)
     }
 

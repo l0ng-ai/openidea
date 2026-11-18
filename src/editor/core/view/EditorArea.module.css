@@ -101,6 +101,9 @@
   color: var(--fg-muted);
   margin-left: -2px;
 }
+.deprecated {
+  text-decoration-line: line-through;
+}
 .dupe {
   color: var(--fg-faint);
   margin-left: 4px;
@@ -308,7 +311,7 @@
   content: "";
   position: absolute;
   inset: 0 -3px;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .sideTabsResizer:focus-visible::after {
   background: color-mix(in srgb, var(--focus-ring) 55%, transparent);

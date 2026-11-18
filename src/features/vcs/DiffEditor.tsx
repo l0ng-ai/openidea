@@ -53,7 +53,7 @@ import {
   languageFor,
   viewerBase,
 } from "./cm";
-import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
+import { applyChunk, arrowControls, chunkAt, hoverRevert, onHunkButtonClick, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
   IGNORE_OPTIONS,
@@ -681,16 +681,14 @@ export function DiffEditor({
             mergeControls: editableB
               ? (type) => {
                   const btn = document.createElement("button");
+                  btn.type = "button";
                   if (type === "accept") {
                     btn.hidden = true;
                     return btn;
                   }
                   btn.textContent = "Revert";
                   btn.title = "Revert this change";
-                  btn.onmousedown = (event) => {
-                    event.preventDefault();
-                    revertUnifiedChunk(view, view.posAtDOM(btn));
-                  };
+                  onHunkButtonClick(btn, () => revertUnifiedChunk(view, view.posAtDOM(btn)));
                   return btn;
                 }
               : false,

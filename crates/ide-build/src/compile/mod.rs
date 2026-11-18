@@ -715,7 +715,7 @@ pub fn run(
                 }
             }
         };
-        let out = process::run(&step.program, &step.args, &step.cwd, &step.env, cancel, |stream, line| {
+        let out = process::run_bounded(&step.program, &step.args, &step.cwd, &step.env, cancel, |stream, line| {
             let parsed = parser.feed(line);
             match parsed.console {
                 Some(text) if text.is_empty() => {}
@@ -757,7 +757,7 @@ pub fn run(
         if !out.success {
             success = false;
             if !messages.iter().any(|m| m.severity == Severity::Error) {
-                let summary = crate::sync::error_summary(&out.text);
+                let summary = crate::sync::error_summary(&out);
                 let text = if summary.is_empty() { last_error_line.clone() } else { summary };
                 let m = BuildMessage { severity: Severity::Error, text, path: None, range: None, code: None };
                 on_event(BuildEvent::Message { message: m.clone() });
