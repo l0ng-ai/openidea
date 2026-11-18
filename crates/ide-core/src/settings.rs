@@ -752,6 +752,8 @@ pub struct AppearanceSettings {
     pub compact_mode: bool,
     /// IDEA "Use smaller indents in trees": tool window trees indent less per level.
     pub small_tree_indents: bool,
+    /// Linux: WebKit animates each mouse wheel step
+    pub smooth_scrolling: bool,
     pub full_path_in_title: bool,
     pub project_colors_in_toolbar: bool,
     pub dnd_with_alt_only: bool,
@@ -887,6 +889,7 @@ impl Default for AppearanceSettings {
             different_tool_window_background: false,
             compact_mode: false,
             small_tree_indents: false,
+            smooth_scrolling: true,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
             dnd_with_alt_only: false,
@@ -1753,6 +1756,16 @@ mod tests {
         assert_eq!(a.preferred_dark_theme, "dark");
         let kept: Settings = serde_json::from_str(r#"{"appearance":{"theme":"solarized-dark"}}"#).unwrap();
         assert_eq!(kept.appearance.theme, "solarized-dark");
+    }
+
+    #[test]
+    fn smooth_scrolling_defaults_on_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"zoom":110}}"#).unwrap();
+        assert!(old.appearance.smooth_scrolling);
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"smoothScrolling":false}}"#).unwrap();
+        assert!(!off.appearance.smooth_scrolling);
+        let json = serde_json::to_value(&off).unwrap();
+        assert_eq!(json["appearance"]["smoothScrolling"], false);
     }
 
     #[test]

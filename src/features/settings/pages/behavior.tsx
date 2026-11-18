@@ -378,6 +378,19 @@ function UiOptionsGrid() {
   );
 }
 
+/** Linux (with desktop) only: WebKitGTK's wheel animation */
+function SmoothScrollingRow() {
+  const linux = usePlatform((s) => s.os === "linux");
+  if (!isTauri() || !linux) return null;
+  return (
+    <BoundToggle
+      k="appearance.smoothScrolling"
+      label="Smooth scrolling"
+      hint="Animates each mouse wheel step. Turn it off if scrolling stutters"
+    />
+  );
+}
+
 /** Desktop only: the browser build always shows Settings in the page. */
 function SettingsWindowRow() {
   if (!isTauri()) return null;
@@ -962,6 +975,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
               "tree indent",
             ],
             component: UiOptionsGrid,
+          },
+          {
+            kind: "custom",
+            label: "Smooth scrolling",
+            keywords: ["mouse wheel", "scroll animation"],
+            component: SmoothScrollingRow,
           },
           {
             kind: "custom",

@@ -177,6 +177,20 @@ pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()>
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+/// Appearance › Smooth scrolling for this window's web view (Linux only)
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_set_smooth_scrolling(window: WebviewWindow, enabled: bool) -> IdeResult<()> {
+    #[cfg(target_os = "linux")]
+    window
+        .with_webview(move |platform| crate::linux_webkit::set_smooth_scrolling(&platform, enabled))
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, enabled);
+    Ok(())
+}
+
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
 #[desktop_command(trust = always)]
 #[tauri::command]
@@ -872,6 +886,7 @@ ide_command::desktop_domain!(
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_set_smooth_scrolling,
     window_set_titlebar_height,
     window_take_launch,
     window_toggle_fullscreen,
