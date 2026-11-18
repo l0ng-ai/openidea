@@ -35,6 +35,8 @@ describe("parseLocationQuery", () => {
     expect(parseLocationQuery('"src/a.ts"').text).toBe("src/a.ts");
     expect(parseLocationQuery("file:///dev/acme/My%20File.kt", "/dev/acme").text).toBe("My File.kt");
     expect(parseLocationQuery("src\\main\\App.kt").text).toBe("src/main/App.kt");
+    // Windows file URLs, with a space and an encoded `#` in the name (#4079).
+    expect(parseLocationQuery("file:///C:/work/sample/src/a%20b%23c.txt", "C:/work/sample").text).toBe("src/a b#c.txt");
   });
 
   it("selectionOf maps to an editor selection", () => {

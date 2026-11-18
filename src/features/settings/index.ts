@@ -133,22 +133,7 @@ export function activate(): () => void {
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
     registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
-    registerActions(zoomActions()),
-    registerActions(appearanceToggleActions()),
-    registerActions([presentationAssistantAction()]),
     registerOverlay({ id: "settings.presentationAssistant", component: PresentationAssistant }),
-    registerActions(navigationBarActions()),
-    registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
-    registerActions([
-      {
-        id: "file.projectStructure",
-        title: "Project Structure…",
-        category: "File",
-        icon: "folder",
-        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
-        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
-      },
-    ]),
     activateFileTypes(),
     registerOverlay({
       id: "settings.assignShortcut",
@@ -157,6 +142,19 @@ export function activate(): () => void {
       ),
     }),
     registerActions([
+      ...zoomActions(),
+      ...appearanceToggleActions(),
+      presentationAssistantAction(),
+      ...navigationBarActions(),
+      ...settingsActions((page, newProjects) => void showSettings(page, newProjects)),
+      {
+        id: "file.projectStructure",
+        title: "Project Structure…",
+        category: "File",
+        icon: "folder",
+        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
+        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
+      },
       {
         // Search Everywhere's ⌥↵ on an action (arg: the action id).
         id: "settings.assignShortcut",

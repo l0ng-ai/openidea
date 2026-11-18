@@ -436,3 +436,105 @@ test("dragging the vertical tab column's edge resizes it and the width is kept",
   await placeLeft();
   await expect.poll(async () => Math.round((await strip.boundingBox())!.width)).toBe(Math.round(narrowed));
 });
+
+test("dragging the Markdown split divider resizes and reflows editor and preview content, keeps the ratio, and resets on double-click", async ({
+  workbench: page,
+}) => {
+  const applyDefaultSettings = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      useProject.setState({ settings: useProject.getState().settings ?? DEFAULT_SETTINGS });
+    });
+  await applyDefaultSettings();
+
+  const editor = await openFromTree(page, "README.md");
+  await page.evaluate(async () => {
+    const controllerModule = "/src/editor/core/controller.ts";
+    const { editorController } = await import(/* @vite-ignore */ controllerModule);
+    const view = editorController().activeSlot!.view!;
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: view.state.doc.length,
+        insert: [
+          "# Order Service",
+          "",
+          "Event-driven order processing API with idempotent checkout, inventory reservation, webhook delivery, and automatic retry policies.",
+          "",
+          "| Method | Path | Description |",
+          "| :--- | :--- | :--- |",
+          "| `POST` | `/v1/orders/{id}/cancel` | Release reserved stock and emit cancellation event |",
+        ].join("\n"),
+      },
+      selection: { anchor: 0 },
+    });
+  });
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const handle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  const cmContent = editor.locator(".cm-content");
+  await expect(preview).toContainText("Event-driven order processing API");
+  await expect(handle).toBeVisible();
+  await expect(cmContent).toHaveClass(/cm-lineWrapping/);
+
+  const initialEditor = (await editor.boundingBox())!.width;
+  const initialPreview = (await preview.boundingBox())!.width;
+  const initialContent = (await cmContent.boundingBox())!.width;
+  expect(Math.abs(initialEditor - initialPreview)).toBeLessThanOrEqual(2);
+  expect(initialContent).toBeLessThanOrEqual(initialEditor);
+
+  const box = (await handle.boundingBox())!;
+  const startX = box.x + box.width / 2;
+  const midY = box.y + box.height / 2;
+
+  await page.mouse.move(startX, midY);
+  await page.mouse.down();
+  await page.mouse.move(startX - 180, midY, { steps: 6 });
+  await expect(handle).toHaveAttribute("data-separator", "active");
+  await page.mouse.up();
+
+  await expect.poll(async () => (await editor.boundingBox())!.width).toBeLessThan(initialEditor - 150);
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview + 150);
+  const narrowedEditor = (await editor.boundingBox())!.width;
+  // Soft-wrapped editor content shrinks with the narrowed editor pane rather than overflowing.
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(narrowedEditor);
+
+  // Dragging right narrows the preview: table and prose stay within the preview content width.
+  const narrowedHandleBox = (await handle.boundingBox())!;
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2, midY);
+  await page.mouse.down();
+  await page.mouse.move(narrowedHandleBox.x + narrowedHandleBox.width / 2 + 380, midY, { steps: 8 });
+  await page.mouse.up();
+  const widenedEditor = (await editor.boundingBox())!.width;
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(initialContent + 140);
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeLessThanOrEqual(widenedEditor);
+  expect(await preview.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+  // Editor Only and Preview Only both expand content to full pane width.
+  await page.getByRole("button", { name: "Editor Only" }).click();
+  await expect.poll(async () => (await cmContent.boundingBox())!.width).toBeGreaterThan(widenedEditor);
+  await page.getByRole("button", { name: "Preview Only" }).click();
+  await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview * 1.8);
+  await page.getByRole("button", { name: "Editor and Preview" }).click();
+  await expect.poll(async () => Math.round((await editor.boundingBox())!.width)).toBe(Math.round(widenedEditor));
+
+  // Persists across reload.
+  await page.reload();
+  await applyDefaultSettings();
+  const reopenedEditor = await openFromTree(page, "README.md");
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(widenedEditor));
+
+  // Double-clicking the divider resets the split back to 50/50.
+  const reopenedHandle = page.getByRole("separator", { name: "Resize Markdown preview" });
+  await reopenedHandle.dblclick();
+  await expect
+    .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
+    .toBe(Math.round(initialEditor));
+});

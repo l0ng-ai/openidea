@@ -285,6 +285,36 @@ pub(super) enum Waiter {
     Prompt(std::sync::mpsc::SyncSender<Option<Vec<String>>>),
     Commit(std::sync::mpsc::SyncSender<CommitAnswer>),
     Command(std::sync::mpsc::SyncSender<super::CommandAnswer>),
+    Clipboard(std::sync::mpsc::SyncSender<super::ClipboardAnswer>),
+}
+
+/// What a window read from its clipboard, as `ui.read-clipboard` returns it. Oversized text
+/// or images fail here, before the base64 is decoded.
+fn clipboard_content(answer: super::ClipboardAnswer) -> Result<ide_plugin::ClipboardContent, HostError> {
+    use base64::Engine;
+    let (text, png) = match answer {
+        super::ClipboardAnswer::Content { text, png } => (text, png),
+        super::ClipboardAnswer::Refused => return Err(HostError::Denied("clipboard.read (the user refused)".into())),
+        super::ClipboardAnswer::Failed { message } => return Err(HostError::Failed(message)),
+    };
+    let max = ide_plugin::MAX_CLIPBOARD_BYTES;
+    let too_large = || HostError::Failed(format!("the clipboard holds more than {} MiB", max >> 20));
+    // The longest base64 of `max` bytes.
+    if text.as_ref().is_some_and(|t| t.len() > max) || png.as_ref().is_some_and(|p| p.len() > max.div_ceil(3) * 4) {
+        return Err(too_large());
+    }
+    let image = match png.filter(|p| !p.is_empty()) {
+        Some(png) => Some(
+            base64::engine::general_purpose::STANDARD
+                .decode(png)
+                .map_err(|e| HostError::Failed(format!("the clipboard image is not valid base64: {e}")))?,
+        ),
+        None => None,
+    };
+    if image.as_ref().is_some_and(|i| i.len() > max) {
+        return Err(too_large());
+    }
+    Ok(ide_plugin::ClipboardContent { text: text.filter(|t| !t.is_empty()), image })
 }
 
 /// A process a plugin started and has not released (API 1.3 `process.start`).
@@ -950,6 +980,17 @@ impl Shared {
             return false;
         }
         let Some(PromptEntry { answer: Waiter::Command(tx), .. }) = prompts.remove(&id) else { return false };
+        tx.try_send(answer).is_ok()
+    }
+
+    /// The window a [`PluginEvent::ClipboardRequested`] went to answered it.
+    pub fn answer_clipboard(&self, client: &str, id: u64, answer: super::ClipboardAnswer) -> bool {
+        let mut prompts = self.prompts.lock();
+        if !matches!(prompts.get(&id), Some(PromptEntry { client: window, answer: Waiter::Clipboard(_), .. }) if window == client)
+        {
+            return false;
+        }
+        let Some(PromptEntry { answer: Waiter::Clipboard(tx), .. }) = prompts.remove(&id) else { return false };
         tx.try_send(answer).is_ok()
     }
 
@@ -1886,6 +1927,49 @@ impl HostApi for PluginApi {
         let client = from_window(client, "copy to the clipboard")?;
         self.shared.sink.emit(Some(client), PluginEvent::CopyToClipboard { plugin_id: self.id().to_owned(), text });
         Ok(())
+    }
+
+    fn read_clipboard(
+        &self,
+        client: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ide_plugin::ClipboardContent, HostError> {
+        let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
+        let (answer, answers) = std::sync::mpsc::sync_channel(1);
+        {
+            let closed = self.shared.closed_clients.lock();
+            let blocked = self.shared.prompts_blocked.lock();
+            if closed.contains(client) || blocked.contains(self.id()) {
+                return Err(HostError::Cancelled);
+            }
+            self.shared.prompts.lock().insert(
+                id,
+                PromptEntry {
+                    plugin: self.id().to_owned(),
+                    client: client.to_owned(),
+                    answer: Waiter::Clipboard(answer),
+                },
+            );
+        }
+        let request_id = id.to_string();
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::ClipboardRequested { plugin_id: self.id().to_owned(), request_id: request_id.clone() },
+        );
+        // A remote window asks the user first, so there is no deadline: the call's own
+        // cancellation, the plugin stopping or the window closing ends the wait.
+        let answer = loop {
+            match answers.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => break answer,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !cancel.is_cancelled() => {}
+                Err(_) => {
+                    self.shared.prompts.lock().remove(&id);
+                    self.shared.sink.emit(Some(client), PluginEvent::PromptClosed { prompt_id: request_id });
+                    return Err(HostError::Cancelled);
+                }
+            }
+        };
+        clipboard_content(answer)
     }
 
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {

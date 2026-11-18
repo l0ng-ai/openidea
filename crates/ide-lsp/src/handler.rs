@@ -435,6 +435,14 @@ impl ClientHandler {
                         .find_map(|base| section.split('.').try_fold(base, |v, key| v.get(key)))
                         .cloned()
                         .unwrap_or(Value::Null),
+                    None if self.server.name == "eslint" => {
+                        let mut settings = options.clone();
+                        settings["workspaceFolder"] = json!({
+                            "uri": crate::uri::path_to_uri(&self.server.root),
+                            "name": self.server.root.file_name().map_or_else(|| "root".into(), |name| name.to_string_lossy().into_owned()),
+                        });
+                        settings
+                    }
                     None => options.clone(),
                 })
                 .collect(),
@@ -527,7 +535,7 @@ impl Handler for ClientHandler {
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
-                    tracing::warn!("[{}] {text}", self.server.name);
+                    tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                     // The tasks of the dead tsserver never see their `end`: end them now
                     // instead of letting them sit as zombies until the stale window, and
                     // stop holding queries back — the restarted instance re-reports.
@@ -554,12 +562,12 @@ impl Handler for ClientHandler {
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
-                        tracing::warn!("[{}] {text}", self.server.name);
+                        tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                         mgr.report_import_failure(self.server.root.clone(), text.to_owned());
                     }
-                    Some(1) => tracing::warn!("[{}] {text}", self.server.name),
-                    Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
-                    _ => tracing::debug!("[{}] {text}", self.server.name),
+                    Some(1) => tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    Some(2 | 3) => tracing::info!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    _ => tracing::debug!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),

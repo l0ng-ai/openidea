@@ -97,6 +97,7 @@ Open **Run › Edit Configurations…** (also in the run widget menu). The **Run
 | **Gradle** / **Maven**                                  | Gradle tasks or Maven goals, optionally through the wrapper                    |
 | **Application** / **JAR Application** / **Spring Boot** | A Java main class, an executable JAR, a Spring Boot application                |
 | **Tomcat Server**                                       | A WAR application in a local Tomcat                                            |
+| **Python**                                              | A Python script or `-m` module                                                 |
 | **pytest** / **Django tests**                           | pytest tests, `manage.py test`                                                 |
 | **Ruby** / **Rake** / **RSpec**                         | A Ruby script, a Rake task, RSpec examples                                     |
 | **PHPUnit**                                             | PHPUnit tests                                                                  |
@@ -120,6 +121,10 @@ The debugger adds attach-only types such as **Remote JVM Debug**, **Go Remote**,
 Turn on **Modify options › Paths to ".env" files** to load one or more `.env` files (relative to the project root, separated by `;`). They support `KEY=value`, `export` prefixes, `#` comments, quoted values and `${VAR}` references. Variables set in the configuration override the ones from `.env` files.
 
 With **Include system environment variables** on, the process also gets the IDE's environment and the variables of your login shell.
+
+### direnv and Nix flakes
+
+When a trusted project has an `.envrc` in its root, the IDE runs `direnv export json` there (`direnv` must be installed) and gives what it exports to terminals, run configurations, language servers, build tools and debuggers started in the project. Language servers wait until it has loaded; an `.envrc` with `use flake` loads the flake's devshell this way, which can take a while the first time. The IDE never runs `direnv allow` for you: when the `.envrc` is blocked, a notification says so. After you edit `.envrc`, `flake.nix` or `flake.lock`, a notification offers **Reload Environment**.
 
 ### Modify options
 

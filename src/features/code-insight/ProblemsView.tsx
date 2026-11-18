@@ -40,6 +40,7 @@ import {
   producerFor,
   sortProblems,
   useProblems,
+  type FileDiagnostics,
   type ProblemOrder,
   type ProblemsMap,
 } from "./problemsStore";
@@ -113,9 +114,8 @@ export function useProblemsHeaderMenu(): MenuItem[] {
 
 const group = (s: Severity): "error" | "warning" | "info" => (s === "hint" ? "info" : s);
 
-type Node =
-  | { kind: "file"; key: string; path: string; items: Diagnostic[] }
-  | { kind: "diag"; key: string; path: string; d: Diagnostic };
+type FileNode = { kind: "file"; key: string; path: string; items: Diagnostic[]; error: boolean };
+type Node = FileNode | { kind: "diag"; key: string; path: string; d: Diagnostic };
 
 /** The inspection that reported `d` (for Disable inspection / Change Severity). */
 export function diagInspection(map: ProblemsMap, path: string, d: Diagnostic): InspectionRef | null {
@@ -129,23 +129,64 @@ const plural = (n: number, word: string) => (n ? `${n} ${word}${n === 1 ? "" : "
 
 const SEVERITY_ICON: Record<Severity, string> = { error: "error", warning: "warning", info: "info", hint: "info" };
 
+interface CachedFileNode {
+  path: string;
+  show: ViewState["show"];
+  order: ProblemOrder;
+  node: FileNode | null;
+}
+
+// Keyed by the file's sources map, which the store replaces only when that file's diagnostics
+// change: a single-file update re-filters and re-sorts that file alone.
+const fileNodes = new WeakMap<FileDiagnostics, CachedFileNode>();
+
+function fileNode(map: ProblemsMap, path: string, show: ViewState["show"], order: ProblemOrder): FileNode | null {
+  const sources = map.get(path);
+  if (!sources) return null;
+  const hit = fileNodes.get(sources);
+  if (
+    hit?.path === path &&
+    hit.show.error === show.error &&
+    hit.show.warning === show.warning &&
+    hit.show.info === show.info &&
+    hit.order.bySeverity === order.bySeverity &&
+    hit.order.byName === order.byName
+  )
+    return hit.node;
+  const items = sortProblems(
+    fileDiagnostics(map, path).filter((d) => show[group(d.severity)]),
+    order,
+  );
+  const node: FileNode | null = items.length
+    ? { kind: "file", key: path, path, items, error: items.some((d) => d.severity === "error") }
+    : null;
+  fileNodes.set(sources, { path, show: { ...show }, order: { ...order }, node });
+  return node;
+}
+
 export function buildProblemNodes(
   map: ProblemsMap,
   paths: readonly string[],
   show: ViewState["show"],
   order: ProblemOrder = DEFAULT_PROBLEM_ORDER,
-): Node[] {
-  const files: Node[] = [];
+): FileNode[] {
+  const files: FileNode[] = [];
   for (const path of paths) {
-    const items = sortProblems(
-      fileDiagnostics(map, path).filter((d) => show[group(d.severity)]),
-      order,
-    );
-    if (!items.length) continue;
-    files.push({ kind: "file", key: path, path, items });
+    const node = fileNode(map, path, show, order);
+    if (node) files.push(node);
   }
-  const rank = (n: Node) => (n.kind === "file" ? (n.items.some((d) => d.severity === "error") ? 0 : 1) : 2);
-  return files.sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
+  return files.sort((a, b) => Number(!a.error) - Number(!b.error) || a.path.localeCompare(b.path));
+}
+
+const diagNodes = new WeakMap<FileNode, Node[]>();
+
+function diagChildren(n: FileNode): Node[] {
+  let children = diagNodes.get(n);
+  if (!children) {
+    children = n.items.map((d, i) => ({ kind: "diag", key: `${n.path}\u0000${i}`, path: n.path, d }));
+    diagNodes.set(n, children);
+  }
+  return children;
 }
 
 function open(path: string, d: Diagnostic, focus = true): Promise<void> {
@@ -200,19 +241,15 @@ export function ProblemsHeaderActions() {
 
 /** Scope tabs in the tool window header: "File: name  2" / "Project Errors". */
 export function ProblemsTabs() {
-  const map = useProblems((s) => s.map);
   const tab = useProblemsView((s) => s.tab);
   const setTab = useProblemsView((s) => s.setTab);
   const current = useCurrentPath();
-  const fileCount = current
-    ? countSeverities(filePaths(map, current).flatMap((path) => fileDiagnostics(map, path)))
-    : null;
-  const projectErrors = useMemo(() => {
-    let n = 0;
-    for (const sources of map.values())
-      for (const items of sources.values()) n += items.filter((d) => d.severity === "error").length;
-    return n;
-  }, [map]);
+  const fileCount = useProblems((s) => {
+    if (!current) return 0;
+    const c = countSeverities(filePaths(s.map, current).flatMap((path) => fileDiagnostics(s.map, path)));
+    return c.error + c.warning;
+  });
+  const projectErrors = useProblems((s) => s.counts.error);
   return (
     <Tabs
       variant="compact"
@@ -231,10 +268,7 @@ export function ProblemsTabs() {
             "File"
           ),
           text: "File",
-          trailing:
-            fileCount && fileCount.error + fileCount.warning > 0 ? (
-              <span className={styles.tabCount}>{fileCount.error + fileCount.warning}</span>
-            ) : undefined,
+          trailing: fileCount > 0 ? <span className={styles.tabCount}>{fileCount}</span> : undefined,
         },
         {
           id: "project",
@@ -297,10 +331,7 @@ export function ProblemsView() {
   );
 
   const getChildren = useCallback(
-    (n: Node): Node[] | undefined =>
-      n.kind === "file"
-        ? n.items.map((d, i) => ({ kind: "diag", key: `${n.path}\u0000${i}`, path: n.path, d }) as Node)
-        : undefined,
+    (n: Node): Node[] | undefined => (n.kind === "file" ? diagChildren(n) : undefined),
     [],
   );
 

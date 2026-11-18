@@ -53,6 +53,8 @@ export interface TabItem {
   /** How strongly `tint` shows, e.g. `var(--file-tint-strength)`; defaults to `--tint-strength`. */
   tintStrength?: string;
   italic?: boolean;
+  /** Wavy error underline on the label: the file has errors (IDEA's problem files). */
+  error?: boolean;
   /** Greyed out, e.g. a run tab whose process has ended. */
   dimmed?: boolean;
   tooltip?: string;
@@ -484,7 +486,7 @@ export function Tabs({
                 {...tooltipAttrs(given(item.tooltip), undefined, true)}
               >
                 {item.icon && <Icon name={item.icon} size={14} className={styles.tabIcon} />}
-                <span className={clsx(styles.tabLabel, item.italic && styles.italic)}>
+                <span className={clsx(styles.tabLabel, item.italic && styles.italic, item.error && styles.error)}>
                   {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}

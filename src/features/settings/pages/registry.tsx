@@ -2,7 +2,7 @@
 import { commands } from "@/platform/ipc";
 import { UPDATES_PAGE } from "./updates";
 import { onLanguageListChanged } from "@/platform/languageList";
-import { registerSettingsPage, type SettingsPageContribution } from "@/workbench/contributions";
+import { registerSettingsPage, registerSettingsPages, type SettingsPageContribution } from "@/workbench/contributions";
 import { BEHAVIOR_PAGES } from "./behavior";
 import { BUILTIN_PAGES as CORE_PAGES } from "./builtins";
 import { DEPLOYMENT_PAGES } from "./deployment";
@@ -60,29 +60,28 @@ function toContribution(spec: PageSpec): SettingsPageContribution {
 }
 
 export function registerBuiltinPages(): () => void {
-  const disposers = BUILTIN_PAGES.filter((spec) => spec !== UPDATES_PAGE).map((spec) =>
-    registerSettingsPage(toContribution(spec)),
+  const disposeBuiltins = registerSettingsPages(
+    BUILTIN_PAGES.filter((spec) => spec !== UPDATES_PAGE).map(toContribution),
   );
   // Code Style › <Language> pages come from the backend's language list, which plugins change.
   let live = true;
+  let disposeUpdates = () => {};
   void commands
     .appBuildInfo()
     .then((info) => {
-      if (live && info.updates) disposers.push(registerSettingsPage(toContribution(UPDATES_PAGE)));
+      if (live && info.updates) disposeUpdates = registerSettingsPage(toContribution(UPDATES_PAGE));
     })
     .catch(() => {});
-  let languagePages: (() => void)[] = [];
+  let disposeLanguagePages = () => {};
   let generation = 0;
   const loadLanguagePages = () => {
     const mine = ++generation;
     void codeStyleLanguagePages()
       .then((pages) => {
         if (!live || mine !== generation) return;
-        languagePages.forEach((d) => d());
-        languagePages = pages.map((spec) => {
-          specs.set(spec.id, spec);
-          return registerSettingsPage(toContribution(spec));
-        });
+        disposeLanguagePages();
+        for (const spec of pages) specs.set(spec.id, spec);
+        disposeLanguagePages = registerSettingsPages(pages.map(toContribution));
       })
       .catch(() => {});
   };
@@ -91,7 +90,8 @@ export function registerBuiltinPages(): () => void {
   return () => {
     live = false;
     unsubscribe();
-    languagePages.forEach((d) => d());
-    disposers.forEach((d) => d());
+    disposeLanguagePages();
+    disposeUpdates();
+    disposeBuiltins();
   };
 }

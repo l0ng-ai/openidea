@@ -194,6 +194,7 @@ deploy_sync                                  trusted            project_host bin
 deploy_test_connection                       always             project_host bindings async
 deploy_upload                                trusted            project_host bindings async
 diff_external_tool                           always             desktop      bindings async
+doc_autosave                                 always             project_host bindings async
 doc_close                                    always             project_host bindings async
 doc_edit                                     always             project_host bindings async
 doc_folding                                  always             project_host bindings async
@@ -386,6 +387,7 @@ notebook_undo                                always             project_host bin
 open_project                                 always             project_host bindings async
 path_completions                             always             project_host bindings async
 plugin_activation_event                      trusted            desktop      bindings async
+plugin_answer_clipboard                      trusted            project_host bindings sync
 plugin_answer_command                        trusted            project_host bindings sync
 plugin_answer_commit                         trusted            project_host bindings sync
 plugin_answer_prompt                         trusted            project_host bindings sync
@@ -535,7 +537,7 @@ scaffold_options                             always             project_host bin
 scaffold_requirements                        always             project_host bindings async
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
-sdk_detect                                   trusted            project_host bindings async
+sdk_detect                                   outside_restricted project_host bindings async
 sdk_jdk_at                                   trusted            project_host bindings async
 sdk_locate_tools                             trusted            project_host bindings async
 sdk_php_composer_install                     trusted            project_host bindings async
@@ -543,12 +545,12 @@ sdk_php_effective                            trusted            project_host bin
 sdk_php_language_level                       trusted            project_host bindings async
 sdk_php_xdebug                               trusted            project_host bindings async
 sdk_project_libraries                        trusted            project_host bindings async
-sdk_python_create_venv                       trusted            project_host bindings async
+sdk_python_create_venv                       outside_restricted project_host bindings async
 sdk_python_effective                         trusted            project_host bindings sync
-sdk_python_interpreter                       trusted            project_host bindings async
-sdk_python_packages                          trusted            project_host bindings async
-sdk_python_pip                               trusted            project_host bindings async
-sdk_python_project_interpreters              trusted            project_host bindings async
+sdk_python_interpreter                       outside_restricted project_host bindings async
+sdk_python_packages                          outside_restricted project_host bindings async
+sdk_python_pip                               outside_restricted project_host bindings async
+sdk_python_project_interpreters              outside_restricted project_host bindings async
 search_start                                 always             project_host bindings async
 search_validate                              always             project_host bindings sync
 set_recent_project_groups                    always             desktop      bindings sync
@@ -594,10 +596,10 @@ term_resize                                  always             project_host bin
 term_spawn                                   always             project_host bindings async
 term_store_image                             always             project_host bindings async
 term_write                                   always             project_host bindings sync
-tools_install                                trusted            project_host bindings async
-tools_list                                   trusted            project_host bindings async
-tools_uninstall                              trusted            project_host bindings async
-tools_updates                                trusted            project_host bindings async
+tools_install                                outside_restricted project_host bindings async
+tools_list                                   outside_restricted project_host bindings async
+tools_uninstall                              outside_restricted project_host bindings async
+tools_updates                                outside_restricted project_host bindings async
 undo_workspace_edit                          always             project_host bindings async
 user_font_data                               always             desktop      -        async
 vcs_add_to_ignore                            trusted            project_host bindings async

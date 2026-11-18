@@ -176,7 +176,9 @@ async fn properties_search_git_and_document_coordinates_agree() {
         vec![ide_search::ReplaceTarget {
             path: closed_path.clone().into(),
             only: Some(vec![ide_core::Pos { line: 0, col: 10 }]),
+            skip: None,
         }],
+        false,
         ide_host::ops::Channel::new(|_| {}),
     )
     .await

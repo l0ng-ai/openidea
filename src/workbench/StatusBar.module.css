@@ -11,6 +11,7 @@
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
+  position: relative;
 }
 /* Widgets read as plain UI text like IDEA's, whatever their own font. */
 .item {
@@ -28,7 +29,7 @@
   min-width: 0;
   padding: 0 4px;
 }
-/* Left items (breadcrumbs…) and background tasks give way first on narrow windows. */
+/* Left items (breadcrumbs…) give way first on narrow windows; right items move into the overflow popup. */
 .shrink {
   flex: 0 1 auto;
   overflow: hidden;
@@ -44,6 +45,40 @@
 .spacer {
   flex: 1;
   min-width: 8px;
+}
+.slot {
+  display: contents;
+}
+/* An overflowed item while its popup is closed: measurable, out of the flow, at the bar's end. */
+.overflowed {
+  position: absolute;
+  inset: 0 10px 0 auto;
+  display: flex;
+  align-items: center;
+  visibility: hidden;
+}
+.more {
+  flex: none;
+}
+.moreList {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.moreRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  min-height: var(--h-statusbar);
+}
+.moreLabel {
+  flex: 1;
+  color: var(--fg-subtle);
 }
 .task {
   max-width: 320px;

@@ -281,15 +281,16 @@ fn managed_dirs(root: &Path) -> Vec<PathBuf> {
 /// The `PATH` an adapter runs with, unless its launch sets one: the search path language servers
 /// get, so what it starts in turn (js-debug's wrapper runs `node`, Delve runs `go build`) is
 /// found like Run finds it, even when the login shell's `PATH` didn't reach the app.
-fn adapter_path(env: &[(String, String)]) -> Option<std::ffi::OsString> {
+fn adapter_path(env: &[(String, String)], cwd: &Path) -> Option<std::ffi::OsString> {
     let own = env.iter().any(|(k, _)| if cfg!(windows) { k.eq_ignore_ascii_case("PATH") } else { k == "PATH" });
-    (!own).then(ide_core::tool_path::search_path)
+    (!own).then(|| ide_core::tool_path::search_path_in(cwd))
 }
 
-/// Directories searched for adapter binaries: managed tools first, then `PATH` and the usual install spots.
-fn search_dirs() -> Vec<PathBuf> {
+/// Directories searched for adapter binaries: managed tools first, then `PATH` (the project's
+/// holding `cwd` first) and the usual install spots.
+fn search_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = tools_root().map(|r| managed_dirs(&r)).unwrap_or_default();
-    dirs.extend(std::env::split_paths(&ide_core::tool_path::search_path()));
+    dirs.extend(std::env::split_paths(&ide_core::tool_path::search_path_in(cwd)));
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         for rel in [".cargo/bin", ".local/bin", "go/bin", ".dotnet/tools", ".bun/bin", ".npm-global/bin", ".volta/bin"]
         {
@@ -318,7 +319,7 @@ fn is_executable(path: &Path, windows: bool) -> bool {
 /// extensionless script next to a shim is never started as a program.
 pub fn find_binary(command: &str, cwd: &Path) -> Option<PathBuf> {
     let pathext = std::env::var("PATHEXT").ok();
-    find_binary_in(command, cwd, &search_dirs(), cfg!(windows), pathext.as_deref())
+    find_binary_in(command, cwd, &search_dirs(cwd), cfg!(windows), pathext.as_deref())
 }
 
 fn find_binary_in(
@@ -377,10 +378,10 @@ pub async fn prepare_debugpy(spec: &mut AdapterSpec) -> IdeResult<()> {
         return Ok(()); // Reported as a missing adapter when it is started.
     };
     let mut probe = Command::new(&python);
+    probe.current_dir(&spec.cwd);
     ide_core::process::prepare(probe.as_std_mut());
     let probe = probe
         .args(["-c", "import debugpy.adapter"])
-        .current_dir(&spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -452,13 +453,13 @@ pub fn parse_gdb_version(output: &str) -> Option<(u32, u32)> {
 /// Probe the already resolved and verified executable with its launch environment.
 async fn gdb_version(binary: &Path, spec: &AdapterSpec) -> IdeResult<Option<(u32, u32)>> {
     let mut probe = Command::new(binary);
-    if let Some(path) = adapter_path(&spec.env) {
+    if let Some(path) = adapter_path(&spec.env, &spec.cwd) {
         probe.env("PATH", path);
     }
+    probe.current_dir(&spec.cwd);
     ide_core::process::prepare(probe.as_std_mut());
     let probe = probe
         .arg("--version")
-        .current_dir(&spec.cwd)
         .envs(spec.env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -690,9 +691,11 @@ async fn spawn_adapter(
 ) -> IdeResult<AdapterIo> {
     let stderr = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let mut cmd = Command::new(binary);
-    if let Some(path) = adapter_path(&spec.env) {
+    if let Some(path) = adapter_path(&spec.env, &spec.cwd) {
         cmd.env("PATH", path);
     }
+    // The working directory first: it picks the project's environment.
+    cmd.current_dir(&spec.cwd);
     ide_core::process::prepare(cmd.as_std_mut());
     // Every adapter leads its own process group: the program an adapter launches itself
     // (java-debug's JVM) joins the group, so a forced stop reaches the whole tree with
@@ -700,7 +703,6 @@ async fn spawn_adapter(
     ide_core::process::own_group(cmd.as_std_mut());
     cmd.args(args)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
-        .current_dir(&spec.cwd)
         .stdin(if port.is_some() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -843,10 +845,11 @@ mod tests {
     #[test]
     fn adapters_run_on_the_tool_search_path() {
         let search = ide_core::tool_path::search_path();
-        assert_eq!(adapter_path(&[]), Some(search.clone()));
-        assert_eq!(adapter_path(&[("GOFLAGS".into(), "-mod=mod".into())]), Some(search));
+        let cwd = Path::new("/openidea-test-no-project");
+        assert_eq!(adapter_path(&[], cwd), Some(search.clone()));
+        assert_eq!(adapter_path(&[("GOFLAGS".into(), "-mod=mod".into())], cwd), Some(search));
         // A launch that sets its own (a selected Go SDK's bin first) keeps it.
-        assert_eq!(adapter_path(&[("PATH".into(), "/sdk/go/bin:/usr/bin".into())]), None);
+        assert_eq!(adapter_path(&[("PATH".into(), "/sdk/go/bin:/usr/bin".into())], cwd), None);
         // The search path reaches the usual install spots even when this process's `PATH` doesn't.
         #[cfg(unix)]
         {

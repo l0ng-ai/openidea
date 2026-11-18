@@ -15,6 +15,7 @@ on:
       - "crates/**"
       - "languages/**"
       - "fixtures/**"
+      - "java/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/features/run/**"
@@ -41,12 +42,77 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # The languages a pull request can affect: a change to one language's fixture, definition or
+  # JDT LS bundle runs that language; crates the smoke doesn't exercise and other crates' tests
+  # run none; anything else runs them all. Pushes and manual runs always run them all.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      languages: ${{ steps.classify.outputs.languages }}
+    steps:
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          all="typescript python rust go java kotlin php c cpp"
+          emit() { tr ' ' '\n' <<< "$1" | { grep . || true; } | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))'; }
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "languages=$(emit "$all")" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
+          cat files.txt
+          # Crates outside what the smoke runs (language servers, debuggers, run configurations,
+          # SDKs, build tools and the project model): cargo metadata, deps of ide-lsp/dap/run/sdk/tools.
+          unused='^crates/(ide-agent|ide-analysis|ide-android|ide-cli|ide-clipboard|ide-coverage|ide-db|ide-docker|ide-fonts|ide-github|ide-http|ide-mcp|ide-notebook|ide-profiler|ide-scaffold|ide-search|ide-spell|ide-ssh|ide-streams|ide-vcs|ide-web)/'
+          # The workflow's paths, less those handled per language below.
+          smoke='^(crates/|Cargo\.(toml|lock)$|src/features/(run|debugger)/|src/platform/|smoke/|package\.json$|pnpm-lock\.yaml$|\.github/workflows/language-smoke\.yml$|\.github/tool-versions\.env$)'
+          langs=""
+          while read -r f; do
+            case "$f" in
+              crates/ide-host/tests/language_smoke.rs | crates/ide-host/tests/project_smoke.rs) langs="$all"; break ;;
+              crates/*/tests/* | crates/*/benches/*) ;;
+              fixtures/ts-app/*) langs+=" typescript" ;;
+              fixtures/python-app/*) langs+=" python" ;;
+              fixtures/rust-app/*) langs+=" rust" ;;
+              fixtures/go-app/*) langs+=" go" ;;
+              fixtures/java-app/*) langs+=" java" ;;
+              fixtures/kotlin-gradle/*) langs+=" kotlin" ;;
+              fixtures/php-app/*) langs+=" php" ;;
+              fixtures/c-app/*) langs+=" c cpp" ;;
+              fixtures/*) ;;
+              languages/typescript.toml | languages/typescriptreact.toml | languages/javascript.toml | languages/javascriptreact.toml) langs+=" typescript" ;;
+              languages/python.toml) langs+=" python" ;;
+              languages/rust.toml) langs+=" rust" ;;
+              languages/go.toml | languages/gomod.toml | languages/gowork.toml) langs+=" go" ;;
+              languages/java.toml) langs+=" java" ;;
+              languages/kotlin.toml) langs+=" kotlin" ;;
+              languages/php.toml) langs+=" php" ;;
+              languages/c.toml) langs+=" c" ;;
+              languages/cpp.toml) langs+=" cpp" ;;
+              languages/*) ;;
+              java/kotlin-bridge/*) langs+=" kotlin" ;;
+              java/*) langs+=" java kotlin" ;;
+              *) if grep -Eq "$smoke" <<< "$f" && ! grep -Eq "$unused" <<< "$f"; then langs="$all"; break; fi ;;
+            esac
+          done < files.txt
+          echo "languages=$(emit "$langs")" | tee -a "$GITHUB_OUTPUT"
+
   smoke:
     name: Language smoke (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.languages != '[]'
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin, php, c, cpp]
+        language: ${{ fromJSON(needs.changes.outputs.languages) }}
     # C/C++ debug with GDB, whose DAP interpreter needs 14+: 22.04 ships 12.1, 24.04 ships 15.
     runs-on: ${{ (matrix.language == 'c' || matrix.language == 'cpp') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
     timeout-minutes: 40

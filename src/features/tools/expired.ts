@@ -11,11 +11,13 @@ import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName } from "./store
 
 export const isExpiredBuild = (message: string | null) => !!message && /This build of .+ has expired/.test(message);
 
+export const expiredKey = (name: string) => `lsp-expired-${name}`;
+
 export async function promptUpdateExpired(name: string) {
   await refreshTools();
   const tool = toolByName(name);
   const display = tool?.displayName ?? name;
-  const key = `lsp-expired-${name}`;
+  const key = expiredKey(name);
   const installable = tool?.canInstall && (tool.status === "installed" || tool.status === "onPath");
   notifications().notify({
     group: "lsp",
