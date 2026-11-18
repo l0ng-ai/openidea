@@ -93,18 +93,26 @@ describe("custom JDBC data sources", () => {
     );
   });
 
-  it("blocks a saved read-only source until the user explicitly chooses database-enforced protection", async () => {
+  it("tests a read-only JDBC source and preserves the option on save", async () => {
     render(
       <SourceDialog initial={{ driver: "jdbc", jdbcDriver: driver.id, url: "jdbc:example:local", readOnly: true }} />,
     );
-    await screen.findByText("I use a read-only account. Turn off the IDE setting.");
-    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+    const test = screen.getByRole("button", { name: "Test Connection" });
+    await waitFor(() => expect(test).toBeEnabled());
+    fireEvent.click(test);
+    await waitFor(() =>
+      expect(backend.call).toHaveBeenCalledWith(["test", expect.objectContaining({ readOnly: true }), null, null]),
+    );
     fireEvent.click(screen.getByRole("tab", { name: "Options" }));
-    expect(screen.queryByRole("checkbox", { name: "Read-only" })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "General" }));
-    fireEvent.click(screen.getByRole("button", { name: "I use a read-only account. Turn off the IDE setting." }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "Read-only" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() =>
+      expect(backend.saveSource).toHaveBeenCalledWith(
+        expect.objectContaining({ readOnly: true }),
+        undefined,
+        undefined,
+      ),
+    );
   });
 
   it("offers Custom JDBC in the new data source menu", () => {

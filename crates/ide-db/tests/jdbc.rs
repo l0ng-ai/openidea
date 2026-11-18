@@ -35,11 +35,9 @@ async fn jdbc_profiles_persist_and_project_files_cannot_start_drivers() -> IdeRe
     let denied = reopened.pool("local").await.err().expect("project JDBC requires explicit approval");
     assert!(denied.message.contains("Review this project"));
     let readonly = DataSource { read_only: true, ..source.clone() };
-    let err = reopened.test(&readonly, None, None).await.unwrap_err();
-    assert!(err.message.contains("cannot enforce read-only"));
-    reopened.approve_jdbc_source(&readonly)?;
     reopened.save_sources(vec![readonly]).await?;
-    assert!(reopened.pool("local").await.err().unwrap().message.contains("cannot enforce read-only"));
+    let err = reopened.apply_edits("local", "main", "sample", &[]).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::PermissionDenied);
     reopened.approve_jdbc_source(&source)?;
     let mut changed = source.clone();
     changed.url.push_str("changed");
@@ -56,7 +54,7 @@ async fn jdbc_profiles_persist_and_project_files_cannot_start_drivers() -> IdeRe
 }
 
 #[tokio::test]
-#[ignore = "requires DUCKDB_JDBC_JAR and a local JDK 17+"]
+#[ignore = "requires DUCKDB_JDBC_JAR and a local Java 17+ runtime"]
 async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     let tmp = tempfile::tempdir()?;
     let db = manager(tmp.path());
@@ -75,7 +73,7 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
         driver: DbDriver::Jdbc,
         global: true,
         jdbc_driver: "duck".into(),
-        url: "jdbc:duckdb:".into(),
+        url: "jdbc:duckdb:local.duckdb".into(),
         ..Default::default()
     };
     assert!(db.test(&source, None, None).await?.to_lowercase().contains("duckdb"));
@@ -93,6 +91,16 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert_eq!(result.rows, vec![vec![Some("1".into()), None]]);
     assert_eq!(result.columns[1].name, "label");
     assert_eq!(db.completion("test").await?.default_schema, "main");
+    db.execute("test", "create temporary table session_marker as select 42 as id", 1, &c).await?;
+    let stop = CancellationToken::new();
+    let (cancelled, ()) =
+        tokio::join!(db.execute("test", "select sum(sin(i)) from range(1000000000) t(i)", 1, &stop), async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            stop.cancel();
+        },);
+    assert_eq!(cancelled.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+    let marker = db.execute("test", "select id from session_marker", 1, &c).await?;
+    assert_eq!(marker.rows, [vec![Some("42".into())]]);
     let sort = [SortKey { column: "id".into(), descending: false }];
     let first = db.table_page("test", "main", "items", None, &sort, 0, 1, &c).await?.result;
     assert_eq!(first.rows, result.rows);
@@ -103,6 +111,9 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     let past = db.table_page("test", "main", "items", None, &sort, 2, 1, &c).await?.result;
     assert!(past.rows.is_empty() && !past.has_more);
     db.disconnect("test").await;
+    let reopened = manager(tmp.path());
+    assert_eq!(reopened.execute("test", "select count(*) from items", 1, &c).await?.rows, [vec![Some("2".into())]]);
+    reopened.disconnect("test").await;
     Ok(())
 }
 
@@ -132,6 +143,7 @@ async fn clickhouse_vendor_driver_reads_catalog_and_results() -> IdeResult<()> {
         jdbc_driver: "clickhouse".into(),
         url: format!("jdbc:clickhouse://127.0.0.1:{port}/default"),
         user: "fixture".into(),
+        read_only: true,
         ..Default::default()
     };
     let password = "local-fixture";
@@ -152,6 +164,52 @@ async fn clickhouse_vendor_driver_reads_catalog_and_results() -> IdeResult<()> {
     assert!(!page.has_more);
     let past = db.table_page("test", "system", "one", None, &[], 1, 1, &c).await?.result;
     assert!(past.rows.is_empty() && !past.has_more);
+    db.disconnect("test").await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires JDBC_FIXTURE_JAR (java/jdbc-bridge/build.py --test --out fixture.jar) and Java 17+"]
+async fn unresponsive_driver_closes_before_reconnect() -> IdeResult<()> {
+    use std::time::Duration;
+    let tmp = tempfile::tempdir()?;
+    let db = manager(tmp.path());
+    let started = tmp.path().join("started");
+    db.save_jdbc_driver(DbJdbcDriver {
+        id: "fixture".into(),
+        name: "Fixture".into(),
+        jars: vec![std::env::var("JDBC_FIXTURE_JAR").unwrap()],
+        class_name: "ai.openidea.jdbc.SelfTest$Fixture".into(),
+        url_template: String::new(),
+    })?;
+    let source = DataSource {
+        id: "test".into(),
+        name: "Fixture".into(),
+        driver: DbDriver::Jdbc,
+        global: true,
+        read_only: true,
+        jdbc_driver: "fixture".into(),
+        url: format!("jdbc:fixture:{}", started.display()),
+        ..Default::default()
+    };
+    db.test(&source, None, None).await?;
+    db.save_sources(vec![source]).await?;
+    let normal = CancellationToken::new();
+    assert!(db.execute("test", "write", 1, &normal).await.unwrap_err().message.contains("read-only"));
+    let stop = CancellationToken::new();
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(12), async {
+        tokio::join!(db.execute("test", "ignore cancel", 1, &stop), async {
+            while !started.is_file() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            stop.cancel();
+        })
+    })
+    .await
+    .expect("driver cancellation must be bounded");
+    assert!(result.unwrap_err().message.contains("Reconnect"));
+    db.disconnect("test").await;
+    assert_eq!(db.execute("test", "after reconnect", 1, &normal).await?.affected, Some(1.0));
     db.disconnect("test").await;
     Ok(())
 }

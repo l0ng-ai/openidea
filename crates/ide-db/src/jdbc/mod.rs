@@ -9,9 +9,10 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tokio::time::{Instant as Deadline, timeout_at};
 
 const LIMIT: usize = 16 * 1024 * 1024;
 
@@ -35,6 +36,9 @@ fn persist_local(path: &Path, data: &[u8]) -> IdeResult<()> {
 }
 
 fn local_jar(jar: &str) -> IdeResult<&Path> {
+    if jar.contains(if cfg!(windows) { ';' } else { ':' }) {
+        return Err(IdeError::invalid("A JDBC JAR path contains the system classpath separator"));
+    }
     let path = Path::new(jar);
     if !path.is_absolute() || !path.is_file() || !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jar")) {
         return Err(IdeError::invalid("Choose an existing local .jar file for each JDBC driver file"));
@@ -174,11 +178,6 @@ impl DbManager {
         if source.driver != crate::DbDriver::Jdbc {
             return crate::Pool::connect(source, password, Some(&self.root)).await;
         }
-        if source.read_only {
-            return Err(IdeError::invalid(
-                "Custom JDBC cannot enforce read-only access. Use a database account with read-only privileges.",
-            ));
-        }
         if source.plugin_owner.is_some() {
             return Err(IdeError::invalid("Plugins cannot start custom JDBC drivers"));
         }
@@ -195,13 +194,17 @@ impl DbManager {
             .into_iter()
             .find(|d| d.id == source.jdbc_driver)
             .ok_or_else(|| IdeError::invalid("Select an installed JDBC driver profile"))?;
-        JdbcPool::connect(source, password, driver).await.map(Box::new).map(crate::Pool::Jdbc)
+        JdbcPool::connect(source, password, driver, self.jdbc_registry()?.with_file_name("jdbc"))
+            .await
+            .map(Box::new)
+            .map(crate::Pool::Jdbc)
     }
 }
 
 struct Bridge {
     stop: tokio::sync::oneshot::Sender<()>,
     exited: tokio::task::JoinHandle<()>,
+    sequence: u64,
     input: ChildStdin,
     output: ChildStdout,
 }
@@ -214,20 +217,24 @@ pub struct JdbcPool {
 }
 
 impl Bridge {
-    fn start() -> IdeResult<Self> {
+    fn start(cache: &Path, jars: &[String]) -> IdeResult<Self> {
         let jdks = ide_sdk::java::installed_jdks();
-        let jdk = ide_sdk::java::runtime_with_modules(&jdks, 17, &["jdk.compiler", "java.sql"])
-            .ok_or_else(|| IdeError::invalid("Install a JDK 17 or newer to use custom JDBC drivers"))?;
-        let dir = tempfile::tempdir()?;
-        let file = dir.path().join("OpenIdeaJdbc.java");
-        std::fs::write(&file, include_bytes!("OpenIdeaJdbc.java"))?;
-        let mut command = Command::new(ide_sdk::java::java_executable(&jdk.home));
-        command.current_dir(dir.path());
+        let java = ide_sdk::java::java_runtime(&jdks, 17)
+            .ok_or_else(|| IdeError::invalid("Install a Java 17 or newer runtime to use custom JDBC drivers"))?;
+        let jar = ide_sdk::java::jdbc_bridge_jar(cache)
+            .ok_or_else(|| IdeError::invalid("Cannot install the JDBC bridge in the application data directory"))?;
+        let classpath = std::env::join_paths(std::iter::once(jar.as_path()).chain(jars.iter().map(Path::new)))
+            .map_err(|_| IdeError::invalid("A JDBC JAR path contains the system classpath separator"))?;
+        // Embedded databases can resolve file URLs against the JVM's working directory.
+        let files = cache.join("files");
+        std::fs::create_dir_all(&files)?;
+        let mut command = Command::new(ide_sdk::java::java_executable(&java.home));
+        command.current_dir(files);
         ide_core::process::prepare(command.as_std_mut());
         let mut child = command
-            .arg("-Xmx192m")
-            .arg("--enable-native-access=ALL-UNNAMED")
-            .arg("OpenIdeaJdbc.java")
+            .args(["-Xms8m", "-Xmx192m", "--enable-native-access=ALL-UNNAMED", "-cp"])
+            .arg(classpath)
+            .arg("ai.openidea.jdbc.OpenIdeaJdbc")
             .env_remove("CLASSPATH")
             .env_remove("JDK_JAVA_OPTIONS")
             .env_remove("JAVA_TOOL_OPTIONS")
@@ -242,47 +249,128 @@ impl Bridge {
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let exited = tokio::spawn(async move {
             tokio::select! {
-                _ = stopped => { let _ = child.kill().await; }
+                stop = stopped => {
+                    // Disconnect closes stdin so a file-backed driver can flush. A dropped
+                    // request or an unresponsive driver must be reaped without waiting.
+                    if stop.is_err() || tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
+                        let _ = child.kill().await;
+                    }
+                }
                 _ = child.wait() => {}
             }
-            // Windows keeps the working directory open until the JVM exits.
-            drop(dir);
         });
-        Ok(Self { input, output, stop, exited })
+        Ok(Self { input, output, stop, exited, sequence: 0 })
     }
 
     async fn close(self) {
-        drop(self.stop);
+        drop(self.input);
+        let _ = self.stop.send(());
         let _ = self.exited.await;
     }
+}
 
-    async fn exchange(&mut self, fields: &[&str]) -> IdeResult<Vec<u8>> {
-        let mut data = Vec::new();
-        data.extend_from_slice(&(fields.len() as u32).to_be_bytes());
-        if fields.len() > 8192 {
-            return Err(IdeError::invalid("Too many JDBC connection properties"));
-        }
-        for field in fields {
-            if field.len() + data.len() + 4 > LIMIT {
-                return Err(IdeError::invalid("JDBC request exceeds 16 MiB"));
+// Request: u64 request id, u32 field count, then length-prefixed UTF-8 fields.
+// Zero fields cancels that id. Replies have a u32 length; zero acknowledges Cancel.
+fn encode(id: u64, fields: &[&str]) -> IdeResult<Vec<u8>> {
+    if fields.is_empty() || fields.len() > 8192 {
+        return Err(IdeError::invalid("Invalid JDBC field count"));
+    }
+    let size = fields
+        .iter()
+        .try_fold(12usize, |n, s| n.checked_add(4)?.checked_add(s.len()).filter(|n| *n <= LIMIT))
+        .ok_or_else(|| IdeError::invalid("JDBC request exceeds 16 MiB"))?;
+    let mut data = Vec::with_capacity(size);
+    data.extend_from_slice(&id.to_be_bytes());
+    data.extend_from_slice(&(fields.len() as u32).to_be_bytes());
+    for field in fields {
+        data.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        data.extend_from_slice(field.as_bytes());
+    }
+    Ok(data)
+}
+
+async fn read_frame(output: &mut (impl AsyncRead + Unpin)) -> IdeResult<Vec<u8>> {
+    let n = output.read_u32().await? as usize;
+    if n > LIMIT {
+        return Err(IdeError::invalid("JDBC response exceeds 16 MiB"));
+    }
+    let mut data = vec![0; n];
+    output.read_exact(&mut data).await?;
+    Ok(data)
+}
+
+const CANCEL_GRACE: Duration = Duration::from_secs(3);
+
+fn cancel_timeout() -> IdeError {
+    IdeError::invalid("The JDBC driver did not stop in time. The session was closed. Reconnect to continue.")
+}
+
+async fn exchange(
+    input: &mut (impl AsyncWrite + Unpin),
+    output: &mut (impl AsyncRead + Unpin),
+    frame: Vec<u8>,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<Vec<u8>>> {
+    let mut stop = [0; 12];
+    stop[..8].copy_from_slice(&frame[..8]);
+    let early_deadline = {
+        let send = input.write_all(&frame);
+        tokio::pin!(send);
+        tokio::select! {
+            result = &mut send => { result?; None },
+            () = cancel.cancelled() => {
+                let end = Deadline::now() + CANCEL_GRACE;
+                timeout_at(end, send).await.map_err(|_| cancel_timeout())??;
+                Some(end)
             }
-            data.extend_from_slice(&(field.len() as u32).to_be_bytes());
-            data.extend_from_slice(field.as_bytes());
         }
-        self.input.write_all(&data).await?;
-        self.input.flush().await?;
-        let n = self.output.read_u32().await? as usize;
-        if n > LIMIT {
-            return Err(IdeError::invalid("JDBC response exceeds 16 MiB"));
+    };
+    drop(frame);
+    let (first, deadline) = {
+        let reply = read_frame(output);
+        tokio::pin!(reply);
+        let end = tokio::select! {
+            biased;
+            () = cancel.cancelled() => early_deadline.unwrap_or_else(|| Deadline::now() + CANCEL_GRACE),
+            data = &mut reply => {
+                let data = data?;
+                if data.is_empty() { return Err(IdeError::invalid("Unexpected JDBC cancellation acknowledgement")); }
+                return Ok(Some(data));
+            }
+        };
+        let first = timeout_at(end, async {
+            input.write_all(&stop).await?;
+            reply.await
+        })
+        .await
+        .map_err(|_| cancel_timeout())??;
+        (first, end)
+    };
+    // Drain both frames before the next statement can use this session. The driver
+    // may complete the statement before or after the control thread acknowledges it.
+    let data = if first.is_empty() {
+        timeout_at(deadline, read_frame(output)).await.map_err(|_| cancel_timeout())??
+    } else {
+        if timeout_at(deadline, output.read_u32()).await.map_err(|_| cancel_timeout())?? != 0 {
+            return Err(IdeError::invalid("Invalid JDBC cancellation acknowledgement"));
         }
-        let mut reply = vec![0; n];
-        self.output.read_exact(&mut reply).await?;
-        Ok(reply)
+        first
+    };
+    match data.first() {
+        // A committed statement may have finished before the control thread received Cancel.
+        Some(1) => Ok(Some(data)),
+        Some(0) => Ok(None),
+        _ => Err(IdeError::invalid("Invalid JDBC cancellation response")),
     }
 }
 
 impl JdbcPool {
-    async fn connect(source: &DataSource, password: Option<&str>, driver: DbJdbcDriver) -> IdeResult<Self> {
+    async fn connect(
+        source: &DataSource,
+        password: Option<&str>,
+        driver: DbJdbcDriver,
+        cache: PathBuf,
+    ) -> IdeResult<Self> {
         driver.validate()?;
         let mut fields = vec![
             "open".to_string(),
@@ -290,17 +378,17 @@ impl JdbcPool {
             source.url.clone(),
             source.user.clone(),
             password.unwrap_or_default().to_owned(),
-            driver.jars.len().to_string(),
+            source.read_only.to_string(),
         ];
-        fields.extend(driver.jars);
         for p in &source.properties {
             if p.name.eq_ignore_ascii_case("password") {
                 return Err(IdeError::invalid("Enter the JDBC password in the password field"));
             }
             fields.extend([p.name.clone(), p.value.clone()]);
         }
-        let bridge =
-            tokio::task::spawn_blocking(Bridge::start).await.map_err(|e| IdeError::internal(e.to_string()))??;
+        let bridge = tokio::task::spawn_blocking(move || Bridge::start(&cache, &driver.jars))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))??;
         let mut pool = Self {
             bridge: Mutex::new(Some(bridge)),
             closed: CancellationToken::new(),
@@ -376,17 +464,19 @@ impl JdbcPool {
             () = self.closed.cancelled() => return Err(IdeError::invalid("JDBC connection is closed")),
             slot = self.bridge.lock() => slot,
         };
-        let mut bridge = slot
-            .take()
+        let bridge = slot
+            .as_mut()
             .ok_or_else(|| IdeError::invalid("JDBC connection is closed; reconnect to start a new session"))?;
+        bridge.sequence = bridge.sequence.wrapping_add(1);
+        let frame = encode(bridge.sequence, fields)?;
+        let mut bridge = slot.take().expect("checked above");
         // Dropping an in-flight request must discard its process and partially consumed frame.
         let interrupted = self.closed.clone().drop_guard();
         let start = Instant::now();
         let response = tokio::select! {
             biased;
-            () = cancel.cancelled() => Err(IdeError::cancelled()),
             () = self.closed.cancelled() => Err(IdeError::cancelled()),
-            response = bridge.exchange(fields) => response,
+            response = exchange(&mut bridge.input, &mut bridge.output, frame, cancel) => response,
         };
         let data = match response {
             Ok(data) => {
@@ -395,11 +485,12 @@ impl JdbcPool {
                 data
             }
             Err(e) => {
-                bridge.close().await;
+                drop(bridge.stop);
+                let _ = bridge.exited.await;
                 return Err(e);
             }
         };
-        decode(&data, sql, start.elapsed().as_secs_f64() * 1000.0)
+        decode(&data.ok_or_else(IdeError::cancelled)?, sql, start.elapsed().as_secs_f64() * 1000.0)
     }
 }
 
@@ -409,6 +500,13 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
         let mut buf = [0; N];
         Read::read_exact(input, &mut buf)?;
         Ok(buf)
+    }
+    fn flag(input: &mut Cursor<&[u8]>) -> IdeResult<bool> {
+        match bytes::<1>(input)? {
+            [0] => Ok(false),
+            [1] => Ok(true),
+            _ => Err(IdeError::invalid("Invalid JDBC flag")),
+        }
     }
     fn field(input: &mut Cursor<&[u8]>) -> IdeResult<Option<String>> {
         let n = i32::from_be_bytes(bytes(input)?);
@@ -424,7 +522,7 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
         input.set_position(end as u64);
         Ok(Some(value))
     }
-    if bytes::<1>(&mut input)? == [0] {
+    if !flag(&mut input)? {
         return Err(IdeError::invalid(field(&mut input)?.unwrap_or_else(|| "JDBC request failed".into())));
     }
     let count = u32::from_be_bytes(bytes(&mut input)?) as usize;
@@ -439,14 +537,17 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
         });
     }
     let mut rows = vec![];
-    while bytes::<1>(&mut input)? == [1] {
+    while flag(&mut input)? {
         if count == 0 {
             return Err(IdeError::invalid("JDBC returned a row with no columns"));
         }
         rows.push((0..count).map(|_| field(&mut input)).collect::<IdeResult<_>>()?);
     }
-    let has_more = bytes::<1>(&mut input)? == [1];
+    let has_more = flag(&mut input)?;
     let affected = i64::from_be_bytes(bytes(&mut input)?);
+    if input.position() != data.len() as u64 {
+        return Err(IdeError::invalid("Invalid trailing JDBC response data"));
+    }
     Ok(QueryResult {
         statement: sql.into(),
         columns,
@@ -490,5 +591,84 @@ impl DbManager {
             tables,
             foreign_keys: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frame_codec_checks_both_16_mib_boundaries() {
+        assert_eq!(encode(7, &["a"]).unwrap(), [0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 1, b'a']);
+        let mut field = "x".repeat(LIMIT - 16);
+        assert_eq!(encode(1, &[&field]).unwrap().len(), LIMIT);
+        field.push('x');
+        assert!(encode(1, &[&field]).is_err());
+        let mut framed = vec![0u8; LIMIT + 4];
+        framed[..4].copy_from_slice(&(LIMIT as u32).to_be_bytes());
+        assert_eq!(read_frame(&mut framed.as_slice()).await.unwrap().len(), LIMIT);
+        assert!(read_frame(&mut &((LIMIT + 1) as u32).to_be_bytes()[..]).await.is_err());
+        assert!(read_frame(&mut &[0, 0, 0, 2, 1u8][..]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cancel_drains_partial_replies_in_either_order() {
+        for ack_first in [true, false] {
+            let (mut input, mut peer_input) = tokio::io::duplex(1);
+            let (mut output, mut peer_output) = tokio::io::duplex(1);
+            let cancel = CancellationToken::new();
+            let frame = encode(42, &["query"]).unwrap();
+            let peer = async {
+                let mut request = vec![0; frame.len()];
+                peer_input.read_exact(&mut request).await.unwrap();
+                assert_eq!(request, frame);
+                // Send the first byte of a frame before Cancel, so a restarted read would desync.
+                peer_output.write_all(&[0]).await.unwrap();
+                cancel.cancel();
+                let mut stop = [0; 12];
+                peer_input.read_exact(&mut stop).await.unwrap();
+                assert_eq!(&stop[..8], &42u64.to_be_bytes());
+                assert_eq!(&stop[8..], &[0; 4]);
+                let frames = if ack_first { [0, 0, 0, 0, 0, 0, 1, 0] } else { [0, 0, 1, 1, 0, 0, 0, 0] };
+                peer_output.write_all(&frames).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(exchange(&mut input, &mut output, frame.clone(), &cancel), peer);
+            assert_eq!(result.unwrap(), (!ack_first).then(|| vec![1]));
+        }
+    }
+
+    #[tokio::test]
+    async fn exchange_rejects_unexpected_acknowledgements() {
+        let cancel = CancellationToken::new();
+        let mut sink = tokio::io::sink();
+        let mut reply = &[0, 0, 0, 1, 1u8][..];
+        assert_eq!(
+            exchange(&mut sink, &mut reply, encode(1, &["query"]).unwrap(), &cancel).await.unwrap(),
+            Some(vec![1])
+        );
+        for cancelled in [false, true] {
+            if cancelled {
+                cancel.cancel();
+            }
+            let mut duplicate_ack = &[0u8; 8][..];
+            assert!(exchange(&mut sink, &mut duplicate_ack, encode(1, &["query"]).unwrap(), &cancel).await.is_err());
+        }
+    }
+
+    #[test]
+    fn result_codec_preserves_null_and_rejects_incomplete_frames() {
+        let mut frame =
+            vec![1, 0, 0, 0, 1, 0, 0, 0, 1, b'n', 0, 0, 0, 3, b'i', b'n', b't', 1, 255, 255, 255, 255, 0, 0];
+        frame.extend_from_slice(&(-1i64).to_be_bytes());
+        let result = decode(&frame, "select", 0.).unwrap();
+        assert_eq!(result.columns[0].name, "n");
+        assert_eq!(result.rows, [vec![None]]);
+        for end in 0..frame.len() {
+            assert!(decode(&frame[..end], "", 0.).is_err());
+        }
+        frame.push(0);
+        assert!(decode(&frame, "", 0.).is_err());
+        assert!(decode(&[2], "", 0.).is_err());
     }
 }

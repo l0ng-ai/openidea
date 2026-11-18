@@ -474,7 +474,7 @@ export function SourceDialog({
   const jdbcUrlValid =
     /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) && !/<[^>]+>|\{(?:host|port|database|file)\}/.test(jdbcUrl);
   const valid = jdbc
-    ? !s.readOnly && !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || jdbcSecurityConfirmed)
+    ? !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || jdbcSecurityConfirmed)
     : sqlite
       ? !!s.file?.trim()
       : (urlOnly ? urlValid : !!s.host?.trim()) &&
@@ -934,16 +934,6 @@ export function SourceDialog({
                     : "Editing the URL fills in the settings above.",
                 )}
           </span>
-          {jdbc && s.readOnly && (
-            <div className={styles.formWide}>
-              <p>
-                <T>This source has Read-only enabled. Custom JDBC relies on the database account to restrict writes.</T>
-              </p>
-              <Button onClick={() => set({ readOnly: false })}>
-                <T>I use a read-only account. Turn off the IDE setting.</T>
-              </Button>
-            </div>
-          )}
           {jdbc && reviewJdbcSecurity && (
             <div className={styles.formWide}>
               <span className={styles.formHint}>
@@ -968,12 +958,11 @@ export function SourceDialog({
     <>
       <Section title="Connection" />
       <span />
-      {jdbc ? (
-        <span className={styles.formHint}>
+      <Checkbox checked={!!s.readOnly} onChange={(readOnly) => set({ readOnly })} label="Read-only" />
+      {jdbc && (
+        <span className={styles.formWide}>
           <T>For read-only access, use a database account with read-only privileges.</T>
         </span>
-      ) : (
-        <Checkbox checked={!!s.readOnly} onChange={(readOnly) => set({ readOnly })} label="Read-only" />
       )}
       {!jdbc && (
         <>

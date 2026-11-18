@@ -86,13 +86,9 @@ pub(crate) fn java_runs(java: &Path) -> bool {
     runnable
 }
 
-/// First runnable JDK in discovery order that provides the requested Java modules.
-pub fn runtime_with_modules<'a>(jdks: &'a [Jdk], min_java: u32, modules: &[&str]) -> Option<&'a Jdk> {
-    jdks.iter().find(|jdk| {
-        jdk.major >= min_java
-            && ide_core::java_runtime::supports_modules(&jdk.home, modules)
-            && java_runs(&java_executable(&jdk.home))
-    })
+/// First runnable Java installation in discovery order, including standalone JREs.
+pub fn java_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
+    jdks.iter().find(|j| j.major >= min_java && java_runs(&java_executable(&j.home)))
 }
 
 fn project_jdk_is_usable(jdk: &Jdk) -> bool {
@@ -758,15 +754,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_with_modules_skips_a_newer_jre() {
+    fn java_runtime_accepts_a_jre_without_a_compiler() {
         let tmp = tempfile::tempdir().unwrap();
-        let jre = test_jdk(tmp.path(), 25, "jre");
+        let jre = test_jdk(tmp.path(), 17, "jre");
         std::fs::remove_file(jre.home.join("bin").join(crate::exe("javac"))).unwrap();
-        let older = test_jdk(tmp.path(), 11, "jdk11");
-        let compatible = test_jdk(tmp.path(), 17, "jdk17");
-        let jdks = [jre, older, compatible.clone()];
-        assert_eq!(runtime_with_modules(&jdks, 17, &["jdk.compiler"]), Some(&compatible));
-        assert_eq!(runtime_with_modules(&jdks, 17, &["missing.module"]), None);
+        let jdks = [test_jdk(tmp.path(), 11, "old"), jre.clone()];
+        assert_eq!(java_runtime(&jdks, 17), Some(&jre));
+        assert_eq!(java_runtime(&jdks, 21), None);
     }
 
     fn test_jdk(root: &Path, major: u32, name: &str) -> Jdk {
@@ -1637,6 +1631,16 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
         "java-usages",
         "1.16.0",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
+    )
+}
+
+/// Extracts the JDBC bridge into the application's data directory.
+pub fn jdbc_bridge_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(
+        data_dir,
+        "jdbc-bridge",
+        "1.0.0",
+        include_bytes!("../../../java/jdbc-bridge/openidea-jdbc-bridge.jar"),
     )
 }
 

@@ -1710,7 +1710,11 @@ impl DbManager {
 
     /// Applies the table editor's pending changes in one transaction.
     pub async fn apply_edits(&self, id: &str, schema: &str, table: &str, edits: &[DbRowEdit]) -> IdeResult<u64> {
-        if self.source(id)?.driver == DbDriver::Clickhouse {
+        let source = self.source(id)?;
+        if source.read_only {
+            return Err(IdeError::new(ErrorKind::PermissionDenied, "the data source is read-only"));
+        }
+        if source.driver == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse table editing is unsupported"));
         }
         let pool = self.pool(id).await?;

@@ -91,6 +91,11 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
   await source.screenshot({ path: info.outputPath("mock-jdbc-source-after-switch.png"), animations: "disabled" });
   await source.getByRole("tab", { name: "Options", exact: true }).click();
   await expect(source.getByRole("button", { name: "Transaction control", exact: true })).toHaveCount(0);
+  await source.getByRole("checkbox", { name: "Read-only", exact: true }).check();
+  await expect(
+    source.getByText("For read-only access, use a database account with read-only privileges."),
+  ).toBeVisible();
+  await source.screenshot({ path: info.outputPath("jdbc-read-only.png"), animations: "disabled" });
   await source.getByRole("tab", { name: "Advanced", exact: true }).click();
   await source.getByRole("button", { name: "Add Property", exact: true }).click();
   await source.getByLabel("Property name", { exact: true }).fill("ssl");
@@ -103,6 +108,7 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
     driver: "jdbc",
     url,
     user: "example-user",
+    readOnly: true,
     properties: [{ name: "ssl", value: "true" }],
   });
   await source.getByRole("button", { name: "OK", exact: true }).click();
@@ -110,6 +116,7 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
   const [{ sources }] = await ipcCalls(page, "db_save_sources");
   const [saved] = sources as Record<string, unknown>[];
   const [{ driver }] = await ipcCalls(page, "db_save_jdbc_driver");
+  expect(saved.readOnly).toBe(true);
   expect(saved.jdbcDriver).toBe((driver as Record<string, unknown>).id);
   for (const key of ["jars", "className", "classpath", "exec", "password"]) expect(saved).not.toHaveProperty(key);
 });
