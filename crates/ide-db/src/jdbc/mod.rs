@@ -623,14 +623,14 @@ mod tests {
                 let mut request = vec![0; frame.len()];
                 peer_input.read_exact(&mut request).await.unwrap();
                 assert_eq!(request, frame);
-                // Send the first byte of a frame before Cancel, so a restarted read would desync.
-                peer_output.write_all(&[0]).await.unwrap();
+                // The one-byte pipe forces the reader to consume part of the header before Cancel.
+                peer_output.write_all(&[0, 0]).await.unwrap();
                 cancel.cancel();
                 let mut stop = [0; 12];
                 peer_input.read_exact(&mut stop).await.unwrap();
                 assert_eq!(&stop[..8], &42u64.to_be_bytes());
                 assert_eq!(&stop[8..], &[0; 4]);
-                let frames = if ack_first { [0, 0, 0, 0, 0, 0, 1, 0] } else { [0, 0, 1, 1, 0, 0, 0, 0] };
+                let frames = if ack_first { [0, 0, 0, 0, 0, 1, 0] } else { [0, 1, 1, 0, 0, 0, 0] };
                 peer_output.write_all(&frames).await.unwrap();
             };
             let (result, ()) = tokio::join!(exchange(&mut input, &mut output, frame.clone(), &cancel), peer);
@@ -654,6 +654,10 @@ mod tests {
             let mut duplicate_ack = &[0u8; 8][..];
             assert!(exchange(&mut sink, &mut duplicate_ack, encode(1, &["query"]).unwrap(), &cancel).await.is_err());
         }
+        let (mut peer, mut output) = tokio::io::duplex(4);
+        peer.write_u32(0).await.unwrap();
+        let error = exchange(&mut sink, &mut output, encode(1, &["query"]).unwrap(), &cancel).await.unwrap_err();
+        assert_eq!(error.message, cancel_timeout().message);
     }
 
     #[test]
