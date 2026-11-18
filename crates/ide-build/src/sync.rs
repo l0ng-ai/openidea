@@ -437,6 +437,8 @@ pub fn sync_gradle_model(
     let mut args: Vec<String> = vec![
         "--console=plain".into(),
         "-q".into(),
+        // The init script reports the evaluated projects, even when a build enables the configuration cache.
+        "-Dorg.gradle.configuration-cache=false".into(),
         "--init-script".into(),
         init_script.to_string_lossy().into_owned(),
         "tasks".into(),

@@ -4682,6 +4682,8 @@
   "No Maven or Gradle projects": "没有 Maven 或 Gradle 项目",
   "Resolving dependencies…": "正在解析依赖…",
   "Cannot resolve dependencies": "无法解析依赖",
+  "Cannot load Gradle configurations": "无法加载 Gradle 配置",
+  "No resolvable Gradle configurations": "没有可解析的 Gradle 配置",
   "requested {version}": "请求的版本为 {version}",
   "not resolved": "未解析",
   "Shows a Gradle project's resolved dependencies per configuration, version conflicts and where each library comes from": "按配置显示 Gradle 项目解析后的依赖、版本冲突以及每个库的来源",
