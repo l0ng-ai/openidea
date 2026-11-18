@@ -160,7 +160,6 @@ function conflictsBody(names: string[]): string {
 
 /** Settings › Version Control › Log (also used by the Settings window). */
 export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
-export { activateDiffWindow, DiffWindow } from "./DiffWindow";
 
 /** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
 export function activateDiffViewer(): () => void {
