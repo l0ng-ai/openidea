@@ -151,6 +151,22 @@ describe("Vim clipboard hooks", () => {
     }
   });
 
+  it("falls back to the register text when the clipboard read is denied", async () => {
+    vi.spyOn(navigator.clipboard, "readText").mockRejectedValue(new Error("denied"));
+    const { controller, register } = fakeController("stale\n");
+    const harness = pasteHarness(controller);
+    try {
+      harness.run();
+      await settle();
+      expect(harness.pastes).toHaveLength(1);
+      const [_cm, _actionArgs, _vim, text, passedRegister] = harness.pastes[0]!;
+      expect(text).toBe("stale\n");
+      expect(passedRegister).toBe(register);
+    } finally {
+      harness.restore();
+    }
+  });
+
   it("leaves internal register pastes alone", () => {
     const { controller } = fakeController("a\r\nb");
     const harness = pasteHarness(controller);

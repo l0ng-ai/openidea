@@ -72,16 +72,21 @@ function pasteAction(): VimPasteAction {
       this.continuePaste(cm, actionArgs, vim, register.toString(), register);
       return;
     }
-    void navigator.clipboard.readText().then((value) => {
-      // Windows clipboards deliver CRLF; Vim treats a trailing line break as linewise.
-      const text = value.replace(/\r\n?/g, "\n");
-      const linewise = text.endsWith("\n");
-      actionArgs.linewise = linewise;
-      register.linewise = linewise;
-      // External text has no Vim block shape, even if the last `"+` write did.
-      register.blockwise = false;
-      this.continuePaste(cm, actionArgs, vim, text, register);
-    });
+    void navigator.clipboard.readText().then(
+      (value) => {
+        // Windows clipboards deliver CRLF; Vim treats a trailing line break as linewise.
+        const text = value.replace(/\r\n?/g, "\n");
+        const linewise = text.endsWith("\n");
+        actionArgs.linewise = linewise;
+        register.linewise = linewise;
+        // External text has no Vim block shape, even if the last `"+` write did.
+        register.blockwise = false;
+        this.continuePaste(cm, actionArgs, vim, text, register);
+      },
+      // A denied read (permission, insecure context) leaves the last `"+` write in the
+      // register; paste that rather than dropping the command, as the yank side does.
+      () => this.continuePaste(cm, actionArgs, vim, register.toString(), register),
+    );
   };
 }
 
