@@ -93,10 +93,12 @@ db_connect                                   trusted            project_host bin
 db_connected                                 trusted            project_host bindings sync
 db_console_path                              always             project_host bindings sync
 db_consoles                                  always             project_host bindings sync
+db_create_database                           trusted            project_host bindings async
 db_database_catalog                          trusted            project_host bindings async
 db_databases                                 trusted            project_host bindings async
 db_ddl                                       trusted            project_host bindings async
 db_disconnect                                trusted            project_host bindings async
+db_drop_database                             trusted            project_host bindings async
 db_dump_info                                 trusted            desktop      bindings async
 db_execute                                   trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async

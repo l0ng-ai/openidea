@@ -1,34 +1,42 @@
 /**
  * Dialogs of the Database tree's object actions, after IDEA's: Rename, Confirm
- * Drop, Truncate, Modify Table / New Table (with a Preview of the SQL they
- * run), Remove Data Source, Data Source from URL, and the Quick Documentation popup.
+ * Drop, Truncate, Modify Table / New Table, New Database / New Schema (with a
+ * Preview of the SQL they run), Remove Data Source, Data Source from URL, and the Quick Documentation popup.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { call, commands, type DbColumnInfo, type DbDriver } from "@/platform/ipc";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { Button, Checkbox, Dialog, IconButton, Input, Popup, Icon, T } from "@/ui";
+import { Button, Checkbox, Dialog, IconButton, Input, Popup, Icon, Select, T, type SelectOption } from "@/ui";
 import { parseSourceUrl, sourceLabel, splitTarget } from "./model";
 import { nodeTarget, schemaObjectOf, tableOf, type DbNode } from "./nodes";
 import {
   alterTableSql,
   canAlterColumn,
+  createDatabaseSql,
+  createSchemaSql,
   createTableSql,
   draftOf,
+  dropDatabaseSql,
   dropSql,
   ident,
   reference,
   renameSql,
   truncateSql,
   type ColumnDraft,
+  templateOf,
+  type CreateOptions,
   type DbObjectRef,
 } from "./objects";
 import {
   closeDialog,
   detailsKey,
   connectedTargets,
+  createDatabase,
+  dropDatabase,
   loadDetails,
   openSourceDialog,
   readableDdl,
+  refresh,
   renameSource,
   runSql,
   sourceById,
@@ -80,14 +88,15 @@ function objectName(o: DbObjectRef): string {
 function useRunner() {
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
-  const runAndClose = async (id: string, statements: string[]) => {
-    if (running.current) return;
+  const runAndClose = async (id: string, statements: string[]): Promise<boolean> => {
+    if (running.current) return false;
     running.current = true;
     setBusy(true);
     const ok = await runSql(id, statements);
     running.current = false;
     setBusy(false);
     if (ok) closeDialog();
+    return ok;
   };
   return { busy, runAndClose };
 }
@@ -116,7 +125,7 @@ function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }
       width={480}
       buttons={[
         { label: "Cancel", role: "cancel" },
-        { label: "Refactor", role: "default", disabled: busy || !name.trim(), onClick: submit },
+        { label: "Refactor", role: "default", disabled: busy || !name.trim(), onClick: () => void submit() },
       ]}
     >
       <div className={styles.dialogBody}>
@@ -207,6 +216,169 @@ function TruncateDialog({ id, schema, table }: { id: string; schema: string; tab
             <Checkbox checked={cascade} onChange={setCascade} label="Cascade" />
           </>
         )}
+        <SqlPreview sql={sql} />
+      </div>
+    </Dialog>
+  );
+}
+
+// ---- New Database / New Schema / Drop database ---------------------------------
+
+const TEMPLATES: SelectOption[] = [
+  { value: "", label: "Server default" },
+  ...["template0", "template1"].map((name) => ({ value: name, label: name, verbatim: true })),
+];
+
+/** An optional text field of the create dialogs: empty leaves it to the server. */
+function OptionField({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <>
+      <label className={styles.formLabel} htmlFor={id}>
+        {tx(label)}
+      </label>
+      <Input id={id} placeholder="Server default" value={value} onChange={(e) => onChange(e.target.value)} />
+    </>
+  );
+}
+
+/** New › Database (`database`) or New › Schema (`schema`) in target `id`. */
+function CreateDialog({ id, what }: { id: string; what: "database" | "schema" }) {
+  const driver = driverOf(id);
+  const [name, setName] = useState("");
+  const [opts, setOpts] = useState<CreateOptions>({});
+  const { busy: running, runAndClose } = useRunner();
+  const [creating, setCreating] = useState(false);
+  const busy = running || creating;
+  const sql = (what === "database" ? createDatabaseSql : createSchemaSql)(driver, name.trim() || "<name>", opts);
+  const submit = async () => {
+    if (what === "schema") {
+      if (await runAndClose(id, [sql])) void refresh(id);
+      return;
+    }
+    setCreating(true);
+    if (await createDatabase(id, templateOf(driver, opts), sql)) closeDialog();
+    else setCreating(false);
+  };
+  const field = (key: keyof CreateOptions, label: string) => (
+    <OptionField
+      id={`db-new-${key}`}
+      label={label}
+      value={opts[key] ?? ""}
+      onChange={(value) => setOpts((o) => ({ ...o, [key]: value }))}
+    />
+  );
+  return (
+    <Dialog
+      open
+      onClose={closeDialog}
+      title={what === "database" ? "New Database" : "New Schema"}
+      width={560}
+      buttons={[
+        { label: "Cancel", role: "cancel" },
+        { label: "OK", role: "default", disabled: busy || !name.trim(), onClick: submit },
+      ]}
+    >
+      <div className={styles.form}>
+        <label className={styles.formLabel} htmlFor="db-new-name">
+          <T>Name:</T>
+        </label>
+        <Input id="db-new-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+        {what === "database" && driver === "postgres" && (
+          <>
+            {field("owner", "Owner:")}
+            <label className={styles.formLabel} htmlFor="db-new-template">
+              <T>Template:</T>
+            </label>
+            <Select
+              id="db-new-template"
+              value={opts.template ?? ""}
+              options={TEMPLATES}
+              onChange={(template) => setOpts((o) => ({ ...o, template }))}
+            />
+            <span />
+            <span className={styles.formHint}>
+              <T>Restoring a dump needs template0: template1 can already hold extensions and schemas.</T>
+            </span>
+            {field("encoding", "Encoding:")}
+            {field("tablespace", "Tablespace:")}
+          </>
+        )}
+        {what === "database" && driver === "sqlServer" && field("collation", "Collation:")}
+        {what === "schema" && driver === "mysql" && (
+          <>
+            {field("charset", "Character set:")}
+            {field("collation", "Collation:")}
+          </>
+        )}
+        {what === "schema" && driver !== "mysql" && field("owner", "Owner:")}
+        <div className={styles.formFull}>
+          <SqlPreview sql={sql} />
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+/** PostgreSQL 13 added `drop database … with (force)`. */
+const PG_FORCE_DROP = 130000;
+
+function DropDatabaseDialog({ id, database }: { id: string; database: string }) {
+  const driver = driverOf(id);
+  const [force, setForce] = useState(false);
+  const [version, setVersion] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (driver !== "postgres") return;
+    let live = true;
+    void withConnection(id, () => call(commands.dbServerVersion(id)))
+      .then((v) => live && setVersion(v))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [id, driver]);
+  const canForce = driver === "sqlServer" || (version ?? 0) >= PG_FORCE_DROP;
+  const sql = dropDatabaseSql(driver, database, force && canForce);
+  const submit = async () => {
+    setBusy(true);
+    if (await dropDatabase(id, database, sql)) closeDialog();
+    else setBusy(false);
+  };
+  return (
+    <Dialog
+      open
+      onClose={closeDialog}
+      title="Confirm Drop"
+      width={520}
+      buttons={[
+        { label: "Cancel", role: "cancel" },
+        { label: "OK", role: "default", disabled: busy, onClick: () => void submit() },
+      ]}
+    >
+      <div className={styles.dialogBody}>
+        <div className={styles.dialogLead}>
+          {tx`Drop database`} <strong>{database}</strong>
+          {tx`? This cannot be undone.`}
+        </div>
+        <span className={styles.formHint}>
+          <T>The IDE closes its own connections to the database first.</T>
+        </span>
+        <Checkbox
+          checked={force && canForce}
+          onChange={setForce}
+          disabled={!canForce}
+          label="Close the sessions of other clients"
+        />
         <SqlPreview sql={sql} />
       </div>
     </Dialog>
@@ -726,6 +898,12 @@ export function ObjectDialogs() {
       return <DropDialog id={dialog.id} object={dialog.object} />;
     case "truncate":
       return <TruncateDialog id={dialog.id} schema={dialog.schema} table={dialog.table} />;
+    case "createDatabase":
+      return <CreateDialog id={dialog.id} what="database" />;
+    case "createSchema":
+      return <CreateDialog id={dialog.id} what="schema" />;
+    case "dropDatabase":
+      return <DropDatabaseDialog id={dialog.id} database={dialog.database} />;
     case "modifyTable":
       return (
         <ModifyTableDialog
