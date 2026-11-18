@@ -19,7 +19,7 @@ fn remember_codex_modes(data: &Path) {
 }
 
 fn codex_mode(host: &Host) -> Option<String> {
-    let providers = ide_host::ops::agent::providers(host, "main").unwrap();
+    let providers = ide_host::ops::agent::agent_providers(host, "main").unwrap();
     let codex = providers.into_iter().find(|p| p.id == "codex").expect("codex is listed");
     codex.config.into_iter().find(|o| o.id == "mode").and_then(|o| o.current)
 }

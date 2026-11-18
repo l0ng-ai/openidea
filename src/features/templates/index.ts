@@ -4,13 +4,13 @@
  * templates ("New ▸ …").
  */
 import { lazyComponent } from "@/ui";
-import { registerAction, registerActions, type Action } from "@/platform/actions";
+import { registerActions, type Action } from "@/platform/actions";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
   registerMenuGroup,
   registerOverlay,
-  registerSettingsPage,
+  registerSettingsPages,
   hasRunConfiguration,
   type MenuGroupContext,
 } from "@/workbench/contributions";
@@ -149,10 +149,10 @@ function registerNewMenuGroups(): () => void {
 }
 
 function registerFileTemplateActions(): () => void {
-  let disposers: Array<() => void> = [];
+  let dispose = () => {};
   const sync = (templates: FileTemplate[]) => {
-    disposers.forEach((d) => d());
-    disposers = templates.filter((t) => t.enabled !== false).map((t) => registerAction(newFileAction(t)));
+    dispose();
+    dispose = registerActions(templates.filter((t) => t.enabled !== false).map(newFileAction));
   };
   sync(useFileTemplates.getState().templates);
   const unsub = useFileTemplates.subscribe((s, prev) => {
@@ -160,22 +160,22 @@ function registerFileTemplateActions(): () => void {
   });
   return () => {
     unsub();
-    disposers.forEach((d) => d());
+    dispose();
   };
 }
 
 /** Live / postfix / file template pages (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
-  const disposers = [
-    registerSettingsPage({
+  return registerSettingsPages([
+    {
       id: "editor.liveTemplates",
       title: "Live Templates",
       group: "Editor",
       order: 28,
       keywords: ["snippet", "abbreviation", "surround", "template"],
       component: lazyComponent(() => import("./settings/LiveTemplatesPage").then((m) => m.LiveTemplatesPage)),
-    }),
-    registerSettingsPage({
+    },
+    {
       // IDEA: Editor › General › Postfix Completion.
       id: "editor.general.postfixCompletion",
       title: "Postfix Completion",
@@ -183,17 +183,16 @@ export function activateSettingsPages(): () => void {
       order: 7,
       keywords: ["postfix", "template", ".if", ".var", ".for"],
       component: lazyComponent(() => import("./settings/PostfixPage").then((m) => m.PostfixPage)),
-    }),
-    registerSettingsPage({
+    },
+    {
       id: "editor.fileTemplates",
       title: "File and Code Templates",
       group: "Editor",
       order: 26,
       keywords: ["new file", "class", "template", "package", "includes", "file header", "code", "scheme", "reformat"],
       component: lazyComponent(() => import("./settings/FileTemplatesPage").then((m) => m.FileTemplatesPage)),
-    }),
-  ];
-  return () => disposers.reverse().forEach((d) => d());
+    },
+  ]);
 }
 
 export function activate(): () => void {

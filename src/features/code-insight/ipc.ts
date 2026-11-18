@@ -134,7 +134,8 @@ export async function readManyFileLines(
 export async function withDocument<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
   const open = editorsFor(path)[0];
   if (open) return fn(open.ctx.doc);
-  const info = await lspRequest(() => commands.docOpen(path));
+  // Library types (`jdt://…`) are documents the language server provides, not files on disk.
+  const info = await lspRequest(() => (isVirtualUri(path) ? commands.docOpenVirtual(path) : commands.docOpen(path)));
   try {
     return await fn(info.id);
   } finally {

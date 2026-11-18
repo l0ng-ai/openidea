@@ -117,6 +117,10 @@ description: "创建、编辑和启动运行配置，从装订区运行代码，
 
 开启 **包括系统环境变量** 时，进程还会继承 IDE 的环境变量和登录 shell 里的变量。
 
+### direnv 和 Nix flake
+
+受信任的项目根目录下有 `.envrc` 时，IDE 会在那里运行 `direnv export json`（需要安装 `direnv`），并把导出的变量交给在项目里启动的终端、运行配置、语言服务器、构建工具和调试器。语言服务器会等它加载完成；`.envrc` 里写了 `use flake` 时，flake 的 devshell 也会这样加载，第一次可能需要一些时间。IDE 不会替你运行 `direnv allow`：`.envrc` 被阻止时会有通知提示。修改 `.envrc`、`flake.nix` 或 `flake.lock` 后，通知会提供**重新加载环境**。
+
 ### 修改选项
 
 | 分组     | 选项                                                                                                                  |

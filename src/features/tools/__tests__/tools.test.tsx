@@ -110,16 +110,17 @@ describe("tools store", () => {
 
   it("groups tools by language and filters by text and missing tools", () => {
     const langs = groupByLanguage(sampleTools());
+    // Popular languages first, then by name.
     expect(langs.map((l) => l.name)).toEqual([
-      "C",
-      "C++",
-      "Go",
       "JavaScript",
-      "Kotlin",
-      "Python",
-      "Ruby",
-      "Rust",
       "TypeScript",
+      "Python",
+      "C++",
+      "C",
+      "Go",
+      "Rust",
+      "Kotlin",
+      "Ruby",
       "Zig",
     ]);
     const go = langs.find((l) => l.name === "Go")!;
@@ -137,7 +138,7 @@ describe("tools store", () => {
     expect(langs.find((l) => l.name === "Python")!.missing.map((t) => t.name)).toEqual(["basedpyright"]);
 
     expect(filterLanguages(langs, "dlv", false).map((l) => l.name)).toEqual(["Go"]);
-    expect(filterLanguages(langs, "codelldb", false).map((l) => l.name)).toEqual(["C", "C++", "Rust"]);
+    expect(filterLanguages(langs, "codelldb", false).map((l) => l.name)).toEqual(["C++", "C", "Rust"]);
     expect(filterLanguages(langs, "", true).map((l) => l.name)).not.toContain("TypeScript");
   });
 
@@ -401,7 +402,11 @@ describe("LanguageServersPage", () => {
     await open(user, "Go");
     await user.click(toolItem("delve"));
     const details = screen.getByLabelText("Delve (Go debugger) details");
-    await user.click(within(details).getByRole("button", { name: "Install Delve (Go debugger)" }));
+    await user.click(
+      within(details).getByRole("button", {
+        name: "Install Delve (Go debugger)",
+      }),
+    );
     await user.click(within(details).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(useTools.getState().logs["delve"]?.error).toBe("Cancelled"));
     expect(toolItem("delve")).toHaveTextContent("Missing");
@@ -432,23 +437,29 @@ describe("LanguageServersPage", () => {
     expect(language("Go")).not.toHaveTextContent("missing");
   });
 
-  it("shows the picker of interchangeable servers once, above them", async () => {
+  it("lists interchangeable servers in their radio group, in preference order", async () => {
     const user = userEvent.setup();
     renderPage();
     const python = await open(user, "Python");
-    expect(
-      within(python).getAllByRole("button", {
-        name: "Language server for Python",
-      }),
-    ).toHaveLength(1);
-    const rows = within(within(python).getByRole("list", { name: "Language Servers" })).getAllByRole("button", {
-      name: /^(?!Install)/,
+    const group = within(python).getByRole("radiogroup", {
+      name: "Language server for Python",
     });
+    const rows = [...group.querySelectorAll<HTMLElement>("[data-tool]")];
     expect(rows.map((r) => r.dataset.tool)).toEqual(["basedpyright", "pyright", "ty", "pyrefly"]);
     await user.click(toolItem("ty"));
-    expect(
-      within(screen.getByLabelText("ty (Python) details")).queryByRole("button", { name: /^Language server/ }),
-    ).toBeNull();
+    expect(within(screen.getByLabelText("ty (Python) details")).queryByRole("radio")).toBeNull();
+  });
+
+  it("jumps to a missing tool from the language's banner", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const rust = await open(user, "Rust");
+    await user.click(
+      within(within(rust).getByRole("note")).getByRole("button", {
+        name: /CodeLLDB/i,
+      }),
+    );
+    expect(toolItem("codelldb")).toHaveAttribute("aria-current", "true");
   });
 
   it("explains why a tool cannot be installed", async () => {
@@ -459,6 +470,33 @@ describe("LanguageServersPage", () => {
     await open(user, "Zig");
     expect(screen.getByText("curl is required to download tools")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Install Missing/ })).toBeNull();
+  });
+
+  it("offers an IDE copy only for a tool found on PATH", async () => {
+    backend.tools.push({
+      ...sampleTools().find((t) => t.name === "gopls")!,
+      name: "golangci-lint-langserver",
+      displayName: "golangci-lint-langserver",
+      status: "custom",
+      path: "/opt/bin/golangci-lint-langserver",
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await open(user, "TypeScript");
+    await user.click(toolItem("typescript-language-server"));
+    const onPath = within(screen.getByLabelText("typescript-language-server details")).getByRole("button", {
+      name: "Install typescript-language-server",
+    });
+    expect(onPath).toHaveTextContent("Install IDE Copy");
+    expect(onPath).toHaveAttribute("title", expect.stringContaining("/opt/homebrew/bin/typescript-language-server"));
+    // The executable chosen in settings wins over an IDE copy, so it is a plain Install.
+    await open(user, "Go");
+    await user.click(toolItem("golangci-lint-langserver"));
+    expect(
+      within(screen.getByLabelText("golangci-lint-langserver details")).getByRole("button", {
+        name: "Install golangci-lint-langserver",
+      }),
+    ).toHaveTextContent(/^Install$/);
   });
 
   it("notes the other languages a shared tool serves", async () => {
@@ -494,7 +532,7 @@ describe("LanguageServersPage", () => {
     renderPage();
     await open(user, "Go");
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByLabelText("JavaScript tools")).toBeInTheDocument();
+    expect(screen.getByLabelText("Rust tools")).toBeInTheDocument();
   });
 
   it("filters to languages missing tools and by tool name", async () => {

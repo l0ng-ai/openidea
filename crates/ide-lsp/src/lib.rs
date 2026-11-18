@@ -25,6 +25,7 @@ mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod message_requests;
 mod notebook;
 mod phoxite;
 mod plugin_requests;
@@ -48,6 +49,7 @@ pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use jdtls::stream_trace::JdtStreamTracer;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
+pub use message_requests::answer as answer_message_request;
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
@@ -647,6 +649,11 @@ impl LspManager {
             .unwrap_or_else(|| self.project_root.clone())
     }
 
+    /// `path` as the project's roots spell it ([`ide_language::project_spelling`]).
+    fn in_project_spelling<'a>(&self, path: &'a Path) -> std::borrow::Cow<'a, Path> {
+        ide_language::project_spelling(path, |p| p.starts_with(self.project_root_for(p)))
+    }
+
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
@@ -668,10 +675,25 @@ impl LspManager {
             })
         };
         if let Some(s) = servers.iter().find(|s| s.name == cfg.name && s.root == root) {
+            if !path.starts_with(&project) {
+                tracing::debug!(
+                    server = ?s.id,
+                    name = %s.name,
+                    root = %s.root.display(),
+                    "reusing language server for external file"
+                );
+            }
             s.add_language(language);
             return s.clone();
         }
         let server = Arc::new(Server::new(cfg.clone(), root, language.clone()));
+        tracing::debug!(
+            server = ?server.id,
+            name = %server.name,
+            root = %server.root.display(),
+            external = !path.starts_with(&project),
+            "created language server route"
+        );
         servers.push(server.clone());
         server
     }
@@ -682,6 +704,7 @@ impl LspManager {
     /// only files below one, and stands in for no other. One that a server before
     /// it `replaces` is left out while that server serves the file.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        let path = &*self.in_project_spelling(path);
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
         }
@@ -826,6 +849,9 @@ impl LspManager {
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
         let Some(cancel) = server.starting_status(generation, &self.sink) else { return };
+        // Includes settings/prepare, blocking-pool queueing, launch and initialize.
+        let started = std::time::Instant::now();
+        tracing::info!(server = ?server.id, generation, name = %server.name, "starting language server");
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
@@ -833,6 +859,9 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
+            // The project's direnv environment (a Nix devshell) may hold the server and its
+            // toolchain: start once it has loaded.
+            ide_core::project_env::wait(&tail.root, &launch_cancel);
             if !me.execution_allowed.load(Ordering::Acquire) {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
@@ -944,8 +973,15 @@ impl LspManager {
         };
         let caps = match result {
             Ok(result) => {
+                tracing::info!(
+                    server = ?server.id,
+                    generation,
+                    name = %server.name,
+                    startup_to_initialize_ms = started.elapsed().as_millis() as u64,
+                    "language server initialized"
+                );
                 if let Some(info) = result.get("serverInfo") {
-                    tracing::info!("{} initialized: {info}", server.name);
+                    tracing::info!(server = ?server.id, generation, "{} initialized: {info}", server.name);
                 }
                 let mut caps_val = result.get("capabilities").cloned().unwrap_or_else(|| json!({}));
                 if server.name == arduino::SERVER {
@@ -3239,6 +3275,7 @@ impl LspManager {
             .call(t, "textDocument/prepareCallHierarchy", snap.pos_params(t, pos), Some(cancel), DEFAULT_TIMEOUT)
             .await?;
         let items = items.filter(|i| !i.is_empty()).ok_or_else(no_hierarchy_target)?;
+        let root = convert::call_item(&self.conv(t.enc()), &items[0], Vec::new());
         let query = || async {
             let mut out = Vec::new();
             for item in &items {
@@ -3261,7 +3298,10 @@ impl LspManager {
                         let (src, _) = uri_target(item.uri.as_str());
                         for c in calls.unwrap_or_default() {
                             let ranges = c.from_ranges.iter().map(|r| conv.range(&src, *r)).collect();
-                            out.extend(convert::call_item(&conv, &c.to, ranges));
+                            out.extend(
+                                convert::call_item(&conv, &c.to, ranges)
+                                    .map(|to| HierarchyItem { from_path: Some(src.clone().into()), ..to }),
+                            );
                         }
                     }
                 }
@@ -3291,8 +3331,8 @@ impl LspManager {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        self.note_virtual(&t.server, out.iter().map(|i| i.uri.as_deref()));
-        Ok(CallHierarchy { items: out, incomplete })
+        self.note_virtual(&t.server, out.iter().chain(&root).map(|i| i.uri.as_deref()));
+        Ok(CallHierarchy { root, items: out, incomplete })
     }
 
     /// The type at `pos` as the server's type hierarchy names it (with its `detail`, the
@@ -4260,5 +4300,66 @@ mod code_action_tests {
         assert!(!source_actions_only(&kinds(&["quickfix"])));
         assert!(!source_actions_only(&kinds(&["source.organizeImports", "refactor"])));
         assert!(!source_actions_only(&kinds(&["sourcefoo"])));
+    }
+}
+
+#[cfg(test)]
+mod external_go_routing_tests {
+    use super::*;
+
+    fn manager(root: &Path) -> Arc<LspManager> {
+        LspManager::new(
+            root.to_owned(),
+            Arc::new(LanguageRegistry::load(None).unwrap()),
+            Arc::new(|_: ide_core::IdeEvent| {}),
+        )
+    }
+
+    fn route(manager: &LspManager, path: &Path) -> Arc<Server> {
+        let language = LanguageId::new("go");
+        let config = manager.languages.get(&language).unwrap();
+        manager.server_for(&config.language_servers[0], &language, path)
+    }
+
+    fn module(root: &Path, name: &str) -> PathBuf {
+        let root = root.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("go.mod"), format!("module example.test/{name}\n")).unwrap();
+        root.join("main.go")
+    }
+
+    // Characterize the fallback, not a promise that this is the correct consumer
+    // context for a shared dependency. No gopls process is launched in these tests.
+    #[tokio::test]
+    async fn external_go_file_reuses_first_module_without_creating_another_server() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let b = module(workspace.path(), "b");
+        let dependency = cache.path().join("dependency.go");
+        for order in [[&a, &b], [&b, &a]] {
+            let manager = manager(workspace.path());
+            let first = route(&manager, order[0]);
+            let second = route(&manager, order[1]);
+            assert_ne!(first.id, second.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(manager.servers.lock().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn external_go_file_restored_first_keeps_project_root_fallback() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let dependency = cache.path().join("dependency.go");
+        let manager = manager(workspace.path());
+        let restored = route(&manager, &dependency);
+        assert_eq!(restored.root, workspace.path());
+        let consumer = route(&manager, &a);
+        assert_ne!(restored.id, consumer.id);
+        assert_eq!(route(&manager, &dependency).id, restored.id);
+        assert_eq!(manager.servers.lock().len(), 2);
     }
 }

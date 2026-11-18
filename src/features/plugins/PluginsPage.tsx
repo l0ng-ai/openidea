@@ -581,7 +581,7 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
             c.id.startsWith("process:") ? (
               <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
             ) : (
-              c.id === "java.agent" && <JavaAgentDetail plugin={plugin} />
+              c.id === "java.agent" && <JavaAgentDetail plugin={plugin} cap={c} disabled={busy || !confirmed} />
             )
           }
         >
@@ -601,14 +601,31 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
 }
 
 /** The agent a `java.agent` grant loads: its jar's file name and arguments, as `-javaagent:` takes them. */
-function JavaAgentDetail({ plugin }: { plugin: PluginInfo }) {
-  const agent = plugin.contributions.find((c) => c.point === "javaAgents");
+function JavaAgentDetail({ plugin, cap, disabled }: { plugin: PluginInfo; cap: CapabilityInfo; disabled: boolean }) {
+  const agent = plugin.javaAgent;
   if (!agent) return null;
+  const approve = async () => {
+    // Revoking and granting again recomputes the jar's hash in the host.
+    if (await setPluginCapability(plugin.id, cap.id, false)) {
+      await setPluginCapability(plugin.id, cap.id, true);
+    }
+  };
   return (
     <div className={styles.programPermission}>
       <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("Java agent")}>
-        {agent.label}
+        {agent.fileName}
+        {agent.args ? `=${agent.args}` : ""}
       </span>
+      {cap.granted && !agent.approved && (
+        <div className={styles.error} role="alert">
+          <p>
+            <T>The agent jar changed since you approved it. Approve the new jar before the next launch.</T>
+          </p>
+          <Button size="small" variant="primary" disabled={disabled} onClick={() => void approve()}>
+            <T>Approve new jar</T>
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

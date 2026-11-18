@@ -150,7 +150,11 @@ export type DialogState =
   /** Export with 'pg_dump' of a database, schema or table. */
   | { kind: "dump"; target: string; database: string; schemas?: string; tables?: string; serverVersion: number | null }
   /** Restore with 'pg_restore' / 'psql' into a database. */
-  | { kind: "restore"; target: string; database: string; serverVersion: number | null };
+  | { kind: "restore"; target: string; database: string; serverVersion: number | null }
+  /** Export with 'mysqldump' of a data source, database or table. */
+  | { kind: "mysqlDump"; target: string; database: string; tables?: string }
+  /** Restore with 'mysql' into a database. */
+  | { kind: "mysqlRestore"; target: string; database: string };
 
 /** The schemas and tables of a data source's databases, as far as introspection has read them. */
 export interface SourceCatalog {

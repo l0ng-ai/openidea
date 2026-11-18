@@ -570,14 +570,24 @@ function copyReference(reference: Promise<string>) {
   }
 }
 
-function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
-  const path = slot.model.path;
-  const { doc, selection } = view.state;
-  const line = doc.lineAt(selection.main.head).number;
+/** The selected lines (1-based), leaving out the one a selection ends at the start of. */
+function selectedLines(state: EditorState): { first: number; last: number } {
+  const { doc, selection } = state;
   const { from, to } = selection.main;
-  // The selected lines, leaving out the one a selection ends at the start of.
   const first = doc.lineAt(from).number;
   const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
+  return { first, last };
+}
+
+/** `path:12`, or `path:12-18` for a selection over several lines. */
+function pathWithLines(state: EditorState, path: string): string {
+  const { first, last } = selectedLines(state);
+  return `${pathToCopy("relative", path)}:${first}${last > first ? `-${last}` : ""}`;
+}
+
+function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
+  const path = slot.model.path;
+  const { first, last } = selectedLines(view.state);
   const contributed = menuGroupItems("copyPath", {
     paths: [path],
     line: first - 1,
@@ -603,7 +613,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
     {
       id: "editor.copyPathWithLineNumber",
       label: "Path with line number",
-      value: `${pathToCopy("relative", path)}:${line}`,
+      value: pathWithLines(view.state, path),
     },
   ];
   const popup: Extract<LspPopup, { kind: "list" }> = {
@@ -905,6 +915,16 @@ export function registerEditorActions(): () => void {
       when: "textEditorActive",
       hidden: true,
       // The mouse selection style handles the pointer position and dragging.
+      run: () => {},
+    },
+    {
+      id: "editor.createRectangularSelectionOnMouseDrag",
+      title: "Create Rectangular Selection on Mouse Drag",
+      category: "Editor Actions",
+      when: "textEditorActive",
+      hidden: true,
+      keymap: true,
+      // The mouse selection style owns the drag; invoking the action alone is harmless.
       run: () => {},
     },
     text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
@@ -1280,12 +1300,7 @@ export function registerEditorActions(): () => void {
       when: TEXT_WHEN,
       run: ({ arg }) => {
         if (typeof arg === "string") copyEditorPath(arg);
-        else
-          withView((view, slot) =>
-            copyEditorPath(
-              `${pathToCopy("relative", slot.model.path)}:${view.state.doc.lineAt(view.state.selection.main.head).number}`,
-            ),
-          )();
+        else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path)))();
       },
     },
     {

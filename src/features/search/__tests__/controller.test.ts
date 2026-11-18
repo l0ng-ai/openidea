@@ -168,6 +168,28 @@ describe("SeController", () => {
     expect(item.kind === "file" && [item.line, item.col]).toEqual([41, 2]);
   });
 
+  // #4080: `:digits` is a location only where a result opens at it.
+  it.each([
+    ["http://localhost:8080", "http://localhost", 8079, null],
+    ["a:1", "a", 0, null],
+    ["key: 2", "key: 2", null, null],
+    ["10:30", "10", 29, null],
+    ["foo.ts:12:3", "foo.ts", 11, 2],
+  ])("%s: files look up %s, text search takes the query as typed", async (query, file, line, col) => {
+    const findFiles = vi.fn(async (_q: string, _limit: number) => [fm("x.ts")]);
+    const searchText = vi.fn(async (_r: number, _q: SearchQuery) => {});
+    const { c, last } = setup({ findFiles, searchText });
+    c.run({ query, tab: "all", includeNonProject: false, extra: {} });
+    await flush();
+    expect(findFiles.mock.calls.at(-1)![0]).toBe(file);
+    const item = last().sections.get("files")!.items[0]!;
+    expect(item.kind === "file" && [item.line ?? null, item.col ?? null]).toEqual([line, col]);
+    expect(searchText.mock.calls.at(-1)![1].pattern).toBe(query);
+    c.run({ query, tab: "text", includeNonProject: false, extra: {} });
+    await flush();
+    expect(searchText.mock.calls.at(-1)![1].pattern).toBe(query);
+  });
+
   it("shows recent files for an empty query", async () => {
     const { c, last } = setup({ recentFiles: async () => ["/p/a/B.kt", "/p/C.kt"] });
     c.run({ query: "", tab: "all", includeNonProject: false, extra: {} });

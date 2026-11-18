@@ -22,9 +22,9 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
 import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
 import { maybeEditorService, registerFontZoomSurface } from "@/workbench/contributions";
-import { setShownLine } from "@/editor/api";
+import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { FloatingToolbar, selectableText } from "@/ui";
+import { FloatingToolbar, SplitGroup, SplitHandle, SplitPanel, selectableText } from "@/ui";
 import {
   FIND_CURRENT_HIGHLIGHT,
   FIND_HIGHLIGHT,
@@ -54,6 +54,7 @@ import {
 import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 /** Loaded local images by absolute path (data URLs), shared by all previews. */
 const imageCache = new Map<string, Promise<string>>();
@@ -75,6 +76,8 @@ function openExternal(url: string) {
   else window.open(url, "_blank", "noopener");
 }
 
+const SPLIT_STORAGE_KEY = "openidea.markdown.split";
+
 export function MarkdownEditor({
   path,
   tabId,
@@ -88,10 +91,47 @@ export function MarkdownEditor({
 }) {
   const mode = useMarkdownModes((s) => modeOf(s, path));
   const ref = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  // CodeMirror's internal ResizeObserver skips resizes within 75ms of a view update
+  // and debounces by 50ms; re-measure immediately on drag and mode transitions.
+  useEffect(() => {
+    const el = editorRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      const next = el.clientWidth;
+      if (next === width) return;
+      width = next;
+      if (next <= 0) return;
+      for (const ed of editorsFor(path)) {
+        if (!ed.tabId || ed.tabId === tabId) ed.view.requestMeasure();
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [path, tabId]);
+
+  const splitBounds = mode === "split" ? { minSize: "10%", maxSize: "90%" } : {};
   return (
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
-      <div className={styles.editor}>{children}</div>
-      {mode !== "editor" && <MarkdownPreview path={path} sync={mode === "split"} />}
+      <SplitGroup
+        orientation="horizontal"
+        className={styles.group}
+        storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
+      >
+        <SplitPanel id="editor" style={{ overflow: "hidden" }} {...splitBounds}>
+          <div ref={editorRef} className={styles.editor}>
+            {children}
+          </div>
+        </SplitPanel>
+        {mode === "split" && <SplitHandle aria-label={tx("Resize Markdown preview")} />}
+        {mode !== "editor" && (
+          <SplitPanel id="preview" style={{ overflow: "hidden" }} {...splitBounds}>
+            <MarkdownPreview path={path} sync={mode === "split"} />
+          </SplitPanel>
+        )}
+      </SplitGroup>
       {!actionsInTabs && (
         <FloatingToolbar targetRef={ref}>
           <MarkdownLayoutActions path={path} tabId={tabId} />
@@ -223,6 +263,21 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     if (!root || !sync) return;
     root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocksOf(root), topLine, root.scrollHeight);
   }, [html, topLine, scrollSeq, sync, diagramsDrawn, fontZoom, fontSize]);
+
+  // Keep the split preview anchored to `topLine` as dragging the divider or resizing the window reflows text.
+  useEffect(() => {
+    const root = ref.current;
+    if (!root || !sync || typeof ResizeObserver === "undefined") return;
+    let width = root.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (root.clientWidth === width) return;
+      width = root.clientWidth;
+      const top = useLiveMarkdown.getState()[path]?.topLine ?? 0;
+      root.scrollTop = top <= 0 ? 0 : previewOffsetForLine(blocksOf(root), top, root.scrollHeight);
+    });
+    ro.observe(root);
+    return () => ro.disconnect();
+  }, [path, sync]);
 
   // The preview's own scroll offset: tab switches and mode toggles unmount the
   // preview, so Preview Only would otherwise start over at the top. Writes made
@@ -380,11 +435,13 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const root = ref.current;
     if (!root) return;
     const onWheel = (e: WheelEvent) => {
-      if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+      if (!editorPrefs().general.wheelZoom) return;
+      const zoom = wheelZoomStep(e);
+      if (zoom === null) return;
       if ((e.target as Element | null)?.closest?.('.mermaid-output[data-zoomed="true"]')) return;
       e.preventDefault();
       e.stopPropagation();
-      stepMarkdownPreviewFontZoom(path, root, e.deltaY < 0 ? 1 : -1);
+      if (zoom) stepMarkdownPreviewFontZoom(path, root, zoom);
     };
     root.addEventListener("wheel", onWheel, { capture: true, passive: false });
     const release = registerFontZoomSurface(root, (delta) => stepMarkdownPreviewFontZoom(path, root, delta));

@@ -4236,6 +4236,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-command"
+version = "0.1.47"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "ide-core"
 version = "0.1.47"
 dependencies = [
@@ -4424,6 +4435,7 @@ dependencies = [
  "ide-agent",
  "ide-analysis",
  "ide-build",
+ "ide-command",
  "ide-core",
  "ide-coverage",
  "ide-dap",
@@ -4577,6 +4589,7 @@ version = "0.1.47"
 dependencies = [
  "blake3",
  "criterion",
+ "dunce",
  "ide-core",
  "ide-extension",
  "ide-text",
@@ -6661,6 +6674,7 @@ dependencies = [
  "ide-build",
  "ide-cli",
  "ide-clipboard",
+ "ide-command",
  "ide-core",
  "ide-coverage",
  "ide-dap",

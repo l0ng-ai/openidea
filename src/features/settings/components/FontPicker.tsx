@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { IconButton, Input, Popup, T } from "@/ui";
 import { useTx } from "@/platform/i18n";
 import { loadSystemFonts, useSystemFonts } from "@/platform/systemFonts";
@@ -23,7 +23,7 @@ export function FontPicker({
   allowEmpty?: boolean;
 }) {
   const tx = useTx();
-  const { fonts, status } = useSystemFonts();
+  const { fonts, status } = useSystemFonts(!disabled);
   const listId = useId();
   const input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
@@ -31,8 +31,24 @@ export function FontPicker({
   const [active, setActive] = useState(-1);
   const text = draft?.source === value ? draft.text : value;
   const query = draft?.source === value ? text.trim().toLocaleLowerCase() : "";
-  const suggestions = fonts.filter((f) => (!monoOnly || f.monospaced) && f.name.toLocaleLowerCase().includes(query));
-  const known = fonts.some((f) => f.name.toLocaleLowerCase() === value.trim().toLocaleLowerCase());
+  const suggestions = useMemo(
+    () =>
+      open && !disabled
+        ? fonts.filter((f) => (!monoOnly || f.monospaced) && f.name.toLocaleLowerCase().includes(query))
+        : [],
+    [open, disabled, fonts, monoOnly, query],
+  );
+  const trimmed = value.trim();
+  const known = useMemo(
+    () =>
+      status === "ready" && trimmed
+        ? fonts.some((f) => f.name.toLocaleLowerCase() === trimmed.toLocaleLowerCase())
+        : true,
+    [status, trimmed, fonts],
+  );
+  const ensureLoaded = () => {
+    if (status === "idle") void loadSystemFonts();
+  };
   const message =
     status === "loading"
       ? "Loading system fonts…"
@@ -64,15 +80,20 @@ export function FontPicker({
           disabled={disabled}
           placeholder={allowEmpty ? "None" : undefined}
           onFocus={() => {
+            ensureLoaded();
             setOpen(true);
             setActive(-1);
           }}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            ensureLoaded();
+            setOpen(true);
+          }}
           onBlur={() => {
             setOpen(false);
             setDraft(null);
           }}
           onChange={(e) => {
+            ensureLoaded();
             const next = e.target.value;
             const valid = allowEmpty || !!next.trim();
             setDraft({ source: valid ? next : value, text: next });
@@ -84,6 +105,7 @@ export function FontPicker({
             if (e.nativeEvent.isComposing) return;
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
               e.preventDefault();
+              ensureLoaded();
               setOpen(true);
               const next = Math.max(0, Math.min(suggestions.length - 1, active + (e.key === "ArrowDown" ? 1 : -1)));
               setActive(next);

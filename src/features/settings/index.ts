@@ -38,7 +38,13 @@ import {
   settingsTitle,
   useSettingsDialog,
 } from "./model/staging";
-import { appearanceToggleActions, navigationBarActions, zoomActions } from "./appearanceRuntime";
+import {
+  appearanceToggleActions,
+  navigationBarActions,
+  presentationAssistantAction,
+  zoomActions,
+} from "./appearanceRuntime";
+import { PresentationAssistant } from "./presentation/PresentationAssistant";
 import { activateFileTypes } from "./fileTypesRuntime";
 import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
@@ -127,20 +133,7 @@ export function activate(): () => void {
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
     registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
-    registerActions(zoomActions()),
-    registerActions(appearanceToggleActions()),
-    registerActions(navigationBarActions()),
-    registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
-    registerActions([
-      {
-        id: "file.projectStructure",
-        title: "Project Structure…",
-        category: "File",
-        icon: "folder",
-        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
-        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
-      },
-    ]),
+    registerOverlay({ id: "settings.presentationAssistant", component: PresentationAssistant }),
     activateFileTypes(),
     registerOverlay({
       id: "settings.assignShortcut",
@@ -149,6 +142,19 @@ export function activate(): () => void {
       ),
     }),
     registerActions([
+      ...zoomActions(),
+      ...appearanceToggleActions(),
+      presentationAssistantAction(),
+      ...navigationBarActions(),
+      ...settingsActions((page, newProjects) => void showSettings(page, newProjects)),
+      {
+        id: "file.projectStructure",
+        title: "Project Structure…",
+        category: "File",
+        icon: "folder",
+        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
+        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
+      },
       {
         // Search Everywhere's ⌥↵ on an action (arg: the action id).
         id: "settings.assignShortcut",

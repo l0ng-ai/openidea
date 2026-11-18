@@ -730,8 +730,6 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
     crate::page_swipe::install(&window);
-    #[cfg(target_os = "macos")]
-    crate::macos::keep_full_screen_on_escape();
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));
@@ -1547,7 +1545,9 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     config.fullscreen = false;
     config.drag_drop_enabled = false;
     // Paint the theme's frame colour before the page loads.
-    if let Some(color) = aux.background.as_deref().and_then(hex_color) {
+    if let Some(color) =
+        aux.background.as_deref().and_then(hex_color).or_else(|| default_aux_frame_color(app, &parent, &parent_label))
+    {
         config.background_color = Some(color);
     }
     windows.set_launch(&label, aux.launch);
@@ -1589,6 +1589,76 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     }
     focus(&window);
     Ok(())
+}
+
+/// Effective appearance settings of project window `parent_label` (client layer on remote windows).
+fn effective_appearance(app: &AppHandle, parent_label: &str) -> Option<AppearanceSettings> {
+    let state = app.try_state::<AppState>()?;
+    if state.remote_dev.get(parent_label).is_some() {
+        return Some(state.global_settings.effective().appearance);
+    }
+    Some(match state.host.project(parent_label) {
+        Ok(p) => p.settings.effective().appearance,
+        Err(_) => state.global_settings.effective().appearance,
+    })
+}
+
+fn default_aux_frame_color(app: &AppHandle, parent: &WebviewWindow, parent_label: &str) -> Option<Color> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(color) = state.plugins.startup_frame().and_then(|c| hex_color(&c)) {
+        return Some(color);
+    }
+    let appearance = effective_appearance(app, parent_label)?;
+    let os_dark =
+        (appearance.sync_with_os || appearance.theme == "system") && parent.theme().is_ok_and(|t| t == Theme::Dark);
+    Some(frame_color(&appearance, os_dark))
+}
+
+/// Whether `parent_label` opens Settings in its own native window.
+pub fn settings_in_separate_window(app: &AppHandle, parent_label: &str) -> bool {
+    effective_appearance(app, parent_label).is_none_or(|a| a.settings_in_separate_window)
+}
+
+fn menu_settings_launch<'a>(
+    target_label: &'a str,
+    has_pending_launch: bool,
+    separate_window: bool,
+    action: &str,
+    arg: Option<String>,
+) -> Option<(&'a str, Option<String>, bool)> {
+    let parent_label = auxiliary_parent(target_label).unwrap_or(target_label);
+    if has_pending_launch || !separate_window {
+        return None;
+    }
+    let (page, new_projects) = match action {
+        "file.settings" => (arg, false),
+        "file.newProjectsSettings" => (Some(arg.unwrap_or_else(|| "languages.java".into())), true),
+        _ => return None,
+    };
+    Some((parent_label, page, new_projects))
+}
+
+/// Opens Settings directly from a native menu click when separate-window mode is enabled,
+/// avoiding a round-trip through the parent window's JS thread.
+pub fn open_settings_from_menu(app: &AppHandle, target: &WebviewWindow, action: &str, arg: Option<String>) -> bool {
+    let parent_label = auxiliary_parent(target.label()).unwrap_or(target.label());
+    let has_pending = app.state::<WindowsState>().pending(parent_label).is_some();
+    let separate = settings_in_separate_window(app, parent_label);
+    let Some((parent_label, page, new_projects)) =
+        menu_settings_launch(target.label(), has_pending, separate, action, arg)
+    else {
+        return false;
+    };
+    let Some(parent) = app.get_webview_window(parent_label) else {
+        return false;
+    };
+    match open_settings_window(app, &parent, page, new_projects, None) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("settings window unavailable from menu, falling back to frontend: {e}");
+            false
+        }
+    }
 }
 
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
@@ -2723,5 +2793,22 @@ mod tests {
         assert_eq!(centered(100.0, 50.0, 1440.0, 900.0, 980.0, 720.0), (330.0, 140.0));
         // Taller than the parent: aligned with its top edge.
         assert_eq!(centered(0.0, 50.0, 800.0, 500.0, 600.0, 720.0), (100.0, 50.0));
+    }
+
+    #[test]
+    fn menu_settings_launch_routes_to_parent_and_respects_separate_window_and_pending_launch() {
+        assert_eq!(menu_settings_launch("main", false, true, "file.settings", None), Some(("main", None, false)),);
+        assert_eq!(
+            menu_settings_launch("diff-project-2-42", false, true, "file.settings", Some("keymap".into())),
+            Some(("project-2", Some("keymap".into()), false)),
+        );
+        assert_eq!(
+            menu_settings_launch("settings-main", false, true, "file.newProjectsSettings", None),
+            Some(("main", Some("languages.java".into()), true)),
+        );
+        // Separate-window off, pending cold launch, or unrelated menu actions fall back to frontend dispatch.
+        assert_eq!(menu_settings_launch("main", false, false, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", true, true, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", false, true, "file.openProject", None), None);
     }
 }

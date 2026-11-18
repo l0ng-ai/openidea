@@ -59,6 +59,8 @@ export interface CommitSettingsValid {
   disabledPluginChecks: string[];
   /** Double-click opens the diff (`true`), the source file (`false`), or follows the interface (`null`). */
   doubleClickOpensDiff: boolean | null;
+  /** Team conventions for Generate Commit Message with Agent, added to its prompt. */
+  agentInstructions: string;
 }
 
 export interface VcsSettingsValid {
@@ -274,6 +276,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       wrapAtMargin: false,
       disabledPluginChecks: [],
       doubleClickOpensDiff: null,
+      agentInstructions: "",
     },
     confirmation: {
       onCreate: "ask",
@@ -433,6 +436,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
       doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
+      agentInstructions: text(c.agentInstructions, d.commit.agentInstructions),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),

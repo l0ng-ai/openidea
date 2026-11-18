@@ -993,6 +993,28 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "tinymist",
+        display: "Tinymist (Typst)",
+        kind: LanguageServer,
+        commands: &["tinymist"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "Myriad-Dreamin/tinymist" },
+            assets: &[
+                rule(Mac, Arm64, "tinymist-aarch64-apple-darwin.tar.gz"),
+                rule(Mac, X64, "tinymist-x86_64-apple-darwin.tar.gz"),
+                rule(Linux, X64, "tinymist-x86_64-unknown-linux-gnu.tar.gz"),
+                rule(Linux, Arm64, "tinymist-aarch64-unknown-linux-gnu.tar.gz"),
+                rule(Windows, X64, "tinymist-x86_64-pc-windows-msvc.zip"),
+                rule(Windows, Arm64, "tinymist-aarch64-pc-windows-msvc.zip"),
+            ],
+            locate: &["tinymist"],
+        },
+        fallback: None,
+        version: ver("tinymist"),
+        homepage: "https://myriad-dreamin.github.io/tinymist/",
+        needs: &[],
+    },
+    ToolSpec {
         name: "slint-lsp",
         display: "Slint LSP",
         kind: LanguageServer,

@@ -8,7 +8,7 @@
 //! `unavailable`.
 use crate::Host;
 use crate::Project;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
 use super::doc::blocking;
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, LanguageId, Pos, Range, RequestId};
@@ -46,11 +46,13 @@ async fn on_doc<T: Send + 'static>(
 
 /// What the structure service supports for a language (`tree`: every query,
 /// `locals`: scope analysis).
+#[command(trust = always)]
 pub fn syntax_support(host: &Host, window: &str, language: LanguageId) -> IdeResult<StructureSupport> {
     Ok(host.project(window)?.structure.support(&language))
 }
 
 /// The smallest named node covering `range`, with its ancestors (parent first).
+#[command(trust = always)]
 pub async fn syntax_node_at(
     host: &Host,
     window: &str,
@@ -63,6 +65,7 @@ pub async fn syntax_node_at(
 
 /// The expression a selection denotes (exact or minimally enclosing), with its
 /// statement, block and caret candidates.
+#[command(trust = always)]
 pub async fn syntax_expression_at(
     host: &Host,
     window: &str,
@@ -74,6 +77,7 @@ pub async fn syntax_expression_at(
 }
 
 /// `ERROR` / `MISSING` nodes (e.g. a missing `;`) in document order.
+#[command(trust = always)]
 pub async fn syntax_errors(
     host: &Host,
     window: &str,
@@ -85,6 +89,7 @@ pub async fn syntax_errors(
 
 /// Scope analysis of the identifier at `pos`: its local definition and
 /// references, or why it is not a local.
+#[command(trust = always)]
 pub async fn syntax_locals(
     host: &Host,
     window: &str,
@@ -96,6 +101,7 @@ pub async fn syntax_locals(
 }
 
 /// Identifier tokens spelled `name` in a document, excluding comments and strings.
+#[command(trust = always)]
 pub async fn syntax_identifiers(
     host: &Host,
     window: &str,
@@ -108,6 +114,7 @@ pub async fn syntax_identifiers(
 
 /// [`syntax_identifiers`] over files (open buffers win over disk); files
 /// without occurrences or without a grammar are left out. Cancellable.
+#[command(trust = always)]
 pub async fn syntax_identifiers_in_files(
     host: &Host,
     window: &str,
@@ -137,6 +144,7 @@ pub async fn syntax_identifiers_in_files(
 
 /// Extend Selection chain plus statement / declaration ranges at `pos`
 /// (Move Statement, Complete Statement for languages without a Lezer grammar).
+#[command(trust = always)]
 pub async fn syntax_structural_ranges(
     host: &Host,
     window: &str,
@@ -147,29 +155,14 @@ pub async fn syntax_structural_ranges(
     on_doc(host, window, doc, request, move |s, snap, c| s.structural_ranges(snap, pos, c)).await
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("syntax_support", |c| async move { syntax_support(&c.host, &c.window, c.arg("language")?) });
-    d.add("syntax_node_at", |c| async move {
-        syntax_node_at(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("request")?).await
-    });
-    d.add("syntax_expression_at", |c| async move {
-        syntax_expression_at(&c.host, &c.window, c.arg("doc")?, c.arg("range")?, c.arg("request")?).await
-    });
-    d.add(
-        "syntax_errors",
-        |c| async move { syntax_errors(&c.host, &c.window, c.arg("doc")?, c.arg("request")?).await },
-    );
-    d.add("syntax_locals", |c| async move {
-        syntax_locals(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("request")?).await
-    });
-    d.add("syntax_identifiers", |c| async move {
-        syntax_identifiers(&c.host, &c.window, c.arg("doc")?, c.arg("name")?, c.arg("request")?).await
-    });
-    d.add("syntax_identifiers_in_files", |c| async move {
-        syntax_identifiers_in_files(&c.host, &c.window, c.arg("paths")?, c.arg("name")?, c.arg("request")?).await
-    });
-    d.add("syntax_structural_ranges", |c| async move {
-        syntax_structural_ranges(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("request")?).await
-    });
-}
+ide_command::domain!(
+    syntax:
+    syntax_errors,
+    syntax_expression_at,
+    syntax_identifiers,
+    syntax_identifiers_in_files,
+    syntax_locals,
+    syntax_node_at,
+    syntax_structural_ranges,
+    syntax_support,
+);

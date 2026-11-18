@@ -99,7 +99,8 @@ async function pickDirectory(title: string): Promise<string | null> {
   return typeof dir === "string" ? dir : null;
 }
 
-type EndpointKind = DockerEndpoint["kind"];
+/** The dialog's kinds: an SSH configuration endpoint is picked under TCP / SSH host. */
+type EndpointKind = Exclude<DockerEndpoint["kind"], "ssh">;
 
 const ENDPOINT_KINDS: Array<{ value: EndpointKind; label: string }> = [
   { value: "default", label: "Docker CLI default (DOCKER_HOST / current context)" },
@@ -164,22 +165,27 @@ function ConnectionDialog({ existing, onDone }: { existing?: DockerConnection; o
   const ep = existing?.endpoint;
   const sshConfigs = useWorkflowSettings((w) => w.ssh.configs);
   const [name, setName] = useState(existing?.name ?? "Docker");
-  const [kind, setKind] = useState<EndpointKind>(ep?.kind ?? "socket");
+  // An SSH configuration endpoint is edited as the TCP/SSH kind with that configuration picked.
+  const [kind, setKind] = useState<EndpointKind>(ep?.kind === "ssh" ? "tcp" : (ep?.kind ?? "socket"));
   const [path, setPath] = useState(ep?.kind === "socket" ? ep.path : "/var/run/docker.sock");
   const [host, setHost] = useState(ep?.kind === "tcp" ? ep.host : "");
   const [tls, setTls] = useState(ep?.kind === "tcp" ? (ep.tlsCertDir ?? "") : "");
   const [context, setContext] = useState(ep?.kind === "context" ? ep.name : "");
-  // The configuration picked in the dropdown; shown even when docker cannot use it yet.
-  const [picked, setPicked] = useState(() => (ep?.kind === "tcp" ? sshConfigForUrl(ep.host, sshConfigs) : ""));
+  const [picked, setPicked] = useState(() =>
+    ep?.kind === "ssh" ? ep.config : ep?.kind === "tcp" ? sshConfigForUrl(ep.host, sshConfigs) : "",
+  );
   const fromUrl = sshConfigForUrl(host, sshConfigs);
+  // A configuration with its own credentials connects through the IDE's SSH client, without a URL.
+  const viaSsh = !fromUrl && sshConfigs.some((c) => c.id === picked && c.auth !== "openSsh");
   const shown = fromUrl || picked;
-  const unusable = !fromUrl && sshConfigs.find((c) => c.id === picked && c.auth !== "openSsh");
   const pickSsh = (id: string) => {
     setPicked(id);
     const config = sshConfigs.find((c) => c.id === id);
     if (config?.auth === "openSsh" && config.host.trim()) setHost(sshConfigUrl(config));
+    else if (config && fromUrl) setHost("");
   };
-  const endpoint = endpointFrom(kind, { path, host, tls, context });
+  const endpoint: DockerEndpoint | null =
+    kind === "tcp" && viaSsh ? { kind: "ssh", config: picked } : endpointFrom(kind, { path, host, tls, context });
   const ok = !!endpoint && name.trim().length > 0;
   const submit = async () => {
     if (!endpoint || !ok) return;
@@ -246,36 +252,40 @@ function ConnectionDialog({ existing, onDone }: { existing?: DockerConnection; o
                 …
               </Button>
             </div>
-            {unusable && (
+            {viaSsh && (
               <span className={styles.hint}>
-                <T>Docker over SSH uses the system ssh: choose a configuration with OpenSSH config authentication.</T>
+                <T>Connects with this SSH configuration and runs docker on its host.</T>
               </span>
             )}
-            <label className={styles.fieldLabel} htmlFor="docker-conn-host">
-              <T>Engine API URL:</T>
-            </label>
-            <Input
-              id="docker-conn-host"
-              mono
-              value={host}
-              placeholder="tcp://build-host:2376 or ssh://me@build-host"
-              onChange={(e) => setHost(e.target.value)}
-            />
-            <label className={styles.fieldLabel} htmlFor="docker-conn-tls">
-              <T>Certificates folder (TLS, optional):</T>
-            </label>
-            <div className={styles.fieldRow}>
-              <Input
-                id="docker-conn-tls"
-                mono
-                value={tls}
-                placeholder="contains ca.pem, cert.pem and key.pem"
-                onChange={(e) => setTls(e.target.value)}
-              />
-              <Button onClick={() => void pickDirectory("Certificates Folder").then((d) => d && setTls(d))}>
-                Browse…
-              </Button>
-            </div>
+            {!viaSsh && (
+              <>
+                <label className={styles.fieldLabel} htmlFor="docker-conn-host">
+                  <T>Engine API URL:</T>
+                </label>
+                <Input
+                  id="docker-conn-host"
+                  mono
+                  value={host}
+                  placeholder="tcp://build-host:2376 or ssh://me@build-host"
+                  onChange={(e) => setHost(e.target.value)}
+                />
+                <label className={styles.fieldLabel} htmlFor="docker-conn-tls">
+                  <T>Certificates folder (TLS, optional):</T>
+                </label>
+                <div className={styles.fieldRow}>
+                  <Input
+                    id="docker-conn-tls"
+                    mono
+                    value={tls}
+                    placeholder="contains ca.pem, cert.pem and key.pem"
+                    onChange={(e) => setTls(e.target.value)}
+                  />
+                  <Button onClick={() => void pickDirectory("Certificates Folder").then((d) => d && setTls(d))}>
+                    Browse…
+                  </Button>
+                </div>
+              </>
+            )}
           </>
         )}
         {kind === "context" && (

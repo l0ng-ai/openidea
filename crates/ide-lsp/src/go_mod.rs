@@ -126,9 +126,10 @@ impl LspManager {
             return;
         }
         let config = server.effective_config();
+        let search = crate::launch::server_search_path(&config, &server.root);
         let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
         let modules: Vec<String> = required.iter().map(|r| r.path.clone()).collect();
-        let Some(deprecated) = list_deprecations(&dir, &config, &modules, cancel).await else { return };
+        let Some(deprecated) = list_deprecations(&dir, &config, &search, &modules, cancel).await else { return };
         // The document changed meanwhile: its own save runs again.
         if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.text.as_str() != text) {
             return;
@@ -209,12 +210,12 @@ struct ListedModule {
 async fn list_deprecations(
     dir: &Path,
     config: &LanguageServerConfig,
+    search: &std::ffi::OsStr,
     modules: &[String],
     cancel: &CancellationToken,
 ) -> Option<Vec<(String, String)>> {
-    let (dir, config, modules) = (dir.to_path_buf(), config.clone(), modules.to_vec());
+    let (dir, config, search, modules) = (dir.to_path_buf(), config.clone(), search.to_owned(), modules.to_vec());
     let command = tokio::task::spawn_blocking(move || {
-        let search = crate::launch::server_search_path(&config);
         let go: PathBuf = ide_core::tool_path::find_command("go", &search, &dir)?;
         Some(deprecations_command(&go, &dir, &config, &search, &modules))
     })
@@ -343,7 +344,7 @@ mod tests {
             Path::new("go"),
             Path::new("workspace"),
             &config,
-            &crate::launch::server_search_path(&config),
+            &crate::launch::server_search_path(&config, Path::new("workspace")),
             &["example.invalid/lib".into()],
         );
         let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();

@@ -47,6 +47,12 @@ pub enum IdeEvent {
         root: crate::IpcPath,
         trusted: bool,
     },
+    /// The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
+    /// from changed and it can be reloaded.
+    Direnv {
+        root: crate::IpcPath,
+        status: DirenvStatus,
+    },
     /// Files or directories changed on disk (after debouncing, ignore rules applied).
     FsChanged {
         created: Vec<crate::IpcPath>,
@@ -147,6 +153,19 @@ pub enum IdeEvent {
         server: ServerId,
         kind: LspRefreshKind,
     },
+    /// A language server asked the user to choose an action, e.g. Dart's
+    /// "Renamed field will be invisible in …" warning during a rename. Answered
+    /// with `lsp_message_request_answer`; the server cancels if we reply null.
+    LspMessageRequest {
+        id: u32,
+        server: String,
+        message: String,
+        actions: Vec<String>,
+    },
+    /// The request was answered or timed out; every window drops its dialog.
+    LspMessageRequestDone {
+        id: u32,
+    },
     TerminalExited {
         terminal: TerminalId,
         code: Option<i32>,
@@ -213,6 +232,20 @@ pub enum AskpassKind {
     Text,
     /// Yes / no (an unknown host key); answered with `yes` or `no`.
     Confirm,
+}
+
+/// See [`IdeEvent::Direnv`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum DirenvStatus {
+    /// `direnv` is not installed (on the search path).
+    NotInstalled,
+    /// direnv refuses the `.envrc` until the user approves it with `direnv allow`.
+    Blocked,
+    /// `direnv export` failed or took too long: what it printed last.
+    Failed { message: String },
+    /// `.envrc`, `flake.nix` or `flake.lock` (a file name in the project root) changed.
+    Changed { file: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

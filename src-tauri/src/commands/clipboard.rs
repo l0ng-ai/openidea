@@ -1,14 +1,16 @@
 //! The OS clipboard's file list, so the project view and Explorer exchange files.
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-use crate::commands::doc::blocking;
+use ide_command::desktop_command;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use ide_core::IdeError;
 use ide_core::IdeResult;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+use ide_host::ops::doc::blocking;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, WebviewWindow};
 
 /// Writes text locally, without WebView user-activation requirements.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: String) -> IdeResult<()> {
@@ -25,6 +27,7 @@ pub async fn clipboard_write_text(app: AppHandle, window: WebviewWindow, text: S
 /// The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 /// from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
 /// text there (#3041). None on Windows, where the WebView's clipboard is used.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
@@ -54,6 +57,7 @@ pub async fn clipboard_text(app: AppHandle) -> IdeResult<Option<String>> {
 }
 
 /// Absolute paths on the clipboard, empty when it holds no file list.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_file_list(app: AppHandle) -> IdeResult<Vec<String>> {
@@ -61,6 +65,7 @@ pub async fn clipboard_file_list(app: AppHandle) -> IdeResult<Vec<String>> {
 }
 
 /// Whether the clipboard holds files: cheap, for the Paste item's enabled state.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn clipboard_has_files() -> bool {
@@ -70,6 +75,7 @@ pub fn clipboard_has_files() -> bool {
 
 /// Replaces the clipboard with `paths`, so Explorer can paste them. Best-effort:
 /// false when the clipboard stayed busy; the caller keeps working either way.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_set_file_list(app: AppHandle, paths: Vec<PathBuf>) -> IdeResult<bool> {
@@ -78,6 +84,7 @@ pub async fn clipboard_set_file_list(app: AppHandle, paths: Vec<PathBuf>) -> Ide
 
 /// Whether the clipboard holds an image (a screenshot): cheap, for the Paste item's
 /// enabled state.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub fn clipboard_has_image() -> bool {
@@ -88,6 +95,7 @@ pub fn clipboard_has_image() -> bool {
 /// The clipboard's image as a PNG data URL: for a paste whose event carried no files
 /// (WebKitGTK leaves `clipboardData` empty for a raw image, a screenshot), and for
 /// the project view's Paste, which has no paste event. None when it holds no image.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<String>> {
@@ -143,3 +151,13 @@ async fn with_clipboard<T: Send + 'static>(
 fn slash(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
+
+ide_command::desktop_domain!(
+    clipboard_file_list,
+    clipboard_has_files,
+    clipboard_has_image,
+    clipboard_image,
+    clipboard_set_file_list,
+    clipboard_text,
+    clipboard_write_text,
+);

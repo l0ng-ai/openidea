@@ -38,7 +38,7 @@ fn images_on_a_share_are_read_only_where_a_project_is_open() {
         runtime: runtime.handle().clone(),
         project_environment: false,
     });
-    let read = |path: PathBuf| runtime.block_on(fs_read_image(&host, "main", path));
+    let read = |path: PathBuf| runtime.block_on(fs_read_image(&host, path));
 
     let in_project = over_smb("127.0.0.1", &root.join("docs/a.png"));
     let beside_project = over_smb("127.0.0.1", &local.join("outside.png"));

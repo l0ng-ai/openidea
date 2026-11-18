@@ -34,11 +34,35 @@ export function trimUrl(url: string): string {
   }
 }
 
+/**
+ * A `file://` URL (compiler output such as Kotlin's `file:///src/A.kt:15:56`) as a file location:
+ * it opens in the editor, on the machine the terminal runs on, like a plain path.
+ */
+function fileUrlTarget(url: string): { path: string; line?: number; col?: number } | null {
+  const m = /^file:\/\/[^/]*(\/.*?)(?::(\d+)(?::(\d+))?)?$/i.exec(url);
+  if (!m) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
+  // `file:///C:/x` is the Windows path `C:/x`.
+  if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+  return { path, line: m[2] ? Number(m[2]) : undefined, col: m[3] ? Number(m[3]) : undefined };
+}
+
 export function findTerminalLinks(text: string): TerminalLink[] {
   const links: TerminalLink[] = [];
   for (const m of text.matchAll(URL_RE)) {
     const url = trimUrl(m[0]);
-    links.push({ kind: "url", start: m.index, end: m.index + url.length, text: url, url });
+    const end = m.index + url.length;
+    const file = fileUrlTarget(url);
+    links.push(
+      file
+        ? { kind: "file", start: m.index, end, text: url, ...file }
+        : { kind: "url", start: m.index, end, text: url, url },
+    );
   }
   const overlaps = (s: number, e: number) => links.some((l) => s < l.end && e > l.start);
   for (const m of text.matchAll(FILE_RE)) {

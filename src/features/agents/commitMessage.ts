@@ -44,7 +44,12 @@ export function fitPatch(patch: string, budget = PATCH_BUDGET, perFile = FILE_BU
   return omitted.length ? `${out}\nDiff omitted for: ${omitted.join(", ")}\n` : out;
 }
 
-export function commitMessagePrompt(patch: string, subjectLimit: number, recentSubjects: readonly string[]): string {
+export function commitMessagePrompt(
+  patch: string,
+  subjectLimit: number,
+  recentSubjects: readonly string[],
+  instructions = "",
+): string {
   const lines = [
     "Write a commit message",
     "",
@@ -54,6 +59,8 @@ export function commitMessagePrompt(patch: string, subjectLimit: number, recentS
     "- Don't edit files or run commands. The whole diff is below.",
     "- Reply with the commit message only: no quotes, no code fence, no commentary.",
   ];
+  // The project's own conventions (Settings › Version Control › Commit) come before the style of recent commits.
+  if (instructions.trim()) lines.push("", "Follow these conventions for commit messages here:", instructions.trim());
   if (recentSubjects.length) {
     lines.push(
       "",
@@ -250,7 +257,12 @@ async function generate(): Promise<void> {
 
   const { commit } = workflowSettings().vcs;
   const subjects = await recentSubjects(changes.roots[0]);
-  const prompt = commitMessagePrompt(changes.patch, commit.limitSubject ? commit.subjectLimit : 72, subjects);
+  const prompt = commitMessagePrompt(
+    changes.patch,
+    commit.limitSubject ? commit.subjectLimit : 72,
+    subjects,
+    commit.agentInstructions,
+  );
   let task: AgentTask | undefined;
   let release = () => {};
   try {

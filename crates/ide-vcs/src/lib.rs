@@ -360,6 +360,10 @@ pub struct Stash {
     pub index: u32,
     pub message: String,
     pub time_ms: f64,
+    /// The stash commit; its changes are those against `base`.
+    pub id: String,
+    /// The commit the stash was made on (the stash commit's first parent).
+    pub base: Option<String>,
 }
 
 /// Push dialog › Push tags: every tag, or only annotated tags on the pushed commits.
@@ -529,9 +533,12 @@ pub enum CheckoutOutcome {
     LocalChanges {
         files: Vec<String>,
     },
-    /// These untracked files (repository-relative paths) would be overwritten.
+    /// These untracked files (repository-relative paths) would be overwritten by the
+    /// checkout; with `removed`, they would be removed by it (tracked here, absent
+    /// from the target).
     UntrackedFiles {
         files: Vec<String>,
+        removed: bool,
     },
     /// Local branch `local` has commits that remote branch `remote` does not.
     LocalBranchAhead {

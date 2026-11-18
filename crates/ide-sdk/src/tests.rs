@@ -1,7 +1,7 @@
 use crate::apply::{
-    apply_to_run_configs, apply_to_run_configs_in, configure_server, configure_vue_module_resolution, jdtls_jdk,
-    maven_command, maven_options, project_jdk, python_interpreter, ruff_configuration, terminal_activation,
-    tool_install_environment, tsdk, without_derived, without_derived_in,
+    apply_to_run_configs, apply_to_run_configs_in, configure_python_extra_paths, configure_server,
+    configure_vue_module_resolution, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
+    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -176,6 +176,72 @@ fn picked_interpreters_must_run_python_code_even_with_valid_venv_metadata() {
     std::fs::remove_file(&python).unwrap();
     assert!(crate::python_interpreter_sdk(&python, None).is_none());
     assert!(crate::python_interpreter_sdk(tmp.path(), None).is_none());
+}
+
+fn extra_paths(cfg: &LanguageServerConfig, section: &str) -> Vec<String> {
+    serde_json::to_value(cfg.initialization_options.as_ref().unwrap())
+        .unwrap()
+        .pointer(&format!("/settings/{section}/analysis/extraPaths"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn basedpyright_gets_dependency_roots_as_extra_paths() {
+    let mut cfg = server("basedpyright");
+    let roots = [Path::new("B:/proj/dep").to_path_buf(), Path::new("/home/me/lib").to_path_buf()];
+    configure_python_extra_paths(&mut cfg, &roots);
+    assert_eq!(
+        extra_paths(&cfg, "basedpyright"),
+        roots.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pyright_gets_dependency_roots_in_the_python_section() {
+    let mut cfg = server("pyright");
+    configure_python_extra_paths(&mut cfg, &[Path::new("/deps/lib").to_path_buf()]);
+    assert_eq!(extra_paths(&cfg, "python"), vec!["/deps/lib"]);
+    assert!(extra_paths(&cfg, "basedpyright").is_empty(), "pyright does not use the basedpyright section");
+}
+
+#[test]
+fn dependency_extra_paths_keep_existing_paths_and_deduplicate() {
+    let mut cfg = server("basedpyright");
+    cfg.initialization_options = Some(
+        toml::Value::try_from(serde_json::json!({
+            "settings": { "basedpyright": { "analysis": { "extraPaths": ["/user/stubs", "/deps/lib", 7] } } }
+        }))
+        .unwrap(),
+    );
+    // `7` is a non-string: it is dropped, the two string paths are kept first, and the
+    // duplicate dependency is not appended again.
+    configure_python_extra_paths(
+        &mut cfg,
+        &[Path::new("/deps/lib").to_path_buf(), Path::new("/new/dep").to_path_buf()],
+    );
+    assert_eq!(extra_paths(&cfg, "basedpyright"), vec!["/user/stubs", "/deps/lib", "/new/dep"]);
+}
+
+#[test]
+fn dependency_extra_paths_replace_a_malformed_settings_section() {
+    let mut cfg = server("basedpyright");
+    cfg.initialization_options =
+        Some(toml::Value::try_from(serde_json::json!({ "settings": { "basedpyright": "strict" } })).unwrap());
+    configure_python_extra_paths(&mut cfg, &[Path::new("/deps/lib").to_path_buf()]);
+    assert_eq!(extra_paths(&cfg, "basedpyright"), vec!["/deps/lib"]);
+}
+
+#[test]
+fn non_python_servers_and_empty_roots_are_untouched() {
+    let mut ruff = server("ruff");
+    configure_python_extra_paths(&mut ruff, &[Path::new("/deps/lib").to_path_buf()]);
+    assert!(ruff.initialization_options.is_none());
+
+    let mut pyright = server("pyright");
+    configure_python_extra_paths(&mut pyright, &[]);
+    assert!(pyright.initialization_options.is_none());
 }
 
 #[test]
@@ -2514,7 +2580,10 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     // Another bare name for the interpreter comes back as the interpreter's own.
     let mut loaded = saved("python", "python3", &["app.py"], &[]);
     apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
-    assert_eq!(without_derived(&loaded, root, &s).command, exe("python"));
+    let mut normalized = without_derived(&loaded, root, &s);
+    assert_eq!(normalized.command, exe("python"));
+    apply_to_run_configs(std::slice::from_mut(&mut normalized), root, &s);
+    assert_eq!(normalized, loaded, "normalizing the name must preserve the resolved configuration");
 
     // A saved configuration follows a later interpreter change instead of a frozen PATH.
     let mut loaded = saved("ruby", "ruby", &["app.rb"], &[]);
@@ -2640,6 +2709,20 @@ fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
     let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
     assert_eq!(stored.command, "python", "the bare program, also on Windows");
     assert!(!stored.env.contains_key("VIRTUAL_ENV"));
+    let mut reloaded = stored.clone();
+    apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &settings);
+    assert_eq!(reloaded, config, "saving must preserve the complete resolved configuration");
+
+    // A saved bare member must also follow a different primary project's auto-detected venv.
+    let other_primary = root.join("other-primary");
+    let other_python = fake_venv(&other_primary, ".venv");
+    let mut moved = stored;
+    apply_to_run_configs_in(std::slice::from_mut(&mut moved), &bare, Some(&other_primary), &settings);
+    let mut expected = run("python", "python3", &["main.py"]);
+    expected.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut expected), &bare, Some(&other_primary), &settings);
+    assert_eq!(moved.command, other_python.to_string_lossy());
+    assert_eq!(moved, expected, "the saved configuration must not freeze the original venv or PATH");
 
     // The member's explicit interpreter wins over the primary project's venv —
     // when it exists (bare names stay bare; a missing path falls back).

@@ -235,6 +235,31 @@ describe("application configurations", () => {
     });
   });
 
+  it("runs a main class as Spring Boot when the annotation carries @SpringBootApplication", () => {
+    const rel = "src/main/java/shop/GatewayApp.java";
+    const cloud =
+      "package shop;\n@SpringCloudApplication\nclass GatewayApp {\n public static void main(String[] a) {}\n}";
+    expect(
+      targetConfig(
+        detectRunTargets(cloud, rel).find((t) => t.kind === "main")!,
+        rel,
+        maven,
+        cloud,
+      ),
+    ).toMatchObject({
+      kind: "spring-boot",
+    });
+    // A project annotation: project detection found the application.
+    const own = "package shop;\n@ShopApplication\nclass GatewayApp {\n public static void main(String[] a) {}\n}";
+    const main = detectRunTargets(own, rel).find((t) => t.kind === "main")!;
+    expect(targetConfig(main, rel, maven, own)).toMatchObject({ kind: "application" });
+    const detected = { ...applicationConfig({ className: "shop.GatewayApp" }, rel), kind: "spring-boot" as const };
+    expect(targetConfig(main, rel, [...maven, detected], own)).toMatchObject({
+      id: "application:shop.GatewayApp",
+      kind: "spring-boot",
+    });
+  });
+
   it("scopes Maven and Gradle test configs to a class or method", () => {
     const file = cfg({ id: "f", kind: "maven", args: ["test", "-Dtest=OrderTest"], isTest: true });
     expect(jvmTestConfig(file, "a.OrderTest$Nested", "fails")).toMatchObject({

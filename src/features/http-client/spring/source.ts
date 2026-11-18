@@ -22,6 +22,8 @@ export type Expr = Tok[];
 export interface Annotation {
   /** Simple name (`GetMapping` of `@org.springframework…GetMapping`). */
   name: string;
+  qualifiedName?: string;
+  duplicateArgs?: boolean;
   /** Arguments by name; a positional argument is `value`. */
   args: Map<string, Expr>;
 }
@@ -42,6 +44,7 @@ export interface Field {
 
 export interface Method {
   name: string;
+  hasBody: boolean;
   annotations: Annotation[];
   params: Param[];
   /** Offset of the name. */
@@ -53,6 +56,7 @@ export interface Method {
 
 export interface ClassDecl {
   name: string;
+  kind: string;
   annotations: Annotation[];
   nameStart: number;
   /** Whole declaration, annotations included. */
@@ -254,27 +258,33 @@ class Reader {
     if (!this.is(i, "@") || this.toks[i + 1]?.kind !== "id" || this.is(i + 1, "interface")) return null;
     let j = i + 1;
     let name = this.toks[j]!.text;
+    let qualifiedName = name;
     // Kotlin use-site targets: `@field:JsonProperty`.
     if (this.is(j + 1, ":") && this.toks[j + 2]?.kind === "id") {
       j += 2;
       name = this.toks[j]!.text;
+      qualifiedName = name;
     }
     while (this.is(j + 1, ".") && this.toks[j + 2]?.kind === "id") {
       j += 2;
       name = this.toks[j]!.text;
+      qualifiedName += `.${name}`;
     }
     j++;
     const args = new Map<string, Expr>();
+    let duplicateArgs = false;
     if (this.is(j, "(") && !this.toks[j]!.nl) {
       const close = this.match[j]!;
       const positional: Tok[][] = [];
       for (const part of this.split(j + 1, close)) {
         if (!part.length) continue;
-        if (part[0]!.kind === "id" && part[1]?.text === "=" && part[1].kind === "p" && part[2]?.text !== "=")
+        if (part[0]!.kind === "id" && part[1]?.text === "=" && part[1].kind === "p" && part[2]?.text !== "=") {
+          duplicateArgs ||= args.has(part[0]!.text);
           args.set(part[0]!.text, part.slice(2));
-        else positional.push(part);
+        } else positional.push(part);
       }
       // Kotlin `vararg value`: `@GetMapping("/a", "/b")` is an array.
+      if (positional.length) duplicateArgs ||= args.has("value");
       if (positional.length === 1) args.set("value", positional[0]!);
       else if (positional.length > 1) {
         const p = (text: string, at: Tok): Tok => ({ kind: "p", text, start: at.start, end: at.start, nl: false });
@@ -287,7 +297,10 @@ class Reader {
       }
       j = close + 1;
     }
-    return [{ name, args }, j];
+    return [
+      { name, args, ...(qualifiedName !== name ? { qualifiedName } : {}), ...(duplicateArgs ? { duplicateArgs } : {}) },
+      j,
+    ];
   }
 
   /** Splits `[from, to)` at top-level commas (brackets and generics nest). */
@@ -405,6 +418,7 @@ class Reader {
         const nameTok = companion ? t : this.toks[i + 1]!;
         const cls: ClassDecl = {
           name: companion ? "Companion" : nameTok.text,
+          kind: t.text,
           annotations,
           nameStart: nameTok.start,
           start: declStart,
@@ -464,8 +478,10 @@ class Reader {
       ) {
         const params = this.params(i + 1);
         let j = this.match[i + 1]! + 1;
+        let hasBody = false;
         for (; j < to; j++) {
           if (this.is(j, "{")) {
+            hasBody = true;
             j = this.match[j]! + 1;
             break;
           }
@@ -474,10 +490,11 @@ class Reader {
             break;
           }
           if (this.startsMember(j)) break;
+          if (this.is(j, "=")) hasBody = true;
           if (this.toks[j]!.kind === "p" && OPEN[this.toks[j]!.text]) j = this.match[j]!;
         }
         const end = this.toks[Math.min(j, this.toks.length) - 1]?.end ?? t.end;
-        into.methods.push({ name: t.text, annotations, params, nameStart: t.start, start: declStart, end });
+        into.methods.push({ name: t.text, hasBody, annotations, params, nameStart: t.start, start: declStart, end });
         reset();
         i = j;
         continue;
@@ -560,6 +577,7 @@ export function parseSource(text: string): SourceFile {
   }
   const root: ClassDecl = {
     name: "",
+    kind: "",
     annotations: [],
     nameStart: 0,
     start: 0,
