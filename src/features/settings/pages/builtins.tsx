@@ -1,10 +1,16 @@
 /** Built-in settings pages (IDEA layout: Appearance & Behavior, Keymap, Editor). */
 import { GlobListEditor, Row } from "../components/Form";
 import { useSetting } from "../components/context";
-import { KeymapPage, keymapSearchLabels } from "../keymap/KeymapPage";
-import { AssociatedApplicationsRow, RecognizedFileTypes } from "./FileTypes";
+import { keymapSearchLabels } from "../keymap/model";
+import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
 export const EDITOR_GROUP = "Editor";
+
+const KeymapPage = lazyPage("keymap", () => import("../keymap/KeymapPage").then((m) => m.KeymapPage));
+const RecognizedFileTypes = lazyPage("editor.files", () => import("./FileTypes").then((m) => m.RecognizedFileTypes));
+const AssociatedApplicationsRow = lazyPage("editor.files", () =>
+  import("./FileTypes").then((m) => m.AssociatedApplicationsRow),
+);
 
 function ExcludeRow() {
   const [exclude, setExclude] = useSetting<string[]>("files.exclude");

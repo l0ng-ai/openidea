@@ -730,6 +730,7 @@ window_set_smooth_scrolling                  always             desktop      bin
 window_set_titlebar_height                   always             desktop      bindings sync
 window_start_drag                            always             desktop      bindings sync
 window_take_launch                           always             desktop      bindings sync
+window_take_settings_init                    always             desktop      bindings sync
 window_toggle_fullscreen                     always             desktop      bindings sync
 window_toggle_zoom                           always             desktop      bindings sync
 workspace_attach                             always             desktop      bindings async
