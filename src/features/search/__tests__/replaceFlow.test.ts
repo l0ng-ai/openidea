@@ -8,6 +8,7 @@ import {
   countUsages,
   groupState,
   markDone,
+  mayMatchLineBreak,
   nextPending,
   pendingUsages,
   replacePreviewLines,
@@ -215,5 +216,16 @@ describe("replace previews", () => {
       { kind: "del", line: 3, text: "foo" },
       { kind: "add", line: 4, text: "z" },
     ]);
+  });
+});
+
+describe("mayMatchLineBreak", () => {
+  it("tells patterns whose matches can span lines (#4082)", () => {
+    expect(mayMatchLineBreak("JOIN\\nTARGET", true)).toBe(true);
+    expect(mayMatchLineBreak("a\\s+b", true)).toBe(true);
+    expect(mayMatchLineBreak("[^x]", true)).toBe(true);
+    expect(mayMatchLineBreak("JOIN.TARGET", true)).toBe(false);
+    expect(mayMatchLineBreak("JOIN\nTARGET", false)).toBe(true);
+    expect(mayMatchLineBreak("a\\nb", false)).toBe(false);
   });
 });

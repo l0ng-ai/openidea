@@ -23,10 +23,13 @@ export function parseLocationQuery(raw: string, root?: string | null): ParsedQue
   if (/^file:\/\//i.test(text)) {
     text = text.replace(/^file:\/\//i, "");
     try {
-      text = decodeURI(text);
+      // Component decoding: `%23` in a file name is a `#`, not a fragment.
+      text = decodeURIComponent(text);
     } catch {
       /* keep as is */
     }
+    // `file:///C:/x` names `C:/x` on Windows.
+    if (/^\/[a-zA-Z]:\//.test(text)) text = text.slice(1);
   }
   if (/^[a-zA-Z]:\\/.test(text) || (text.includes("\\") && !text.includes("/"))) text = text.replace(/\\/g, "/");
 

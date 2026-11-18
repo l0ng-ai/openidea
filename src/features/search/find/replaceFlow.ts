@@ -300,3 +300,9 @@ export function replacePreviewLines(before: string, edits: readonly TextEdit[]):
   for (let l = next; l < lines.length; l++) out.push({ kind: "same", line: l, text: lines[l] ?? "" });
   return out;
 }
+
+/** Whether a match of `pattern` can span lines, so replacing it may remove line breaks. */
+export function mayMatchLineBreak(pattern: string, regex: boolean): boolean {
+  if (!regex) return pattern.includes("\n");
+  return /\n|\\[nrsSWD]|\[\^/.test(pattern);
+}
