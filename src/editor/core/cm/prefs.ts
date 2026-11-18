@@ -81,7 +81,7 @@ export function matchesFilePatterns(patterns: string, path: string): boolean {
 }
 
 export function softWrapActive(softWrap: boolean | undefined, prefs: EditorExtras, path: string): boolean {
-  return !!softWrap && matchesFilePatterns(prefs.general.softWrapFiles || "*", path);
+  return (softWrap ?? true) && matchesFilePatterns(prefs.general.softWrapFiles || "*", path);
 }
 
 const wrapIndentCache = new Map<number, Decoration>();
