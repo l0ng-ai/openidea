@@ -9,6 +9,7 @@ import { loadRcFile, useVimRc } from "./rcFile";
 import { updateVimSettings, useVimSettings, type Handler } from "./settings";
 import styles from "./Vim.module.css";
 import { tx } from "@/platform/i18n";
+import { useSettingsForm } from "@/workbench/contributions";
 
 const HANDLERS = [
   { value: "vim" as const, label: "Vim" },
@@ -16,12 +17,21 @@ const HANDLERS = [
 ];
 
 export function VimSettingsPage() {
-  const s = useVimSettings();
+  const form = useSettingsForm();
+  const saved = useVimSettings();
+  const enabled = form.useExternal("enabled", saved.enabled, async (value) => {
+    updateVimSettings({ enabled: value });
+    return value;
+  });
+  const { value: handlers, set: setHandlers } = form.useExternal("handlers", saved.handlers, async (value) => {
+    updateVimSettings({ handlers: value });
+    return value;
+  });
   const rc = useVimRc();
   const keymap = useKeymap();
   const actions = useActions((a) => a.actions);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- the keymap store is the input of effectiveBindings()
-  const rows = useMemo(() => conflictRows(effectiveBindings(), s.handlers), [keymap, s.handlers]);
+  const rows = useMemo(() => conflictRows(effectiveBindings(), handlers), [keymap, handlers]);
 
   useEffect(() => {
     if (!useVimRc.getState().loaded) void loadRcFile();
@@ -34,19 +44,15 @@ export function VimSettingsPage() {
   };
 
   const setHandler = (stroke: string, handler: Handler) => {
-    const handlers = { ...s.handlers };
-    if (VIM_KEYS.find((k) => k.stroke === stroke)?.handler === handler) delete handlers[stroke];
-    else handlers[stroke] = handler;
-    updateVimSettings({ handlers });
+    const next = { ...handlers };
+    if (VIM_KEYS.find((k) => k.stroke === stroke)?.handler === handler) delete next[stroke];
+    else next[stroke] = handler;
+    setHandlers(next);
   };
 
   return (
     <div className={styles.page}>
-      <Checkbox
-        checked={s.enabled}
-        onChange={(enabled) => updateVimSettings({ enabled })}
-        label="Enable Vim emulation"
-      />
+      <Checkbox checked={enabled.value} onChange={enabled.set} label="Enable Vim emulation" />
 
       <section className={styles.section} aria-label={tx("Vim rc file")}>
         <div className={styles.header}>
@@ -137,11 +143,7 @@ export function VimSettingsPage() {
           </tbody>
         </table>
         <div>
-          <Button
-            size="small"
-            onClick={() => updateVimSettings({ handlers: {} })}
-            disabled={!Object.keys(s.handlers).length}
-          >
+          <Button size="small" onClick={() => setHandlers({})} disabled={!Object.keys(handlers).length}>
             Reset to Defaults
           </Button>
         </div>
