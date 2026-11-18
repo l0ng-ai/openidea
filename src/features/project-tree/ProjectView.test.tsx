@@ -7,6 +7,7 @@ import { applyKeymapSettings, installKeyboardDispatcher, useKeymap } from "@/pla
 import { usePlatform } from "@/platform/platformInfo";
 import {
   provideEditorService,
+  provideNotificationService,
   registerProjectViewRoot,
   setFileDecorations,
   type EditorService,
@@ -290,15 +291,66 @@ describe("ProjectView", () => {
       await waitFor(() => expect(selected()).toEqual(["README.md"]));
       focusEditor("/w/acme/src/App.kt");
       await waitFor(() => expect(selected()).toEqual(["App.kt"]));
+      act(() => setViewOption("showExcluded", false));
+      focusEditor("/w/acme/build/out.class");
+      await waitFor(() => expect(useProjectTree.getState().revealRequest).toBeNull());
+      expect(selected()).toEqual(["App.kt"]);
 
       act(() => setViewOption("autoscrollFromSource", false));
       focusEditor("/w/acme/README.md");
       expect(selected()).toEqual(["App.kt"]);
       expect(screen.getByRole("button", { name: "Select Opened File" })).toBeTruthy();
     } finally {
-      act(() => useEditorRegistry.setState({ active: null }));
+      act(() => {
+        useEditorRegistry.setState({ active: null });
+        setViewOption("autoscrollFromSource", false);
+        setViewOption("showExcluded", true);
+      });
     }
   });
+
+  it.each([
+    ["showExcluded", "build/out.class", "Show Excluded Files"],
+    ["showHidden", "src/generated.pyc", "Show Hidden Files"],
+  ] as const)(
+    "explains a file hidden by %s and leaves the tree selection and filter alone",
+    async (option, relative, label) => {
+      const path = `${ROOT}/${relative}`;
+      if (!fs.nodes.has(path)) await fs.createFile(path);
+      const notify = vi.fn();
+      provideNotificationService({ notify });
+      provideEditorService({ openFile, activePath: () => path } as unknown as EditorService);
+      setContext("projectOpen", true);
+      setViewOption(option, false);
+      try {
+        const { row, rows } = setup();
+        render(<ProjectHeaderActions />);
+        const locate = screen.getByRole("button", { name: "Select Opened File" });
+        await waitFor(() => expect(rows()).toContain("README.md"));
+        fireEvent.mouseDown(row("README.md"));
+        fireEvent.click(locate);
+        await waitFor(() =>
+          expect(notify).toHaveBeenCalledWith(
+            expect.objectContaining({
+              title: "Hidden in Project View",
+              body: `Turn on ${label} in the Project view's Options to locate it.`,
+            }),
+          ),
+        );
+        expect(row("README.md")).toHaveAttribute("aria-selected", "true");
+        expect(useProjectTree.getState().options[option]).toBe(false);
+
+        act(() => setViewOption(option, true));
+        fireEvent.click(locate);
+        const name = relative.split("/").at(-1)!;
+        await waitFor(() => expect(row(name)).toHaveAttribute("aria-selected", "true"));
+        expect(notify).toHaveBeenCalledTimes(1);
+      } finally {
+        act(() => setViewOption(option, option === "showExcluded"));
+        setContext("projectOpen", false);
+      }
+    },
+  );
 
   it("expands and collapses folders on single click only when enabled", async () => {
     const { row, rows } = setup();

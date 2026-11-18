@@ -4651,6 +4651,8 @@
   "Show Hidden Files": "显示隐藏文件",
   "Show Members": "显示成员",
   "Show Excluded Files": "显示已排除的文件",
+  "Hidden in Project View": "项目视图中已隐藏",
+  "Turn on {option} in the Project view's Options to locate it.": "在项目视图的“选项”中开启“{option}”即可定位。",
   "Compact Middle Packages": "压缩中间软件包",
   "Sort Folders First": "文件夹排在前面",
   "Open Files with Single Click": "单击打开文件",

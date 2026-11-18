@@ -90,12 +90,16 @@ export function unityPathVisible(path: string, opts: TreeOptions): boolean {
   return true;
 }
 
-export function isVisible(entry: FileEntry, opts: TreeOptions): boolean {
-  if (!unityPathVisible(entry.path, opts)) return false;
+export type FileVisibilityOption = "showHidden" | "showExcluded";
+
+export function hiddenByFileOption(entry: FileEntry, opts: TreeOptions): FileVisibilityOption | null {
   // Ignored names are also excluded on the backend; only "Show Hidden" brings them back.
-  if (isIgnoredName(entry.name)) return opts.showHidden;
-  if (!opts.showExcluded && entry.ignored) return false;
-  return true;
+  if (isIgnoredName(entry.name)) return opts.showHidden ? null : "showHidden";
+  return !opts.showExcluded && entry.ignored ? "showExcluded" : null;
+}
+
+export function isVisible(entry: FileEntry, opts: TreeOptions): boolean {
+  return unityPathVisible(entry.path, opts) && hiddenByFileOption(entry, opts) === null;
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });

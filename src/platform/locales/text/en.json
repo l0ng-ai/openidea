@@ -150,6 +150,8 @@
   "Issue link": "Issue link",
   "Subject": "Subject",
   "Project View": "Project View",
+  "Hidden in Project View": "Hidden in Project View",
+  "Turn on {option} in the Project view's Options to locate it.": "Turn on {option} in the Project view's Options to locate it.",
   "Changed decoration": "Changed decoration",
   "HEAD tags decoration": "HEAD tags decoration",
   "Local branch decoration": "Local branch decoration",

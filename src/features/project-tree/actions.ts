@@ -5,11 +5,11 @@ import { getContext } from "@/platform/context";
 import { canRevealInFileManager, revealInFileManagerLabel } from "@/platform/fileManager";
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
-import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
+import { maybeEditorService, menuGroupItems, notifications, toolWindowService } from "@/workbench/contributions";
 import { OPTION_LABELS, SORT_LABELS } from "./HeaderActions";
 import { compareTarget, newMenuItems, revealLabel } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
-import type { ProjectNode } from "./model";
+import type { FileVisibilityOption, ProjectNode } from "./model";
 import {
   beginNew,
   beginRename,
@@ -102,13 +102,24 @@ function showProjectView(focus: boolean) {
   }
 }
 
+function explainHiddenFile(option: FileVisibilityOption) {
+  const [, label] = OPTION_LABELS.find(([key]) => key === option)!;
+  notifications().notify({
+    level: "info",
+    key: "project.hiddenFile",
+    title: "Hidden in Project View",
+    body: tx`Turn on ${label} in the Project view's Options to locate it.`,
+    userInitiated: true,
+  });
+}
+
 /** Selects `path` (default: the active editor's file) in the project view. */
 export function selectInProjectView(path?: string | null, focus = true) {
   const target = path ?? maybeEditorService()?.activePath() ?? null;
   if (!target) return false;
   if (!modeShows(target)) setViewMode("project");
   showProjectView(focus);
-  return revealPath(target, focus);
+  return revealPath(target, focus, focus ? explainHiddenFile : undefined);
 }
 
 /**

@@ -86,6 +86,7 @@ import {
   VIEW_MODES,
   autoExpand,
   clearRevealRequest,
+  hiddenRevealOption,
   loadDir,
   loadOutline,
   revealPath,
@@ -517,12 +518,17 @@ export function ProjectView() {
   // Select a revealed path once its row exists.
   useEffect(() => {
     if (!revealRequest) return;
-    const { path, focus, seq } = revealRequest;
+    const { path, root, focus, seq, onHidden } = revealRequest;
     const exact = model.keyOfPath.get(path);
+    const hidden = exact ? null : hiddenRevealOption(root, path);
     const loadingAncestors = info.pending.some((p) => p === path || isInside(path, p));
-    if (!exact && loadingAncestors) return;
-    const key = exact ?? nodeKeyFor(model, path);
+    if (!exact && !hidden && loadingAncestors) return;
     clearRevealRequest(seq);
+    if (hidden) {
+      onHidden?.(hidden);
+      return;
+    }
+    const key = exact ?? nodeKeyFor(model, path);
     if (!key || !info.visible.has(key)) return;
     revealing.current = true;
     handle.current?.reveal(key);

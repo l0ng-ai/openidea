@@ -25,11 +25,13 @@ import {
   withExtraRoots,
   withReadOnlyFolders,
   dropListings,
+  hiddenByFileOption,
   isDirEntry,
   mergeListing,
   planRefresh,
   visibleEntries,
   unityPathVisible,
+  type FileVisibilityOption,
   type Placeholder,
   type ProjectNode,
   type TreeModel,
@@ -108,6 +110,14 @@ export interface Clipboard {
   osWrite?: Promise<boolean>;
 }
 
+interface RevealRequest {
+  path: string;
+  root: string;
+  focus: boolean;
+  seq: number;
+  onHidden?: (option: FileVisibilityOption) => void;
+}
+
 interface ProjectTreeState {
   unity: UnityProjectInfo | null;
   root: string | null;
@@ -122,7 +132,7 @@ interface ProjectTreeState {
   editing: Editing | null;
   clipboard: Clipboard | null;
   /** A path to select (and scroll to) once its row is visible. */
-  revealRequest: { path: string; focus: boolean; seq: number } | null;
+  revealRequest: RevealRequest | null;
   /** Folder key highlighted as drop target. */
   dropTarget: string | null;
   mode: ViewMode;
@@ -635,7 +645,7 @@ export function dropOutlines(paths: readonly string[]) {
 let revealSeq = 0;
 
 /** Expands the ancestors of `path` and selects it once visible. */
-export function revealPath(requested: string, focus = false) {
+export function revealPath(requested: string, focus = false, onHidden?: RevealRequest["onHidden"]) {
   const { expanded } = get();
   const project = get().root;
   if (!project) return false;
@@ -668,9 +678,25 @@ export function revealPath(requested: string, focus = false) {
       changed = true;
     }
   if (changed) setExpanded(next);
-  set({ revealRequest: { path, focus, seq: ++revealSeq } });
+  set({ revealRequest: { path, root, focus, seq: ++revealSeq, onHidden } });
   for (const a of folders) void loadDir(a);
   return true;
+}
+
+/** The first hidden entry on a reveal's path may be one of its folders. */
+export function hiddenRevealOption(root: string, path: string): FileVisibilityOption | null {
+  const state = get();
+  if (isFilteredMode(state.mode)) return null;
+  const options = treeOptions(state);
+  const folders = ancestorsWithin(root, path);
+  for (const [i, folder] of folders.entries()) {
+    const child = folders[i + 1] ?? path;
+    const entry = state.listings.get(folder)?.find((file) => file.path === child);
+    if (!entry) return null;
+    const option = hiddenByFileOption(entry, options);
+    if (option) return option;
+  }
+  return null;
 }
 
 /**
