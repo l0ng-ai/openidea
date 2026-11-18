@@ -129,6 +129,15 @@ describe("staging operations of the tree's nodes", () => {
       enabled(nodeMenu([underUnstaged], []), "Unstage"),
     ]).toEqual([true, false]);
   });
+
+  it("has no Commit File…: a commit takes the whole index", () => {
+    useSettings(true);
+    const labels = (items: MenuItem[]) => items.map((i) => ("label" in i ? i.label : null));
+    for (const node of [group("staged").children![0]!, group("unstaged").children![0]!])
+      expect(labels(nodeMenu([node], []))).not.toContain("Commit File…");
+    useSettings(false);
+    expect(labels(nodeMenu([group("unstaged").children![0]!], []))).toContain("Commit File…");
+  });
 });
 
 describe("the Commit tool window with the staging area", () => {
