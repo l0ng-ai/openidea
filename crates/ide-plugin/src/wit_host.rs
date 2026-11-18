@@ -506,6 +506,21 @@ impl ui::Host for StoreData {
             .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), None)
             .map_err(to_wit))
     }
+    fn set_console_rules(&mut self, rules: Vec<ui::ConsoleRule>) -> Fallible<()> {
+        let rules = rules
+            .into_iter()
+            .map(|r| crate::ConsoleRule {
+                pattern: r.pattern,
+                ignore_case: r.ignore_case,
+                foreground: r.foreground,
+                background: r.background,
+                styles: r.styles,
+                whole_line: r.whole_line,
+                enabled: r.enabled,
+            })
+            .collect();
+        Ok(self.host.console_rules(rules).map_err(to_wit))
+    }
     fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
         let valid_key =
             (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));

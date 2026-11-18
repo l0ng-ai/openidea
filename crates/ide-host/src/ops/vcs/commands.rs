@@ -338,6 +338,13 @@ fn keep_private(root: &Path) {
     }
 }
 
+/// Directory Mappings: the repository roots detection finds, before any are excluded or added.
+#[command(trust = always)]
+pub async fn vcs_detected_roots(host: &Host, window: &str) -> IdeResult<Vec<PathBuf>> {
+    let project = host.project(window)?;
+    blocking(move || project.detected_repository_roots()).await
+}
+
 /// The project's repositories, the primary one first.
 #[command(trust = always)]
 pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
@@ -1061,6 +1068,22 @@ pub async fn vcs_config_get(
     blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.config_get(&key))).await
 }
 
+/// Git User Name Is Not Defined: sets `user.name` / `user.email` for commits in the
+/// repository, or globally.
+#[command(trust = trusted)]
+pub async fn vcs_set_user_identity(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    name: String,
+    email: String,
+    global: bool,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.set_user_identity(&name, &email, global))).await
+}
+
 /// Local history operation that may take a while (hooks, large checkouts); git's
 /// output streams through `on_output`. Cancellable.
 #[command(trust = trusted)]
@@ -1569,6 +1592,7 @@ ide_command::domain!(
     vcs_compare_paths,
     vcs_compare_scope,
     vcs_config_get,
+    vcs_set_user_identity,
     vcs_conflict_versions,
     vcs_create_branch,
     vcs_create_patch,
@@ -1616,6 +1640,7 @@ ide_command::domain!(
     vcs_revision_files,
     vcs_reword,
     vcs_roots,
+    vcs_detected_roots,
     vcs_shelf_delete,
     vcs_shelf_diff,
     vcs_shelf_import,

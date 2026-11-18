@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { RemoteSession } from "@/bindings";
 import { useRemote } from "@/platform/remote";
+import { useConsoleRules } from "@/workbench/contributions";
 import { MessagesHost } from "@/workbench/messages";
 import { createMemoryPluginsBackend, setPluginsBackend, type PluginsBackend } from "./backend";
 import { handleRuntimeEvent } from "./runtimeUi";
@@ -166,5 +167,23 @@ describe("clipboard reads for a plugin command", () => {
     act(() => void handleRuntimeEvent({ type: "promptClosed", promptId: "6" }));
     await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(answerClipboard).not.toHaveBeenCalled();
+  });
+});
+
+describe("console rules from a plugin", () => {
+  it("replace that plugin's rules and go away with an empty list", () => {
+    const rule = {
+      pattern: "JOB-\\d+",
+      ignoreCase: false,
+      foreground: "cyan",
+      background: null,
+      styles: [],
+      wholeLine: false,
+      enabled: true,
+    };
+    expect(handleRuntimeEvent({ type: "consoleRulesChanged", pluginId: "acme.grep", rules: [rule] })).toBe(true);
+    expect(useConsoleRules.getState().providers.get("acme.grep")).toEqual([rule]);
+    handleRuntimeEvent({ type: "consoleRulesChanged", pluginId: "acme.grep", rules: [] });
+    expect(useConsoleRules.getState().providers.has("acme.grep")).toBe(false);
   });
 });

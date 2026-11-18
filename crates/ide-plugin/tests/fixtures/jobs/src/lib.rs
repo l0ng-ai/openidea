@@ -87,6 +87,20 @@ impl Plugin for Jobs {
                 host::copy_to_clipboard(arg.unwrap_or_default())?;
                 Ok(None)
             }
+            "console-rules" => {
+                // No argument: two rules; `""` clears; anything else is one rule with that pattern.
+                use openidea_plugin::ConsoleRule;
+                let rules = match arg {
+                    None => vec![
+                        ConsoleRule::new(r"\[AUDIT\]").foreground("bright-yellow").style("bold").whole_line(),
+                        ConsoleRule::new(r"job-\d+").ignore_case().foreground("cyan").background("teal"),
+                    ],
+                    Some("") => Vec::new(),
+                    Some(pattern) => vec![ConsoleRule::new(pattern).foreground("red")],
+                };
+                host::set_console_rules(&rules)?;
+                Ok(None)
+            }
             "open-url" => {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)

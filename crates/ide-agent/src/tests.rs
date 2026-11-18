@@ -59,6 +59,8 @@ struct FakeAgent {
     session_steering: bool,
     /// Records the `mcpServers` array passed to `session/new`, `session/load`, and `session/fork`.
     mcp_calls: Mutex<Vec<(String, Vec<String>)>>,
+    /// The content blocks of each `session/prompt`.
+    prompts: Mutex<Vec<Value>>,
 }
 
 impl FakeAgent {
@@ -247,7 +249,17 @@ impl Handler for FakeAgent {
                 Ok(json!({}))
             }
             "session/prompt" => {
-                let text = params.pointer("/prompt/0/text").and_then(Value::as_str).unwrap_or_default().to_owned();
+                self.prompts.lock().push(params.get("prompt").cloned().unwrap_or(Value::Null));
+                // `!` commands run since the last message come first; the message follows.
+                let first = match params.pointer("/prompt/0/text").and_then(Value::as_str) {
+                    Some(t) if t.starts_with("<bash-input>") => 1,
+                    _ => 0,
+                };
+                let text = params
+                    .pointer(&format!("/prompt/{first}/text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
                 if text.starts_with("<send_user_message_question_reply>") {
                     self.say(&session, "answer received");
                     return Ok(json!({"stopReason": "end_turn"}));
@@ -1359,6 +1371,53 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     assert_eq!(queued.len(), 1);
     assert_eq!(mgr.unqueue(&task.id, &queued[0].id).unwrap().prompt.text, "later");
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+}
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_commands_show_in_the_conversation_and_go_with_the_next_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let turns = agent.prompts.lock().len();
+
+    mgr.run_shell(&task.id, " echo shell-out ", ide_core::CancellationToken::new()).await.unwrap();
+    assert_eq!(agent.prompts.lock().len(), turns, "a `!` command starts no turn");
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let Some(AgentEntry::Tool { title, kind, status, output, .. }) = entries.last() else {
+        panic!("no entry for the command: {entries:?}")
+    };
+    assert_eq!((title.as_str(), kind.as_str(), *status), ("! echo shell-out", "execute", AgentToolStatus::Completed));
+    assert_eq!(output.as_deref(), Some("shell-out"));
+
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert_eq!(
+        sent.pointer("/0/text").and_then(Value::as_str),
+        Some(
+            "<bash-input>echo shell-out</bash-input>\n<bash-stdout>shell-out</bash-stdout><bash-stderr></bash-stderr>"
+        )
+    );
+    assert_eq!(sent.pointer("/1/text").and_then(Value::as_str), Some("again"));
+    // Only once.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert_eq!(sent.pointer("/0/text").and_then(Value::as_str), Some("again"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -284,6 +284,18 @@ async fn files_of_a_project_attached_outside_go_by_their_absolute_path_everywher
         .map(|r| r["repositoryPathRelativeToProject"].as_str().unwrap())
         .collect();
     assert!(repos.contains(&shown("").trim_end_matches('/')), "{repos:?}");
+
+    // `paths` names such a project by its absolute path, in every tool.
+    let only = json!([format!("{}/src/**", shown(""))]);
+    let files = h.json("search_file", json!({"q":"*.rs","paths":only})).await;
+    assert_eq!(files["items"], json!([{ "filePath": shown("src/lib.rs") }]));
+    let text = h.json("search_text", json!({"q":"attached_marker","paths":only})).await;
+    assert_eq!(text["items"][0]["filePath"], shown("src/lib.rs"), "{text}");
+    let symbols = h.json("search_symbol", json!({"q":"attached_marker","paths":only})).await;
+    assert_eq!(symbols["items"][0]["filePath"], shown("src/lib.rs"), "{symbols}");
+    let status = h.json("git_status", json!({"paths":only})).await;
+    assert_eq!(status["repositories"].as_array().unwrap().len(), 1, "{status}");
+    assert_eq!(status["repositories"][0]["repositoryPathRelativeToProject"], shown("").trim_end_matches('/'));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -442,7 +454,7 @@ async fn git_status_and_diff_on_a_temporary_repository() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn scope_limits_the_query_tools_to_a_directory() {
+async fn paths_limit_the_query_tools_to_folders() {
     let h = Harness::new();
     std::fs::create_dir_all(h.root.join("lib")).unwrap();
     std::fs::write(h.root.join("lib/c.txt"), "needle\n").unwrap();
@@ -452,17 +464,20 @@ async fn scope_limits_the_query_tools_to_a_directory() {
         out.dedup();
         out
     };
-    assert_eq!(paths(&h.json("search_text", json!({"q":"needle","scope":"lib"})).await), ["lib/c.txt"]);
-    assert_eq!(paths(&h.json("search_regex", json!({"q":"need.e","scope":"lib/"})).await), ["lib/c.txt"]);
+    assert_eq!(paths(&h.json("search_text", json!({"q":"needle","paths":["lib/"]})).await), ["lib/c.txt"]);
+    assert_eq!(paths(&h.json("search_regex", json!({"q":"need.e","paths":["lib/**"]})).await), ["lib/c.txt"]);
     let absolute = h.root.join("src").to_string_lossy().into_owned();
-    assert_eq!(paths(&h.json("search_file", json!({"q":"*.txt","scope":absolute})).await), ["src/a.txt", "src/b.txt"]);
-    // Within the scope, `paths` narrows further.
     assert_eq!(
-        paths(&h.json("search_text", json!({"q":"needle","scope":"src","paths":["**/b.txt"]})).await),
-        ["src/b.txt"]
+        paths(&h.json("search_file", json!({"q":"*.txt","paths":[absolute]})).await),
+        ["src/a.txt", "src/b.txt"]
     );
-    assert!(h.error("search_text", json!({"q":"needle","scope":"missing"})).await.contains("is not a directory"));
-    assert!(h.error("search_text", json!({"q":"needle","scope":".."})).await.contains("outside the project"));
+    // Several folders at once, and exclusions.
+    assert_eq!(
+        paths(&h.json("search_text", json!({"q":"needle","paths":["src/**","lib/**","!**/a.txt"]})).await),
+        ["lib/c.txt", "src/b.txt"]
+    );
+    let outside = h.error("search_text", json!({"q":"needle","paths":["../**"]})).await;
+    assert!(outside.contains("outside of the project directory"), "{outside}");
 
     let git = |args: &[&str]| {
         let output = std::process::Command::new("git").current_dir(&h.root).args(args).output().unwrap();
@@ -473,7 +488,7 @@ async fn scope_limits_the_query_tools_to_a_directory() {
     git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
     std::fs::write(h.root.join("src/a.txt"), "changed\n").unwrap();
     std::fs::write(h.root.join("lib/c.txt"), "changed\n").unwrap();
-    let status = h.json("git_status", json!({"scope":"lib"})).await;
+    let status = h.json("git_status", json!({"paths":["lib/"]})).await;
     assert_eq!(status["repositories"].as_array().unwrap().len(), 1);
     assert_eq!(
         status["repositories"][0]["entries"],
@@ -482,7 +497,63 @@ async fn scope_limits_the_query_tools_to_a_directory() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_scoped_symbol_search_finds_matches_past_the_unscoped_ones() {
+async fn excluded_and_ignored_folders_are_searched_when_asked_for() {
+    let h = Harness::new();
+    // `ignored/` is ignored by the project's `.gitignore`; `excluded/` is excluded in its settings.
+    std::fs::create_dir_all(h.root.join("excluded")).unwrap();
+    std::fs::write(h.root.join("excluded/e.txt"), "needle\n").unwrap();
+    std::fs::create_dir_all(h.root.join("src/ignored")).unwrap();
+    std::fs::write(h.root.join("src/ignored/x.txt"), "needle\n").unwrap();
+    ide_host::ops::project::set_settings(
+        &h.host,
+        "main",
+        ide_workspace::settings::SettingsScope::Project,
+        "projectStructure.excluded",
+        "[\"excluded\"]",
+    )
+    .unwrap();
+    let found = |args: Value| {
+        let h = &h;
+        async move {
+            let v = h.json(args["tool"].as_str().unwrap(), args["args"].clone()).await;
+            let mut out: Vec<String> = v["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|i| i["filePath"].as_str().unwrap().to_owned())
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        }
+    };
+    let text = |args: Value| json!({ "tool": "search_text", "args": args });
+    assert_eq!(found(text(json!({"q":"needle"}))).await, ["src/a.txt", "src/b.txt"]);
+    let every = ["excluded/e.txt", "ignored/a.txt", "src/a.txt", "src/b.txt", "src/ignored/x.txt"];
+    assert_eq!(found(text(json!({"q":"needle","includeExcluded":true}))).await, every);
+    assert_eq!(found(json!({"tool":"search_regex","args":{"q":"need.e","includeExcluded":true}})).await, every);
+    // `paths` only narrows: a folder the project leaves out stays out when named ...
+    let nothing: Vec<String> = Vec::new();
+    assert_eq!(found(text(json!({"q":"needle","paths":["ignored/"]}))).await, nothing);
+    assert_eq!(found(text(json!({"q":"needle","paths":["excluded/"]}))).await, nothing);
+    // ... and is searched, alone, when asked for.
+    assert_eq!(
+        found(text(json!({"q":"needle","paths":["ignored/","excluded/"],"includeExcluded":true}))).await,
+        ["excluded/e.txt", "ignored/a.txt"]
+    );
+    let file = |dir: &str| json!({"tool":"search_file","args":{"q":"*.txt","paths":[dir],"includeExcluded":true}});
+    assert_eq!(found(file("excluded/")).await, ["excluded/e.txt"]);
+    assert_eq!(found(file("ignored/")).await, ["ignored/a.txt"]);
+    assert_eq!(found(text(json!({"q":"needle","paths":["src/"]}))).await, ["src/a.txt", "src/b.txt"]);
+    assert_eq!(
+        found(text(json!({"q":"needle","paths":["src/"],"includeExcluded":true}))).await,
+        ["src/a.txt", "src/b.txt", "src/ignored/x.txt"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_symbol_search_with_paths_finds_matches_past_the_others() {
     let h = Harness::new();
     std::fs::create_dir_all(h.root.join("many")).unwrap();
     for i in 0..60 {
@@ -498,12 +569,12 @@ async fn a_scoped_symbol_search_finds_matches_past_the_unscoped_ones() {
         assert!(std::time::Instant::now() < deadline, "the files were never indexed");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let found = h.json("search_symbol", json!({"q":"pool_marker","scope":"zz","limit":1})).await;
+    let found = h.json("search_symbol", json!({"q":"pool_marker","paths":["zz/"],"limit":1})).await;
     assert_eq!(found["items"][0]["filePath"], "zz/last.rs", "{found}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn scope_reaches_an_attached_worktree_the_repository_ignores() {
+async fn paths_reach_an_attached_worktree_the_repository_ignores() {
     let h = Harness::new();
     h.trust().await;
     let git = |dir: &Path, args: &[&str]| {
@@ -545,10 +616,14 @@ async fn scope_reaches_an_attached_worktree_the_repository_ignores() {
     let everywhere = found(json!({"q":"needle"})).await;
     assert!(everywhere.contains(&".wt/feature/src/b.txt".to_owned()), "{everywhere:?}");
     assert_eq!(
-        found(json!({"q":"needle","scope":".wt/feature/src"})).await,
+        found(json!({"q":"needle","paths":[".wt/feature/src/"]})).await,
         [".wt/feature/src/a.txt", ".wt/feature/src/b.txt"]
     );
     assert_eq!(found(json!({"q":"needle","paths":[".wt/feature/src/b.txt"]})).await, [".wt/feature/src/b.txt"]);
+    // With `includeExcluded` the root's walk enters the ignored worktree: its files still come once.
+    let all = h.json("search_text", json!({"q":"needle","includeExcluded":true})).await;
+    let items = all["items"].as_array().unwrap();
+    assert_eq!(items.iter().filter(|i| i["filePath"] == ".wt/feature/src/b.txt").count(), 1, "{all}");
 }
 
 #[cfg(unix)]
@@ -1217,8 +1292,8 @@ async fn call_hierarchy_pages_are_sorted_and_scoped() {
     assert_eq!((&first["more"], &first["nextOffset"]), (&json!(true), &json!(2)));
     let next = h.json("get_call_hierarchy", at(json!({"limit":2,"offset":2}))).await;
     assert_eq!(names(&next), ["main"]);
-    let scoped = h.json("get_call_hierarchy", at(json!({"scope":"src"}))).await;
+    let scoped = h.json("get_call_hierarchy", at(json!({"paths":["src/"]}))).await;
     assert_eq!(names(&scoped), ["main"]);
     assert_eq!(scoped["total"], 1);
-    assert_eq!(scoped["root"]["name"], "price", "the root is shown whatever the scope");
+    assert_eq!(scoped["root"]["name"], "price", "the root is shown whatever the paths");
 }

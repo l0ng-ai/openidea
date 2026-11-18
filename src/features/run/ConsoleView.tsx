@@ -18,6 +18,8 @@ import { useConsoleFont } from "@/platform/consoleFont";
 import { Icon, showContextMenu } from "@/ui";
 import { spanStyle } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
+import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
+import { useConsoleRules } from "@/workbench/contributions";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
 import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
@@ -37,15 +39,18 @@ const Line = memo(
   function Line({
     line,
     marks,
+    rules,
     cwd,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
+    rules?: ConsoleRuleMatch;
     length: number;
     cwd: string;
   }) {
     // Not memoised: the open (last) line mutates in place; `memo` below re-renders on length changes only.
-    const segments = segmentLine(line.spans, line.kind === "system" ? [] : findOutputLinks(line.text), marks);
+    const spans = rules ? styleSpans(line.spans, rules) : line.spans;
+    const segments = segmentLine(spans, line.kind === "system" ? [] : findOutputLinks(line.text), marks);
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
@@ -92,7 +97,7 @@ const Line = memo(
       </>
     );
   },
-  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks,
+  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks && a.rules === b.rules,
 );
 
 /** A run of folded lines (Settings › Console › Fold lines that contain). */
@@ -185,6 +190,7 @@ export function ConsoleView({
   const lines = model.lines;
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const logColors = useWorkflowSettings((s) => s.console.logColors);
+  const consoleRules = compileConsoleRules(useConsoleRules((s) => s.providers));
   // The Run console uses Tools › Terminal › Font (which can follow Editor › Font),
   // so the font and fallback configured there apply to process output too.
   const consoleFont = useConsoleFont();
@@ -608,17 +614,25 @@ export function ConsoleView({
             }
             const line = lines[row.index];
             if (!line) return null;
-            // The level colour is the inherited fallback; spans with their own ANSI colour win.
-            const color = logLineColor(line.text, line.kind, logColors);
+            // A plugin's whole-line rule replaces the level colour. The level colour is the
+            // inherited fallback; spans with their own ANSI colour win (rule styles replace those).
+            const ruled = matchConsoleRules(line.text, line.kind, consoleRules);
+            const color = ruled?.line ? ruled.line.fg : logLineColor(line.text, line.kind, logColors);
             return (
               <div
                 key={item.key}
                 data-index={item.index}
                 ref={softWrap ? virtualizer.measureElement : undefined}
                 className={clsx(styles.line, styles[line.kind])}
-                style={{ ...rowStyle(item.start), color }}
+                style={{ ...rowStyle(item.start), color, background: ruled?.line?.bg }}
               >
-                <Line line={line} marks={marksByLine.get(row.index)} length={line.text.length} cwd={cwd} />
+                <Line
+                  line={line}
+                  marks={marksByLine.get(row.index)}
+                  rules={ruled}
+                  length={line.text.length}
+                  cwd={cwd}
+                />
                 {row.fold && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
                 {"\n"}

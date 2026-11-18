@@ -6,7 +6,6 @@
 //! the editor (one per character except emoji and other astral characters).
 
 use crate::mcp::page::{OFFSET, Page};
-use crate::mcp::scope::{self, Scope};
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use crate::mcp::util::{INDEXING_PARTIAL_RESULT_REASON, MEDIUM_TIMEOUT};
 use crate::ops::search::SearchEvent;
@@ -37,8 +36,10 @@ const MIN_UNMASKED_MATCHES: usize = 10_000;
 /// outside the window of a longer line are left out.
 const LINE_WINDOW: usize = 500;
 
-const PATHS_DESCRIPTION: &str = "Optional list of project-relative glob patterns to filter results. Supports '!' \
-excludes. Trailing '/' expands to '**'. Patterns without '/' are treated as '**/pattern'. Empty strings are ignored.";
+const INCLUDE_EXCLUDED_DESCRIPTION: &str = "Whether to include excluded/ignored files in results";
+const PATHS_DESCRIPTION: &str = "Optional list of project-relative glob patterns to filter results (absolute ones for a \
+project attached outside it). Supports '!' excludes. Trailing '/' expands to '**'. Patterns without '/' are treated as \
+'**/pattern'. Empty strings are ignored.";
 const LIMIT_DESCRIPTION: &str = "Results to return at most (default 100)";
 const SYMBOL_LIMIT_DESCRIPTION: &str = "Results to return at most (default 50)";
 const CONTEXT_DESCRIPTION: &str = "Lines around each match to return besides the matched line (`lineText`): \"+N\" the \
@@ -68,8 +69,8 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
         |call| async move { text_search(call, false).await },
     )
     .param(Param::required("q", ParamType::String, "Text to search for"))
-    .param(scope::param())
-    .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
+    .param(paths_param())
+    .param(Param::optional("includeExcluded", ParamType::Boolean, INCLUDE_EXCLUDED_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
@@ -91,8 +92,8 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
         |call| async move { text_search(call, true).await },
     )
     .param(Param::required("q", ParamType::String, "Regex pattern to search for"))
-    .param(scope::param())
-    .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
+    .param(paths_param())
+    .param(Param::optional("includeExcluded", ParamType::Boolean, INCLUDE_EXCLUDED_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
@@ -113,8 +114,7 @@ If you don't find a suitable result, try again with include_external=true to sea
         |call| async move { symbol_search(call).await },
     )
     .param(Param::required("q", ParamType::String, "Symbol query text"))
-    .param(scope::param())
-    .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
+    .param(paths_param())
     .param(Param::optional(
         "include_external",
         ParamType::Boolean,
@@ -140,13 +140,8 @@ Paths are optional additional glob filters relative to the project root.",
         |call| async move { file_search(call).await },
     )
     .param(Param::required("q", ParamType::String, "Glob pattern to search for"))
-    .param(scope::param())
-    .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
-    .param(Param::optional(
-        "includeExcluded",
-        ParamType::Boolean,
-        "Whether to include excluded/ignored files in results",
-    ))
+    .param(paths_param())
+    .param(Param::optional("includeExcluded", ParamType::Boolean, INCLUDE_EXCLUDED_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .output(result_schema())
@@ -336,22 +331,39 @@ async fn fill_lines(
 
 // --- path globs ----------------------------------------------------------------
 
-/// The `paths` argument: project-relative globs, `!` excludes.
-struct PathScope {
+/// The `paths` argument every query tool takes.
+pub(crate) fn paths_param() -> Param {
+    Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION)
+}
+
+/// The `paths` argument: project-relative globs (absolute ones in a project attached outside
+/// the project), `!` excludes. It only narrows: what the project leaves out stays out.
+#[derive(Clone)]
+pub(crate) struct PathScope {
+    root: PathBuf,
     /// `None` when only excludes were given (everything is included).
     include: Option<GlobSet>,
     exclude: GlobSet,
     /// The globs as `FileMask` masks for Find in Files (`{a,b}` expanded, as masks
     /// split on commas), `None` when they cannot be expressed.
     masks: Option<(Vec<String>, Vec<String>)>,
+    /// The folders the included globs lie in, `None` when one may match anywhere (`**/a.rs`).
+    roots: Option<Vec<PathBuf>>,
 }
 
 impl PathScope {
-    fn new(root: &Path, patterns: &[String]) -> IdeResult<Self> {
+    pub(crate) fn of(call: &Call) -> IdeResult<Self> {
+        Self::new(call.root(), &call.project().content_roots(), &call.str_list("paths")?)
+    }
+
+    /// `attached`: the content roots, whose files outside `root` the globs name by absolute path.
+    fn new(root: &Path, attached: &[PathBuf], patterns: &[String]) -> IdeResult<Self> {
         let (mut include, mut exclude) = (GlobSetBuilder::new(), GlobSetBuilder::new());
         let (mut include_masks, mut exclude_masks) = (Vec::new(), Vec::new());
+        let mut roots = Vec::new();
         let mut has_include = false;
         let mut maskable = true;
+        let mut anywhere = false;
         for raw in patterns {
             let raw = raw.trim();
             if raw.is_empty() {
@@ -362,12 +374,18 @@ impl PathScope {
                 Some(rest) => (true, rest.trim()),
                 None => (false, raw),
             };
-            let mut glob = normalize_glob(pattern, root)?;
+            let mut glob = normalize_glob(pattern, root, attached)?;
             // A path naming an existing directory covers the files below it.
             if index_of_glob_char(&glob).is_none() && root.join(&glob).is_dir() {
                 glob.push_str("/**");
             }
-            let alternatives = expand_braces(&glob);
+            if !negated {
+                match glob_folder(&glob, root) {
+                    Some(folder) => roots.push(folder),
+                    None => anywhere = true,
+                }
+            }
+            let alternatives = expand_braces(&engine_mask(&glob, attached));
             maskable &= alternatives.is_some();
             let (set, masks) =
                 if negated { (&mut exclude, &mut exclude_masks) } else { (&mut include, &mut include_masks) };
@@ -376,27 +394,83 @@ impl PathScope {
             has_include |= !negated;
         }
         let build = |b: GlobSetBuilder| b.build().map_err(|e| IdeError::invalid(format!("Invalid glob pattern: {e}")));
+        // A folder inside another one is walked with it.
+        roots.sort();
+        roots.dedup_by(|inner, outer| inner.starts_with(outer));
         Ok(Self {
+            root: root.to_path_buf(),
             include: if has_include { Some(build(include)?) } else { None },
             exclude: build(exclude)?,
             masks: maskable.then_some((include_masks, exclude_masks)),
+            roots: (has_include && !anywhere).then_some(roots),
         })
     }
 
-    fn is_all(&self) -> bool {
+    pub(crate) fn is_all(&self) -> bool {
         self.include.is_none() && self.exclude.is_empty()
     }
 
     /// `path` is project-relative with `/` (absolute outside the project).
-    fn matches(&self, path: &str) -> bool {
+    pub(crate) fn matches(&self, path: &str) -> bool {
         self.include.as_ref().is_none_or(|s| s.is_match(path)) && !self.exclude.is_match(path)
     }
+
+    pub(crate) fn matches_path(&self, path: &Path) -> bool {
+        self.is_all() || self.matches(&shown(&self.root, path))
+    }
+
+    /// Whether `dir` or a file in it is in: a directory something runs in.
+    pub(crate) fn matches_dir(&self, dir: &Path) -> bool {
+        if self.is_all() {
+            return true;
+        }
+        let dir = shown(&self.root, dir);
+        self.matches(&dir) || self.matches(&if dir.is_empty() { "x".into() } else { format!("{dir}/x") })
+    }
+
+    /// The folders to walk instead of the whole project, `None` when a glob may match anywhere.
+    pub(crate) fn roots(&self) -> Option<&[PathBuf]> {
+        self.roots.as_deref()
+    }
+}
+
+/// `path` as the tools give it: relative to `root` with `/`, absolute (with `/`) outside it.
+fn shown(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+/// The folder a normalized glob lies in (the whole segments before its first glob character),
+/// `None` for one that may match anywhere.
+fn glob_folder(glob: &str, root: &Path) -> Option<PathBuf> {
+    let end = index_of_glob_char(glob).map_or(glob.len(), |i| glob[..i].rfind('/').unwrap_or(0));
+    let prefix = glob[..end].trim_end_matches('/');
+    if prefix.is_empty() {
+        return None;
+    }
+    let path = root.join(prefix);
+    // A file named by its path lies in its folder.
+    Some(if index_of_glob_char(glob).is_none() && !path.is_dir() { path.parent()?.to_path_buf() } else { path })
+}
+
+/// `glob` as Find in Files matches it: a project attached outside the project goes by its
+/// folder name there (as `search_project` shows its files), not by its absolute path.
+fn engine_mask(glob: &str, attached: &[PathBuf]) -> String {
+    if is_absolute_pattern(glob) {
+        for root in attached {
+            let shown = root.to_string_lossy().replace('\\', "/");
+            if let Some(rest) = glob.strip_prefix(&shown).filter(|r| r.is_empty() || r.starts_with('/')) {
+                return format!("{}{rest}", root.file_name().unwrap_or_default().to_string_lossy());
+            }
+        }
+    }
+    glob.to_owned()
 }
 
 /// A glob as a project-relative pattern: `\` → `/`, leading `./` dropped, `dir/` → `dir/**`,
 /// `name` → `**/name`, and its leading directories (`..`, absolute paths) resolved against
-/// `root`. Errors when that points outside the project.
-fn normalize_glob(raw: &str, root: &Path) -> IdeResult<String> {
+/// `root`; absolute in a project of `attached` outside it. Errors when that points outside the
+/// project.
+fn normalize_glob(raw: &str, root: &Path, attached: &[PathBuf]) -> IdeResult<String> {
     let mut value = raw.trim().replace('\\', "/");
     if value.is_empty() {
         return Err(IdeError::invalid("Glob pattern is empty"));
@@ -411,7 +485,7 @@ fn normalize_glob(raw: &str, root: &Path) -> IdeResult<String> {
     if !value.contains('/') {
         value = format!("**/{value}");
     }
-    let value = normalize_path_pattern(&value, root)?;
+    let value = normalize_path_pattern(&value, root, attached)?;
     if value.is_empty() {
         return Err(IdeError::invalid(format!("Invalid glob pattern: {raw}")));
     }
@@ -421,7 +495,7 @@ fn normalize_glob(raw: &str, root: &Path) -> IdeResult<String> {
 /// Resolves the whole directory segments before the first glob character against `root`.
 /// (JetBrains resolves up to the glob character itself, turning `src/Foo*.java` into
 /// `src/Foo/*.java`; only whole segments are resolved here.)
-fn normalize_path_pattern(pattern: &str, root: &Path) -> IdeResult<String> {
+fn normalize_path_pattern(pattern: &str, root: &Path, attached: &[PathBuf]) -> IdeResult<String> {
     let outside = || {
         IdeError::invalid(format!("Specified path '{pattern}' points to the location outside of the project directory"))
     };
@@ -442,8 +516,16 @@ fn normalize_path_pattern(pattern: &str, root: &Path) -> IdeResult<String> {
     } else {
         root.join(prefix_path)
     });
-    let relative = relative_to_root(root, &absolute).ok_or_else(outside)?;
     let suffix = pattern[prefix_len..].trim_start_matches('/');
+    let Some(relative) = relative_to_root(root, &absolute) else {
+        // A project attached outside the project goes by its absolute path, as its files do.
+        let absolute = dunce::canonicalize(&absolute).unwrap_or(absolute);
+        if !attached.iter().any(|r| absolute.starts_with(r)) {
+            return Err(outside());
+        }
+        let absolute = absolute.to_string_lossy().replace('\\', "/");
+        return Ok(if suffix.is_empty() { absolute } else { format!("{absolute}/{suffix}") });
+    };
     Ok(match (relative.is_empty(), suffix.is_empty()) {
         (true, _) => suffix.to_owned(),
         (false, true) => relative,
@@ -544,8 +626,7 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let pattern = query(&call, if is_regex { "Regex pattern is empty" } else { "Search text is empty" })?;
     let (page, limit) = page(&call, DEFAULT_LIMIT)?;
     let around = context(&call)?;
-    let dir = Scope::of(&call)?;
-    let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
+    let scope = PathScope::of(&call)?;
     // Globs Find in Files cannot take are applied afterwards, so the engine must not
     // stop at `limit` matches the filter may drop.
     let (masks, max_matches) = match scope.masks.clone() {
@@ -565,22 +646,18 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         whole_word: false,
         include,
         exclude,
-        // Only `scope` is walked.
-        scope: dir.dir().map_or(SearchScope::Project, |d| SearchScope::Directory { path: d.to_path_buf().into() }),
+        scope: SearchScope::Project,
         max_matches,
         context: Default::default(),
+        include_excluded: call.flag("includeExcluded", false)?,
     };
     if is_regex && let Err(e) = ide_search::match_ranges("", &query) {
         return Err(IdeError::invalid(format!("Invalid regex pattern: {pattern} ({})", e.message)));
     }
     let (files, summary, timed_out) = run_search(&call, query.clone()).await?;
     // Content roots outside the project are reported by absolute path.
-    let mut files: Vec<(String, FileMatches)> = files
-        .into_iter()
-        .filter(|f| dir.contains(&f.path.0))
-        .map(|f| (call.display(&f.path.0), f))
-        .filter(|(path, _)| scope.matches(path))
-        .collect();
+    let mut files: Vec<(String, FileMatches)> =
+        files.into_iter().map(|f| (call.display(&f.path.0), f)).filter(|(path, _)| scope.matches(path)).collect();
     files.sort_by(|a, b| a.0.cmp(&b.0));
     // Only these can match a line break.
     let may_span = is_regex || pattern.contains('\n');
@@ -750,27 +827,35 @@ async fn run_search(call: &Call, query: SearchQuery) -> IdeResult<(Vec<FileMatch
 async fn file_search(call: Call) -> IdeResult<Output> {
     let q = query(&call, "Glob pattern is empty")?;
     let (page, limit) = page(&call, DEFAULT_LIMIT)?;
-    let dir = Scope::of(&call)?;
-    let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
+    let scope = PathScope::of(&call)?;
     let include_excluded = call.flag("includeExcluded", false)?;
     let glob = GlobSetBuilder::new()
-        .add(build_glob(&normalize_glob(&q, call.root())?)?)
+        .add(build_glob(&normalize_glob(&q, call.root(), &[])?)?)
         .build()
         .map_err(|_| IdeError::invalid(format!("Invalid glob pattern: {q}")))?;
     // Ignored names and "Exclude files" patterns, which `read_dir` does not flag.
     let excludes = if include_excluded { None } else { Some(FileMask::new(&[], &call.project().search_excludes())?) };
     let root = call.root().to_path_buf();
-    // `scope`, or the project folder and the content roots its walk does not cover: those
-    // outside it and those inside it that it skips as ignored.
-    let roots: Vec<PathBuf> = match dir.dir() {
-        Some(dir) => vec![dir.to_path_buf()],
+    let content = call.project().content_roots();
+    // Where a folder's exclusions are matched from: the content root holding it, or the project.
+    let base_of =
+        |dir: &Path| content.iter().filter(|r| dir.starts_with(r)).max_by_key(|r| r.components().count()).cloned();
+    // The folders of `paths`, or the project folder and the content roots its walk does not
+    // cover: those outside it and those inside it that it skips as ignored.
+    let roots: Vec<(PathBuf, PathBuf)> = match scope.roots() {
+        Some(dirs) => dirs
+            .iter()
+            .filter(|d| d.is_dir())
+            .map(|d| (d.clone(), base_of(d).unwrap_or_else(|| root.clone())))
+            .collect(),
         None => std::iter::once(root.clone())
             .chain(
-                call.project()
-                    .content_roots()
-                    .into_iter()
-                    .filter(|r| relative_to_root(&root, r).is_none() || ide_index::walk_skips(&root, r)),
+                content
+                    .iter()
+                    .filter(|r| relative_to_root(&root, r).is_none() || ide_index::walk_skips(&root, r))
+                    .cloned(),
             )
+            .map(|r| (r.clone(), r))
             .collect(),
     };
     let host = call.host();
@@ -790,7 +875,7 @@ async fn file_search(call: Call) -> IdeResult<Output> {
     let (paths, more, timed_out) = host
         .blocking(move || {
             let mut found = Vec::new();
-            let more = roots.iter().any(|base| walk.dir(base, base, &mut found));
+            let more = roots.iter().any(|(dir, base)| walk.dir(dir, base, &mut found));
             if walk.cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
@@ -877,23 +962,23 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     let q = query(&call, "Search query is empty")?;
     let (page, limit) = page(&call, SYMBOL_SEARCH_DEFAULT_LIMIT)?;
     let around = context(&call)?;
-    let dir = Scope::of(&call)?;
-    let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
+    let scope = PathScope::of(&call)?;
     let external = call.flag("include_external", false)?;
     let host = call.host();
     let project = call.project().clone();
     let indexing_before = project.index.status().indexing;
     let pool = if scope.is_all() { limit + 1 } else { ((limit + 1) * SYMBOL_POOL_FACTOR).min(MAX_SYMBOL_POOL) };
     let found = {
-        let (project, q, dir) = (project.clone(), q.clone(), dir.dir().map(Path::to_path_buf));
+        let (project, q, within) = (project.clone(), q.clone(), scope.clone());
         host.blocking(move || {
-            Ok(match dir {
+            Ok(if within.is_all() {
+                project.index.find_symbols(&q, ide_index::SymbolFilter::All, pool)
+            } else {
                 // Filtered in the index: a pool cut before the filter could miss every match.
-                Some(dir) => project
+                project
                     .index
-                    .find_symbols_until(&q, ide_index::SymbolFilter::All, pool, &|p| p.starts_with(&dir), &|| false)
-                    .unwrap_or_default(),
-                None => project.index.find_symbols(&q, ide_index::SymbolFilter::All, pool),
+                    .find_symbols_until(&q, ide_index::SymbolFilter::All, pool, &|p| within.matches_path(p), &|| false)
+                    .unwrap_or_default()
             })
         })
         .await?
@@ -902,7 +987,6 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
         .into_iter()
         // By the path the other tools give: the index shows a root outside the project by its
         // folder name, which is no path to read.
-        .filter(|s| dir.contains(&s.path.0))
         .map(|s| (call.display(&s.path.0), s))
         .filter(|(path, _)| scope.matches(path))
         .map(|(path, s)| SearchItem {
@@ -920,11 +1004,11 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
         roots.extend(crate::mcp::tool::attached_projects(call.root()));
         for (name, container, location) in symbols {
             let path = location.uri.clone().unwrap_or_else(|| call.display(&location.path));
-            // Project files (attached projects' too) obey `scope` and `paths`; library symbols
-            // are what was asked for.
+            // Project files (attached projects' too) obey `paths`; library symbols are what was
+            // asked for.
             let inside = location.uri.is_none()
                 && (!Path::new(&path).is_absolute() || roots.iter().any(|r| location.path.starts_with(r)));
-            if inside && !(dir.contains_shown(call.root(), &path) && scope.matches(&path)) {
+            if inside && !scope.matches(&path) {
                 continue;
             }
             let item = SearchItem {
@@ -999,13 +1083,13 @@ mod tests {
     }
 
     fn scope(root: &Path, p: &[&str]) -> PathScope {
-        PathScope::new(root, &p.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
+        PathScope::new(root, &[], &p.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
     }
 
     #[test]
     fn normalizes_globs() {
         let (_dir, root) = root();
-        let n = |p: &str| normalize_glob(p, &root);
+        let n = |p: &str| normalize_glob(p, &root, &[]);
         assert_eq!(n("*.rs").unwrap(), "**/*.rs");
         assert_eq!(n("./foo/bar.txt").unwrap(), "foo/bar.txt");
         assert_eq!(n("foo/").unwrap(), "foo/**");
@@ -1082,9 +1166,33 @@ mod tests {
         assert!(s.matches("a.rs") && !s.matches("docs/a.md"));
         assert!(scope(root, &["*.{rs,ts}"]).masks.is_some());
         assert!(scope(root, &["*.{rs,{ts,js}}"]).masks.is_none());
-        let err = |p: &str| PathScope::new(root, &[p.to_owned()]).err().unwrap().message;
+        let err = |p: &str| PathScope::new(root, &[], &[p.to_owned()]).err().unwrap().message;
         assert!(err("a[").contains("Invalid glob pattern"));
         assert!(err("!").contains("Exclude pattern is empty"));
         assert!(err("../x/**").contains("outside of the project directory"));
+    }
+
+    #[test]
+    fn paths_name_the_folders_to_walk_and_projects_attached_outside() {
+        let (dir, root) = root();
+        let roots = |p: &[&str]| scope(&root, p).roots().map(<[PathBuf]>::to_vec);
+        // Only the folders the globs lie in, a folder inside another one walked with it.
+        assert_eq!(roots(&["subdir1/**", "subdir1/nested/*.rs", "!**/gen/**"]), Some(vec![root.join("subdir1")]));
+        assert_eq!(roots(&["subdir1/nested/x.rs"]), Some(vec![root.join("subdir1/nested")]));
+        // A glob matching anywhere, or none included, means the whole project.
+        assert_eq!(roots(&["subdir1/**", "**/*.rs"]), None);
+        assert_eq!(roots(&["!**/*.md"]), None);
+
+        let attached = dunce::canonicalize(dir.path()).unwrap().join("attached");
+        std::fs::create_dir_all(attached.join("src")).unwrap();
+        let shown = attached.to_string_lossy().replace('\\', "/");
+        let s = PathScope::new(&root, std::slice::from_ref(&attached), &[format!("{shown}/src/**")]).unwrap();
+        assert!(s.matches(&format!("{shown}/src/a.rs")) && !s.matches("src/a.rs"));
+        assert!(s.matches_path(&attached.join("src/a.rs")));
+        assert_eq!(s.roots(), Some(&[attached.join("src")][..]));
+        // Find in Files shows such a project's files under its folder name.
+        assert_eq!(s.masks.unwrap().0, ["attached/src/**"]);
+        let unattached = PathScope::new(&root, &[], &[format!("{shown}/src/**")]);
+        assert!(unattached.err().unwrap().message.contains("outside of the project directory"));
     }
 }

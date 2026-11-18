@@ -31,6 +31,7 @@ import type {
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setPluginDecorations } from "./decorations";
+import { setPluginConsoleRules } from "./consoleRules";
 import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
@@ -540,6 +541,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "decorationsChanged":
       setPluginDecorations(e.pluginId, e.sets);
+      return true;
+    case "consoleRulesChanged":
+      setPluginConsoleRules(e.pluginId, e.rules);
       return true;
     case "editorOpen": {
       const r = e.selection;

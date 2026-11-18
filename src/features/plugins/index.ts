@@ -26,6 +26,7 @@ import { startViewUi } from "./uiPoints";
 import { showInstalledIntellijThemes } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
 import { startPluginDecorations } from "./decorations";
+import { startPluginConsoleRules } from "./consoleRules";
 import { startOneDarkNotice } from "./oneDarkNotice";
 import { startIndexedMarkers } from "./indexedMarkers";
 import { startPluginNavigation } from "./navigation";
@@ -115,6 +116,7 @@ export function activate(): () => void {
     startOneDarkNotice(),
     startIndexedMarkers(),
     startPluginDecorations(),
+    startPluginConsoleRules(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
     startWorkspaceContains(),

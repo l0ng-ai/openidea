@@ -18,7 +18,7 @@ import { useEffortFocus } from "../effortFocus";
 import { isBusy } from "../model";
 import { asksInCard, type PermissionEntry } from "../permission";
 import {
-  cancelTask,
+  stopTask,
   editQueued,
   refreshTaskModels,
   removeQueued,
@@ -177,6 +177,7 @@ export function SessionComposer({
   const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
+  const shellRunning = useAgents((s) => s.shellRunning.has(task.id));
   // ↑ recalls this conversation's messages, newest first.
   const history = useMemo(
     () => (entries ?? []).flatMap((e) => (e.type === "user" && e.text ? [e.text] : [])).reverse(),
@@ -297,7 +298,7 @@ export function SessionComposer({
         }
         actions={
           <>
-            {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
+            {(busy || shellRunning) && <IconButton icon="stop" title="Stop" onClick={() => void stopTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}

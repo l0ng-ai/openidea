@@ -869,6 +869,7 @@ async fn occurrences(
         scope,
         max_matches: 0,
         context,
+        include_excluded: false,
     };
     let host = call.host();
     let request = crate::mcp::tool::request_id();

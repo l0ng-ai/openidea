@@ -4,7 +4,7 @@ import { nativeToAsciiAction } from "./nativeToAscii";
 /** Java's page first: JDK, Maven and the language server are what new projects most often need. */
 export const NEW_PROJECTS_PAGE = "languages.java";
 
-export function settingsActions(open: (page?: string, newProjects?: boolean) => void): Action[] {
+export function settingsActions(open: (page?: string, newProjects?: boolean) => void | Promise<void>): Action[] {
   return [
     nativeToAsciiAction(),
     {

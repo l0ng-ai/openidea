@@ -4,12 +4,14 @@
  * Behaviour lives in the vcs feature, which reads `vcs.*` through
  * `platform/workflowSettings`.
  */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS, type IssueLinkValid } from "@/platform/workflowSettings";
 import { showInFileManagerLabel } from "@/platform/fileManager";
-import { Button, Icon, Input, type SelectOption, T } from "@/ui";
+import { Button, Icon, IconButton, Input, Select, type SelectOption, T } from "@/ui";
+import { choosePath } from "@/platform/choosePath";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
 import type { PageSpec } from "./spec";
@@ -34,10 +36,91 @@ function HistoryLimitRow() {
   );
 }
 
+type VcsChoice = "git" | "none";
+const VCS_OPTIONS: SelectOption<VcsChoice>[] = [
+  { value: "git", label: "Git" },
+  { value: "none", label: "<none>" },
+];
+
+/** A mapping's directory as stored: relative to the project root (`.` for the root), absolute outside it. */
+export function mappingKey(root: string, path: string): string {
+  const p = path.replace(/[\\/]+$/, "");
+  if (p === root) return ".";
+  return p.startsWith(root + "/") || p.startsWith(root + "\\") ? p.slice(root.length + 1).replace(/\\/g, "/") : p;
+}
+
+function mappingPath(root: string, key: string): string {
+  if (key === "." || key === "") return root;
+  return /^([A-Za-z]:)?[\\/]/.test(key) ? key : `${root}/${key}`;
+}
+
+/**
+ * IDEA's Directory Mappings: the detected repositories plus those added by hand. Choosing
+ * `<none>` leaves a repository out of the Git and Commit tool windows; its files stay in the project.
+ */
 function MappingsTable() {
   const project = useProject((s) => s.project);
+  const root = project?.root ?? null;
+  const [excluded, setExcluded] = useSetting<string[]>("vcs.mappings.excluded", "project");
+  const [added, setAdded] = useSetting<string[]>("vcs.mappings.added", "project");
+  const [detected, setDetected] = useState<string[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  useEffect(() => {
+    if (!root || !isTauri()) return;
+    let live = true;
+    call(commands.vcsDetectedRoots()).then(
+      (roots) => live && setDetected(roots),
+      () => live && setDetected([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [root]);
+
+  const rows = useMemo(() => {
+    if (!root) return [];
+    const keys = new Set([...(detected ?? []).map((p) => mappingKey(root, p)), ...added]);
+    if (!keys.size) keys.add(".");
+    return [...keys]
+      .sort((a, b) => (a === "." ? -1 : b === "." ? 1 : a.localeCompare(b)))
+      .map((key) => ({
+        key,
+        path: mappingPath(root, key),
+        manual: added.includes(key),
+        vcs: (excluded.includes(key) || (!project?.isGit && key === "." && !detected?.length && !added.length)
+          ? "none"
+          : "git") as VcsChoice,
+      }));
+  }, [root, detected, added, excluded, project?.isGit]);
+
+  const setVcs = (key: string, vcs: VcsChoice) =>
+    setExcluded(vcs === "none" ? [...excluded.filter((k) => k !== key), key] : excluded.filter((k) => k !== key));
+
+  const add = async () => {
+    if (!root) return;
+    const picked = await choosePath({ directory: true, title: "Select Repository Root", defaultPath: root });
+    if (!picked) return;
+    const key = mappingKey(root, picked);
+    if (excluded.includes(key)) setExcluded(excluded.filter((k) => k !== key));
+    if (!rows.some((r) => r.key === key)) setAdded([...added, key]);
+    setSelected(key);
+  };
+  const removable = rows.find((r) => r.key === selected && r.manual);
+  const remove = () => {
+    if (!removable) return;
+    setAdded(added.filter((k) => k !== removable.key));
+    setExcluded(excluded.filter((k) => k !== removable.key));
+    setSelected(null);
+  };
+
   return (
     <div className={styles.tableBox}>
+      {root && (
+        <div className={styles.toolbar} role="toolbar" aria-label={tx("Directory mappings actions")}>
+          <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
+          <IconButton icon="minus" title="Remove" size="small" disabled={!removable} onClick={remove} />
+        </div>
+      )}
       <table className={styles.table} aria-label={tx("Directory mappings")}>
         <thead>
           <tr>
@@ -50,20 +133,38 @@ function MappingsTable() {
           </tr>
         </thead>
         <tbody>
-          {!project ? (
+          {!root ? (
             <tr>
               <td colSpan={2} className={styles.empty}>
                 <T>No project is open</T>
               </td>
             </tr>
           ) : (
-            <tr>
-              <td title={project.root}>
-                <Icon name="folder" size={16} className={styles.mappingIcon} />
-                {tx("<Project>")} {project.root}
-              </td>
-              <td>{project.isGit ? "Git" : tx("<none>")}</td>
-            </tr>
+            rows.map((row) => {
+              const name = row.key === "." ? tx("<Project>") : row.key;
+              return (
+                <tr
+                  key={row.key}
+                  aria-selected={selected === row.key}
+                  className={clsx(selected === row.key && styles.selectedRow)}
+                  onMouseDown={() => setSelected(row.key)}
+                >
+                  <td title={row.path}>
+                    <Icon name="folder" size={16} className={styles.mappingIcon} />
+                    {name}
+                  </td>
+                  <td>
+                    <Select
+                      value={row.vcs}
+                      options={VCS_OPTIONS}
+                      variant="ghost"
+                      aria-label={tx`VCS of ${name}`}
+                      onChange={(v) => setVcs(row.key, v)}
+                    />
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
@@ -555,6 +656,12 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "vcs.git.showBranchInProjectView",
             label: "Show branch and incoming/outgoing commits in the Project view",
+          },
+          {
+            kind: "toggle",
+            key: "vcs.git.cliStatus",
+            label: "Detect changes with the Git command line",
+            hint: "Slower, but matches git status where encryption or file protection software makes files look modified.",
           },
         ],
       },

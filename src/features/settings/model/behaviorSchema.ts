@@ -76,6 +76,8 @@ export interface AppearanceExtras {
   compactMode: boolean;
   /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
   smallTreeIndents: boolean;
+  /** IDEA "Smooth scrolling" (Linux: WebKitGTK animates each mouse wheel step). */
+  smoothScrolling: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
@@ -91,6 +93,7 @@ export interface AppearanceExtras {
   showToolWindowNames: boolean;
   showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
+  rememberToolWindowSizes: boolean;
   /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
   showMainToolbar: boolean;
   showStatusBar: boolean;
@@ -161,6 +164,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   differentToolWindowBackground: false,
   compactMode: false,
   smallTreeIndents: false,
+  smoothScrolling: true,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
@@ -174,6 +178,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showToolWindowNames: false,
   showToolWindowBadges: true,
   widescreenToolWindows: false,
+  rememberToolWindowSizes: false,
   showMainToolbar: true,
   showStatusBar: true,
   navigationBar: "statusBar",
@@ -244,6 +249,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
     smallTreeIndents: b("smallTreeIndents"),
+    smoothScrolling: b("smoothScrolling"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
@@ -257,6 +263,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     showToolWindowNames: b("showToolWindowNames"),
     showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
+    rememberToolWindowSizes: b("rememberToolWindowSizes"),
     showMainToolbar: b("showMainToolbar"),
     showStatusBar: b("showStatusBar"),
     // Legacy settings stored this as `showNavigationBar: bool` (`true` = shown,
