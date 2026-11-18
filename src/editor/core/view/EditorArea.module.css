@@ -101,6 +101,9 @@
   color: var(--fg-muted);
   margin-left: -2px;
 }
+.deprecated {
+  text-decoration-line: line-through;
+}
 .dupe {
   color: var(--fg-faint);
   margin-left: 4px;
