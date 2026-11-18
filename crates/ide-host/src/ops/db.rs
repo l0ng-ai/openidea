@@ -140,6 +140,32 @@ pub async fn db_disconnect(host: &Host, window: &str, id: String) -> IdeResult<(
 }
 
 #[command(trust = trusted)]
+pub async fn db_create_database(
+    host: &Host,
+    window: &str,
+    id: String,
+    template: String,
+    statement: String,
+) -> IdeResult<()> {
+    // Creates a database on the server of data source `id` with `statement`, copied from `template` (New › Database).
+    let db = host.project(window)?.db.clone();
+    db.create_database(&id, &template, &statement).await
+}
+
+#[command(trust = trusted)]
+pub async fn db_drop_database(
+    host: &Host,
+    window: &str,
+    id: String,
+    database: String,
+    statement: String,
+) -> IdeResult<()> {
+    // Drops `database` of the server of data source `id` with `statement` (Drop… on a database node).
+    let db = host.project(window)?.db.clone();
+    db.drop_database(&id, &database, &statement).await
+}
+
+#[command(trust = trusted)]
 pub async fn db_databases(host: &Host, window: &str, id: String) -> IdeResult<Databases> {
     // Databases of the server of data source `id` (PostgreSQL); connect to one as `<id>:<database>`.
     let db = host.project(window)?.db.clone();
@@ -478,10 +504,12 @@ ide_command::domain!(
     db_connected,
     db_console_path,
     db_consoles,
+    db_create_database,
     db_database_catalog,
     db_databases,
     db_ddl,
     db_disconnect,
+    db_drop_database,
     db_execute,
     db_explain,
     db_finish_transaction,

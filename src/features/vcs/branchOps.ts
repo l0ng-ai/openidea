@@ -5,7 +5,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { ask } from "@/workbench/messages";
-import { isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
+import { branchNamePrefixes, isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
 import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
@@ -199,6 +199,7 @@ export async function newBranch(from?: string, repo = currentRepo()) {
     label: "New branch name:",
     // Kept even when that branch exists (the current one always does): the user edits it.
     initial: suggestion,
+    prefixes: branchNamePrefixes(branches),
     mono: true,
     okLabel: "Create",
     sanitize: cleanUpBranchNameOnTyping,

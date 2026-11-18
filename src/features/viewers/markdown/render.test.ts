@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderMath } from "@/editor/lsp/markdownMath";
 import {
+  createMarkdownRenderer,
   frontMatter,
   joinPath,
   previewLineAtOffset,
@@ -231,6 +235,7 @@ describe("markdown preview rendering", () => {
     });
     expect(resolveLink(file, "javascript:alert(1)")).toBeNull();
     expect(joinPath("C:/repo/docs", "../a.md")).toBe("C:/repo/a.md");
+    expect(joinPath("C:/repo/docs", "D:/shared/a.md")).toBe("D:/shared/a.md");
     expect(joinPath("/repo", "../../a.md")).toBe("/a.md");
   });
 
@@ -275,5 +280,152 @@ describe("markdown preview rendering", () => {
     expect(previewLineAtOffset(blocks, 250)).toBe(10);
     expect(previewLineAtOffset(blocks, 5000)).toBe(20);
     expect(previewLineAtOffset([], 50)).toBe(0);
+  });
+
+  it("renders LaTeX math blocks with source lines and inline math", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown("# Heading\n\n$$\nx^2 + y^2 = z^2\n$$\n\nInline $a_1 + b_2$.\n");
+    expect(root.querySelectorAll("[data-math]")).toHaveLength(2);
+    renderMath(root);
+    const lines = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((e) => e.dataset.line);
+    expect(lines).toEqual(["0", "2", "6"]);
+    expect(root.querySelector(".katex-display")).not.toBeNull();
+    expect(root.querySelectorAll(".katex")).toHaveLength(2);
+  });
+});
+
+describe("markdown preview re-rendering", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const blocks = [
+    "---\ntitle: Notes\n---",
+    "# Title",
+    "# Title",
+    "Some *text* with [a ref][r] and a footnote-ish [b].",
+    "[r]: https://example.com/r\n[b]: ./b.md",
+    "<details>\n<summary>More</summary>",
+    "- inside\n- the container",
+    "</details>",
+    '<p align="center"><img src="logo.png" alt="logo"></p>',
+    "```mermaid\ngraph TD; A-->B\n```",
+    "```ts\nconst a = <div>x</div>;\n```",
+    "| a | b |\n|---|---|\n| 1 | <b>2</b> |",
+    '<span is="x-span">custom</span> and <body class="x"> and </body> text',
+    "> quote\n> more",
+    "$$\nx^2 + y^2 = z^2\n$$",
+    "Inline $a_1 + b_2$ math.",
+    "Last paragraph.",
+  ];
+  const doc = (parts: readonly string[]) => parts.join("\n\n") + "\n";
+  /** Renders `text` with `render` and checks it against the whole-document render. */
+  const same = (render: (text: string) => string, text: string) => expect(render(text)).toBe(renderMarkdown(text));
+
+  it("renders what the whole document renders, before and after each block is edited", () => {
+    const render = createMarkdownRenderer();
+    same(render, doc(blocks));
+    same(render, doc(blocks));
+    for (const i of blocks.keys()) {
+      same(render, doc(blocks.map((b, j) => (j === i ? `${b} edited` : b))));
+      same(render, doc(blocks.filter((_, j) => j !== i)));
+    }
+    same(render, "");
+    same(render, doc(blocks));
+  });
+
+  it("renders a large document as a whole, sanitizing only what an edit changed", () => {
+    const asWritten = readFileSync(resolve(import.meta.dirname, "../../../../plugins/README.md"), "utf8");
+    // As written, a bare `<title>` swallows the rest of the file, so it is rendered as a whole.
+    for (const [readme, reuses] of [
+      [asWritten.replace('"<title> failed', '"`<title>` failed'), true],
+      [asWritten, false],
+    ] as const) {
+      const render = createMarkdownRenderer();
+      same(render, readme);
+      for (const at of [0.1, 0.5, 0.9]) {
+        const from = Math.floor(readme.length * at);
+        const i = from + readme.slice(from).search(/\n\n[A-Z][a-z]/) + 2;
+        const edited = `${readme.slice(0, i)}Typed ${readme.slice(i)}`;
+        const parse = vi.spyOn(DOMParser.prototype, "parseFromString");
+        const html = render(edited);
+        const sanitized = parse.mock.calls.map(([dirty]) => String(dirty));
+        parse.mockRestore();
+        expect(html).toBe(renderMarkdown(edited));
+        expect(sanitized).toHaveLength(1);
+        expect(sanitized[0]!.includes("data-marker")).toBe(reuses);
+        if (reuses) expect(sanitized[0]!.length).toBeLessThan(2000);
+      }
+    }
+  });
+
+  it("sanitizes only the blocks an edit changed", () => {
+    const render = createMarkdownRenderer();
+    render(doc(blocks));
+    const parse = vi.spyOn(DOMParser.prototype, "parseFromString");
+    same(render, doc(blocks.map((b) => (b === "Last paragraph." ? "Last paragraph, edited." : b))));
+    const sanitized = parse.mock.calls.map(([html]) => String(html));
+    expect(sanitized.filter((html) => html.includes("Last paragraph, edited."))).toHaveLength(2);
+    expect(sanitized.filter((html) => html.includes("quote"))).toHaveLength(1);
+  });
+
+  // In one pass, an unclosed tag carries into the blocks after it.
+  it.each([
+    ["formatting", "Bold <b>starts here"],
+    ["link", '<a href="https://example.com">open link'],
+    ["raw text", "<textarea>"],
+    ["select", "<select><option>a"],
+    ["template", "<template>"],
+    ["comment", "<!-- never closed"],
+    ["object", "<object>"],
+    ["frameset", "<frameset>"],
+    ["plaintext", "<plaintext>"],
+    ["early close", "</div><p>x</p><div>"],
+    ["svg", "<svg><foreignObject>"],
+    ["close of the wrapper", "Text with a stray </div> close."],
+  ])("renders a block that leaks into the next (%s) as the whole document does", (_, leak) => {
+    const render = createMarkdownRenderer();
+    const parts = [...blocks.slice(0, 8), leak, ...blocks.slice(8)];
+    same(render, doc(parts));
+    same(render, doc(parts));
+    same(render, doc([...parts, "One more."]));
+    same(render, doc(blocks));
+  });
+
+  it.each([
+    ["formatting", "Bold <b>starts here", "ends here</b>."],
+    ["link", '<a href="https://example.com">open link', "closed</a> here."],
+    ["raw text", "<textarea>", "</textarea>"],
+    ["object", "<object>", "</object>"],
+    ["comment", "<!-- opens here", "closes here -->"],
+  ])("renders a tag that closes in a later block (%s) as the whole document does", (_, opens, closes) => {
+    const render = createMarkdownRenderer();
+    const parts = [...blocks.slice(0, 8), opens, "Between.", closes, ...blocks.slice(8)];
+    same(render, doc(parts));
+    same(render, doc(parts.map((b) => (b === "Between." ? "Between, edited." : b))));
+    same(render, doc(parts.filter((b) => b !== opens)));
+    same(render, doc(parts.filter((b) => b !== closes)));
+    same(render, doc(parts));
+  });
+
+  it("renders forms and framesets, which change how the parser reads later blocks, as the whole document does", () => {
+    const render = createMarkdownRenderer();
+    same(render, doc(["Text", "<frameset>"]));
+    same(render, doc(["<frameset>"]));
+    same(render, doc(["<p>one<form>two", "<p>three<form>four"]));
+    same(render, doc(["<p>three<form>four"]));
+    same(render, doc(["Text", "<p>three<form>four"]));
+  });
+
+  it("renders the whole document in one pass while a block leaks", () => {
+    const render = createMarkdownRenderer();
+    const text = doc(["Bold <b>starts here", "Still bold."]);
+    render(text);
+    const parse = vi.spyOn(DOMParser.prototype, "parseFromString");
+    const html = render(text);
+    expect(parse.mock.calls.map(([dirty]) => String(dirty))).toEqual([
+      expect.stringMatching(/starts here[\s\S]*Still bold/),
+    ]);
+    const root = document.createElement("div");
+    root.innerHTML = html;
+    expect(root.querySelector('[data-line="2"] b')?.textContent).toBe("Still bold.");
   });
 });

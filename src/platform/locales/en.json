@@ -331,7 +331,7 @@
   "menu.toolwindow.debug": "Debug",
   "menu.toolwindow.find": "Find",
   "menu.toolwindow.git": "Git",
-  "menu.toolwindow.hideAll": "Hide All Tool Windows",
+  "menu.toolwindow.hideAll": "{toolWindows, select, hidden {Restore Tool Windows} other {Hide All Tool Windows}}",
   "menu.toolwindow.problems": "Problems",
   "menu.toolwindow.project": "Project",
   "menu.toolwindow.run": "Run",

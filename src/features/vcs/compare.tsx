@@ -10,6 +10,7 @@ import { maybeEditorService, notifications, projectViewSelection } from "@/workb
 import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { compareFilesData, displayPath } from "./compareData";
+import { showDirectoryComparison } from "./directoryCompareKind";
 export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
 import { baseName } from "./model";
@@ -127,11 +128,6 @@ async function pickComparison(
 }
 
 const contextPath = (arg: unknown) => argPath(arg) ?? maybeEditorService()?.activePath() ?? undefined;
-
-async function showDirectories(left: string, right: string) {
-  const { showDirectoryComparison } = await import("./DirectoryCompare");
-  showDirectoryComparison(left, right);
-}
 
 async function isDirectory(path: string): Promise<boolean> {
   try {
@@ -300,7 +296,7 @@ export function registerCompareActions(): () => void {
           const other = await pickDirectory(path);
           if (!other || other === path) return;
           if (!(await isDirectory(other))) return info("Select a directory to compare");
-          await showDirectories(path, other);
+          showDirectoryComparison(path, other);
           return;
         }
         const other = await pickComparison(path);
@@ -329,7 +325,7 @@ export function registerCompareActions(): () => void {
         const paths = arg === undefined ? projectViewSelection() : argPaths(arg);
         if (paths.length !== 2 || !(await isDirectory(paths[0]!)) || !(await isDirectory(paths[1]!)))
           return info("Select two directories to compare");
-        await showDirectories(paths[0]!, paths[1]!);
+        showDirectoryComparison(paths[0]!, paths[1]!);
       },
     },
     {

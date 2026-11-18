@@ -428,6 +428,8 @@ struct Task {
     next_permission: AtomicU32,
     /// Set while `session/load` replays history we already have.
     replaying: AtomicBool,
+    /// The saved session failed to load and the user was told: the next start opens a new one.
+    start_fresh: AtomicBool,
     /// The current turn is being cancelled to send the first queued message right away.
     send_now: AtomicBool,
     /// The user stopped the current turn. A stop that reaches the agent before it took the
@@ -1857,6 +1859,7 @@ impl Task {
             permissions: Mutex::new(HashMap::new()),
             next_permission: AtomicU32::new(1),
             replaying: AtomicBool::new(false),
+            start_fresh: AtomicBool::new(false),
             send_now: AtomicBool::new(false),
             cancel_pending: AtomicBool::new(false),
             turn_started: AtomicBool::new(false),
@@ -2483,7 +2486,8 @@ impl Task {
 
         let mut tried_auth = false;
         let mut session = None;
-        if let (Some(id), true) = (saved, can_load) {
+        let start_fresh = self.start_fresh.load(Ordering::Acquire);
+        if let (Some(id), true, false) = (saved, can_load, start_fresh) {
             self.replaying.store(true, Ordering::Release);
             let mut params = session_params(&cwd_s, &mcp_servers);
             params["sessionId"] = json!(&id);
@@ -2492,7 +2496,23 @@ impl Task {
             self.replaying.store(false, Ordering::Release);
             match loaded {
                 Ok(v) => session = Some((id, v)),
-                Err(e) => tracing::info!("agent task {}: session/load failed, starting a new session: {e}", self.id),
+                // Not silently: a new session would lose the conversation and replace the saved id.
+                Err(e) => {
+                    tracing::info!("agent task {}: session/load failed: {e}", self.id);
+                    if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
+                        return Err(SessionOpenError { message, allow_acp_fallback: false });
+                    }
+                    self.start_fresh.store(true, Ordering::Release);
+                    return Err(SessionOpenError {
+                        message: format!(
+                            "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
+                             continue in a new session. The agent won't see the earlier conversation.",
+                            spec.name,
+                            self.describe(e)
+                        ),
+                        allow_acp_fallback: false,
+                    });
+                }
             }
         }
         let resumed = session.is_some();
@@ -2597,6 +2617,7 @@ impl Task {
             s.task.config = options;
             s.task.capabilities = capabilities;
             s.session_id = Some(session_id.clone());
+            self.start_fresh.store(false, Ordering::Release);
             // The (re)started process runs nothing yet: whatever it reports next is all of it.
             s.background_tasks = Vec::new();
             s.task.background.clear();

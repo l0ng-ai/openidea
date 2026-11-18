@@ -8,12 +8,17 @@ import { usePlatform } from "@/platform/platformInfo";
 import { Icon, MenuList, Popup, type MenuItem } from "@/ui";
 import menuStyles from "@/ui/Menu.module.css";
 import { isDistractionFree } from "./distractionFree";
+import { toolWindowsRestorable } from "./toolwindows/store";
 import styles from "./TitleBar.module.css";
 
 function label(id: string, fallback: string): string {
   const key = `menu.${id}`;
   if (lookup(key) === undefined) return fallback;
-  return t(key, { os: usePlatform.getState().os, distractionFree: isDistractionFree() ? "on" : "off" });
+  return t(key, {
+    os: usePlatform.getState().os,
+    distractionFree: isDistractionFree() ? "on" : "off",
+    toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
+  });
 }
 
 type Submenu = Extract<MenuNode, { kind: "submenu" }>;

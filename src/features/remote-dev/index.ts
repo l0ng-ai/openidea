@@ -10,7 +10,7 @@ import { maybeEditorService, registerOverlay, registerStatusItem, registerToolWi
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
 import { reopenInContainer } from "./container";
-import { reloadEnvironment } from "./environment";
+import { installDirenvNotifications, reloadEnvironment } from "./environment";
 import { RemoteStatus } from "./RemoteStatus";
 import { closeConnectDialog, openConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
@@ -56,6 +56,7 @@ export function activate(): () => void {
   const disposers = [
     trackPortsWindow(),
     installReconnect(),
+    installDirenvNotifications(),
     registerOverlay({ id: "remote.connect", component: ConnectHost }),
     registerStatusItem({
       id: "remote.location",
@@ -116,7 +117,20 @@ export function activate(): () => void {
         description:
           "Reads the login shell's environment (and devcontainer.json remoteEnv on a remote host) again for new terminals and processes.",
         category: "File",
-        keywords: ["env", "environment", "variables", "path", "shell", "remoteEnv", "devcontainer", "reload"],
+        keywords: [
+          "env",
+          "environment",
+          "variables",
+          "path",
+          "shell",
+          "remoteEnv",
+          "devcontainer",
+          "direnv",
+          "envrc",
+          "nix",
+          "flake",
+          "reload",
+        ],
         when: "projectOpen",
         run: () => reloadEnvironment(),
       },

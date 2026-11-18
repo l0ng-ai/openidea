@@ -10,6 +10,9 @@ import { BRACKET_COLORS } from "./rainbowBrackets";
 import { LINE_INSET } from "./lineInset";
 import { GUIDE_COLORS } from "./indentGuides";
 
+/** How much of its palette colour a rainbow indent guide takes. */
+const RAINBOW_GUIDE_STRENGTH = "55%";
+
 /** The `--editor-*` locals of `findStyles`, for the `&` rule. */
 export const findLocals = {
   "--editor-search": "var(--bg-search-match, color-mix(in srgb, var(--warning) 30%, transparent))",
@@ -21,6 +24,8 @@ export const findStyles = {
   ".cm-openidea-findMatch": {
     backgroundColor: "var(--editor-search)",
     color: "var(--fg-search-match, inherit)",
+    // Its own colour, over the text fill of an identifier highlight around the match.
+    WebkitTextFillColor: "currentcolor",
     borderRadius: "2px",
   },
   ".cm-openidea-findExcluded": {
@@ -35,6 +40,11 @@ export const findStyles = {
     color: "var(--fg-search-match, inherit)",
     outline: "1px solid color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))",
   },
+};
+
+/** Marks colour text with an inherited text fill; widgets inside them keep their own colours. */
+export const markWidgetStyles = {
+  '.cm-content [contenteditable="false"]': { WebkitTextFillColor: "currentcolor" },
 };
 
 /** The caret and Settings › Editor › General › Appearance caret options (`caretExtension`), also for viewers. */
@@ -137,17 +147,18 @@ export const openideaTheme = EditorView.theme({
     "--editor-indent-guide-brace":
       "var(--border-indent-guide-brace, var(--bg-matched-brace, var(--editor-indent-guide-active)))",
     "--openidea-guide-brace": "linear-gradient(var(--editor-indent-guide-brace), var(--editor-indent-guide-brace))",
-    // Rainbow indent guides: one image per depth, so they follow the colour scheme.
+    // Rainbow indent guides: one image per depth, so they follow the colour scheme. The
+    // palettes are text colours; guides take them at half strength so they stay chrome.
     ...Object.fromEntries(
       Array.from({ length: GUIDE_COLORS }, (_, i) => {
-        const color = `var(--syn-rainbow-${i + 1}, var(--editor-indent-guide))`;
+        const color = `color-mix(in srgb, var(--syn-rainbow-${i + 1}, var(--editor-indent-guide)) ${RAINBOW_GUIDE_STRENGTH}, transparent)`;
         return [`--openidea-guide-${i + 1}`, `linear-gradient(${color}, ${color})`];
       }),
     ),
     // A rainbow guide of a bracket block takes its bracket's colour (rainbow brackets).
     ...Object.fromEntries(
       Array.from({ length: BRACKET_COLORS }, (_, i) => {
-        const color = `var(--syn-bracket-${i + 1}, var(--editor-indent-guide))`;
+        const color = `color-mix(in srgb, var(--syn-bracket-${i + 1}, var(--editor-indent-guide)) ${RAINBOW_GUIDE_STRENGTH}, transparent)`;
         return [`--openidea-guide-bracket-${i + 1}`, `linear-gradient(${color}, ${color})`];
       }),
     ),
@@ -215,6 +226,8 @@ export const openideaTheme = EditorView.theme({
   ".cm-selectionMatch": {
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
   },
+  // IDEA paints these with IDENTIFIER_UNDER_CARET_ATTRIBUTES, except the selection itself.
+  ".cm-selectionMatch:not(.cm-selectionMatch-main)": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
   // IDEA's MATCHED_BRACE_ATTRIBUTES (bold in dark schemes only) and MATCHED_TAG_NAME (never bold).
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--editor-brace)",
@@ -339,6 +352,7 @@ export const openideaTheme = EditorView.theme({
 
   // Find in file (cm/find.ts)
   ...findStyles,
+  ...markWidgetStyles,
   // Find in Files preview matches (search/find/parts.tsx)
   ".cm-openidea-searchResult": { backgroundColor: "var(--bg-search-result)" },
 

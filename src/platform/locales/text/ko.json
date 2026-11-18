@@ -2590,7 +2590,6 @@
   "Stash": "스태시",
   "Remove Recent Project": "최근 프로젝트 제거",
   "Group By": "그룹화 기준",
-  "The search hit its limit; only usages found so far are replaced.": "검색이 한도에 도달했습니다. 지금까지 찾은 사용 위치만 바뀝니다.",
   "Review": "검토",
   "Commit and Push…": "커밋 및 푸시…",
   "Language server": "언어 서버",

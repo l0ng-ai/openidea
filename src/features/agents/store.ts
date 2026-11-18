@@ -550,11 +550,123 @@ function onEntryEvent(s: AgentsState, e: EntryEvent) {
   else if (next !== current) useAgents.setState({ entries: new Map(s.entries).set(key, next) });
 }
 
+const CACHED_CLOSED_TASKS = 5;
+
+/** Recent closed-task ids kept in memory so reopening a just-closed tab avoids refetching. */
+const closedTaskMru: string[] = [];
+/** Bumped when a task's cache is dropped, so a fetch started before that doesn't refill it. */
+const cacheDrops = new Map<string, number>();
+
+function isTaskKey(key: string, taskId: string): boolean {
+  return key === taskId || key.startsWith(`${taskId}/`);
+}
+
+function forgetClosed(taskId: string) {
+  const idx = closedTaskMru.indexOf(taskId);
+  if (idx >= 0) closedTaskMru.splice(idx, 1);
+}
+
+function clearTaskMaps(taskId: string, clearStreaming = false) {
+  forgetClosed(taskId);
+  for (const key of [...arrivedWhileLoading.keys()]) {
+    if (isTaskKey(key, taskId)) arrivedWhileLoading.delete(key);
+  }
+  // Mounted streams write into this map directly, so it is pruned in place rather than replaced.
+  const positions = useAgents.getState().scrollPositions;
+  for (const key of [...positions.keys()]) {
+    if (isTaskKey(key, taskId)) positions.delete(key);
+  }
+  if (clearStreaming) streamingReply.delete(taskId);
+  const timer = pendingChanges.get(taskId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    pendingChanges.delete(taskId);
+  }
+}
+
+function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> | null {
+  let entries: Map<string, AgentEntry[]> | undefined;
+  for (const key of s.entries.keys()) {
+    if (isTaskKey(key, taskId)) (entries ??= new Map(s.entries)).delete(key);
+  }
+  let entryLoads: Map<string, { error: string | null }> | undefined;
+  for (const key of s.entryLoads.keys()) {
+    if (isTaskKey(key, taskId)) (entryLoads ??= new Map(s.entryLoads)).delete(key);
+  }
+  let changes: Map<string, AgentChange[]> | undefined;
+  if (s.changes.has(taskId)) {
+    changes = new Map(s.changes);
+    changes.delete(taskId);
+  }
+  let groupedChanges: Map<string, AgentChanges> | undefined;
+  if (s.groupedChanges.has(taskId)) {
+    groupedChanges = new Map(s.groupedChanges);
+    groupedChanges.delete(taskId);
+  }
+  let turnChanges: Map<string, AgentChange[]> | undefined;
+  if (s.turnChanges.has(taskId)) {
+    turnChanges = new Map(s.turnChanges);
+    turnChanges.delete(taskId);
+  }
+  if (!entries && !entryLoads && !changes && !groupedChanges && !turnChanges) return null;
+  return {
+    ...(entries ? { entries } : {}),
+    ...(entryLoads ? { entryLoads } : {}),
+    ...(changes ? { changes } : {}),
+    ...(groupedChanges ? { groupedChanges } : {}),
+    ...(turnChanges ? { turnChanges } : {}),
+  };
+}
+
+function dropTaskCache(taskId: string) {
+  clearTaskMaps(taskId);
+  // A deleted task needs no marker: fetches already discard results for tasks that are gone.
+  if (useAgents.getState().tasks.has(taskId)) cacheDrops.set(taskId, (cacheDrops.get(taskId) ?? 0) + 1);
+  useAgents.setState((s) => withoutTaskCache(s, taskId) ?? s);
+}
+
+function isTaskOpenInUi(taskId: string): boolean {
+  if (useAgents.getState().docked === taskId) return true;
+  return (editorService().openTabs?.() ?? []).some(
+    (t) => t.input.kind === SESSION_KIND && (t.input.data as { task?: string } | undefined)?.task === taskId,
+  );
+}
+
+/** Whether a background trigger should reload a task's changes: only while they are shown or still cached. */
+function wantsChanges(taskId: string): boolean {
+  const s = useAgents.getState();
+  return s.changes.has(taskId) || s.groupedChanges.has(taskId) || s.turnChanges.has(taskId) || isTaskOpenInUi(taskId);
+}
+
+/**
+ * Releases cached conversation data for a closed or un-docked session once more than
+ * `CACHED_CLOSED_TASKS` closed tasks have been retained. Archived and deleted tasks are
+ * dropped immediately; other tasks stay in a small MRU cache so reopening is instant.
+ */
+export function releaseClosedTaskCache(taskId: string) {
+  if (!taskId || isTaskOpenInUi(taskId)) return;
+  const task = useAgents.getState().tasks.get(taskId);
+  if (!task || task.status === "archived") {
+    dropTaskCache(taskId);
+    return;
+  }
+  forgetClosed(taskId);
+  closedTaskMru.push(taskId);
+  while (closedTaskMru.length > CACHED_CLOSED_TASKS) {
+    const oldest = closedTaskMru.shift()!;
+    if (!isTaskOpenInUi(oldest)) dropTaskCache(oldest);
+  }
+}
+
 export function disconnect() {
   generation++;
   arrivedWhileLoading.clear();
   streamingReply.clear();
   modelFlights.clear();
+  closedTaskMru.length = 0;
+  cacheDrops.clear();
+  for (const timer of pendingChanges.values()) clearTimeout(timer);
+  pendingChanges.clear();
   resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
@@ -589,9 +701,12 @@ function onEvent(e: AgentEvent) {
       const prev = s.tasks.get(e.task.id);
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
       if (prev && (prev.title !== e.task.title || prev.status !== e.task.status)) notifyTabTitlesChanged();
-      if (e.task.status === "archived") setUnread(e.task.id, false);
-      if (prev?.status !== e.task.status && !isBusy(e.task.status)) {
-        void refreshChanges(e.task.id);
+      if (e.task.status === "archived") {
+        setUnread(e.task.id, false);
+        if (prev?.status !== "archived" && !isTaskOpenInUi(e.task.id)) dropTaskCache(e.task.id);
+      }
+      if (prev?.status !== e.task.status && !isBusy(e.task.status) && e.task.status !== "archived") {
+        if (wantsChanges(e.task.id)) void refreshChanges(e.task.id);
         void refreshProviders();
       }
       break;
@@ -602,6 +717,8 @@ function onEvent(e: AgentEvent) {
       break;
     }
     case "removed": {
+      clearTaskMaps(e.id, true);
+      cacheDrops.delete(e.id);
       const tasks = new Map(s.tasks);
       tasks.delete(e.id);
       const composers = new Map(s.composers);
@@ -615,6 +732,7 @@ function onEvent(e: AgentEvent) {
         tasks,
         composers,
         unread,
+        ...withoutTaskCache(s, e.id),
         organize,
         ...(s.docked === e.id ? { docked: null } : {}),
       });
@@ -739,29 +857,37 @@ export async function loadEntries(task: string, subagent: string | null = null):
 }
 
 export async function refreshChanges(task: string): Promise<void> {
+  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
+  const gen = generation;
+  const drops = cacheDrops.get(task);
+  const stillWanted = () =>
+    gen === generation && useAgents.getState().tasks.has(task) && cacheDrops.get(task) === drops;
   // The whole task's changes are read in either scope: the session's summary counts them.
   await Promise.all([
-    refreshTaskChanges(task),
-    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task),
+    refreshTaskChanges(task, stillWanted),
+    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
   ]);
 }
 
-async function refreshTurnChanges(task: string): Promise<void> {
+async function refreshTurnChanges(task: string, stillWanted: () => boolean): Promise<void> {
   const changes = await call(commands.agentChanges(task, "lastTurn")).catch(() => []);
+  if (!stillWanted()) return;
   useAgents.setState((s) => ({ turnChanges: new Map(s.turnChanges).set(task, changes) }));
 }
 
-async function refreshTaskChanges(task: string): Promise<void> {
+async function refreshTaskChanges(task: string, stillWanted: () => boolean): Promise<void> {
   // Local tasks have no commits of their own to group: the flat list is their only view.
   const grouped =
     useChangesOptions.getState().groupByCommit && useAgents.getState().tasks.get(task)?.isolation === "worktree";
   if (grouped) {
     try {
       const review = await call(commands.agentGroupedChanges(task));
+      if (!stillWanted()) return;
       useAgents.setState((s) => ({
         groupedChanges: new Map(s.groupedChanges).set(task, review),
       }));
     } catch {
+      if (!stillWanted()) return;
       // The worktree is gone or not a repository: nothing to list.
       useAgents.setState((s) => ({
         groupedChanges: new Map(s.groupedChanges).set(task, { uncommitted: [], commits: [] }),
@@ -771,10 +897,12 @@ async function refreshTaskChanges(task: string): Promise<void> {
   }
   try {
     const changes = await call(commands.agentChanges(task, null));
+    if (!stillWanted()) return;
     useAgents.setState((s) => ({
       changes: new Map(s.changes).set(task, changes),
     }));
   } catch {
+    if (!stillWanted()) return;
     // The worktree is gone or not a repository: nothing to list.
     useAgents.setState((s) => ({ changes: new Map(s.changes).set(task, []) }));
   }
@@ -810,7 +938,7 @@ export function scheduleChanges(task: string) {
     task,
     setTimeout(() => {
       pendingChanges.delete(task);
-      void refreshChanges(task);
+      if (wantsChanges(task)) void refreshChanges(task);
     }, 500),
   );
 }
@@ -868,6 +996,7 @@ export function useAgentCommands(
 }
 
 export function openTask(task: string) {
+  forgetClosed(task);
   if (useAgents.getState().sessionLocation === "toolWindow") {
     showDockedTask(task);
     return;
@@ -883,12 +1012,14 @@ function openTaskInEditor(task: string) {
 }
 
 function showDockedTask(task: string) {
+  const previousDocked = useAgents.getState().docked;
   useAgents.setState({
     docked: task,
     lastTask: task,
     homeOpen: false,
     lastComposer: task,
   });
+  if (previousDocked && previousDocked !== task) releaseClosedTaskCache(previousDocked);
   toolWindowService().show(TOOL_WINDOW, true);
   void editorService().closeInput?.(sessionKey(task));
 }
@@ -917,8 +1048,11 @@ export function setSessionLocation(location: SessionLocation) {
     [...s.tasks.values()]
       .filter((t) => t.status !== "archived")
       .sort((a, b) => (b.updatedMs ?? b.createdMs ?? 0) - (a.updatedMs ?? a.createdMs ?? 0))[0]?.id;
+  const previousDocked = s.docked;
   saveSessionLocation(location);
   useAgents.setState({ docked: null, homeOpen: false });
+  // The docked task itself reopens in the new location unless the New Task page takes its place.
+  if (previousDocked && (home || previousDocked !== task)) releaseClosedTaskCache(previousDocked);
   if (home) {
     openHome();
   } else if (task) {
@@ -940,8 +1074,10 @@ export function undockTask() {
 
 /** An explicit editor drop also updates where subsequent sessions open. */
 export function openTaskInEditorLocation(task: string) {
+  const previousDocked = useAgents.getState().docked;
   saveSessionLocation("editor");
   useAgents.setState({ docked: null, homeOpen: false });
+  if (previousDocked && previousDocked !== task) releaseClosedTaskCache(previousDocked);
   openTask(task);
 }
 
@@ -975,7 +1111,9 @@ export function openHome(prompt?: string) {
   }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
   if (useAgents.getState().sessionLocation === "toolWindow") {
+    const previousDocked = useAgents.getState().docked;
     useAgents.setState({ docked: null, homeOpen: true });
+    if (previousDocked) releaseClosedTaskCache(previousDocked);
     toolWindowService().show(TOOL_WINDOW, true);
     void editorService().closeInput?.(HOME_KEY);
     return;

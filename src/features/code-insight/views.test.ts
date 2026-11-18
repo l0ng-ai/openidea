@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { groupUsages, trimPreview, usageCount } from "./usages";
 import { serversSummary, type ServerEntry } from "./servers";
 import { buildProblemNodes } from "./ProblemsView";
-import { mergeDiagnostics, sortProblems } from "./problemsStore";
+import type { Diagnostic } from "@/bindings";
+import { mergeDiagnostics, sortProblems, type ProblemOrder, type ProblemsMap } from "./problemsStore";
 import { toggleExcludedUsages } from "./UsagesView";
 import { childId, directionLabel } from "./hierarchy";
 
@@ -65,6 +66,86 @@ describe("buildProblemNodes", () => {
     const errorsOnly = buildProblemNodes(map, ["/a", "/b"], { error: true, warning: false, info: false });
     expect(errorsOnly.map((n) => n.key)).toEqual(["/b"]);
     expect(errorsOnly[0]!.kind === "file" && errorsOnly[0]!.items.length).toBe(1);
+  });
+
+  it("matches a full rebuild across single-file updates, filters and sort orders", () => {
+    let seed = 11;
+    const random = (n: number) => (seed = (seed * 48271) % 2147483647) % n;
+    const SEVERITIES = ["error", "warning", "info", "hint"] as const;
+    const MESSAGES = ["alpha", "Alpha", "beta 2", "beta 10"];
+    const items = (): Diagnostic[] =>
+      Array.from({ length: random(6) }, () => ({
+        range: { start: { line: random(3), col: random(2) }, end: { line: 3, col: 0 } },
+        severity: SEVERITIES[random(4)]!,
+        message: MESSAGES[random(4)]!,
+        source: null,
+        code: String(random(1000)),
+      }));
+    // buildProblemNodes as it was before per-file caching.
+    const rebuild = (map: ProblemsMap, paths: string[], show: Record<string, boolean>, order: ProblemOrder) => {
+      const files = paths.flatMap((path) => {
+        const all = [...(map.get(path)?.values() ?? [])]
+          .flat()
+          .sort(
+            (a, b) =>
+              a.range.start.line - b.range.start.line ||
+              a.range.start.col - b.range.start.col ||
+              SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity),
+          );
+        const shown = sortProblems(
+          all.filter((d) => show[d.severity === "hint" ? "info" : d.severity]),
+          order,
+        );
+        return shown.length ? [{ path, items: shown }] : [];
+      });
+      const rank = (f: { items: Diagnostic[] }) => (f.items.some((d) => d.severity === "error") ? 0 : 1);
+      return files.sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
+    };
+    // Neighbours differ in one flag, so a cache that ignored any of them would serve stale nodes.
+    const shows = ["111", "101", "100", "000", "010", "011"].map(([e, w, i]) => ({
+      error: e === "1",
+      warning: w === "1",
+      info: i === "1",
+    }));
+    const orders = ["10", "00", "01", "11"].map(([s, n]) => ({ bySeverity: s === "1", byName: n === "1" }));
+    let map: ProblemsMap = new Map();
+    for (let step = 0; step < 300; step++) {
+      const path = `/p/${["b", "A", "a", "c10", "c2"][random(5)]}/${random(4)}.ts`;
+      map = mergeDiagnostics(map, path, ["lsp", "eslint"][random(2)]!, items());
+      const show = shows[Math.floor(step / 20) % shows.length]!;
+      const order = orders[Math.floor(step / 35) % orders.length]!;
+      const paths = [...map.keys()];
+      const nodes = buildProblemNodes(map, paths, { ...show }, { ...order });
+      expect(nodes.map((n) => ({ path: n.path, items: n.items }))).toEqual(rebuild(map, paths, show, order));
+      const some = paths.filter((_, i) => i % 3 === 0);
+      expect(buildProblemNodes(map, some, show, order).map((n) => ({ path: n.path, items: n.items }))).toEqual(
+        rebuild(map, some, show, order),
+      );
+    }
+  });
+
+  it("reuses the nodes of files an update didn't touch", () => {
+    const diag = (line: number) => ({
+      range: { start: { line, col: 0 }, end: { line, col: 1 } },
+      severity: "error" as const,
+      message: "x",
+      source: null,
+      code: null,
+    });
+    const show = { error: true, warning: true, info: true };
+    let map = mergeDiagnostics(new Map(), "/a", "s", [diag(1)]);
+    map = mergeDiagnostics(map, "/b", "s", [diag(2)]);
+    const [a, b] = buildProblemNodes(map, ["/a", "/b"], show);
+    map = mergeDiagnostics(map, "/b", "s", [diag(3)]);
+    const [a2, b2] = buildProblemNodes(map, ["/a", "/b"], show);
+    expect(a2).toBe(a);
+    expect(b2).not.toBe(b);
+    const shared = map.get("/a")!;
+    const twice = new Map([
+      ["/a", shared],
+      ["/c", shared],
+    ]);
+    expect(buildProblemNodes(twice, ["/a", "/c"], show).map((n) => n.path)).toEqual(["/a", "/c"]);
   });
 });
 

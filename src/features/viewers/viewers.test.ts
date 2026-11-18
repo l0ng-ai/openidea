@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { registerTextEditorWrapper, resolveFileEditor } from "@/workbench/contributions";
+import { afterEach, describe, expect, it } from "vitest";
+import { editorContributions, type EditorDocContext } from "@/editor/api";
+import type { ProjectInfo, Settings } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import {
+  registerTextEditorWrapper,
+  resolveFileEditor,
+  textEditorWrapperFor,
+  useTextEditorWrappers,
+} from "@/workbench/contributions";
 import { activate as activateViewers } from "./index";
 import {
   associatedApplication,
@@ -81,6 +89,88 @@ describe("file kinds", () => {
     } finally {
       offWrapper();
       offViewers();
+    }
+  });
+});
+
+describe("Markdown files follow File Types", () => {
+  const types = (patterns: string[], removedPatterns: string[] = []) => ({ patterns, removedPatterns, hashbangs: [] });
+  const setFiles = (files: object) =>
+    useProject.setState({ project: { root: "/p" } as ProjectInfo, settings: { files } as Settings });
+  const toMmd = { fileTypes: { markdown: types(["*.mmd"]) } };
+
+  afterEach(() => useProject.setState({ project: null, settings: null }));
+
+  it.each<[string, object, string, boolean]>([
+    ["default .md", {}, "/p/a.md", true],
+    ["default .markdown", {}, "/p/a.markdown", true],
+    ["default .mdown", {}, "/p/a.mdown", true],
+    ["default .mkd", {}, "/p/a.mkd", true],
+    ["default .mkdn", {}, "/p/a.mkdn", true],
+    ["default .mdwn", {}, "/p/a.mdwn", true],
+    ["upper-case default", {}, "/p/A.MD", true],
+    ["no association", {}, "/p/a.mmd", false],
+    ["added extension", toMmd, "/p/diagram.mmd", true],
+    ["added extension, other case", toMmd, "/p/DIAGRAM.MMD", true],
+    ["added file name", { fileTypes: { markdown: types(["NOTES"]) } }, "/p/NOTES", true],
+    ["added glob", { fileTypes: { markdown: types(["notes.*"]) } }, "/p/notes.txt", true],
+    ["extension given to another language", { fileTypes: { plaintext: types(["*.mmd"]) } }, "/p/a.mmd", false],
+    [
+      "*.md moved to another language",
+      { fileTypes: { markdown: types([], ["*.md"]), plaintext: types(["*.md"]) } },
+      "/p/a.md",
+      false,
+    ],
+    ["*.md removed", { fileTypes: { markdown: types([], ["*.md"]) } }, "/p/a.md", false],
+    ["*.md removed keeps the others", { fileTypes: { markdown: types([], ["*.md"]) } }, "/p/a.markdown", true],
+    ["override to Markdown", { fileTypeOverrides: { "docs/a.txt": "markdown" } }, "/p/docs/a.txt", true],
+    ["override outside the project", { fileTypeOverrides: { "/x/a.txt": "markdown" } }, "/x/a.txt", true],
+    ["override away from Markdown", { fileTypeOverrides: { "a.md": "plaintext" } }, "/p/a.md", false],
+    ["override beats a pattern", { ...toMmd, fileTypeOverrides: { "a.mmd": "plaintext" } }, "/p/a.mmd", false],
+  ])("%s", (_name, files, path, expected) => {
+    setFiles(files);
+    expect(isMarkdownPath(path)).toBe(expected);
+  });
+
+  it("updates open tabs only when File Types change", () => {
+    const off = activateViewers();
+    const wrappers = () => useTextEditorWrappers.getState().wrappers;
+    try {
+      setFiles({});
+      const before = wrappers();
+      expect(textEditorWrapperFor(before, "/p/a.mmd")).toBeUndefined();
+
+      setFiles({ autoSave: true });
+      expect(wrappers()).toBe(before);
+
+      setFiles(toMmd);
+      expect(wrappers()).not.toBe(before);
+      expect(textEditorWrapperFor(wrappers(), "/p/a.mmd")?.id).toBe("viewers.markdown");
+
+      setFiles({});
+      expect(textEditorWrapperFor(wrappers(), "/p/a.mmd")).toBeUndefined();
+    } finally {
+      off();
+    }
+  });
+
+  it("publishes the live text of Markdown documents only", () => {
+    const off = activateViewers();
+    try {
+      const live = editorContributions().find((c) => c.id === "viewers.markdownLive")!;
+      const ctx = (language: string, virtual = false): EditorDocContext => ({
+        doc: 1,
+        path: "/p/a.mmd",
+        language,
+        uiMode: null,
+        readOnly: false,
+        virtual,
+      });
+      expect(live.extensions(ctx("markdown"))).toHaveLength(1);
+      expect(live.extensions(ctx("plaintext"))).toHaveLength(0);
+      expect(live.extensions(ctx("markdown", true))).toHaveLength(0);
+    } finally {
+      off();
     }
   });
 });

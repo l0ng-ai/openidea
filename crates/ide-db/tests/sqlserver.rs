@@ -95,3 +95,44 @@ async fn sqlserver_values_paging_transactions_and_cancellation() {
     task.await.unwrap();
     assert_eq!(pool.rows("SELECT 1", 1).await.unwrap()[0][0].as_deref(), Some("1"));
 }
+
+#[tokio::test]
+async fn sqlserver_creates_from_a_held_model_and_force_drops_a_held_database() {
+    let Ok(server) = std::env::var("OPENIDEA_TEST_SQLSERVER") else { return };
+    let mut parts = server.splitn(4, ':');
+    let (host, port, user, password) = (
+        parts.next().unwrap(),
+        parts.next().unwrap().parse().unwrap(),
+        parts.next().unwrap(),
+        parts.next().unwrap_or(""),
+    );
+    let source = |database: &str| DataSource {
+        id: "s".into(),
+        name: "sqlserver".into(),
+        driver: DbDriver::SqlServer,
+        host: host.into(),
+        port: Some(port),
+        user: user.into(),
+        database: database.into(),
+        ssl: DbSslMode::Disable,
+        ..Default::default()
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-passwords.json")));
+    let db = ide_db::DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"), ssh);
+    db.save_sources(vec![source("master")]).await.unwrap();
+    db.set_password("s", Some(password.into()), false).await.unwrap();
+    let name = format!("oi_force_drop_{}", std::process::id());
+    // The tree's connection to `model` would keep SQL Server from copying it.
+    db.schemas("s:model").await.unwrap();
+    db.create_database("s", "model", &format!("create database {name};")).await.unwrap();
+    assert!(!db.is_connected("s:model"));
+
+    let other = Pool::connect(&source(&name), Some(password), None).await.unwrap();
+    let held = Held::acquire(&other).await.unwrap();
+    let force = format!("alter database {name} set single_user with rollback immediate;\ndrop database {name};");
+    db.drop_database("s", &name, &force).await.unwrap();
+    assert!(!db.databases("s").await.unwrap().names.contains(&name));
+    drop(held);
+}

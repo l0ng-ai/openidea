@@ -93,14 +93,20 @@ function translated(key: string): string | undefined {
 }
 
 /** Catalog key, else the source-text catalog; `undefined` when untranslated. */
-function localized(key: string, text: string | undefined): string | undefined {
+function localized(key: string | null, text: string | undefined): string | undefined {
   if (!text) return undefined;
-  const v = translated(key) ?? tx(text);
+  const v = (key === null ? undefined : translated(key)) ?? tx(text);
   return v === text ? undefined : v;
 }
 
-function localize(action: Action): Action {
-  const title = action.verbatim ? undefined : localized(`action.${action.id}`, action.title);
+/** Titles that follow state ({@link retitleAction}), as written (English). */
+const titleOverrides = new Map<string, string>();
+
+function localize(source: Action): Action {
+  const override = titleOverrides.get(source.id);
+  const action = override ? { ...source, title: override } : source;
+  // An override is text, not the id's catalog entry (which names the registered title).
+  const title = action.verbatim ? undefined : localized(override ? null : `action.${action.id}`, action.title);
   const description = localized(`action.${action.id}.description`, action.description);
   const category = localized(`action.category.${action.category}`, action.category);
   if (!title && !description && !category) return action;
@@ -117,6 +123,19 @@ useI18n.subscribe((s, prev) => {
   if ((s.messages === prev.messages && s.texts === prev.texts) || !sources.size) return;
   useActions.setState({ actions: new Map([...sources].map(([id, a]) => [id, localize(a)])) });
 });
+
+/**
+ * Shows action `id` as `title` (English, translated through the text catalog) while its
+ * state calls for it, e.g. Hide All Tool Windows as "Restore Tool Windows"; `undefined`
+ * returns to the registered title.
+ */
+export function retitleAction(id: string, title: string | undefined) {
+  if (titleOverrides.get(id) === title) return;
+  if (title) titleOverrides.set(id, title);
+  else titleOverrides.delete(id);
+  const source = sources.get(id);
+  if (source) useActions.setState((s) => ({ actions: new Map(s.actions).set(id, localize(source)) }));
+}
 
 /** Adds `action` to the written sources; returns a disposer that removes it. */
 function addSource(action: Action): () => void {
@@ -140,17 +159,34 @@ export function registerAction(action: Action): () => void {
 }
 
 export function registerActions(actions: Action[]): () => void {
-  const disposers = actions.map(addSource);
+  const owned = new Map<string, Action>();
+  for (const action of actions) {
+    sources.set(action.id, action);
+    owned.set(action.id, action);
+  }
   // One state update for the batch: features register dozens of actions at start-up,
   // and cloning the whole map per action made that O(n²).
-  if (actions.length) {
+  if (owned.size) {
     useActions.setState((s) => {
       const next = new Map(s.actions);
-      for (const action of actions) next.set(action.id, localize(action));
+      for (const [id, action] of owned) next.set(id, localize(action));
       return { actions: next };
     });
   }
-  return () => disposers.forEach((d) => d());
+  return () => {
+    const removed: string[] = [];
+    for (const [id, action] of owned) {
+      if (sources.get(id) !== action) continue;
+      sources.delete(id);
+      removed.push(id);
+    }
+    if (!removed.length) return;
+    useActions.setState((s) => {
+      const next = new Map(s.actions);
+      for (const id of removed) next.delete(id);
+      return { actions: next };
+    });
+  };
 }
 
 export function getAction(id: string): Action | undefined {

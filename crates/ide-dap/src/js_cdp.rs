@@ -216,7 +216,21 @@ pub(crate) async fn serve(
         }
     }
     if holding {
-        let _ = write.send(call("Fetch.disable", json!({})).1).await;
+        let (disable, command) = call("Fetch.disable", json!({}));
+        if write.send(command).await.is_ok() {
+            // Wait until the proxy has disabled interception before closing the
+            // socket. Dropping it with unread replies can reset the connection.
+            let _ = tokio::time::timeout(REQUEST_TIMEOUT, async {
+                while let Some(Ok(message)) = read.next().await {
+                    let Ok(text) = message.to_text() else { continue };
+                    let Ok(reply) = serde_json::from_str::<Value>(text) else { continue };
+                    if reply.get("id").and_then(Value::as_u64) == Some(disable) {
+                        break;
+                    }
+                }
+            })
+            .await;
+        }
     }
     let _ = write.close().await;
 }
