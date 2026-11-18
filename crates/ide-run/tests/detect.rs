@@ -354,6 +354,8 @@ fn nested_builds_of_every_kind_and_depth() {
         ide_build::compile::BuildKind::Build,
         Some(&dir.path().join("services/api/app/src/main/kotlin/com/acme/Api.kt")),
         None,
+        None,
+        &ide_core::CancellationToken::new(),
     )
     .unwrap();
     assert_eq!(plan.steps[0].cwd, dir.path().join("services/api"));
