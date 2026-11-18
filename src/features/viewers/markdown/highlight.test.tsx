@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setSearchQuery } from "@codemirror/search";
@@ -269,8 +269,11 @@ describe("Markdown preview search & selection highlights", () => {
     });
   });
 
-  it("seeds Command+F from a word selected in the Markdown preview", () => {
-    openEditor("first second third\n");
+  it.each([
+    ["double-click", true, "Order", ["Order", "Order", "Order"]],
+    ["manual", false, "Order ", ["Order ", "Order "]],
+  ] as const)("preserves the intended %s selection for highlights and Find", (_gesture, doubleClick, text, matches) => {
+    openEditor("# Order Service\n\nManage **Order** items and `Order` status.\n\nThe last word is Order.\n");
     const pane = document.createElement("section");
     pane.setAttribute("data-pane-id", "pane-1");
     document.body.appendChild(pane);
@@ -284,13 +287,18 @@ describe("Markdown preview search & selection highlights", () => {
     );
 
     const preview = screen.getByRole("document", { name: "Markdown preview" });
-    const textNode = preview.querySelector("p")!.firstChild as Text;
+    const bold = preview.querySelector("strong")!;
     const range = document.createRange();
-    range.setStart(textNode, 6);
-    range.setEnd(textNode, 12);
+    range.setStart(bold.firstChild!, 0);
+    range.setEnd(bold.nextSibling!, 1);
     const sel = window.getSelection()!;
     sel.removeAllRanges();
     sel.addRange(range);
+    // Windows Chromium includes this space in the native word selection.
+    if (doubleClick) fireEvent.doubleClick(bold);
+    act(() => document.dispatchEvent(new Event("selectionchange")));
+    expect(sel.toString()).toBe(text);
+    expect(highlightTexts(SELECTION_MATCH_HIGHLIGHT)).toEqual(matches);
 
     const target: FindTarget = {
       id: "t",
@@ -302,7 +310,7 @@ describe("Markdown preview search & selection highlights", () => {
       seedFind(target, false);
     });
 
-    expect(useFindSessions.getState().t?.search).toBe("second");
-    expect(view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)).toBe("second");
+    expect(useFindSessions.getState().t?.search).toBe(text);
+    expect(view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)).toBe(text);
   });
 });

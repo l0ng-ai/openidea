@@ -37,6 +37,7 @@ import {
   revealPreviewRange,
   selectionMatchesInNode,
   setPreviewHighlight,
+  trimPreviewWordSelection,
 } from "./highlight";
 import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
@@ -518,6 +519,10 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       role="document"
       aria-label={tx("Markdown preview")}
       onClick={onClick}
+      onDoubleClick={(e) => {
+        if (e.defaultPrevented || e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if (e.target instanceof Node && trimPreviewWordSelection(e.currentTarget, e.target)) e.preventDefault();
+      }}
       onScroll={onScroll}
       dangerouslySetInnerHTML={{ __html: html }}
     />

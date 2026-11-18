@@ -196,6 +196,8 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
       "",
       "Manage **Order** items and `Order` status.",
       "",
+      "The last word is Order.",
+      "",
       "```mermaid",
       "flowchart LR",
       "  A --> B",
@@ -210,6 +212,7 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
 
   // Selecting a word in the preview auto-highlights its other occurrences in the preview and the split editor.
   await preview.locator("strong").dblclick();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("Order");
 
   await expect
     .poll(() =>
@@ -218,8 +221,8 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
         return set ? [...set].map((r) => (r as Range).toString()) : [];
       }),
     )
-    .toEqual(["Order", "Order"]);
-  await expect(editor.locator(".cm-selectionMatch")).toHaveCount(3);
+    .toEqual(["Order", "Order", "Order"]);
+  await expect(editor.locator(".cm-selectionMatch")).toHaveCount(4);
 
   // Pressing ⌘F seeds from the preview selection and highlights current + other matches in the preview.
   await page.keyboard.press("Meta+f");
@@ -232,7 +235,7 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
         other: [...(CSS.highlights.get("markdown-find") ?? [])].map((r) => (r as Range).toString()),
       })),
     )
-    .toEqual({ current: ["Order"], other: ["Order", "Order"] });
+    .toEqual({ current: ["Order"], other: ["Order", "Order", "Order"] });
 
   const mermaidSvg = preview.locator(".mermaid-output svg");
   const excalidrawImg = preview.locator('img[alt="Diagram"]');

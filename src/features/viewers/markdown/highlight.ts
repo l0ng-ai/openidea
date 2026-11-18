@@ -271,6 +271,32 @@ function isSameRange(a: Range, b: Range): boolean {
   }
 }
 
+/** The native double-click selection can include horizontal space after the word. */
+export function trimPreviewWordSelection(root: HTMLElement, target: Node): boolean {
+  const selection = root.ownerDocument.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return false;
+  const range = selection.getRangeAt(0);
+  const common = range.commonAncestorContainer;
+  if (!root.contains(common) || !range.intersectsNode(target)) return false;
+  const word = /^(\S+)[\p{Zs}\t]+$/u.exec(range.toString())?.[1];
+  if (!word || !WORD_CHAR.test(word)) return false;
+
+  // The word and its trailing space can be in different inline nodes.
+  const walker = root.ownerDocument.createTreeWalker(common, NodeFilter.SHOW_TEXT);
+  let remaining = word.length;
+  for (let node = common instanceof Text ? common : walker.nextNode(); node; node = walker.nextNode()) {
+    if (!range.intersectsNode(node)) continue;
+    const start = node === range.startContainer ? range.startOffset : 0;
+    const end = node === range.endContainer ? range.endOffset : (node as Text).length;
+    if (remaining <= end - start) {
+      selection.setBaseAndExtent(range.startContainer, range.startOffset, node, start + remaining);
+      return true;
+    }
+    remaining -= end - start;
+  }
+  return false;
+}
+
 /** Single-line non-empty selection inside `root` (2..200 chars), matching CodeMirror's `highlightSelectionMatches`. */
 export function previewSelectionOf(root: HTMLElement): { text: string; range: Range } | null {
   if (typeof window === "undefined") return null;
