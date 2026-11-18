@@ -148,10 +148,25 @@ impl LogAccess {
             .with_log_repo_at(at, f)
     }
 
+    /// The Perforce workspace `at` names (the project's own without Git, when `None`).
+    fn p4(&self, at: Option<&Path>) -> Option<std::sync::Arc<ide_p4::Workspace>> {
+        self.project.as_ref().and_then(|p| p.p4_workspace_at(at))
+    }
+
     /// `with_log_repo_at` through the backend-agnostic Changes-view surface.
     fn with_log_backend_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        if let Some(workspace) = self.project.as_ref().and_then(|p| p.p4_workspace_at(at)) {
+            return f(workspace.as_ref());
+        }
         self.with_log_repo_at(at, |r| f(r as &dyn Backend))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum VcsKind {
+    Git,
+    Perforce,
 }
 
 /// A repository of the project (IDEA's VCS root).
@@ -162,6 +177,8 @@ pub struct VcsRoot {
     pub root: ide_core::IpcPath,
     /// Root representing all mapped worktrees of the same Git repository in branch lists.
     pub branch_root: ide_core::IpcPath,
+    /// The version control system holding it.
+    pub kind: VcsKind,
     /// Merge / rebase / cherry-pick / revert in progress.
     pub operation: Option<String>,
     /// The current rebase uses Git's interactive mode.
@@ -415,7 +432,25 @@ fn per_backend(
     recorded: Option<&str>,
     f: impl Fn(&dyn Backend, &[PathBuf]) -> IdeResult<()>,
 ) -> IdeResult<()> {
-    per_repo(project, paths, recorded, |r, paths| f(r as &dyn Backend, paths))
+    // Paths of a Perforce workspace go to it; the rest to the Git repositories as before.
+    let mut rest: Vec<PathBuf> = Vec::new();
+    let mut by_workspace: Vec<(std::sync::Arc<ide_p4::Workspace>, Vec<PathBuf>)> = Vec::new();
+    for path in paths {
+        match project.p4_workspace_of(path) {
+            Some(workspace) => match by_workspace.iter_mut().find(|(w, _)| w.root() == workspace.root()) {
+                Some((_, mine)) => mine.push(path.clone()),
+                None => by_workspace.push((workspace, vec![path.clone()])),
+            },
+            None => rest.push(path.clone()),
+        }
+    }
+    for (workspace, mine) in &by_workspace {
+        project.with_p4_recorded(workspace, recorded, |w| f(w as &dyn Backend, mine))?;
+    }
+    if rest.is_empty() && !by_workspace.is_empty() {
+        return Ok(());
+    }
+    per_repo(project, &rest, recorded, |r, paths| f(r as &dyn Backend, paths))
 }
 
 fn with_shelf_batch<T>(project: &Project, batch: Option<String>, operation: impl FnOnce() -> T) -> T {
@@ -522,6 +557,7 @@ pub async fn vcs_detected_roots(host: &Host, window: &str) -> IdeResult<Vec<Path
 pub async fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
     let project = host.project(window)?;
     let repos = project.repos();
+    let workspaces = project.p4_workspaces();
     let trusted = project.is_trusted();
     blocking(move || {
         let primary = repos.primary().map(|r| r.root().to_path_buf());
@@ -537,7 +573,7 @@ pub async fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
                 }
             }
         }
-        Ok(roots
+        let mut roots: Vec<VcsRoot> = roots
             .iter()
             .map(|(r, dirs)| {
                 let branch_root = dirs.as_ref().and_then(|[_, common_dir]| branch_roots.get(common_dir));
@@ -554,6 +590,7 @@ pub async fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
                 VcsRoot {
                     root: r.root().into(),
                     branch_root: branch_root.copied().unwrap_or_else(|| r.root()).into(),
+                    kind: VcsKind::Git,
                     operation,
                     interactive_rebase,
                     head,
@@ -563,7 +600,24 @@ pub async fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
                     resolved_conflicts,
                 }
             })
-            .collect())
+            .collect();
+        // A Perforce workspace shows its stream (or client) where Git shows the branch.
+        roots.extend(workspaces.iter().map(|w| {
+            let connection = w.connection();
+            VcsRoot {
+                root: w.root().to_path_buf().into(),
+                branch_root: w.root().to_path_buf().into(),
+                kind: VcsKind::Perforce,
+                operation: None,
+                interactive_rebase: false,
+                head: Some(connection.stream.clone().unwrap_or_else(|| connection.client.clone())),
+                head_commit: None,
+                shallow: false,
+                has_remotes: None,
+                resolved_conflicts: Vec::new(),
+            }
+        }));
+        Ok(roots)
     })
     .await
 }
@@ -571,7 +625,26 @@ pub async fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
 #[command(trust = always)]
 pub async fn vcs_branch_info(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<BranchInfo> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.branch_info())).await
+    blocking(move || {
+        // A Perforce workspace has no branch: its stream (or client) stands where the branch does.
+        if let Some(workspace) = project.p4(repo.as_deref()) {
+            let connection = workspace.connection();
+            return Ok(BranchInfo {
+                head: Some(connection.stream.clone().unwrap_or_else(|| connection.client.clone())),
+                head_commit: None,
+                upstream: None,
+                upstream_tracking: None,
+                tracked_tip: None,
+                ahead: 0,
+                behind: 0,
+                outgoing: None,
+                operation: None,
+                rebase: None,
+            });
+        }
+        project.with_log_repo_at(repo.as_deref(), |r| r.branch_info())
+    })
+    .await
 }
 
 #[command(trust = trusted)]
@@ -775,6 +848,9 @@ pub async fn vcs_log(host: &Host, window: &str, repo: Option<PathBuf>, query: Lo
     let cancel =
         request.map_or_else(ide_core::CancellationToken::new, |id| host.begin_project_read_request(window, id));
     let result = blocking(move || {
+        if let Some(workspace) = project.p4(repo.as_deref()) {
+            return Backend::log(workspace.as_ref(), &query, &cancel);
+        }
         project.with_log_repo_at(repo.as_deref(), |r| {
             r.enable_log_index(&project.cache);
             (r as &dyn Backend).log(&query, &cancel)
@@ -812,13 +888,25 @@ pub async fn vcs_log_refs(
     repo: Option<PathBuf>,
 ) -> IdeResult<std::collections::BTreeMap<String, String>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.log_refs())).await
+    blocking(move || {
+        if project.p4(repo.as_deref()).is_some() {
+            return Ok(Default::default());
+        }
+        project.with_log_repo_at(repo.as_deref(), |r| r.log_refs())
+    })
+    .await
 }
 
 #[command(trust = always)]
 pub async fn vcs_log_users(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<String>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.log_users())).await
+    blocking(move || {
+        if project.p4(repo.as_deref()).is_some() {
+            return Ok(Vec::new());
+        }
+        project.with_log_repo_at(repo.as_deref(), |r| r.log_users())
+    })
+    .await
 }
 
 #[command(trust = always)]
@@ -847,7 +935,20 @@ pub async fn vcs_log_details(
     revision: String,
 ) -> IdeResult<LogDetails> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.log_details(&revision))).await
+    blocking(move || {
+        if let Some(workspace) = project.p4(repo.as_deref()) {
+            return Ok(LogDetails {
+                message: workspace.description(&revision)?,
+                containing_branches: Vec::new(),
+                signature: "N".into(),
+                signer: String::new(),
+                key: String::new(),
+                fingerprint: String::new(),
+            });
+        }
+        project.with_log_repo_at(repo.as_deref(), |r| r.log_details(&revision))
+    })
+    .await
 }
 
 #[command(trust = always)]
@@ -1004,13 +1105,25 @@ pub async fn vcs_commit_selection_changes(
 #[command(trust = always)]
 pub async fn vcs_branches(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<Branch>> {
     let project = LogAccess::new(host, window, repo.as_deref());
-    blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.branches())).await
+    blocking(move || {
+        if project.p4(repo.as_deref()).is_some() {
+            return Ok(Vec::new());
+        }
+        project.with_log_repo_at(repo.as_deref(), |r| r.branches())
+    })
+    .await
 }
 
 #[command(trust = always)]
 pub async fn vcs_stashes(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<Vec<Stash>> {
     let project = host.project(window)?;
-    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.stashes())).await
+    blocking(move || {
+        if project.p4_workspace_at(repo.as_deref()).is_some() {
+            return Ok(Vec::new());
+        }
+        project.with_repo_at(repo.as_deref(), |r| r.stashes())
+    })
+    .await
 }
 
 #[command(trust = trusted)]

@@ -242,7 +242,18 @@ pub fn fs_scratches_dir(host: &Host) -> IdeResult<ide_core::IpcPath> {
 #[command(trust = always)]
 pub fn fs_set_writable(host: &Host, window: &str, path: PathBuf, writable: bool) -> IdeResult<bool> {
     match host.project(window) {
-        Ok(p) => p.documents.set_writable(&path, writable),
+        Ok(p) => {
+            // A file of a Perforce workspace is read-only until it is opened: making it
+            // writable is `p4 edit`, so the server knows about the change to come.
+            if writable
+                && p.is_trusted()
+                && let Some(workspace) = p.p4_workspace_of(&path)
+            {
+                workspace.open_for_edit(std::slice::from_ref(&path), None)?;
+                p.vcs_changed();
+            }
+            p.documents.set_writable(&path, writable)
+        }
         Err(_) => ide_vfs::set_writable(&path, writable).map(|()| !writable),
     }
 }

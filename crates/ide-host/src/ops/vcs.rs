@@ -10,14 +10,24 @@ pub async fn vcs_status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>>
     host.blocking(move || {
         let settings = project.settings.effective();
         let repos = project.repos();
-        if repos.is_empty() {
-            return Err(ide_core::IdeError::unavailable("project is not a git repository"));
+        let workspaces = project.p4_workspaces();
+        if repos.is_empty() && workspaces.is_empty() {
+            return Err(ide_core::IdeError::unavailable("project is not under version control"));
         }
         for r in repos.all() {
             r.set_ignored_names(settings.ignored_names());
             r.set_cli_status(settings.vcs.git.cli_status);
         }
-        repos.status()
+        let mut status = if repos.is_empty() { Vec::new() } else { repos.status()? };
+        for workspace in &workspaces {
+            match p4_status(&project, workspace, None) {
+                Ok(opened) => status.extend(opened),
+                // An unreachable server must not hide the Git changes of the same project.
+                Err(e) if !repos.is_empty() => tracing::warn!("p4 status of {}: {e}", workspace.root().display()),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(status)
     })
     .await
 }
@@ -45,22 +55,55 @@ pub async fn vcs_status_paths(host: &Host, window: &str, paths: Vec<std::path::P
     host.blocking(move || {
         let settings = project.settings.effective();
         let repos = project.repos();
-        if repos.is_empty() {
-            return Err(ide_core::IdeError::unavailable("project is not a git repository"));
+        let workspaces = project.p4_workspaces();
+        if repos.is_empty() && workspaces.is_empty() {
+            return Err(ide_core::IdeError::unavailable("project is not under version control"));
         }
         for r in repos.all() {
             r.set_ignored_names(settings.ignored_names());
             r.set_cli_status(settings.vcs.git.cli_status);
         }
-        repos.status_paths(&paths)
+        let mut status = if repos.is_empty() { Vec::new() } else { repos.status_paths(&paths)? };
+        for workspace in &workspaces {
+            match p4_status(&project, workspace, Some(&paths)) {
+                Ok(opened) => status.extend(opened),
+                // An unreachable server must not hide the Git changes of the same project.
+                Err(e) if !repos.is_empty() => tracing::warn!("p4 status of {}: {e}", workspace.root().display()),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(status)
     })
     .await
+}
+
+/// Opened files of a Perforce workspace (those among `paths`, when given) that no Git
+/// repository nested in it reports itself.
+fn p4_status(
+    project: &crate::Project,
+    workspace: &ide_p4::Workspace,
+    paths: Option<&[std::path::PathBuf]>,
+) -> IdeResult<Vec<FileStatus>> {
+    use ide_vcs::Backend;
+    let status = match paths {
+        Some(paths) => {
+            let mine: Vec<std::path::PathBuf> =
+                paths.iter().filter(|p| p.starts_with(workspace.root())).cloned().collect();
+            if mine.is_empty() {
+                return Ok(Vec::new());
+            }
+            workspace.status_paths(&mine)?
+        }
+        None => workspace.status()?,
+    };
+    Ok(status.into_iter().filter(|f| project.p4_workspace_of(&f.path.0).is_some()).collect())
 }
 
 pub mod commands;
 mod rebase_editor;
 mod worktree_setup;
 pub use commands::*;
+pub mod p4;
 pub(crate) use rebase_editor::RebaseEditors;
 
 /// Refuses (with `refusal`) to remove or move the worktree that holds the open project.
