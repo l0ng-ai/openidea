@@ -169,6 +169,9 @@ describe("color schemes", () => {
     expect(regular).toContain("--syn-keyword-bold: var(--fw-code, 400) !important");
     const cleared = schemeCss("theme-default", { light: { keyword: { background: CLEAR_COLOR } } }, root);
     expect(cleared).toContain("--syn-keyword-bg: transparent !important");
+    // An unticked Foreground falls back to the default text colour instead of hiding the text.
+    const noForeground = schemeCss("theme-default", { light: { predefined: { foreground: CLEAR_COLOR } } }, root);
+    expect(noForeground).toContain("--syn-builtin: var(--fg-editor) !important");
     const upright = schemeCss("theme-default", { light: { staticSymbol: { italic: false } } }, root);
     expect(upright).toContain("--syn-static-italic: normal !important");
     const pythonItalic = schemeCss("theme-default", { light: { pyStaticSymbol: { italic: true } } }, root);
