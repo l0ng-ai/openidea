@@ -2457,5 +2457,21 @@
   "Skip": "Skip",
   "Resize Markdown preview": "Resize Markdown preview",
   "Run a Python script or module": "Run a Python script or module",
-  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed."
+  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.",
+  "Server default": "Server default",
+  "New Database": "New Database",
+  "Owner:": "Owner:",
+  "Restoring a dump needs template0: template1 can already hold extensions and schemas.": "Restoring a dump needs template0: template1 can already hold extensions and schemas.",
+  "Encoding:": "Encoding:",
+  "Tablespace:": "Tablespace:",
+  "Collation:": "Collation:",
+  "New Schema": "New Schema",
+  "Character set:": "Character set:",
+  "Drop database": "Drop database",
+  "The IDE closes its own connections to the database first.": "The IDE closes its own connections to the database first.",
+  "Close the sessions of other clients": "Close the sessions of other clients",
+  "Cannot drop database {database}": "Cannot drop database {database}",
+  "Cannot create database": "Cannot create database",
+  "Database…": "Database…",
+  "Schema…": "Schema…"
 }
