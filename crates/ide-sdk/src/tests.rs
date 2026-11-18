@@ -225,6 +225,15 @@ fn dependency_extra_paths_keep_existing_paths_and_deduplicate() {
 }
 
 #[test]
+fn dependency_extra_paths_replace_a_malformed_settings_section() {
+    let mut cfg = server("basedpyright");
+    cfg.initialization_options =
+        Some(toml::Value::try_from(serde_json::json!({ "settings": { "basedpyright": "strict" } })).unwrap());
+    configure_python_extra_paths(&mut cfg, &[Path::new("/deps/lib").to_path_buf()]);
+    assert_eq!(extra_paths(&cfg, "basedpyright"), vec!["/deps/lib"]);
+}
+
+#[test]
 fn non_python_servers_and_empty_roots_are_untouched() {
     let mut ruff = server("ruff");
     configure_python_extra_paths(&mut ruff, &[Path::new("/deps/lib").to_path_buf()]);

@@ -897,26 +897,11 @@ pub fn configure_python_extra_paths(cfg: &mut LanguageServerConfig, roots: &[Pat
     }
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
-    if !current.is_object() {
-        current = json!({});
+    let mut node = &mut current;
+    for key in ["settings", section, "analysis"] {
+        node = object_entry(node, key);
     }
-    let analysis = current
-        .as_object_mut()
-        .expect("object")
-        .entry("settings")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .expect("settings object")
-        .entry(section)
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .expect("section object")
-        .entry("analysis")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .expect("analysis object")
-        .entry("extraPaths")
-        .or_insert_with(|| json!([]));
+    let analysis = node.as_object_mut().expect("made an object above").entry("extraPaths").or_insert_with(|| json!([]));
     let mut paths: Vec<String> = analysis
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
@@ -932,6 +917,18 @@ pub fn configure_python_extra_paths(cfg: &mut LanguageServerConfig, roots: &[Pat
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot add extraPaths to initialization options: {e}", cfg.name),
     }
+}
+
+/// `value[key]`, made an empty object when it is missing or not an object; `value` too.
+fn object_entry<'a>(value: &'a mut Value, key: &str) -> &'a mut Value {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    let entry = value.as_object_mut().expect("made an object above").entry(key).or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        *entry = json!({});
+    }
+    entry
 }
 
 /// Editor › Inspections › Java: "Serializable class without 'serialVersionUID'" (off by default,

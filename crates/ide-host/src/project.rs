@@ -1511,7 +1511,18 @@ fn python_dependency_roots(settings: &ide_core::settings::Settings, root: &Path)
     } else {
         settings.project_structure.dependencies.clone()
     };
-    configured.into_iter().map(|p| PathBuf::from(p.trim())).filter(|p| p.is_absolute() && p.is_dir()).collect()
+    configured
+        .into_iter()
+        .map(|p| PathBuf::from(p.trim()))
+        .filter(|p| p.is_absolute() && p.is_dir())
+        // A `src` layout keeps its packages one level down; basedpyright searches a
+        // project's own `src` by itself, but not an extra path's.
+        .flat_map(|p| {
+            let src = p.join("src");
+            let src = src.is_dir().then_some(src);
+            std::iter::once(p).chain(src)
+        })
+        .collect()
 }
 
 fn extra_content_roots(
@@ -2256,10 +2267,19 @@ mod content_roots_tests {
         let missing = tmp.path().join("gone");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&dep).unwrap();
+        let src_layout = tmp.path().join("pkg");
+        std::fs::create_dir_all(src_layout.join("src/pkg")).unwrap();
         let mut settings = ide_core::settings::Settings::default();
-        settings.project_structure.dependencies =
-            vec![dep.to_string_lossy().into_owned(), missing.to_string_lossy().into_owned(), "relative".into()];
-        assert_eq!(super::python_dependency_roots(&settings, &root), vec![dep]);
+        settings.project_structure.dependencies = vec![
+            dep.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+            "relative".into(),
+            src_layout.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(
+            super::python_dependency_roots(&settings, &root),
+            vec![dep, src_layout.clone(), src_layout.join("src")]
+        );
     }
 
     #[test]
