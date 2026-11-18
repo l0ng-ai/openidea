@@ -228,10 +228,8 @@ pub fn parse_remote_location(location: &str) -> Option<(RemoteTarget, String)> {
         ("ssh", rest)
     } else if let Some(rest) = location.strip_prefix("wsl://") {
         ("wsl", rest)
-    } else if let Some(rest) = location.strip_prefix("devcontainer://") {
-        ("devcontainer", rest)
     } else {
-        return None;
+        ("devcontainer", location.strip_prefix("devcontainer://")?)
     };
     let slash = rest.find('/')?;
     if slash == 0 {
