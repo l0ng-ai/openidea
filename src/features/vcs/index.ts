@@ -20,7 +20,7 @@ import { registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
 import { registerLogPaneActions } from "./logPaneActions";
-import { controlLabel, controlOperation, inProgress } from "./operations";
+import { controlLabel, controlOperation, inProgress, installOperationNoticeExpiry } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
@@ -195,6 +195,7 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
+    installOperationNoticeExpiry(),
     installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
