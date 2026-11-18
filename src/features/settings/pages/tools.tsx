@@ -614,6 +614,7 @@ export const TOOLS_PAGES: PageSpec[] = [
               "Use Option as Meta key",
               "Move focus to the Editor with Escape",
               "Configure terminal keybindings",
+              "Maximum refresh rate",
             ],
             component: TerminalOptions,
           },
