@@ -1280,6 +1280,10 @@
   flex: none;
   white-space: nowrap;
 }
+.changesScope {
+  flex: none;
+  padding: 6px 10px 2px;
+}
 .changesSummary {
   flex: none;
   overflow: hidden;

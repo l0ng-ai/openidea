@@ -19,8 +19,14 @@ struct State {
     settings: Vec<(String, String)>,
     read_only: bool,
     session_id: String,
-    session: Mutex<bool>,
+    session: Mutex<Session>,
     closed: CancellationToken,
+}
+
+#[derive(Default)]
+struct Session {
+    initialized: bool,
+    strict_read_only: bool,
 }
 
 /// The response format: a names line, a types line, then one JSON array per row, so rows past
@@ -109,12 +115,23 @@ impl ClickhousePool {
             settings: setup.params,
             read_only: source.read_only,
             session_id: uuid::Uuid::new_v4().to_string(),
-            session: Mutex::new(false),
+            session: Mutex::new(Session::default()),
             closed: CancellationToken::new(),
         }));
         let cancel = CancellationToken::new();
         let initialize = async {
-            pool.execute("SELECT 1", 1, &cancel).await?;
+            if let Err(error) = pool.execute("SELECT 1", 1, &cancel).await {
+                if !rejects_driver_setting(&error) {
+                    return Err(error);
+                }
+                // Retry only the connection probe. Keep relying on the server for write protection
+                // only after verifying strict read-only mode in this same session.
+                pool.0.session.lock().await.strict_read_only = true;
+                let result = pool.execute("SELECT getSetting('readonly')", 1, &cancel).await?;
+                if result.rows.first().and_then(|row| row.first()).and_then(Option::as_deref) != Some("1") {
+                    return Err(error);
+                }
+            }
             for sql in setup.statements {
                 pool.execute(&sql, 0, &cancel).await?;
             }
@@ -151,7 +168,7 @@ impl ClickhousePool {
     }
 
     /// `max_rows`: the rows the server may send (the skipped ones included).
-    fn request(&self, client: &Client, query_id: &str, max_rows: usize, initialized: bool) -> RequestBuilder {
+    fn request(&self, client: &Client, query_id: &str, max_rows: usize, session: &Session) -> RequestBuilder {
         let mut request = client
             .post(self.0.endpoint.clone())
             .basic_auth(&self.0.user, Some(&self.0.password))
@@ -162,16 +179,20 @@ impl ClickhousePool {
                 ("session_timeout", "3600".into()),
                 ("query_id", query_id.to_owned()),
                 ("default_format", FORMAT.into()),
+            ]);
+        if !session.strict_read_only {
+            request = request.query(&[
                 ("output_format_json_quote_denormals", "1".into()),
                 ("max_result_rows", max_rows.saturating_add(1).to_string()),
                 ("result_overflow_mode", "break".into()),
             ]);
-        if initialized {
+        }
+        if session.initialized {
             request = request.query(&[("session_check", "1")]);
         } else {
             request = request.query(&[("database", &self.0.database)]);
         }
-        if self.0.read_only {
+        if self.0.read_only && !session.strict_read_only {
             request = request.query(&[("readonly", "1")]);
         }
         request
@@ -200,7 +221,7 @@ impl ClickhousePool {
         };
         let client = self.client()?;
         let query_id = uuid::Uuid::new_v4().to_string();
-        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), *session).body(sql.to_owned());
+        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), &session).body(sql.to_owned());
         let started = Instant::now();
         let fetch = async {
             let mut response = request.send().await.map_err(http_error)?;
@@ -254,7 +275,7 @@ impl ClickhousePool {
         match result {
             Some(result) => {
                 if result.is_ok() {
-                    *session = true;
+                    session.initialized = true;
                 }
                 result
             }
@@ -323,9 +344,9 @@ type DecodedResult = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, bool);
 
 /// Decodes a streamed [`FORMAT`] body. Reads past the first `skip` rows unparsed (a later
 /// page), then keeps `max_rows` rows; later rows only set `has_more` and are read past
-/// unparsed, so a grid limit bounds memory however large the block
-/// `result_overflow_mode=break` lets the server send. A line that is not a JSON array
-/// starts the exception ClickHouse writes when a query fails mid-stream.
+/// unparsed, so a grid limit bounds memory even if a strict read-only server does not allow
+/// per-query result limits. A line that is not a JSON array starts the exception ClickHouse
+/// writes when a query fails mid-stream.
 struct RowReader {
     skip: usize,
     max_rows: usize,
@@ -477,6 +498,20 @@ fn http_error(error: reqwest::Error) -> IdeError {
 fn read_pem(path: &str, label: &str) -> IdeResult<Vec<u8>> {
     std::fs::read(ide_ssh::expand(path))
         .map_err(|error| IdeError::new(ErrorKind::Io, format!("cannot read ClickHouse {label}: {error}")))
+}
+
+fn rejects_driver_setting(error: &IdeError) -> bool {
+    error
+        .message
+        .split_once(": ")
+        .and_then(|(_, detail)| detail.strip_prefix("Code: 164. DB::Exception: Cannot modify '"))
+        .and_then(|detail| detail.split_once("' setting in readonly mode"))
+        .is_some_and(|(name, _)| {
+            matches!(
+                name,
+                "output_format_json_quote_denormals" | "max_result_rows" | "result_overflow_mode" | "readonly"
+            )
+        })
 }
 
 fn reserved_setting(name: &str) -> bool {
@@ -724,6 +759,77 @@ mod tests {
             vec![vec![Some("1".into())]]
         );
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connects_when_server_forbids_settings_in_readonly_mode() {
+        let (port, requests) = server(vec![
+            (
+                "500 Internal Server Error",
+                "X-ClickHouse-Exception-Code: 164\r\n",
+                "Code: 164. DB::Exception: Cannot modify 'output_format_json_quote_denormals' setting in readonly mode. (READONLY)",
+            ),
+            ("200 OK", "", ONE),
+            ("200 OK", "", "[\"n\"]\n[\"UInt64\"]\n[1]\n[2]\n"),
+        ])
+        .await;
+        let source = DataSource {
+            read_only: true,
+            properties: vec![DbProperty { name: "max_threads".into(), value: "2".into() }],
+            ..source(port)
+        };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let result = pool.execute("SELECT number FROM numbers(2)", 1, &CancellationToken::new()).await.unwrap();
+        assert_eq!(result.rows, vec![vec![Some("1".into())]]);
+        assert!(result.has_more);
+
+        let requests = requests.await.unwrap();
+        assert!(requests[0].ends_with("SELECT 1"));
+        assert!(requests[0].contains("output_format_json_quote_denormals=1"));
+        assert!(requests[1].ends_with("SELECT getSetting('readonly')"));
+        assert!(requests[2].contains("session_check=1"));
+        for request in &requests[1..] {
+            assert!(request.contains("default_format=JSONCompactEachRowWithNamesAndTypes"));
+            assert!(request.contains("max_threads=2"));
+            for setting in
+                ["output_format_json_quote_denormals=", "max_result_rows=", "result_overflow_mode=", "readonly="]
+            {
+                assert!(!request.contains(setting), "{setting} is not allowed in a strict read-only session");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn readonly_probe_does_not_disable_settings_on_a_writable_session() {
+        let (port, requests) = server(vec![
+            (
+                "500 Internal Server Error",
+                "X-ClickHouse-Exception-Code: 164\r\n",
+                "Code: 164. DB::Exception: Cannot modify 'max_result_rows' setting in readonly mode. (READONLY)",
+            ),
+            ("200 OK", "", "[\"readonly\"]\n[\"UInt64\"]\n[0]\n"),
+        ])
+        .await;
+        let source = DataSource { read_only: true, ..source(port) };
+        let error = Pool::connect(&source, None, None).await.err().expect("writable session must stay rejected");
+        assert!(error.message.contains("Cannot modify 'max_result_rows'"));
+        assert!(requests.await.unwrap()[1].ends_with("SELECT getSetting('readonly')"));
+    }
+
+    #[test]
+    fn readonly_probe_matches_only_the_driver_settings() {
+        for (code, setting, expected) in [
+            (164, "max_result_rows", true),
+            (164, "result_overflow_mode", true),
+            (164, "readonly", true),
+            (164, "max_threads", false),
+            (516, "max_result_rows", false),
+        ] {
+            let error = IdeError::invalid(format!(
+                "ClickHouse HTTP 500: Code: {code}. DB::Exception: Cannot modify '{setting}' setting in readonly mode. (READONLY)"
+            ));
+            assert_eq!(rejects_driver_setting(&error), expected, "{setting}");
+        }
     }
 
     #[tokio::test]

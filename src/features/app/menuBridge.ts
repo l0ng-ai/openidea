@@ -25,6 +25,7 @@ import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFr
 import { orderStatusItems } from "@/workbench/StatusBar";
 import { statusWidgetRows } from "@/workbench/statusBarWidgets";
 import { useToolWindowLayouts } from "@/workbench/toolwindows/layouts";
+import { toolWindowsRestorable, useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { hostOs, type HostOs } from "./host";
 
 export const MENU_EVENT = "openidea://menu";
@@ -100,7 +101,11 @@ export function menuAccelerator(binding: string): string | undefined {
 export function buildMenuConfig(os: HostOs): MenuConfig {
   const labels: Record<string, string> = {};
   // Per-window state some labels follow (View › Appearance › Enter / Exit Distraction Free Mode).
-  const params = { os, distractionFree: isDistractionFree() ? "on" : "off" };
+  const params = {
+    os,
+    distractionFree: isDistractionFree() ? "on" : "off",
+    toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
+  };
   for (const key of keysWithPrefix("menu.")) labels[key] = t(key, params);
   const accelerators: Record<string, string> = {};
   const seen = new Set<string>();
@@ -264,6 +269,10 @@ export function installMenuBridge(): () => void {
     useKeymap.subscribe(push),
     useDistractionFree.subscribe((s, prev) => {
       if (s.active !== prev.active) push();
+    }),
+    // Window › Hide All Tool Windows reads "Restore Tool Windows" while it would restore them.
+    useToolWindowLayout.subscribe((s, prev) => {
+      if (toolWindowsRestorable(s) !== toolWindowsRestorable(prev)) push();
     }),
     useContributions.subscribe((s, prev) => {
       if (s.toolWindows !== prev.toolWindows || s.statusItems !== prev.statusItems) push();

@@ -98,6 +98,8 @@ interface AgentsState {
   changes: Map<string, AgentChange[]>;
   /** The task's uncommitted changes and commits, when the Changes pane groups by commit. */
   groupedChanges: Map<string, AgentChanges>;
+  /** What the task's last turn changed, when the Changes pane shows that. */
+  turnChanges: Map<string, AgentChange[]>;
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
@@ -186,6 +188,7 @@ export const useAgents = create<AgentsState>(() => ({
   entryLoads: new Map(),
   changes: new Map(),
   groupedChanges: new Map(),
+  turnChanges: new Map(),
   providers: [],
   limits: new Map(),
   modelCatalogs: new Map(),
@@ -496,6 +499,7 @@ export async function connect(): Promise<void> {
     entryLoads: new Map(),
     changes: new Map(),
     groupedChanges: new Map(),
+    turnChanges: new Map(),
     providers,
     organizeRoot,
     organize: pruneOrganize(loadOrganize(organizeRoot), tasks),
@@ -599,12 +603,18 @@ function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> 
     groupedChanges = new Map(s.groupedChanges);
     groupedChanges.delete(taskId);
   }
-  if (!entries && !entryLoads && !changes && !groupedChanges) return null;
+  let turnChanges: Map<string, AgentChange[]> | undefined;
+  if (s.turnChanges.has(taskId)) {
+    turnChanges = new Map(s.turnChanges);
+    turnChanges.delete(taskId);
+  }
+  if (!entries && !entryLoads && !changes && !groupedChanges && !turnChanges) return null;
   return {
     ...(entries ? { entries } : {}),
     ...(entryLoads ? { entryLoads } : {}),
     ...(changes ? { changes } : {}),
     ...(groupedChanges ? { groupedChanges } : {}),
+    ...(turnChanges ? { turnChanges } : {}),
   };
 }
 
@@ -625,7 +635,7 @@ function isTaskOpenInUi(taskId: string): boolean {
 /** Whether a background trigger should reload a task's changes: only while they are shown or still cached. */
 function wantsChanges(taskId: string): boolean {
   const s = useAgents.getState();
-  return s.changes.has(taskId) || s.groupedChanges.has(taskId) || isTaskOpenInUi(taskId);
+  return s.changes.has(taskId) || s.groupedChanges.has(taskId) || s.turnChanges.has(taskId) || isTaskOpenInUi(taskId);
 }
 
 /**
@@ -667,6 +677,7 @@ export function disconnect() {
     entryLoads: new Map(),
     changes: new Map(),
     groupedChanges: new Map(),
+    turnChanges: new Map(),
     modelCatalogs: new Map(),
     modelRequests: new Set(),
     modelRequestTargets: new Map(),
@@ -846,11 +857,25 @@ export async function loadEntries(task: string, subagent: string | null = null):
 }
 
 export async function refreshChanges(task: string): Promise<void> {
+  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
   const gen = generation;
   const drops = cacheDrops.get(task);
-  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
   const stillWanted = () =>
     gen === generation && useAgents.getState().tasks.has(task) && cacheDrops.get(task) === drops;
+  // The whole task's changes are read in either scope: the session's summary counts them.
+  await Promise.all([
+    refreshTaskChanges(task, stillWanted),
+    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
+  ]);
+}
+
+async function refreshTurnChanges(task: string, stillWanted: () => boolean): Promise<void> {
+  const changes = await call(commands.agentChanges(task, "lastTurn")).catch(() => []);
+  if (!stillWanted()) return;
+  useAgents.setState((s) => ({ turnChanges: new Map(s.turnChanges).set(task, changes) }));
+}
+
+async function refreshTaskChanges(task: string, stillWanted: () => boolean): Promise<void> {
   // Local tasks have no commits of their own to group: the flat list is their only view.
   const grouped =
     useChangesOptions.getState().groupByCommit && useAgents.getState().tasks.get(task)?.isolation === "worktree";
@@ -871,7 +896,7 @@ export async function refreshChanges(task: string): Promise<void> {
     return;
   }
   try {
-    const changes = await call(commands.agentChanges(task));
+    const changes = await call(commands.agentChanges(task, null));
     if (!stillWanted()) return;
     useAgents.setState((s) => ({
       changes: new Map(s.changes).set(task, changes),
