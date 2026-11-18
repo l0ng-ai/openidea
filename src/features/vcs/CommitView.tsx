@@ -357,8 +357,8 @@ export function nodeMenu(
           },
           { kind: "separator" as const },
         ]),
-    // Under the modal interface the node itself, like double-click, in the front window.
-    vcsDiffInFront() && opts?.roots && first
+    // The node itself, like double-click: under Staged or Unstaged its side of the index.
+    opts?.roots && first
       ? {
           label: "Show Diff",
           icon: "diff",
