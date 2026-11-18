@@ -8822,5 +8822,7 @@
   "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.": "direnv 只在你允许后才会运行它。请先检查内容，在项目文件夹中运行 direnv allow，然后重新加载环境。",
   "Could not load the direnv environment": "无法加载 direnv 环境",
   "{file} changed": "{file} 已更改",
-  "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.": "重新加载环境，让新的终端、运行和语言服务器再次获得项目的 direnv 环境。"
+  "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.": "重新加载环境，让新的终端、运行和语言服务器再次获得项目的 direnv 环境。",
+  "Show files only on left": "显示仅在左侧的文件",
+  "Show files only on right": "显示仅在右侧的文件"
 }

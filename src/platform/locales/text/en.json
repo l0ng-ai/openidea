@@ -2445,5 +2445,7 @@
   "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.": "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.",
   "Could not load the direnv environment": "Could not load the direnv environment",
   "{file} changed": "{file} changed",
-  "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.": "Reload the environment so new terminals, runs and language servers get the project's direnv environment again."
+  "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.": "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.",
+  "Show files only on left": "Show files only on left",
+  "Show files only on right": "Show files only on right"
 }

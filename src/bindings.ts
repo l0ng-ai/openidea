@@ -4930,6 +4930,12 @@ export type DirectoryCompareEntry = {
 	rightKind: EntryKind | null,
 	leftLink?: string | null,
 	rightLink?: string | null,
+	/**  File sizes in bytes; directories and symlinks have none. */
+	leftSize?: number | null,
+	rightSize?: number | null,
+	/**  Last modification, milliseconds since the Unix epoch. */
+	leftModified?: number | null,
+	rightModified?: number | null,
 };
 
 export type DirectoryCompareProgress = {
