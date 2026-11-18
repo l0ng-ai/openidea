@@ -402,6 +402,7 @@ plugin_catalog                               always             desktop      bin
 plugin_choose_program                        outside_restricted project_host bindings async
 plugin_color_presentations                   trusted            project_host bindings async
 plugin_commit_checks                         trusted            project_host bindings async
+plugin_console_rules                         trusted            project_host bindings sync
 plugin_content_tab_action                    trusted            project_host bindings sync
 plugin_context_keys                          trusted            project_host bindings sync
 plugin_debug_attach_target                   trusted            project_host bindings async

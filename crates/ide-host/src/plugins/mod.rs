@@ -20,6 +20,7 @@ mod auth;
 mod build_graph;
 pub mod commands;
 pub mod commit;
+mod console_rules;
 mod database;
 mod dependencies;
 pub(crate) mod diagnostics;
@@ -436,6 +437,11 @@ impl PluginHost {
     /// Current decoration snapshots for windows opening after a plugin published them.
     pub fn decoration_sets(&self) -> std::collections::BTreeMap<String, Vec<DecorationSet>> {
         self.shared.decoration_sets()
+    }
+
+    /// Every plugin's console highlight rules, for windows opening after they were set.
+    pub fn console_rules(&self) -> std::collections::BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+        self.shared.console_rules()
     }
 
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
