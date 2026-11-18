@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.11.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.12.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -426,6 +426,17 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.12
+
+API 1.12.0 is in development on `main`. Use `engines.openidea = "^1.12"` and the
+matching SDK. Plugins for 1.11 and earlier keep working. New in 1.12:
+
+- **Console highlight rules.** `host::set_console_rules(&[ConsoleRule])` (WIT
+  `ui.set-console-rules`) gives the Run and Debug consoles a list of regular
+  expressions with a palette colour, background and text styles, for the whole
+  line or only the matched text. The IDE applies them; the plugin never sees
+  the output. No capability. See _Console highlight rules_.
+
 ### API 1.11
 
 API 1.11.0 is in development on `main`. Use `engines.openidea = "^1.11"` and the
@@ -730,6 +741,7 @@ then run `openidea-plugin check`.
 | `host::begin_loopback(path)` → `Loopback`                                                                      | `auth.begin-loopback`                        | API 1.4: `redirect_uri()`, `wait(timeout_ms)` → raw query or none on timeout. Desktop-only, even for remote projects; no capability. At most 2 listeners; one-shot, closed on timeout, drop or stop. Waiting excludes the call budget.                                                                                                                    |
 | `host::output_append(channel, text)`, `output_clear`, `output_reveal`                                          | `output.{append,clear,reveal}`               | API 1.4: read-only Output tabs; 32 named channels per plugin, each a 1 MiB UTF-8 ring buffer. Reveal requires the invoking window.                                                                                                                                                                                                                        |
 | `host::set_context(key, value)`, `remove_context`                                                              | `ui.{set,remove}-context`                    | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                                                                                                                                                            |
+| `host::set_console_rules(rules)`                                                                               | `ui.set-console-rules`                       | API 1.12: replaces the plugin's highlight rules for Run and Debug console output (regex, palette colours, styles, whole line or match); no capability. See _Console highlight rules_.                                                                                                                                                                     |
 | `host::notify(level, title, body)`                                                                             | `ui.show-notification`                       | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                                                                                                                                                           |
 | `Project::notify(level, title, body, actions)`                                                                 | `ui.notify-project`                          | API 1.5: balloon only in a window of that project (the most recently focused one), with or without an invoking window; see _Notifications with commands_.                                                                                                                                                                                                 |
 | `host::copy_to_clipboard(text)`                                                                                | `ui.copy-to-clipboard`                       | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                                                                                                                                                                 |
@@ -982,6 +994,58 @@ if let Some(png) = clip.image {
 In tests, `MockHost::set_clipboard(text, image)` sets what is read, and
 `MockHost::set_unattended(true)` makes the calls fail as an event handler's do.
 
+### Console highlight rules (API 1.12)
+
+A plugin can colour lines of Run and Debug console output, as Grep Console does
+in IDEA: the rule list, its editor, import and export live in the plugin, and
+the IDE applies the rules when it shows the output. The plugin never reads the
+console, so the call needs no capability. Rules apply in every window, to the
+program's stdout and stderr, not to the lines the IDE prints itself.
+
+```rust
+host::set_console_rules(&[
+    ConsoleRule::new(r"\[AUDIT\]").foreground("bright-yellow").style("bold").whole_line(),
+    ConsoleRule::new(r"JOB-\d+").foreground("cyan").style("underline"),
+    ConsoleRule::new(r"^\[service-b\]").ignore_case().foreground("magenta").whole_line(),
+])?;
+```
+
+| SDK                                                 | WIT                           | Notes                                          |
+| --------------------------------------------------- | ----------------------------- | ---------------------------------------------- |
+| `host::set_console_rules(rules)`                    | `ui.set-console-rules(rules)` | Replaces the plugin's list; `&[]` removes it   |
+| `ConsoleRule::new(pattern)` and its builder methods | `record console-rule`         | `enabled`, match-only and case-sensitive first |
+
+- **Order.** The first enabled whole-line rule that matches a line styles it,
+  and the colour of its log level (_Settings › Build, Execution, Deployment ›
+  Console_) no longer applies; a line no rule matches keeps its level colour.
+  Every enabled match-only rule styles its matches on top, an earlier rule
+  winning where matches overlap. Rules of several plugins apply in plugin id
+  order. A disabled rule keeps its place in the list.
+- **Style.** `foreground` and `background` are console palette names: `black`,
+  `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white` and their
+  `bright-` forms, shown in the colour scheme's Console Colors. `styles` are
+  `bold`, `italic`, `underline`, `strikethrough` and `dim`. Unknown names are
+  ignored, so a plugin can use names a newer IDE adds. Where a rule sets a
+  colour or style, it replaces the one the program printed (ANSI); find matches
+  stay on top.
+- **Patterns.** At most 100 rules of at most 512 bytes each. A pattern uses the
+  syntax Rust's `regex` and JavaScript share, as file icon patterns do (_File
+  icon themes_): no inline flags (use `ignore_case`), named groups, lookaround,
+  backreferences, `\A`, `\z`, `\p{…}` or POSIX classes. The windows match with
+  JavaScript, whose engine backtracks, so the host refuses a pattern that could
+  take long on a long line: a repeated group (`(a+)+`, `(\w|\w\w)*`) or two
+  repetitions that can match the same text (`.*a.*b`, `\w+\w+!`). A repetition
+  the next part can't start inside is fine (`\d+\.\d+`, `.*ERROR.*`, `[^(]*\(`).
+  A pattern starting with `^` tries one start instead of every position, so it
+  may have one more such repetition (`^.*a.*b`). Rules see the first 2000
+  characters of a line.
+- An invalid rule fails the call with `invalid` (naming the rule's index) and
+  keeps the previous list. The rules go away when the plugin stops, not when it
+  is reclaimed while idle.
+
+In tests, `MockHost::console_rules()` returns the last list set. The mock checks
+the count and pattern length only, not the complexity.
+
 ### Database sources (API 1.4)
 
 Declare `database.sources` (medium risk). All five calls require it and a
@@ -1196,7 +1260,10 @@ The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
 (`events.subscribe-paths`). The host matches project-relative globs before
 queueing an event or waking an idle plugin. `file-saved`, `document-changed`
-and `files-changed` work the same way. For `files-changed`, each category is filtered and an empty batch
+and `files-changed` work the same way. A `document-changed` path is relative to
+its own project, which the event names in `project` (the root's absolute path):
+two open projects can hold the same relative path, so key per-document state by
+both. IDEs before this field omit it. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
@@ -2859,7 +2926,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46; API 1.10.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0 and 1.12.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

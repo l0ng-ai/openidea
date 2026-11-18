@@ -417,6 +417,16 @@ describe("connection and metadata continuations", () => {
     });
   }
 
+  it("does not list sources after the project is closed", async () => {
+    // Closing the project resets `loaded`; a still-mounted SQL console then asks for sources again.
+    useProject.setState({ project: null });
+    backend.sources.mockRejectedValue(new Error("no project is open in this window"));
+    backend.connected.mockRejectedValue(new Error("no project is open in this window"));
+    await loadSources();
+    expect(ui.notify).not.toHaveBeenCalled();
+    expect(backend.sources).not.toHaveBeenCalled();
+  });
+
   it("can load metadata again after a disconnect fails", async () => {
     backend.disconnect.mockRejectedValueOnce(new Error("disconnect failed"));
     await expect(disconnect("pg")).rejects.toThrow("disconnect failed");

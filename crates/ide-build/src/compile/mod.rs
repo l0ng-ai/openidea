@@ -536,7 +536,9 @@ impl PathMap {
         let abs = if p.is_absolute() {
             p.to_path_buf()
         } else {
-            let in_base = base.map(|b| Path::new(b).join(p)).filter(|c| c.exists());
+            // rustc prints workspace members' files relative to the workspace root, above
+            // the member's manifest directory (`base`) when a member is built on its own.
+            let in_base = base.and_then(|b| Path::new(b).ancestors().map(|a| a.join(p)).find(|c| c.exists()));
             in_base.unwrap_or_else(|| cwd.join(p))
         };
         let abs = normalize(&abs);
@@ -713,7 +715,7 @@ pub fn run(
                 }
             }
         };
-        let out = process::run(&step.program, &step.args, &step.cwd, &step.env, cancel, |stream, line| {
+        let out = process::run_bounded(&step.program, &step.args, &step.cwd, &step.env, cancel, |stream, line| {
             let parsed = parser.feed(line);
             match parsed.console {
                 Some(text) if text.is_empty() => {}
@@ -755,7 +757,7 @@ pub fn run(
         if !out.success {
             success = false;
             if !messages.iter().any(|m| m.severity == Severity::Error) {
-                let summary = crate::sync::error_summary(&out.text);
+                let summary = crate::sync::error_summary(&out);
                 let text = if summary.is_empty() { last_error_line.clone() } else { summary };
                 let m = BuildMessage { severity: Severity::Error, text, path: None, range: None, code: None };
                 on_event(BuildEvent::Message { message: m.clone() });
@@ -1301,6 +1303,22 @@ mod tests {
         assert_eq!(utf16_col(Some("ab"), 5, ColUnit::Char), 4);
         assert_eq!(identifier_len("x 😀ab_1 c", 2), 0);
         assert_eq!(identifier_len("x é_1 c", 2), 3);
+    }
+
+    #[test]
+    fn resolves_a_member_build_s_workspace_relative_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        write(&root, "client/src/main.rs", "fn main() {}\n");
+        write(&root, "client/src/lib.rs", "\n");
+        write(&root, "src/lib.rs", "\n");
+        let map = PathMap { root: root.clone(), canonical: None };
+        let member = root.join("client");
+        let base = member.to_str();
+        // Build Module runs in the member; rustc names its files from the workspace root.
+        assert_eq!(map.resolve("client/src/main.rs", &member, base), root.join("client/src/main.rs"));
+        // A crate built from its own directory names them from there.
+        assert_eq!(map.resolve("src/lib.rs", &member, base), member.join("src/lib.rs"));
     }
 
     // Uses Unix absolute paths for the canonical root.

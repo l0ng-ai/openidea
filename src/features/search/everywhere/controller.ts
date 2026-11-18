@@ -253,8 +253,9 @@ export class SeController {
             .recentActions()
             .map((aid) => byId.get(aid))
             .filter((a): a is Action => !!a && !a.hidden)
-            .slice(0, limit)
-            .map((a) => actionItem(a, this.deps.isEnabled(a)));
+            .map((a) => actionItem(a, this.deps.isEnabled(a)))
+            .filter((a) => a.enabled || req.includeDisabled !== false)
+            .slice(0, limit);
           this.set(id, gen, items, false, false);
           break;
         }

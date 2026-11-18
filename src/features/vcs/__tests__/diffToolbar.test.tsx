@@ -712,7 +712,7 @@ describe("Unified Revert", () => {
           await waitFor(() => expect(button).not.toBeDisabled());
           fireEvent.click(button);
         } else {
-          fireEvent.mouseDown(await screen.findByRole("button", { name: /^Revert$/ }));
+          fireEvent.click(await screen.findByRole("button", { name: /^Revert$/ }));
         }
         await waitFor(() => expect(view.state.doc.toString()).toBe(original));
       } finally {

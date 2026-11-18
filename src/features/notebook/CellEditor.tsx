@@ -12,7 +12,7 @@ import {
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import type { NotebookCellDoc } from "@/bindings";
-import { cellEditorExtensions, embeddedEditorExtensions, externalHistory } from "@/editor/api";
+import { adjacentEditor, cellEditorExtensions, embeddedEditorExtensions, externalHistory } from "@/editor/api";
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { selectionMarks } from "@/editor/core/cm/selectionMarks";
@@ -106,7 +106,12 @@ export function CellEditor({
       services.current.of(languageServices(type, initialDoc.current)),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
       EditorView.lineWrapping,
-      EditorView.theme({ "&.cm-editor": { height: "auto" }, ".cm-scroller": { maxHeight: "640px", overflow: "auto" } }),
+      EditorView.theme({
+        "&.cm-editor": { height: "auto" },
+        // `auto`: past either end of a long cell the wheel scrolls the notebook.
+        "&.cm-editor .cm-scroller": { maxHeight: "640px", overflow: "auto", overscrollBehavior: "auto" },
+      }),
+      adjacentEditor.of((direction, col) => session.revealAdjacent(id, direction, col)),
       EditorView.contentAttributes.of({
         "aria-label": tx(type === "code" ? "Python cell source" : "Markdown cell source"),
       }),

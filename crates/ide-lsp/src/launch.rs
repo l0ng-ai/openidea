@@ -160,12 +160,13 @@ const DEAD_SHIM_MESSAGES: &[&str] =
 /// server that dies like that on every start is missing (an install hint), not crashing.
 /// Anything but a clear "not installed" answer from the shim counts as working.
 fn reject_dead_shim(binary: PathBuf, search: &OsStr, root: &Path) -> Option<PathBuf> {
-    if !binary.parent().is_some_and(|d| d.file_name().is_some_and(|n| n == "shims")) {
+    if binary.parent().and_then(Path::file_name) != Some(OsStr::new("shims")) {
         return Some(binary);
     }
-    let Ok(mut child) = ide_core::process::prepare(std::process::Command::new(&binary).current_dir(root))
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.current_dir(root).env("PATH", search);
+    let Ok(mut child) = ide_core::process::prepare(&mut cmd)
         .arg("--version")
-        .env("PATH", search)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())

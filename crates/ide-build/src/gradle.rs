@@ -41,6 +41,10 @@ pub struct GradleProject {
     /// Project-relative build script, if any.
     pub build_file: Option<String>,
     pub tasks: Vec<GradleTask>,
+    /// Configurations Gradle can resolve, or null before Gradle reports the project.
+    #[serde(default)]
+    #[specta(optional)]
+    pub resolvable_configurations: Option<Vec<String>>,
     /// Identity path of the nested build holding the project (`:lib` for `includeBuild`,
     /// `:buildSrc`); null for the opened build.
     #[serde(default)]
@@ -301,6 +305,7 @@ fn project_at(root: &Path, path: String, name: String, pdir: &Path) -> GradlePro
         path,
         name,
         tasks,
+        resolvable_configurations: None,
         build: None,
     }
 }
@@ -317,6 +322,8 @@ pub struct ReportedProject {
     pub build_dir: Option<String>,
     #[serde(default)]
     pub source_sets: Vec<ReportedSourceSet>,
+    #[serde(default)]
+    pub resolvable_configurations: Option<Vec<String>>,
     /// Toolchain language version, else target compatibility.
     #[serde(default)]
     pub java: Option<u32>,
@@ -412,6 +419,7 @@ pub fn merge_reported_projects(root: &Path, model: &mut GradleModel, reported: &
             if p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc")) {
                 project.tasks.clear();
             }
+            project.resolvable_configurations = p.resolvable_configurations.clone();
             project.build = p.build.clone();
             project
         })
@@ -1630,6 +1638,11 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
                 path: path.into(),
                 dir: ws.join(d).to_string_lossy().into_owned(),
                 build: build.map(Into::into),
+                resolvable_configurations: match path {
+                    ":" => Some(vec!["reviewTools".into(), "runtimeClasspath".into()]),
+                    ":lib:core" => Some(Vec::new()),
+                    _ => None,
+                },
                 ..ReportedProject::default()
             };
             format!("{MODEL_LINE}{}\n", serde_json::to_string(&project).unwrap())
@@ -1658,6 +1671,12 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
         );
         let build_src = &model.projects[2];
         assert!(build_src.tasks.is_empty(), "buildSrc tasks cannot run from the root build");
+        assert_eq!(
+            model.projects[0].resolvable_configurations,
+            Some(vec!["reviewTools".into(), "runtimeClasspath".into()])
+        );
+        assert_eq!(model.projects[1].resolvable_configurations, None);
+        assert_eq!(model.projects[4].resolvable_configurations, Some(Vec::new()));
         assert!(!model.projects[4].tasks.is_empty());
         assert!(build_files(&root, &model).contains(&ws.join("lib/settings.gradle")));
     }

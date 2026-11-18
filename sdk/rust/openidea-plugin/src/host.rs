@@ -150,6 +150,22 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+        let rules: Vec<_> = rules
+            .iter()
+            .map(|r| wit::ui::ConsoleRule {
+                pattern: r.pattern.clone(),
+                ignore_case: r.ignore_case,
+                foreground: r.foreground.clone(),
+                background: r.background.clone(),
+                styles: r.styles.clone(),
+                whole_line: r.whole_line,
+                enabled: r.enabled,
+            })
+            .collect();
+        wit::ui::set_console_rules(&rules).map_err(error)
+    }
+
     pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
         let value = match value {
             ContextValue::Flag(b) => wit::ui::ContextValue::Flag(b),
@@ -1602,6 +1618,16 @@ pub fn set_status_item(id: &str, item: &StatusItem) {
 
 pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
+}
+
+/// Replaces the plugin's console highlight rules (API 1.12); an empty list removes them.
+/// Every window applies them to the stdout and stderr lines of its Run and Debug consoles;
+/// the plugin never sees the output. The first enabled whole-line rule that matches styles
+/// the line instead of its log level colour; match-only rules style their matches on top, an
+/// earlier rule winning where they overlap. At most 100 rules; an invalid one fails the call
+/// and keeps the previous rules. They go away when the plugin stops. Needs no capability.
+pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+    imp::set_console_rules(rules)
 }
 
 /// Sets the plugin's context key that `when` clauses test as `plugin.<id>.<key>`, in

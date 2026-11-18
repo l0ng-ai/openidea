@@ -56,7 +56,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.11";
+pub const API_VERSION: &str = "1.12";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -390,6 +390,11 @@ pub trait HostApi: Send + Sync {
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
         let _ = (client, id, item);
         Err(HostError::Invalid("window status unavailable".into()))
+    }
+    /// Replaces the plugin's console highlight rules (API 1.12); empty removes them.
+    fn console_rules(&self, rules: Vec<crate::ConsoleRule>) -> Result<(), HostError> {
+        let _ = rules;
+        Err(HostError::Failed("console rules unavailable".into()))
     }
     /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
     /// for window `client` (every window if `None`).

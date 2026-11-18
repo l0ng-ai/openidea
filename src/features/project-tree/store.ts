@@ -10,6 +10,9 @@ import { commands, type FileEntry, type OutlineItem } from "@/bindings";
 import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
 import { libraryEntryPaths } from "@/platform/virtualDocs";
+import { isIgnoredName } from "@/platform/ignoredNames";
+import { tx } from "@/platform/i18n";
+import { notifications } from "@/workbench/contributions";
 import { ipcPath } from "@/platform/paths";
 import {
   DEFAULT_TREE_OPTIONS,
@@ -81,7 +84,7 @@ function storedOptions(): ViewOptions {
 }
 
 /** IDEA's Project view panes ("Project ▾" in the tool window header). */
-export type ViewMode = "unity" | "project" | "projectFiles" | "openFiles" | "changedFiles" | "scratches";
+export type ViewMode = "unity" | "project" | "projectFiles" | "openFiles" | "changedFiles" | "scratches" | "scope";
 
 export const VIEW_MODES: ReadonlyArray<[ViewMode, string]> = [
   ["unity", "Unity"],
@@ -93,7 +96,7 @@ export const VIEW_MODES: ReadonlyArray<[ViewMode, string]> = [
 ];
 
 /** Modes listing just some files (expanded as they appear). */
-export const isFilteredMode = (mode: ViewMode) => mode === "openFiles" || mode === "changedFiles";
+export const isFilteredMode = (mode: ViewMode) => mode === "openFiles" || mode === "changedFiles" || mode === "scope";
 
 export type Editing =
   | { kind: "new"; parent: string; nodeKind: "file" | "dir"; pkg?: PackageKind }
@@ -122,7 +125,8 @@ interface ProjectTreeState {
   editing: Editing | null;
   clipboard: Clipboard | null;
   /** A path to select (and scroll to) once its row is visible. */
-  revealRequest: { path: string; focus: boolean; seq: number } | null;
+  /** `explain`: say which view option hides the path when only an ancestor can be selected. */
+  revealRequest: { path: string; focus: boolean; seq: number; explain?: boolean } | null;
   /** Folder key highlighted as drop target. */
   dropTarget: string | null;
   mode: ViewMode;
@@ -130,12 +134,17 @@ interface ProjectTreeState {
   openFiles: readonly string[];
   /** Files with VCS changes (All Changed Files mode). */
   changedFiles: readonly string[];
+  /** The user scope a "scope" pane shows (Settings › Scopes), by name. */
+  scope: string | null;
+  /** The files of `scope`. */
+  scopeFiles: readonly string[];
   /** Loaded document outlines per file path, for the "Show Members" rows (empty for unsupported files). */
   outlines: ReadonlyMap<string, readonly OutlineItem[]>;
 }
 
 const OPTIONS_KEY = "openidea.projectTree.options";
 const MODE_KEY = "openidea.projectTree.mode";
+const SCOPE_KEY = "openidea.projectTree.scope";
 const expandedKey = (root: string) => `openidea.projectTree.expanded:${root}`;
 const MAX_PERSISTED = 3000;
 
@@ -174,11 +183,14 @@ export const useProjectTree = create<ProjectTreeState>(() => ({
   mode: readMode(),
   openFiles: [],
   changedFiles: [],
+  scope: readJson<string>(SCOPE_KEY),
+  scopeFiles: [],
   outlines: new Map(),
 }));
 
 function readMode(): ViewMode {
   const m = readJson<string>(MODE_KEY);
+  if (m === "scope" && readJson<string>(SCOPE_KEY)) return "scope";
   return VIEW_MODES.find(([id]) => id === m)?.[0] ?? "project";
 }
 
@@ -206,7 +218,13 @@ let memo: {
 const EMPTY_MODEL: TreeModel = { roots: [], children: new Map(), byKey: new Map(), keyOfPath: new Map() };
 
 const filesOf = (s: ProjectTreeState) =>
-  s.mode === "openFiles" ? s.openFiles : s.mode === "changedFiles" ? s.changedFiles : null;
+  s.mode === "openFiles"
+    ? s.openFiles
+    : s.mode === "changedFiles"
+      ? s.changedFiles
+      : s.mode === "scope"
+        ? s.scopeFiles
+        : null;
 
 function treeOptions(s: ProjectTreeState): TreeOptions {
   return s.mode === "unity" && s.unity && s.root ? { ...s.options, compact: false, unityRoot: s.root } : s.options;
@@ -418,6 +436,25 @@ export function autoExpand(model: TreeModel) {
 export function setOpenFiles(paths: readonly string[]) {
   const prev = get().openFiles;
   if (prev.length !== paths.length || prev.some((p, i) => p !== paths[i])) set({ openFiles: [...paths] });
+}
+
+/** Shows the user scope `name` as a pane of the Project view (IDEA's scope views). */
+export function setScopeView(name: string) {
+  const s = get();
+  if (s.mode === "scope" && s.scope === name) return;
+  writeJson(SCOPE_KEY, name);
+  if (s.mode === "scope") {
+    autoExpanded.clear();
+    set({ scope: name, scopeFiles: [], expanded: new Set(), selected: new Set(), lead: null, editing: null });
+    return;
+  }
+  set({ scope: name, scopeFiles: [] });
+  setViewMode("scope");
+}
+
+export function setScopeFiles(paths: readonly string[]) {
+  const prev = get().scopeFiles;
+  if (prev.length !== paths.length || prev.some((p, i) => p !== paths[i])) set({ scopeFiles: [...paths] });
 }
 
 export function setChangedFiles(paths: readonly string[]) {
@@ -635,7 +672,7 @@ export function dropOutlines(paths: readonly string[]) {
 let revealSeq = 0;
 
 /** Expands the ancestors of `path` and selects it once visible. */
-export function revealPath(requested: string, focus = false) {
+export function revealPath(requested: string, focus = false, explain = false) {
   const { expanded } = get();
   const project = get().root;
   if (!project) return false;
@@ -668,7 +705,7 @@ export function revealPath(requested: string, focus = false) {
       changed = true;
     }
   if (changed) setExpanded(next);
-  set({ revealRequest: { path, focus, seq: ++revealSeq } });
+  set({ revealRequest: { path, focus, seq: ++revealSeq, ...(explain ? { explain } : {}) } });
   for (const a of folders) void loadDir(a);
   return true;
 }
@@ -732,6 +769,45 @@ function groupAncestors(model: TreeModel, key: string): string[] {
     out.unshift(parent);
     child = parent;
   }
+}
+
+/**
+ * The view option that hides `path` below its shown ancestor `shown`: a hidden name
+ * (Show Hidden Files) or an ignored entry (Show Excluded Files). Null when no option does.
+ */
+export function hidingOption(path: string, shown: string): "showHidden" | "showExcluded" | null {
+  const { listings, options } = get();
+  if (!isSameOrInside(path, shown) || path === shown) return null;
+  let dir = shown;
+  for (const name of path.slice(shown.length + 1).split("/")) {
+    if (isIgnoredName(name)) return options.showHidden ? null : "showHidden";
+    if (listings.get(dir)?.find((e) => e.name === name)?.ignored) return options.showExcluded ? null : "showExcluded";
+    dir = `${dir}/${name}`;
+  }
+  return null;
+}
+
+const OPTION_TITLES = { showHidden: "Show Hidden Files", showExcluded: "Show Excluded Files" } as const;
+
+/** Select Opened File reached only `shown`: say which option hides `path`, offering to turn it on. */
+export function explainHiddenPath(path: string, shown: string) {
+  const option = hidingOption(path, shown);
+  if (!option) return;
+  const title = OPTION_TITLES[option];
+  notifications().notify({
+    level: "info",
+    key: "project.hiddenPath",
+    title: tx`${nameOf(path)} is hidden because ${title} is off`,
+    actions: [
+      {
+        label: tx(title),
+        run: () => {
+          setViewOption(option, true);
+          revealPath(path, true);
+        },
+      },
+    ],
+  });
 }
 
 export function clearRevealRequest(seq: number) {

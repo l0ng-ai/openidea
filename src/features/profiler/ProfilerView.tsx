@@ -3,12 +3,12 @@
  * (click to zoom, search highlights), the call tree (top-down) and the method
  * list (self / total). Double-click opens a frame's source when known.
  */
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { Profile } from "@/platform/ipc";
 import { EmptyState, Icon, IconButton, Input, Tabs, Tree, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { colorSlot, flameLayout, formatWeight, frameLocation, matchingFrames, share } from "./model";
+import { colorSlot, flameLayout, flameStep, formatWeight, frameLocation, matchingFrames, share } from "./model";
 import { activeSnapshot, closeSnapshot, useProfiler, type ProfilerTab } from "./store";
 import styles from "./Profiler.module.css";
 import { useTx } from "@/platform/i18n";
@@ -96,6 +96,28 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
     return () => ro.disconnect();
   }, []);
   const layout = useMemo(() => flameLayout(profile, focus, width > 0 ? 1 / width : 0.002), [profile, focus, width]);
+  // The frame the keyboard is on: arrows move it, Enter zooms into it, F4 opens its source.
+  const [current, setCurrent] = useState(0);
+  const shown = layout.rects.some((r) => r.node === current) ? current : focus;
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const moves: Record<string, Parameters<typeof flameStep>[2]> = {
+      ArrowUp: "deeper",
+      ArrowDown: "shallower",
+      ArrowLeft: "previous",
+      ArrowRight: "next",
+    };
+    const move = moves[e.key];
+    if (move) setCurrent(flameStep(layout.rects, shown, move));
+    else if (e.key === "Enter") setFocus(shown);
+    else if (e.key === "Escape" && focus !== 0) setFocus(0);
+    else if (e.key === "F4") openFrame(profile, profile.nodes[shown]!.frame);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  useEffect(() => {
+    ref.current?.querySelector(`[data-node="${shown}"]`)?.scrollIntoView?.({ block: "nearest" });
+  }, [shown]);
   const matches = useMemo(() => matchingFrames(profile, query), [profile, query]);
   const unit = profile.unit;
   const total = profile.total ?? 0;
@@ -109,7 +131,15 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
         </div>
       )}
       <div className={styles.flameScroll} ref={ref}>
-        <div className={styles.flame} style={{ height: layout.depth * ROW }} role="tree" aria-label={tx("Flame graph")}>
+        <div
+          className={styles.flame}
+          style={{ height: layout.depth * ROW }}
+          role="tree"
+          aria-label={tx("Flame graph")}
+          tabIndex={0}
+          aria-activedescendant={`flame-frame-${shown}`}
+          onKeyDown={onKeyDown}
+        >
           {width > 0 &&
             layout.rects.map((r) => {
               const node = profile.nodes[r.node]!;
@@ -120,17 +150,24 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
               return (
                 <div
                   key={r.node}
+                  id={`flame-frame-${r.node}`}
+                  data-node={r.node}
                   role="treeitem"
                   aria-label={label}
+                  aria-selected={r.node === shown}
                   className={clsx(
                     styles.frame,
+                    r.node === shown && styles.current,
                     styles[`c${colorSlot(frame.name)}`],
                     frame.kind === "allocatedType" && styles.typeFrame,
                     matches && (matches.has(node.frame) ? styles.match : styles.dim),
                   )}
                   style={{ left: r.x * width, width: Math.max(w - 1, 1), bottom: r.depth * ROW }}
                   title={`${frame.kind === "allocatedType" ? `${tx("Allocated type")}\n` : ""}${frame.name}${location ? ` (${location})` : ""}\nTotal: ${formatWeight(node.total ?? 0, unit)} (${share(node.total ?? 0, total)})\nSelf: ${formatWeight(node.selfWeight ?? 0, unit)}`}
-                  onClick={() => setFocus(r.node)}
+                  onClick={() => {
+                    setCurrent(r.node);
+                    setFocus(r.node);
+                  }}
                   onDoubleClick={() => openFrame(profile, node.frame)}
                 >
                   {w > 28 && <span className={styles.frameText}>{label}</span>}

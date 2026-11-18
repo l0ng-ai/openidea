@@ -11,6 +11,7 @@ const PROVIDER: &str = "catalog-test";
 
 #[derive(Debug)]
 struct Pending {
+    launch: usize,
     method: String,
     params: Value,
     reply: oneshot::Sender<Result<Value, String>>,
@@ -44,7 +45,7 @@ impl Harness {
             let launches = launches.clone();
             let live = live.clone();
             move |_, _, client, _| {
-                launches.fetch_add(1, Ordering::SeqCst);
+                let launch = launches.fetch_add(1, Ordering::SeqCst);
                 live.fetch_add(1, Ordering::SeqCst);
                 let guard = Live(live.clone());
                 let pending = pending_tx.clone();
@@ -75,10 +76,17 @@ impl Harness {
                         }
                         let response = match request["method"].as_str().unwrap() {
                             "initialize" => json!({ "id": id, "jsonrpc": "2.0", "result": initialize }),
-                            "session/new" | "session/set_config_option" | "session/set_model" => {
+                            "session/new"
+                            | "session/set_config_option"
+                            | "session/set_model"
+                            | "session/load"
+                            | "session/resume"
+                            | "session/prompt"
+                            | "session/set_mode" => {
                                 let (reply, mut result) = oneshot::channel();
                                 pending
                                     .send(Pending {
+                                        launch,
                                         method: request["method"].as_str().unwrap().to_owned(),
                                         params: request["params"].clone(),
                                         reply,
@@ -288,6 +296,223 @@ async fn a_session_adds_the_efforts_of_a_model_discovery_did_not_read() {
     let fresh = completed(&mut events).await;
     assert_eq!(efforts(&fresh, "first"), ["medium"]);
     assert_eq!(efforts(&fresh, "second"), ["off", "auto"]);
+}
+
+#[tokio::test]
+async fn discovered_model_is_confirmed_by_the_live_session() {
+    switch_chat_model(ChatSwitch::Live).await;
+}
+
+#[tokio::test]
+async fn discovered_model_reloads_the_same_session_on_the_next_message() {
+    switch_chat_model(ChatSwitch::Resume).await;
+}
+
+#[tokio::test]
+async fn discovered_model_leaves_the_original_session_intact_after_resume_failure() {
+    switch_chat_model(ChatSwitch::ResumeFails).await;
+}
+
+#[tokio::test]
+async fn discovered_model_is_reverted_when_the_reloaded_session_does_not_offer_it() {
+    switch_chat_model(ChatSwitch::Unavailable).await;
+}
+
+#[tokio::test]
+async fn discovered_model_can_be_selected_while_the_session_is_not_running() {
+    switch_chat_model(ChatSwitch::Idle).await;
+}
+
+#[derive(Clone, Copy)]
+enum ChatSwitch {
+    Live,
+    Resume,
+    ResumeFails,
+    Unavailable,
+    Idle,
+}
+
+async fn switch_chat_model(scenario: ChatSwitch) {
+    use crate::{AgentPrompt, AgentStatus, Isolation, NewAgentTask};
+
+    let tmp = tempfile::tempdir().unwrap();
+    configure(tmp.path(), "one");
+    let mut harness = Harness::with_initialize(json!({
+        "protocolVersion": 1, "agentCapabilities": { "loadSession": true }
+    }));
+    let mut manager = make_manager(tmp.path(), Arc::default(), &harness);
+    let task = manager
+        .create(NewAgentTask {
+            prompt: AgentPrompt { text: "first".into(), ..Default::default() },
+            provider: PROVIDER.into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let next = harness.next().await;
+    assert_eq!((next.launch, next.method.as_str()), (0, "session/new"));
+    let mut initial = response(&["old"], &["low", "high"]);
+    initial["sessionId"] = json!("saved-chat");
+    initial["modes"] = json!({
+        "currentModeId": "code", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]
+    });
+    next.reply.send(Ok(initial.clone())).unwrap();
+    let next = harness.next().await;
+    assert_eq!(
+        (next.launch, next.method.as_str(), &next.params["sessionId"]),
+        (0, "session/prompt", &json!("saved-chat"))
+    );
+    next.reply.send(Ok(json!({"stopReason": "end_turn"}))).unwrap();
+    wait_for_chat(&manager, &task.id, AgentStatus::Ready).await;
+    {
+        let mode = manager.set_config(&task.id, "mode", "ask".into());
+        tokio::pin!(mode);
+        let set = next_chat_request(&mut harness, mode.as_mut()).await;
+        assert_eq!((set.launch, set.method.as_str()), (0, "session/set_mode"));
+        assert_eq!(set.params, json!({"sessionId": "saved-chat", "modeId": "ask"}));
+        set.reply.send(Ok(json!({}))).unwrap();
+        mode.await.unwrap();
+    }
+    let before_entries = serde_json::to_value(manager.entries(&task.id, None).unwrap()).unwrap();
+    let before_config = manager.task(&task.id).unwrap().state.lock().task.config.clone();
+    if matches!(scenario, ChatSwitch::Idle) {
+        manager.shutdown();
+        manager = make_manager(tmp.path(), Arc::default(), &harness);
+    }
+
+    let mut events = events(&manager);
+    assert!(manager.refresh_models(PROVIDER, false, None).unwrap().refreshing);
+    let next = harness.next().await;
+    assert_eq!((next.launch, next.method.as_str()), (1, "session/new"));
+    next.reply.send(Ok(response(&["new", "old"], &["catalog-only"]))).unwrap();
+    assert_eq!(model_values(&completed(&mut events).await), ["new", "old"]);
+    assert_eq!(manager.task(&task.id).unwrap().state.lock().task.config, before_config);
+
+    let live = matches!(scenario, ChatSwitch::Live);
+    let offline = matches!(scenario, ChatSwitch::Idle);
+    let load_fails = matches!(scenario, ChatSwitch::ResumeFails);
+    let unavailable = matches!(scenario, ChatSwitch::Unavailable);
+    let switching = manager.set_config(&task.id, "model", "new".into());
+    tokio::pin!(switching);
+    if !offline {
+        let next = next_chat_request(&mut harness, switching.as_mut()).await;
+        assert_eq!((next.launch, next.method.as_str()), (0, "session/set_config_option"));
+        assert_eq!(next.params, json!({"sessionId": "saved-chat", "configId": "model", "value": "new"}));
+        if live {
+            next.reply.send(Ok(response(&["new", "old"], &["session-only"]))).unwrap();
+        } else {
+            next.reply.send(Err("not in this process's model list".into())).unwrap();
+        }
+    }
+    // A fallback selection settles without waiting for a new process.
+    tokio::select! {
+        result = &mut switching => result.unwrap(),
+        request = harness.next() => panic!("selection must not open another session: {request:?}"),
+    }
+    assert_eq!(serde_json::to_value(manager.entries(&task.id, None).unwrap()).unwrap(), before_entries);
+    let snapshot = |manager: &AgentManager| manager.subscribe(Arc::new(|_| {})).remove(0);
+    let current = snapshot(&manager);
+    assert_eq!(current.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("new"));
+    assert_eq!(current.model.as_deref(), Some(if live { "new" } else { "old" }));
+
+    manager.prompt(&task.id, AgentPrompt { text: "next".into(), ..Default::default() }, false).await.unwrap();
+    if !live {
+        let load = harness.next().await;
+        assert_eq!((load.launch, load.method.as_str()), (2, "session/load"));
+        assert_eq!(load.params["sessionId"], "saved-chat");
+        load.notifications
+            .send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "saved-chat",
+                "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "replay"}}
+            }}))
+            .unwrap();
+        if load_fails {
+            load.notifications
+                .send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": "saved-chat",
+                    "update": {"sessionUpdate": "config_option_update",
+                        "configOptions": response(&["other", "old"], &["low"])["configOptions"]}
+                }}))
+                .unwrap();
+            load.reply.send(Err("cannot resume saved-chat".into())).unwrap();
+        } else {
+            let models: &[&str] = if unavailable { &["old"] } else { &["old", "new"] };
+            let mut resumed = response(models, &["low", "high"]);
+            resumed["modes"] = initial["modes"].clone();
+            load.reply.send(Ok(resumed)).unwrap();
+        }
+        if load_fails || unavailable {
+            wait_for_chat(&manager, &task.id, AgentStatus::Failed).await;
+            let task = snapshot(&manager);
+            assert_eq!(task.model.as_deref(), Some("old"));
+            assert_eq!(task.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("old"));
+            let expected = if load_fails { "cannot resume saved-chat" } else { "does not offer model new" };
+            assert!(task.error.as_deref().unwrap().contains(expected), "{:?}", task.error);
+            assert!(harness.pending.try_recv().is_err(), "must not send on the previous model or create a session");
+            if load_fails {
+                manager
+                    .prompt(&task.id, AgentPrompt { text: "retry".into(), ..Default::default() }, false)
+                    .await
+                    .unwrap();
+                let retry = harness.next().await;
+                assert_eq!((retry.launch, retry.method.as_str()), (3, "session/load"));
+                assert_eq!(retry.params["sessionId"], "saved-chat");
+                retry.reply.send(Ok(initial.clone())).unwrap();
+                let set = harness.next().await;
+                assert_eq!(set.method, "session/set_mode");
+                set.reply.send(Ok(json!({}))).unwrap();
+                let prompt = harness.next().await;
+                assert_eq!(prompt.method, "session/prompt");
+                assert_eq!(prompt.params["sessionId"], "saved-chat");
+                prompt.reply.send(Ok(json!({"stopReason": "end_turn"}))).unwrap();
+                wait_for_chat(&manager, &task.id, AgentStatus::Ready).await;
+            }
+            manager.shutdown();
+            return;
+        }
+        let set = harness.next().await;
+        assert_eq!((set.launch, set.method.as_str()), (2, "session/set_config_option"));
+        assert_eq!(set.params, json!({"sessionId": "saved-chat", "configId": "model", "value": "new"}));
+        set.reply.send(Ok(response(&["new", "old"], &["session-only"]))).unwrap();
+        let set = harness.next().await;
+        assert_eq!((set.launch, set.method.as_str()), (2, "session/set_mode"));
+        assert_eq!(set.params, json!({"sessionId": "saved-chat", "modeId": "ask"}));
+        set.reply.send(Ok(json!({}))).unwrap();
+    }
+    let next = harness.next().await;
+    assert_eq!(
+        (next.launch, next.method.as_str(), &next.params["sessionId"]),
+        (if live { 0 } else { 2 }, "session/prompt", &json!("saved-chat"))
+    );
+    next.reply.send(Ok(json!({"stopReason": "end_turn"}))).unwrap();
+    wait_for_chat(&manager, &task.id, AgentStatus::Ready).await;
+    let current = snapshot(&manager);
+    assert_eq!(current.model.as_deref(), Some("new"));
+    assert_eq!(current.config.iter().find(|o| o.id == "effort").unwrap().current.as_deref(), Some("session-only"));
+    assert_eq!(current.config.iter().find(|o| o.id == "mode").unwrap().current.as_deref(), Some("ask"));
+    manager.shutdown();
+}
+
+async fn wait_for_chat(manager: &AgentManager, id: &str, status: crate::AgentStatus) {
+    let task = manager.task(id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while task.state.lock().task.status != status || task.state.lock().busy {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn next_chat_request(
+    harness: &mut Harness,
+    switching: std::pin::Pin<&mut impl Future<Output = crate::IdeResult<()>>>,
+) -> Pending {
+    tokio::select! {
+        result = switching => panic!("model switching ended before contacting the session: {result:?}"),
+        request = harness.next() => request,
+    }
 }
 
 #[tokio::test]

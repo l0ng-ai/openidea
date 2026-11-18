@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderMath } from "@/editor/lsp/markdownMath";
 import {
   createMarkdownRenderer,
   frontMatter,
@@ -280,6 +281,17 @@ describe("markdown preview rendering", () => {
     expect(previewLineAtOffset(blocks, 5000)).toBe(20);
     expect(previewLineAtOffset([], 50)).toBe(0);
   });
+
+  it("renders LaTeX math blocks with source lines and inline math", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown("# Heading\n\n$$\nx^2 + y^2 = z^2\n$$\n\nInline $a_1 + b_2$.\n");
+    expect(root.querySelectorAll("[data-math]")).toHaveLength(2);
+    renderMath(root);
+    const lines = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((e) => e.dataset.line);
+    expect(lines).toEqual(["0", "2", "6"]);
+    expect(root.querySelector(".katex-display")).not.toBeNull();
+    expect(root.querySelectorAll(".katex")).toHaveLength(2);
+  });
 });
 
 describe("markdown preview re-rendering", () => {
@@ -300,6 +312,8 @@ describe("markdown preview re-rendering", () => {
     "| a | b |\n|---|---|\n| 1 | <b>2</b> |",
     '<span is="x-span">custom</span> and <body class="x"> and </body> text',
     "> quote\n> more",
+    "$$\nx^2 + y^2 = z^2\n$$",
+    "Inline $a_1 + b_2$ math.",
     "Last paragraph.",
   ];
   const doc = (parts: readonly string[]) => parts.join("\n\n") + "\n";

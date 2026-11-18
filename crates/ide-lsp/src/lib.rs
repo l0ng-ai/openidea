@@ -26,6 +26,7 @@ mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod maven_placeholder;
 mod message_requests;
 mod notebook;
 mod phoxite;
@@ -3057,7 +3058,12 @@ impl LspManager {
         for s in servers {
             let Some(run) = s.running() else { continue };
             let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            // jdtls owns its annotation-processor output; javac's copy of those files is not an edit.
+            let jdtls = s.name == "jdtls";
             let send = |p: &PathBuf, change: Change| {
+                if jdtls && jdtls::is_processor_output(p) {
+                    return false;
+                }
                 change == Change::Deleted
                     || !open
                         .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))

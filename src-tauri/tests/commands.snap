@@ -42,6 +42,7 @@ agent_set_command                            trusted            project_host bin
 agent_set_config                             trusted            project_host bindings async
 agent_set_env                                trusted            project_host bindings sync
 agent_set_mcp_overrides                      always             project_host bindings sync
+agent_shell                                  trusted            project_host bindings async
 agent_stop_background                        always             project_host bindings async
 agent_subscribe                              always             project_host bindings sync
 agent_unarchive                              always             project_host bindings sync
@@ -93,10 +94,12 @@ db_connect                                   trusted            project_host bin
 db_connected                                 trusted            project_host bindings sync
 db_console_path                              always             project_host bindings sync
 db_consoles                                  always             project_host bindings sync
+db_create_database                           trusted            project_host bindings async
 db_database_catalog                          trusted            project_host bindings async
 db_databases                                 trusted            project_host bindings async
 db_ddl                                       trusted            project_host bindings async
 db_disconnect                                trusted            project_host bindings async
+db_drop_database                             trusted            project_host bindings async
 db_dump_info                                 trusted            desktop      bindings async
 db_execute                                   trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async
@@ -246,6 +249,7 @@ fs_create_dir                                always             project_host bin
 fs_create_file                               always             project_host bindings sync
 fs_create_file_bytes                         always             project_host bindings async
 fs_delete                                    always             project_host bindings async
+fs_delete_with_undo                          always             project_host bindings async
 fs_entry_kind                                always             project_host bindings async
 fs_open_with_system                          always             desktop      bindings async
 fs_probe                                     always             project_host bindings async
@@ -256,6 +260,7 @@ fs_read_text                                 always             project_host bin
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
 fs_set_writable                              always             project_host bindings sync
+fs_undo_delete                               always             project_host bindings async
 gh_account_repos                             trusted            desktop      bindings async
 gh_api                                       trusted            desktop      bindings async
 gh_availability                              trusted            desktop      bindings async
@@ -399,6 +404,7 @@ plugin_catalog                               always             desktop      bin
 plugin_choose_program                        outside_restricted project_host bindings async
 plugin_color_presentations                   trusted            project_host bindings async
 plugin_commit_checks                         trusted            project_host bindings async
+plugin_console_rules                         trusted            project_host bindings sync
 plugin_content_tab_action                    trusted            project_host bindings sync
 plugin_context_keys                          trusted            project_host bindings sync
 plugin_debug_attach_target                   trusted            project_host bindings async
@@ -536,6 +542,7 @@ scaffold_catalog                             always             project_host bin
 scaffold_create                              always             project_host bindings async
 scaffold_options                             always             project_host bindings async
 scaffold_requirements                        always             project_host bindings async
+scope_files                                  always             project_host bindings async
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   outside_restricted project_host bindings async
@@ -627,6 +634,7 @@ vcs_create_tag                               trusted            project_host bin
 vcs_delete_branch                            trusted            project_host bindings async
 vcs_delete_tag                               trusted            project_host bindings async
 vcs_detected_git                             always             project_host bindings sync
+vcs_detected_roots                           always             project_host bindings async
 vcs_diff_hunks                               always             project_host bindings async
 vcs_diff_numstat                             always             project_host bindings async
 vcs_diff_revisions                           always             project_host bindings async
@@ -667,6 +675,7 @@ vcs_revision_children                        always             project_host bin
 vcs_revision_files                           always             project_host bindings async
 vcs_reword                                   trusted            project_host bindings async
 vcs_roots                                    always             project_host bindings sync
+vcs_set_user_identity                        trusted            project_host bindings async
 vcs_shelf_delete                             trusted            project_host bindings async
 vcs_shelf_diff                               trusted            project_host bindings async
 vcs_shelf_import                             trusted            project_host bindings async
@@ -719,9 +728,11 @@ window_open_project                          always             desktop      bin
 window_open_projects                         always             desktop      bindings sync
 window_open_remote                           always             desktop      bindings async
 window_open_settings                         always             desktop      bindings async
+window_set_smooth_scrolling                  always             desktop      bindings sync
 window_set_titlebar_height                   always             desktop      bindings sync
 window_start_drag                            always             desktop      bindings sync
 window_take_launch                           always             desktop      bindings sync
+window_take_settings_init                    always             desktop      bindings sync
 window_toggle_fullscreen                     always             desktop      bindings sync
 window_toggle_zoom                           always             desktop      bindings sync
 workspace_attach                             always             desktop      bindings async

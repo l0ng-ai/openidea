@@ -224,6 +224,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                 modelRefresh={
                   provider?.installed
                     ? {
+                        draft: true,
                         refreshing: requestingModels || (catalog?.refreshing ?? false),
                         loadingSettings: unknownModelSettings && (requestingModels || (catalog?.refreshing ?? false)),
                         retryAtMs:
@@ -231,7 +232,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                             ? (catalog?.retryAtMs ?? null)
                             : null,
                         error: !requestingModels && currentModelRequest ? (catalog?.error ?? null) : null,
-                        onRefresh: () => void executeAction("agents.refreshModels"),
+                        onRefresh: () => void executeAction("agents.refreshModels", null),
                       }
                     : undefined
                 }

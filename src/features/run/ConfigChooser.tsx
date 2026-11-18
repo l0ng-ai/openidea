@@ -36,6 +36,7 @@ import {
 import { selectedTarget } from "./sessionTargets";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { confirm } from "@/workbench/messages";
 
 type Row =
   /** A labelled group, or a thin separator when `label` is empty. */
@@ -111,6 +112,16 @@ function anchorElement(): Element | { x: number; y: number } {
 }
 
 /** Run/Debug configuration chooser popup (⌃⌥R), anchored to the title bar widget. */
+/** Deletes a configuration from the chooser once the user confirms, as IDEA's popup asks first. */
+async function askDeleteConfig(config: RunConfig) {
+  const ok = await confirm({
+    title: "Confirmation",
+    message: tx`Are you sure you want to delete ${config.name}?`,
+    ok: "Delete",
+  });
+  if (ok) await deleteConfig(config.id);
+}
+
 export function ConfigChooserOverlay() {
   const open = useRun((s) => s.chooserOpen);
   if (!open) return null;
@@ -250,10 +261,11 @@ function ConfigChooser() {
       e.key === "Delete" &&
       row?.type === "config" &&
       canDeleteConfig(row.config.id) &&
-      input().selectionStart === query.length
+      input().selectionStart === query.length &&
+      input().selectionEnd === query.length
     ) {
       e.preventDefault();
-      void deleteConfig(row.config.id);
+      void askDeleteConfig(row.config);
       return;
     }
     if (numbers.size && !e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$|^Numpad[1-9]$/.test(e.code)) {
@@ -286,7 +298,7 @@ function ConfigChooser() {
       { kind: "header", label: "Configuration" },
       { label: "Edit…", icon: "edit", run: () => activate(row, "edit") },
       { label: pinned.includes(c.id) ? "Unpin" : "Pin", icon: "pin", run: () => togglePinned(c.id) },
-      ...(canDeleteConfig(c.id) ? [{ label: "Delete", danger: true, run: () => void deleteConfig(c.id) }] : []),
+      ...(canDeleteConfig(c.id) ? [{ label: "Delete", danger: true, run: () => void askDeleteConfig(c) }] : []),
     ];
   };
   const openMenu = (c: RunConfig, at: Element) => setMenu({ name: c.name, anchor: at, items: menuItems(c) });

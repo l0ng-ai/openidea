@@ -574,7 +574,7 @@ export function Grid(props: GridProps) {
   const startResize = (e: MouseEvent, col: number) => {
     e.preventDefault();
     e.stopPropagation();
-    const releaseCursor = lockDragCursor("ew-resize");
+    const releaseCursor = lockDragCursor("col-resize");
     const startX = e.clientX;
     const start = widths[col] ?? 100;
     const move = (ev: globalThis.MouseEvent) => {

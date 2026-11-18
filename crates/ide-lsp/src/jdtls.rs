@@ -23,6 +23,7 @@ pub(crate) mod configuration;
 mod extract_interface;
 mod formatter;
 mod generated;
+pub(crate) use generated::is_processor_output;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
 mod move_refactoring;

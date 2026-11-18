@@ -10,8 +10,6 @@ import { BUILTIN_SCOPES, scopeError, validateScopes, type NamedScope } from "@/p
 import { IconButton, Input, T, type SelectOption } from "@/ui";
 import { ColorSwatches, Row, Section, Select } from "../components/Form";
 import { useSetting } from "../components/context";
-import { APPEARANCE_GROUP } from "./behavior";
-import type { PageSpec } from "./spec";
 import styles from "./Workflow.module.css";
 import own from "./Scopes.module.css";
 
@@ -73,7 +71,7 @@ function errorText(error: { message: string; at: number }): string {
   return tx`${message} at column ${column}`;
 }
 
-function ScopesEditor() {
+export function ScopesEditor() {
   const [raw, setRaw] = useSetting<unknown>("scopes");
   const scopes = validateScopes(raw);
   const [selected, setSelected] = useState(0);
@@ -182,7 +180,7 @@ const COLOR_LABELS: Record<string, string> = {
 
 const colorLabel = (color: string) => COLOR_LABELS[color.toLowerCase()] ?? color;
 
-function FileColorsEditor() {
+export function FileColorsEditor() {
   const [raw, setRaw] = useSetting<unknown>("fileColors");
   const [rawScopes] = useSetting<unknown>("scopes");
   const settings = validateFileColors(raw);
@@ -266,48 +264,3 @@ function FileColorsEditor() {
     </div>
   );
 }
-
-export const SCOPE_PAGES: PageSpec[] = [
-  {
-    id: "fileColors",
-    title: "File Colors",
-    group: APPEARANCE_GROUP,
-    order: 1.5,
-    projectScope: true,
-    defaultScope: "project",
-    keywords: ["colour", "color", "tab", "background", "tests", "non-project"],
-    sections: [
-      {
-        options: [
-          { kind: "toggle", key: "fileColors.enabled", label: "Enable file colors" },
-          { kind: "toggle", key: "fileColors.editorTabs", label: "Use in editor tabs" },
-          { kind: "toggle", key: "fileColors.projectView", label: "Use in project view" },
-        ],
-      },
-      {
-        options: [
-          {
-            kind: "custom",
-            label: "File Colors",
-            keywords: ["Scope", "Color", "Custom", "Hex value"],
-            component: FileColorsEditor,
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "scopes",
-    title: "Scopes",
-    group: APPEARANCE_GROUP,
-    order: 1.6,
-    projectScope: true,
-    defaultScope: "project",
-    keywords: ["scope", "file set", "pattern"],
-    sections: [
-      {
-        options: [{ kind: "custom", label: "Scopes", keywords: ["Name", "Pattern"], component: ScopesEditor }],
-      },
-    ],
-  },
-];

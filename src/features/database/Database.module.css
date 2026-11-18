@@ -67,7 +67,7 @@
   right: -3px;
   width: 6px;
   height: 100%;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .rowNumber {
   display: flex;
@@ -369,6 +369,9 @@
 .formHint {
   font-size: var(--fs-small);
   color: var(--fg-muted);
+}
+.formFull {
+  grid-column: 1 / -1;
 }
 .paramInput {
   font-family: var(--openidea-editor-font, var(--font-mono));

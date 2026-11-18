@@ -1,4 +1,5 @@
 /** POSIX path helpers for backend paths (the backend always reports `/`-separated absolute paths). */
+import { tx } from "@/platform/i18n";
 import { isSameOrInside } from "@/platform/paths";
 export { isSameOrInside } from "@/platform/paths";
 
@@ -79,7 +80,7 @@ export interface ValidateOptions {
   current?: string;
   /** Compare names case-insensitively (macOS / Windows default file systems). */
   caseInsensitive?: boolean;
-  /** Windows' reserved characters are rejected. */
+  /** Apply Windows naming rules. */
   windows?: boolean;
 }
 
@@ -99,6 +100,8 @@ export function validateName(raw: string, opts: ValidateOptions): NameCheck {
     if (seg === "." || seg === "..") return { error: `'${seg}' is not a valid name` };
     if (opts.windows && (WINDOWS_INVALID.test(seg) || WINDOWS_RESERVED.test(seg)))
       return { error: `'${seg}' is not a valid file name` };
+    if (opts.windows && (seg.endsWith(".") || seg.endsWith(" ")))
+      return { error: tx("Windows file and folder names cannot end with a period or space") };
     if (seg.length > 255) return { error: "Name is too long" };
   }
   const fold = (s: string) => (opts.caseInsensitive ? s.toLowerCase() : s);

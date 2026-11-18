@@ -1,5 +1,6 @@
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
-import { registerActions } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled, registerActions } from "@/platform/actions";
+import { getContext } from "@/platform/context";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
@@ -698,6 +699,33 @@ describe("Set NULL / Set DEFAULT (issue #2331, phase 1)", () => {
     { name: "b", type: "int", nullable: false },
     { name: "c", type: "text", default: "now()" },
   ];
+
+  it("keeps the invoking grid available to a popup using its captured focus context", async () => {
+    const onEdit = vi.fn();
+    render(
+      <>
+        <Grid columns={[columns[0]!]} rowCount={1} value={() => "old"} editable onEdit={onEdit} />
+        <div role="dialog">
+          <input aria-label="Action query" />
+        </div>
+        <button>Outside the grid</button>
+      </>,
+    );
+    fireEvent.mouseDown(screen.getByRole("gridcell"), { button: 0 });
+    const source = { ...getContext() };
+    const action = getAction("db.setCellNull")!;
+    expect(isActionEnabled(action, source)).toBe(true);
+
+    act(() => screen.getByLabelText("Action query").focus());
+    expect(isActionEnabled(action)).toBe(false);
+    expect(isActionEnabled(action, source)).toBe(true);
+    act(() => screen.getByRole("grid").focus());
+    await act(() => executeAction(action.id));
+    expect(onEdit).toHaveBeenCalledWith(0, 0, null);
+
+    act(() => screen.getByRole("button", { name: "Outside the grid" }).focus());
+    expect(isActionEnabled(action, source)).toBe(false);
+  });
 
   it("sets NULL on the selection from the context menu and ⌘⌫, skipping NOT NULL columns", async () => {
     const onEdit = vi.fn();

@@ -179,17 +179,17 @@
 .undocked[data-slot^="left"] > .undockEdge {
   inset: 0 0 0 auto;
   width: var(--island-gap);
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .undocked[data-slot^="right"] > .undockEdge {
   inset: 0 auto 0 0;
   width: var(--island-gap);
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .undocked[data-slot^="bottom"] > .undockEdge {
   inset: 0 0 auto;
   height: var(--island-gap);
-  cursor: ns-resize;
+  cursor: row-resize;
 }
 .undockEdge:focus-visible {
   background: color-mix(in srgb, var(--accent) 45%, transparent);
@@ -210,10 +210,10 @@
   grid-area: gap-bottom;
 }
 .gap[aria-orientation="vertical"] {
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .gap[aria-orientation="horizontal"] {
-  cursor: ns-resize;
+  cursor: row-resize;
 }
 /* A slightly wider hit area than the gap itself. */
 .gap::before {
@@ -286,7 +286,7 @@
   flex: none;
   width: 0;
   outline: none;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .stripeHandle::before {
   content: "";

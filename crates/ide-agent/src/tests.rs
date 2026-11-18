@@ -59,6 +59,8 @@ struct FakeAgent {
     session_steering: bool,
     /// Records the `mcpServers` array passed to `session/new`, `session/load`, and `session/fork`.
     mcp_calls: Mutex<Vec<(String, Vec<String>)>>,
+    /// The content blocks of each `session/prompt`.
+    prompts: Mutex<Vec<Value>>,
 }
 
 impl FakeAgent {
@@ -247,7 +249,17 @@ impl Handler for FakeAgent {
                 Ok(json!({}))
             }
             "session/prompt" => {
-                let text = params.pointer("/prompt/0/text").and_then(Value::as_str).unwrap_or_default().to_owned();
+                self.prompts.lock().push(params.get("prompt").cloned().unwrap_or(Value::Null));
+                // `!` commands run since the last message come first; the message follows.
+                let first = match params.pointer("/prompt/0/text").and_then(Value::as_str) {
+                    Some(t) if t.starts_with("<bash-input>") => 1,
+                    _ => 0,
+                };
+                let text = params
+                    .pointer(&format!("/prompt/{first}/text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
                 if text.starts_with("<send_user_message_question_reply>") {
                     self.say(&session, "answer received");
                     return Ok(json!({"stopReason": "end_turn"}));
@@ -1359,6 +1371,53 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     assert_eq!(queued.len(), 1);
     assert_eq!(mgr.unqueue(&task.id, &queued[0].id).unwrap().prompt.text, "later");
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+}
+
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_commands_show_in_the_conversation_and_go_with_the_next_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let turns = agent.prompts.lock().len();
+
+    mgr.run_shell(&task.id, " echo shell-out ", ide_core::CancellationToken::new()).await.unwrap();
+    assert_eq!(agent.prompts.lock().len(), turns, "a `!` command starts no turn");
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let Some(AgentEntry::Tool { title, kind, status, output, .. }) = entries.last() else {
+        panic!("no entry for the command: {entries:?}")
+    };
+    assert_eq!((title.as_str(), kind.as_str(), *status), ("! echo shell-out", "execute", AgentToolStatus::Completed));
+    assert_eq!(output.as_deref(), Some("shell-out"));
+
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert_eq!(
+        sent.pointer("/0/text").and_then(Value::as_str),
+        Some(
+            "<bash-input>echo shell-out</bash-input>\n<bash-stdout>shell-out</bash-stdout><bash-stderr></bash-stderr>"
+        )
+    );
+    assert_eq!(sent.pointer("/1/text").and_then(Value::as_str), Some("again"));
+    // Only once.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert_eq!(sent.pointer("/0/text").and_then(Value::as_str), Some("again"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2852,7 +2911,10 @@ async fn task_project_root_controls_local_and_worktree_repositories() {
         let changes = mgr.changes(&task.id).await.unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path.0, task.cwd.0.join("file.txt"));
-        assert_eq!(mgr.base_text(&task.id, changes[0].path.0.clone()).await.unwrap().as_deref(), Some("original\n"));
+        assert_eq!(
+            mgr.base_text(&task.id, changes[0].path.0.clone(), AgentChangesView::SinceStart).await.unwrap().as_deref(),
+            Some("original\n")
+        );
         let saved = std::fs::read(root.join("store").join(format!("{}.json", task.id))).unwrap();
         assert!(String::from_utf8(saved).unwrap().contains("projectRoot"));
         let mut old = serde_json::to_value(&task).unwrap();
@@ -3636,6 +3698,178 @@ async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
     mgr.changes(id).await.unwrap().into_iter().map(|c| c.rel_path).collect()
 }
 
+/// Waits until the turn asks for permission, runs `work` (what the agent does), then stops it.
+async fn one_turn(mgr: &AgentManager, id: &str, prompt: Option<&str>, work: impl FnOnce()) {
+    if let Some(prompt) = prompt {
+        mgr.prompt(id, text(prompt), false).await.unwrap();
+    }
+    wait_for(mgr, id, AgentStatus::NeedsInput).await;
+    work();
+    mgr.cancel(id, None).unwrap();
+    wait_for(mgr, id, AgentStatus::Ready).await;
+}
+
+async fn turn_changed(mgr: &AgentManager, id: &str) -> Vec<(String, ide_vcs::ChangeKind, u32, u32)> {
+    let changes = mgr.turn_changes(id).await.unwrap();
+    changes.into_iter().map(|c| (c.rel_path, c.kind, c.added, c.removed)).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_last_turn_lists_and_rolls_back_only_its_own_changes() {
+    use ide_vcs::ChangeKind::{Added, Deleted, Modified};
+    for isolation in [Isolation::Local, Isolation::Worktree] {
+        for eol in EOLS {
+            let repo = Checkout::new(eol);
+            repo.write("a.txt", "base\n");
+            repo.write("gone.txt", "base\n");
+            repo.write("mine.txt", "base\n");
+            repo.commit("init");
+            let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+            let task = mgr
+                .create(NewAgentTask {
+                    prompt: text("Hello"),
+                    provider: "claude".into(),
+                    isolation,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let cwd = task.cwd.0.clone();
+            let write = |rel: &str, text: &str| {
+                let text = match eol {
+                    Eol::Lf => text.to_owned(),
+                    Eol::Crlf => text.replace('\n', "\r\n"),
+                };
+                std::fs::write(cwd.join(rel), text).unwrap();
+            };
+            let read = |rel: &str| std::fs::read_to_string(cwd.join(rel)).unwrap().replace("\r\n", "\n");
+            let case = format!("{isolation:?} {eol:?}");
+            assert!(mgr.turn_changes(&task.id).await.unwrap().is_empty(), "{case}: no turn has ended yet");
+
+            one_turn(&mgr, &task.id, None, || {
+                write("a.txt", "base\nturn 1\n");
+                write("one.txt", "one\n");
+            })
+            .await;
+            // The user's own work between the turns belongs to neither.
+            write("mine.txt", "base\nmine\n");
+            one_turn(&mgr, &task.id, Some("more"), || {
+                write("a.txt", "base\nturn 1\nturn 2\n");
+                write("one.txt", "one\ntwo\n");
+                write("two.txt", "two\n");
+                std::fs::remove_file(cwd.join("gone.txt")).unwrap();
+            })
+            .await;
+            // And after the turn.
+            write("later.txt", "mine\n");
+
+            assert_eq!(
+                turn_changed(&mgr, &task.id).await,
+                [
+                    ("a.txt".into(), Modified, 1, 0),
+                    ("gone.txt".into(), Deleted, 0, 1),
+                    ("one.txt".into(), Modified, 1, 0),
+                    ("two.txt".into(), Added, 1, 0),
+                ],
+                "{case}"
+            );
+            let turn_base = |rel: &str| {
+                let path = cwd.join(rel);
+                let mgr = &mgr;
+                let id = task.id.clone();
+                async move {
+                    let text = mgr.base_text(&id, path, AgentChangesView::LastTurn).await.unwrap();
+                    text.map(|t| t.replace("\r\n", "\n"))
+                }
+            };
+            assert_eq!(turn_base("a.txt").await.as_deref(), Some("base\nturn 1\n"), "{case}");
+            assert_eq!(turn_base("gone.txt").await.as_deref(), Some("base\n"), "{case}");
+            assert_eq!(turn_base("two.txt").await, None, "{case}");
+            let whole: Vec<String> = changed(&mgr, &task.id).await;
+            assert!(["a.txt", "one.txt"].iter().all(|f| whole.iter().any(|w| w == f)), "{case}: {whole:?}");
+
+            // One file, then the rest, after a restart: from the copies saved as the turn started.
+            mgr.rollback_changes(&task.id, Some(vec!["one.txt".into()]), AgentChangesView::LastTurn).await.unwrap();
+            assert_eq!(read("one.txt"), "one\n", "{case}");
+            assert_eq!(turn_changed(&mgr, &task.id).await.len(), 3, "{case}");
+            mgr.shutdown();
+            let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+            mgr.rollback_changes(&task.id, None, AgentChangesView::LastTurn).await.unwrap();
+            assert_eq!(read("a.txt"), "base\nturn 1\n", "{case}");
+            assert_eq!(read("gone.txt"), "base\n", "{case}");
+            assert!(!cwd.join("two.txt").exists(), "{case}");
+            assert_eq!(read("mine.txt"), "base\nmine\n", "{case}: the user's edit between turns stays");
+            assert_eq!(read("later.txt"), "mine\n", "{case}: and the one after");
+            assert!(mgr.turn_changes(&task.id).await.unwrap().is_empty(), "{case}");
+            // The task's own changes from its first turn stay.
+            let whole: Vec<String> = changed(&mgr, &task.id).await;
+            assert!(["a.txt", "one.txt"].iter().all(|f| whole.iter().any(|w| w == f)), "{case}: {whole:?}");
+
+            mgr.delete(&task.id, true).await.unwrap();
+            assert!(!repo.dir.join("store").join(format!("{}.turn", task.id)).exists(), "{case}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_the_whole_task_leaves_the_last_turn_nothing_to_list() {
+    let repo = Checkout::new(Eol::Lf);
+    repo.write("a.txt", "base\n");
+    repo.commit("init");
+    let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { prompt: text("Hello"), provider: "claude".into(), ..Default::default() })
+        .await
+        .unwrap();
+    one_turn(&mgr, &task.id, None, || repo.write("a.txt", "base\nturn 1\n")).await;
+    one_turn(&mgr, &task.id, Some("more"), || repo.write("a.txt", "base\nturn 1\nturn 2\n")).await;
+    assert_eq!(turn_changed(&mgr, &task.id).await.len(), 1);
+    mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
+    assert_eq!(repo.read("a.txt"), "base\n");
+    assert!(mgr.turn_changes(&task.id).await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_commit_made_in_the_last_turn_is_among_its_changes() {
+    let repo = Checkout::new(Eol::Lf);
+    repo.write("a.txt", "base\n");
+    repo.commit("init");
+    let mgr = manager(&repo.dir, Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("Hello"),
+            provider: "claude".into(),
+            isolation: Isolation::Worktree,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let cwd = task.cwd.0.clone();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&cwd)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "{args:?}");
+    };
+    one_turn(&mgr, &task.id, None, || {
+        std::fs::write(cwd.join("a.txt"), "base\nagent\n").unwrap();
+        std::fs::write(cwd.join("new.txt"), "new\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "agent"]);
+    })
+    .await;
+    let rel: Vec<String> = mgr.turn_changes(&task.id).await.unwrap().into_iter().map(|c| c.rel_path).collect();
+    assert_eq!(rel, ["a.txt", "new.txt"]);
+    mgr.rollback_changes(&task.id, None, AgentChangesView::LastTurn).await.unwrap();
+    assert_eq!(std::fs::read_to_string(cwd.join("a.txt")).unwrap(), "base\n");
+    assert!(!cwd.join("new.txt").exists());
+    mgr.delete(&task.id, true).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn work_uncommitted_by_a_reset_during_a_local_task_is_not_rolled_back() {
     for eol in EOLS {
@@ -3652,7 +3886,7 @@ async fn work_uncommitted_by_a_reset_during_a_local_task_is_not_rolled_back() {
         repo.git(&["reset", "-q", "--soft", "HEAD~1"]);
         assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-        let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
+        let base = mgr.base_text(&task.id, repo.dir.join("a.txt"), AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(base.map(|b| b.replace("\r\n", "\n")).as_deref(), Some("base\n"), "{eol:?}");
         mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
@@ -3792,7 +4026,11 @@ async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_c
         let (mgr, task) = repo.task().await;
         repo.write("new.txt", "agent\n");
         assert_eq!(changed(&mgr, &task.id).await, ["new.txt"], "{eol:?}");
-        assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None, "{eol:?}");
+        assert_eq!(
+            mgr.base_text(&task.id, repo.dir.join("new.txt"), AgentChangesView::SinceStart).await.unwrap(),
+            None,
+            "{eol:?}"
+        );
 
         mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
         assert!(!repo.dir.join("new.txt").exists(), "{eol:?}");

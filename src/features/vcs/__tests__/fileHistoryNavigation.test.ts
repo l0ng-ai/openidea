@@ -116,7 +116,7 @@ describe("File History actions", () => {
     try {
       expect(getAction("vcs.log.changes.showDiff")!.keyWhen).toBe("vcsLogChangesFocus || vcsLogRevisionFocus");
       expect(getAction("vcs.showDiff")!.keyWhen).toBe(
-        "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
+        "!editorTextFocus && !diffEditorFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       );
       window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyD", key: "d", ctrlKey: true, bubbles: true }));
       await vi.waitFor(() => expect(mocks.openVcsDiff).toHaveBeenCalledOnce());
