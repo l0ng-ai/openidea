@@ -8877,5 +8877,15 @@
   "{name} is hidden because {title} is off": "{name} 已隐藏，因为“{title}”已关闭",
   "{name} did not exist at label '{label}'": "标签“{label}”时 {name} 尚不存在",
   "Restore Tool Windows": "恢复工具窗口",
-  "Configure {name}…": "配置 {name}…"
+  "Configure {name}…": "配置 {name}…",
+  "Git User Name Is Not Defined": "Git 用户名未定义",
+  "You need to specify username and email for Git": "需要为 Git 指定用户名和电子邮件",
+  "The email address must contain the '@' symbol": "电子邮件地址必须包含“@”符号",
+  "Could not set the Git user name and email": "无法设置 Git 用户名和电子邮件",
+  "Set and Commit": "设置并提交",
+  "Set and Amend Commit": "设置并修改提交",
+  "Git user.name and user.email properties are not defined in 1 root": "1 个根中未定义 Git user.name 和 user.email 属性",
+  "Git user.name and user.email properties are not defined in {n} roots": "{n} 个根中未定义 Git user.name 和 user.email 属性",
+  "E-mail:": "电子邮件：",
+  "Set properties globally": "全局设置属性"
 }

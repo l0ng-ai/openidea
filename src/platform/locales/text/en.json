@@ -2503,5 +2503,15 @@
   "No resolvable Gradle configurations": "No resolvable Gradle configurations",
   "Restore Tool Windows": "Restore Tool Windows",
   "Configure {name}…": "Configure {name}…",
-  "Check the system Trash for these items. {names}": "Check the system Trash for these items. {names}"
+  "Check the system Trash for these items. {names}": "Check the system Trash for these items. {names}",
+  "Git User Name Is Not Defined": "Git User Name Is Not Defined",
+  "You need to specify username and email for Git": "You need to specify username and email for Git",
+  "The email address must contain the '@' symbol": "The email address must contain the '@' symbol",
+  "Could not set the Git user name and email": "Could not set the Git user name and email",
+  "Set and Commit": "Set and Commit",
+  "Set and Amend Commit": "Set and Amend Commit",
+  "Git user.name and user.email properties are not defined in 1 root": "Git user.name and user.email properties are not defined in 1 root",
+  "Git user.name and user.email properties are not defined in {n} roots": "Git user.name and user.email properties are not defined in {n} roots",
+  "E-mail:": "E-mail:",
+  "Set properties globally": "Set properties globally"
 }

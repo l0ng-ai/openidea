@@ -1061,6 +1061,22 @@ pub async fn vcs_config_get(
     blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.config_get(&key))).await
 }
 
+/// Git User Name Is Not Defined: sets `user.name` / `user.email` for commits in the
+/// repository, or globally.
+#[command(trust = trusted)]
+pub async fn vcs_set_user_identity(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    name: String,
+    email: String,
+    global: bool,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.set_user_identity(&name, &email, global))).await
+}
+
 /// Local history operation that may take a while (hooks, large checkouts); git's
 /// output streams through `on_output`. Cancellable.
 #[command(trust = trusted)]
@@ -1569,6 +1585,7 @@ ide_command::domain!(
     vcs_compare_paths,
     vcs_compare_scope,
     vcs_config_get,
+    vcs_set_user_identity,
     vcs_conflict_versions,
     vcs_create_branch,
     vcs_create_patch,

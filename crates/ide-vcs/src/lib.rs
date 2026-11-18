@@ -1164,6 +1164,20 @@ impl Repo {
         Ok((out.code == Some(0)).then(|| out.stdout_str().trim().to_string()))
     }
 
+    /// Sets `user.name` and `user.email` for commits: in this repository's config, or in the
+    /// user's global one (`global`).
+    pub fn set_user_identity(&self, name: &str, email: &str, global: bool) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let scope = if global { "--global" } else { "--local" };
+        for (key, value) in [("user.name", name.trim()), ("user.email", email.trim())] {
+            if value.is_empty() {
+                return Err(IdeError::invalid(format!("{key} must not be empty")));
+            }
+            cli::run(&self.root, &["config", scope, key, value], None)?;
+        }
+        Ok(())
+    }
+
     // ---- writes (git CLI) ----
     pub fn stage(&self, paths: &[PathBuf]) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
