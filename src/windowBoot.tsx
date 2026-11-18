@@ -11,6 +11,7 @@ import { installPointerFocus } from "./platform/pointerFocus";
 import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { hideSplash } from "./platform/splash";
 import { installWebKitClipboardGuard } from "./platform/webkitClipboard";
+import { installWebKitScrollSnap } from "./platform/webkitScrollSnap";
 import { prefetchLazyComponents } from "./ui";
 import { installWindowDrag } from "./workbench/window-drag";
 
@@ -42,7 +43,10 @@ export async function installCommonWindowBoot(): Promise<void> {
   // second press like the release before it, which the shim would take for a reordered tap and
   // click twice.
   if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
-  if (guessOs() === "linux" && isTauri()) installWebKitClipboardGuard();
+  if (guessOs() === "linux" && isTauri()) {
+    installWebKitClipboardGuard();
+    installWebKitScrollSnap();
+  }
   // A double click on the title bar fills the work area; the backend steps the frame once per
   // presented webview frame, because AppKit's own zoom hides the page until the resize ends.
   installWindowDrag({
