@@ -321,6 +321,14 @@ impl ClientHandler {
         else {
             return;
         };
+        if self.server.name == crate::compose::SERVER {
+            // Maven resource-filtering placeholders (`@profileActive@`) parse as invalid
+            // YAML but are replaced before the file is ever read: their parser error is noise.
+            let text = mgr.docs.lock().values().find(|d| d.path == path).map(|d| d.text.as_str().to_owned());
+            if let Some(text) = text {
+                params.diagnostics.retain(|d| !crate::maven_placeholder::false_positive(&text, d));
+            }
+        }
         if self.server.name == "jdtls"
             && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
         {
