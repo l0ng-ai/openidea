@@ -328,6 +328,27 @@ describe("DocumentManager + slots", () => {
     manager.stop();
   });
 
+  it("keeps a modified file open when its last tab closes without autosave, and reopens it with the changes", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
+    try {
+      const a = await manager.acquire("/p/a.txt");
+      const slot = new EditorSlot(a, "t1", host);
+      backend.patch(a.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      slot.dispose();
+      const b = await manager.acquire("/p/b.txt");
+      new EditorSlot(b, "t2", host).dispose();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(backend.files.get("/p/a.txt")).toBe("a\n");
+      expect(await manager.acquire("/p/a.txt")).toBe(a);
+      expect(a.getMeta().dirty).toBe(true);
+      expect(manager.byPath.has("/p/b.txt")).toBe(false);
+      await manager.saveAll("explicit");
+      expect(backend.files.get("/p/a.txt")).toBe("changed a\n");
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("Save All rejects a failed document save after saving the remaining dirty documents", async () => {
     const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
     try {

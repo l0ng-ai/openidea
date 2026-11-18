@@ -899,6 +899,10 @@ export class DocumentManager {
           console.warn(`autosave of ${model.path} failed`, e);
         }
       }
+      // As in IDEA, a file whose changes are not saved (autosave off, or a failed save) stays
+      // open without a tab: reopening shows the changes, and Save All and the exit check still
+      // cover them. An untitled buffer was asked about when its tab closed.
+      if (model.getMeta().dirty && !isUntitledUri(model.path)) return;
       if (model.inUse()) return;
       await model.sync.whenIdle();
       if (model.inUse()) return;
