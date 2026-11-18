@@ -1062,11 +1062,13 @@ mod tests {
     #[test]
     fn a_child_inside_a_project_gets_its_environment() {
         let root = std::path::Path::new("/openidea-test-process/project");
+        // Absolute on the platform: the search path drops relative entries.
+        let devshell = if cfg!(windows) { r"C:\nix\store\x-devshell\bin" } else { "/nix/store/x-devshell/bin" };
         crate::project_env::set(
             root,
             vec![
                 ("OPENIDEA_PROJECT_VAR".into(), Some("devshell".into())),
-                ("PATH".into(), Some("/nix/store/x-devshell/bin".into())),
+                ("PATH".into(), Some(devshell.into())),
                 ("OPENIDEA_PROJECT_UNSET".into(), None),
             ],
         );
@@ -1075,7 +1077,7 @@ mod tests {
         let mut inside = Command::new("true");
         inside.current_dir(root.join("src")).env("OPENIDEA_PROJECT_VAR", "call site");
         host_env(&mut inside);
-        assert_eq!(get(&inside, "PATH"), Some(Some("/nix/store/x-devshell/bin".into())));
+        assert_eq!(get(&inside, "PATH"), Some(Some(devshell.into())));
         assert_eq!(get(&inside, "OPENIDEA_PROJECT_UNSET"), Some(None));
         assert_eq!(get(&inside, "OPENIDEA_PROJECT_VAR"), Some(Some("call site".into())), "the call site's value wins");
 
@@ -1093,7 +1095,7 @@ mod tests {
         assert_eq!(host_var_os_in(root, "OPENIDEA_PROJECT_VAR"), Some("devshell".into()));
         assert_eq!(host_var_os("OPENIDEA_PROJECT_VAR"), None);
         let search = crate::tool_path::search_path_in(root);
-        assert_eq!(std::env::split_paths(&search).next(), Some("/nix/store/x-devshell/bin".into()));
+        assert_eq!(std::env::split_paths(&search).next(), Some(devshell.into()));
         crate::project_env::remove(root);
         assert!(host_vars_in(root).all(|(k, _)| k != "OPENIDEA_PROJECT_VAR"));
     }
