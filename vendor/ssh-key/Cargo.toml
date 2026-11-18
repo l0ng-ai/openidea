@@ -139,51 +139,6 @@ tdes = [
 name = "ssh_key"
 path = "src/lib.rs"
 
-[[test]]
-name = "algorithm_name"
-path = "tests/algorithm_name.rs"
-
-[[test]]
-name = "authorized_keys"
-path = "tests/authorized_keys.rs"
-
-[[test]]
-name = "certificate"
-path = "tests/certificate.rs"
-
-[[test]]
-name = "certificate_builder"
-path = "tests/certificate_builder.rs"
-
-[[test]]
-name = "dot_ssh"
-path = "tests/dot_ssh.rs"
-
-[[test]]
-name = "encrypted_private_key"
-path = "tests/encrypted_private_key.rs"
-
-[[test]]
-name = "known_hosts"
-path = "tests/known_hosts.rs"
-
-[[test]]
-name = "mldsa44_ed25519"
-path = "tests/mldsa44_ed25519.rs"
-required-features = ["mldsa-eddsa"]
-
-[[test]]
-name = "private_key"
-path = "tests/private_key.rs"
-
-[[test]]
-name = "public_key"
-path = "tests/public_key.rs"
-
-[[test]]
-name = "sshsig"
-path = "tests/sshsig.rs"
-
 [dependencies.argon2]
 version = "0.6.0-rc.8"
 features = ["alloc"]
