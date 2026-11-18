@@ -1898,6 +1898,11 @@ export const commands = {
 	 */
 	windowOpenDiff: (diff: DiffLaunch_Deserialize, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_diff", { diff, background })),
 	/**
+	 *  Opens a lightweight editor window for `editor` next to this project window ("Open in New Window").
+	 *  `background` (`#rrggbb`) paints it until its page has loaded.
+	 */
+	windowOpenEditor: (editor: EditorLaunch_Deserialize, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_editor", { editor, background })),
+	/**
 	 *  Detaches an editor tab: opens `file` in a forced new window (`project`, None
 	 *  for LightEdit, decided by the caller), bypassing the focus-an-existing-window
 	 *  routing of [`window_open_project`] / [`window_open_files`].
@@ -1967,6 +1972,8 @@ export const commands = {
 	diffBeforeFiles: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment: DeploymentLaunch | null,
+	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
+	editor: EditorLaunch_Serialize | null,
 } | null>("window_take_launch"),
 	/**
 	 *  Local bootstrap snapshot for a `settings-<parent>` window, avoiding a sequential
@@ -5454,6 +5461,27 @@ export type EditorGeneralSettings = {
 	richTextCopy?: boolean,
 };
 
+/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+export type EditorLaunch = EditorLaunch_Serialize | EditorLaunch_Deserialize;
+
+/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+export type EditorLaunch_Deserialize = {
+	path: IpcPath,
+	line?: number | null,
+	column?: number | null,
+	endLine?: number | null,
+	endColumn?: number | null,
+};
+
+/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+export type EditorLaunch_Serialize = {
+	path: IpcPath,
+	line?: number | null,
+	column?: number | null,
+	endLine?: number | null,
+	endColumn?: number | null,
+};
+
 export type EditorSettings = EditorSettings_Serialize | EditorSettings_Deserialize;
 
 export type EditorSettings_Deserialize = {
@@ -7770,6 +7798,8 @@ export type Launch_Deserialize = {
 	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
+	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
+	editor?: EditorLaunch_Deserialize | null,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -7799,6 +7829,8 @@ export type Launch_Serialize = {
 	diffBeforeFiles: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment: DeploymentLaunch | null,
+	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
+	editor: EditorLaunch_Serialize | null,
 };
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
