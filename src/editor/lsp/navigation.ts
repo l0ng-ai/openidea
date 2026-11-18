@@ -1240,6 +1240,12 @@ const marks = {
   read: Decoration.mark({ class: KIND_CLASS.read }),
   write: Decoration.mark({ class: KIND_CLASS.write }),
 };
+/** The text a multi-line highlight paints with line backgrounds: a line class would also colour its indent. */
+const lineText = {
+  text: Decoration.mark({ class: "cm-lsp-occurrence-text" }),
+  read: Decoration.mark({ class: "cm-lsp-occurrence-text" }),
+  write: Decoration.mark({ class: "cm-lsp-occurrence-text cm-lsp-occurrence-text-write" }),
+};
 const fullLines = {
   text: Decoration.line({ class: KIND_CLASS.text }),
   read: Decoration.line({ class: KIND_CLASS.read }),
@@ -1266,7 +1272,7 @@ function highlightDeco(doc: Text, tabSize: number, items: readonly HighlightItem
       class: i.kind === "write" ? "cm-lsp-occurrence-tail cm-lsp-occurrence-tail-write" : "cm-lsp-occurrence-tail",
       attributes: { style: `--lsp-occurrence-from: calc(${LINE_INSET}px + ${col}ch)` },
     });
-    out.push(tail.range(first.from));
+    out.push(tail.range(first.from), lineText[i.kind].range(i.from, last.from));
     for (let n = first.number + 1; n < last.number; n++) out.push(fullLines[i.kind].range(doc.line(n).from));
     if (i.to > last.from) out.push(marks[i.kind].range(last.from, i.to));
   }

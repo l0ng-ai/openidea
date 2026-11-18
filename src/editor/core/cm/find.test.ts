@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, Prec } from "@codemirror/state";
-import { Decoration, EditorView } from "@codemirror/view";
+import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { setSearchQuery } from "@codemirror/search";
 import { StreamLanguage } from "@codemirror/language";
 import { literalKindAt } from "./literals";
 import { selectionMarks } from "./selectionMarks";
+import { findStyles, markWidgetStyles } from "./theme";
 import {
   countMatches,
   findResultLines,
@@ -40,6 +41,49 @@ function make(doc: string, o: Partial<FindOptions>, scope?: { from: number; to: 
 }
 
 const sel = (v: EditorView) => [v.state.selection.main.from, v.state.selection.main.to];
+
+class TextWidget extends WidgetType {
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "widget";
+    el.textContent = "hint";
+    return el;
+  }
+}
+
+describe("widgets inside find matches", () => {
+  it.each([
+    ["before the cursor side", Decoration.widget({ widget: new TextWidget(), side: -1 }).range(3)],
+    ["after the cursor side", Decoration.widget({ widget: new TextWidget(), side: 1 }).range(3)],
+    ["replacing text", Decoration.replace({ widget: new TextWidget() }).range(2, 4)],
+  ])("keep their own colour %s", (_name, widget) => {
+    const view = new EditorView({
+      parent: document.body,
+      doc: "Session",
+      extensions: [
+        // At the top precedence, as only then does the match wrap the widget.
+        Prec.highest(EditorView.decorations.of(Decoration.set(widget))),
+        findExtension(),
+      ],
+    });
+    views.push(view);
+    view.dispatch({
+      effects: [
+        setFindOpen.of(true),
+        setSearchQuery.of(
+          makeQuery({ search: "Session", caseSensitive: true, wholeWord: false, regexp: false, replace: "" }),
+        ),
+      ],
+    });
+    const el = view.contentDOM.querySelector<HTMLElement>(".cm-openidea-findMatch .widget")!;
+    // Browsers reflect this property to the attribute; jsdom does not.
+    el.setAttribute("contenteditable", el.contentEditable);
+    expect(el.matches(Object.keys(markWidgetStyles)[0]!)).toBe(true);
+    expect(Object.values(markWidgetStyles)[0]!.WebkitTextFillColor).toBe("currentcolor");
+    // A text fill of `--fg-search-match` here would reach every widget in the match.
+    expect(findStyles[".cm-openidea-findMatch"].WebkitTextFillColor).toBe("currentcolor");
+  });
+});
 
 describe("find backgrounds", () => {
   it.each([

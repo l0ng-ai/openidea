@@ -215,6 +215,8 @@ html {
   --fg-deprecated: #8c8f95;
   --bg-identifier-under-caret: #373b39;
   --bg-identifier-under-caret-write: #402f33;
+  --fg-identifier-under-caret: inherit;
+  --fg-identifier-under-caret-write: inherit;
   --fg-inlay: #868a91;
   --bg-inlay: #393b40;
   --wave-error: #fa6675;
@@ -673,6 +675,8 @@ html {
   --fg-deprecated: #6c707e;
   --bg-identifier-under-caret: #edebfc;
   --bg-identifier-under-caret-write: #fce8f4;
+  --fg-identifier-under-caret: inherit;
+  --fg-identifier-under-caret-write: inherit;
   --fg-inlay: #73767c;
   --bg-inlay: #00000012;
   --wave-error: #f50000;
