@@ -2521,5 +2521,7 @@
   "Select Repository Root": "Select Repository Root",
   "VCS of {name}": "VCS of {name}",
   "Remember size for each tool window": "Remember size for each tool window",
-  "Off, the tool windows of one side share its size": "Off, the tool windows of one side share its size"
+  "Off, the tool windows of one side share its size": "Off, the tool windows of one side share its size",
+  "The scope {scope} has more than {SCOPE_FILES_LIMIT} files; the Project view shows the first ones": "The scope {scope} has more than {SCOPE_FILES_LIMIT} files; the Project view shows the first ones",
+  "Cannot show the scope {scope}": "Cannot show the scope {scope}"
 }

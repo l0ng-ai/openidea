@@ -1398,6 +1398,7 @@ export const commands = {
 	scaffoldOptions: (generator: string, values: { [key in string]: string }, request: RequestId) => typedError<Field[], IdeError>(__TAURI_INVOKE("scaffold_options", { generator, values, request })),
 	/**  The programs a generator needs for `values`, and whether they are installed. */
 	scaffoldRequirements: (generator: string, values: { [key in string]: string }) => typedError<Requirement[], IdeError>(__TAURI_INVOKE("scaffold_requirements", { generator, values })),
+	scopeFiles: (pattern: string, limit: number) => typedError<ScopeFiles, IdeError>(__TAURI_INVOKE("scope_files", { pattern, limit })),
 	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
 	sdkContainerPython: () => typedError<{
 	/**  The run target's id. */
@@ -10476,6 +10477,13 @@ export type Scope = {
 	name: string,
 	variablesReference: number,
 	expensive: boolean,
+};
+
+/**  The files of a custom scope (`file:src//*.ts`), for the Project view's scope panes. */
+export type ScopeFiles = {
+	paths: IpcPath[],
+	/**  More files than `limit` matched; `paths` holds the first ones. */
+	truncated: boolean,
 };
 
 /**  One installed interpreter / toolchain. */

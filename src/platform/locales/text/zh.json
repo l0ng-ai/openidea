@@ -8894,5 +8894,7 @@
   "Select Repository Root": "选择仓库根目录",
   "VCS of {name}": "{name} 的 VCS",
   "Remember size for each tool window": "记住每个工具窗口的大小",
-  "Off, the tool windows of one side share its size": "关闭时，同一侧的工具窗口共用一个大小"
+  "Off, the tool windows of one side share its size": "关闭时，同一侧的工具窗口共用一个大小",
+  "The scope {scope} has more than {SCOPE_FILES_LIMIT} files; the Project view shows the first ones": "作用域 {scope} 中的文件超过 {SCOPE_FILES_LIMIT} 个，项目视图只显示前面的部分",
+  "Cannot show the scope {scope}": "无法显示作用域 {scope}"
 }

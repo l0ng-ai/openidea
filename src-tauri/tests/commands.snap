@@ -539,6 +539,7 @@ scaffold_catalog                             always             project_host bin
 scaffold_create                              always             project_host bindings async
 scaffold_options                             always             project_host bindings async
 scaffold_requirements                        always             project_host bindings async
+scope_files                                  always             project_host bindings async
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   outside_restricted project_host bindings async
