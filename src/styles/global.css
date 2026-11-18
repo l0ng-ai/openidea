@@ -280,3 +280,12 @@ a:hover {
 :root[data-aa-editor="none"] .cm-editor {
   -webkit-font-smoothing: none;
 }
+
+/* Whole-pixel character advance below 2x, as IDEA renders code. With a fractional advance
+   (13px JetBrains Mono: 7.8px) each glyph lands at another subpixel offset and its stems
+   rasterize at uneven widths. Letter spacing turns off ligatures, so not when they are on. */
+@media (max-resolution: 1.99dppx) {
+  .cm-editor:not(.cm-openidea-ligatures) .cm-scroller {
+    letter-spacing: calc(round(nearest, 1ch, 1px) - 1ch);
+  }
+}
