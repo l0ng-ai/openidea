@@ -1,5 +1,5 @@
 import { Vim } from "@replit/codemirror-vim";
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 
 /**
  * The system clipboard is the other half of Vim's clipboard registers. codemirror-vim
@@ -87,7 +87,8 @@ function pasteAction(): VimPasteAction {
       this.continuePaste(cm, actionArgs, vim, register.toString(), register);
       return;
     }
-    void navigator.clipboard.readText().then(
+    // Read natively where the backend can: WebKitGTK's `navigator.clipboard.readText()` gives no text.
+    void readClipboardPlainText().then(
       (value) => {
         // Windows clipboards deliver CRLF; Vim treats a trailing line break as linewise.
         const text = value.replace(/\r\n?/g, "\n");
