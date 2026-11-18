@@ -33,6 +33,19 @@ interface CoverageState {
 
 export const useCoverage = create<CoverageState>(() => ({ suites: [], activeId: null, visible: false }));
 
+export function captureCoverageProject() {
+  const { project, opening } = useProject.getState();
+  if (!project || opening) return null;
+  const root = project.root;
+  return {
+    root,
+    isCurrent: () => {
+      const current = useProject.getState();
+      return !current.opening && current.project?.root === root;
+    },
+  };
+}
+
 let seq = 0;
 
 export function activeSuite(s: CoverageState = useCoverage.getState()): Suite | null {
@@ -142,9 +155,8 @@ function saveImported(root: string, reports: ImportedReport[]) {
   }
 }
 
-export function rememberImport(report: ImportedReport) {
-  const root = useProject.getState().project?.root;
-  if (root) saveImported(root, [report, ...importedReports(root).filter((r) => r.path !== report.path)]);
+export function rememberImport(root: string, report: ImportedReport) {
+  saveImported(root, [report, ...importedReports(root).filter((r) => r.path !== report.path)]);
 }
 
 export function forgetImport(path: string) {
