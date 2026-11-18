@@ -176,6 +176,19 @@ export function shortRemoteName(name: string): string {
   return i < 0 ? name : name.slice(i + 1);
 }
 
+/** Distinct branch prefixes, shallowest first (e.g. `origin/feat/ui/login` contributes `feat/` and `feat/ui/`). */
+export function branchNamePrefixes(branches: readonly Branch[]): string[] {
+  const prefixes = new Map<string, number>();
+  for (const branch of branches) {
+    const name = branch.remote ? shortRemoteName(branch.name) : branch.name;
+    let depth = 1;
+    for (let slash = name.indexOf("/"); slash !== -1; slash = name.indexOf("/", slash + 1)) {
+      prefixes.set(name.slice(0, slash + 1), depth++);
+    }
+  }
+  return [...prefixes.keys()].sort((a, b) => prefixes.get(a)! - prefixes.get(b)! || a.localeCompare(b));
+}
+
 export const MAX_RECENT = 5;
 
 /** Recently checked-out local branches other than the current one, newest first. */
