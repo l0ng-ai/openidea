@@ -8861,5 +8861,6 @@
   "These projects open in Restricted Mode, even inside a trusted location.": "这些项目即使位于受信任的位置内，也以受限模式打开。",
   "Trust": "信任",
   "{name} is hidden because {title} is off": "{name} 已隐藏，因为“{title}”已关闭",
-  "{name} did not exist at label '{label}'": "标签“{label}”时 {name} 尚不存在"
+  "{name} did not exist at label '{label}'": "标签“{label}”时 {name} 尚不存在",
+  "Restore Tool Windows": "恢复工具窗口"
 }
