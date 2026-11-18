@@ -76,6 +76,29 @@ impl Repos {
         Ok(Self::new(Repo::discover(project_root)?.into_iter().collect(), project_root))
     }
 
+    /// Directory Mappings applied: the repositories at `excluded` roots are dropped (their
+    /// files stay in the project) and those at `added` roots join, the primary one being the
+    /// repository of `project_root` if it remains.
+    pub fn mapped(&self, excluded: &[PathBuf], added: &[PathBuf], project_root: &Path) -> Self {
+        let same = |a: &Path, b: &Path| a == b || dunce::canonicalize(a).ok() == dunce::canonicalize(b).ok();
+        let mut repos: Vec<Arc<Repo>> =
+            self.repos.iter().filter(|r| !excluded.iter().any(|e| same(e, r.root()))).cloned().collect();
+        for root in added {
+            if excluded.iter().any(|e| same(e, root)) || repos.iter().any(|r| same(r.root(), root)) {
+                continue;
+            }
+            match Repo::discover(root) {
+                Ok(Some(r)) if same(r.root(), root) => repos.push(Arc::new(r)),
+                Ok(_) => tracing::debug!("mapped directory {} is not a git root", root.display()),
+                Err(e) => tracing::debug!("mapped directory {}: {}", root.display(), e.message),
+            }
+        }
+        repos.sort_by(|a, b| a.root().cmp(b.root()));
+        let roots: Vec<&Path> = repos.iter().map(|r| r.root()).collect();
+        let primary = innermost(&roots, project_root, false).or((!repos.is_empty()).then_some(0));
+        Self { repos, primary }
+    }
+
     /// Worktree roots, sorted.
     pub fn roots(&self) -> Vec<PathBuf> {
         self.repos.iter().map(|r| r.root().to_path_buf()).collect()
@@ -220,6 +243,34 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         let ok = Command::new("git").args(["init", "-q"]).current_dir(dir).status().is_ok_and(|s| s.success());
         assert!(ok, "git init in {}", dir.display());
+    }
+
+    #[test]
+    fn directory_mappings_exclude_and_add_repositories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
+        let outside = root.parent().unwrap().join("sdk");
+        git_init(&root);
+        git_init(&root.join("app"));
+        git_init(&root.join("reference-sdk"));
+        git_init(&root.join("a/b/c/d/deep"));
+        git_init(&outside);
+
+        let detected = Repos::discover(&root, &|_| false).unwrap();
+        let mapped =
+            detected.mapped(&[root.join("reference-sdk")], &[outside.clone(), root.join("a/b/c/d/deep")], &root);
+        let roots: Vec<&Path> = mapped.all().iter().map(|r| r.root()).collect();
+        assert_eq!(roots, [root.as_path(), &root.join("a/b/c/d/deep"), &root.join("app"), &outside]);
+        assert_eq!(mapped.primary().unwrap().root(), root);
+        // The excluded repository's files belong to the enclosing one again.
+        assert_eq!(mapped.for_path(&root.join("reference-sdk/lib.rs")).unwrap().root(), root);
+
+        // The project root excluded: only the other repositories remain; a folder that is no
+        // repository root is not added.
+        let without_root = detected.mapped(std::slice::from_ref(&root), &[root.join("a")], &root);
+        let roots: Vec<&Path> = without_root.all().iter().map(|r| r.root()).collect();
+        assert_eq!(roots, [&root.join("app"), &root.join("reference-sdk")]);
+        assert!(without_root.for_path(&root.join("README.md")).is_none());
     }
 
     #[test]
