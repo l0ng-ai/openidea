@@ -49,6 +49,8 @@ export interface DocBackend {
   close(doc: DocId): Promise<void>;
   edit(doc: DocId, baseVersion: number, changes: TextChange[]): Promise<number>;
   save(doc: DocId): Promise<void>;
+  /** An automatic save; `false` when the file changed on disk after the buffer was edited (nothing written). */
+  autosave?(doc: DocId): Promise<boolean>;
   /** Re-check every open file for external changes missed by file watchers. */
   syncFromDisk?(): Promise<void>;
   snapshot(doc: DocId): Promise<DocumentInfo>;
@@ -92,6 +94,7 @@ export const ipcBackend: DocBackend = {
   close: async (doc) => void (await call(commands.docClose(doc))),
   edit: (doc, baseVersion, changes) => call(commands.docEdit(doc, baseVersion, { changes })),
   save: async (doc) => void (await call(commands.docSave(doc))),
+  autosave: (doc) => call(commands.docAutosave(doc)),
   syncFromDisk: async () => void (await call(commands.docSyncFromDisk())),
   snapshot: (doc) => call(commands.docSnapshot(doc)),
   setLineEnding: async (doc, le) => void (await call(commands.docSetLineEnding(doc, le))),
