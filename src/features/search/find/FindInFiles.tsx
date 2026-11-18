@@ -624,41 +624,49 @@ function FindInFilesDialog() {
             {stale || state.status === "searching" || state.status === "validating" ? (
               <Spinner size={16} variant="spokes" />
             ) : null}
-            {summary}
+            <span className={styles.count}>{summary}</span>
           </span>
           <span className={styles.spacer} />
-          <Checkbox
-            checked={s.maskEnabled}
-            onChange={enableMask}
-            label={<Mnemonic text={tx("File mask:")} char="K" />}
-          />
-          <div ref={maskRef} className={clsx(styles.mask, !s.maskEnabled && styles.maskOff)}>
-            <input
-              ref={maskInputRef}
-              className={styles.maskInput}
-              value={s.mask}
-              placeholder={projectMasks[0] ?? ""}
-              aria-label={tx("File mask")}
-              spellCheck={false}
-              onChange={(e) => set({ mask: e.target.value, maskEnabled: true })}
-              onBlur={() => s.maskEnabled && rememberMask(s.mask)}
+          <div className={styles.tools}>
+            <Checkbox
+              className={styles.maskToggle}
+              checked={s.maskEnabled}
+              onChange={enableMask}
+              label={<Mnemonic text={tx("File mask:")} char="K" />}
+            />
+            <div ref={maskRef} className={clsx(styles.mask, !s.maskEnabled && styles.maskOff)}>
+              <input
+                ref={maskInputRef}
+                className={styles.maskInput}
+                value={s.mask}
+                placeholder={projectMasks[0] ?? ""}
+                aria-label={tx("File mask")}
+                spellCheck={false}
+                onChange={(e) => set({ mask: e.target.value, maskEnabled: true })}
+                onBlur={() => s.maskEnabled && rememberMask(s.mask)}
+              />
+              <IconButton
+                icon="chevron-down"
+                title="Recent file masks"
+                size="small"
+                iconSize={11}
+                onClick={() => setMaskMenu(true)}
+              />
+            </div>
+            <IconButton
+              ref={contextRef}
+              icon="filter"
+              title="Search Context"
+              pressed={s.context !== "any"}
+              onClick={() => setContextMenu(true)}
             />
             <IconButton
-              icon="chevron-down"
-              title="Recent file masks"
-              size="small"
-              iconSize={11}
-              onClick={() => setMaskMenu(true)}
+              icon="pin"
+              title="Pin Window"
+              pressed={s.pinned}
+              onClick={() => setFindPopupPinned(!s.pinned)}
             />
           </div>
-          <IconButton
-            ref={contextRef}
-            icon="filter"
-            title="Search Context"
-            pressed={s.context !== "any"}
-            onClick={() => setContextMenu(true)}
-          />
-          <IconButton icon="pin" title="Pin Window" pressed={s.pinned} onClick={() => setFindPopupPinned(!s.pinned)} />
         </header>
         <div className={styles.fields}>
           <div data-find-field ref={patternBoxRef}>
