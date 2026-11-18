@@ -3793,7 +3793,6 @@
   "(empty line)": "（空行）",
   "Name cannot be empty": "名称不能为空",
   "Every scope needs a name": "每个范围都需要名称",
-  "Every project inside a trusted location is trusted without asking.": "受信任的位置内的每个项目都会被信任，不再询问。",
   "Scopes": "范围",
   "Add Scope": "添加范围",
   "Remove Scope": "移除范围",
@@ -8854,5 +8853,9 @@
   "Align key-value pairs": "对齐键值对",
   "Align consecutive assignments": "对齐连续赋值",
   "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "在语言服务器或 PHP-CS-Fixer 格式化文件后，对齐多行数组中的 => 和连续赋值语句中的 =；格式化选区时只对齐选中的行。",
-  "Are you sure you want to delete {name}?": "确定要删除 {name} 吗？"
+  "Are you sure you want to delete {name}?": "确定要删除 {name} 吗？",
+  "Every project inside a trusted location is trusted without asking, unless it is a restricted project.": "受信任的位置内的每个项目都会被信任，不再询问；受限项目除外。",
+  "Restricted projects": "受限项目",
+  "These projects open in Restricted Mode, even inside a trusted location.": "这些项目即使位于受信任的位置内，也以受限模式打开。",
+  "Trust": "信任"
 }

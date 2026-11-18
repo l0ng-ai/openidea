@@ -2479,5 +2479,9 @@
   "Align key-value pairs": "Align key-value pairs",
   "Align consecutive assignments": "Align consecutive assignments",
   "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.",
-  "Are you sure you want to delete {name}?": "Are you sure you want to delete {name}?"
+  "Are you sure you want to delete {name}?": "Are you sure you want to delete {name}?",
+  "Every project inside a trusted location is trusted without asking, unless it is a restricted project.": "Every project inside a trusted location is trusted without asking, unless it is a restricted project.",
+  "Restricted projects": "Restricted projects",
+  "These projects open in Restricted Mode, even inside a trusted location.": "These projects open in Restricted Mode, even inside a trusted location.",
+  "Trust": "Trust"
 }
