@@ -387,10 +387,11 @@ export class EditorController implements SlotHost {
           // Untitled buffers belong to the window, not a project: their tabs
           // survive the switch (the backend carries them into the new
           // registry) and their slots rebuild against the carried documents.
+          // Closing to Welcome drops them; the leave guard already asked about them.
           const carriedUntitled: Tab[] = [];
           let carriedActive: string | null = null;
           const cs = useTabs.getState();
-          for (const pane of Object.values(cs.panes)) {
+          for (const pane of root || s.lightEdit ? Object.values(cs.panes) : []) {
             for (const tab of pane.tabs) {
               if (isUntitledUri(tab.input.path ?? "")) {
                 carriedUntitled.push(tab);
