@@ -169,6 +169,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::PromptWaiting { .. }
             | PluginEvent::RevealView { .. }
             | PluginEvent::CommitRequested { .. }
+            | PluginEvent::ClipboardRequested { .. }
             | PluginEvent::EndpointsChanged { .. }
     )
 }

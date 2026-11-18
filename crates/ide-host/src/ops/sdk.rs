@@ -34,9 +34,9 @@ pub struct ProjectInterpreter {
 }
 
 /// Installed interpreters / toolchains of `kind`; project-local ones first.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<Vec<Sdk>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let project = host.project(window).ok();
     if kind == SdkKind::Jdk {
         host.apply_added_jdks();
@@ -63,10 +63,10 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
 }
 
 /// The Python interpreters of the recently opened projects, each with its project.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeResult<Vec<ProjectInterpreter>> {
     // Newest first. The open project is skipped: `sdk_detect` lists its own.
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let current = host.project(window).ok().map(|p| p.root.clone());
     let config = host.config_dir.clone();
     // Probing runs the project's interpreter (and its settings may name any program): only
@@ -111,9 +111,9 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
 }
 
 /// An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<Sdk>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let root = host.project(window).ok().map(|p| p.root.clone());
     tokio::task::spawn_blocking(move || Ok(ide_sdk::python_interpreter_sdk(&path, root.as_deref())))
         .await
@@ -320,7 +320,7 @@ pub async fn sdk_locate_tools(
 }
 
 /// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_create_venv(
     host: &Host,
     window: &str,
@@ -330,7 +330,7 @@ pub async fn sdk_python_create_venv(
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<Sdk> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         ide_sdk::python::create_venv(tool, &base, &location, &cancel, &|line| {
@@ -343,14 +343,14 @@ pub async fn sdk_python_create_venv(
     result?
 }
 
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_packages(
     host: &Host,
     window: &str,
     python: PathBuf,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
     let result =
         tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, &cancel)).await.map_err(join_err);
@@ -360,7 +360,7 @@ pub async fn sdk_python_packages(
 
 /// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
 #[allow(clippy::too_many_arguments)]
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_pip(
     host: &Host,
     window: &str,
@@ -371,7 +371,7 @@ pub async fn sdk_python_pip(
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let project_root = host.project(window).ok().map(|p| p.root.clone());
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {

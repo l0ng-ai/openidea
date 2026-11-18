@@ -39,6 +39,8 @@ struct FakeAgent {
     authenticate_method: Option<String>,
     authenticated: AtomicBool,
     request_error: Option<(i64, String)>,
+    /// `session/load` fails with this, as OMP does for a session whose model it can't restore.
+    load_error: Option<(i64, String)>,
     auth_methods: Vec<Value>,
     /// Hold the late mode reply until the prompt's permission request is already waiting.
     hold_late_mode: bool,
@@ -212,6 +214,7 @@ impl Handler for FakeAgent {
                 let outcome = if text == "too late" { "promptRequired" } else { "injected" };
                 Ok(json!({"outcome": outcome, "queue": "steering"}))
             }
+            "session/load" if self.load_error.is_some() => Err(self.load_error.clone().unwrap()),
             "session/load" => {
                 self.say(&session, "replayed history");
                 Ok(json!({}))
@@ -870,7 +873,7 @@ async fn authenticates_and_retries_session_setup_once_on_auth_error() {
         ["session/load", "authenticate", "authenticate github_oauth", "session/load", "session/prompt"],
     );
 
-    // If `authenticate` fails during `session/load`, fallback to `session/new` does not try it again.
+    // If `authenticate` fails during `session/load`, the sign-in error stands: no new session replaces it.
     mgr2.shutdown();
     let agent3 = Arc::new(FakeAgent {
         auth_on_load: true,
@@ -889,7 +892,7 @@ async fn authenticates_and_retries_session_setup_once_on_auth_error() {
             .iter()
             .filter(|c| c.starts_with("session/") || c.starts_with("authenticate"))
             .collect::<Vec<_>>(),
-        ["session/load", "authenticate", "session/new"],
+        ["session/load", "authenticate"],
     );
     mgr3.shutdown();
 }
@@ -1152,6 +1155,46 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     // The chosen settings are re-applied to the reloaded session.
     let calls = agent2.calls.lock().clone();
     assert!(calls.contains(&"session/set_mode \"code\"".to_owned()), "{calls:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_fails_to_load_is_reported_and_replaced_only_when_sent_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let saved = mgr.task(&task.id).unwrap().state.lock().session_id.clone().expect("a session");
+    mgr.shutdown();
+
+    // OMP: "Could not restore model …" for a session saved with a model it can't restore.
+    let agent = Arc::new(FakeAgent {
+        load_error: Some((codes::INTERNAL_ERROR, "Could not restore model x".into())),
+        ..Default::default()
+    });
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Failed).await;
+    let calls = |agent: &FakeAgent| -> Vec<String> {
+        agent.calls.lock().iter().filter(|c| c.starts_with("session/")).cloned().collect()
+    };
+    assert_eq!(calls(&agent), ["session/load"], "no new session behind the user's back");
+    let handle = mgr.task(&task.id).unwrap();
+    assert_eq!(handle.state.lock().session_id.as_deref(), Some(saved.as_str()));
+    assert!(mgr.entries(&task.id, None).unwrap().iter().any(|e| matches!(e,
+        AgentEntry::Error { message } if message.contains("Could not restore model x") && message.contains("Send the message again"))));
+
+    // Sending again is the user's choice to continue without the earlier conversation.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(calls(&agent), ["session/load", "session/new", "session/prompt"]);
 }
 
 fn text(t: &str) -> AgentPrompt {

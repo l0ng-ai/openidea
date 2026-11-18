@@ -397,6 +397,17 @@ describe("context configuration", () => {
     expect(contextConfig("tools/gen.py", uv)).toMatchObject({ command: "uv", args: ["run", "python", "tools/gen.py"] });
   });
 
+  it("prefers a detected Python config's interpreter over one made by hand", () => {
+    const configs = [
+      cfg({ id: "mine", kind: "python", command: "python3", args: ["tool.py"], detected: false }),
+      cfg({ id: "found", kind: "python", command: "uv", args: ["run", "python", "-m", "app"], detected: true }),
+    ];
+    expect(contextConfig("tools/gen.py", configs)).toMatchObject({
+      command: "uv",
+      args: ["run", "python", "tools/gen.py"],
+    });
+  });
+
   it("takes the interpreter from a Django runserver config without its arguments", () => {
     const runserver = (command: string, args: string[]) =>
       cfg({ id: "django:runserver", kind: "python", command, args: [...args, "manage.py", "runserver"] });

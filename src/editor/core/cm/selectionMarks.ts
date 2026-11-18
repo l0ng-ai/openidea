@@ -46,6 +46,7 @@ const theme = EditorView.baseTheme({
     boxDecorationBreak: "clone",
     // Unset (the default `inherit`): the declaration drops and the syntax colours show through.
     color: "var(--fg-editor-selection)",
+    WebkitTextFillColor: "var(--fg-editor-selection)",
   },
   "&.cm-focused .cm-openidea-selected": {
     "--openidea-selected-bg": "var(--editor-selection, var(--bg-editor-selection))",

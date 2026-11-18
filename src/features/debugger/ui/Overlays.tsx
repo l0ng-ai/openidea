@@ -179,12 +179,19 @@ function BreakpointFields({
   const commitText = () => {
     const d = draft.current;
     const cond = d.condition.trim() || null;
-    if (cond) pushHistory("condition", cond);
-    updateBreakpoint(path, bp.id, {
+    const changes = {
       condition: cond,
       hitCondition: d.hitCondition.trim() || null,
       logMessage: d.logEval ? d.logMessage.trim() || null : null,
-    });
+    };
+    if (
+      changes.condition === (bp.condition ?? null) &&
+      changes.hitCondition === (bp.hitCondition ?? null) &&
+      changes.logMessage === (bp.logMessage ?? null)
+    )
+      return;
+    if (cond) pushHistory("condition", cond);
+    updateBreakpoint(path, bp.id, changes);
   };
   useEffect(() => {
     if (!commitRef) return;
@@ -396,9 +403,13 @@ function BreakpointsDialog() {
   }, [byFile, methods, fields]);
   const items = rows.filter((r) => r.type !== "section");
   const [selected, setSelected] = useState<string | null>(null);
+  // The shown breakpoint's typed fields, saved before it is closed or another one is shown:
+  // Enter on Done and a click on a row don't blur them.
+  const commitRef = useRef<(() => void) | null>(null);
   const open = !!state;
   const current = items.find((r) => r.key === (selected ?? state?.id)) ?? items[0];
   const close = () => {
+    commitRef.current?.();
     setSelected(null);
     useOverlays.setState({ breakpoints: null });
   };
@@ -448,8 +459,14 @@ function BreakpointsDialog() {
             isSection={(r) => r.type === "section"}
             renderSection={(r) => <div className={styles.exceptionAdapter}>{r.type === "section" ? r.label : ""}</div>}
             activeIndex={current ? rows.indexOf(current) : -1}
-            onActiveChange={(i) => setSelected(rows[i]?.key ?? null)}
-            onActivate={(r) => goTo(r)}
+            onActiveChange={(i) => {
+              commitRef.current?.();
+              setSelected(rows[i]?.key ?? null);
+            }}
+            // A click selects; double-click or Enter goes to the source.
+            onActivate={(r, _i, e) => {
+              if (e.type === "keydown" || e.detail > 1) goTo(r);
+            }}
             aria-label="All breakpoints"
             className={styles.bpList}
             empty={
@@ -522,9 +539,9 @@ function BreakpointsDialog() {
         </div>
         <div className={styles.bpDetail}>
           {current?.type === "line" ? (
-            <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} />
+            <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} commitRef={commitRef} />
           ) : current?.type === "special" ? (
-            <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} />
+            <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} commitRef={commitRef} />
           ) : null}
         </div>
       </div>
@@ -579,7 +596,15 @@ function ExceptionBreakpoints({ open }: { open: boolean }) {
   );
 }
 
-function BreakpointDetail({ row, onGo }: { row: BpRow; onGo: () => void }) {
+function BreakpointDetail({
+  row,
+  onGo,
+  commitRef,
+}: {
+  row: BpRow;
+  onGo: () => void;
+  commitRef: MutableRefObject<(() => void) | null>;
+}) {
   const { path, bp } = row;
   const st = useBreakpoints((s) => s.status[bp.id]);
   return (
@@ -597,7 +622,7 @@ function BreakpointDetail({ row, onGo }: { row: BpRow; onGo: () => void }) {
         </Button>
       </div>
       {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
-      <BreakpointFields path={path} bp={bp} />
+      <BreakpointFields path={path} bp={bp} commitRef={commitRef} />
       <Checkbox
         checked={!!bp.temporary}
         onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
@@ -607,11 +632,34 @@ function BreakpointDetail({ row, onGo }: { row: BpRow; onGo: () => void }) {
   );
 }
 
-function SpecialDetail({ bp, onGo }: { bp: SpecialBreakpoint; onGo: () => void }) {
+function SpecialDetail({
+  bp,
+  onGo,
+  commitRef,
+}: {
+  bp: SpecialBreakpoint;
+  onGo: () => void;
+  commitRef: MutableRefObject<(() => void) | null>;
+}) {
   const st = useSpecialBreakpoints((s) => s.status[bp.id]);
   const [name, setName] = useState(bp.kind === "method" ? bp.name : bp.label);
   const [condition, setCondition] = useState(bp.condition ?? "");
   const [hitCondition, setHitCondition] = useState(bp.hitCondition ?? "");
+  const draft = useRef({ name, condition, hitCondition });
+  useEffect(() => {
+    draft.current = { name, condition, hitCondition };
+    commitRef.current = () => {
+      const d = draft.current;
+      updateSpecial(bp.id, {
+        name: d.name.trim(),
+        condition: d.condition.trim() || null,
+        hitCondition: d.hitCondition.trim() || null,
+      });
+    };
+    return () => {
+      commitRef.current = null;
+    };
+  });
   return (
     <div className={styles.detail}>
       <div className={styles.bpTitle}>

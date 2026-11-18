@@ -35,15 +35,18 @@ import { CodePreview, MatchText, ReplaceDiffPreview } from "./parts";
 import { clearPreviewCache } from "./preview";
 import {
   NO_MARKS,
+  confirmAllText,
   confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
   markDone,
+  mayMatchLineBreak,
   nextPending,
   pendingUsages,
   replacePreviewLines,
   replaceTargets,
+  skipTargets,
   startReplace,
   summaryText,
   type PreviewLine,
@@ -301,13 +304,17 @@ function FindInFilesDialog() {
   const canReplace = () =>
     !stale && !session.current.stale && currentQuery.current === queryKey && session.current.files === state.files;
 
-  /** IDEA asks before Replace All only when the results span more than one file. */
+  /**
+   * IDEA asks before Replace All only when the results span more than one file, or when the
+   * search hit its limit: then every match in the scope is replaced, listed or not.
+   */
   const confirmReplaceAll = async () => {
     if (!canReplace()) return;
     const usages = pendingUsages(rows, marks);
     if (!usages.length) return;
+    const allInScope = !!state.summary?.limitHit;
     const counts = countUsages(usages);
-    if (rows.length <= 1 || counts.files <= 1) {
+    if (!allInScope && (rows.length <= 1 || counts.files <= 1)) {
       void replaceAll(usages);
       return;
     }
@@ -316,30 +323,32 @@ function FindInFilesDialog() {
       ok: "Replace",
       message: (
         <>
-          {confirmText(counts, s.pattern, s.replacement || "")}
+          {allInScope
+            ? confirmAllText(s.pattern, s.replacement || "")
+            : confirmText(counts, s.pattern, s.replacement || "")}
           {marks.excluded.size > 0 && (
             <>
               {" "}
               <T>Excluded usages are skipped.</T>
             </>
           )}
-          {state.summary?.limitHit && (
-            <>
-              {"\n"}
-              <T>The search hit its limit; only usages found so far are replaced.</T>
-            </>
-          )}
         </>
       ),
     });
-    if (ok) void replaceAll(usages);
+    if (ok) void replaceAll(usages, allInScope);
   };
 
   /** Replaces `usages` in the backend, then marks them done (IDEA's Replace / Replace All). */
-  const replaceUsages = async (usages: Usage[]): Promise<ReplaceMarks | null> => {
+  const replaceUsages = async (usages: Usage[], allInScope = false): Promise<ReplaceMarks | null> => {
     if (!canReplace() || !usages.length || running) return null;
     const run = startReplace(
-      { query, replacement: s.replacement, preserveCase: s.preserveCase, targets: replaceTargets(usages) },
+      {
+        query,
+        replacement: s.replacement,
+        preserveCase: s.preserveCase,
+        targets: allInScope ? skipTargets(rows, marks) : replaceTargets(usages),
+        allInScope,
+      },
       setProgress,
     );
     setRunning(run);
@@ -354,8 +363,14 @@ function FindInFilesDialog() {
       });
       clearPreviewCache();
       setPreviewVersion((v) => v + 1);
-      // Replacements that add or remove lines (or a stopped run) invalidate the positions found.
-      if (summary.cancelled || /\n|\\n/.test(s.replacement)) {
+      // Positions found are stale when lines were added or removed (a multi-line replacement or
+      // match), the run stopped, or a target no longer matched (#4082): search again.
+      if (
+        summary.cancelled ||
+        /\n|\\n/.test(s.replacement) ||
+        mayMatchLineBreak(s.pattern, s.isRegex) ||
+        summary.replacements < usages.length
+      ) {
         setRerun((r) => r + 1);
         return null;
       }
@@ -386,8 +401,8 @@ function FindInFilesDialog() {
       if (i >= 0) setIndex(i);
     }
   };
-  const replaceAll = async (usages: Usage[]) => {
-    const done = await replaceUsages(usages);
+  const replaceAll = async (usages: Usage[], allInScope = false) => {
+    const done = await replaceUsages(usages, allInScope);
     if (done) close();
   };
 
@@ -624,41 +639,49 @@ function FindInFilesDialog() {
             {stale || state.status === "searching" || state.status === "validating" ? (
               <Spinner size={16} variant="spokes" />
             ) : null}
-            {summary}
+            <span className={styles.count}>{summary}</span>
           </span>
           <span className={styles.spacer} />
-          <Checkbox
-            checked={s.maskEnabled}
-            onChange={enableMask}
-            label={<Mnemonic text={tx("File mask:")} char="K" />}
-          />
-          <div ref={maskRef} className={clsx(styles.mask, !s.maskEnabled && styles.maskOff)}>
-            <input
-              ref={maskInputRef}
-              className={styles.maskInput}
-              value={s.mask}
-              placeholder={projectMasks[0] ?? ""}
-              aria-label={tx("File mask")}
-              spellCheck={false}
-              onChange={(e) => set({ mask: e.target.value, maskEnabled: true })}
-              onBlur={() => s.maskEnabled && rememberMask(s.mask)}
+          <div className={styles.tools}>
+            <Checkbox
+              className={styles.maskToggle}
+              checked={s.maskEnabled}
+              onChange={enableMask}
+              label={<Mnemonic text={tx("File mask:")} char="K" />}
+            />
+            <div ref={maskRef} className={clsx(styles.mask, !s.maskEnabled && styles.maskOff)}>
+              <input
+                ref={maskInputRef}
+                className={styles.maskInput}
+                value={s.mask}
+                placeholder={projectMasks[0] ?? ""}
+                aria-label={tx("File mask")}
+                spellCheck={false}
+                onChange={(e) => set({ mask: e.target.value, maskEnabled: true })}
+                onBlur={() => s.maskEnabled && rememberMask(s.mask)}
+              />
+              <IconButton
+                icon="chevron-down"
+                title="Recent file masks"
+                size="small"
+                iconSize={11}
+                onClick={() => setMaskMenu(true)}
+              />
+            </div>
+            <IconButton
+              ref={contextRef}
+              icon="filter"
+              title="Search Context"
+              pressed={s.context !== "any"}
+              onClick={() => setContextMenu(true)}
             />
             <IconButton
-              icon="chevron-down"
-              title="Recent file masks"
-              size="small"
-              iconSize={11}
-              onClick={() => setMaskMenu(true)}
+              icon="pin"
+              title="Pin Window"
+              pressed={s.pinned}
+              onClick={() => setFindPopupPinned(!s.pinned)}
             />
           </div>
-          <IconButton
-            ref={contextRef}
-            icon="filter"
-            title="Search Context"
-            pressed={s.context !== "any"}
-            onClick={() => setContextMenu(true)}
-          />
-          <IconButton icon="pin" title="Pin Window" pressed={s.pinned} onClick={() => setFindPopupPinned(!s.pinned)} />
         </header>
         <div className={styles.fields}>
           <div data-find-field ref={patternBoxRef}>

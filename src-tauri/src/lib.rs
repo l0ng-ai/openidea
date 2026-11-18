@@ -43,6 +43,8 @@ mod window_zoom;
 mod windows;
 #[cfg(windows)]
 mod windows_error_mode;
+#[cfg(windows)]
+mod windows_webview_recovery;
 
 use parking_lot::Mutex;
 use state::AppState;
@@ -137,6 +139,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
     #[cfg(not(target_os = "linux"))]
@@ -391,6 +395,11 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
+            if matches!(route.action.as_str(), "file.settings" | "file.newProjectsSettings")
+                && windows::open_settings_from_menu(app, &w, &route.action, route.arg.clone())
+            {
+                return;
+            }
             // The window to bring back to the front once what the action shows is closed (Settings).
             let mut return_to = None;
             let label = match windows::menu_destination(w.label(), &route.action) {

@@ -6,8 +6,8 @@
 //! parse instead of a full one.
 
 use super::{
-    Grammar, MAX_PARSE_BYTES, ParsedTree, Syntax, SyntaxHighlights, TreeError, folding, highlight, outline,
-    parse_cancellable, selection,
+    Grammar, MAX_PARSE_BYTES, ParsedTree, Syntax, SyntaxHighlights, TreeError, highlight, outline, parse_cancellable,
+    selection,
 };
 use crate::FoldRange;
 use ide_core::{DocId, LanguageId, OutlineItem, Range};
@@ -219,9 +219,10 @@ impl SyntaxCache {
             |m| &mut m.folding,
             || {
                 self.with_tree(doc, lang, version, text, |g, tree, text| {
-                    Some(folding::folding(g.spec, g.kinds(), tree, text, self.syntax.comment_tokens(lang)))
+                    Some(self.syntax.folding_with_scripts(g, tree, text, lang))
                 })
                 .or_else(|| super::external::folding(lang, text))
+                .or_else(|| self.syntax.web_folding(lang, text))
                 .or_else(|| Some(self.syntax.custom_folding(lang, text)))
             },
         )

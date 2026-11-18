@@ -272,10 +272,12 @@ export const commands = {
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
 	/**  The query consoles of data source `id`; `create` adds the next one first. */
 	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
+	dbCreateDatabase: (id: string, template: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_create_database", { id, template, statement })),
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
 	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
@@ -452,6 +454,11 @@ export const commands = {
 	 *  (a remote window passes the sides as text).
 	 */
 	diffExternalTool: (left: ExternalDiffSide, right: ExternalDiffSide, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("diff_external_tool", { left, right, title })),
+	/**
+	 *  An automatic save: `false` (nothing written) when the file changed on disk after the
+	 *  buffer was edited, which only an explicit save overwrites.
+	 */
+	docAutosave: (doc: DocId) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_autosave", { doc })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
@@ -977,6 +984,11 @@ export const commands = {
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`. */
 	pluginActivationEvent: (kind: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_activation_event", { kind, value })),
+	/**
+	 *  This window's clipboard for a plugin's `clipboardRequested`; false when the call no
+	 *  longer waits or asked another window.
+	 */
+	pluginAnswerClipboard: (requestId: string, answer: ClipboardAnswer) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_answer_clipboard", { requestId, answer })),
 	/**  The invoking window's reply to a plugin command request. */
 	pluginAnswerCommand: (requestId: string, answer: CommandAnswer) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_answer_command", { requestId, answer })),
 	/**
@@ -1285,8 +1297,12 @@ export const commands = {
 	 *  update live and undo the whole file's replacements in one step. Unsaved
 	 *  editor buffers are replaced in place and left unsaved; files that were not
 	 *  open are opened transiently, saved and closed.
+	 * 
+	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
+	 *  scope is searched again without the limit and every match in it is replaced,
+	 *  as IDEA does: `targets` then only carry the `skip` positions of their files.
 	 */
-	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, onEvent })),
+	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], allInScope: boolean, onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, allInScope, onEvent })),
 	/**  Before / after text of `path` for Replace › Preview (unsaved buffer included). */
 	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
@@ -1801,7 +1817,10 @@ export const commands = {
 	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
-	/**  The built-in server's URL for `path` (started on first use). */
+	/**
+	 *  The built-in server's URL for `path` (started on first use). A file whose language is
+	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
+	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
@@ -3376,6 +3395,15 @@ export type CliInstallation = {
 	pathDirectory: IpcPath | null,
 };
 
+/**  A window's answer to `ClipboardRequested`: its machine's clipboard. */
+export type ClipboardAnswer = 
+/**  `None` for a kind the clipboard doesn't hold; `png` is base64. */
+{ kind: "content"; text: string | null; png: string | null } | 
+/**  The user refused (a remote window asks first). */
+{ kind: "refused" } | 
+/**  The window could not read the clipboard. */
+{ kind: "failed"; message: string };
+
 export type CloseContext = {
 	/**  Quit is in progress (exit was already confirmed). */
 	quitting: boolean,
@@ -4916,6 +4944,12 @@ export type DirectoryCompareEntry = {
 	rightKind: EntryKind | null,
 	leftLink?: string | null,
 	rightLink?: string | null,
+	/**  File sizes in bytes; directories and symlinks have none. */
+	leftSize?: number | null,
+	rightSize?: number | null,
+	/**  Last modification, milliseconds since the Unix epoch. */
+	leftModified?: number | null,
+	rightModified?: number | null,
 };
 
 export type DirectoryCompareProgress = {
@@ -4935,6 +4969,17 @@ export type DirectoryHistory = {
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
 };
+
+/**  See [`IdeEvent::Direnv`]. */
+export type DirenvStatus = 
+/**  `direnv` is not installed (on the search path). */
+{ kind: "notInstalled" } | 
+/**  direnv refuses the `.envrc` until the user approves it with `direnv allow`. */
+{ kind: "blocked" } | 
+/**  `direnv export` failed or took too long: what it printed last. */
+{ kind: "failed"; message: string } | 
+/**  `.envrc`, `flake.nix` or `flake.lock` (a file name in the project root) changed. */
+{ kind: "changed"; file: string };
 
 export type DiscoveredProject = {
 	path: IpcPath,
@@ -6646,6 +6691,11 @@ export type IdeEvent =
  *  its server went away); the window's project is unreachable until it reconnects.
  */
 { type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+/**
+ *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
+ *  from changed and it can be reloaded.
+ */
+{ type: "direnv"; root: IpcPath; status: DirenvStatus } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
 /**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */
@@ -7377,6 +7427,10 @@ export type LanguageCodeStyle_Deserialize = {
 	lineCommentAtFirstColumn?: boolean | null,
 	/**  Comment Code › Add a space at line comment start. */
 	lineCommentAddSpace?: boolean | null,
+	/**  PHP: align `=>` in multi-line arrays after formatting (other languages ignore it). */
+	alignKeyValuePairs?: boolean | null,
+	/**  PHP: align `=` of consecutive assignment statements after formatting. */
+	alignConsecutiveAssignments?: boolean | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -7393,6 +7447,10 @@ export type LanguageCodeStyle_Serialize = {
 	lineCommentAtFirstColumn?: boolean | null,
 	/**  Comment Code › Add a space at line comment start. */
 	lineCommentAddSpace?: boolean | null,
+	/**  PHP: align `=>` in multi-line arrays after formatting (other languages ignore it). */
+	alignKeyValuePairs?: boolean | null,
+	/**  PHP: align `=` of consecutive assignment statements after formatting. */
+	alignConsecutiveAssignments?: boolean | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -8047,6 +8105,12 @@ export type MavenSettings = {
 	activeProfiles?: string,
 	/**  Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ). */
 	delegateBuild?: boolean,
+	/**
+	 *  Download `-sources.jar` of dependencies when the Java language server imports the
+	 *  project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
+	 *  from a library class's Download Sources banner.
+	 */
+	downloadSources?: boolean,
 };
 
 /**  Summary of one server discovered inside an external MCP configuration file. */
@@ -8830,7 +8894,12 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
  *  A command needs the window's Commit view: answer with
  *  `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
  */
-({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
+({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**
+ *  A command the user ran reads the clipboard (`ui.read-clipboard`): answer with
+ *  `plugin_answer_clipboard(request_id, …)`. Closed like a prompt (`PromptClosed`).
+ */
+({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent_Serialize = 
@@ -8933,7 +9002,12 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
  *  A command needs the window's Commit view: answer with
  *  `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
  */
-({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
+({ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+/**
+ *  A command the user ran reads the clipboard (`ui.read-clipboard`): answer with
+ *  `plugin_answer_clipboard(request_id, …)`. Closed like a prompt (`PromptClosed`).
+ */
+({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
@@ -9951,6 +10025,11 @@ export type ReplaceTarget = {
 	 *  Positions where no match starts any more are skipped.
 	 */
 	only?: Pos[] | null,
+	/**
+	 *  Start positions of matches to leave as they are (excluded or already
+	 *  replaced usages) when every other match in the file is replaced.
+	 */
+	skip?: Pos[] | null,
 };
 
 export type RepositoryComparison = {

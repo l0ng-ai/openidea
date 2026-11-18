@@ -311,6 +311,11 @@ async fn shutdown_does_not_wait_forever_for_a_stuck_capture() {
     shutdown_within(&f.host, std::time::Duration::from_millis(200)).await;
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert!(cancel.is_cancelled());
+    // The cleanup is only waited for briefly and finishes in the background on a busy machine.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while stuck_dir.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert!(!stuck_dir.exists(), "its directory is removed once the wait is over");
 }
 

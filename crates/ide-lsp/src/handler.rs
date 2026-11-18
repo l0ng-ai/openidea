@@ -65,6 +65,28 @@ pub(crate) fn lenient_diagnostics(server: &str, items: Value) -> Vec<lsp::Diagno
     parsed
 }
 
+/// rust-analyzer publishes its own analysis next to `cargo check`'s (flycheck): one type
+/// mismatch then arrives as `rust-analyzer(E0308)` and `rustc(E0308)`. Its own entry is
+/// dropped when the compiler reports the same code and severity over an overlapping range.
+fn drop_compiler_duplicates(diagnostics: &mut Vec<lsp::Diagnostic>) {
+    let overlaps = |a: &lsp::Range, b: &lsp::Range| a.start <= b.end && b.start <= a.end;
+    let compiler: Vec<(lsp::Range, Option<lsp::NumberOrString>, Option<lsp::DiagnosticSeverity>)> = diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("rustc") && d.code.is_some())
+        .map(|d| (d.range, d.code.clone(), d.severity))
+        .collect();
+    if compiler.is_empty() {
+        return;
+    }
+    diagnostics.retain(|d| {
+        d.source.as_deref() != Some("rust-analyzer")
+            || d.code.is_none()
+            || !compiler
+                .iter()
+                .any(|(range, code, severity)| code == &d.code && severity == &d.severity && overlaps(range, &d.range))
+    });
+}
+
 impl ClientHandler {
     pub fn new(mgr: Weak<LspManager>, server: Arc<Server>, generation: u64) -> Self {
         Self { mgr, server, generation }
@@ -293,6 +315,7 @@ impl ClientHandler {
             }
         };
         params.diagnostics = lenient_diagnostics(&self.server.name, raw.unwrap_or(Value::Null));
+        drop_compiler_duplicates(&mut params.diagnostics);
         let Some(path) = uri_to_path(params.uri.as_str())
             .or_else(|| crate::notebook::is_cell_uri(params.uri.as_str()).then(|| PathBuf::from(params.uri.as_str())))
         else {
@@ -435,6 +458,14 @@ impl ClientHandler {
                         .find_map(|base| section.split('.').try_fold(base, |v, key| v.get(key)))
                         .cloned()
                         .unwrap_or(Value::Null),
+                    None if self.server.name == "eslint" => {
+                        let mut settings = options.clone();
+                        settings["workspaceFolder"] = json!({
+                            "uri": crate::uri::path_to_uri(&self.server.root),
+                            "name": self.server.root.file_name().map_or_else(|| "root".into(), |name| name.to_string_lossy().into_owned()),
+                        });
+                        settings
+                    }
                     None => options.clone(),
                 })
                 .collect(),
@@ -527,7 +558,7 @@ impl Handler for ClientHandler {
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
                 if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
-                    tracing::warn!("[{}] {text}", self.server.name);
+                    tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                     // The tasks of the dead tsserver never see their `end`: end them now
                     // instead of letting them sit as zombies until the stale window, and
                     // stop holding queries back — the restarted instance re-reports.
@@ -554,12 +585,12 @@ impl Handler for ClientHandler {
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
-                        tracing::warn!("[{}] {text}", self.server.name);
+                        tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name);
                         mgr.report_import_failure(self.server.root.clone(), text.to_owned());
                     }
-                    Some(1) => tracing::warn!("[{}] {text}", self.server.name),
-                    Some(2 | 3) => tracing::info!("[{}] {text}", self.server.name),
-                    _ => tracing::debug!("[{}] {text}", self.server.name),
+                    Some(1) => tracing::warn!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    Some(2 | 3) => tracing::info!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
+                    _ => tracing::debug!(server = ?self.server.id, generation = self.generation, "[{}] {text}", self.server.name),
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
@@ -692,6 +723,28 @@ mod tests {
     use ide_core::{LanguageId, TaskId};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn rust_analyzer_s_own_entry_yields_to_the_compiler_s_for_the_same_error() {
+        let diagnostic = |source: &str, code: &str, line: u32, severity| lsp::Diagnostic {
+            range: lsp::Range::new(lsp::Position::new(line, 21), lsp::Position::new(line, 27)),
+            severity: Some(severity),
+            code: Some(lsp::NumberOrString::String(code.into())),
+            source: Some(source.into()),
+            message: format!("{source} {code}"),
+            ..Default::default()
+        };
+        let error = lsp::DiagnosticSeverity::ERROR;
+        let mut items = vec![
+            diagnostic("rust-analyzer", "E0308", 1, error),
+            diagnostic("rustc", "E0308", 1, error),
+            diagnostic("rust-analyzer", "E0308", 5, error),
+            diagnostic("rust-analyzer", "unused_variables", 1, lsp::DiagnosticSeverity::WARNING),
+        ];
+        drop_compiler_duplicates(&mut items);
+        let left: Vec<_> = items.iter().map(|d| (d.message.as_str(), d.range.start.line)).collect();
+        assert_eq!(left, [("rustc E0308", 1), ("rust-analyzer E0308", 5), ("rust-analyzer unused_variables", 1)]);
+    }
 
     #[test]
     fn tsserver_aborts_are_out_of_memory() {

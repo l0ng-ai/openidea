@@ -391,6 +391,12 @@
 .targetList {
   flex: 1;
 }
+.prefixPopup {
+  padding-block: var(--space-1);
+}
+.prefixList {
+  height: 100%;
+}
 .targetRow {
   flex: 1;
   min-width: 0;

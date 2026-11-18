@@ -988,6 +988,28 @@ fn folding_typescript_import_run_ending_with_multiline_import() {
 }
 
 #[test]
+fn folding_script_imports_in_web_containers() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+
+    let src = "<template><div/></template>\n<script setup lang=\"ts\">\nimport { ref, normalizeStyle } from 'vue'\nimport { Button, CheckableTagGroup, Divider, Space } from 'antdv-next'\n</script>\n";
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    for id in ["vue", "html", "svelte", "jsp"] {
+        let expected = (2, 3, FoldKind::Imports);
+        assert!(folds(id, src).contains(&expected), "{id}");
+        let doc = DocId::next();
+        cache.open(doc, &lang(id), 0);
+        let cached = cache.folding(doc, &lang(id), 0, src);
+        assert!(cached.iter().any(|f| (f.start_line, f.end_line, f.kind) == expected), "{id}");
+    }
+
+    let js = "<script>\r\nimport a from 'a'\r\nimport b from 'b'\r\n</script>\r\n";
+    assert!(folds("vue", js).contains(&(1, 2, FoldKind::Imports)));
+    let json = "<script type=\"application/json\">\nimport a from 'a'\nimport b from 'b'\n</script>\n";
+    assert!(!folds("vue", json).iter().any(|f| f.2 == FoldKind::Imports));
+}
+
+#[test]
 fn folding_xml_custom_regions() {
     for (start, end) in [
         ("<!--region要折叠的内容-->", "<!-- endregion -->"),
@@ -1078,6 +1100,77 @@ fn folding_python_bodies_start_at_header() {
             (5, 7, FoldKind::Region),
             (10, 11, FoldKind::Region),
         ]
+    );
+}
+
+#[test]
+fn folding_python_docstrings_are_comments() {
+    let src = r#""""Module doc.
+More.
+"""
+
+class A:
+    """Class doc.
+    More.
+    """
+    def f(self):
+        """Method doc.
+        More.
+        """
+        return 1
+"#;
+    assert_eq!(
+        folds("python", src),
+        vec![
+            (0, 2, FoldKind::Comment),
+            (4, 12, FoldKind::Region),
+            (5, 7, FoldKind::Comment),
+            (8, 12, FoldKind::Region),
+            (9, 11, FoldKind::Comment),
+        ]
+    );
+}
+
+#[test]
+fn folding_python_single_line_or_later_strings_are_not_docstrings() {
+    // A one-line docstring has nothing to fold; a multi-line string that is not
+    // the opening statement stays an ordinary string fold, not a doc comment.
+    let src = r#"x = 1
+"""Later string.
+Still later.
+"""
+
+def f():
+    """One line."""
+    return 1
+"#;
+    let found = folds("python", src);
+    assert!(!found.contains(&(1, 3, FoldKind::Comment)), "later string must not be a doc comment: {found:?}");
+    assert!(found.contains(&(1, 3, FoldKind::Region)), "later string still folds as a string: {found:?}");
+    assert!(!found.iter().any(|f| f.2 == FoldKind::Comment), "single-line docstring has no fold: {found:?}");
+}
+
+#[test]
+fn folding_elixir_doc_strings_are_comments() {
+    let src = r#"defmodule Foo do
+  @moduledoc """
+  Module doc.
+  More.
+  """
+
+  @doc ~S"""
+  Function doc.
+  More.
+  """
+  def bar, do: :ok
+
+  @doc "one line"
+  def baz, do: :ok
+end
+"#;
+    assert_eq!(
+        folds("elixir", src),
+        vec![(0, 14, FoldKind::Region), (1, 4, FoldKind::Comment), (6, 9, FoldKind::Comment),]
     );
 }
 

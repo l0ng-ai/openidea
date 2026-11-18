@@ -369,6 +369,17 @@ describe("streamed replies", () => {
     expect(container.querySelector("details p")?.textContent).toBe("text");
   });
 
+  it("renders LaTeX math across streamed blocks", () => {
+    const text = "Inline $a + b$.\n\n$$\n\\frac{1}{2}\n$$\n\nTail";
+    const blocks = markdownBlocks(text);
+    expect(blocks).toHaveLength(3);
+    expect(blocks.join("")).toBe(text);
+    const { container } = render(<Markdown text={text} cwd="/repo" />);
+    expect(container.querySelectorAll(".katex")).toHaveLength(2);
+    expect(container.querySelector(".katex-display")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy Code" })).toBeNull();
+  });
+
   it("cuts only what streamed on after the blocks that ended", () => {
     const before = markdownBlocks("One.\n\nTwo.\n\nThr");
     const after = markdownBlocks("One.\n\nTwo.\n\nThree.\n\n- a", before);
