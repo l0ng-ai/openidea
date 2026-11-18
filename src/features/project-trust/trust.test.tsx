@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { confirmProjectTrust } from "@/platform/projectTrust";
 import { executeAction } from "@/platform/actions";
 import { emitLocalIdeEvent } from "@/platform/ipc";
@@ -163,6 +163,24 @@ it("adds a picked folder as a trusted location from settings", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Add folder…" }));
   await act(async () => {});
   expect(addLocation).toHaveBeenCalledTimes(1);
+});
+
+it("lists restricted projects, which a trusted location doesn't cover, and trusts one from settings", async () => {
+  const Page = useSettingsPages.getState().pages.get("projectTrust")!.component!;
+  listDecisions.mockResolvedValue({
+    status: "ok",
+    data: { projects: [], locations: ["/projects"], restricted: ["/projects/app"] },
+  });
+  render(<Page />);
+  expect(await screen.findByRole("heading", { name: "Restricted projects" })).toBeTruthy();
+  listDecisions.mockResolvedValue({
+    status: "ok",
+    data: { projects: ["/projects/app"], locations: ["/projects"], restricted: [] },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Trust" }));
+  await waitFor(() => expect(screen.queryByRole("heading", { name: "Restricted projects" })).toBeNull());
+  expect(decide).toHaveBeenCalledWith("/projects/app", true, false);
+  expect(screen.getByText("/projects/app")).toBeTruthy();
 });
 
 it.each(["Trust Project", "Preview in Restricted Mode"])(
