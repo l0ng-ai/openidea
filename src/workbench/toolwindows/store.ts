@@ -557,6 +557,13 @@ export function focusToolWindow(id: string) {
   update({ focusRequest: { id, seq: ++focusSeq }, lastActive: id }, false);
 }
 
+/** Whether Hide All Tool Windows would now restore the windows it hid (nothing visible, a stash kept). */
+export function toolWindowsRestorable(
+  s: Pick<ToolWindowLayoutState, "visible" | "stashed"> = useToolWindowLayout.getState(),
+) {
+  return !!s.stashed && !SLOTS.some((slot) => s.visible[slot]);
+}
+
 /** Hides every visible window; called again with nothing visible, restores them. */
 export function hideAllToolWindows() {
   const s = useToolWindowLayout.getState();

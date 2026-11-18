@@ -384,6 +384,7 @@ const ICONS = {
   "db-foreign-key": "openidea/database/foreignKey",
   "db-index": "openidea/database/index",
   "db-schema": "openidea/database/schema",
+  "db-database": "openidea/database/database",
   "db-console": "openidea/database/console",
   "db-matview": "openidea/database/matview",
   "db-routine": "openidea/database/routine",

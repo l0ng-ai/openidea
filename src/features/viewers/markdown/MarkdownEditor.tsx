@@ -41,6 +41,7 @@ import {
 import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
+import { renderMath } from "@/editor/lsp/markdownMath";
 import { modeOf, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
@@ -184,8 +185,11 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     });
   }, [html]);
 
+  // Math before the preview index: typesetting changes the blocks' heights.
   useLayoutEffect(() => {
-    if (ref.current) invalidatePreviewIndex(ref.current);
+    if (!ref.current) return;
+    renderMath(ref.current);
+    invalidatePreviewIndex(ref.current);
   }, [html]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.

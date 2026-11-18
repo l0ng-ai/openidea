@@ -243,6 +243,21 @@ describe("tool window persistence", () => {
 });
 
 describe("tool window actions", () => {
+  it("titles Hide All Tool Windows 'Restore Tool Windows' while it would restore them", async () => {
+    const dispose = installToolWindowActions();
+    try {
+      showToolWindow("terminal");
+      expect(getAction("toolwindow.hideAll")?.title).toBe("Hide All Tool Windows");
+      await executeAction("toolwindow.hideAll");
+      expect(getAction("toolwindow.hideAll")?.title).toBe("Restore Tool Windows");
+      await executeAction("toolwindow.hideAll");
+      expect(isToolWindowVisible("terminal")).toBe(true);
+      expect(getAction("toolwindow.hideAll")?.title).toBe("Hide All Tool Windows");
+    } finally {
+      dispose();
+    }
+  });
+
   it("registers toolwindow.<id> and generic actions", async () => {
     const dispose = installToolWindowActions();
     expect(getAction("toolwindow.terminal")?.title).toBe("Terminal");

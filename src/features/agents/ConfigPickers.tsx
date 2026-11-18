@@ -450,7 +450,7 @@ function CostBadge({ category }: { category: string | null | undefined }) {
 }
 
 /** Accessible segmented pill selector (`role="radiogroup"`) with Left/Right arrow navigation. */
-function SegmentedControl({
+export function SegmentedControl({
   ariaLabel,
   options,
   value,

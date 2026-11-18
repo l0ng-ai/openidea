@@ -18,24 +18,13 @@ import {
   registerMenuGroup,
   registerMenuSlotItem,
   registerOverlay,
-  registerSettingsPages,
   registerStatusItem,
   registerToolWindow,
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import {
-  AGENTS_GROUP,
-  HOME_KIND,
-  MCP_PAGE,
-  POLICY_PAGE,
-  REGISTRY_PAGE,
-  SESSION_KIND,
-  TASK_DRAG,
-  TOOL_WINDOW,
-  WORKING_STATUS_PAGE,
-  providerIcon,
-} from "./model";
+import { activateSettingsPages } from "./settingsPages";
+import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
@@ -56,45 +45,7 @@ import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  return registerSettingsPages([
-    {
-      id: REGISTRY_PAGE,
-      title: "Coding Agents",
-      group: AGENTS_GROUP,
-      // First in Agents, which sits after Languages & Frameworks and before Tools.
-      order: 450,
-      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
-      component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-    },
-    {
-      id: WORKING_STATUS_PAGE,
-      title: "Working Status",
-      group: AGENTS_GROUP,
-      // After Chat.
-      order: 465,
-      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
-      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
-    },
-    {
-      id: MCP_PAGE,
-      title: "External MCP Servers",
-      group: AGENTS_GROUP,
-      order: 475,
-      keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
-      component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
-    },
-    {
-      id: POLICY_PAGE,
-      title: "Command Permissions",
-      group: AGENTS_GROUP,
-      order: 490,
-      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
-      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
-    },
-  ]);
-}
+export { activateSettingsPages } from "./settingsPages";
 
 export function activate(): () => void {
   const sync = (root: string | null | undefined) => {

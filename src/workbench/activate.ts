@@ -99,10 +99,3 @@ export function activateWorkbench(): () => void {
   ];
   return () => disposers.reverse().forEach((d) => d());
 }
-
-/** Shell services for a secondary window (Settings): notifications, platform info, browser guards. */
-export function activateSecondaryWindow(): () => void {
-  provideNotificationService(notificationServiceImpl);
-  void loadPlatformInfo();
-  return installBrowserGuards();
-}
