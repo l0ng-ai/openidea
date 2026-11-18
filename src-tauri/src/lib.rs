@@ -391,6 +391,11 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
+            if matches!(route.action.as_str(), "file.settings" | "file.newProjectsSettings")
+                && windows::open_settings_from_menu(app, &w, &route.action, route.arg.clone())
+            {
+                return;
+            }
             // The window to bring back to the front once what the action shows is closed (Settings).
             let mut return_to = None;
             let label = match windows::menu_destination(w.label(), &route.action) {
