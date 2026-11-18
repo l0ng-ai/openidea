@@ -3,24 +3,33 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
   AgentConfigOption,
+  AgentEntry,
   AgentEvent,
   AgentModelCatalog,
   AgentProvider,
+  AgentTask,
   NewAgentTask,
   ProjectInfo,
 } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
+import type { EditorInput } from "@/workbench/contributions";
 import { HomeEditor } from "./HomeEditor";
 import { activate } from "./index";
+import { SESSION_KIND, sessionKey } from "./model";
+import { SessionEditor } from "./SessionEditor";
 import { HOME, connect, savedDraft, updateComposer, useAgents } from "./store";
 
 const backend = vi.hoisted(() => ({
+  activeInput: null as EditorInput | null,
+  tasks: [] as AgentTask[],
   providers: [] as AgentProvider[],
   channel: null as { onmessage: (event: AgentEvent) => void } | null,
   refresh: vi.fn(),
   create: vi.fn(),
+  setConfig: vi.fn(),
+  prompt: vi.fn(),
   notify: vi.fn(),
 }));
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
@@ -36,7 +45,7 @@ vi.mock("@/platform/ipc", async (original) => ({
   commands: {
     agentSubscribe: async (channel: typeof backend.channel) => {
       backend.channel = channel;
-      return ok([]);
+      return ok(backend.tasks);
     },
     agentProviders: async () => ok(backend.providers),
     agentRefreshModels: (provider: string, force: boolean, model: string | null) =>
@@ -44,16 +53,21 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentProbe: async () => ok(null),
     agentCommands: async () => ok([]),
     vcsBranchInfo: async () => ok({ head: "main" }),
+    vcsConfigGet: async () => ok(null),
     vcsBranches: async () => ok([]),
     agentCreate: (request: NewAgentTask) => backend.create(request),
+    agentEntries: async () => ok([{ type: "user", text: "Earlier message", attachments: [] }] satisfies AgentEntry[]),
+    agentChanges: async () => ok([]),
+    agentSetConfig: (task: string, id: string, value: string) => backend.setConfig(task, id, value),
+    agentPrompt: backend.prompt,
   },
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
-  maybeEditorService: () => ({ activePath: () => null }),
+  maybeEditorService: () => ({ activePath: () => null, activeInput: () => backend.activeInput }),
   editorService: () => ({
     activePath: () => null,
-    activeInput: () => null,
+    activeInput: () => backend.activeInput,
     openTabs: () => [],
     closeInput: () => false,
   }),
@@ -122,6 +136,9 @@ beforeEach(async () => {
   previousProject = useProject.getState().project;
   useProject.setState({ project: { root: "/models", trusted: true } as ProjectInfo });
   setContext("projectOpen", true);
+  backend.activeInput = null;
+  backend.tasks = [];
+  backend.setConfig.mockReset().mockResolvedValue(ok(null));
   backend.providers = [provider("first"), provider("second")];
   backend.refresh.mockReset().mockImplementation(async (id: string) => ok(catalog(id)));
   backend.create
@@ -141,6 +158,96 @@ afterEach(async () => {
   vi.useRealTimers();
   await vi.dynamicImportSettled();
   clearMocks();
+});
+
+it("refreshes an existing chat's searchable model choices and switches through its own option", async () => {
+  const task: AgentTask = {
+    id: "old-task",
+    title: "Old chat",
+    provider: "second",
+    status: "ready",
+    isolation: "local",
+    model: "old",
+    cwd: "/models",
+    branch: null,
+    base: null,
+    baseCommit: null,
+    error: null,
+    createdMs: 0,
+    updatedMs: 0,
+    config: [
+      { ...option("session-model", "model", ["old", "session-only"]), name: "Model" },
+      option("effort", "thought_level", ["low", "high"], "low"),
+      { ...option("mode", "mode", ["plan", "act"]), name: "Mode" },
+    ],
+    commands: [],
+    usage: null,
+    queue: [],
+  };
+  const input = { kind: SESSION_KIND, key: sessionKey(task.id), data: { task: task.id } };
+  backend.providers[1]!.config = [option("catalog-model", "model", ["second-cached"])];
+  backend.tasks = [task];
+  backend.activeInput = input;
+  await connect();
+  const draft = useAgents.getState().draft;
+  const fresh = catalog("second", {
+    config: [option("catalog-model", "model", ["fresh"]), option("catalog-only", "context_tier", ["large"])],
+    thoughtLevels: { old: [option("catalog-effort", "thought_level", ["max"])] },
+  });
+  backend.refresh.mockRejectedValueOnce(new Error("discovery offline"));
+
+  render(<SessionEditor input={input} />);
+  expect(await screen.findByText("Earlier message")).toBeVisible();
+  const modelButton = screen.getByRole("button", { name: "Model" });
+  fireEvent.click(modelButton);
+  expect(await screen.findByRole("alert")).toHaveTextContent("discovery offline");
+  expect(screen.getByRole("option", { name: "session-only" })).toBeVisible();
+  expect(screen.getByRole("option", { name: "second-cached" })).toBeVisible();
+  expect(backend.refresh.mock.calls).toEqual([["second", false, null]]);
+  expect(screen.queryByRole("option", { name: "big" })).not.toBeInTheDocument();
+
+  const pending = deferred<CatalogReply>();
+  backend.refresh.mockReturnValueOnce(pending.promise);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+  expect(screen.getByRole("button", { name: "Refreshing…" })).toBeDisabled();
+  await act(async () => executeAction("agents.refreshModels"));
+  expect(backend.refresh.mock.calls).toEqual([
+    ["second", false, null],
+    ["second", true, null],
+  ]);
+  await act(async () => pending.resolve(ok(fresh)));
+
+  expect(modelButton).toHaveTextContent("old");
+  expect(screen.getByRole("option", { name: "session-only" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("plan");
+  expect(screen.getByText("Earlier message")).toBeVisible();
+  expect(screen.queryByText("catalog-only")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(backend.setConfig).not.toHaveBeenCalled();
+  expect(backend.create).not.toHaveBeenCalled();
+  expect(backend.prompt).not.toHaveBeenCalled();
+  expect(useAgents.getState().draft).toBe(draft);
+
+  fireEvent.change(screen.getByPlaceholderText("Search…"), { target: { value: "fresh" } });
+  fireEvent.click(screen.getByRole("option", { name: "fresh" }));
+  expect(backend.setConfig).toHaveBeenCalledExactlyOnceWith("old-task", "session-model", "fresh");
+  expect(modelButton).toHaveTextContent("old");
+  act(() =>
+    backend.channel!.onmessage({
+      type: "task",
+      task: { ...task, config: [{ ...task.config[0]!, current: "fresh" }, task.config[2]!] },
+    }),
+  );
+  expect(modelButton).toHaveTextContent("fresh");
+  expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
+  expect(screen.getByText("Earlier message")).toBeVisible();
+  expect(backend.prompt).not.toHaveBeenCalled();
+
+  await act(async () => executeAction("agents.refreshModels"));
+  expect(backend.refresh).toHaveBeenLastCalledWith("second", true, null);
+  expect(backend.refresh).toHaveBeenCalledTimes(3);
+  expect(useAgents.getState().draft).toBe(draft);
 });
 
 it("keeps cached choices usable while refreshing and shares the completion/cooldown from another window", async () => {
