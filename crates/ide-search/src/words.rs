@@ -44,6 +44,7 @@ pub fn files_with_word(
         scope: SearchScope::Directory { path: query.dir.clone().into() },
         max_matches: u32::MAX,
         context: SearchContext::Any,
+        include_excluded: false,
     };
     let stop = cancel.child_token();
     let found = Mutex::new(WordFiles::default());

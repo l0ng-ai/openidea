@@ -121,6 +121,7 @@ impl PluginWorkspace for TestWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit,
             context: Default::default(),
+            include_excluded: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
