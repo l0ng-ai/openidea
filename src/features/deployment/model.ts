@@ -88,8 +88,27 @@ export function resolveServer(settings: DeploymentSettingsValid, id: string | nu
 
 export const serverLabel = (s: Pick<DeploymentServerValid, "id" | "name">) => s.name.trim() || s.id;
 
+/** The default target when it is a server group: its name and servers, in upload order. */
+export function defaultGroup(
+  settings: DeploymentSettingsValid,
+): { name: string; servers: DeploymentServerValid[] } | null {
+  const group = settings.groups.find((g) => g.id === settings.defaultServer);
+  if (!group) return null;
+  const servers = group.servers.flatMap((id) => settings.servers.find((s) => s.id === id) ?? []);
+  return { name: group.name.trim() || group.id, servers };
+}
+
 /** Transfer entries of the Deployment menu: named after the default server, choosers when there are several. */
 export function transferMenuEntries(settings: DeploymentSettingsValid): { action: string; label?: string }[] {
+  // A default group uploads to each of its servers; downloads and syncs pick one server.
+  const group = defaultGroup(settings);
+  if (group)
+    return [
+      { action: "deployment.uploadToDefault", label: tx`Upload to ${group.name}` },
+      { action: "deployment.uploadTo" },
+      { action: "deployment.downloadFrom" },
+      { action: "deployment.syncWith" },
+    ];
   const target = resolveServer(settings, null);
   const name = target && serverLabel(target);
   const named = target
