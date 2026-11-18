@@ -561,6 +561,23 @@ fn detect_maven(root: &Path, excluded_poms: &[PathBuf], out: &mut Vec<RunConfig>
     }
 }
 
+/// Configurations of the Maven / Gradle builds in `dirs`: the builds a user linked explicitly,
+/// however deep below `root` or outside it (ids and working directory then absolute).
+pub(crate) fn detect_builds(root: &Path, dirs: &[PathBuf]) -> Vec<RunConfig> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        if dir.join("pom.xml").is_file() {
+            detect_maven_build(root, dir, &mut out);
+        }
+        if GRADLE_SETTINGS.iter().chain(GRADLE_BUILDS).any(|name| dir.join(name).is_file()) {
+            detect_gradle_build(root, dir, &mut out);
+        }
+    }
+    let mut seen = HashSet::new();
+    out.retain(|c| seen.insert(c.id.clone()));
+    out
+}
+
 fn detect_maven_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
     let Some(text) = collect_texts(dir, &["pom.xml"]) else { return };
     let scope = Scope::new(root, dir);

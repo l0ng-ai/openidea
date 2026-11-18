@@ -2438,5 +2438,19 @@
   "Instructions for Generate Commit Message with Agent": "Instructions for Generate Commit Message with Agent",
   "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.": "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.",
   "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.",
-  "Choose Include Path": "Choose Include Path"
+  "Choose Include Path": "Choose Include Path",
+  "direnv is not installed": "direnv is not installed",
+  "This project has an .envrc. Install direnv so terminals, run configurations and language servers get its environment, then reload the environment.": "This project has an .envrc. Install direnv so terminals, run configurations and language servers get its environment, then reload the environment.",
+  "The project's .envrc is blocked": "The project's .envrc is blocked",
+  "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.": "direnv runs it only once you allow it. Review it, run direnv allow in the project folder, then reload the environment.",
+  "Could not load the direnv environment": "Could not load the direnv environment",
+  "{file} changed": "{file} changed",
+  "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.": "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.",
+  "Show files only on left": "Show files only on left",
+  "Show files only on right": "Show files only on right",
+  "Add as Maven Project": "Add as Maven Project",
+  "This Maven project is not loaded": "This Maven project is not loaded",
+  "Load Maven Project": "Load Maven Project",
+  "Skip": "Skip",
+  "Resize Markdown preview": "Resize Markdown preview"
 }

@@ -141,6 +141,12 @@ export function formatDate(ms: number | null | undefined): string {
   return ms ? formatDay(new Date(ms), undefined, true) : "";
 }
 
+export function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
 /** Parses a git progress line ("Receiving objects:  45% (9/20)") into a fraction. */
 export function progressFraction(line: string): number | null {
   const m = /(\d{1,3})%/.exec(line);

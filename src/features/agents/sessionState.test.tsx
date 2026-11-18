@@ -7,7 +7,8 @@ import { EditorShownProvider } from "@/workbench/contributions";
 import { hideContextMenu, useContextMenuStore } from "@/ui";
 import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
-import { SessionEditor, conversationRows } from "./SessionEditor";
+import { SessionEditor } from "./SessionEditor";
+import { conversationRows } from "./session/conversationRows";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import {
   disconnect,

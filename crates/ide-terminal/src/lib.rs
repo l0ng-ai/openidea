@@ -187,14 +187,16 @@ impl TerminalManager {
         let mut cmd = CommandBuilder::new(&shell);
         cmd.args(&args);
         // wsl.exe takes the directory through `--cd`; a UNC share is no valid process cwd.
-        cmd.cwd(if exact {
+        let cwd = if exact {
             options.cwd.0.clone()
         } else if wsl.is_some() {
             resolve_cwd(Path::new(""))
         } else {
             resolve_cwd(&options.cwd)
-        });
-        for (k, v) in ide_core::process::host_env_fixes() {
+        };
+        cmd.cwd(&cwd);
+        // In a project folder: the project's environment (its direnv `.envrc`) too.
+        for (k, v) in ide_core::process::host_env_fixes_in(&cwd) {
             match v {
                 Some(v) => cmd.env(k, v),
                 None => cmd.env_remove(k),

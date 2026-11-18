@@ -479,6 +479,23 @@ async fn dart_file_watching_requires_an_explicit_registration() {
 // ------------------------------------------------------------------ tests
 
 #[tokio::test(flavor = "multi_thread")]
+async fn servers_start_once_the_project_environment_has_loaded() {
+    let h = harness(&[("mock", incremental_caps())]);
+    // The project's direnv environment (a Nix devshell) is still being read.
+    ide_core::project_env::begin_loading(&h.root);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Starting).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let server = h.launcher.state("mock");
+    assert_eq!(server.launches.load(Ordering::SeqCst), 0);
+    ide_core::project_env::set(&h.root, vec![("OPENIDEA_TEST_DEVSHELL".into(), Some("1".into()))]);
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert_eq!(server.launches.load(Ordering::SeqCst), 1);
+    ide_core::project_env::remove(&h.root);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn linked_projects_initialize_separate_language_server_roots() {
     let h = harness(&[("mock", incremental_caps())]);
     let first = tempfile::tempdir().unwrap();
@@ -3609,6 +3626,51 @@ async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     h.open("a.mk", "x");
     h.wait_status("framework", ServerStatus::Ready).await;
     h.wait_status("alt", ServerStatus::Ready).await;
+}
+
+/// #4061: an Angular template opened under another spelling of the project's
+/// (canonical) path, other letter case on macOS or a symlinked folder, still
+/// gets the Angular server, which answers hover and Go to Declaration there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
+    let h = harness_configured("mock", "html", &[("framework", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["angular.json".into()];
+        cfg.require_root_marker = true;
+    });
+    std::fs::write(h.root.join("angular.json"), "{}").unwrap();
+    let app = h.root.join("apps/myapp/src/app");
+    std::fs::create_dir_all(&app).unwrap();
+    let (template, component) = (app.join("example.component.html"), app.join("example.component.ts"));
+    std::fs::write(&template, "<button (click)=\"onConfirm()\">Confirm</button>\n").unwrap();
+    std::fs::write(&component, "export class ExampleComponent {\n  onConfirm() {}\n}\n").unwrap();
+    let framework = h.launcher.state("framework");
+    framework.respond("textDocument/hover", json!({ "contents": "(method) ExampleComponent.onConfirm(): void" }));
+    let target = Range::new(Pos::new(1, 2), Pos::new(1, 11));
+    let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
+    framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
+
+    let links = tempfile::tempdir().unwrap();
+    let mut spellings = Vec::new();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&h.root, links.path().join("linked")).unwrap();
+        spellings.push(links.path().join("linked").join(template.strip_prefix(&h.root).unwrap()));
+    }
+    // Only on a case-insensitive disk (macOS, Windows).
+    let upper = PathBuf::from(template.to_string_lossy().to_uppercase());
+    if upper.exists() {
+        spellings.push(upper);
+    }
+    for path in spellings {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &path, &h.lang, 1, "<button (click)=\"onConfirm()\">Confirm</button>\n");
+        eventually(|| framework.docs.lock().contains_key(&uri_of(&path))).await;
+        let hover = h.mgr.hover(doc, Pos::new(0, 20), Default::default()).await.unwrap();
+        assert!(hover.is_some_and(|h| h.contents.value.contains("onConfirm")), "{}", path.display());
+        let defs = h.mgr.goto(doc, Pos::new(0, 20), GotoKind::Definition).await.unwrap();
+        assert_eq!((&*defs[0].path, defs[0].range), (component.as_path(), target), "{}", path.display());
+    }
+    assert_eq!(h.statuses("framework").iter().filter(|s| **s == ServerStatus::Starting).count(), 1);
 }
 
 /// A server that `replaces` another (a PHP server with its own Laravel support and

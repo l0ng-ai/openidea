@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   prompt: vi.fn(),
   openDiff: vi.fn(),
 }));
-vi.mock("../DirectoryCompare", () => ({ showDirectoryComparison: mocks.show }));
+vi.mock("../directoryCompareKind", () => ({ showDirectoryComparison: mocks.show }));
 vi.mock("../dialogs", () => ({ promptText: mocks.prompt }));
 vi.mock("../diffInput", () => ({ openDiff: mocks.openDiff, openVcsDiff: mocks.openDiff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.pick }));

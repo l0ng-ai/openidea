@@ -121,6 +121,10 @@ Turn on **Modify options › Paths to ".env" files** to load one or more `.env` 
 
 With **Include system environment variables** on, the process also gets the IDE's environment and the variables of your login shell.
 
+### direnv and Nix flakes
+
+When a trusted project has an `.envrc` in its root, the IDE runs `direnv export json` there (`direnv` must be installed) and gives what it exports to terminals, run configurations, language servers, build tools and debuggers started in the project. Language servers wait until it has loaded; an `.envrc` with `use flake` loads the flake's devshell this way, which can take a while the first time. The IDE never runs `direnv allow` for you: when the `.envrc` is blocked, a notification says so. After you edit `.envrc`, `flake.nix` or `flake.lock`, a notification offers **Reload Environment**.
+
 ### Modify options
 
 | Group            | Option                                                                                                                                                    |

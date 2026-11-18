@@ -649,6 +649,11 @@ impl LspManager {
             .unwrap_or_else(|| self.project_root.clone())
     }
 
+    /// `path` as the project's roots spell it ([`ide_language::project_spelling`]).
+    fn in_project_spelling<'a>(&self, path: &'a Path) -> std::borrow::Cow<'a, Path> {
+        ide_language::project_spelling(path, |p| p.starts_with(self.project_root_for(p)))
+    }
+
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
@@ -684,6 +689,7 @@ impl LspManager {
     /// only files below one, and stands in for no other. One that a server before
     /// it `replaces` is left out while that server serves the file.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        let path = &*self.in_project_spelling(path);
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
         }
@@ -835,6 +841,9 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
+            // The project's direnv environment (a Nix devshell) may hold the server and its
+            // toolchain: start once it has loaded.
+            ide_core::project_env::wait(&tail.root, &launch_cancel);
             if !me.execution_allowed.load(Ordering::Acquire) {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }

@@ -120,7 +120,7 @@ fn collect(
                 break;
             }
         }
-        let program = process::program_path(&step.program, &step.env);
+        let program = process::program_path(&step.program, &step.env, &step.cwd);
         inputs.push(program.clone());
         // Maven installed via a symlink still reads conf from its distribution.
         if let Ok(program) = dunce::canonicalize(program)
@@ -131,7 +131,7 @@ fn collect(
             }
         }
         if !environment.contains_key("JAVA_HOME") {
-            let java = process::program_path(if cfg!(windows) { "java.exe" } else { "java" }, &step.env);
+            let java = process::program_path(if cfg!(windows) { "java.exe" } else { "java" }, &step.env, &step.cwd);
             inputs.push(java.clone());
             if let Ok(java) = dunce::canonicalize(java)
                 && let Some(home) = java.parent().and_then(Path::parent)
@@ -171,7 +171,7 @@ fn collect(
     let steps = plan
         .steps
         .iter()
-        .map(|s| (process::program_path(&s.program, &s.env), s.args.clone(), s.cwd.clone(), s.env.clone()))
+        .map(|s| (process::program_path(&s.program, &s.env, &s.cwd), s.args.clone(), s.cwd.clone(), s.env.clone()))
         .collect();
     // Profiles and plugins can read arbitrary environment variables. Keep a signature
     // of the inherited environment without persisting unrelated credentials.

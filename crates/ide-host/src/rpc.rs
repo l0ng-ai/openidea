@@ -184,6 +184,7 @@ pub fn client_accepts(event: &IdeEvent) -> bool {
         | IdeEvent::UpdateAvailable { .. } => false,
         IdeEvent::DbSourcesChanged
         | IdeEvent::ProjectTrustChanged { .. }
+        | IdeEvent::Direnv { .. }
         | IdeEvent::FsChanged { .. }
         | IdeEvent::ExcludedDirsChanged { .. }
         | IdeEvent::DocPatched { .. }

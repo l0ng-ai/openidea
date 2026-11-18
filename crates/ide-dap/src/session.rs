@@ -979,20 +979,18 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     let mut cmd = CommandBuilder::new(program);
     // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
     cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
-    for (k, v) in ide_core::process::host_env_fixes() {
+    let cwd = args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()).map_or(s.spec.cwd.as_path(), Path::new);
+    for (k, v) in ide_core::process::host_env_fixes_in(cwd) {
         match v {
             Some(v) => cmd.env(k, v),
             None => cmd.env_remove(k),
         }
     }
-    for (k, v) in ide_core::process::shell_env() {
+    for (k, v) in ide_core::process::shell_env_in(cwd) {
         cmd.env(k, v);
     }
     cmd.env("TERM", "xterm-256color");
-    match args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
-        Some(cwd) => cmd.cwd(cwd),
-        None => cmd.cwd(&s.spec.cwd),
-    }
+    cmd.cwd(cwd);
     if let Some(env) = args.get("env").and_then(Value::as_object) {
         for (k, v) in env {
             match v.as_str() {
@@ -1163,6 +1161,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     let classpath =
         std::env::join_paths(strings("classPaths")).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let mut cmd = tokio::process::Command::new(java);
+    cmd.current_dir(&s.spec.cwd);
     ide_core::process::prepare(cmd.as_std_mut());
     cmd.args(kotlin_jvm_args(strings("vmArguments"), cfg!(windows)))
         // Let the JVM pick its own port (`:0`) and report it below: pre-picking a free
@@ -1181,8 +1180,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
             .ok_or_else(|| ide_core::IdeError::invalid("Missing Kotlin main class"))?,
     )
     .args(strings("programArgs"))
-    .current_dir(&s.spec.cwd)
-    .envs(ide_core::process::shell_env())
+    .envs(ide_core::process::shell_env_in(&s.spec.cwd))
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())

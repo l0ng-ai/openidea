@@ -4930,6 +4930,12 @@ export type DirectoryCompareEntry = {
 	rightKind: EntryKind | null,
 	leftLink?: string | null,
 	rightLink?: string | null,
+	/**  File sizes in bytes; directories and symlinks have none. */
+	leftSize?: number | null,
+	rightSize?: number | null,
+	/**  Last modification, milliseconds since the Unix epoch. */
+	leftModified?: number | null,
+	rightModified?: number | null,
 };
 
 export type DirectoryCompareProgress = {
@@ -4949,6 +4955,17 @@ export type DirectoryHistory = {
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
 };
+
+/**  See [`IdeEvent::Direnv`]. */
+export type DirenvStatus = 
+/**  `direnv` is not installed (on the search path). */
+{ kind: "notInstalled" } | 
+/**  direnv refuses the `.envrc` until the user approves it with `direnv allow`. */
+{ kind: "blocked" } | 
+/**  `direnv export` failed or took too long: what it printed last. */
+{ kind: "failed"; message: string } | 
+/**  `.envrc`, `flake.nix` or `flake.lock` (a file name in the project root) changed. */
+{ kind: "changed"; file: string };
 
 export type DiscoveredProject = {
 	path: IpcPath,
@@ -6660,6 +6677,11 @@ export type IdeEvent =
  *  its server went away); the window's project is unreachable until it reconnects.
  */
 { type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+/**
+ *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
+ *  from changed and it can be reloaded.
+ */
+{ type: "direnv"; root: IpcPath; status: DirenvStatus } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
 /**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */
