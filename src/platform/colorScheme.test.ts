@@ -72,6 +72,19 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-keyword: #224466 !important");
   });
 
+  it("offers a Julia scheme page and scopes Julia overrides to Julia editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "julia.functionCall")?.path).toEqual(["Julia"]);
+    expect(ATTRIBUTES.find((a) => a.id === "julia.className")?.path).toEqual(["Julia"]);
+    const css = schemeCss("dark", {
+      dark: { "julia.functionCall": { foreground: "#224466" }, "julia.className": { italic: true } },
+    });
+    expect(css).toContain('.cm-editor[data-language="Julia"]');
+    expect(css).toContain('.cm-editor [data-language="Julia"]');
+    expect(css).toContain("--syn-function-call: #224466 !important");
+    expect(css).toContain("--syn-type-italic: italic !important");
+    expect(css.indexOf('.cm-editor[data-language="Julia"]')).toBeGreaterThan(css.indexOf(":root"));
+  });
+
   it("groups Python attributes as PyCharm's color settings page does", () => {
     const python = (name: string) => ATTRIBUTES.find((a) => a.id === `py${name}`)!;
     expect(python("Number").name).toBe("Number");

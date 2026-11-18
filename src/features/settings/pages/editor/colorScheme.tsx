@@ -767,6 +767,40 @@ const SAMPLES: Record<string, CodeSample> = {
       [["}", "java.operator"]],
     ],
   },
+  Julia: {
+    code: [
+      [["# Julia", "julia.lineComment"]],
+      [
+        ["struct ", "julia.keyword"],
+        ["Point", "julia.className"],
+        ["{", "julia.operator"],
+      ],
+      [["    x::Float64", "julia.identifier"]],
+      [["end", "julia.keyword"]],
+      [],
+      [
+        ["function ", "julia.keyword"],
+        ["distance", "julia.functionDeclaration"],
+        ["(p::", "julia.operator"],
+        ["Point", "julia.className"],
+        [")", "julia.operator"],
+      ],
+      [["    norm((p.x, p.y))", "text"]],
+      [["end", "julia.keyword"]],
+      [],
+      [
+        ["@show ", "julia.metadata"],
+        ["distance", "julia.functionCall"],
+        ["(", "julia.operator"],
+        ["Point", "julia.functionCall"],
+        ["(", "julia.operator"],
+        ["1.0", "julia.number"],
+        [", ", "julia.operator"],
+        ["2.0", "julia.number"],
+        ["))", "julia.operator"],
+      ],
+    ],
+  },
   Go: {
     code: [
       [["package ", "go.keyword"], ["palette"]],
