@@ -54,6 +54,11 @@ export function validateFileTypeOverrides(raw: unknown): Record<string, string> 
   return out;
 }
 
+/** Settings key of a file: project-relative inside the project, else absolute. */
+export function overrideKey(path: string, root: string | null): string {
+  return root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+}
+
 /** Built-in file name patterns of a language definition: `*.ext` and file names. */
 export function builtinPatterns(lang: Pick<LanguageInfo, "extensions" | "filenames">): string[] {
   return [...lang.extensions.map((e) => `*.${e}`), ...(lang.filenames ?? [])];

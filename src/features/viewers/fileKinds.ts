@@ -1,8 +1,15 @@
 /** Which files open in which viewer, and the editor inputs of the viewers. */
 import type { EditorInput } from "@/workbench/contributions";
-import { wildcardMatch } from "@/platform/fileTypes";
+import {
+  overrideKey,
+  userFileType,
+  validateFileTypeOverrides,
+  validateFileTypes,
+  wildcardMatch,
+} from "@/platform/fileTypes";
 import type { FileProbe } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
 
 export const IMAGE_KIND = "image";
 export const BINARY_KIND = "binary";
@@ -18,7 +25,23 @@ function extension(path: string): string {
 
 export const isImagePath = (path: string) => IMAGE_EXTENSIONS.has(extension(path));
 export const isSvgPath = (path: string) => extension(path) === "svg";
-export const isMarkdownPath = (path: string) => MARKDOWN_EXTENSIONS.has(extension(path));
+
+/**
+ * Whether `path` gets the Markdown preview, decided synchronously so a tab never opens
+ * without it first. Settings › File Types apply in the order of `LanguageRegistry::detect`:
+ * Override File Type, the user's patterns, then the built-in extensions they left in place.
+ */
+export function isMarkdownPath(path: string): boolean {
+  const { settings, project } = useProject.getState();
+  const assoc = validateFileTypes(settings?.files?.fileTypes);
+  const overrides = validateFileTypeOverrides(settings?.files?.fileTypeOverrides);
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const assigned = overrides[overrideKey(path, project?.root ?? null)] ?? userFileType(assoc, name);
+  if (assigned) return assigned === "markdown";
+  const ext = extension(path);
+  const removed = assoc.markdown?.removedPatterns.some((p) => p.toLowerCase() === `*.${ext}`);
+  return MARKDOWN_EXTENSIONS.has(ext) && !removed;
+}
 
 /** Whether the file's name matches one of `patterns` (`*.xlsx`); Windows/macOS match case-insensitively. */
 export function associatedApplication(
