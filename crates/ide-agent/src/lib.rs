@@ -20,6 +20,7 @@ mod native;
 mod provider;
 pub mod registry;
 pub mod security;
+mod shell;
 mod skills;
 mod timeline;
 mod worktree;
@@ -475,6 +476,8 @@ struct Task {
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
     deleted: Mutex<bool>,
+    /// Finished `!` shell commands waiting for the next real prompt (#4339).
+    pending_shell: Mutex<Vec<shell::PendingShell>>,
 }
 
 impl AgentManager {
@@ -915,13 +918,17 @@ impl AgentManager {
     pub async fn prompt(&self, id: &str, prompt: AgentPrompt, now: bool) -> IdeResult<()> {
         let task = self.task(id)?;
         let prompt = clean(prompt).ok_or_else(|| IdeError::invalid("empty message"))?;
-        // An agent that takes messages mid-turn gets it right away.
-        let prompt = match now {
-            true => match task.steer(prompt).await {
-                Ok(()) => return Ok(()),
-                Err(prompt) => prompt,
-            },
-            false => prompt,
+        // `!` shell never steers into the agent; it runs (or queues) as its own turn.
+        let prompt = if shell::bang_command(&prompt.text).is_some() {
+            prompt
+        } else {
+            match now {
+                true => match task.steer(prompt).await {
+                    Ok(()) => return Ok(()),
+                    Err(prompt) => prompt,
+                },
+                false => prompt,
+            }
         };
         let start = {
             let mut s = task.state.lock();
@@ -1905,6 +1912,7 @@ impl Task {
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
             deleted: Mutex::new(false),
+            pending_shell: Mutex::new(Vec::new()),
         })
     }
 
@@ -2125,13 +2133,23 @@ impl Task {
     /// the user stops one. The caller set `busy`.
     async fn run(self: Arc<Self>, mut prompt: AgentPrompt) {
         loop {
-            self.checkout_before_turn().await;
-            let result = self.turn(&prompt).await;
-            self.cancel_pending.store(false, Ordering::Release);
-            tokio::time::sleep(TURN_GRACE).await;
-            self.record_turn_changes().await;
-            let changed = self.state.lock().conversation.end_turn(Some(now_ms()));
-            self.mark_dirty(changed);
+            let result = if let Some(cmd) = shell::bang_command(&prompt.text) {
+                // `! <command>`: shell in the task cwd, no agent turn (#4339).
+                self.checkout_before_turn().await;
+                let stop = self.run_shell(cmd.to_owned()).await;
+                self.cancel_pending.store(false, Ordering::Release);
+                self.record_turn_changes().await;
+                Ok(stop)
+            } else {
+                self.checkout_before_turn().await;
+                let result = self.turn(&prompt).await;
+                self.cancel_pending.store(false, Ordering::Release);
+                tokio::time::sleep(TURN_GRACE).await;
+                self.record_turn_changes().await;
+                let changed = self.state.lock().conversation.end_turn(Some(now_ms()));
+                self.mark_dirty(changed);
+                result
+            };
             let send_now = self.send_now.swap(false, Ordering::AcqRel);
             let next = {
                 let mut s = self.state.lock();
@@ -2173,6 +2191,45 @@ impl Task {
                 (None, Err(failure)) => return self.fail(failure),
             }
         }
+    }
+
+    /// Runs a composer `!` shell command and records it as an execute tool entry.
+    async fn run_shell(self: &Arc<Self>, command: String) -> String {
+        let tool_id = format!("shell:{}", uuid::Uuid::new_v4().simple());
+        let index = self.push_entry(AgentEntry::Tool {
+            id: tool_id,
+            title: command.clone(),
+            kind: "execute".into(),
+            status: AgentToolStatus::Running,
+            locations: vec![],
+            output: None,
+            diffs: vec![],
+        });
+        self.set_status(AgentStatus::Running, None);
+        let cwd = self.state.lock().task.cwd.0.clone();
+        let this = Arc::clone(self);
+        let (output, exit) = shell::run_command(&command, &cwd, || this.cancel_pending.load(Ordering::Acquire)).await;
+        let cancelled = exit.is_none();
+        let status = if cancelled {
+            AgentToolStatus::Failed
+        } else if exit == Some(0) {
+            AgentToolStatus::Completed
+        } else {
+            AgentToolStatus::Failed
+        };
+        {
+            let mut s = self.state.lock();
+            if let Some(AgentEntry::Tool { status: st, output: out, .. }) = s.conversation.main.entries.get_mut(index) {
+                *st = status;
+                *out = Some(output.clone());
+            }
+            s.task.updated_ms = now_ms();
+        }
+        self.pending_shell.lock().push(shell::PendingShell { command, output, exit });
+        self.mark_dirty([(None, index)]);
+        self.persist();
+        self.emit_task();
+        if cancelled { "cancelled".into() } else { "end_turn".into() }
     }
 
     /// Drops an idle resumable live session so the next turn reloads it.
@@ -2473,7 +2530,12 @@ impl Task {
         } else {
             Vec::new()
         };
-        blocks(prompt, &contents)
+        let mut out = blocks(prompt, &contents);
+        let pending = std::mem::take(&mut *self.pending_shell.lock());
+        for item in &pending {
+            out.push(json!({ "type": "text", "text": shell::context_block(item) }));
+        }
+        out
     }
 
     /// What a failed request means for the user: signed out, out of quota, or the agent's message.
