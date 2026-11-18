@@ -871,6 +871,69 @@ pub(crate) fn merge_init_options(cfg: &mut LanguageServerConfig, layer: Value) {
     }
 }
 
+/// The settings section a Python type checker reads its analysis settings from:
+/// basedpyright uses its own section, Pyright the `python` one. `None` for servers
+/// that have no `analysis.extraPaths` (ty, pyrefly, Ruff, pylsp, …).
+fn python_analysis_section(name: &str) -> Option<&'static str> {
+    match name {
+        "basedpyright" => Some("basedpyright"),
+        "pyright" => Some("python"),
+        _ => None,
+    }
+}
+
+/// Adds attached dependency roots to basedpyright/Pyright's `analysis.extraPaths`, so
+/// imports into projects configured in Project Structure › Dependencies resolve in the
+/// editor too — not just in the IDE's own index/navigation.
+///
+/// Existing paths (from the user's `pyrightconfig.json` / `[tool.basedpyright]`, or a
+/// container run target) are kept first and de-duplicated: `merge` replaces arrays
+/// wholesale, so it cannot be used here. Paths are IPC-style (`/`-separated) to match
+/// the container snapshot's `extraPaths`.
+pub fn configure_python_extra_paths(cfg: &mut LanguageServerConfig, roots: &[PathBuf]) {
+    let Some(section) = python_analysis_section(&cfg.name) else { return };
+    if roots.is_empty() {
+        return;
+    }
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    if !current.is_object() {
+        current = json!({});
+    }
+    let analysis = current
+        .as_object_mut()
+        .expect("object")
+        .entry("settings")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("settings object")
+        .entry(section)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("section object")
+        .entry("analysis")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("analysis object")
+        .entry("extraPaths")
+        .or_insert_with(|| json!([]));
+    let mut paths: Vec<String> = analysis
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+    for root in roots {
+        let path = ide_core::ipc_path::to_ipc(root);
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    *analysis = json!(paths);
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot add extraPaths to initialization options: {e}", cfg.name),
+    }
+}
+
 /// Editor › Inspections › Java: "Serializable class without 'serialVersionUID'" (off by default,
 /// as in IntelliJ IDEA). ECJ reports it, so it is a compiler option rather than a filter.
 pub const SERIAL_VERSION_INSPECTION: &str = "java:missing-serial-version";

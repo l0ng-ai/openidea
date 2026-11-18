@@ -180,7 +180,14 @@ impl Host {
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
+                let container_python = effective.languages.python.run_target().is_some();
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
+                // Attached dependency projects are source, so basedpyright/Pyright should
+                // resolve imports into them. A container target already supplies its own
+                // `extraPaths` (the site-packages snapshot); don't mix local sources into it.
+                if !container_python {
+                    ide_sdk::apply::configure_python_extra_paths(cfg, &python_dependency_roots(&effective, root));
+                }
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
@@ -1483,6 +1490,19 @@ fn member_dependencies_for<'a>(map: &'a BTreeMap<String, Vec<String>>, own_key: 
     map.iter().find(|(key, _)| ide_core::ipc_path::to_ipc(&PathBuf::from(key)) == own_key).map(|(_, deps)| deps)
 }
 
+/// Dependency roots of `root`, for a Python language server's `analysis.extraPaths`.
+/// In a workspace a member depends only on the roots picked for it in Project
+/// Structure › Dependencies; outside one, the project-level `dependencies` list applies.
+fn python_dependency_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+    let own_key = ide_core::ipc_path::to_ipc(root);
+    let configured = if ide_workspace::workspace::Workspace::load(root).ok().flatten().is_some() {
+        member_dependencies_for(&settings.project_structure.member_dependencies, &own_key).cloned().unwrap_or_default()
+    } else {
+        settings.project_structure.dependencies.clone()
+    };
+    configured.into_iter().map(|p| PathBuf::from(p.trim())).filter(|p| p.is_absolute() && p.is_dir()).collect()
+}
+
 fn extra_content_roots(
     settings: &ide_core::settings::Settings,
     root: &Path,
@@ -2215,6 +2235,38 @@ mod content_roots_tests {
             vec![dep.to_string_lossy().into_owned(), root.to_string_lossy().into_owned()];
         let roots = content_roots(&settings, &root, &tmp.path().join("build"), false);
         assert_eq!(roots, vec![shared, dep]);
+    }
+
+    #[test]
+    fn python_dependency_roots_use_project_dependencies_outside_a_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("app");
+        let dep = tmp.path().join("lib");
+        let missing = tmp.path().join("gone");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&dep).unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        settings.project_structure.dependencies =
+            vec![dep.to_string_lossy().into_owned(), missing.to_string_lossy().into_owned(), "relative".into()];
+        assert_eq!(super::python_dependency_roots(&settings, &root), vec![dep]);
+    }
+
+    #[test]
+    fn python_dependency_roots_use_the_members_own_picks_inside_a_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let (app, lib, other) = (ws.join("app"), ws.join("lib"), ws.join("other"));
+        for dir in [&app, &lib, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        ide_workspace::workspace::Workspace::attach(&app, "ws", vec![app.clone(), lib.clone(), other.clone()]).unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        let key = |p: &std::path::Path| ide_core::ipc_path::to_ipc(p);
+        settings.project_structure.member_dependencies.insert(key(&app), vec![key(&lib)]);
+        settings.project_structure.member_dependencies.insert(key(&other), vec![key(&app)]);
+        // Project-level dependencies are ignored: inside a workspace, members pick their own.
+        settings.project_structure.dependencies = vec![key(&other)];
+        assert_eq!(super::python_dependency_roots(&settings, &app), vec![lib]);
     }
 
     #[test]
