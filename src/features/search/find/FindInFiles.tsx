@@ -41,6 +41,7 @@ import {
   groupState,
   loadReplacePreview,
   markDone,
+  mayMatchLineBreak,
   nextPending,
   pendingUsages,
   replacePreviewLines,
@@ -362,8 +363,14 @@ function FindInFilesDialog() {
       });
       clearPreviewCache();
       setPreviewVersion((v) => v + 1);
-      // Replacements that add or remove lines (or a stopped run) invalidate the positions found.
-      if (summary.cancelled || /\n|\\n/.test(s.replacement)) {
+      // Positions found are stale when lines were added or removed (a multi-line replacement or
+      // match), the run stopped, or a target no longer matched (#4082): search again.
+      if (
+        summary.cancelled ||
+        /\n|\\n/.test(s.replacement) ||
+        mayMatchLineBreak(s.pattern, s.isRegex) ||
+        summary.replacements < usages.length
+      ) {
         setRerun((r) => r + 1);
         return null;
       }

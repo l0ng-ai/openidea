@@ -231,6 +231,7 @@ describe("markdown preview rendering", () => {
     });
     expect(resolveLink(file, "javascript:alert(1)")).toBeNull();
     expect(joinPath("C:/repo/docs", "../a.md")).toBe("C:/repo/a.md");
+    expect(joinPath("C:/repo/docs", "D:/shared/a.md")).toBe("D:/shared/a.md");
     expect(joinPath("/repo", "../../a.md")).toBe("/a.md");
   });
 
