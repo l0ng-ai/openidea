@@ -218,6 +218,11 @@
   max-width: 100%;
   margin-inline: auto;
   box-sizing: border-box;
+  /* Each row paints into its own layer, leaving the stream's scrolled contents empty. WebKit
+     never frees that layer's surfaces when its height keeps crossing 2048px (turns fold and
+     unfold below the limit while a reply streams), and the app process grows by ~1 GB per
+     40 crossings. */
+  will-change: transform;
 }
 .conversationRow {
   min-width: 0;

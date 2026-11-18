@@ -111,6 +111,10 @@ function adjoins(state: EditorState, from: number, to: number): boolean {
  * block in every language that has them.
  */
 export function docComments(state: EditorState): DocComment[] {
+  // Languages without a CodeMirror grammar (Zig, GDScript…) have no syntax tree to walk.
+  // Find their doc comments from the text instead: a `///` / `//!` run or a `/** */` block
+  // that owns its lines, exactly as the tree walk below would.
+  if (!syntaxTree(state).length) return textDocComments(state);
   const out: DocComment[] = [];
   /** The block comment being assembled, until a node ends it with the closing marker. */
   let open: DocComment | null = null;
@@ -160,6 +164,59 @@ export function docComments(state: EditorState): DocComment[] {
       return false;
     },
   });
+  return out;
+}
+
+/**
+ * Doc comments of a document with no syntax tree, from its lines alone. Zig's `///` and
+ * `//!` and other unparsed languages' doc comments are recognized by the same markers as
+ * the tree walk; `finish` applies the same "owns its line" rule.
+ */
+function textDocComments(state: EditorState): DocComment[] {
+  // Only where the language's own comments use these markers: not plain text, logs or `#` languages.
+  const tokens = state.languageDataAt<{ line?: string; block?: { open: string } }>("commentTokens", 0)[0];
+  const lineDocs = tokens?.line === "//";
+  const blockDocs = tokens?.block?.open === "/*";
+  if (!lineDocs && !blockDocs) return [];
+  const out: DocComment[] = [];
+  const ws = (text: string) => /^[ \t]*/.exec(text)![0].length;
+  const finish = (comment: DocComment) => {
+    comment.text = state.doc.sliceString(comment.from, comment.to);
+    out.push(comment);
+  };
+  let open: DocComment | null = null;
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const line = state.doc.line(n);
+    const indent = ws(line.text);
+    const text = line.text.slice(indent);
+    if (open) {
+      open.to = line.to;
+      if (text.trimEnd().endsWith("*/")) {
+        finish(open);
+        open = null;
+      }
+      continue;
+    }
+    const from = line.from + indent;
+    if (blockDocs && blockDocAt(text)) {
+      const comment: DocComment = { from, to: line.to, style: "block", text: "" };
+      if (text.length > 3 && text.trimEnd().endsWith("*/")) finish(comment);
+      else open = comment;
+      continue;
+    }
+    if (!lineDocs || !lineDocAt(text)) continue;
+    const previous = out.at(-1);
+    if (
+      previous?.style === "line" &&
+      state.doc.lineAt(previous.to).number === n - 1 &&
+      adjoins(state, previous.to, from)
+    ) {
+      previous.to = line.to;
+      previous.text = state.doc.sliceString(previous.from, line.to);
+      continue;
+    }
+    finish({ from, to: line.to, style: "line", text: "" });
+  }
   return out;
 }
 

@@ -2,7 +2,7 @@
 import { useMemo, useRef, useState } from "react";
 import { tx } from "@/platform/i18n";
 import { Button, Checkbox, IconButton, Input, Select, T } from "@/ui";
-import { registerSettingsPage, useSettingsForm } from "@/workbench/contributions";
+import { registerSettingsPages, useSettingsForm } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 import { localizeContributions, usePluginCatalogs } from "./pluginText";
 import { itemsOf } from "./projection";
@@ -372,24 +372,20 @@ function PluginSecrets({ pluginId }: { pluginId: string }) {
 export function projectSettings(pluginId: string, decl: SettingsDecl): () => void {
   const id = pluginSettingsPageId(pluginId);
   const pages = decl.pages ?? [];
-  const dispose = [
-    registerSettingsPage({
+  return registerSettingsPages([
+    {
       id,
       title: decl.title,
       projectScope: true,
       keywords: ["plugin", pluginId, ...keywords(decl)],
       component: pages.length ? undefined : settingsPage(pluginId, decl),
-    }),
-  ];
-  for (const p of pages)
-    dispose.push(
-      registerSettingsPage({
-        id: `${id}.settings:${p.id}`,
-        title: p.title,
-        projectScope: true,
-        keywords: [pluginId, decl.title, ...keywords(p)],
-        component: settingsPage(pluginId, p),
-      }),
-    );
-  return () => dispose.forEach((d) => d());
+    },
+    ...pages.map((p) => ({
+      id: `${id}.settings:${p.id}`,
+      title: p.title,
+      projectScope: true,
+      keywords: [pluginId, decl.title, ...keywords(p)],
+      component: settingsPage(pluginId, p),
+    })),
+  ]);
 }

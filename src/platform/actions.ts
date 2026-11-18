@@ -140,17 +140,34 @@ export function registerAction(action: Action): () => void {
 }
 
 export function registerActions(actions: Action[]): () => void {
-  const disposers = actions.map(addSource);
+  const owned = new Map<string, Action>();
+  for (const action of actions) {
+    sources.set(action.id, action);
+    owned.set(action.id, action);
+  }
   // One state update for the batch: features register dozens of actions at start-up,
   // and cloning the whole map per action made that O(n²).
-  if (actions.length) {
+  if (owned.size) {
     useActions.setState((s) => {
       const next = new Map(s.actions);
-      for (const action of actions) next.set(action.id, localize(action));
+      for (const [id, action] of owned) next.set(id, localize(action));
       return { actions: next };
     });
   }
-  return () => disposers.forEach((d) => d());
+  return () => {
+    const removed: string[] = [];
+    for (const [id, action] of owned) {
+      if (sources.get(id) !== action) continue;
+      sources.delete(id);
+      removed.push(id);
+    }
+    if (!removed.length) return;
+    useActions.setState((s) => {
+      const next = new Map(s.actions);
+      for (const id of removed) next.delete(id);
+      return { actions: next };
+    });
+  };
 }
 
 export function getAction(id: string): Action | undefined {

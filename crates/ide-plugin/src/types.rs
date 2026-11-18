@@ -866,6 +866,14 @@ pub struct Endpoint {
     pub location: Location,
 }
 
+/// The clipboard as `ui.read-clipboard` returns it (API 1.11): `None` for a kind it doesn't
+/// hold; `image` is PNG bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardContent {
+    pub text: Option<String>,
+    pub image: Option<Vec<u8>>,
+}
+
 /// A notification button that runs one of the publishing plugin's commands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
