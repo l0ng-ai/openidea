@@ -8,6 +8,7 @@ import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, type FileProbe } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
 import { openWithSystemApp } from "@/platform/fileManager";
+import { onFileTypesChange } from "@/platform/fileTypes";
 import { basename, useProject } from "@/platform/project";
 import { fileIconName, lazyComponent } from "@/ui";
 import {
@@ -82,17 +83,11 @@ function markdownActions(): Action[] {
   ];
 }
 
-const fileTypesKey = ({ settings }: ReturnType<typeof useProject.getState>) =>
-  JSON.stringify([settings?.files?.fileTypes, settings?.files?.fileTypeOverrides]);
-
 export function activate(): () => void {
   const probes = new Map<string, Promise<FileProbe>>();
   const disposers = [
     // Open tabs gain or lose the Markdown preview when File Types change.
-    useProject.subscribe((s, prev) => {
-      if (s.settings !== prev.settings && fileTypesKey(s) !== fileTypesKey(prev))
-        useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }));
-    }),
+    onFileTypesChange(() => useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }))),
     // Files associated with another application (Settings › Editor › File Types)
     // win over the viewers below; a failed launch falls through to them.
     registerExternalFileOpenHandler({

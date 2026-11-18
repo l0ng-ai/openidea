@@ -6,6 +6,7 @@
  * model and mirrors the name matching for the UI (file icons).
  */
 import type { LanguageInfo_Serialize as LanguageInfo } from "./ipc";
+import { useProject } from "./project";
 
 export interface FileTypeAssociation {
   /** Added file name patterns (`*.foo`, `Jenkinsfile`, `Dockerfile.*`). */
@@ -187,6 +188,16 @@ export function hasFileType(
     extensions.has(pattern.slice(2)) &&
     !languages.some((l) => assoc[l]?.removedPatterns.some((p) => p.toLowerCase() === pattern))
   );
+}
+
+const fileTypesKey = ({ settings }: ReturnType<typeof useProject.getState>) =>
+  JSON.stringify([settings?.files?.fileTypes, settings?.files?.fileTypeOverrides]);
+
+/** Calls `listener` when Settings › File Types (associations or overrides) change. */
+export function onFileTypesChange(listener: () => void): () => void {
+  return useProject.subscribe((s, prev) => {
+    if (s.settings !== prev.settings && fileTypesKey(s) !== fileTypesKey(prev)) listener();
+  });
 }
 
 /** File name standing for a language when picking its icon (`x.py`). */
