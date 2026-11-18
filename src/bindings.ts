@@ -971,7 +971,10 @@ export const commands = {
 	notebookReload: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_reload", { id })),
 	notebookRestart: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_restart", { id })),
 	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
+	/**  Attaches a view to the shared document and returns its kernel state. */
+	notebookSessionInfo: (id: string) => typedError<NotebookSessionInfo, IdeError>(__TAURI_INVOKE("notebook_session_info", { id })),
 	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_undo", { id })),
+	notebookViewCloseDecision: (id: string, begin: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("notebook_view_close_decision", { id, begin })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
@@ -1817,6 +1820,12 @@ export const commands = {
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
+	/**  Moves a live editor into an auxiliary window owned by the same project window. */
+	windowDetachEditor: (launch: EditorWindowLaunch, position: {
+	x: number | null,
+	y: number | null,
+} | null) => typedError<OpenOutcome, IdeError>(__TAURI_INVOKE("window_detach_editor", { launch, position })),
+	windowEditorHandoff: (id: string, action: EditorHandoffAction) => typedError<EditorHandoffState, IdeError>(__TAURI_INVOKE("window_editor_handoff", { id, action })),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -1886,6 +1895,8 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	windowReleaseEditorInput: (key: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_release_editor_input", { key })),
+	windowRetainEditorInput: (key: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_retain_editor_input", { key })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
 	/**
@@ -1922,6 +1933,8 @@ export const commands = {
 	diffBeforeFiles: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment: DeploymentLaunch | null,
+	/**  A live editor tab moving within this project's application instance. */
+	editor: EditorWindowLaunch | null,
 } | null>("window_take_launch"),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
 	/**  Fills the work area without the platform zoom animation. Returns whether it is filled now. */
@@ -5322,6 +5335,11 @@ export type EditorConfigProps = {
 	maxLineLength: number | null,
 };
 
+export type EditorDropPosition = {
+	x: number | null,
+	y: number | null,
+};
+
 /**  Editor › General (mouse, scrolling, soft wraps, virtual space, saving). */
 export type EditorGeneralSettings = {
 	/**  Change font size with ⌘ + mouse wheel. */
@@ -5348,6 +5366,10 @@ export type EditorGeneralSettings = {
 	/**  Copy as rich text (HTML with syntax colours) by default. */
 	richTextCopy?: boolean,
 };
+
+export type EditorHandoffAction = "status" | "ready" | "commit" | "finish" | "cancel";
+
+export type EditorHandoffState = "opening" | "ready" | "committed" | "finished" | "cancelled";
 
 export type EditorSettings = EditorSettings_Serialize | EditorSettings_Deserialize;
 
@@ -5496,6 +5518,12 @@ export type EditorTabsSettings = {
 	closingPolicy?: string,
 	/**  When the current tab is closed activate the `left` | `right` | `mru` tab. */
 	activateOnClose?: string,
+};
+
+export type EditorWindowLaunch = {
+	id: string,
+	source: string,
+	payload: string,
 };
 
 /**  Editor › File Encodings. */
@@ -6769,7 +6797,7 @@ remember: boolean } |
  */
 { type: "notebookKernel"; 
 /**  Backend document incarnation; stale queued events cannot target a reopen. */
-id: string; path: IpcPath; state: string; message: string | null };
+id: string; path: IpcPath; state: string; message: string | null } | { type: "notebookChanged"; id: string; path: IpcPath };
 
 /**  An identifier-like token whose text equals the searched name. */
 export type IdentifierOccurrence = {
@@ -7635,6 +7663,8 @@ export type Launch_Deserialize = {
 	diffBeforeFiles?: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
+	/**  A live editor tab moving within this project's application instance. */
+	editor?: EditorWindowLaunch | null,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -7664,6 +7694,8 @@ export type Launch_Serialize = {
 	diffBeforeFiles: boolean,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment: DeploymentLaunch | null,
+	/**  A live editor tab moving within this project's application instance. */
+	editor: EditorWindowLaunch | null,
 };
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
@@ -8509,6 +8541,12 @@ export type NotebookOutputEvent = {
 	version: number,
 	dirty: boolean,
 	changedCells: string[],
+};
+
+export type NotebookSessionInfo = {
+	snapshot: NotebookSnapshot,
+	running: boolean,
+	kernel: string,
 };
 
 export type NotebookSnapshot = {

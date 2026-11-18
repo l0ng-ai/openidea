@@ -57,6 +57,46 @@ pub async fn window_open_file_in_new_window(
     windows::open_file_in_new_window(&app, project, file)
 }
 
+/// Moves a live editor into an auxiliary window owned by the same project window.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_detach_editor(
+    app: AppHandle,
+    window: WebviewWindow,
+    launch: windows::EditorWindowLaunch,
+    position: Option<windows::EditorDropPosition>,
+) -> IdeResult<OpenOutcome> {
+    windows::detach_editor(&app, &window, launch, position)
+}
+
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_editor_handoff(
+    window: Window,
+    state: State<'_, WindowsState>,
+    id: String,
+    action: windows::EditorHandoffAction,
+) -> IdeResult<windows::EditorHandoffState> {
+    state.editor_handoff(window.label(), &id, action)
+}
+
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_retain_editor_input(window: Window, state: State<'_, WindowsState>, key: String) -> IdeResult<()> {
+    state.retain_editor_input(window.label(), key);
+    Ok(())
+}
+
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_release_editor_input(window: Window, state: State<'_, WindowsState>, key: String) -> IdeResult<bool> {
+    Ok(state.release_editor_input(window.label(), key))
+}
+
 /// [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
 /// Remote Development); a new window connects itself.
 #[desktop_command(trust = always)]
@@ -860,6 +900,8 @@ ide_command::desktop_domain!(
     window_close_context,
     window_complete_launch,
     window_cycle,
+    window_detach_editor,
+    window_editor_handoff,
     window_flash_taskbar,
     window_is_fullscreen,
     window_new,
@@ -872,6 +914,8 @@ ide_command::desktop_domain!(
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_release_editor_input,
+    window_retain_editor_input,
     window_set_titlebar_height,
     window_take_launch,
     window_toggle_fullscreen,

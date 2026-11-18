@@ -21,6 +21,8 @@ import { installWindowTitle } from "./title";
 import { installLaunchHandling, installLightEditAutoClose, windowActions } from "./windows";
 import { WorkspaceDialogHost } from "./WorkspaceDialog";
 import { installWindowGroups } from "@/platform/windowGroups";
+import { installProjectResourceHost } from "@/platform/projectResources";
+import { installProjectWindowActionHost } from "@/platform/projectWindowActions";
 
 /** The UI locale of a secondary (Settings, comparison) window. */
 export const activateLocale = installLocaleSync;
@@ -49,6 +51,8 @@ export function activate(): () => void {
     registerPowerSaveBanner(),
     registerInvalidateCachesActions(),
     installMenuBridge(),
+    installProjectResourceHost(),
+    installProjectWindowActionHost(),
     installWindowTitle(),
     installCloseGuard(),
     installLaunchHandling(),

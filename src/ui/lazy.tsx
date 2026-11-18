@@ -36,7 +36,13 @@ export function lazyComponent<P extends object>(load: () => Promise<ComponentTyp
     }, [Component]);
     return Component ? <Component {...props} /> : null;
   }
+  componentLoaders.set(LazyComponent, get);
   return LazyComponent;
+}
+
+const componentLoaders = new WeakMap<object, () => Promise<unknown>>();
+export async function preloadComponent(component: object): Promise<void> {
+  await componentLoaders.get(component)?.();
 }
 
 /**

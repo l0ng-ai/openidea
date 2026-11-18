@@ -136,13 +136,13 @@ export async function saveAll() {
     notifications().notify({
       group: "vcs",
       level: "error",
-      title: tx("Could not save diff"),
+      title: tx("Could not save"),
       body: errorMessage(error),
     });
     throw error;
   }
   try {
-    await maybeEditorService()?.saveAll();
+    await maybeEditorService()?.saveAll({ includeOtherWindows: false });
   } catch {
     // Saving is best effort; git then works on what is on disk.
   }

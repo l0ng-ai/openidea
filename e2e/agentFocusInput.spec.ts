@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import type { AgentEntry, AgentTask } from "../src/bindings";
-import { expect, openFromTree, test } from "./fixtures";
+import { expect, openFromTree, test, waitForWorkbench } from "./fixtures";
 
 type Placement = "editor" | "toolWindow";
 
@@ -416,6 +416,7 @@ test("dragging the Changes pane's edge resizes it for the next session too", asy
 
   // The next session starts with the dragged width.
   await page.reload();
+  await waitForWorkbench(page);
   await seedTasks(page, "editor");
   await seedChanges(page);
   await expect.poll(async () => Math.round((await changes.boundingBox())!.width)).toBe(Math.round(widened));

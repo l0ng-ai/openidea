@@ -11,7 +11,14 @@ import {
 } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
 import { ProviderAcquisitions } from "@/workbench/providerAcquisition";
-import { closeNotebook, existingNotebookSession, notebookBackend, notebookSession, notebookSessions } from "./session";
+import {
+  closeNotebook,
+  existingNotebookSession,
+  notebookBackend,
+  notebookSession,
+  notebookSessions,
+  type NotebookSession,
+} from "./session";
 
 const acquisitions = new ProviderAcquisitions<NotebookSnapshot>(
   (snapshot) => existingNotebookSession(snapshot.path)?.getState().snapshot?.id === snapshot.id,
@@ -27,9 +34,7 @@ const document: EditorDocumentLifecycle = {
   save: async (input) => {
     if (input.path) await existingNotebookSession(input.path)?.save();
   },
-  prepareClose: async (input) => {
-    if (input.path) await existingNotebookSession(input.path)?.prepareClose();
-  },
+  prepareClose: async (input) => (input.path ? existingNotebookSession(input.path)?.prepareClose() : undefined),
   cancelClose: (input) => {
     if (input.path) existingNotebookSession(input.path)?.cancelClose();
   },
@@ -51,6 +56,17 @@ export function activate(): () => void {
   const disposers = [
     registerEditorKind({
       kind: "notebook",
+      transfer: {
+        capture: (input) => (input.path ? existingNotebookSession(input.path)?.captureTransfer() : null),
+        adopt: async (input, state) => {
+          if (input.path) {
+            const session = notebookSession(input.path);
+            if (state) await session.adoptTransfer(state as Awaited<ReturnType<NotebookSession["captureTransfer"]>>);
+            else await session.load();
+          }
+        },
+        release: (input) => (input.path ? closeNotebook(input.path) : undefined),
+      },
       restorable: true,
       document,
       component: lazyComponent(() => import("./NotebookEditor").then((m) => m.NotebookEditor)),

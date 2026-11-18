@@ -20,6 +20,7 @@ import {
   type TransactionSpec,
 } from "@codemirror/state";
 import { historyField } from "@codemirror/commands";
+import { foldState } from "@codemirror/language";
 import { EditorView, ViewPlugin, keymap, tooltips, type ViewUpdate } from "@codemirror/view";
 import {
   _addEditor,
@@ -57,6 +58,11 @@ export interface Reveal {
   center?: boolean;
 }
 
+export interface SlotTransferState {
+  state: Record<string, unknown>;
+  view: { anchor: number; head: number; topLine?: number; left?: number };
+}
+
 /** Hidden views kept for showing again, least recently hidden first. */
 const KEPT_VIEWS = 8;
 const keptSlots: EditorSlot[] = [];
@@ -81,6 +87,7 @@ export class EditorSlot {
   private pendingReveal: Reveal | null = null;
   /** First visible line (0-based) when the view was last unmounted. */
   private savedTopLine: number | undefined;
+  private transferredLeft: number | undefined;
   private contributionsVersion: number;
   disposed = false;
   /** Focus the view as soon as it is mounted. */
@@ -92,7 +99,7 @@ export class EditorSlot {
     readonly model: DocModel,
     readonly tabId: string,
     private host: SlotHost,
-    init?: { from?: EditorSlot; reveal?: Reveal },
+    init?: { from?: EditorSlot; reveal?: Reveal; transfer?: SlotTransferState },
   ) {
     this.historyTarget = {
       path: model.path,
@@ -109,29 +116,39 @@ export class EditorSlot {
           .find((state) => state?.field(historyField, false))
       : null;
     const history = secondary?.field(historyField, false);
-    this.stored = EditorState.create({
-      doc: model.sync.localText,
-      selection: source ? source.currentState().selection : undefined,
-      extensions: [
-        history ? historyField.init(() => history) : [],
-        baseExtensions({
-          ctx: model.ctx(),
-          settings: model.settings(),
-          info: model.info,
-          language: model.language,
-          docLength: model.sync.localText.length,
-          indent: model.effectiveIndent(),
-          formatIndent: model.formatIndent(),
-          wrapOverride: model.softWrapOverride,
-          renderedDocsOverride: model.renderedDocsOverride,
-          extra: this.slotExtensions(),
-        }),
-      ],
-    });
+    const extensions = [
+      history ? historyField.init(() => history) : [],
+      baseExtensions({
+        ctx: model.ctx(),
+        settings: model.settings(),
+        info: model.info,
+        language: model.language,
+        docLength: model.sync.localText.length,
+        indent: model.effectiveIndent(),
+        formatIndent: model.formatIndent(),
+        wrapOverride: model.softWrapOverride,
+        renderedDocsOverride: model.renderedDocsOverride,
+        extra: this.slotExtensions(),
+      }),
+    ];
+    const transferred = init?.transfer;
+    const restored =
+      transferred && transferred.state.doc === model.sync.localText.toString() ? transferred.state : null;
+    this.stored = restored
+      ? EditorState.fromJSON(restored, { extensions }, { history: historyField, folds: foldState })
+      : EditorState.create({
+          doc: model.sync.localText,
+          selection: source ? source.currentState().selection : undefined,
+          extensions,
+        });
     this.contributionsVersion = model.manager.contributionsVersion;
     if (source?.view) this.scroll = source.view.scrollSnapshot();
     else if (source) this.scroll = source.scroll;
     if (init?.reveal) this.pendingReveal = init.reveal;
+    if (transferred) {
+      this.restoreView(transferred.view, restored ? this.stored.selection : undefined);
+      this.transferredLeft = transferred.view.left;
+    }
     model.addSlot(this);
     this.detachHistory = model.manager.workspaceHistory.attach(this.historyTarget, !history);
   }
@@ -238,6 +255,16 @@ export class EditorSlot {
       this.pendingReveal = null;
       this.reveal(r);
     }
+    if (this.transferredLeft !== undefined) {
+      const left = this.transferredLeft;
+      this.transferredLeft = undefined;
+      view.requestMeasure({
+        read: () => left,
+        write: (offset) => {
+          if (this.view === view) view.scrollDOM.scrollLeft = offset;
+        },
+      });
+    }
     return view;
   }
 
@@ -270,13 +297,13 @@ export class EditorSlot {
     this.tooltipLayer?.remove();
   }
 
-  dispose() {
+  dispose(save = true) {
     if (this.disposed) return;
     this.detachHistory();
     this.unmount(false);
     this.release();
     this.disposed = true;
-    this.model.removeSlot(this);
+    this.model.removeSlot(this, save);
   }
 
   focus() {
@@ -386,10 +413,17 @@ export class EditorSlot {
     return { anchor: main.anchor, head: main.head, ...(topLine !== undefined ? { topLine } : {}) };
   }
 
-  /** Restores a saved caret / scroll position (session restore). */
-  restoreView(v: { anchor: number; head: number; topLine?: number }) {
+  captureTransfer(): SlotTransferState {
+    return {
+      state: this.currentState().toJSON({ history: historyField, folds: foldState }),
+      view: { ...this.viewState(), left: this.view?.scrollDOM.scrollLeft ?? this.scrollPos.left },
+    };
+  }
+
+  /** Restores saved caret / scroll; live transfers keep their full selection. */
+  restoreView(v: { anchor: number; head: number; topLine?: number }, selection?: EditorSelection) {
     const doc = this.currentState().doc;
-    const selection = EditorSelection.single(
+    selection ??= EditorSelection.single(
       Math.min(Math.max(0, v.anchor), doc.length),
       Math.min(Math.max(0, v.head), doc.length),
     );

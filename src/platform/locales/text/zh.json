@@ -8829,5 +8829,13 @@
   "Add as Maven Project": "添加为 Maven 项目",
   "This Maven project is not loaded": "此 Maven 项目尚未加载",
   "Load Maven Project": "加载 Maven 项目",
-  "Resize Markdown preview": "调整 Markdown 预览宽度"
+  "Resize Markdown preview": "调整 Markdown 预览宽度",
+  "Missing editor transfer": "缺少编辑器标签交接信息",
+  "The editor could not be opened in the new window": "无法在新窗口中打开此编辑器",
+  "The project for this editor is no longer open": "此编辑器所属的项目已关闭",
+  "This editor contains state that cannot be moved to another window": "此编辑器包含无法迁移到其他窗口的状态",
+  "The editor window did not respond": "编辑器窗口未响应",
+  "Could not save files in another window": "无法保存其他窗口中的文件",
+  "The project service did not respond": "项目服务未响应",
+  "This editor is not available in this window": "此窗口无法加载该编辑器"
 }

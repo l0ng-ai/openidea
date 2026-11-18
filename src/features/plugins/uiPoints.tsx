@@ -51,6 +51,7 @@ import {
   basename,
   customEditorDocument,
   customEditorInput,
+  customEditorTransfer,
   matchesPattern,
   type CustomEditorDecl,
 } from "./views/customEditor";
@@ -564,6 +565,7 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
     registerContentActions(),
     registerEditorKind({
       kind: CUSTOM_EDITOR_KIND,
+      transfer: customEditorTransfer,
       component: CustomEditor,
       title: (input) => basename(input.path ?? input.key),
       icon: () => "db-table",

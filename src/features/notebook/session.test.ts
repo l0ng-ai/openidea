@@ -71,6 +71,7 @@ function model() {
     get: async () => structuredClone(document),
     environments: async () => [[], null],
     close: async () => null,
+    closeDecision: async () => true,
     interrupt: async () => null,
     cancel: async () => {},
     edit: async (_id, version, edit) => {
@@ -157,7 +158,7 @@ describe("shared notebook mutation session", () => {
     expect(session.getState().kernel).toBe(kernel);
   });
 
-  it("still releases the backend document when interrupting a running batch fails during close", async () => {
+  it("lets the backend stop execution when releasing the final view", async () => {
     const m = model();
     const session = new NotebookSession("/p/a.ipynb", m.backend, true);
     await session.load();
@@ -168,17 +169,18 @@ describe("shared notebook mutation session", () => {
       started.resolve();
       return running.promise;
     };
-    m.backend.interrupt = async () => {
+    const interrupt = vi.spyOn(m.backend, "interrupt");
+    const closed = vi.fn(async () => {
       running.reject(retired);
-      throw retired;
-    };
-    const closed = vi.fn(async () => null);
+      return null;
+    });
     m.backend.close = closed;
     const execution = session.execute().catch(() => {});
     await started.promise;
     await session.close();
     await execution;
     expect(closed).toHaveBeenCalledWith("document-a");
+    expect(interrupt).not.toHaveBeenCalled();
   });
 
   it("retains rapid typing over an older acknowledgement and serializes the latest intent", async () => {
@@ -300,6 +302,19 @@ describe("shared notebook mutation session", () => {
     await session.flush();
     expect(m.read().cells[0]!.source).toBe("resumed");
     await session.close();
+  });
+
+  it("flushes a shared notebook view without interrupting the kernel or dropping its edits", async () => {
+    const m = model();
+    vi.spyOn(m.backend, "closeDecision").mockResolvedValue(false);
+    const interrupt = vi.spyOn(m.backend, "interrupt");
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.edit({ type: "setSource", cell: "cell-a", source: "shared edits" });
+    expect(await session.prepareClose()).toBe(false);
+    await session.close();
+    expect(m.read().cells[0]!.source).toBe("shared edits");
+    expect(interrupt).not.toHaveBeenCalled();
   });
 
   it("retains a kernel failure arriving before a late source acknowledgement and subsequent undo", async () => {

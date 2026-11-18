@@ -14,16 +14,20 @@ export const test = base.extend<{ workbench: Page }>({
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto("/");
-    await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
-    await expect(page.getByRole("treeitem", { name: /acme-api/ })).toBeVisible();
-    // The start-up splash swallows raw mouse presses until it has faded out.
-    await expect(page.locator("#splash")).toHaveCount(0);
+    await waitForWorkbench(page);
     await provide(page);
     expect(errors, "uncaught page errors").toEqual([]);
   },
 });
 
 export { expect };
+
+export async function waitForWorkbench(page: Page) {
+  await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
+  await expect(page.getByRole("treeitem", { name: /acme-api/ })).toBeVisible();
+  // The start-up splash swallows raw mouse presses until it has faded out.
+  await expect(page.locator("#splash")).toHaveCount(0);
+}
 
 /** What `stubDesktop` installs on `window.__ipc`; handlers are defined inside `page.evaluate`. */
 export interface IpcStub {
@@ -60,7 +64,11 @@ export async function stubDesktop(page: Page) {
     let nextCallback = 1;
     const ipc: IpcStub = {
       // This window is the only one.
-      handlers: { "plugin:window|get_all_windows": () => [] },
+      handlers: {
+        "plugin:window|get_all_windows": () => [],
+        window_retain_editor_input: () => null,
+        window_release_editor_input: () => true,
+      },
       calls: [],
       send(channel, message) {
         const id = (channel as { id: number }).id;

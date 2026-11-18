@@ -37,7 +37,7 @@ describe("LightEdit window", () => {
     useProject.setState({ project: null, lightEdit: false });
   });
 
-  it("closes when its last editor tab closes", () => {
+  it("closes when its last editor tab closes", async () => {
     const editor = fakeEditor();
     useProject.setState({ project: null, lightEdit: true });
     dispose = installLightEditAutoClose(close);
@@ -45,7 +45,19 @@ describe("LightEdit window", () => {
     editor.setTabs(["/x/a.txt"]);
     expect(close).not.toHaveBeenCalled();
     editor.setTabs([]);
-    expect(close).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+  });
+
+  it("stays open if it leaves LightEdit while checking for editor windows", async () => {
+    const editor = fakeEditor();
+    useProject.setState({ project: null, lightEdit: true });
+    dispose = installLightEditAutoClose(close);
+    editor.setTabs(["/x/a.txt"]);
+    editor.setTabs([]);
+    useProject.setState({ project: null, lightEdit: false });
+
+    await Promise.resolve();
+    expect(close).not.toHaveBeenCalled();
   });
 
   it("stays open in a project window or while leaving LightEdit", () => {

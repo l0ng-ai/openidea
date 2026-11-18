@@ -220,6 +220,10 @@ pub enum IdeEvent {
         state: String,
         message: Option<String>,
     },
+    NotebookChanged {
+        id: String,
+        path: crate::IpcPath,
+    },
 }
 
 /// What an askpass prompt asks for.

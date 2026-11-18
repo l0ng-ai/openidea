@@ -2454,5 +2454,13 @@
   "Load Maven Project": "Load Maven Project",
   "Skip": "Skip",
   "Resize Markdown preview": "Resize Markdown preview",
-  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed."
+  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.",
+  "Missing editor transfer": "Missing editor transfer",
+  "The editor could not be opened in the new window": "The editor could not be opened in the new window",
+  "The project for this editor is no longer open": "The project for this editor is no longer open",
+  "This editor contains state that cannot be moved to another window": "This editor contains state that cannot be moved to another window",
+  "The editor window did not respond": "The editor window did not respond",
+  "Could not save files in another window": "Could not save files in another window",
+  "The project service did not respond": "The project service did not respond",
+  "This editor is not available in this window": "This editor is not available in this window"
 }

@@ -17,7 +17,6 @@ import {
   activate as vcs,
   activateComparisonWindow,
   activateDiffViewer,
-  activateDiffWindow,
   activateSettingsPages as vcsPages,
 } from "./vcs";
 import { activate as terminal } from "./terminal";
@@ -60,8 +59,7 @@ import { activate as ssh } from "./ssh";
 import { activate as lspMessages } from "./lsp-messages";
 import { activate as remoteDev } from "./remote-dev";
 import { activate as whatsNew } from "./whats-new";
-
-type Activate = () => void | (() => void);
+import { activateAll, type Activate } from "@/platform/activation";
 
 const features: Array<[string, Activate]> = [
   ["project-trust", projectTrust],
@@ -116,25 +114,12 @@ const features: Array<[string, Activate]> = [
   ["remote-dev", remoteDev],
 ];
 
-function activateAll(what: string, list: Array<[string, Activate]>): () => void {
-  const disposers: Array<() => void> = [];
-  for (const [name, activate] of list) {
-    try {
-      const d = activate();
-      if (d) disposers.push(d);
-    } catch (e) {
-      console.error(`${what} of ${name} failed to activate`, e);
-    }
-  }
-  return () => disposers.reverse().forEach((d) => d());
-}
-
 export function activateFeatures(): () => void {
   return activateAll("feature", features);
 }
 
 export { SettingsWindow } from "./settings";
-export { ComparisonWindow, DiffWindow } from "./vcs";
+export { ComparisonWindow } from "./vcs";
 export { DeploymentWindow } from "./deployment";
 
 /**
@@ -149,20 +134,6 @@ export function activateComparisonWindowFeatures(parent: string): () => void {
     ["editor", editor],
     ["vcs", vcs],
     ["comparison", () => activateComparisonWindow(parent, (project) => confirmLeave(undefined, project))],
-  ]);
-}
-
-/**
- * The diff window of project window `parent`: one file's diff, with Git and its own documents but
- * no workbench.
- */
-export function activateDiffWindowFeatures(parent: string): () => void {
-  return activateAll("diff window", [
-    ["locale", appLocale],
-    ["settings", activateRuntimeSettings],
-    ["menu", activateMenuBridge],
-    ["vcs", vcs],
-    ["diff", () => activateDiffWindow(parent)],
   ]);
 }
 

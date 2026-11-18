@@ -1,5 +1,5 @@
 import { Channel } from "@tauri-apps/api/core";
-import type { EditorState } from "@codemirror/state";
+import { EditorState } from "@codemirror/state";
 import type { NotebookCellDoc, NotebookSnapshot, NotebookEdit, NotebookOutputEvent, Sdk, RequestId } from "@/bindings";
 import { call, commands, IpcError, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { notifyEditorDocumentChanged } from "@/workbench/contributions";
@@ -8,6 +8,7 @@ import { OutputReducer } from "./outputs";
 export const notebookBackend = {
   open: (path: string) => call(commands.notebookOpen(path)),
   get: (id: string) => call(commands.notebookGet(id)),
+  session: (id: string) => call(commands.notebookSessionInfo(id)),
   cellDocs: (id: string) => call(commands.notebookCellDocs(id)),
   edit: (id: string, version: number, edit: NotebookEdit) => call(commands.notebookEdit(id, version, edit)),
   save: (id: string) => call(commands.notebookSave(id)),
@@ -15,6 +16,7 @@ export const notebookBackend = {
   undo: (id: string) => call(commands.notebookUndo(id)),
   redo: (id: string) => call(commands.notebookRedo(id)),
   close: (id: string) => call(commands.notebookClose(id)),
+  closeDecision: (id: string, begin: boolean) => call(commands.notebookViewCloseDecision(id, begin)),
   interrupt: (id: string) => call(commands.notebookInterrupt(id)),
   restart: (id: string) => call(commands.notebookRestart(id)),
   execute: (
@@ -83,6 +85,8 @@ export class NotebookSession {
   private pumping: Promise<void> | null = null;
   private blocked = false;
   private disposed = false;
+  private closingView: string | null = null;
+  private closeDecision: Promise<unknown> = Promise.resolve();
   private authoritativeVersion = -1;
   private executionCancelled = false;
   private generation = 0;
@@ -92,6 +96,7 @@ export class NotebookSession {
   private refreshAgain = false;
   private output = new OutputReducer();
   private stopEvents: (() => void) | null = null;
+  private changedTimer: ReturnType<typeof setTimeout> | undefined;
   private errors = new Map<ErrorOwner, { cause: unknown; message: string }>();
   /** The code cells `cellDocs` was fetched for. */
   private cellDocsKey: string | null = null;
@@ -211,11 +216,26 @@ export class NotebookSession {
       }
       this.accept(snapshot);
       this.recover("load");
-      this.stopEvents = onIdeEvent("notebookKernel", (event) => {
+      const offKernel = onIdeEvent("notebookKernel", (event) => {
         if (this.disposed || event.path !== snapshot.path || event.id !== snapshot.id) return;
-        this.publish({ kernel: event.state });
+        this.publish({
+          kernel: event.state,
+          ...(!this.execution && event.state !== "starting" ? { running: event.state === "busy" } : {}),
+        });
         if (event.message) this.reportOperation(event.message, "kernel");
       });
+      const offChanged = onIdeEvent("notebookChanged", (event) => {
+        if (this.disposed || this.execution || event.id !== snapshot.id || this.changedTimer) return;
+        this.changedTimer = setTimeout(() => {
+          this.changedTimer = undefined;
+          if (!this.disposed) void this.refresh().catch((error) => this.reportOperation(error, "execution"));
+        }, 100);
+      });
+      this.stopEvents = () => {
+        offKernel();
+        offChanged();
+        clearTimeout(this.changedTimer);
+      };
       void this.detectEnvironments();
     })()
       .catch((error) => {
@@ -483,18 +503,35 @@ export class NotebookSession {
       this.publish({ frozen: false });
     }
   }
-  async prepareClose() {
+  async prepareClose(): Promise<boolean> {
     this.publish({ frozen: true });
     if (this.loading) await this.loading.catch(() => {});
     // An invalid/unavailable file never acquired a backend document.
-    if (!this.state.snapshot) return;
+    const id = this.state.snapshot?.id;
+    if (!id) return true;
+    this.closingView = id;
+    const decision = this.closeDecision.then(() => this.backend.closeDecision(id, true));
+    this.closeDecision = decision.catch(() => {});
+    const last = await decision;
     try {
       await this.flush();
     } finally {
-      await this.drain();
+      if (last) {
+        if (this.execution) await this.drain();
+        else await this.backend.interrupt(id);
+        await this.refresh();
+      }
     }
+    return last;
   }
   cancelClose() {
+    const id = this.closingView;
+    this.closingView = null;
+    if (id) {
+      this.closeDecision = this.closeDecision
+        .then(() => this.backend.closeDecision(id, false))
+        .catch((error) => this.reportOperation(error, "other"));
+    }
     if (!this.disposed) this.publish({ frozen: false });
   }
   async discard() {
@@ -521,9 +558,8 @@ export class NotebookSession {
     this.publish({ frozen: true });
     ++this.generation;
     try {
-      // The host close interrupts, drains and shuts down authoritatively, and a
-      // retired project already rejects interrupt. Never let that skip release.
-      await this.drain().catch(() => {});
+      // The host releases this view and stops execution only for the last view.
+      await this.closeDecision;
       if (this.pumping) await this.pumping.catch(() => {});
       if (this.loading) await this.loading.catch(() => {});
       const snapshot = this.state.snapshot;
@@ -532,8 +568,41 @@ export class NotebookSession {
       this.disposed = true;
       this.stopEvents?.();
       this.editors.clear();
+      this.markdownEditing.clear();
       this.listeners.clear();
+      this.errors.clear();
+      this.output = new OutputReducer();
+      this.state = { ...this.state, snapshot: null, cellDocs: new Map(), environments: [] };
     }
+  }
+
+  async captureTransfer() {
+    await this.flush();
+    return {
+      id: this.state.snapshot?.id,
+      python: this.state.python,
+      selectedCell: this.selectedCell,
+      scrollTop: this.scrollTop,
+      markdownEditing: [...this.markdownEditing],
+      editors: [...this.editors].map(([id, state]) => [id, state.toJSON()] as const),
+    };
+  }
+
+  async adoptTransfer(value: Awaited<ReturnType<NotebookSession["captureTransfer"]>>) {
+    if (!value.id) {
+      await this.load();
+      return;
+    }
+    const current = await this.backend.session(value.id);
+    await this.load(current.snapshot);
+    this.selectedCell = value.selectedCell;
+    this.scrollTop = value.scrollTop;
+    value.markdownEditing.forEach((id) => this.markdownEditing.add(id));
+    for (const [id, state] of value.editors) {
+      const source = current.snapshot.cells.find((cell) => cell.id === id)?.source;
+      if (source === state.doc) this.editors.set(id, EditorState.fromJSON(state));
+    }
+    this.publish({ python: value.python, running: current.running, kernel: current.kernel });
   }
 }
 

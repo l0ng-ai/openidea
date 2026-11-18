@@ -28,6 +28,7 @@ import { editorService, maybeEditorService, notifications } from "@/workbench/co
 import { chooseProjectWindow } from "@/workbench/projectWindow";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
+import { hasEditorWindows } from "@/platform/editorTransfer";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
 
 export const LAUNCH_EVENT = "openidea://launch";
@@ -607,13 +608,21 @@ async function closeThisWindow(): Promise<void> {
  */
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();
+  let disposed = false;
+  const canClose = () =>
+    !disposed && useProject.getState().lightEdit && !editor?.openTabs?.().length && !editorSwitching();
   const off = editor?.onActiveInputChange?.((input) => {
     // A mode switch clears and re-fills the tabs in place: while it runs, the
     // momentarily empty editor must not read as "the user closed everything".
-    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length || editorSwitching()) return;
-    void closeWindow().catch((e) => console.warn("could not close the window", e));
+    if (input || !canClose()) return;
+    void (async () => {
+      if (!(await hasEditorWindows()) && canClose()) await closeWindow();
+    })().catch((e) => console.warn("could not close the window", e));
   });
-  return () => off?.();
+  return () => {
+    disposed = true;
+    off?.();
+  };
 }
 
 export function installLaunchHandling(): () => void {

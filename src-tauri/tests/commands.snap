@@ -382,7 +382,9 @@ notebook_redo                                always             project_host bin
 notebook_reload                              always             project_host bindings async
 notebook_restart                             trusted            project_host bindings async
 notebook_save                                always             project_host bindings async
+notebook_session_info                        always             project_host bindings async
 notebook_undo                                always             project_host bindings async
+notebook_view_close_decision                 always             project_host bindings sync
 open_project                                 always             project_host bindings async
 path_completions                             always             project_host bindings async
 plugin_activation_event                      trusted            desktop      bindings async
@@ -696,6 +698,8 @@ web_url                                      always             project_host bin
 window_close_context                         always             desktop      bindings sync
 window_complete_launch                       always             desktop      bindings sync
 window_cycle                                 always             desktop      bindings sync
+window_detach_editor                         always             desktop      bindings async
+window_editor_handoff                        always             desktop      bindings sync
 window_flash_taskbar                         always             desktop      bindings sync
 window_group_cancel_close                    always             desktop      bindings sync
 window_group_close                           always             desktop      bindings sync
@@ -717,6 +721,8 @@ window_open_project                          always             desktop      bin
 window_open_projects                         always             desktop      bindings sync
 window_open_remote                           always             desktop      bindings async
 window_open_settings                         always             desktop      bindings async
+window_release_editor_input                  always             desktop      bindings sync
+window_retain_editor_input                   always             desktop      bindings sync
 window_set_titlebar_height                   always             desktop      bindings sync
 window_start_drag                            always             desktop      bindings sync
 window_take_launch                           always             desktop      bindings sync

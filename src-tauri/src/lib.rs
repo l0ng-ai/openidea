@@ -302,6 +302,10 @@ pub fn run() {
                     state.close_project(window.label());
                     state.plugins.forget_client(window.label());
                 }
+            } else if let Some(state) = window.try_state::<AppState>()
+                && let Ok(project) = state.host.project(window.label())
+            {
+                project.notebooks.forget_view(window.label());
             }
             if let Some(w) = window.try_state::<WindowsState>() {
                 w.forget(window.label());

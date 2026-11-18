@@ -29,8 +29,14 @@ body,
   -webkit-user-select: none;
   user-select: none;
   cursor: default;
-  animation: splash-in 240ms ease-out 120ms both;
   transition: opacity 160ms ease-out;
+}
+/* Keep the backdrop opaque; only the loading indicators fade in. */
+.splash:not(.boot-error) > * {
+  animation: splash-in 240ms ease-out 120ms both;
+}
+.splash.splash-ready > * {
+  animation-play-state: paused;
 }
 .splash.splash-out {
   opacity: 0;
@@ -71,7 +77,7 @@ body,
     var(--splash-progress-easing, cubic-bezier(0.1, 0.7, 0.3, 1)) both;
 }
 /* Settings window: a dialog, not a launch. Only the bar, and only if loading takes a while. */
-:root[data-window="settings"] .splash:not(.boot-error) {
+:root[data-window="settings"] .splash:not(.boot-error) > * {
   animation-delay: 400ms;
 }
 :root[data-window="settings"] .splash:not(.boot-error) > :not(.splash-bar) {
@@ -92,7 +98,7 @@ body,
 }
 /* The fill stays: it grows in place, which reduced motion allows. */
 @media (prefers-reduced-motion: reduce) {
-  .splash {
+  .splash:not(.boot-error) > * {
     animation: none;
   }
 }

@@ -6,6 +6,7 @@ import { ChangeSet, Transaction, type Annotation, type EditorState, type StateEf
 import { EditorView } from "@codemirror/view";
 import type { LanguageDescription, LanguageSupport } from "@codemirror/language";
 import { create } from "zustand";
+import { isDocumentTransferring } from "@/platform/editorTransfer";
 import type { EditorConfigProps } from "@/bindings";
 import type {
   DocId,
@@ -361,12 +362,12 @@ export class DocModel {
       slot.reconfigure([setSyntaxHighlights.of(this.highlights.value)]);
   }
 
-  removeSlot(slot: EditorSlot) {
+  removeSlot(slot: EditorSlot, save = true) {
     if (this.slots.size === 1)
       for (const attachment of this.attachments) attachment.adoptHistory?.(slot.currentState());
     this.slots.delete(slot);
     if (this.lastFocused === slot) this.lastFocused = null;
-    if (!this.inUse()) this.manager.release(this);
+    if (!this.inUse()) this.manager.release(this, save);
   }
 
   attach(target: DocAttachmentTarget) {
@@ -772,6 +773,7 @@ export class DocumentManager {
   readonly byPath = new Map<string, DocModel>();
   readonly byId = new Map<DocId, DocModel>();
   private opening = new Map<string, Promise<DocModel>>();
+  private releasing = new Set<Promise<void>>();
   contributionsVersion = 0;
   private disposers: Array<() => void> = [];
 
@@ -886,13 +888,13 @@ export class DocumentManager {
   }
 
   /** Called when the last slot of a model goes away. */
-  release(model: DocModel) {
+  release(model: DocModel, save = !isDocumentTransferring(model.path)) {
     if (model.closed || model.inUse()) return;
     // Defer so that "close tab + reopen in split" in one tick keeps the model.
-    queueMicrotask(async () => {
+    const pending = Promise.resolve().then(async () => {
       if (model.inUse() || model.closed) return;
       const files = this.settings()?.files;
-      if (files?.autoSave !== false && model.getMeta().dirty) {
+      if (save && files?.autoSave !== false && model.getMeta().dirty) {
         try {
           await model.save("auto");
         } catch (e) {
@@ -922,6 +924,12 @@ export class DocumentManager {
         console.warn(`doc_close ${model.path} failed`, e);
       }
     });
+    this.releasing.add(pending);
+    void pending.finally(() => this.releasing.delete(pending));
+  }
+
+  async whenReleased(): Promise<void> {
+    await Promise.all(this.releasing);
   }
 
   applySettings() {

@@ -10,8 +10,9 @@ const FILL_MS = 120;
 
 /** Runs the fake progress bar to 100% from wherever its animation has got to; false if nothing shows yet. */
 function completeBar(el: HTMLElement): boolean {
-  const fill = el.querySelector<HTMLElement>(".splash-bar > i");
-  if (!fill || getComputedStyle(el).opacity === "0") return false;
+  const bar = el.querySelector<HTMLElement>(".splash-bar");
+  const fill = bar?.querySelector<HTMLElement>("i");
+  if (!bar || !fill || getComputedStyle(bar).opacity === "0") return false;
   fill.style.transform = getComputedStyle(fill).transform;
   fill.style.animation = "none";
   void fill.offsetWidth;
@@ -44,24 +45,27 @@ export function holdSplash(work: Promise<unknown>): void {
 export function hideSplash(): void {
   const el = document.getElementById("splash");
   if (!el) return;
+  const remove = () => {
+    if (document.documentElement.dataset.boot === "failed" || !el.isConnected) return;
+    el.remove();
+    window.dispatchEvent(new Event("openidea:boot-ready"));
+  };
   const timeout = new Promise((resolve) => setTimeout(resolve, MAX_WAIT_MS));
   void Promise.race([Promise.all(holds), timeout]).then(async () => {
     while (questions.size) await Promise.all(questions);
+    if (document.documentElement.dataset.boot === "failed" || !el.isConnected) return;
+    // Once ready, a pending entrance must never cover the content later.
+    el.classList.add("splash-ready");
     // Two frames: let React commit the state the holds produced before uncovering it.
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
-        setTimeout(
-          () => {
-            if (document.documentElement.dataset.boot === "failed") return;
-            el.classList.add("splash-out");
-            setTimeout(() => {
-              if (document.documentElement.dataset.boot === "failed") return;
-              el.remove();
-              window.dispatchEvent(new Event("openidea:boot-ready"));
-            }, 200);
-          },
-          completeBar(el) ? FILL_MS : 0,
-        );
+        if (document.documentElement.dataset.boot === "failed" || !el.isConnected) return;
+        if (!completeBar(el)) return remove();
+        setTimeout(() => {
+          if (document.documentElement.dataset.boot === "failed" || !el.isConnected) return;
+          el.classList.add("splash-out");
+          setTimeout(remove, 200);
+        }, FILL_MS);
       }),
     );
   });

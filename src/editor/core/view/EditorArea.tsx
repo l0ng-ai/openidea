@@ -401,6 +401,7 @@ function PaneView({ paneId }: { paneId: string }) {
       <div className={styles.body}>
         <div
           className={styles.content}
+          data-editor-view={active && isTextInput(active.input) ? active.id : undefined}
           role="tabpanel"
           id={active ? `editor-${paneId}-panel-${active.id}` : undefined}
           aria-labelledby={active ? `editor-${paneId}-tab-${active.id}` : undefined}
@@ -508,6 +509,7 @@ function KindEditor({ tab, shown, kept = false }: { tab: Tab; shown: boolean; ke
     <div
       className={clsx(styles.kind, kept && styles.kept, !shown && styles.keptHidden)}
       data-editor-focus={shown ? "" : undefined}
+      data-editor-view={tab.id}
       tabIndex={-1}
       aria-hidden={shown ? undefined : true}
     >
