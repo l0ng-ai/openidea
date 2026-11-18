@@ -36,7 +36,7 @@ pub struct ProjectInterpreter {
 /// Installed interpreters / toolchains of `kind`; project-local ones first.
 #[command(trust = trusted)]
 pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<Vec<Sdk>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let project = host.project(window).ok();
     if kind == SdkKind::Jdk {
         host.apply_added_jdks();
@@ -66,7 +66,7 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
 #[command(trust = trusted)]
 pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeResult<Vec<ProjectInterpreter>> {
     // Newest first. The open project is skipped: `sdk_detect` lists its own.
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let current = host.project(window).ok().map(|p| p.root.clone());
     let config = host.config_dir.clone();
     // Probing runs the project's interpreter (and its settings may name any program): only
@@ -113,7 +113,7 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
 /// An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run.
 #[command(trust = trusted)]
 pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<Sdk>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let root = host.project(window).ok().map(|p| p.root.clone());
     tokio::task::spawn_blocking(move || Ok(ide_sdk::python_interpreter_sdk(&path, root.as_deref())))
         .await
@@ -123,7 +123,7 @@ pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) ->
 /// The interpreter the project uses: the configured one, else its virtualenv.
 #[command(trust = trusted)]
 pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) -> IdeResult<Option<ide_core::IpcPath>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let project = host.project(window)?;
     let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|w| {
         let near = near.as_deref()?;
@@ -149,7 +149,7 @@ pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) ->
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
 #[command(trust = trusted)]
 pub fn sdk_php_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core::IpcPath>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let project = host.project(window)?;
     let settings = project.settings.effective();
     Ok(ide_sdk::apply::setting_path(&project.root, &settings.languages.php.interpreter).map(Into::into))
@@ -245,7 +245,7 @@ pub async fn sdk_project_libraries(
     request: RequestId,
     on_groups: Channel<Vec<ide_sdk::libraries::LibraryGroup>>,
 ) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     let cancel = host.begin_project_request(window, request);
@@ -330,7 +330,7 @@ pub async fn sdk_python_create_venv(
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<Sdk> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
         ide_sdk::python::create_venv(tool, &base, &location, &cancel, &|line| {
@@ -350,7 +350,7 @@ pub async fn sdk_python_packages(
     python: PathBuf,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
     let result =
         tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, &cancel)).await.map_err(join_err);
@@ -371,7 +371,7 @@ pub async fn sdk_python_pip(
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let project_root = host.project(window).ok().map(|p| p.root.clone());
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
