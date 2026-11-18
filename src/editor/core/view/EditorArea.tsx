@@ -180,6 +180,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
+  const errors = useFileDecorations(useShallow(() => paths.map((p) => !!p && !!getFileDecoration(p)?.error)));
   const fileColors = useFileColors("editorTabs");
 
   const hints = useTitleHints();
@@ -224,6 +225,7 @@ function PaneView({ paneId }: { paneId: string }) {
             : tabIcon(t.input, kinds)
           : undefined,
         italic: t.preview,
+        error: t.input.kind === "file" && errors[i],
         modified: dirty[i],
         // IDEA: hiding the close button is visual only. Keep close gestures
         // (middle click, Shift+click, Delete) alive when its position is None.
@@ -249,6 +251,7 @@ function PaneView({ paneId }: { paneId: string }) {
     titleRevision,
     dirty,
     colors,
+    errors,
     tints,
     fileColors,
     hints,

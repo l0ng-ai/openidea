@@ -18,7 +18,7 @@ mod markers;
 pub mod plugin_point;
 mod registry;
 mod syntax;
-pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root};
+pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root, project_spelling};
 pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
@@ -28,7 +28,7 @@ pub use syntax::{
     VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_visibility,
     set_external_syntax, shift_pos, shift_range,
 };
-pub use syntax::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts};
+pub use syntax::{MethodBody, PhpAlignment, PythonClassFacts, PythonFacts, PythonMethodFacts};
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
 #[derive(Clone, Debug, Serialize, Deserialize)]

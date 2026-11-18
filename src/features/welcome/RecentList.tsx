@@ -274,7 +274,11 @@ export function RecentList({ exclude, compact, autoFocus, onOpened, className, t
       open(items[current]);
       return;
     }
-    if ((e.key === "Delete" || (e.key === "Backspace" && e.metaKey)) && items[current]) {
+    // Delete removes the selected project only when it has no text to delete: the caret is at the end
+    // of the query (⌘⌫: the query is empty). Otherwise it edits the query.
+    const field = e.currentTarget;
+    const atEnd = field.selectionStart === field.value.length && field.selectionEnd === field.value.length;
+    if (((e.key === "Delete" && atEnd) || (e.key === "Backspace" && e.metaKey && !field.value)) && items[current]) {
       e.preventDefault();
       void askRemoveRecent(items[current]!.project);
       return;

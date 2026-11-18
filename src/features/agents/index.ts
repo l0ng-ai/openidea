@@ -11,30 +11,20 @@ import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { call, commands } from "@/platform/ipc";
 import {
+  maybeEditorService,
   registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
   registerMenuSlotItem,
   registerOverlay,
-  registerSettingsPage,
   registerStatusItem,
   registerToolWindow,
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import {
-  AGENTS_GROUP,
-  HOME_KIND,
-  MCP_PAGE,
-  POLICY_PAGE,
-  REGISTRY_PAGE,
-  SESSION_KIND,
-  TASK_DRAG,
-  TOOL_WINDOW,
-  WORKING_STATUS_PAGE,
-  providerIcon,
-} from "./model";
+import { activateSettingsPages } from "./settingsPages";
+import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
@@ -47,52 +37,15 @@ import {
   openHome,
   refreshModels,
   refreshProviders,
+  refreshTaskModels,
+  releaseClosedTaskCache,
   useAgents,
 } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  const disposers = [
-    registerSettingsPage({
-      id: REGISTRY_PAGE,
-      title: "Coding Agents",
-      group: AGENTS_GROUP,
-      // First in Agents, which sits after Languages & Frameworks and before Tools.
-      order: 450,
-      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
-      component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-    }),
-    registerSettingsPage({
-      id: WORKING_STATUS_PAGE,
-      title: "Working Status",
-      group: AGENTS_GROUP,
-      // After Chat.
-      order: 465,
-      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
-      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
-    }),
-    registerSettingsPage({
-      id: MCP_PAGE,
-      title: "External MCP Servers",
-      group: AGENTS_GROUP,
-      order: 475,
-      keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
-      component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
-    }),
-    registerSettingsPage({
-      id: POLICY_PAGE,
-      title: "Command Permissions",
-      group: AGENTS_GROUP,
-      order: 490,
-      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
-      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
-    }),
-  ];
-  return () => disposers.reverse().forEach((d) => d());
-}
+export { activateSettingsPages } from "./settingsPages";
 
 export function activate(): () => void {
   const sync = (root: string | null | undefined) => {
@@ -175,6 +128,10 @@ export function activate(): () => void {
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
       onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
+      onClose: (input) => {
+        const task = (input.data as { task?: string } | undefined)?.task;
+        if (task) releaseClosedTaskCache(task);
+      },
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
@@ -259,7 +216,22 @@ export function activate(): () => void {
         title: "Refresh models",
         category: "Agents",
         when: "projectOpen",
-        run: () => refreshModels(),
+        run: ({ arg }) => {
+          if (typeof arg === "string") return refreshTaskModels(arg);
+          if (arg === null) return refreshModels(); // Explicitly invoked by the New Task picker.
+          const { sessionLocation, docked, homeOpen } = useAgents.getState();
+          if (sessionLocation === "toolWindow" && (homeOpen || docked) && toolWindowService().isVisible(TOOL_WINDOW)) {
+            return !homeOpen && docked ? refreshTaskModels(docked) : refreshModels();
+          }
+          const active = maybeEditorService()?.activeInput?.();
+          if (active?.kind === SESSION_KIND) {
+            const data = active.data;
+            if (data && typeof data === "object" && "task" in data && typeof data.task === "string")
+              return refreshTaskModels(data.task);
+            return;
+          }
+          return refreshModels();
+        },
       },
       {
         id: "agents.closeTask",

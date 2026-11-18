@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.11.0;
 
 /// Declarative views: tool windows declared
 /// under `[[contributes.views]]` and custom editors under

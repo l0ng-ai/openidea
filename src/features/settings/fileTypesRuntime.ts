@@ -6,6 +6,7 @@
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
 import {
+  overrideKey,
   sampleFileName,
   userFileType,
   validateFileTypeOverrides,
@@ -29,11 +30,6 @@ function loadLanguages(): Promise<LanguageInfo[]> {
       loading = null;
       return [];
     }));
-}
-
-/** Settings key of a file: project-relative inside the project, else absolute. */
-export function overrideKey(path: string, root: string | null): string {
-  return root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
 }
 
 function currentOverrides(): Record<string, string> {

@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   ATTRIBUTES,
   CLEAR_COLOR,
+  SCHEMES,
   _setSchemeSource,
   overrideDeclarations,
   resolvedAttribute,
@@ -70,6 +71,19 @@ describe("color schemes", () => {
     const css = schemeCss("dark", { dark: { "csharp.keyword": { foreground: "#224466" } } });
     expect(css).toContain('.cm-editor[data-language="C#"]');
     expect(css).toContain("--syn-keyword: #224466 !important");
+  });
+
+  it("offers a Julia scheme page and scopes Julia overrides to Julia editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "julia.functionCall")?.path).toEqual(["Julia"]);
+    expect(ATTRIBUTES.find((a) => a.id === "julia.className")?.path).toEqual(["Julia"]);
+    const css = schemeCss("dark", {
+      dark: { "julia.functionCall": { foreground: "#224466" }, "julia.className": { italic: true } },
+    });
+    expect(css).toContain('.cm-editor[data-language="Julia"]');
+    expect(css).toContain('.cm-editor [data-language="Julia"]');
+    expect(css).toContain("--syn-function-call: #224466 !important");
+    expect(css).toContain("--syn-type-italic: italic !important");
+    expect(css.indexOf('.cm-editor[data-language="Julia"]')).toBeGreaterThan(css.indexOf(":root"));
   });
 
   it("groups Python attributes as PyCharm's color settings page does", () => {
@@ -169,6 +183,9 @@ describe("color schemes", () => {
     expect(regular).toContain("--syn-keyword-bold: var(--fw-code, 400) !important");
     const cleared = schemeCss("theme-default", { light: { keyword: { background: CLEAR_COLOR } } }, root);
     expect(cleared).toContain("--syn-keyword-bg: transparent !important");
+    // An unticked Foreground falls back to the default text colour instead of hiding the text.
+    const noForeground = schemeCss("theme-default", { light: { predefined: { foreground: CLEAR_COLOR } } }, root);
+    expect(noForeground).toContain("--syn-builtin: var(--fg-editor) !important");
     const upright = schemeCss("theme-default", { light: { staticSymbol: { italic: false } } }, root);
     expect(upright).toContain("--syn-static-italic: normal !important");
     const pythonItalic = schemeCss("theme-default", { light: { pyStaticSymbol: { italic: true } } }, root);
@@ -215,6 +232,20 @@ describe("color schemes", () => {
     });
     expect(schemeCss("dark", { dark: { selectionForeground: { foreground: "#112233" } } })).toContain(
       "--fg-editor-selection: #112233 !important",
+    );
+  });
+
+  it.each([
+    ["identifierUnderCaret", "--fg-identifier-under-caret"],
+    ["identifierUnderCaretWrite", "--fg-identifier-under-caret-write"],
+  ])("lets %s set a foreground over the syntax colours (#4109)", (id, token) => {
+    expect(ATTRIBUTES.find((a) => a.id === id)?.fg).toBe(token);
+    // The `inherit` default is no colour: every built-in scheme keeps the syntax colours.
+    for (const scheme of SCHEMES) expect(resolvedAttribute(scheme.id, id).foreground).toBeUndefined();
+    expect(schemeCss("dark", { dark: { [id]: { foreground: "#112233" } } })).toContain(`${token}: #112233 !important`);
+    // Unticked, the syntax colours show again rather than one flat default text colour.
+    expect(schemeCss("dark", { dark: { [id]: { foreground: CLEAR_COLOR } } })).toContain(
+      `${token}: inherit !important`,
     );
   });
 

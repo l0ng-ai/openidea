@@ -39,13 +39,41 @@ const PAGE_SIZES = ["100", "500", "1000", "5000"];
 
 export { tableTitle } from "./tableInput";
 
+/** WHERE, ORDER BY and page of a table tab, kept when a tab that is no longer kept alive mounts again. */
+interface TableViewState {
+  offset: number;
+  limit: number;
+  sort: DbSortKey[];
+  filterText: string;
+  filter: string;
+}
+
+const MAX_VIEW_STATES = 100;
+const viewStates = new Map<string, TableViewState>();
+
+function rememberViewState(key: string, state: TableViewState) {
+  viewStates.delete(key);
+  viewStates.set(key, state);
+  if (viewStates.size > MAX_VIEW_STATES) viewStates.delete(viewStates.keys().next().value!);
+}
+
+/** Test hook: forget the remembered table view states. */
+export function _resetTableViewStates() {
+  viewStates.clear();
+}
+
 export function TableEditor({ input }: { input: EditorInput }) {
   const ref = input.data as TableRef;
-  const [offset, setOffset] = useState(0);
-  const [limit, setLimit] = useState(500);
-  const [sort, setSort] = useState<DbSortKey[]>([]);
-  const [filterText, setFilterText] = useState("");
-  const [filter, setFilter] = useState("");
+  const [initial] = useState(() => viewStates.get(input.key));
+  const [offset, setOffset] = useState(initial?.offset ?? 0);
+  const [limit, setLimit] = useState(initial?.limit ?? 500);
+  const [sort, setSort] = useState<DbSortKey[]>(initial?.sort ?? []);
+  const [filterText, setFilterText] = useState(initial?.filterText ?? "");
+  const [filter, setFilter] = useState(initial?.filter ?? "");
+  useEffect(
+    () => rememberViewState(input.key, { offset, limit, sort, filterText, filter }),
+    [input.key, offset, limit, sort, filterText, filter],
+  );
   const [nonce, setNonce] = useState(0);
   const [edits, setEdits] = useState<PendingEdits>(emptyEdits);
   const [panel, setPanel] = useState<DataPanel | null>(null);

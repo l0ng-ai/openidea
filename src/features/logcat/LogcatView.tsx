@@ -99,16 +99,23 @@ export function LogcatView() {
       written.current = 0;
     }
     const request = nextRequestId();
-    const channel = new Channel<LogcatLine[]>();
-    channel.onmessage = (batch) => appendLines(batch);
+    let active = true;
+    const isCurrent = () => active && useLogcat.getState().serial === serial;
+    const channel = new Channel<LogcatLine[]>((batch) => {
+      if (isCurrent()) appendLines(batch);
+    });
     setStatus("running");
     call(commands.androidLogcat(request, serial, false, channel))
-      .then(() => setStatus("idle"))
+      .then(() => {
+        if (isCurrent()) setStatus("idle");
+      })
       .catch((e) => {
+        if (!isCurrent()) return;
         if (isCancelled(e)) setStatus("idle");
         else setStatus("error", message(e));
       });
     return () => {
+      active = false;
       void commands.cancelRequest(request);
     };
   }, [serial]);

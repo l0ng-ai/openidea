@@ -36,6 +36,17 @@ export function methodStop(outline: readonly OutlineItem[], caret: Pos, dir: 1 |
   return null;
 }
 
+/** The outermost type around `caret`, looking through namespaces and packages (C#, Kotlin scripts). */
+export function topLevelTypeAt(outline: readonly OutlineItem[], caret: Pos): OutlineItem | null {
+  let level: readonly OutlineItem[] = outline;
+  for (;;) {
+    const hit = level.find((i) => inside(i, caret));
+    if (!hit) return null;
+    if (hit.kind !== "namespace" && hit.kind !== "package") return TYPES.has(hit.kind) ? hit : null;
+    level = hit.children;
+  }
+}
+
 export interface CaretMember {
   /** Innermost method at the caret. */
   method: OutlineItem | null;

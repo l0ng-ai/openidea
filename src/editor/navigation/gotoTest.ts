@@ -36,6 +36,19 @@ export interface TestNavDeps {
   /** Create New Test… in `directory` (file templates), or a Rust test module in the file itself. */
   createTest: (req: { directory: string; name: string; extension: string; subject: string }) => void;
   createRustTestModule: () => void;
+  /** Name of the top-level class, interface, enum or object around the caret, if any. */
+  classAtCaret?: () => Promise<string | null>;
+}
+
+/** Languages whose files are named after a class but may declare several top-level ones. */
+const CLASS_FILE = /\.(java|kt|scala|groovy|cs)$/;
+
+/** The file name as the class at the caret would have it (`Helper.java` inside `Widget.java`), else the file's own. */
+async function subjectFileName(path: string, deps: TestNavDeps): Promise<string> {
+  const name = basename(path);
+  if (!CLASS_FILE.test(name) || !deps.classAtCaret) return name;
+  const cls = await deps.classAtCaret().catch(() => null);
+  return cls ? cls + splitName(name).ext : name;
 }
 
 const isRustIntegrationTest = (path: string) => path.endsWith(".rs") && /\/tests\/[^/]+\.rs$/.test(path);
@@ -88,7 +101,7 @@ function relLabel(root: string | null, path: string) {
 export async function gotoTestOrSubject(path: string, text: string, deps: TestNavDeps): Promise<void> {
   const roots = deps.roots();
   const root = deps.projectRoot();
-  const name = basename(path);
+  const name = await subjectFileName(path, deps);
   const rank = (paths: string[]) => rankCandidates(path, paths, belowRoot(root, roots));
 
   if (isTestSide(path, roots)) {

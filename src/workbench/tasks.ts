@@ -51,7 +51,14 @@ export function upsertTask(t: TaskUpdate) {
   // A cancelled task leaves without the finished (full) progress bar.
   if (t.done) {
     if (cancelled) removeTask(t.id);
-    else setTimeout(() => removeTask(t.id), DONE_LINGER_MS);
+    else {
+      const finished = useTasks.getState().tasks.find((x) => x.id === t.id && x.done);
+      if (finished) {
+        setTimeout(() => {
+          if (useTasks.getState().tasks.includes(finished)) removeTask(t.id);
+        }, DONE_LINGER_MS);
+      }
+    }
   }
 }
 

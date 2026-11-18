@@ -7,6 +7,7 @@
  */
 import { registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { onFileTypesChange } from "@/platform/fileTypes";
 import { basename } from "@/platform/project";
 import { lazyComponent, type MenuItem } from "@/ui";
 import {
@@ -14,6 +15,7 @@ import {
   registerEditorBanner,
   registerMenuGroup,
   registerTextEditorWrapper,
+  useTextEditorWrappers,
 } from "@/workbench/contributions";
 import { registerEditorContribution } from "@/editor/api";
 import { djangoContentWatcher, djangoTemplateBanner } from "./djangoTemplates";
@@ -67,6 +69,8 @@ function browserMenu(path: string): MenuItem {
 export function activate(): () => void {
   void loadBrowsers();
   const disposers = [
+    // Open tabs gain or lose the browser bar and preview when File Types change.
+    onFileTypesChange(() => useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }))),
     registerEditorBanner(djangoTemplateBanner),
     registerEditorContribution({ id: "web.djangoContent", order: 57, extensions: djangoContentWatcher }),
     registerTextEditorWrapper({

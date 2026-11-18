@@ -86,7 +86,8 @@ OpenIDEA 自带 SSH 客户端，自行读取 `~/.ssh/config`，支持 `Host`、`
 已经在运行的进程保持原来的环境。如果有变量发生变化，通知里会提供**重启语言服务器**。
 
 如果远程项目包含 `.devcontainer/devcontainer.json` 或 `.devcontainer.json`，其中的 `remoteEnv` 也会生效，`postStartCommand`
-会在每次服务端启动时运行一次。
+会在每次服务端启动时运行一次。项目有 `.envrc` 时，会像在本地一样在主机上加载它的 direnv 环境（`use flake` 时是 Nix flake 的
+devshell），重新加载环境时也会再次加载；见 [direnv 和 Nix flake](/zh/guide/run#direnv-和-nix-flake)。
 
 ## 打开 SSH 终端
 

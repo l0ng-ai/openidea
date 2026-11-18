@@ -1,9 +1,11 @@
 //! The environment child processes get beyond this process's own: the login shell's as
-//! re-read by Reload Environment, and (remote server) the project's
-//! `devcontainer.json` `remoteEnv`, plus its `postStartCommand` once per server start.
+//! re-read by Reload Environment, (remote server) the project's `devcontainer.json`
+//! `remoteEnv`, plus its `postStartCommand` once per server start, and each trusted
+//! project's direnv `.envrc` ([`crate::direnv`]).
 //!
-//! Both reach every child through `ide_core::process::set_env_overlay`: terminals, runs,
-//! language servers, debug adapters, build tools and git all spawn through
+//! The first two reach every child through `ide_core::process::set_env_overlay`, a project's
+//! direnv environment the children started inside it (`ide_core::project_env`): terminals,
+//! runs, language servers, debug adapters, build tools and git all spawn through
 //! `ide_core::process::prepare` / `host_env`.
 
 use ide_core::event::NotifyLevel;
@@ -18,6 +20,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 type Changes = Vec<(OsString, Option<OsString>)>;
@@ -51,18 +54,87 @@ struct State {
     post_commands: std::collections::HashMap<PathBuf, CancellationToken>,
 }
 
+/// Project roots whose direnv environment is loaded or loading, with the load that owns
+/// each (a generation) and what stops it.
+type DirenvLoads = Arc<Mutex<std::collections::HashMap<PathBuf, (u64, CancellationToken)>>>;
+
 pub struct Environment {
     /// Whether the open project's `devcontainer.json` applies (the remote server: one project per process).
     project_env: bool,
     data_dir: PathBuf,
     state: Mutex<State>,
-    /// Stops running `postStartCommand`s when the host shuts down.
+    /// Stops running `postStartCommand`s and direnv loads when the host shuts down.
     cancel: CancellationToken,
+    direnv: DirenvLoads,
+    /// "direnv is not installed" is said once per process.
+    direnv_hinted: AtomicBool,
 }
 
 impl Environment {
     pub(crate) fn new(project_env: bool, data_dir: PathBuf) -> Self {
-        Self { project_env, data_dir, state: Mutex::default(), cancel: CancellationToken::new() }
+        Self {
+            project_env,
+            data_dir,
+            state: Mutex::default(),
+            cancel: CancellationToken::new(),
+            direnv: DirenvLoads::default(),
+            direnv_hinted: AtomicBool::new(false),
+        }
+    }
+
+    /// A trusted project at `root` opened or became trusted: loads its direnv environment in
+    /// the background, unless another window of it already did. Its language servers wait.
+    pub(crate) fn direnv_opened(&self, root: &Path, sink: &SharedSink) {
+        if !self.direnv.lock().contains_key(root) {
+            self.load_direnv(root, sink, true);
+        }
+    }
+
+    /// The project at `root` closed in its last window, or is no longer trusted.
+    pub(crate) fn direnv_closed(&self, root: &Path) {
+        if let Some((_, cancel)) = self.direnv.lock().remove(root) {
+            cancel.cancel();
+        }
+        ide_core::project_env::remove(root);
+    }
+
+    /// (Re)loads `root`'s direnv environment, replacing a load still running; on this thread
+    /// unless `background`. Without an `.envrc` the project has none.
+    fn load_direnv(&self, root: &Path, sink: &SharedSink, background: bool) {
+        static GENERATION: AtomicU64 = AtomicU64::new(0);
+        let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+        let cancel = self.cancel.child_token();
+        {
+            let mut loads = self.direnv.lock();
+            if let Some((_, previous)) = loads.insert(root.to_path_buf(), (generation, cancel.clone())) {
+                previous.cancel();
+            }
+            if !crate::direnv::has_envrc(root) {
+                ide_core::project_env::remove(root);
+                return;
+            }
+            // Before this returns: a language server starting next waits for it.
+            ide_core::project_env::begin_loading(root);
+        }
+        let program = crate::direnv::program();
+        let hint = program.is_none() && !self.direnv_hinted.swap(true, Ordering::AcqRel);
+        let (loads, dir, sink) = (self.direnv.clone(), root.to_path_buf(), sink.clone());
+        let run = move || {
+            let current = |apply: &dyn Fn()| {
+                let loads = loads.lock();
+                if loads.get(&dir).is_some_and(|(g, _)| *g == generation) {
+                    apply();
+                }
+            };
+            crate::direnv::load(&dir, program.as_deref(), &sink, &cancel, crate::direnv::TIMEOUT, hint, &current);
+        };
+        if !background {
+            run();
+        } else if let Err(e) = std::thread::Builder::new().name("openidea-direnv".into()).spawn(run) {
+            tracing::warn!("direnv: {e}");
+            // Language servers must not wait for a load that never runs.
+            ide_core::project_env::settle(root);
+        }
     }
 
     pub(crate) fn shutdown(&self) {
@@ -118,11 +190,17 @@ impl Environment {
         ide_core::process::set_env_overlay(merge(&state.login, &state.project));
     }
 
-    /// Reload Environment: reads the login shell again and re-applies the project's
-    /// `remoteEnv` (`root`). Blocking (it runs the shell); children already running keep
-    /// their environment.
+    /// Reload Environment: reads the login shell again, re-applies the project's `remoteEnv`
+    /// and loads its direnv environment again (`root`, a trusted project). Blocking (it runs
+    /// the shell and direnv); children already running keep their environment.
     pub fn reload(&self, root: Option<&Path>, sink: &SharedSink) -> IdeResult<EnvReloaded> {
-        let before: Vec<_> = ide_core::process::host_vars().collect();
+        let vars = || -> Vec<_> {
+            match root {
+                Some(root) => ide_core::process::host_vars_in(root).collect(),
+                None => ide_core::process::host_vars().collect(),
+            }
+        };
+        let before = vars();
         let fresh = crate::shell_env::read_login_env_now().map_err(IdeError::unavailable)?;
         let shell_read = fresh.is_some();
         if let Some(fresh) = fresh {
@@ -146,7 +224,10 @@ impl Environment {
                 None
             }
         };
-        let after: Vec<_> = ide_core::process::host_vars().collect();
+        if let Some(root) = root {
+            self.load_direnv(root, sink, false);
+        }
+        let after = vars();
         Ok(EnvReloaded { changed: changed_names(&before, &after), devcontainer, shell_read })
     }
 

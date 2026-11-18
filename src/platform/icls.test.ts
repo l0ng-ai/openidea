@@ -48,6 +48,33 @@ describe(".icls schemes", () => {
     expect(parseIcls(xml).scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
   });
 
+  it("round trips both caret identifier attributes with their foregrounds (#4109)", () => {
+    const { scheme } = parseIcls(`<scheme name="Caret" parent_scheme="Darcula"><attributes>
+      <option name="WRITE_SEARCH_RESULT_ATTRIBUTES"><value><option name="BACKGROUND" value="111111"/></value></option>
+      <option name="IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="aa0000"/><option name="BACKGROUND" value="220000"/>
+      </value></option>
+      <option name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="00aa00"/><option name="BACKGROUND" value="002200"/>
+      </value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.identifierUnderCaret).toEqual({ foreground: "#aa0000", background: "#220000" });
+    expect(scheme.attributes.identifierUnderCaretWrite).toEqual({ foreground: "#00aa00", background: "#002200" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"');
+    expect(parseIcls(xml).scheme.attributes.identifierUnderCaretWrite).toEqual(
+      scheme.attributes.identifierUnderCaretWrite,
+    );
+  });
+
+  it("still reads the write highlight from WRITE_SEARCH_RESULT_ATTRIBUTES alone", () => {
+    const { scheme } = parseIcls(`<scheme name="Old"><attributes>
+      <option name="WRITE_SEARCH_RESULT_ATTRIBUTES"><value><option name="BACKGROUND" value="111111"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.identifierUnderCaretWrite).toEqual({ background: "#111111" });
+  });
+
   it("resolves explicit attribute inheritance independent of XML order and stops cycles", () => {
     const { scheme } = parseIcls(`<scheme name="Inherited"><attributes>
       <option name="PHP_PARAMETER" baseAttributes="PHP_VAR"/>

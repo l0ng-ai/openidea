@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.11.0;
 
 /// Writes to the IDE log, tagged with the plugin id.
 interface log {
@@ -75,6 +75,21 @@ interface ui {
     remove-context: func(key: string);
     /// Copies `text` to the system clipboard. Requires `clipboard`.
     copy-to-clipboard: func(text: string) -> result<_, error>;
+    /// What `read-clipboard` found (API 1.11). Both `none`: the clipboard holds
+    /// neither text nor an image.
+    record clipboard-content {
+        text: option<string>,
+        /// An image (a screenshot), always as PNG bytes.
+        image: option<list<u8>>,
+    }
+    /// Reads the system clipboard of the user's machine (API 1.11). Requires
+    /// `clipboard.read`. Only in a command the user ran or a view action from
+    /// a window; anywhere else (event handlers, background and scheduled
+    /// work, web view messages, a command run through `command-runner`) it is
+    /// `denied`, so nothing reads the clipboard behind the user's back. Text
+    /// or an image over 16 MiB fails the call. In a remote project the user
+    /// confirms first; refusing is `denied`.
+    read-clipboard: func() -> result<clipboard-content, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.
     open-url: func(url: string) -> result<_, error>;
     /// Shows a list and waits for the chosen key, or `none` when dismissed.

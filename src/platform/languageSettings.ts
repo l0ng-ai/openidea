@@ -231,6 +231,8 @@ export interface LanguagesValid {
       activeProfiles: string;
       /** Delegate IDE build/run actions to Maven (`javac`) instead of jdtls (ECJ). */
       delegateBuild: boolean;
+      /** Download dependencies' `-sources.jar` when jdtls imports the project. */
+      downloadSources: boolean;
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -314,6 +316,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       threads: "",
       activeProfiles: "",
       delegateBuild: false,
+      downloadSources: false,
     },
   },
   markdown: { previewFontSize: null },
@@ -492,6 +495,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         threads: text(maven.threads, d.java.maven.threads),
         activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
         delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
+        downloadSources: bool(maven.downloadSources, d.java.maven.downloadSources),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },

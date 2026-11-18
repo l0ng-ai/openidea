@@ -87,8 +87,9 @@ fn pump_bounded(stream: Box<dyn Read + Send>, kind: Stream, tx: &mpsc::Sender<(S
 
 /// `program` as spawnable: a bare name (`mvn`, `mvn.cmd`) resolves on the IDE's
 /// search path — the login shell's `PATH` plus version-manager shims — since the
-/// app's own `PATH` can be minimal and `Command` would not see `mvn` there.
-pub(crate) fn program_path(program: &str, env: &BTreeMap<String, String>) -> std::path::PathBuf {
+/// app's own `PATH` can be minimal and `Command` would not see `mvn` there. The `PATH`
+/// of the project holding `cwd` (its direnv `.envrc`) comes first.
+pub(crate) fn program_path(program: &str, env: &BTreeMap<String, String>, cwd: &Path) -> std::path::PathBuf {
     let path = std::path::Path::new(program);
     if !path.is_relative() || path.components().count() > 1 {
         return path.to_path_buf();
@@ -97,7 +98,7 @@ pub(crate) fn program_path(program: &str, env: &BTreeMap<String, String>) -> std
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
         .map(|(_, v)| std::ffi::OsString::from(v))
-        .unwrap_or_else(ide_core::tool_path::search_path);
+        .unwrap_or_else(|| ide_core::tool_path::search_path_in(cwd));
     ide_core::process::find_executable(program, &search).unwrap_or_else(|| path.to_path_buf())
 }
 
@@ -161,7 +162,7 @@ fn run_with_env_capture(
     // Output is read as UTF-8: JVMs on Windows are told to write it (see `ide_core::output_encoding`).
     let encoding =
         ide_core::output_encoding::fix(program, args, env, |k| std::env::var(k).ok(), "UTF-8", cfg!(windows));
-    let program = program_path(program, env);
+    let program = program_path(program, env, cwd);
     let mut command = Command::new(&program);
     command.args(args).current_dir(cwd).envs(env).envs(encoding.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());

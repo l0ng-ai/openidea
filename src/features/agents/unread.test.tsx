@@ -11,9 +11,9 @@ import {
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
-import { openChangeDiff } from "./SessionEditor";
+import { openChangeDiff } from "./session/ChangesPane";
 import * as actions from "@/platform/actions";
-import { TASK_DRAG } from "./model";
+import { SESSION_KIND, sessionKey, TASK_DRAG } from "./model";
 import {
   connect,
   disconnect,
@@ -56,7 +56,10 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentProviders: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
     agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
-    agentBaseText: async (_task: string, path: string) => ({ status: "ok", data: `base of ${path}` }),
+    agentBaseText: async (_task: string, path: string, view: string | null) => ({
+      status: "ok",
+      data: view === "lastTurn" ? `before the last turn: ${path}` : `base of ${path}`,
+    }),
     agentEntries: async () => ({ status: "ok", data: await backend.entries }),
   },
 }));
@@ -265,6 +268,88 @@ describe("agent unread activity", () => {
     expect(useAgents.getState().unread.size).toBe(0);
     expect([...useAgents.getState().tasks.keys()]).toEqual(["other"]);
   });
+
+  it("evicts entries, subagent entries, changes, and scroll positions when a task is removed or archived", () => {
+    backend.tabs = [
+      {
+        input: { kind: SESSION_KIND, key: sessionKey("open"), data: { task: "open" } },
+        title: "open",
+        icon: "toolwindow-agents",
+        lastActive: 1,
+      },
+    ];
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set("two", task("two", "ready")).set("open", task("open", "ready")),
+      entries: new Map(s.entries)
+        .set("one", [{ type: "agent", text: "Answer one" }])
+        .set("one/child", [{ type: "agent", text: "Child one" }])
+        .set("one1", [{ type: "agent", text: "Answer one1" }])
+        .set("two", [{ type: "agent", text: "Answer two" }])
+        .set("open", [{ type: "agent", text: "Answer open" }]),
+      changes: new Map(s.changes)
+        .set("one", [{ path: "a.ts", relPath: "a.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }])
+        .set("two", [{ path: "b.ts", relPath: "b.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }]),
+      groupedChanges: new Map(s.groupedChanges)
+        .set("one", { uncommitted: [], commits: [] })
+        .set("two", { uncommitted: [], commits: [] }),
+      scrollPositions: new Map(s.scrollPositions)
+        .set("one", { top: 100, stick: false })
+        .set("one/child", { top: 50, stick: false }),
+    }));
+    emit({ type: "removed", id: "one" });
+    const afterRemoved = useAgents.getState();
+    expect(afterRemoved.entries.has("one")).toBe(false);
+    expect(afterRemoved.entries.has("one/child")).toBe(false);
+    expect(afterRemoved.changes.has("one")).toBe(false);
+    expect(afterRemoved.groupedChanges.has("one")).toBe(false);
+    expect(afterRemoved.scrollPositions.has("one")).toBe(false);
+    expect(afterRemoved.scrollPositions.has("one/child")).toBe(false);
+    expect(afterRemoved.entries.has("one1")).toBe(true);
+    expect(afterRemoved.entries.has("two")).toBe(true);
+
+    emit({ type: "task", task: task("two", "archived") });
+    const afterArchived = useAgents.getState();
+    expect(afterArchived.entries.has("two")).toBe(false);
+    expect(afterArchived.changes.has("two")).toBe(false);
+    expect(afterArchived.groupedChanges.has("two")).toBe(false);
+
+    // An archived task that is still open in a tab keeps its entries until closed.
+    emit({ type: "task", task: task("open", "archived") });
+    expect(useAgents.getState().entries.has("open")).toBe(true);
+    backend.tabs = [];
+    const dispose = activate();
+    try {
+      const sessionKind = useContributions.getState().editorKinds.get(SESSION_KIND);
+      sessionKind?.onClose?.({ kind: SESSION_KIND, key: sessionKey("open"), data: { task: "open" } });
+      expect(useAgents.getState().entries.has("open")).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
+  it.each([false, true])(
+    "releases the previously docked task when another task or New Task replaces it (via New Task: %s)",
+    (viaHome) => {
+      setSessionLocation("toolWindow");
+      const tasks = new Map<string, AgentTask>();
+      const entries = new Map<string, AgentEntry[]>();
+      for (let i = 1; i <= 7; i++) {
+        const id = `D${i}`;
+        tasks.set(id, task(id, "ready"));
+        entries.set(id, [{ type: "agent", text: `Reply ${id}` }]);
+      }
+      useAgents.setState({ tasks, entries });
+      for (let i = 1; i <= 7; i++) {
+        if (viaHome) openHome();
+        openTask(`D${i}`);
+      }
+      const state = useAgents.getState();
+      expect(state.docked).toBe("D7");
+      expect(state.entries.has("D1")).toBe(false);
+      expect(state.entries.has("D7")).toBe(true);
+      expect(state.entries.size).toBe(6); // D7 docked + 5 most recently un-docked (D2..D6)
+    },
+  );
 });
 
 describe("agent unread indicators", () => {
@@ -438,6 +523,21 @@ describe("the diff of an agent change", () => {
     expect(input.data.left).toEqual({ type: "text", text: "base of /project/b.ts", label: "Base" });
     expect(input.data.chain.map((d: { path: string }) => d.path)).toEqual(["/project/a.ts", "/project/b.ts"]);
     expect(input.data.chain[0].left.text).toBe("base of /project/a.ts");
+  });
+
+  it("in the last turn, lists that turn's files against how they were as it started", async () => {
+    useAgents.setState({
+      changes: new Map([["one", [change("/project/a.ts"), change("/project/b.ts")]]]),
+      turnChanges: new Map([["one", [change("/project/b.ts")]]]),
+    });
+    await openChangeDiff(task("one"), "/project/b.ts", "turn");
+    const input = backend.openInput.mock.lastCall![0];
+    expect(input.data.left).toEqual({
+      type: "text",
+      text: "before the last turn: /project/b.ts",
+      label: "Before Last Turn",
+    });
+    expect(input.data.chain).toBeUndefined();
   });
 
   it("opens a file outside the change list on its own", async () => {

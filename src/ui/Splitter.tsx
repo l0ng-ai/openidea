@@ -12,8 +12,10 @@ import {
   type SeparatorProps,
 } from "react-resizable-panels";
 import clsx from "clsx";
-import { useEffect, useImperativeHandle, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useImperativeHandle, useRef, useState } from "react";
 import styles from "./Splitter.module.css";
+
+const SplitResetContext = createContext<((handle: HTMLElement, defaultHandled: boolean) => void) | null>(null);
 
 function savedLayout(storageKey: string | undefined): Record<string, number> | undefined {
   try {
@@ -46,6 +48,14 @@ export function SplitGroup({
   const mountedKey = useRef(storageKey);
   // Sizes to apply once the group's panels match them (a panel added with the new key registers later).
   const pending = useRef<Record<string, number> | null>(null);
+  const saveLayout = (layout: Record<string, number>) => {
+    if (!storageKey || !Object.values(layout).every(Number.isFinite)) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(layout));
+    } catch {
+      /* Storage may be unavailable. */
+    }
+  };
   const applyPending = (current: Record<string, number>) => {
     const layout = pending.current;
     if (!layout) return;
@@ -73,35 +83,39 @@ export function SplitGroup({
     applyPending(layout);
     rest.onLayoutChange?.(layout);
   };
-  if (!storageKey)
-    return (
+  const resetHandle = (handle: HTMLElement, defaultHandled: boolean) => {
+    const g = group.current;
+    if (!g || rest.disabled) return;
+    if (!defaultHandled) {
+      let prev = handle.previousElementSibling;
+      while (prev && !prev.hasAttribute("data-panel")) prev = prev.previousElementSibling;
+      let next = handle.nextElementSibling;
+      while (next && !next.hasAttribute("data-panel")) next = next.nextElementSibling;
+      const current = g.getLayout();
+      const left = prev?.id ? current[prev.id] : undefined;
+      const right = next?.id ? current[next.id] : undefined;
+      if (prev?.id && next?.id && left !== undefined && right !== undefined) {
+        const half = (left + right) / 2;
+        g.setLayout({ ...current, [prev.id]: half, [next.id]: half });
+      }
+    }
+    const updated = g.getLayout();
+    if (Object.keys(updated).length) saveLayout(updated);
+  };
+  return (
+    <SplitResetContext.Provider value={resetHandle}>
       <Group
         className={clsx(styles.group, className)}
         {...rest}
         groupRef={group}
         onLayoutChange={onLayoutChange}
-        defaultLayout={defaultLayout}
-        onLayoutChanged={onLayoutChanged}
+        defaultLayout={storageKey ? (saved ?? defaultLayout) : defaultLayout}
+        onLayoutChanged={(layout, meta) => {
+          if (meta.isUserInteraction) saveLayout(meta.requestedLayout ?? layout);
+          onLayoutChanged?.(layout, meta);
+        }}
       />
-    );
-  return (
-    <Group
-      className={clsx(styles.group, className)}
-      {...rest}
-      groupRef={group}
-      onLayoutChange={onLayoutChange}
-      defaultLayout={saved ?? defaultLayout}
-      onLayoutChanged={(layout, meta) => {
-        if (storageKey && meta.isUserInteraction) {
-          try {
-            localStorage.setItem(storageKey, JSON.stringify(meta.requestedLayout ?? layout));
-          } catch {
-            /* Storage may be unavailable. */
-          }
-        }
-        onLayoutChanged?.(layout, meta);
-      }}
-    />
+    </SplitResetContext.Provider>
   );
 }
 
@@ -114,6 +128,16 @@ export interface SplitHandleProps extends SeparatorProps {
   hairline?: boolean;
 }
 
-export function SplitHandle({ className, hairline = true, ...rest }: SplitHandleProps) {
-  return <Separator className={clsx(styles.handle, !hairline && styles.invisible, className)} {...rest} />;
+export function SplitHandle({ className, hairline = true, onDoubleClick, ...rest }: SplitHandleProps) {
+  const reset = useContext(SplitResetContext);
+  return (
+    <Separator
+      className={clsx(styles.handle, !hairline && styles.invisible, className)}
+      onDoubleClick={(e) => {
+        onDoubleClick?.(e);
+        if (!rest.disabled && !rest.disableDoubleClick) reset?.(e.currentTarget, e.defaultPrevented);
+      }}
+      {...rest}
+    />
+  );
 }

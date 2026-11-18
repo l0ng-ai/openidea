@@ -110,6 +110,18 @@ describe("Search Everywhere dialog", () => {
     dispose();
   });
 
+  it("passes the Text tab's query to Find in Files as typed, port included", async () => {
+    const run = vi.fn();
+    const dispose = registerAction({ id: "find.inPath", title: "Find in Files", run });
+    render(<SearchEverywhereOverlay />);
+    act(() => showSearchEverywhere("text", { query: "http://localhost:8080" }));
+    await tick();
+    fireEvent.keyDown(screen.getByLabelText("Search query"), { key: "Enter", metaKey: true, ctrlKey: true });
+    await tick();
+    expect(run.mock.calls[0]![0].arg).toEqual({ query: "http://localhost:8080" });
+    dispose();
+  });
+
   it("refreshes the current file query after index invalidation finishes", async () => {
     render(<SearchEverywhereOverlay />);
     act(() => showSearchEverywhere("files", { query: "order" }));

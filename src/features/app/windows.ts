@@ -57,6 +57,13 @@ async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
   // A folder of a WSL distro runs there, not as a network folder; the window then drops untitled buffers.
   const wsl = await commands.wslResolve(path).catch(() => null);
+  try {
+    // Asked before leaving, so Don't Open keeps the current project and its processes running.
+    if (!wsl) await confirmProjectTrust(path, "local");
+  } catch (e) {
+    openFailed(path, e);
+    return false;
+  }
   if (!(await confirmLeaveProject(!wsl))) return false;
   try {
     if (wsl) await connectRemote(wsl.target, wsl.path);

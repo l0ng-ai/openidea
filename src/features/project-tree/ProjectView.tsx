@@ -86,6 +86,7 @@ import {
   VIEW_MODES,
   autoExpand,
   clearRevealRequest,
+  explainHiddenPath,
   loadDir,
   loadOutline,
   revealPath,
@@ -517,7 +518,7 @@ export function ProjectView() {
   // Select a revealed path once its row exists.
   useEffect(() => {
     if (!revealRequest) return;
-    const { path, focus, seq } = revealRequest;
+    const { path, focus, seq, explain } = revealRequest;
     const exact = model.keyOfPath.get(path);
     const loadingAncestors = info.pending.some((p) => p === path || isInside(path, p));
     if (!exact && loadingAncestors) return;
@@ -528,6 +529,8 @@ export function ProjectView() {
     handle.current?.reveal(key);
     revealing.current = false;
     if (focus) handle.current?.focus();
+    const shown = model.byKey.get(key)?.path;
+    if (explain && !exact && shown) explainHiddenPath(path, shown);
   }, [revealRequest, model, info]);
 
   // Autoscroll from source: follow the active editor.
