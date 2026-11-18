@@ -78,6 +78,12 @@ export function VimSettingsPage() {
             &lt;Action&gt;() mappings that run IDE actions. :w saves, :q closes the editor tab.
           </T>
         </p>
+        <p className={styles.hint}>
+          <T>
+            Unnamed yanks and deletes stay in Vim's registers. Add set clipboard+=unnamed (or set clipboard=unnamedplus)
+            to the rc file to mirror them to the system clipboard.
+          </T>
+        </p>
         {rc.ignored.length > 0 && (
           <ul className={styles.ignored} aria-label={tx("Ignored lines")}>
             {rc.ignored.map((i) => (
@@ -103,6 +109,12 @@ export function VimSettingsPage() {
           <T>
             Keys Vim also handles. With Vim as the handler the key goes to the editor while Vim mode is on and an editor
             has focus; with IDE, an enabled IDE action runs first.
+          </T>
+        </p>
+        <p className={styles.hint}>
+          <T>
+            Ctrl+V pastes in Insert mode and starts a Visual block in Normal and Visual modes. Ctrl+C copies the
+            selection in Visual mode and otherwise leaves the current mode.
           </T>
         </p>
         <table className={styles.table}>
