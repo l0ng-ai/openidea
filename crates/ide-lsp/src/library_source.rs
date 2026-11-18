@@ -180,6 +180,7 @@ pub(crate) fn declaration_range(text: &str, name: &str) -> Range {
     const KEYWORDS: [&str; 9] = ["fun", "class", "interface", "object", "val", "var", "typealias", "enum", "record"];
     let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
     let mut fallback = None;
+    let mut field = None;
     let mut block_comment = false;
     for (line_no, line) in text.lines().enumerate() {
         let trimmed = line.trim_start();
@@ -223,27 +224,23 @@ pub(crate) fn declaration_range(text: &str, name: &str) -> Range {
             if java_member && fallback.is_none() {
                 fallback = Some(range);
             }
-            // A Java field (`private String name;`): Lombok sources declare only the
-            // field, the accessors exist solely in the compiled class.
-            let java_field = matches!(after, Some(';') | Some('='))
+            // A Java field (`private String name;`, `int age = 5;`): Lombok sources declare only
+            // the field, the accessors exist solely in the compiled class. A method of that name
+            // still wins, so a same-named local declared before it is not taken.
+            let java_field = matches!(line[end..].trim_start().chars().next(), Some(';' | '=' | ','))
                 && !head.trim_end().ends_with('.')
                 && !head.trim().is_empty()
-                && !head.contains('(')
+                && !head.contains(['=', '('])
                 && !words.iter().any(|w| matches!(*w, "return" | "throw" | "new" | "yield" | "assert"));
-            if java_field {
-                return range;
+            if java_field && field.is_none() {
+                field = Some(range);
             }
         }
     }
-    if fallback.is_none()
-        && let Some(field) = accessor_field(name)
-    {
-        let range = declaration_range(text, &field);
-        if range != Range::default() {
-            return range;
-        }
+    if let Some(range) = fallback.or(field) {
+        return range;
     }
-    fallback.unwrap_or_default()
+    accessor_field(name).map(|field| declaration_range(text, &field)).unwrap_or_default()
 }
 
 /// The field a Lombok/bean accessor stands for (`getName`/`setName` → `name`,
@@ -642,6 +639,10 @@ mod tests {
         // An explicitly declared accessor still wins over the field.
         let plain = "class Plain {\n    private String name;\n    public String getName() { return name; }\n}\n";
         assert_eq!(declaration_range(plain, "getName").start.line, 2);
+        // Initialized fields count; a method beats a same-named local declared before it.
+        let init = "class Init {\n    private int count = 0;\n    void a() {\n        int size = 1;\n    }\n    int size() { return 2; }\n}\n";
+        assert_eq!(declaration_range(init, "getCount").start.line, 1);
+        assert_eq!(declaration_range(init, "size").start.line, 5);
         // Bean convention keeps acronyms; non-accessors are not remapped.
         assert_eq!(accessor_field("getURL").as_deref(), Some("URL"));
         assert_eq!(accessor_field("getter"), None);

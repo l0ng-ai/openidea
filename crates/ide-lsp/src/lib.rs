@@ -1849,7 +1849,8 @@ impl LspManager {
                 out.push(loc);
                 continue;
             };
-            let uri = if original.starts_with("jar:") {
+            let jdt = original.starts_with("jdt:");
+            let uri = if !jdt {
                 let Some(entry) = library_source::parse(original) else {
                     out.push(loc);
                     continue;
@@ -1868,15 +1869,30 @@ impl LspManager {
             } else {
                 original.to_owned()
             };
-            let computed = match (&name, self.virtual_document(&uri).await) {
-                (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),
+            let doc = self.virtual_document(&uri).await.ok();
+            let range = match (&name, &doc) {
+                // jdtls' own class: its range is exact (overloads included) unless it maps a
+                // Lombok-generated member onto the annotation or class header, which doesn't
+                // name the member; only then look the declaration up in the source.
+                (Some(name), Some(doc)) if jdt => {
+                    let line = doc.text.lines().nth(loc.range.start.line as usize).unwrap_or_default();
+                    if library_source::identifier_at(line, loc.range.start.col) == Some(name.as_str()) {
+                        loc.range
+                    } else {
+                        Some(library_source::declaration_range(&doc.text, name))
+                            .filter(|r| *r != Range::default())
+                            .unwrap_or(loc.range)
+                    }
+                }
+                (Some(name), Some(doc)) => library_source::declaration_range(&doc.text, name),
+                _ if jdt => loc.range,
                 _ => Range::default(),
             };
-            // jdtls maps Lombok-generated members onto the annotation / class, not the
-            // field; prefer the declaration located in the attached source when we find
-            // one, else keep the server's range.
-            let range = if uri.starts_with("jdt:") && computed == Range::default() { loc.range } else { computed };
-            out.push(Location { path: uri.clone().into(), range, uri: Some(uri) });
+            out.push(if jdt {
+                Location { range, ..loc }
+            } else {
+                Location { path: uri.clone().into(), range, uri: Some(uri) }
+            });
         }
         out
     }
