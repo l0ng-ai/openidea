@@ -561,6 +561,7 @@ describe("applying completions", () => {
           EditorState.languageData.of(() => [{ openideaCompletion: source }]),
         ]),
       });
+      view.focus();
       startCompletion(view);
       await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
       view.dispatch({
@@ -593,6 +594,7 @@ describe("applying completions", () => {
           EditorState.languageData.of(() => [{ openideaCompletion: source }]),
         ]),
       });
+      view.focus();
       startCompletion(view);
       await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -818,6 +820,7 @@ describe("completion footer", () => {
       }),
       parent: document.body,
     });
+    view.focus();
     startCompletion(view);
     await vi.waitFor(() =>
       expect(document.querySelector(".cm-tooltip-autocomplete > .cm-lsp-completion-footer")).not.toBeNull(),
@@ -938,6 +941,7 @@ describe("completionBackoff", () => {
       }),
       parent: document.body,
     });
+    view.focus();
 
     // 1. Typing 'o' triggers automatic completion -> backend unavailable -> marks backoff
     view.dispatch({ changes: { from: 1, insert: "o" }, selection: { anchor: 2 }, userEvent: "input.type" });

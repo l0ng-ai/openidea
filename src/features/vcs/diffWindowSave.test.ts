@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+type Listener = (event: { payload: unknown }) => unknown;
+
 const bus = vi.hoisted(() => ({
   label: "main",
   windows: ["main", "diff-main-1", "diff-project-2-1"],
-  listeners: new Map<string, (event: { payload: unknown }) => unknown>(),
+  listeners: new Map<string, Set<Listener>>(),
 }));
 vi.mock("@/platform/ipc", () => ({ isTauri: () => true }));
 vi.mock("@tauri-apps/api/window", () => ({
@@ -12,17 +14,23 @@ vi.mock("@tauri-apps/api/window", () => ({
     const label = bus.label;
     return {
       label,
-      listen: async (event: string, handler: (event: { payload: unknown }) => unknown) => {
+      listen: async (event: string, handler: Listener) => {
         const key = `${label}:${event}`;
-        bus.listeners.set(key, handler);
-        return () => bus.listeners.delete(key);
+        const listeners = bus.listeners.get(key) ?? new Set<Listener>();
+        bus.listeners.set(key, listeners);
+        listeners.add(handler);
+        return () => {
+          listeners.delete(handler);
+          if (!listeners.size) bus.listeners.delete(key);
+        };
       },
     };
   },
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   emitTo: async (label: string, event: string, payload: unknown) => {
-    await bus.listeners.get(`${label}:${event}`)?.({ payload });
+    const listeners = bus.listeners.get(`${label}:${event}`);
+    if (listeners) await Promise.all([...listeners].map((listener) => listener({ payload })));
   },
 }));
 import { installDiffWindowSave, saveDiffWindows } from "./diffWindowSave";
