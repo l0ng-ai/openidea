@@ -2457,5 +2457,9 @@
   "Skip": "Skip",
   "Resize Markdown preview": "Resize Markdown preview",
   "Run a Python script or module": "Run a Python script or module",
-  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed."
+  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.",
+  "Alignment": "Alignment",
+  "Align key-value pairs": "Align key-value pairs",
+  "Align consecutive assignments": "Align consecutive assignments",
+  "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines."
 }
