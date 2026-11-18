@@ -7,7 +7,6 @@
  */
 import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { commands, isTauri } from "@/platform/ipc";
 import {
   BUILTIN_INSPECTIONS,
   copyProfileName,
@@ -44,10 +43,8 @@ import {
 import { useSetting } from "../../components/context";
 import { useSettingsDialog } from "../../model/staging";
 import { useProject } from "@/platform/project";
-import type { PageSpec } from "../spec";
 import {
   AS_REPORTED,
-  INSPECTION_KEYWORDS,
   LEVEL_OPTIONS,
   buildInspectionTree,
   checkState,
@@ -62,29 +59,20 @@ import {
   setLevel,
   withProfileOverrides,
   type InspectionNode,
+  cachedInspectionLanguages,
+  loadInspectionLanguages,
   type LanguageServers,
 } from "./inspectionsModel";
 import styles from "./Inspections.module.css";
 import { tx } from "@/platform/i18n";
-import { onLanguageListChanged, useLanguageListVersion } from "@/platform/languageList";
-
-let languagesCache: LanguageServers[] | null = null;
-onLanguageListChanged(() => (languagesCache = null));
-
-async function loadLanguages(): Promise<LanguageServers[]> {
-  if (languagesCache) return languagesCache;
-  if (!isTauri()) return [];
-  const list = await commands.languages();
-  languagesCache = list.map((l) => ({ name: l.name, servers: l.languageServers ?? [] }));
-  return languagesCache;
-}
+import { useLanguageListVersion } from "@/platform/languageList";
 
 function useLanguages(): LanguageServers[] {
-  const [langs, setLangs] = useState<LanguageServers[]>(() => languagesCache ?? []);
+  const [langs, setLangs] = useState<LanguageServers[]>(() => cachedInspectionLanguages());
   const version = useLanguageListVersion((s) => s.version);
   useEffect(() => {
     let alive = true;
-    void loadLanguages().then(
+    void loadInspectionLanguages().then(
       (l) => alive && setLangs(l),
       () => {},
     );
@@ -103,7 +91,7 @@ function expandableKeys(nodes: readonly InspectionNode[], out = new Set<string>(
   return out;
 }
 
-function InspectionsPage() {
+export function InspectionsPage() {
   const hasProject = useProject((s) => !!s.project);
   const newProjects = useSettingsDialog((s) => s.newProjects);
   const projectAvailable = hasProject && !newProjects;
@@ -510,13 +498,3 @@ function InspectionOptions({
     </fieldset>
   );
 }
-
-export const INSPECTIONS_PAGE: PageSpec = {
-  id: "editor.inspections",
-  title: "Inspections",
-  group: "Editor",
-  order: 25,
-  keywords: INSPECTION_KEYWORDS,
-  component: InspectionsPage,
-  dynamicLabels: () => (languagesCache ?? []).flatMap((l) => [l.name, ...l.servers]),
-};

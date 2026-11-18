@@ -121,6 +121,7 @@ struct State {
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     window_status: BTreeMap<String, StatusItem>,
+    console_rules: Vec<ConsoleRule>,
     ipc: BTreeMap<u64, VecDeque<u8>>,
     next_ipc: u64,
     loopbacks: BTreeSet<u64>,
@@ -454,6 +455,11 @@ impl MockHost {
     pub fn status_items(&self) -> BTreeMap<String, StatusItem> {
         let s = self.state.borrow();
         s.status.iter().chain(&s.window_status).map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// The rules of the last successful [`crate::host::set_console_rules`].
+    pub fn console_rules(&self) -> Vec<ConsoleRule> {
+        self.state.borrow().console_rules.clone()
     }
 
     pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
@@ -997,6 +1003,19 @@ pub mod current {
 
     pub fn set_status_item(id: &str, item: &StatusItem) {
         with(|s| s.status.insert(id.to_owned(), item.clone()));
+    }
+
+    /// The host's count and length limits; it also refuses patterns that could
+    /// backtrack for long, which the mock doesn't check.
+    pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+        if rules.len() > 100 {
+            return Err(Error::Invalid("at most 100 console rules".into()));
+        }
+        if let Some(i) = rules.iter().position(|r| r.pattern.is_empty() || r.pattern.len() > 512) {
+            return Err(Error::Invalid(format!("console rule {i}: a pattern is 1-512 bytes")));
+        }
+        with(|s| s.console_rules = rules.to_vec());
+        Ok(())
     }
 
     pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {

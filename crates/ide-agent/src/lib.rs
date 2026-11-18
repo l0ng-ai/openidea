@@ -20,6 +20,7 @@ mod native;
 mod provider;
 pub mod registry;
 pub mod security;
+mod shell;
 mod skills;
 mod timeline;
 mod worktree;
@@ -400,6 +401,9 @@ struct TaskState {
     /// the like), as it sent them: unlike a turn they outlive it, so an idle release
     /// waits for the last one. A (re)started process runs nothing yet.
     background_tasks: Vec<Value>,
+    /// Shell commands the user ran with `!` since the last prompt, as the text block that
+    /// goes ahead of the next one.
+    shell_context: Vec<String>,
 }
 
 impl TaskState {
@@ -954,6 +958,26 @@ impl AgentManager {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Runs `command` (a composer line starting with `!`) in the task's folder with the user's
+    /// shell, without starting a turn: it shows as one entry with its output and exit code,
+    /// and goes to the agent with the next message.
+    pub async fn run_shell(&self, id: &str, command: &str, cancel: ide_core::CancellationToken) -> IdeResult<()> {
+        let task = self.task(id)?;
+        let command = command.trim();
+        if command.is_empty() {
+            return Err(IdeError::invalid("empty command"));
+        }
+        let cwd = {
+            let s = task.state.lock();
+            if s.task.status == AgentStatus::Archived {
+                return Err(IdeError::invalid("the task is archived"));
+            }
+            s.task.cwd.0.clone()
+        };
+        task.shell(command, &cwd, &cancel).await;
         Ok(())
     }
 
@@ -1885,6 +1909,7 @@ impl Task {
                 title_renamed: file.title_renamed,
                 busy: false,
                 background_tasks: Vec::new(),
+                shell_context: Vec::new(),
             }),
             live: Mutex::new(None),
             connecting: tokio::sync::Mutex::new(()),
@@ -2113,6 +2138,33 @@ impl Task {
         for e in events {
             self.shared.emit(e);
         }
+    }
+
+    /// Folds an update made here (not by the agent) into the main conversation.
+    fn apply_local(self: &Arc<Self>, update: &Value) {
+        let changed = self.state.lock().conversation.apply(None, update, now_ms());
+        self.mark_dirty(changed);
+    }
+
+    async fn shell(self: &Arc<Self>, command: &str, cwd: &Path, cancel: &ide_core::CancellationToken) {
+        let call = format!("shell-{}", uuid::Uuid::new_v4().simple());
+        self.apply_local(&json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": call,
+            "title": format!("! {command}"),
+            "kind": "execute",
+            "status": "in_progress",
+        }));
+        let ran = shell::run(command, cwd, cancel).await;
+        let status = if ran.code == Some(0) { "completed" } else { "failed" };
+        self.apply_local(&json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": call,
+            "status": status,
+            "content": [{ "type": "content", "content": { "type": "text", "text": ran.shown() } }],
+        }));
+        self.state.lock().shell_context.push(ran.context(command));
+        self.persist();
     }
 
     fn push_entry(self: &Arc<Self>, entry: AgentEntry) -> usize {
@@ -2431,7 +2483,14 @@ impl Task {
         if !prompt.images.is_empty() && !live.capabilities.images {
             return Err(Failure::from("This agent can't read images.".to_owned()));
         }
-        let mut content = self.content(&live, prompt).await;
+        let shell = std::mem::take(&mut self.state.lock().shell_context);
+        let with_shell = |mut content: Vec<Value>| {
+            if !shell.is_empty() {
+                content.insert(0, json!({ "type": "text", "text": shell.join("\n") }));
+            }
+            content
+        };
+        let mut content = with_shell(self.content(&live, prompt).await);
         let mut result: Result<Value, RpcError> =
             live.peer.request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None).await;
         if live.driver == provider::Driver::Copilot
@@ -2453,7 +2512,7 @@ impl Task {
             if !prompt.images.is_empty() && !live.capabilities.images {
                 return Err(Failure::from("This agent can't read images.".to_owned()));
             }
-            content = self.content(&live, prompt).await;
+            content = with_shell(self.content(&live, prompt).await);
             result = live
                 .peer
                 .request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None)

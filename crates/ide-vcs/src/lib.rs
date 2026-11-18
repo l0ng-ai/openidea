@@ -768,6 +768,8 @@ pub struct Repo {
     git_dir: PathBuf,
     inner: std::sync::Mutex<repo::Cache>,
     ignored: std::sync::RwLock<IgnoredNames>,
+    /// Working-tree status from `git status` instead of gitoxide.
+    cli_status: std::sync::atomic::AtomicBool,
     log_index: std::sync::Mutex<log_index::LogIndex>,
     log_signatures: std::sync::Mutex<std::collections::HashMap<String, LogDetails>>,
 }
@@ -793,6 +795,11 @@ impl Repo {
     pub fn set_ignored_names(&self, names: IgnoredNames) {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         *self.ignored.write().unwrap_or_else(|p| p.into_inner()) = names;
+    }
+    /// Read the working-tree status with `git status` rather than in process: for file systems
+    /// (encryption or protection layers) whose metadata only the system git reads correctly.
+    pub fn set_cli_status(&self, on: bool) {
+        self.cli_status.store(on, std::sync::atomic::Ordering::Release);
     }
     /// Staged (HEAD↔index) and unstaged (index↔worktree, incl. untracked) changes,
     /// sorted by path. Conflicted files report `unstaged: Conflicted` and no staged kind.

@@ -3,24 +3,38 @@
  * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript / Zig. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
-import {
-  GoPage,
-  JavaPage,
-  NodePage,
-  PhpPage,
-  RubyPage,
-  RustPage,
-  TypeScriptPage,
-  ZigPage,
-} from "../languages/LanguagePages";
-import { MarkdownPage } from "../languages/MarkdownPage";
-import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
-import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
-import { PythonInterpretersPage } from "../languages/PythonInterpretersPage";
-import { DocstringsPage } from "../languages/DocstringsPage";
-import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
-import { GoModulesPage, GO_MODULE_SECTIONS } from "../languages/GoModules";
+import { GO_BUILD_TAG_SECTIONS, GoBuildTagsPage } from "../languages/GoBuildTags";
+import { GO_MODULE_SECTIONS, GoModulesPage } from "../languages/GoModules";
+import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
+
+const PythonInterpreterPage = lazyPage("python.interpreter", () =>
+  import("../languages/PythonInterpreterPage").then((m) => m.PythonInterpreterPage),
+);
+const PythonInterpretersPage = lazyPage("python.interpreters", () =>
+  import("../languages/PythonInterpretersPage").then((m) => m.PythonInterpretersPage),
+);
+const GoPage = lazyPage("languages.go", () => import("../languages/LanguagePages").then((m) => m.GoPage));
+const JavaPage = lazyPage("languages.java", () => import("../languages/LanguagePages").then((m) => m.JavaPage));
+const NodePage = lazyPage("languages.node", () => import("../languages/LanguagePages").then((m) => m.NodePage));
+const MarkdownPage = lazyPage("languages.markdown", () =>
+  import("../languages/MarkdownPage").then((m) => m.MarkdownPage),
+);
+const PrettierPage = lazyPage("languages.prettier", () =>
+  import("../languages/FormatterPage").then((m) => m.PrettierPage),
+);
+const OxfmtPage = lazyPage("languages.oxfmt", () => import("../languages/FormatterPage").then((m) => m.OxfmtPage));
+const DocstringsPage = lazyPage("python.docstrings", () =>
+  import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
+);
+const RuffPage = lazyPage("python.ruff", () => import("../languages/FormatterPage").then((m) => m.RuffPage));
+const PhpPage = lazyPage("languages.php", () => import("../languages/LanguagePages").then((m) => m.PhpPage));
+const RubyPage = lazyPage("languages.ruby", () => import("../languages/LanguagePages").then((m) => m.RubyPage));
+const RustPage = lazyPage("languages.rust", () => import("../languages/LanguagePages").then((m) => m.RustPage));
+const TypeScriptPage = lazyPage("languages.typescript", () =>
+  import("../languages/LanguagePages").then((m) => m.TypeScriptPage),
+);
+const ZigPage = lazyPage("languages.zig", () => import("../languages/LanguagePages").then((m) => m.ZigPage));
 
 export const LANGUAGES_GROUP = "Languages & Frameworks";
 

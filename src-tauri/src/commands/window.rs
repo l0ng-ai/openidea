@@ -177,6 +177,20 @@ pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()>
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+/// Appearance › Smooth scrolling for this window's web view (Linux only)
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_set_smooth_scrolling(window: WebviewWindow, enabled: bool) -> IdeResult<()> {
+    #[cfg(target_os = "linux")]
+    window
+        .with_webview(move |platform| crate::linux_webkit::set_smooth_scrolling(&platform, enabled))
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, enabled);
+    Ok(())
+}
+
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
 #[desktop_command(trust = always)]
 #[tauri::command]
@@ -198,6 +212,54 @@ pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResu
 #[specta::specta]
 pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
     windows.take_launch(window.label())
+}
+
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsWindowInit {
+    pub launch: Option<Launch>,
+    pub remote: Option<crate::remote_dev::RemoteSession>,
+    pub project: Option<ide_host::ops::project::ProjectInfo>,
+    pub global_settings: ide_core::settings::Settings,
+    pub updates: bool,
+}
+
+/// Local bootstrap snapshot for a `settings-<parent>` window, avoiding a sequential
+/// startup IPC waterfall and any blocking SSH `project_current` round-trip before first paint.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_take_settings_init(
+    app: AppHandle,
+    window: WebviewWindow,
+    windows: State<'_, WindowsState>,
+    state: State<'_, AppState>,
+) -> SettingsWindowInit {
+    let owner = AppState::owner_window(window.label());
+    let launch = windows.take_launch(window.label());
+    let (remote, project) = if let Some(c) = state.remote_dev.get(owner) {
+        let session = crate::remote_dev::RemoteSession {
+            target: c.target.clone(),
+            root: c.root.clone(),
+            host: c.host.clone(),
+            os: c.os.clone(),
+            commands: c.commands.clone(),
+        };
+        // Leave `project` empty on remote sessions: the Settings page tree renders immediately
+        // from local client settings, and `projectCurrent()` fills in project-scoped settings
+        // right after first paint without keeping a shadow cache in sync.
+        (Some(session), None)
+    } else {
+        let project = state.project(owner).ok().filter(|p| !p.light).map(|p| ide_host::ops::project::info(&p));
+        (None, project)
+    };
+    SettingsWindowInit {
+        launch,
+        remote,
+        project,
+        global_settings: state.host.with_proxy_password(state.global_settings.effective()),
+        updates: updates_configured(&app),
+    }
 }
 
 /// Release the opening window's reservation after navigation or cancellation.
@@ -872,8 +934,10 @@ ide_command::desktop_domain!(
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_set_smooth_scrolling,
     window_set_titlebar_height,
     window_take_launch,
+    window_take_settings_init,
     window_toggle_fullscreen,
     window_toggle_zoom,
 );
