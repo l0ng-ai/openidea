@@ -41,6 +41,7 @@ CLAUDE.local.md
 !.claude/skills/verify
 !.claude/skills/issue-fix
 !.claude/skills/eval
+!.claude/skills/agent-prior-art
 
 # Local reference screenshots
 pycharm-screenshots/

@@ -69,7 +69,8 @@ Do not use Impeccable or its related skills in this repository, including global
 Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 `verify` drives the running app through Tauri MCP and captures screenshot evidence;
 `issue-fix` takes an issue from reproduction to one PR;
-`eval` takes a failing code-intelligence eval to a fix with before / after numbers.
+`eval` takes a failing code-intelligence eval to a fix with before / after numbers;
+`agent-prior-art` surveys how popular AI agents and IDEs solve a problem, critiques good vs bad designs with citations, and adapts the best ideas when creating or reviewing issues and PRs.
 
 ## Commands
 
