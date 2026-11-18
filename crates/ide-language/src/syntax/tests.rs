@@ -1104,6 +1104,77 @@ fn folding_python_bodies_start_at_header() {
 }
 
 #[test]
+fn folding_python_docstrings_are_comments() {
+    let src = r#""""Module doc.
+More.
+"""
+
+class A:
+    """Class doc.
+    More.
+    """
+    def f(self):
+        """Method doc.
+        More.
+        """
+        return 1
+"#;
+    assert_eq!(
+        folds("python", src),
+        vec![
+            (0, 2, FoldKind::Comment),
+            (4, 12, FoldKind::Region),
+            (5, 7, FoldKind::Comment),
+            (8, 12, FoldKind::Region),
+            (9, 11, FoldKind::Comment),
+        ]
+    );
+}
+
+#[test]
+fn folding_python_single_line_or_later_strings_are_not_docstrings() {
+    // A one-line docstring has nothing to fold; a multi-line string that is not
+    // the opening statement stays an ordinary string fold, not a doc comment.
+    let src = r#"x = 1
+"""Later string.
+Still later.
+"""
+
+def f():
+    """One line."""
+    return 1
+"#;
+    let found = folds("python", src);
+    assert!(!found.contains(&(1, 3, FoldKind::Comment)), "later string must not be a doc comment: {found:?}");
+    assert!(found.contains(&(1, 3, FoldKind::Region)), "later string still folds as a string: {found:?}");
+    assert!(!found.iter().any(|f| f.2 == FoldKind::Comment), "single-line docstring has no fold: {found:?}");
+}
+
+#[test]
+fn folding_elixir_doc_strings_are_comments() {
+    let src = r#"defmodule Foo do
+  @moduledoc """
+  Module doc.
+  More.
+  """
+
+  @doc ~S"""
+  Function doc.
+  More.
+  """
+  def bar, do: :ok
+
+  @doc "one line"
+  def baz, do: :ok
+end
+"#;
+    assert_eq!(
+        folds("elixir", src),
+        vec![(0, 14, FoldKind::Region), (1, 4, FoldKind::Comment), (6, 9, FoldKind::Comment),]
+    );
+}
+
+#[test]
 fn folding_data_and_markup() {
     assert_eq!(
         folds("json", "{\n  \"a\": [\n    1\n  ],\n  \"b\": {}\n}\n"),

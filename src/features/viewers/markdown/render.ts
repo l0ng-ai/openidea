@@ -192,9 +192,9 @@ export type LinkTarget =
 /** Directory of `file` (forward slashes). */
 const dirOf = (file: string) => file.slice(0, Math.max(0, file.lastIndexOf("/")));
 
-/** Joins `rel` onto `dir`, resolving `.` / `..`. Absolute `rel` (leading `/`) is kept. */
+/** Joins `rel` onto `dir`, resolving `.` / `..`. Absolute `rel` (`/…` or `C:/…`) is kept. */
 export function joinPath(dir: string, rel: string): string {
-  const parts = (rel.startsWith("/") ? rel : `${dir}/${rel}`).split("/");
+  const parts = (rel.startsWith("/") || /^[A-Za-z]:\//.test(rel) ? rel : `${dir}/${rel}`).split("/");
   const out: string[] = [];
   for (const p of parts) {
     if (p === "..") {

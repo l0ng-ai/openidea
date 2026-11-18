@@ -377,12 +377,14 @@ export const viewerTheme = EditorView.theme(
       margin: "0 -1px",
       verticalAlign: "top",
     },
-    // The unified view: old lines deleted, new lines inserted.
+    // The unified view: old lines deleted, new lines inserted. The old lines of a chunk whose words
+    // were compared sit right above its first new line and take the lighter colour too.
     ".cm-deletedChunk": { backgroundColor: diffTint("deleted", 70) },
-    "&.cm-diffWords .cm-deletedChunk": { backgroundColor: diffTint("deleted", 28) },
-    ".cm-deletedChunk .cm-deletedText": { background: diffTint("deleted", 85) },
+    "&.cm-diffWords .cm-deletedChunk:has(+ .cm-diffLine-fine)": { backgroundColor: diffTint("deleted", 28) },
+    // Full line height, as `.cm-diffWord`.
+    ".cm-deletedChunk .cm-deletedText": { display: "inline-block", background: diffTint("deleted", 85) },
     "&.cm-merge-a .cm-changedText": { background: diffTint("deleted", 85) },
-    "&.cm-merge-b .cm-changedText": { background: diffTint("inserted", 85) },
+    "&.cm-merge-b .cm-changedText": { display: "inline-block", background: diffTint("inserted", 85) },
     ".cm-changeGutter": { width: "3px", paddingLeft: "0" },
     "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: "var(--gutter-deleted)" },
     "&.cm-merge-b .cm-changedLineGutter": { background: "var(--gutter-modified)" },
