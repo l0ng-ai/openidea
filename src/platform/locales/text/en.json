@@ -2486,5 +2486,6 @@
   "Trust": "Trust",
   "{name} is hidden because {title} is off": "{name} is hidden because {title} is off",
   "{name} did not exist at label '{label}'": "{name} did not exist at label '{label}'",
-  "Restore Tool Windows": "Restore Tool Windows"
+  "Restore Tool Windows": "Restore Tool Windows",
+  "Configure {name}…": "Configure {name}…"
 }
