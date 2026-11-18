@@ -372,7 +372,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     escapeToEditor: false,
     cursorShape: "block",
     cursorBlink: true,
-    maxFps: "30",
+    maxFps: "unlimited",
     useEditorFont: true,
     fontFamily: "JetBrains Mono",
     fontSize: 13,

@@ -493,7 +493,7 @@ impl Default for TerminalSettings {
             escape_to_editor: false,
             cursor_shape: "block".into(),
             cursor_blink: true,
-            max_fps: "30".into(),
+            max_fps: "unlimited".into(),
             use_editor_font: true,
             font_family: "JetBrains Mono".into(),
             font_size: 13.0,
