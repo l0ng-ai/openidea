@@ -78,9 +78,34 @@ test.beforeEach(async ({ page, context }) => {
   await openEditor(page);
 });
 
-test("unnamed yanks and deletes reach the system clipboard", async ({ page }) => {
-  await page.evaluate(() => navigator.clipboard.writeText("SENTINEL"));
+/** Applies rc file lines through the same parser and engine the app uses. */
+async function applyRc(page: Page, rc: string) {
+  await page.evaluate(async (text) => {
+    // Load the app modules in the browser's Vite realm; the variables keep knip from resolving the URLs.
+    const enginePath = "/src/features/vim/engine.ts";
+    const rcPath = "/src/features/vim/rc.ts";
+    const { applyRcCommands } = await import(enginePath);
+    const { parseVimrc } = await import(rcPath);
+    applyRcCommands(parseVimrc(text).commands);
+  }, rc);
+}
 
+test("unnamed register writes stay out of the clipboard by default", async ({ page }) => {
+  await page.evaluate(() => navigator.clipboard.writeText("SENTINEL"));
+  await reset(page, "alpha\nbravo\n");
+  await keys(page, "y", "y");
+  await page.waitForTimeout(150);
+  expect(await readClipboard(page)).toBe("SENTINEL");
+
+  await keys(page, "d", "d");
+  await page.waitForTimeout(150);
+  expect(await readClipboard(page)).toBe("SENTINEL");
+});
+
+test("clipboard+=unnamed mirrors unnamed yanks and deletes", async ({ page }) => {
+  await applyRc(page, "set clipboard+=unnamed");
+
+  await page.evaluate(() => navigator.clipboard.writeText("SENTINEL"));
   await reset(page, "alpha\nbravo\ncharlie\n");
   await keys(page, "y", "y");
   await expectClipboard(page, "alpha\n");
@@ -97,6 +122,8 @@ test("unnamed yanks and deletes reach the system clipboard", async ({ page }) =>
 });
 
 test("explicit registers keep the clipboard out of the sync", async ({ page }) => {
+  await applyRc(page, "set clipboard+=unnamed");
+
   for (const strokes of [
     ['"', "a", "y", "y"],
     ['"', "_", "d", "d"],
@@ -159,6 +186,12 @@ test("the settings page documents what Ctrl+V and Ctrl+C do in each mode", async
   await expect(
     conflicts.getByText(
       "Ctrl+V pastes in Insert mode and starts a Visual block in Normal and Visual modes. Ctrl+C copies the selection in Visual mode and otherwise leaves the current mode.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    settings.getByText(
+      "Unnamed yanks and deletes stay in Vim's registers. Add set clipboard+=unnamed (or set clipboard=unnamedplus) to the rc file to mirror them to the system clipboard.",
       { exact: true },
     ),
   ).toBeVisible();

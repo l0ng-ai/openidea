@@ -155,6 +155,16 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
+  it("appends list option values from the rc file", () => {
+    try {
+      const problems = applyRcCommands(parseVimrc("set clipboard+=unnamed\nset clipboard+=unnamedplus").commands);
+      expect(problems).toEqual([]);
+      expect(Vim.getOption("clipboard")).toBe("ideaput,autoselect,unnamed,unnamedplus");
+    } finally {
+      Vim.setOption("clipboard", "ideaput,autoselect");
+    }
+  });
+
   it("sends u and Ctrl-R to an editor's own history (notebook cells)", () => {
     const history = { undo: vi.fn(), redo: vi.fn() };
     const view = makeView([vimExtension(), externalHistory.of(history)]);

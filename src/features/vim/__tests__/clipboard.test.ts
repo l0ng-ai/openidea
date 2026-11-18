@@ -50,6 +50,7 @@ describe("Vim clipboard hooks", () => {
   beforeEach(() => {
     clipboard.write.mockReset();
     clipboard.write.mockResolvedValue(undefined);
+    Vim.setOption("clipboard", "ideaput,autoselect");
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { readText: vi.fn(async () => ""), writeText: vi.fn(async () => {}) },
@@ -62,7 +63,7 @@ describe("Vim clipboard hooks", () => {
     _installClipboardHooksFor(controller);
     controller.pushText(null, "yank", "one", false);
     expect(pushes).toHaveLength(1);
-    expect(clipboard.write).toHaveBeenCalledTimes(1);
+    expect(clipboard.write).not.toHaveBeenCalled();
   });
 
   it("is a no-op without a register controller", () => {
@@ -77,20 +78,42 @@ describe("Vim clipboard hooks", () => {
     }
   });
 
+  it("keeps the system clipboard out of unnamed register writes by default", () => {
+    const { controller, pushes } = fakeController();
+    _installClipboardHooksFor(controller);
+    controller.pushText(null, "yank", "one\n", true);
+    controller.pushText(null, "delete", "two\n", true);
+    expect(pushes).toHaveLength(2);
+    expect(clipboard.write).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["yank", null, "one\n", true, "one\n"],
     ["delete", null, "abc", false, "abc"],
     ["change", undefined, "x", false, "x"],
     ["yank", '"', "alpha", false, "alpha"],
     ["yank", null, "line", true, "line\n"],
-  ])("mirrors %s into the system clipboard", (operator, registerName, text, linewise, expected) => {
+  ])(
+    "mirrors %s into the system clipboard with clipboard=unnamed",
+    (operator, registerName, text, linewise, expected) => {
+      Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
+      const { controller } = fakeController();
+      _installClipboardHooksFor(controller);
+      controller.pushText(registerName, operator, text, linewise);
+      expect(clipboard.write).toHaveBeenCalledWith(expected);
+    },
+  );
+
+  it("mirrors with clipboard=unnamedplus too", () => {
+    Vim.setOption("clipboard", "unnamedplus");
     const { controller } = fakeController();
     _installClipboardHooksFor(controller);
-    controller.pushText(registerName, operator, text, linewise);
-    expect(clipboard.write).toHaveBeenCalledWith(expected);
+    controller.pushText(null, "yank", "one\n", true);
+    expect(clipboard.write).toHaveBeenCalledWith("one\n");
   });
 
   it.each([["a"], ["0"], ["_"], ["+"]])("leaves explicit register %s out of the system clipboard", (registerName) => {
+    Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
     const { controller } = fakeController();
     _installClipboardHooksFor(controller);
     controller.pushText(registerName, "yank", "one\n", true);
@@ -98,6 +121,7 @@ describe("Vim clipboard hooks", () => {
   });
 
   it("does not write empty text", () => {
+    Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
     const { controller } = fakeController();
     _installClipboardHooksFor(controller);
     controller.pushText(null, "delete", "", false);
@@ -105,6 +129,7 @@ describe("Vim clipboard hooks", () => {
   });
 
   it("keeps Vim state when the clipboard rejects and keeps trying", async () => {
+    Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
     clipboard.write.mockRejectedValueOnce(new Error("denied"));
     const { controller, pushes } = fakeController();
     _installClipboardHooksFor(controller);

@@ -464,6 +464,16 @@ function firstKey(lhs: string): string {
   return /^<[^<>]+>|^./.exec(lhs)?.[0] ?? lhs;
 }
 
+/** `set clipboard+=unnamed`: the comma list option with `add` appended once. */
+function appendedOption(name: string, add: string): string {
+  const current = Vim.getOption(name);
+  const items = (typeof current === "string" ? current : "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return items.includes(add) ? items.join(",") : [...items, add].join(",");
+}
+
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
 export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   defineExCommands();
@@ -475,7 +485,7 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   for (const c of commands) {
     try {
       if (c.kind === "set") {
-        const err = Vim.setOption(c.name, c.value);
+        const err = Vim.setOption(c.name, c.append ? appendedOption(c.name, String(c.value)) : c.value);
         if (err) problems.push(`set ${c.name}: ${err.message}`);
       } else if (c.kind === "map") {
         if (c.noremap) Vim.noremap(c.lhs, c.rhs, c.mode as string);

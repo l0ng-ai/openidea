@@ -2,12 +2,27 @@ import { Vim } from "@replit/codemirror-vim";
 import { writeClipboardText } from "@/platform/clipboard";
 
 /**
- * The system clipboard is the other half of Vim's clipboard registers. IdeaVim's
- * default `clipboard=ideaput,autoselect` mirrors unnamed register writes (yank,
- * delete, change) to it, but codemirror-vim only does that for an explicit `"+`
- * and reads clipboard text back without normalizing it. These hooks add the
- * default behavior without touching the engine's own `+` path.
+ * The system clipboard is the other half of Vim's clipboard registers. codemirror-vim
+ * only reaches it for an explicit `"+` and reads its text back without normalizing it.
+ * These hooks add IdeaVim's `clipboard` option: unnamed register writes (yank, delete,
+ * change) reach the clipboard only with `set clipboard+=unnamed` (or `unnamedplus`) in
+ * the rc file, as in IdeaVim; the engine's own `+` path stays untouched.
  */
+
+/** IdeaVim's default: `ideaput` pastes through the IDE, `autoselect` copies a Visual selection. */
+const CLIPBOARD_DEFAULT = "ideaput,autoselect";
+
+/** `set clipboard+=unnamed` / `unnamedplus` opts unnamed register writes into the clipboard. */
+const MIRROR_OPTIONS = new Set(["unnamed", "unnamedplus"]);
+
+// The rc file's `set clipboard=…` lines need the option to exist before they are applied.
+Vim.defineOption("clipboard", CLIPBOARD_DEFAULT, "string");
+
+/** Whether the user asked for unnamed register writes to reach the system clipboard. */
+function unnamedMirrors(): boolean {
+  const value = Vim.getOption("clipboard");
+  return typeof value === "string" && value.split(",").some((v) => MIRROR_OPTIONS.has(v.trim()));
+}
 
 type RegisterLike = { linewise?: boolean; blockwise?: boolean; toString(): string };
 
@@ -31,7 +46,7 @@ type PasteActions = {
 
 export type VimPasteAction = (this: PasteActions, cm: unknown, actionArgs: ActionArgsLike, vim: unknown) => void;
 
-/** Writes the unnamed register leaves in both Vim and the system clipboard. */
+/** Operators that write the unnamed register; with `clipboard=unnamed` they also write the system clipboard. */
 const MIRRORED_OPERATORS = new Set(["yank", "delete", "change"]);
 
 /** Controllers whose paste path is already wrapped; reinspection is a no-op. */
@@ -53,7 +68,7 @@ function install(controller: ClipboardRegisterController): void {
   const pushText = controller.pushText;
   controller.pushText = function (registerName, operator, text, linewise, blockwise) {
     pushText.call(this, registerName, operator, text, linewise, blockwise);
-    if (!MIRRORED_OPERATORS.has(operator) || !mirrorsToClipboard(registerName)) return;
+    if (!MIRRORED_OPERATORS.has(operator) || !mirrorsToClipboard(registerName) || !unnamedMirrors()) return;
     const value = clipboardText(text, linewise);
     // Vim's registers stay authoritative: a denied clipboard never fails the command.
     if (value) void writeClipboardText(value).catch(() => {});

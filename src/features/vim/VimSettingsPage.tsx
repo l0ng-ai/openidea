@@ -65,6 +65,12 @@ export function VimSettingsPage() {
             &lt;Action&gt;() mappings that run IDE actions. :w saves, :q closes the editor tab.
           </T>
         </p>
+        <p className={styles.hint}>
+          <T>
+            Unnamed yanks and deletes stay in Vim's registers. Add set clipboard+=unnamed (or set clipboard=unnamedplus)
+            to the rc file to mirror them to the system clipboard.
+          </T>
+        </p>
         {rc.ignored.length > 0 && (
           <ul className={styles.ignored} aria-label={tx("Ignored lines")}>
             {rc.ignored.map((i) => (
