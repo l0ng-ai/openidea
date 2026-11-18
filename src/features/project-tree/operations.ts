@@ -9,6 +9,7 @@ import { executeAction, getAction } from "@/platform/actions";
 import {
   canOpenWithSystemApp,
   canRevealInFileManager,
+  chooseOpenWithApplication,
   fileManagerName,
   fileManagerPath,
   openWithSystemApp,
@@ -906,6 +907,24 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
 
 /** Opens each selected file with its OS-associated application (#4352). */
 export async function openWithAssociatedApp(nodes: ProjectNode[] = selectedNodes()) {
+  await openSelectedWithApp(nodes, null);
+}
+
+/** Picks an application, then opens each selected file with it (#4352). */
+export async function openWithChosenApp(nodes: ProjectNode[] = selectedNodes()) {
+  if (!canOpenWithSystemApp()) {
+    notifications().notify({
+      level: "warning",
+      title: tx("Remote project files cannot be opened with a local application"),
+    });
+    return;
+  }
+  const app = await chooseOpenWithApplication();
+  if (!app) return;
+  await openSelectedWithApp(nodes, app);
+}
+
+async function openSelectedWithApp(nodes: ProjectNode[], withApp: string | null) {
   if (!canOpenWithSystemApp()) {
     notifications().notify({
       level: "warning",
@@ -915,7 +934,7 @@ export async function openWithAssociatedApp(nodes: ProjectNode[] = selectedNodes
   }
   const files = nodes.filter((n) => !n.dir && !n.placeholder);
   for (const file of files) {
-    if (!(await openWithSystemApp(file.path))) {
+    if (!(await openWithSystemApp(file.path, withApp))) {
       notifications().notify({
         level: "error",
         title: tx`Cannot open ${nameOf(file.path)} with its application`,

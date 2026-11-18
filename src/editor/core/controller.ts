@@ -2272,6 +2272,12 @@ function openInMenu(path: string, line?: number): MenuItem {
               arg: path,
               label: "Associated Application",
             },
+            {
+              kind: "action" as const,
+              action: "project.openWithChooseApplication",
+              arg: path,
+              label: "Choose Application…",
+            },
           ]
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },

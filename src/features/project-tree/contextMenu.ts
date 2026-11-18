@@ -29,6 +29,7 @@ import {
   openSelectionInRightSplit,
   paste,
   openWithAssociatedApp,
+  openWithChosenApp,
   reformatNodes,
   reloadFromDisk,
   revealInFinder,
@@ -349,6 +350,13 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           icon: "external-link",
           run: () => void openWithAssociatedApp(files),
         },
+      files.length > 0 &&
+        canOpenWithSystemApp() && {
+          id: "chooseApp",
+          label: "Choose Application…",
+          icon: "external-link",
+          run: () => void openWithChosenApp(files),
+        },
       folder && getAction("terminal.openAt")
         ? { id: "terminal", label: "Terminal", icon: "terminal", run: () => void delegate("terminal.openAt", folder) }
         : null,
@@ -516,6 +524,13 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
           label: "Associated Application",
           icon: "external-link",
           run: () => void openWithAssociatedApp(nodes),
+        },
+      nodes.every((n) => !n.dir) &&
+        canOpenWithSystemApp() && {
+          id: "chooseApp",
+          label: "Choose Application…",
+          icon: "external-link",
+          run: () => void openWithChosenApp(nodes),
         },
     ]),
     single &&

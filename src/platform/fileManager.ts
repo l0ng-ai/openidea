@@ -78,16 +78,39 @@ export function canOpenWithSystemApp(target = windowTarget()): boolean {
 }
 
 /**
- * Launches `path` with its associated application. The backend checks that the window is trusted and
- * that the file lies inside its project. False when this desktop cannot, or the launch was refused.
+ * Launches `path` with its associated application, or with `withApp` when set (absolute app path or
+ * program name). The backend checks that the window is trusted and that the file lies inside its
+ * project. False when this desktop cannot, or the launch was refused.
  */
-export async function openWithSystemApp(path: string, target = windowTarget()): Promise<boolean> {
+export async function openWithSystemApp(
+  path: string,
+  withApp?: string | null,
+  target = windowTarget(),
+): Promise<boolean> {
   if (!canOpenWithSystemApp(target)) return false;
   try {
-    await call(commands.fsOpenWithSystem(path));
+    await call(commands.fsOpenWithSystem(path, withApp ?? null));
     return true;
   } catch (e) {
     console.warn(`cannot open ${path} with its application`, e);
     return false;
   }
+}
+
+/** Native picker for an application to open files with; `null` when cancelled or unavailable. */
+export async function chooseOpenWithApplication(): Promise<string | null> {
+  if (!canOpenWithSystemApp()) return null;
+  const { open } = await import("./dialog");
+  const os = usePlatform.getState().os;
+  const picked = await open({
+    title: "Choose Application",
+    multiple: false,
+    defaultPath: os === "macos" ? "/Applications" : os === "windows" ? "C:\\Program Files" : "/usr/bin",
+    ...(os === "macos"
+      ? { filters: [{ name: "Applications", extensions: ["app"] }] }
+      : os === "windows"
+        ? { filters: [{ name: "Programs", extensions: ["exe"] }] }
+        : {}),
+  });
+  return typeof picked === "string" ? picked : null;
 }

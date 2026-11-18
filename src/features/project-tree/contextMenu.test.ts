@@ -180,7 +180,7 @@ describe("project view context menu", () => {
       "-",
       "Edit File Colors…",
     ]);
-    expect(sub(items, "Open In")).toEqual([revealLabel(), "Associated Application", "Terminal"]);
+    expect(sub(items, "Open In")).toEqual([revealLabel(), "Associated Application", "Choose Application…", "Terminal"]);
     expect(sub(items, "Git")?.slice(0, 4)).toEqual(["Commit File…", "Add", "-", "Annotate with Git Blame"]);
   });
 
@@ -204,7 +204,11 @@ describe("project view context menu", () => {
 
   it("hides the OS file manager in an SSH or dev-container window, whose files are not on this desktop", () => {
     const library = { ...node("/root/.m2/lib.jar"), readOnly: true };
-    expect(sub(contextMenuItems([library]), "Open In")).toEqual([revealLabel(), "Associated Application"]);
+    expect(sub(contextMenuItems([library]), "Open In")).toEqual([
+      revealLabel(),
+      "Associated Application",
+      "Choose Application…",
+    ]);
     for (const target of [
       { kind: "ssh", config: "box" },
       { kind: "devContainer", folder: "/Users/me/app", config: "" },
