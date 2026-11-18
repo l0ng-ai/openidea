@@ -26,7 +26,7 @@ import { sampleFileName } from "@/platform/fileTypes";
 import type { LanguageChoice } from "./backend";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { useSettingsForm } from "@/workbench/contributions";
+import { useSettingsForm, useSettingsPageFocus } from "@/workbench/contributions";
 import {
   languageNames,
   NewServerDialog,
@@ -644,6 +644,7 @@ export function LanguageServersPage() {
   const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const list = useRef<HTMLUListElement>(null);
   const known = useLanguageChoices();
   const staged = form.useValue("languageServers") as Record<string, ServerEntry> | undefined;
   const servers = useMemo(() => staged ?? {}, [staged]);
@@ -689,6 +690,29 @@ export function LanguageServersPage() {
     setSelectedLanguage(name);
     setSelectedTool(null);
   };
+
+  // Opened as `languages.servers#<tool>` (the status bar's Language Servers popup): that tool's
+  // language and details.
+  const { focus, consume } = useSettingsPageFocus();
+  useEffect(() => {
+    if (!focus) return;
+    const frame = requestAnimationFrame(() => {
+      setNeedsSetup(false);
+      setQuery("");
+      setSelectedLanguage(null);
+      setSelectedTool(focus);
+      consume();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focus, consume]);
+
+  const selectedName = selected?.name;
+  useEffect(() => {
+    if (!selectedName) return;
+    list.current?.querySelector<HTMLElement>(`[data-language="${CSS.escape(selectedName)}"]`)?.scrollIntoView?.({
+      block: "nearest",
+    });
+  }, [selectedName]);
 
   const onListKey = (e: KeyboardEvent<HTMLUListElement>) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -752,7 +776,7 @@ export function LanguageServersPage() {
             placeholder="Language or tool"
             aria-label="Filter languages"
           />
-          <ul className={styles.list} aria-label={tx("Languages")} onKeyDown={onListKey}>
+          <ul ref={list} className={styles.list} aria-label={tx("Languages")} onKeyDown={onListKey}>
             {shown.map((l) => (
               <li key={l.name} className={clsx(styles.row, l === selected && styles.rowSelected)}>
                 <button

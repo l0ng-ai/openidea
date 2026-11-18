@@ -2,7 +2,7 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -80,6 +80,7 @@
     "dompurify": "^3.4.17",
     "emmet": "2.4.11",
     "immer": "^11.1.21",
+    "katex": "^0.19.1",
     "marked": "^18.1.1",
     "mermaid": "12.1.0",
     "react": "^19.1.0",

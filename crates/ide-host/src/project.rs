@@ -272,6 +272,7 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
@@ -285,6 +286,8 @@ impl Host {
                         effective.languages.java.gradle.linked_projects.as_deref(),
                         build_files.as_deref(),
                     );
+                    // After the import settings: they extend the workspace folder's name.
+                    ide_sdk::jdtls_workspaces::use_own_temp(cfg, &data_dir);
                 }
             }));
         }
@@ -321,7 +324,7 @@ impl Host {
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
         documents.add_observer(Arc::new(LspObserver(lsp.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         documents.add_observer(Arc::new(DeployObserver {
             remote: self.remote.clone(),
             settings: settings.clone(),
@@ -782,7 +785,7 @@ impl Host {
         lsp.set_servers_hook(Box::new(|_, _| Vec::new()));
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         let watcher = match watch_dir {
             Some(dir) => light_watcher(dir, &sink, &documents, &history)?,
             // A quiet private folder stands in until the first save brings a
@@ -1887,13 +1890,41 @@ impl DocumentObserver for SyntaxObserver {
     }
 }
 
-struct HistoryObserver(Arc<LocalHistory>);
+struct HistoryObserver {
+    history: Arc<LocalHistory>,
+    /// Documents edited since they were opened: only the first edit looks for a missing original.
+    edited: Mutex<HashSet<ide_core::DocId>>,
+}
+
+impl HistoryObserver {
+    fn new(history: Arc<LocalHistory>) -> Self {
+        Self { history, edited: Mutex::default() }
+    }
+}
 
 impl DocumentObserver for HistoryObserver {
-    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
-        if let Err(e) = self.0.record(path, text, "Saved") {
+    fn changed(
+        &self,
+        doc: ide_core::DocId,
+        path: &Path,
+        _version: u32,
+        _changes: &[AppliedChange],
+        _full_text: &dyn Fn() -> String,
+    ) {
+        // The file on disk still has its content from before the edit.
+        if self.edited.lock().insert(doc)
+            && let Err(e) = self.history.record_original(path)
+        {
             tracing::warn!("local history: {e}");
         }
+    }
+    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
+        if let Err(e) = self.history.record(path, text, "Saved") {
+            tracing::warn!("local history: {e}");
+        }
+    }
+    fn closed(&self, doc: ide_core::DocId, _path: &Path) {
+        self.edited.lock().remove(&doc);
     }
 }
 

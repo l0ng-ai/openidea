@@ -130,6 +130,11 @@ export type DialogState =
   /** Confirm Drop / Truncate, with a preview of the statement. */
   | { kind: "drop"; id: string; object: DbObjectRef }
   | { kind: "truncate"; id: string; schema: string; table: string }
+  /** New › Database of data source `id`; New › Schema in target `id`. */
+  | { kind: "createDatabase"; id: string }
+  | { kind: "createSchema"; id: string }
+  /** Drop on database `database` of data source `id`. */
+  | { kind: "dropDatabase"; id: string; database: string }
   /** Modify Table (`table` null: New › Table); `focusColumn` selects a column, `addColumn` starts a new one. */
   | { kind: "modifyTable"; id: string; schema: string; table: string | null; focusColumn?: string; addColumn?: boolean }
   /** Quick Documentation of a tree node, shown at `anchor` (client coordinates). */
@@ -325,6 +330,8 @@ function sourceMutation(id: string): () => boolean {
 }
 
 export async function loadSources(): Promise<void> {
+  // Closing the project resets `loaded` while its SQL consoles are still mounted.
+  if (!useProject.getState().project) return;
   const request = ++sourcesRequest;
   const current = projectRequest();
   const intents = new Map(connectionIntents);
@@ -612,6 +619,20 @@ export function listsDatabases(source: DataSource | undefined): boolean {
     (source?.driver === "postgres" || source?.driver === "sqlServer" || source?.driver === "snowflake") &&
     !source.options?.singleDatabase
   );
+}
+
+/** New › Database and Drop on database nodes: PostgreSQL and SQL Server data sources that show their databases. */
+export function createsDatabases(source: DataSource | undefined): boolean {
+  return listsDatabases(source) && source?.driver !== "snowflake";
+}
+
+/** The target New › Schema creates a schema in: a database node, or a data source that shows schemas directly. */
+export function newSchemaTarget(n: DbNode): string | null {
+  if (n.kind === "database") return createsDatabases(sourceById(n.id)) ? n.id : null;
+  if (n.kind !== "source" || !n.source.id) return null;
+  const driver = n.source.driver;
+  if (driver !== "postgres" && driver !== "sqlServer" && driver !== "mysql") return null;
+  return listsDatabases(n.source) ? null : n.source.id;
 }
 
 interface LoadedLevels {
@@ -1089,6 +1110,38 @@ export async function runSql(id: string, texts: string[]): Promise<boolean> {
       notifications().notify({ level: "error", title: `Cannot execute on ${targetLabel(id)}`, body: message(e) });
     return false;
   }
+}
+
+/**
+ * Creates a database on data source `id` with `sql` after disconnecting `template`, then refreshes
+ * the data source, reloading what the tree had shown of `template` too.
+ */
+export async function createDatabase(id: string, template: string, sql: string): Promise<boolean> {
+  const levels = loadedLevels(id);
+  await disconnect(`${id}:${template}`);
+  try {
+    // Asks for a password the data source does not save, like any statement it runs.
+    await withConnection(id, () => call(commands.dbCreateDatabase(id, template, sql)));
+  } catch (e) {
+    notifications().notify({ level: "error", title: tx`Cannot create database`, body: message(e) });
+    void refresh(id, levels);
+    return false;
+  }
+  void refresh(id, levels);
+  return true;
+}
+
+/** Drops `database` of data source `id` with `sql` after disconnecting it, then refreshes the data source. */
+export async function dropDatabase(id: string, database: string, sql: string): Promise<boolean> {
+  await disconnect(`${id}:${database}`);
+  try {
+    await withConnection(id, () => call(commands.dbDropDatabase(id, database, sql)));
+  } catch (e) {
+    notifications().notify({ level: "error", title: tx`Cannot drop database ${database}`, body: message(e) });
+    return false;
+  }
+  void refresh(id);
+  return true;
 }
 
 /** Opens the query console of `id` with `text` appended and selected (SQL Scripts › …). */

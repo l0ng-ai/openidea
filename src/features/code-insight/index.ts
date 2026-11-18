@@ -29,12 +29,7 @@ import { installWorkspaceEditUndo } from "./workspaceUndo";
 const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 function useErrorBadge(): number | null {
-  return useProblems((s) => {
-    let n = 0;
-    for (const sources of s.map.values())
-      for (const items of sources.values()) for (const d of items) if (d.severity === "error") n++;
-    return n || null;
-  });
+  return useProblems((s) => s.counts.error || null);
 }
 
 export function activate(): () => void {

@@ -15,11 +15,24 @@ export const commands = {
 	/**  Answers a non-blocking question, without cancelling the current turn. */
 	agentAnswerQuestion: (task: string, question: string, answer: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_answer_question", { task, question, answer })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
-	/**  Content of `path` when the task started (left side of its diff). */
-	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
+	/**  Content of `path` as `view` compares it (without: when the task started), the left side of its diff. */
+	agentBaseText: (task: string, path: IpcPath, view: 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path, view })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
-	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
+	/**  The task's changed files as `view` compares them (without: since it started). */
+	agentChanges: (task: string, view: 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task, view })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
@@ -103,7 +116,9 @@ export const commands = {
 /**  Everything since the commit the task started from. */
 "sinceStart" | 
 /**  The uncommitted files against `HEAD`; commits made since the start stay. */
-"group" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
 	/**  Sends a queued message now, interrupting the current turn. */
 	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
 	/**
@@ -272,10 +287,12 @@ export const commands = {
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
 	/**  The query consoles of data source `id`; `create` adds the next one first. */
 	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
+	dbCreateDatabase: (id: string, template: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_create_database", { id, template, statement })),
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
 	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
@@ -452,6 +469,11 @@ export const commands = {
 	 *  (a remote window passes the sides as text).
 	 */
 	diffExternalTool: (left: ExternalDiffSide, right: ExternalDiffSide, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("diff_external_tool", { left, right, title })),
+	/**
+	 *  An automatic save: `false` (nothing written) when the file changed on disk after the
+	 *  buffer was edited, which only an explicit save overwrites.
+	 */
+	docAutosave: (doc: DocId) => typedError<boolean, IdeError>(__TAURI_INVOKE("doc_autosave", { doc })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
@@ -1288,8 +1310,8 @@ export const commands = {
 	 * 
 	 *  Edits go through the document layer as one patch per file, so open editors
 	 *  update live and undo the whole file's replacements in one step. Unsaved
-	 *  editor buffers are replaced in place and left unsaved; files that were not
-	 *  open are opened transiently, saved and closed.
+	 *  editor buffers are replaced in place and left unsaved; other open documents
+	 *  are saved, and files that were not open are opened transiently, saved and closed.
 	 * 
 	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
 	 *  scope is searched again without the limit and every match in it is replaced,
@@ -1810,7 +1832,10 @@ export const commands = {
 	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
-	/**  The built-in server's URL for `path` (started on first use). */
+	/**
+	 *  The built-in server's URL for `path` (started on first use). A file whose language is
+	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
+	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
@@ -2061,7 +2086,9 @@ export type AgentChangesView =
 /**  Everything since the commit the task started from. */
 "sinceStart" | 
 /**  The uncommitted files against `HEAD`; commits made since the start stay. */
-"group";
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn";
 
 export type AgentCommand = {
 	/**  Without the leading `/`. */
@@ -7417,6 +7444,10 @@ export type LanguageCodeStyle_Deserialize = {
 	lineCommentAtFirstColumn?: boolean | null,
 	/**  Comment Code › Add a space at line comment start. */
 	lineCommentAddSpace?: boolean | null,
+	/**  PHP: align `=>` in multi-line arrays after formatting (other languages ignore it). */
+	alignKeyValuePairs?: boolean | null,
+	/**  PHP: align `=` of consecutive assignment statements after formatting. */
+	alignConsecutiveAssignments?: boolean | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -7433,6 +7464,10 @@ export type LanguageCodeStyle_Serialize = {
 	lineCommentAtFirstColumn?: boolean | null,
 	/**  Comment Code › Add a space at line comment start. */
 	lineCommentAddSpace?: boolean | null,
+	/**  PHP: align `=>` in multi-line arrays after formatting (other languages ignore it). */
+	alignKeyValuePairs?: boolean | null,
+	/**  PHP: align `=` of consecutive assignment statements after formatting. */
+	alignConsecutiveAssignments?: boolean | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -8087,6 +8122,12 @@ export type MavenSettings = {
 	activeProfiles?: string,
 	/**  Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ). */
 	delegateBuild?: boolean,
+	/**
+	 *  Download `-sources.jar` of dependencies when the Java language server imports the
+	 *  project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
+	 *  from a library class's Download Sources banner.
+	 */
+	downloadSources?: boolean,
 };
 
 /**  Summary of one server discovered inside an external MCP configuration file. */

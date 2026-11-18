@@ -369,10 +369,21 @@ pub async fn agent_delete(host: &Host, window: &str, task: String, remove_worktr
     host.project(window)?.agents.delete(&task, remove_worktree).await
 }
 
+/// The task's changed files as `view` compares them (without: since it started).
 #[command(trust = trusted)]
-pub async fn agent_changes(host: &Host, window: &str, task: String) -> IdeResult<Vec<AgentChange>> {
+pub async fn agent_changes(
+    host: &Host,
+    window: &str,
+    task: String,
+    view: Option<AgentChangesView>,
+) -> IdeResult<Vec<AgentChange>> {
     host.require_trust(window)?;
-    host.project(window)?.agents.changes(&task).await
+    let agents = &host.project(window)?.agents;
+    match view.unwrap_or_default() {
+        AgentChangesView::SinceStart => agents.changes(&task).await,
+        AgentChangesView::Group => Ok(agents.grouped_changes(&task).await?.uncommitted),
+        AgentChangesView::LastTurn => agents.turn_changes(&task).await,
+    }
 }
 
 /// The task's uncommitted changes and the commits made since it started.
@@ -382,11 +393,17 @@ pub async fn agent_grouped_changes(host: &Host, window: &str, task: String) -> I
     host.project(window)?.agents.grouped_changes(&task).await
 }
 
-/// Content of `path` when the task started (left side of its diff).
+/// Content of `path` as `view` compares it (without: when the task started), the left side of its diff.
 #[command(trust = trusted)]
-pub async fn agent_base_text(host: &Host, window: &str, task: String, path: IpcPath) -> IdeResult<Option<String>> {
+pub async fn agent_base_text(
+    host: &Host,
+    window: &str,
+    task: String,
+    path: IpcPath,
+    view: Option<AgentChangesView>,
+) -> IdeResult<Option<String>> {
     host.require_trust(window)?;
-    host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
+    host.project(window)?.agents.base_text(&task, path.into_path_buf(), view.unwrap_or_default()).await
 }
 
 /// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.

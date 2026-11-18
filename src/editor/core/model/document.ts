@@ -711,7 +711,11 @@ export class DocModel {
         if (await this.manager.saveAs(this)) this.modified.clear();
         return;
       }
-      await this.manager.backend.save(this.doc);
+      const backend = this.manager.backend;
+      // Autosave never overwrites external changes made after the buffer was edited.
+      if (reason === "auto" && backend.autosave) {
+        if (!(await backend.autosave(this.doc))) return;
+      } else await backend.save(this.doc);
       this.modified.clear();
       this.setMeta({ dirty: false });
       _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
@@ -899,6 +903,10 @@ export class DocumentManager {
           console.warn(`autosave of ${model.path} failed`, e);
         }
       }
+      // As in IDEA, a file whose changes are not saved (autosave off, or a failed save) stays
+      // open without a tab: reopening shows the changes, and Save All and the exit check still
+      // cover them. An untitled buffer was asked about when its tab closed.
+      if (model.getMeta().dirty && !isUntitledUri(model.path)) return;
       if (model.inUse()) return;
       await model.sync.whenIdle();
       if (model.inUse()) return;

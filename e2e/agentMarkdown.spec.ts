@@ -1024,3 +1024,37 @@ test("aligns Mermaid diagrams in replies to their container align attribute", as
   expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
   expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
 });
+
+test("renders LaTeX math formulas with KaTeX and keeps wide equations scrollable", async ({ page }) => {
+  const reply = await openReply(
+    page,
+    [
+      "Inline $E = mc^2$ and \\(a^2 + b^2 = c^2\\), prices $5 and $10 stay plain.",
+      "",
+      "$$",
+      "\\int_{-\\infty}^{\\infty} e^{-x^2} \\, dx = \\sqrt{\\pi}",
+      "$$",
+      "",
+      "```math",
+      "\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2} + a_1 + a_2 + a_3 + a_4 + a_5 + a_6 + a_7 + a_8 + a_9 + a_{10}",
+      "```",
+    ].join("\n"),
+  );
+  await expect(reply.locator(".katex")).toHaveCount(4);
+  await expect(reply.locator(".katex-display")).toHaveCount(2);
+  await expect(reply).toContainText("prices $5 and $10 stay plain.");
+
+  const layout = await reply.evaluate((el) => {
+    const firstKatex = el.querySelector<HTMLElement>(".katex")!;
+    const display = el.querySelectorAll<HTMLElement>(".katex-display");
+    const font = getComputedStyle(firstKatex).fontFamily;
+    return {
+      font,
+      height: firstKatex.getBoundingClientRect().height,
+      overflowX: getComputedStyle(display[1]!).overflowX,
+    };
+  });
+  expect(layout.font).toContain("KaTeX_Main");
+  expect(layout.height).toBeGreaterThan(10);
+  expect(layout.overflowX).toBe("auto");
+});

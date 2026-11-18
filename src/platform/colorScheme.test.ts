@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   ATTRIBUTES,
   CLEAR_COLOR,
+  SCHEMES,
   _setSchemeSource,
   overrideDeclarations,
   resolvedAttribute,
@@ -218,6 +219,20 @@ describe("color schemes", () => {
     });
     expect(schemeCss("dark", { dark: { selectionForeground: { foreground: "#112233" } } })).toContain(
       "--fg-editor-selection: #112233 !important",
+    );
+  });
+
+  it.each([
+    ["identifierUnderCaret", "--fg-identifier-under-caret"],
+    ["identifierUnderCaretWrite", "--fg-identifier-under-caret-write"],
+  ])("lets %s set a foreground over the syntax colours (#4109)", (id, token) => {
+    expect(ATTRIBUTES.find((a) => a.id === id)?.fg).toBe(token);
+    // The `inherit` default is no colour: every built-in scheme keeps the syntax colours.
+    for (const scheme of SCHEMES) expect(resolvedAttribute(scheme.id, id).foreground).toBeUndefined();
+    expect(schemeCss("dark", { dark: { [id]: { foreground: "#112233" } } })).toContain(`${token}: #112233 !important`);
+    // Unticked, the syntax colours show again rather than one flat default text colour.
+    expect(schemeCss("dark", { dark: { [id]: { foreground: CLEAR_COLOR } } })).toContain(
+      `${token}: inherit !important`,
     );
   });
 

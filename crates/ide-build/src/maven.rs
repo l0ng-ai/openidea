@@ -1241,10 +1241,13 @@ fn file_stamp(path: &Path) -> FileStamp {
     std::fs::metadata(path).ok().map(|m| (m.modified().ok(), m.len()))
 }
 
-/// The POM files a reactor walk read or looked for, and the module folders it found outside the root.
+/// The POM files a reactor walk read or looked for, the module folders it found outside the
+/// root, and the folders of every project in the reactor (canonical, the root's first).
+#[derive(Clone)]
 struct ReactorScan {
     stamps: Vec<(PathBuf, FileStamp)>,
     dirs: Vec<PathBuf>,
+    members: Vec<PathBuf>,
 }
 
 /// Folders of the modules that the reactor of `root/pom.xml` lists outside `root`
@@ -1254,18 +1257,28 @@ struct ReactorScan {
 /// Callers keep the outermost directory only. Memoized on the POMs' modification times and
 /// sizes: content roots are read on hot paths (every references search, Find in Files).
 pub fn reactor_external_dirs(root: &Path, profiles: &[String], unlinked: &[String]) -> Vec<PathBuf> {
+    reactor(root, profiles, unlinked).dirs
+}
+
+/// Folders of every project in the reactor of `root/pom.xml` (canonical): `root` itself and its
+/// modules, theirs in turn, including those of the active `profiles`. A POM elsewhere below `root`
+/// that no `<module>` reaches is a separate build.
+pub fn reactor_member_dirs(root: &Path, profiles: &[String]) -> Vec<PathBuf> {
+    reactor(root, profiles, &[]).members
+}
+
+fn reactor(root: &Path, profiles: &[String], unlinked: &[String]) -> ReactorScan {
     type Memo = HashMap<(PathBuf, Vec<String>, Vec<String>), ReactorScan>;
     static MEMO: std::sync::LazyLock<Mutex<Memo>> = std::sync::LazyLock::new(Default::default);
     let key = (root.to_path_buf(), profiles.to_vec(), unlinked.to_vec());
     if let Some(scan) = MEMO.lock().unwrap_or_else(|e| e.into_inner()).get(&key)
         && scan.stamps.iter().all(|(path, stamp)| file_stamp(path) == *stamp)
     {
-        return scan.dirs.clone();
+        return scan.clone();
     }
     let scan = scan_reactor(root, profiles, unlinked);
-    let dirs = scan.dirs.clone();
-    MEMO.lock().unwrap_or_else(|e| e.into_inner()).insert(key, scan);
-    dirs
+    MEMO.lock().unwrap_or_else(|e| e.into_inner()).insert(key, scan.clone());
+    scan
 }
 
 /// Reads only the POMs the reactor lists (no parent resolution and no directory walk).
@@ -1274,7 +1287,8 @@ fn scan_reactor(root: &Path, profiles: &[String], unlinked: &[String]) -> Reacto
     let chosen = Resolver::new(None, profiles);
     let unlinked: HashSet<String> = unlinked.iter().map(|p| normalized_pom(p.trim())).collect();
     let first = root.join("pom.xml");
-    let mut scan = ReactorScan { stamps: vec![(first.clone(), file_stamp(&first))], dirs: Vec::new() };
+    let mut scan =
+        ReactorScan { stamps: vec![(first.clone(), file_stamp(&first))], dirs: Vec::new(), members: Vec::new() };
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut pending = vec![first];
     while let Some(path) = pending.pop() {
@@ -1288,6 +1302,7 @@ fn scan_reactor(root: &Path, profiles: &[String], unlinked: &[String]) -> Reacto
         let Some(pom) = xml::read_text(&path).as_deref().and_then(parse_pom) else { continue };
         let dir = path.parent().unwrap_or(root).to_path_buf();
         let dir_canon = dunce::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        scan.members.push(dir_canon.clone());
         if !dir_canon.starts_with(&canonical_root) {
             if canonical_root.starts_with(&dir_canon) {
                 continue;
@@ -1858,6 +1873,14 @@ fn coordinates(e: &Element, props: &HashMap<String, String>) -> Option<(String, 
 /// resolvable declaration here.
 pub fn goto_declaration(text: &str, path: &Path, pos: Pos, local_repo: Option<PathBuf>) -> Option<PomGoto> {
     goto_declaration_in(text, path, pos, local_repo, Vec::new)
+}
+
+/// The declaration of the property `name` in the pom at `path`, for files it configures
+/// outside the pom itself (a YAML resource's `@name@`): the first `<properties>` entry
+/// along the parent chain declaring it, `project.*` built-ins included.
+pub fn property_declaration(pom: &Path, name: &str, local_repo: Option<PathBuf>) -> Option<PomGoto> {
+    let text = xml::read_text(pom)?;
+    property_target(&text, pom, name, local_repo)
 }
 
 /// [`goto_declaration`], where a `<parent>` and a dependency or plugin whose version no

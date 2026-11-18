@@ -67,7 +67,7 @@ import {
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
-import { inclusionChecks, isCommitAll, useStagingArea } from "./staging";
+import { inclusionChecks, isCommitAll, stagingAreaOn, useStagingArea } from "./staging";
 import { addToChangelist, commitFiles } from "./changelistsUi";
 import { acceptSide } from "./conflictsUi";
 import { copyChangesAsPatch } from "./patches";
@@ -345,15 +345,20 @@ export function nodeMenu(
           { kind: "separator" as const },
         ]
       : []),
-    {
-      label: "Commit File…",
-      icon: "commit",
-      disabled: !files.some((f) => groupOf(f) === "changes"),
-      run: () => commitFiles(paths),
-    },
-    { kind: "separator" },
-    // Under the modal interface the node itself, like double-click, in the front window.
-    vcsDiffInFront() && opts?.roots && first
+    // With the staging area a commit takes the whole index: there is no committing one file.
+    ...(stagingAreaOn()
+      ? []
+      : [
+          {
+            label: "Commit File…",
+            icon: "commit" as const,
+            disabled: !files.some((f) => groupOf(f) === "changes"),
+            run: () => commitFiles(paths),
+          },
+          { kind: "separator" as const },
+        ]),
+    // The node itself, like double-click: under Staged or Unstaged its side of the index.
+    opts?.roots && first
       ? {
           label: "Show Diff",
           icon: "diff",

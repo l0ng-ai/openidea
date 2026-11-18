@@ -110,7 +110,7 @@ export function RunWidget() {
               />
             )}
           </>
-        ) : active ? (
+        ) : active && !selected?.allowParallel ? (
           <>
             {target?.paused && (
               <IconButton
