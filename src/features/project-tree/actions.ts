@@ -108,7 +108,7 @@ export function selectInProjectView(path?: string | null, focus = true) {
   if (!target) return false;
   if (!modeShows(target)) setViewMode("project");
   showProjectView(focus);
-  return revealPath(target, focus);
+  return revealPath(target, focus, true);
 }
 
 /**

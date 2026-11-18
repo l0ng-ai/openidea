@@ -2483,5 +2483,6 @@
   "Every project inside a trusted location is trusted without asking, unless it is a restricted project.": "Every project inside a trusted location is trusted without asking, unless it is a restricted project.",
   "Restricted projects": "Restricted projects",
   "These projects open in Restricted Mode, even inside a trusted location.": "These projects open in Restricted Mode, even inside a trusted location.",
-  "Trust": "Trust"
+  "Trust": "Trust",
+  "{name} is hidden because {title} is off": "{name} is hidden because {title} is off"
 }
