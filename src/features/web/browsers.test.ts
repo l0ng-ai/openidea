@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ProjectInfo, Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { textEditorWrapperFor, useTextEditorWrappers } from "@/workbench/contributions";
-import { isHtmlPath, isWebPath } from "./browsers";
+import { isHtmlPath, isWebPath, isWebResource } from "./browsers";
 import { activate } from "./index";
 
 const types = (patterns: string[], removedPatterns: string[] = []) => ({ patterns, removedPatterns, hashbangs: [] });
@@ -67,5 +67,14 @@ describe("HTML files follow File Types", () => {
     } finally {
       off();
     }
+  });
+});
+
+describe("web resources", () => {
+  it("are what a page loads, so the built-in preview reloads for them only", () => {
+    for (const path of ["/p/index.html", "/p/app.css", "/p/main.js", "/p/data.json", "/p/logo.svg", "/p/a.woff2"])
+      expect(isWebResource(path), path).toBe(true);
+    for (const path of ["/p/notes.txt", "/p/README.md", "/p/src/Main.java"])
+      expect(isWebResource(path), path).toBe(false);
   });
 });
