@@ -308,7 +308,7 @@
   content: "";
   position: absolute;
   inset: 0 -3px;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .sideTabsResizer:focus-visible::after {
   background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
