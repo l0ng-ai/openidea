@@ -8,6 +8,7 @@
  */
 import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
+import { mathExtension, renderMath } from "@/editor/lsp/markdownMath";
 import { opensOtherShare } from "@/platform/paths";
 
 const escapeHtml = (s: string) =>
@@ -22,7 +23,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-});
+}).use(mathExtension());
 
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
@@ -175,13 +176,16 @@ export function renderMarkdown(text: string): string {
   }
   if (group) html += `<div data-line="${group.line}">${group.html}</div>`;
   // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
-  return purify().sanitize(html, {
+  const root = purify().sanitize(html, {
     USE_PROFILES: { html: true },
-    ADD_ATTR: ["data-src", "data-line", "data-front-matter"],
+    ADD_ATTR: ["data-src", "data-line", "data-front-matter", "data-math"],
     // `srcset` and `<source>` would pick an image past the one the preview loads.
     FORBID_TAGS: ["style", "form", "source"],
     FORBID_ATTR: ["style", "srcset"],
-  });
+    RETURN_DOM: true,
+  }) as HTMLElement;
+  renderMath(root);
+  return root.innerHTML;
 }
 
 export type LinkTarget =

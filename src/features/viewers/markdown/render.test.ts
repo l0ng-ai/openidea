@@ -277,4 +277,13 @@ describe("markdown preview rendering", () => {
     expect(previewLineAtOffset(blocks, 5000)).toBe(20);
     expect(previewLineAtOffset([], 50)).toBe(0);
   });
+
+  it("renders LaTeX math blocks with source lines and inline math", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown("# Heading\n\n$$\nx^2 + y^2 = z^2\n$$\n\nInline $a_1 + b_2$.\n");
+    const lines = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((e) => e.dataset.line);
+    expect(lines).toEqual(["0", "2", "6"]);
+    expect(root.querySelector(".katex-display")).not.toBeNull();
+    expect(root.querySelectorAll(".katex")).toHaveLength(2);
+  });
 });
