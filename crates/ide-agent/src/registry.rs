@@ -657,16 +657,47 @@ fn install_npm(
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<PathBuf> {
+    let (name, _) = split_npm_spec(&p.package);
+    let npm = which::which("npm").map_err(|_| IdeError::unavailable(format!("npm is required to install {name}")))?;
+    install_npm_with(&npm, p, entry, dir, platform, cancel, emit)
+}
+
+fn install_npm_with(
+    npm: &Path,
+    p: &Package,
+    entry: &Entry,
+    dir: &Path,
+    platform: Platform,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<PathBuf> {
     let (name, version) = split_npm_spec(&p.package);
     let spec = match version {
         Some(v) if !v.is_empty() => p.package.clone(),
         _ => format!("{name}@{}", entry.version),
     };
     check_spec(&spec)?;
-    let npm = which::which("npm").map_err(|_| IdeError::unavailable(format!("npm is required to install {name}")))?;
-    let mut cmd = Command::new(npm);
-    cmd.arg("install").arg("--prefix").arg(dir).args(["--no-audit", "--no-fund"]).arg(&spec).current_dir(dir);
-    ide_tools::run_streamed(cmd, cancel, emit)?;
+    let specs = [spec.clone()];
+    ide_tools::run_npm_with_public_fallback(
+        |extra| {
+            if !extra.is_empty() {
+                let _ = fs::remove_dir_all(dir.join("node_modules"));
+            }
+            let mut cmd = Command::new(npm);
+            cmd.arg("install")
+                .arg("--prefix")
+                .arg(dir)
+                .args(["--no-audit", "--no-fund"])
+                .args(extra)
+                .arg(&spec)
+                .current_dir(dir);
+            cmd
+        },
+        &specs,
+        false,
+        cancel,
+        emit,
+    )?;
     let modules = dir.join("node_modules");
     let manifest: serde_json::Value = fs::read_to_string(modules.join(name).join("package.json"))
         .ok()
@@ -959,6 +990,58 @@ mod tests {
         assert!(check_url("https://x/a.tar.gz").is_ok());
         assert!(check_url("http://x/a.tar.gz").is_err());
         assert!(check_url("ftp://x/a").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_registry_agent_retries_against_public_npmjs_on_mirror_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let install_dir = dir.path().join("acme/1.2.0");
+        fs::create_dir_all(&install_dir).unwrap();
+        let log = dir.path().join("npm-calls.log");
+        let npm = dir.path().join("npm");
+        fs::write(
+            &npm,
+            format!(
+                r#"#!/bin/sh
+echo "$@" >> '{}'
+case " $* " in
+  *" --registry=https://registry.npmjs.org/ --@acme:registry=https://registry.npmjs.org/ "*)
+    prefix=""; while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && prefix="$2"; shift; done
+    mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/@acme/agent-acp"
+    printf '#!/bin/sh\necho 1.2.0\n' > "$prefix/node_modules/.bin/agent-acp"
+    chmod +x "$prefix/node_modules/.bin/agent-acp"
+    printf '{{"bin":"cli.js"}}\n' > "$prefix/node_modules/@acme/agent-acp/package.json"
+    exit 0
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for @acme/agent-acp@1.2.0." >&2
+    exit 1
+    ;;
+esac
+"#,
+                log.display()
+            ),
+        )
+        .unwrap();
+        archive::make_executable(&npm).unwrap();
+
+        let index = r#"{"agents":[
+            {"id":"acme","name":"Acme","version":"1.2.0",
+             "distribution":{"npx":{"package":"@acme/agent-acp@1.2.0","args":["--acp"]}}}
+        ]}"#;
+        let entry = parse(index).unwrap().remove(0);
+        let pkg = entry.distribution.npx.as_ref().unwrap();
+        let exe =
+            install_npm_with(&npm, pkg, &entry, &install_dir, MAC_ARM, &CancellationToken::new(), &|_| {}).unwrap();
+        let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(!calls[0].contains("--registry="), "{calls:?}");
+        assert!(calls[1].contains("--registry=https://registry.npmjs.org/"), "{calls:?}");
+        assert!(calls[1].contains("--@acme:registry=https://registry.npmjs.org/"), "{calls:?}");
+        assert_eq!(exe, install_dir.join("node_modules/.bin/agent-acp"));
+        assert!(exe.is_file());
     }
 
     #[test]
