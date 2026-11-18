@@ -6020,6 +6020,7 @@
   "Copy Branch Name": "复制分支名称",
   "Remote branches are not available for private forks": "私有派生仓库的远程分支不可用",
   "Remote branches": "远程分支",
+  "Branch name prefixes": "分支名称前缀",
   "Show Diff in a New Tab or Window": "在新标签页或窗口中显示差异",
   "Pull request does not contain any changes": "拉取请求不包含任何更改",
   "Mark as Viewed": "标记为已查看",
