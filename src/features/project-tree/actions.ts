@@ -29,7 +29,6 @@ import {
   reformatNodes,
   reloadFromDisk,
   openWithAssociatedApp,
-  openWithChosenApp,
   revealInFinder,
   selectedFiles,
   selectedNodes,
@@ -421,15 +420,6 @@ export function registerProjectActions(): () => void {
       when: OPEN,
       keywords: ["open with", "default application", "system application", "external"],
       run: ({ arg }) => void openWithAssociatedApp(nodesFrom(contextTarget(arg))),
-    },
-    {
-      id: "project.openWithChooseApplication",
-      title: "Open with Choose Application…",
-      category: "Project View",
-      icon: "external-link",
-      when: OPEN,
-      keywords: ["open with", "choose application", "other application", "pick application"],
-      run: ({ arg }) => void openWithChosenApp(nodesFrom(contextTarget(arg))),
     },
     {
       id: "project.openInTerminal",

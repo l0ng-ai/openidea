@@ -118,15 +118,9 @@ describe("openWithSystemApp", () => {
     const open = vi.spyOn(commands, "fsOpenWithSystem").mockResolvedValue({ status: "ok", data: null });
     useRemote.setState({ session: target && { target, root: "/p", host: "h", os: "linux", commands: [] } });
     expect(await openWithSystemApp(path)).toBe(launched);
-    if (launched) expect(open).toHaveBeenCalledExactlyOnceWith(path, null);
+    if (launched) expect(open).toHaveBeenCalledExactlyOnceWith(path);
     else expect(open).not.toHaveBeenCalled();
     expect(canOpenWithSystemApp()).toBe(launched);
-  });
-
-  it("passes a chosen application through to the backend", async () => {
-    const open = vi.spyOn(commands, "fsOpenWithSystem").mockResolvedValue({ status: "ok", data: null });
-    expect(await openWithSystemApp("/Users/me/a.xlsx", "/Applications/Numbers.app")).toBe(true);
-    expect(open).toHaveBeenCalledExactlyOnceWith("/Users/me/a.xlsx", "/Applications/Numbers.app");
   });
 
   it("reports a refused launch so the caller can fall back", async () => {
