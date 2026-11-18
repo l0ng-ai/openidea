@@ -1,6 +1,6 @@
 import { showBackgroundTasks } from "./StatusBar";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
-import { isTauri } from "@/platform/ipc";
+import { isCancelled, isTauri } from "@/platform/ipc";
 import { closeProject, confirmLeaveProject, openProject, useProject } from "@/platform/project";
 import { runSearchFieldCommand, showContextMenu } from "@/ui";
 import { showCustomizeToolbar } from "./MainToolbarDialog";
@@ -32,11 +32,11 @@ export async function openProjectDialog() {
     await executeAction("file.openProjectPath", path);
     return;
   }
-  if (!(await confirmLeaveProject())) return;
   try {
-    await openProject(path);
+    await openProject(path, confirmLeaveProject);
   } catch (e) {
-    notify({ level: "error", title: "Could not open project", body: e instanceof Error ? e.message : String(e) });
+    if (!isCancelled(e))
+      notify({ level: "error", title: "Could not open project", body: e instanceof Error ? e.message : String(e) });
   }
 }
 

@@ -2,7 +2,7 @@
 import { confirmProjectTrust } from "./projectTrust";
 import { create } from "zustand";
 import { setContext } from "./context";
-import { call, commands, type ProjectInfo, type Settings } from "./ipc";
+import { call, commands, IpcError, type ProjectInfo, type Settings } from "./ipc";
 import { isVirtualUri, virtualContainer, virtualName, virtualParent } from "./virtualDocs";
 
 interface ProjectState {
@@ -59,8 +59,11 @@ export function startupLaunchHandled(): Promise<void> {
   return (startupLaunch ?? Promise.resolve()).catch(() => {});
 }
 
-export async function openProject(path: string): Promise<ProjectInfo> {
+/** Checks trust before a caller that is switching projects asks to leave the current one. */
+export async function openProject(path: string, beforeOpen?: () => Promise<boolean>): Promise<ProjectInfo> {
   await confirmProjectTrust(path, "local");
+  if (beforeOpen && !(await beforeOpen()))
+    throw new IpcError({ kind: "cancelled", message: "Project opening cancelled" });
   useProject.setState({ opening: true, openingPath: path });
   try {
     const project = await call(commands.openProject(path));

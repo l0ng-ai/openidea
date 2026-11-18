@@ -27,8 +27,7 @@ const lightEditOpen = vi.fn(async (_path: string) => ({ status: "ok", data: useP
 const fsReadDir = vi.fn(async (_path: string) => ({ status: "ok", data: [] }));
 const openProject = vi.fn(async (path: string) => {
   const project = { root: path, name: path, trusted: true, isGit: false, settings: {} };
-  useProject.setState({ project, lightEdit: false } as never);
-  return project;
+  return { status: "ok", data: project };
 });
 
 vi.mock("@/platform/ipc", async (orig) => {
@@ -47,6 +46,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       windowTakeLaunch: () => windowTakeLaunch(),
       windowCompleteLaunch: () => windowCompleteLaunch(),
       wslResolve: (p: string) => wslResolve(p),
+      openProject: (p: string) => openProject(p),
       lightEditOpen: (p: string) => lightEditOpen(p),
       fsReadDir: (p: string) => fsReadDir(p),
     },
@@ -54,7 +54,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 });
 vi.mock("@/platform/project", async (orig) => {
   const real = await orig<typeof import("@/platform/project")>();
-  return { ...real, confirmLeaveProject: vi.fn(real.confirmLeaveProject), openProject: (p: string) => openProject(p) };
+  return { ...real, confirmLeaveProject: vi.fn(real.confirmLeaveProject) };
 });
 const diffs: unknown[] = [];
 const openDiff = vi.fn(async (data: unknown) => void diffs.push(data));
@@ -70,7 +70,8 @@ const {
   openProjectWithPolicy,
   windowActions,
 } = await import("../windows");
-const { useProject, startupLaunchHandled, confirmLeaveProject } = await import("@/platform/project");
+const { useProject, startupLaunchHandled, confirmLeaveProject, provideLeaveProjectGuard } =
+  await import("@/platform/project");
 const { provideEditorService, provideNotificationService } = await import("@/workbench/contributions");
 const { isRemoteWindow, connectRemote } = await import("@/platform/remote");
 const { ask } = await import("@/workbench/messages");
@@ -110,7 +111,7 @@ beforeEach(() => {
   projectTrustStatus.mockReset().mockResolvedValue(ok({ trusted: true }));
   workspaceAttach.mockReset();
   workspaceUpdate.mockReset();
-  projectCurrent.mockReset();
+  projectCurrent.mockReset().mockImplementation(() => Promise.resolve(useProject.getState().project));
   for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch, wslResolve]) f.mockReset();
   windowTakeLaunch.mockResolvedValue(null);
   windowCompleteLaunch.mockReset().mockResolvedValue(ok(null));
@@ -354,9 +355,7 @@ describe("launch", () => {
     const openedProject = deferred();
     openProject.mockImplementationOnce(async (path) => {
       await openedProject.promise;
-      const state = projectState(path);
-      useProject.setState({ ...state, lightEdit: false } as never);
-      return state.project;
+      return { status: "ok", data: projectState(path).project };
     });
     let onLaunch: (() => void) | undefined;
     listen.mockImplementationOnce(async (_event, handler: () => void) => {
@@ -751,6 +750,63 @@ describe("explicit project-window requests", () => {
   });
 });
 
+describe("trust before leaving the current project", () => {
+  it.each([
+    { name: "This Window from the open prompt", open: () => openProjectWithPolicy("/new", ["/new/file.txt"]) },
+    { name: "a dropped folder", open: () => openPaths(["/new"]) },
+    { name: "a folder launch", open: () => consumeLaunch() },
+  ])("leaves the current project and its processes alone when declining $name", async ({ open }) => {
+    useProject.setState(projectState("/old") as never);
+    vi.mocked(ask).mockResolvedValueOnce({ button: "same", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    windowTakeLaunch.mockResolvedValueOnce({ project: "/new", files: ["/new/file.txt"] });
+    vi.mocked(confirmProjectTrust).mockRejectedValueOnce(
+      new IpcError({ kind: "cancelled", message: "Project opening cancelled" }),
+    );
+    const leave = vi.fn(async () => true);
+    const dispose = provideLeaveProjectGuard(leave);
+    try {
+      await open();
+      expect(confirmProjectTrust).toHaveBeenCalledWith("/new", "local");
+      expect(leave).not.toHaveBeenCalled();
+      expect(cancelClose).not.toHaveBeenCalled();
+      expect(openProject).not.toHaveBeenCalled();
+      expect(useProject.getState().project?.root).toBe("/old");
+      expect(opened).toEqual([]);
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it.each([false, true])("honors the leave decision after accepting trust (leave=%s)", async (leaves) => {
+    useProject.setState(projectState("/old") as never);
+    vi.mocked(ask).mockResolvedValueOnce({ button: "same", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    const trust = deferred();
+    vi.mocked(confirmProjectTrust).mockReturnValueOnce(trust.promise);
+    const leave = vi.fn(async () => leaves);
+    const dispose = provideLeaveProjectGuard(leave);
+    const opening = openProjectWithPolicy("/new", ["/new/file.txt"]);
+    try {
+      await vi.waitFor(() => expect(confirmProjectTrust).toHaveBeenCalledOnce());
+      expect(leave).not.toHaveBeenCalled();
+      expect(openProject).not.toHaveBeenCalled();
+      expect(useProject.getState().project?.root).toBe("/old");
+      trust.resolve();
+      await opening;
+      expect(leave).toHaveBeenCalledWith(true);
+      expect(useProject.getState().project?.root).toBe(leaves ? "/new" : "/old");
+      expect(opened).toEqual(leaves ? ["/new/file.txt (focus)"] : []);
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      trust.resolve();
+      await opening;
+      dispose();
+    }
+  });
+});
+
 describe("trust is asked before a new project window opens", () => {
   const openProjectPath = (arg: unknown) =>
     windowActions()
@@ -796,7 +852,7 @@ describe("trust is asked before a new project window opens", () => {
     windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
     await openProjectInWindow("/p/b", false);
     expect(windowOpenProject).toHaveBeenCalledWith("/p/b", false, []);
-    expect(confirmProjectTrust).not.toHaveBeenCalled();
+    expect(confirmProjectTrust).toHaveBeenCalledExactlyOnceWith("/p/b", "local");
     expect(openProject).toHaveBeenCalledWith("/p/b");
   });
 });
