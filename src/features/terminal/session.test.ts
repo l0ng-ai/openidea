@@ -39,6 +39,18 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
     onmessage: ((chunk: string) => void) | null = null;
   },
 }));
+// Session buffer assertions need every PTY chunk on the next line; the production
+// default (30 FPS) would leave output in the gate until a timer fires.
+vi.mock("@/platform/workflowSettings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/platform/workflowSettings")>();
+  return {
+    ...actual,
+    workflowSettings: () => {
+      const s = actual.workflowSettings();
+      return { ...s, terminal: { ...s.terminal, maxFps: "unlimited" as const } };
+    },
+  };
+});
 
 const fileLink = (text: string): Extract<TerminalLink, { kind: "file" }> => {
   const [l] = findTerminalLinks(text);

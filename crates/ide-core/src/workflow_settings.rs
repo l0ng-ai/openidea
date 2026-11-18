@@ -460,6 +460,8 @@ pub struct TerminalSettings {
     /// `block` | `underline` | `bar`.
     pub cursor_shape: String,
     pub cursor_blink: bool,
+    /// Cap PTY→xterm paint rate: `unlimited` | `60` | `30` | `15` | `10`.
+    pub max_fps: String,
     pub use_editor_font: bool,
     pub font_family: String,
     pub font_size: f32,
@@ -491,6 +493,7 @@ impl Default for TerminalSettings {
             escape_to_editor: false,
             cursor_shape: "block".into(),
             cursor_blink: true,
+            max_fps: "30".into(),
             use_editor_font: true,
             font_family: "JetBrains Mono".into(),
             font_size: 13.0,
