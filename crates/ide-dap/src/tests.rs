@@ -1010,6 +1010,44 @@ async fn run_in_terminal_spawns_debuggee() {
     assert!(response["body"]["processId"].as_u64().unwrap() > 0);
 }
 
+/// The debug console answers a terminal's cursor position query: ConPTY asks one before it runs
+/// the program at all (Windows debuggees never started), and programs that lay out a prompt ask too.
+#[tokio::test]
+async fn run_in_terminal_answers_cursor_position_queries() {
+    #[cfg(unix)]
+    let program = vec![
+        "sh".into(),
+        "-c".into(),
+        r"stty -echo -icanon min 6; printf '\033[6n'; reply=$(dd bs=6 count=1 2>/dev/null); stty sane; case $reply in *'[1;1R') echo answered;; esac".into(),
+    ];
+    #[cfg(windows)]
+    let program = vec!["cmd".into(), "/c".into(), "echo answered".into()];
+    let h = harness(Script { run_in_terminal: Some(program), ..Script::default() });
+    h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("answered"))).await;
+    let output: String = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Debug { event: DebugEvent::Output { output, .. }, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!output.contains("\x1b[6n"), "{output:?}");
+}
+
+#[test]
+fn cursor_position_queries_are_taken_out_of_the_output() {
+    use crate::session::{partial_cursor_query, take_cursor_queries};
+    assert_eq!(take_cursor_queries(b"a\x1b[6nb\x1b[6n"), (b"ab".to_vec(), 2));
+    assert_eq!(take_cursor_queries(b"\x1b[0mtext"), (b"\x1b[0mtext".to_vec(), 0));
+    assert_eq!(partial_cursor_query(b"text\x1b["), 2);
+    assert_eq!(partial_cursor_query(b"text\x1b[6"), 3);
+    assert_eq!(partial_cursor_query(b"text\x1b[0m"), 0);
+    assert_eq!(partial_cursor_query(b"text"), 0);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn run_in_terminal_program_reads_typed_input() {

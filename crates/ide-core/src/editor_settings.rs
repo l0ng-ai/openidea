@@ -446,6 +446,12 @@ pub struct LanguageCodeStyle {
     /// Comment Code › Add a space at line comment start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_comment_add_space: Option<bool>,
+    /// PHP: align `=>` in multi-line arrays after formatting (other languages ignore it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_key_value_pairs: Option<bool>,
+    /// PHP: align `=` of consecutive assignment statements after formatting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub align_consecutive_assignments: Option<bool>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).

@@ -5,9 +5,7 @@
  * Actions: `tools.languageServers` (open the page), `tools.install` (arg: tool name),
  * `java.downloadJdk` (arg: `DownloadJdkArgs`).
  */
-import { lazyComponent } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
-import { registerSettingsPage } from "@/workbench/contributions";
 import { installExpiredServerPrompts } from "./expired";
 import { installJdkPrompts, registerJdkActions } from "./jdk";
 import {
@@ -16,31 +14,8 @@ import {
   installServerWarningPrompts,
   promptInstall,
 } from "./missing";
+import { activateSettingsPages } from "./settingsPages";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
-
-/** The Language Servers page (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: SETTINGS_PAGE_ID,
-    title: "Language Servers",
-    group: "Languages & Frameworks",
-    order: 400,
-    keywords: [
-      "lsp",
-      "language server",
-      "debugger",
-      "adapter",
-      "dap",
-      "install",
-      "initialization options",
-      "rust-analyzer",
-      "gopls",
-      "pyright",
-    ],
-    projectScope: true,
-    component: lazyComponent(() => import("./LanguageServersPage").then((m) => m.LanguageServersPage)),
-  });
-}
 
 export function activate(): () => void {
   const disposers = [

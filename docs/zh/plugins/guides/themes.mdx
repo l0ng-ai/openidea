@@ -211,7 +211,8 @@ pnpm theme:import-intellij path/to/MyTheme.theme.json path/to/MyTheme.icls --out
 | `--syn-tag`, `--syn-attribute`, `--syn-todo`, `--syn-invalid`                         | `DEFAULT_TAG`, `DEFAULT_ATTRIBUTE`, `TODO_DEFAULT_ATTRIBUTES`, `BAD_CHARACTER`                       |
 | `--syn-rainbow-1` … `--syn-rainbow-5`（语义高亮）                                     | `RAINBOW_COLOR1` … `RAINBOW_COLOR5`                                                                  |
 | `--wave-error`, `--wave-warning`                                                      | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES`（效果颜色）                                                |
-| `--bg-matched-brace`, `--bg-identifier-under-caret`                                   | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES`                                      |
+| `--bg-matched-brace`, `--bg-identifier-under-caret`, `--fg-identifier-under-caret`    | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES`                                      |
+| `--bg-identifier-under-caret-write`, `--fg-identifier-under-caret-write`              | `WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES`                                                            |
 | `--bg-text-search-result`, `--bg-search-result`                                       | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES`                                          |
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined`              | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME`                      |
 | `--ansi-*`                                                                            | `CONSOLE_*_OUTPUT`（`CONSOLE_DARKGRAY_OUTPUT` 为亮黑，`CONSOLE_GRAY_OUTPUT` 为白色）                 |
@@ -485,6 +486,8 @@ VS Code 主题（扩展中的 `themes/*.json`）包含 `type`（`dark` / `light`
 | `--fg-unused`                       | `#6f737a`                | `#8c8c8c`                |
 | `--bg-identifier-under-caret`       | `#373b39`                | `#edebfc`                |
 | `--bg-identifier-under-caret-write` | `#402f33`                | `#fce8f4`                |
+| `--fg-identifier-under-caret`       | `inherit`                | `inherit`                |
+| `--fg-identifier-under-caret-write` | `inherit`                | `inherit`                |
 | `--fg-inlay`                        | `#868a91`                | `#73767c`                |
 | `--bg-inlay`                        | `#393b40`                | `#00000012`              |
 | `--wave-error`                      | `#fa6675`                | `#f50000`                |

@@ -70,6 +70,18 @@ pub async fn doc_save(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
     host.debugger.refresh_source_mirrors(host.owner_window(window)).await
 }
 
+/// An automatic save: `false` (nothing written) when the file changed on disk after the
+/// buffer was edited, which only an explicit save overwrites.
+#[command(trust = always)]
+pub async fn doc_autosave(host: &Host, window: &str, doc: DocId) -> IdeResult<bool> {
+    let project = host.project(window)?;
+    let saved = host.blocking(move || project.documents.autosave(doc)).await?;
+    if saved {
+        host.debugger.refresh_source_mirrors(host.owner_window(window)).await?;
+    }
+    Ok(saved)
+}
+
 #[command(trust = always)]
 pub async fn doc_save_all(host: &Host, window: &str) -> IdeResult<()> {
     let project = host.project(window)?;
@@ -109,6 +121,7 @@ ide_command::domain!(
     doc_open,
     doc_open_untitled,
     doc_save,
+    doc_autosave,
     doc_save_all,
     doc_save_as,
     doc_snapshot,

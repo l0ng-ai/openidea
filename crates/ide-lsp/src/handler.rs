@@ -435,6 +435,14 @@ impl ClientHandler {
                         .find_map(|base| section.split('.').try_fold(base, |v, key| v.get(key)))
                         .cloned()
                         .unwrap_or(Value::Null),
+                    None if self.server.name == "eslint" => {
+                        let mut settings = options.clone();
+                        settings["workspaceFolder"] = json!({
+                            "uri": crate::uri::path_to_uri(&self.server.root),
+                            "name": self.server.root.file_name().map_or_else(|| "root".into(), |name| name.to_string_lossy().into_owned()),
+                        });
+                        settings
+                    }
                     None => options.clone(),
                 })
                 .collect(),

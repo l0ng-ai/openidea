@@ -157,7 +157,11 @@ async function runSelected() {
     useRun.setState({ chooserOpen: true, chooserMode: "run" });
     return;
   }
-  const target = selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
+  // As in IDEA, Run starts another instance of a configuration that allows multiple instances;
+  // otherwise it restarts the running one.
+  const target = config.allowParallel
+    ? null
+    : selectedTarget(config.id, useRun.getState().sessions, useDebugRunSessions.getState().sessions);
   if (target) {
     target.rerun?.();
     return;
