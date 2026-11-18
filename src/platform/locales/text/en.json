@@ -2452,5 +2452,6 @@
   "This Maven project is not loaded": "This Maven project is not loaded",
   "Load Maven Project": "Load Maven Project",
   "Skip": "Skip",
-  "Resize Markdown preview": "Resize Markdown preview"
+  "Resize Markdown preview": "Resize Markdown preview",
+  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed."
 }

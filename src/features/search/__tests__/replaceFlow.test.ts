@@ -12,6 +12,7 @@ import {
   pendingUsages,
   replacePreviewLines,
   replaceTargets,
+  skipTargets,
   startReplace,
   summaryText,
   toggleExcluded,
@@ -147,6 +148,36 @@ describe("startReplace", () => {
       replacements: 2,
       failures: [{ path: "/p/b.ts", message: "read-only" }],
     });
+  });
+
+  it("Replace All past the limit syncs every editor and skips excluded or replaced usages", async () => {
+    const d = deps([]);
+    const groups = [
+      {
+        key: "a",
+        path: "/p/a.ts",
+        starts: [
+          { line: 0, col: 0 },
+          { line: 1, col: 2 },
+          { line: 2, col: 0 },
+        ],
+      },
+    ];
+    const marks = { excluded: new Set(["/p/a.ts:0:0"]), done: new Set(["/p/a.ts:2:0"]) };
+    const targets = skipTargets(groups, marks);
+    expect(targets).toEqual([
+      {
+        path: "/p/a.ts",
+        skip: [
+          { line: 0, col: 0 },
+          { line: 2, col: 0 },
+        ],
+      },
+    ]);
+    expect(skipTargets(groups, NO_MARKS)).toEqual([]);
+    await startReplace({ query: q, replacement: "x", preserveCase: false, targets, allInScope: true }, undefined, d)
+      .result;
+    expect(d.synced).toHaveBeenCalledWith(null);
   });
 
   it("cancel goes to the backend request", async () => {

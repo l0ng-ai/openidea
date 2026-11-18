@@ -3252,7 +3252,7 @@
   "Group By": "分组依据",
   "Show on Double-Click": "双击时显示",
   "Follow the Interface": "跟随界面",
-  "The search hit its limit; only usages found so far are replaced.": "搜索已达上限，只替换目前找到的用法。",
+  "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "要在整个范围内把所有「{pattern}」替换为「{replacement}」吗？搜索已达上限，将重新搜索以找出未列出的匹配项。",
   "Review": "审查",
   "Commit and Push…": "提交并推送…",
   "Language server": "语言服务器",
