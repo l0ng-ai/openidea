@@ -6,7 +6,7 @@
 import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, runScopeHandlers } from "@codemirror/view";
 import { CodeMirror, Vim, getCM, vim } from "@replit/codemirror-vim";
-import { externalHistory, transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
+import { adjacentEditor, externalHistory, transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
 import { setContext } from "@/platform/context";
 import { strokeOf } from "@/platform/keymap";
 import { executeAction, getAction } from "@/platform/actions";
@@ -285,6 +285,30 @@ const ideHandledKeys = EditorView.domEventHandlers({
   },
 });
 
+const LINE_MOTIONS: Record<string, 1 | -1> = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 };
+
+/** Normal-mode `j`/`k` on the last/first line continue into the host's neighbouring editor (notebook cells). */
+const lineMotionLeavesEditor = EditorView.domEventHandlers({
+  keydown(e, view) {
+    const direction = LINE_MOTIONS[e.key];
+    const leave = view.state.facet(adjacentEditor);
+    if (!direction || !leave || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+    const vimState = getCM(view)?.state.vim;
+    if (!vimState || vimState.insertMode || vimState.visualMode) return false;
+    // A count, operator or register applies to this editor only (`3j`, `dj`).
+    const input = vimState.inputState;
+    if (input.operator || input.keyBuffer.length || input.prefixRepeat.length || input.motionRepeat.length)
+      return false;
+    if (input.registerName) return false;
+    const { doc, selection } = view.state;
+    const line = doc.lineAt(selection.main.head);
+    if (direction > 0 ? line.number < doc.lines : line.number > 1) return false;
+    if (!leave(direction, selection.main.head - line.from)) return false;
+    e.preventDefault();
+    return true;
+  },
+});
+
 const modeTracker = (ctx?: EditorDocContext) =>
   ViewPlugin.define((view) => {
     const cm = getCM(view);
@@ -359,6 +383,7 @@ export function vimExtension(ctx?: EditorDocContext): Extension {
       imeTracker,
       imeTransactions,
       escapeClosesPopupsFirst,
+      lineMotionLeavesEditor,
       ideHandledKeys,
       vim(),
       modeTracker(ctx),
