@@ -93,6 +93,7 @@
 }
 .hint {
   grid-column: 2;
+  margin-top: var(--space-1);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   line-height: 1.4;
@@ -104,10 +105,13 @@
 }
 .toggleHint {
   grid-column: 1 / -1;
-  padding-left: 20px;
+  /* Starts with the checkbox text: the 16px box and its label gap (`ui/Checkbox`). */
+  padding-left: calc(16px + var(--space-2));
 }
 .stacked > .hint {
   grid-column: 1 / -1;
+  /* The stacked row's gap already separates it. */
+  margin-top: 0;
 }
 
 .number {

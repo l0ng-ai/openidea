@@ -18,7 +18,8 @@
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
 .checkHint {
-  padding: 0 0 4px 20px;
+  /* Starts with the checkbox text: the 16px box and its label gap (`ui/Checkbox`). */
+  padding: 0 0 4px calc(16px + var(--space-2));
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   line-height: 1.4;
