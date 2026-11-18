@@ -1,6 +1,7 @@
 /** Settings › Editor › Vim: on/off, the rc file, and IdeaVim's "Shortcut conflicts" table. */
 import { useEffect, useMemo } from "react";
-import { useActions } from "@/platform/actions";
+import { executeAction, useActions } from "@/platform/actions";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { effectiveBindings, formatBinding, useKeymap } from "@/platform/keymap";
 import { Button, Checkbox, Select, T } from "@/ui";
 import { conflictRows, VIM_KEYS } from "./conflicts";
@@ -26,6 +27,12 @@ export function VimSettingsPage() {
     if (!useVimRc.getState().loaded) void loadRcFile();
   }, []);
 
+  const reload = async () => {
+    await executeAction("vim.reloadRc", "settings");
+    // The native Settings window forwards the action to its editor window.
+    if (auxiliaryWindow()?.kind === "settings") await loadRcFile();
+  };
+
   const setHandler = (stroke: string, handler: Handler) => {
     const handlers = { ...s.handlers };
     if (VIM_KEYS.find((k) => k.stroke === stroke)?.handler === handler) delete handlers[stroke];
@@ -46,7 +53,7 @@ export function VimSettingsPage() {
           <span>
             <T>Configuration file</T>
           </span>
-          <Button size="small" onClick={() => void loadRcFile()}>
+          <Button size="small" disabled={!actions.has("vim.reloadRc")} onClick={() => void reload()}>
             Reload
           </Button>
         </div>
