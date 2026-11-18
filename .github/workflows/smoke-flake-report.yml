@@ -1,0 +1,27 @@
+name: Smoke flake report
+# Pass rate and flake rate of the Language smoke jobs over the last N days:
+# scripts/ci/smoke-flakes.mjs. The table goes to the job summary.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Days to look back
+        default: "30"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  report:
+    name: Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.days }}
+        run: node scripts/ci/smoke-flakes.mjs --days "$DAYS" | tee -a "$GITHUB_STEP_SUMMARY"

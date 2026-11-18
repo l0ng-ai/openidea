@@ -13,6 +13,8 @@ something to show.
 | `go-app/`        | Go 1.22+                                                        | `go run ./cmd/server`               | `go test ./...`      | `OPENIDEA_FAIL=1 go test ./...`           | unused `fmt.Sprintf` result in `internal/store/store.go` |
 | `kotlin-gradle/` | JDK 21, Gradle 8 (no wrapper)                                   | `gradle run`                        | `gradle test`        | `gradle test -PopenideaFail`              | unused variable in `App.kt`                              |
 | `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`             | `mvn test`           | `mvn test -DopenideaFail=true`            | unused variable in `App.java`                            |
+| `kotlin-gradle-multi/` | JDK 21, Gradle 8 (no wrapper)                             | `gradle :app:run`                   | —                    | —                                     | —                                                        |
+| `java-multimodule/` | JDK 21, Maven 3.9                                            | `mvn -q compile` (modules `core`, `app`) | —               | —                                     | —                                                        |
 | `c-app/`         | gcc / g++ 12+, make, GDB 14+                                    | `make all`                          | —                    | —                                     | —                                                        |
 | `php-app/`       | PHP 8.5, Composer                                               | `composer quote`                    | `vendor/bin/pest`    | `OPENIDEA_FAIL=1 vendor/bin/pest`         | unused variable in `ThresholdCustoms.php`                |
 | `django-app/`    | Python 3.10+, Django 5.2+                                       | `python manage.py runserver`        | `python manage.py test` | `OPENIDEA_FAIL=1 python manage.py test` | unused import in `shop/views.py`                         |
@@ -28,6 +30,14 @@ language servers, `smoke/run.test.ts` runs each project's run and test configura
 (the intentionally failing test included, then Rerun Failed Tests), and `smoke/debug.test.ts`
 debugs its entry point from the "Set a breakpoint here" line: when you change a fixture, run
 them for that language.
+
+The two multi-module fixtures (`java-multimodule`, `kotlin-gradle-multi`) belong to the
+`Real servers` CI check: the project imports, Go to Definition crosses from `app` into the
+other module and into a library, and renaming a method of the other module edits both modules
+and the build tool still compiles the result. The same file also restarts each server with an
+unsaved edit open and changes an open file from outside (`typescript`, `java`, `kotlin`).
+`pnpm smoke:native <debug app binary>` drives the built desktop app on `ts-app` through its
+MCP bridge (see `smoke/native/run.ts`).
 
 ## Setup
 

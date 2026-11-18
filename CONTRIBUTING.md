@@ -37,3 +37,32 @@ are listed through [l0ng-ai/openidea-plugins](https://github.com/l0ng-ai/openide
 see [`plugins/README.md`](plugins/README.md) § 8.1.
 
 A check on each PR adds `needs-info` when the verification section is missing, and removes it once it's filled in.
+
+## Real-server CI
+
+`Language smoke` runs the real language servers (vtsls, jdtls, Kotlin LSP, ...) on the fixtures. The
+**`Real servers`** check is its summary for the TypeScript, Java and Kotlin Linux legs: it passes when
+they pass, or when a pull request touches nothing they cover. It is the one check to require in the
+repo ruleset. The other languages and the Windows legs (`Language smoke Windows`) run too but are
+advisory until a maintainer promotes them (adds them to the `real-servers` job's `needs`).
+A failed leg uploads `smoke-logs-*` (tool versions, test output, server logs) for 7 days.
+
+Run a leg locally with its servers installed at the versions in `.github/tool-versions.env`
+(`node scripts/ci/preflight.mjs <leg>` checks them):
+
+```sh
+OPENIDEA_SMOKE_LOG_DIR=/tmp/smoke-logs \
+  cargo test --locked -p ide-host --test language_smoke -- --ignored --exact --test-threads=1 java java_restart java_external_change java_multimodule
+```
+
+The test names per leg are in `.github/workflows/language-smoke.yml`. The tests write diagnostics to
+`$OPENIDEA_SMOKE_LOG_DIR/<test>.log`.
+
+Bump a pin by editing `.github/tool-versions.env`; for jdtls and Kotlin LSP also the `*_SHA256` lines
+(`sha256sum` of the archive the workflow downloads). For Kotlin LSP, whose builds
+expire after a few weeks: `node scripts/ci/bump-kotlin-lsp.mjs` does it. The `Bump tool pins` workflow runs
+that weekly and opens a PR. Until it is merged, a leg whose pinned Kotlin LSP expired passes on the newest
+build with a warning annotation.
+
+`node scripts/ci/smoke-flakes.mjs --days 30` (or the `Smoke flake report` workflow) shows each job's
+pass rate and how many failures were flakes.

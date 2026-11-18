@@ -1,0 +1,139 @@
+name: Language smoke leg
+description: >
+  One Language smoke leg on the current runner: installs the language's pinned tools, checks them
+  (scripts/ci/preflight.mjs), runs crates/ide-host/tests/language_smoke.rs, the project and run/debug
+  smoke, and uploads diagnostics when a step fails. Used by language-smoke.yml after checkout.
+inputs:
+  language:
+    description: typescript, java, kotlin, python, rust, go, php, c or cpp
+    required: true
+  tests:
+    description: Space separated language_smoke test names (`--exact`)
+    required: true
+  token:
+    description: Token the debug smoke uses against GitHub's release rate limits
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    # Tool versions, shared with the evals (pnpm eval).
+    - id: pins
+      shell: bash
+      run: |
+        grep -E '^[A-Z0-9_]+=' .github/tool-versions.env | tr -d '\r' >> "$GITHUB_ENV"
+        for key in JAVA GRADLE; do
+          echo "${key,,}=$(sed -n "s/^$key=//p" .github/tool-versions.env | tr -d '\r')" >> "$GITHUB_OUTPUT"
+        done
+        mkdir -p "$RUNNER_TEMP/smoke-logs" "$RUNNER_TEMP/downloads"
+        echo "OPENIDEA_SMOKE_LOG_DIR=$RUNNER_TEMP/smoke-logs" >> "$GITHUB_ENV"
+        echo "DOWNLOAD_DIR=$RUNNER_TEMP/downloads" >> "$GITHUB_ENV"
+    - uses: dtolnay/rust-toolchain@stable
+      with: { components: "rust-analyzer, rustfmt" }
+    # One build cache for every language; main saves it (Windows has its own, saved by its typescript leg).
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ runner.os == 'Windows' && 'language-smoke-windows' || 'language-smoke' }}
+        save-if: ${{ github.ref == 'refs/heads/main' && (inputs.language == 'rust' || (runner.os == 'Windows' && inputs.language == 'typescript')) }}
+
+    - uses: pnpm/action-setup@v4
+      with: { version: 11 }
+    - uses: actions/setup-node@v4
+      with: { node-version: 22, cache: pnpm }
+    - if: inputs.language == 'typescript'
+      shell: bash
+      run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
+
+    # The smoke builds the c-app fixture and debugs it with GDB's own DAP interpreter.
+    - if: inputs.language == 'c' || inputs.language == 'cpp'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gdb
+
+    - if: inputs.language == 'python'
+      uses: actions/setup-python@v5
+      with: { python-version: "3.12" }
+    - if: inputs.language == 'python'
+      shell: bash
+      run: pip install "basedpyright==$BASEDPYRIGHT" "ruff==$RUFF"
+
+    - if: inputs.language == 'go'
+      uses: actions/setup-go@v5
+      with: { go-version: "1.27", cache: false }
+    - if: inputs.language == 'go'
+      shell: bash
+      run: go install "golang.org/x/tools/gopls@$GOPLS"
+
+    - if: inputs.language == 'java' || inputs.language == 'kotlin'
+      uses: actions/setup-java@v4
+      with: { distribution: temurin, java-version: "${{ steps.pins.outputs.java }}" }
+    # Archives are verified against the sha256 in tool-versions.env, so a cache hit is as good as a download.
+    - if: inputs.language == 'java' || inputs.language == 'kotlin'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/downloads
+        key: smoke-downloads-${{ runner.os }}-${{ inputs.language }}-${{ hashFiles('.github/tool-versions.env') }}
+    - if: inputs.language == 'java'
+      shell: bash
+      run: bash scripts/ci/install-jdtls.sh
+
+    # The Kotlin fixtures have no Gradle wrapper: the server imports them with the Gradle on PATH.
+    - if: inputs.language == 'kotlin'
+      uses: gradle/actions/setup-gradle@v4
+      with: { gradle-version: "${{ steps.pins.outputs.gradle }}" }
+    # bin/intellij-server is what the app starts; `kotlin-lsp` on PATH is a one-line launcher for it.
+    - if: inputs.language == 'kotlin'
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = Windows ]; then os=windows sha=$KOTLIN_LSP_SHA256_WINDOWS; else os=linux sha=$KOTLIN_LSP_SHA256_LINUX; fi
+        bash scripts/ci/install-kotlin-lsp.sh "$KOTLIN_LSP" "$sha" "$os" "$RUNNER_TEMP/kotlin-lsp"
+
+    # Xdebug for the debug smoke; Composer installs the fixture's Pest for the run smoke.
+    - if: inputs.language == 'php'
+      uses: shivammathur/setup-php@v2
+      with: { php-version: "8.5", coverage: xdebug, tools: composer }
+    - if: inputs.language == 'php'
+      shell: bash
+      run: npm install --global "intelephense@$INTELEPHENSE"
+
+    - name: Preflight
+      shell: bash
+      run: node scripts/ci/preflight.mjs "${{ inputs.language }}"
+
+    - shell: bash
+      run: cargo test --locked -p ide-host --test language_smoke --no-run
+    - name: Language smoke tests
+      shell: bash
+      env: { TESTS: "${{ inputs.tests }}" }
+      run: |
+        # shellcheck disable=SC2086
+        bash scripts/ci/run-language-smoke.sh "${{ inputs.language }}" $TESTS
+    - if: inputs.language == 'java'
+      shell: bash
+      run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk maven_launch_classpath_uses_the_runner_jdk_classifier 2>&1 | tee "$OPENIDEA_SMOKE_LOG_DIR/project-smoke.txt"
+    - if: inputs.language == 'kotlin'
+      shell: bash
+      run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact gradle_sync 2>&1 | tee "$OPENIDEA_SMOKE_LOG_DIR/project-smoke.txt"
+    - if: inputs.language == 'python'
+      shell: bash
+      run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact python_venv 2>&1 | tee "$OPENIDEA_SMOKE_LOG_DIR/project-smoke.txt"
+
+    - shell: bash
+      run: pnpm install --frozen-lockfile
+    - shell: bash
+      run: cargo build --locked -p ide-host --bin openidea-server
+    - shell: bash
+      run: pnpm smoke smoke/run.test.ts -t "^${{ inputs.language }}$" 2>&1 | tee "$OPENIDEA_SMOKE_LOG_DIR/run-smoke.txt"
+    - shell: bash
+      run: pnpm smoke smoke/debug.test.ts -t "^${{ inputs.language }}$" 2>&1 | tee "$OPENIDEA_SMOKE_LOG_DIR/debug-smoke.txt"
+      # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.
+      env: { GITHUB_TOKEN: "${{ inputs.token }}" }
+
+    - if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: smoke-logs-${{ runner.os }}-${{ inputs.language }}
+        path: ${{ runner.temp }}/smoke-logs
+        retention-days: 7
+        if-no-files-found: warn
+        overwrite: true

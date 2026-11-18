@@ -85,6 +85,10 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 - `pnpm smoke smoke/debug.test.ts -t <language>` — debug that fixture's entry point the same way, with
   the debugger the IDE installs (on macOS, CodeLLDB and Delve may need Developer Mode:
   `sudo DevToolsSecurity -enable`).
+- `pnpm smoke:native <debug app binary> [fixture]` — launches the built desktop app (a debug build with
+  the global Tauri API: `pnpm tauri build --debug --no-bundle --config src-tauri/tauri.dev.conf.json`) on
+  a fixture copy and drives it through the MCP bridge: IPC round trip, an open buffer following a file
+  changed on disk, an edit reaching the disk on save.
 - `pnpm test`, `pnpm e2e`, `pnpm lint`, `pnpm format:check`, `pnpm knip`, `pnpm typecheck`,
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
