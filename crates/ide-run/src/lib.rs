@@ -258,6 +258,11 @@ pub fn detect_with_profiles(
     detect::detect_with_profiles(root, excluded_poms, profiles)
 }
 
+/// Configurations of the Maven / Gradle builds a user linked in `dirs`, at any depth below `root` or outside it.
+pub fn detect_builds(root: &Path, dirs: &[PathBuf]) -> Vec<RunConfig> {
+    detect::detect_builds(root, dirs)
+}
+
 /// Reads `<root>/.openidea/run.toml`; a missing file yields no configs.
 pub fn load_user_configs(root: &Path) -> IdeResult<Vec<RunConfig>> {
     config::load(root)
