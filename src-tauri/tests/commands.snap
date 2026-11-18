@@ -440,6 +440,7 @@ plugin_revoke_net_host                       outside_restricted desktop      bin
 plugin_roll_back                             outside_restricted desktop      bindings async
 plugin_run_command                           trusted            project_host bindings async
 plugin_run_targets                           trusted            project_host bindings async
+plugin_search                                trusted            project_host bindings async
 plugin_secrets                               trusted            desktop      bindings sync
 plugin_select_tests                          trusted            project_host bindings async
 plugin_service_detail                        trusted            project_host bindings async

@@ -3,7 +3,7 @@
  * secrets, endpoints), shared by the workbench and the Settings window without
  * pulling in CodeMirror-backed plugin editors.
  */
-import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
+import { registerEndpointProvider, registerSearchCategory, type EndpointEntry } from "@/workbench/contributions";
 import type { PluginInfo, ThemeDef } from "@/bindings";
 import { pluginIconName } from "./pluginIcon";
 import { registerAction } from "@/platform/actions";
@@ -17,7 +17,7 @@ import { defineUiPoint, type UiItem } from "./projection";
 import { SecretsDetails, type SecretDecl } from "./secrets";
 import { pluginSettingsPageId } from "./settings";
 import { pluginsBackend } from "./backend";
-import { isLive, runPluginCommand } from "./store";
+import { isLive, runPluginCommand, usePlugins } from "./store";
 import styles from "./PluginsPage.module.css";
 
 /** Unpacks an action argument: a bare path, or a menu's `{ path, paths }`. */
@@ -187,11 +187,41 @@ function providePluginEndpoints(pluginId: string): () => void {
   };
 }
 
-/** Registers the editor-free UI points (commands, themes, icon themes, secrets, endpoints). */
+/** Registers the editor-free UI points (commands, themes, icon themes, secrets, endpoints, search categories). */
 export function defineCoreUiPoints(): () => void {
   const disposers = [
     defineUiPoint("mcpTools", {}),
     defineUiPoint("serverCommands", {}),
+    defineUiPoint<{ id: string; title: string }>("searchCategories", {
+      project: ({ pluginId, decl }) => {
+        let active = true;
+        const command = (id: string) =>
+          usePlugins.getState().ui.find((c) => c.pluginId === pluginId && c.point === "commands" && c.key === id)
+            ?.decl as CommandDecl | undefined;
+        const dispose = registerSearchCategory({
+          id: `plugin:${pluginId}:${decl.id}`,
+          title: decl.title,
+          search: (request, query, limit) => pluginsBackend().search(pluginId, decl.id, query, limit, request),
+          command: (id) => {
+            const c = command(id);
+            if (!active || !c) return undefined;
+            return {
+              id: pluginActionId(pluginId, id),
+              title: c.title,
+              when: c.when ?? undefined,
+              run: async ({ arg }) => {
+                if (active && command(id))
+                  await runPluginCommand(pluginId, id, typeof arg === "string" ? arg : null, []);
+              },
+            };
+          },
+        });
+        return () => {
+          active = false;
+          dispose();
+        };
+      },
+    }),
     defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",

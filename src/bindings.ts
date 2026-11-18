@@ -1130,6 +1130,11 @@ export const commands = {
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
+	/**
+	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
+	 *  `cancel_request(request)`.
+	 */
+	pluginSearch: (pluginId: string, category: string, query: string, limit: number, request: RequestId) => typedError<PluginSearchPage, IdeError>(__TAURI_INVOKE("plugin_search", { pluginId, category, query, limit, request })),
 	pluginSecrets: (pluginId: string) => typedError<PluginSecretState[], IdeError>(__TAURI_INVOKE("plugin_secrets", { pluginId })),
 	/**  Selects test-tree paths in an owned plugin test configuration. */
 	pluginSelectTests: (config: string, tests: string[][]) => typedError<string[] | null, IdeError>(__TAURI_INVOKE("plugin_select_tests", { config, tests })),
@@ -9228,6 +9233,23 @@ export type PluginRunTarget = {
 	containerRoot: string | null,
 	commands: PluginCommandOverride[],
 };
+
+export type PluginSearchItem = {
+	id: string,
+	title: string,
+	description: string | null,
+	target: PluginSearchTarget,
+};
+
+export type PluginSearchPage = {
+	items: PluginSearchItem[],
+	hasMore: boolean,
+};
+
+export type PluginSearchTarget = { kind: "location"; value: Location } | { kind: "command"; value: {
+	id: string,
+	arg: string | null,
+} };
 
 /**  A secret a plugin declares, and whether the user stored it. */
 export type PluginSecretState = {
