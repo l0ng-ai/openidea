@@ -12,6 +12,8 @@ const clipboard = vi.hoisted(() => ({ write: vi.fn<(text: string) => Promise<voi
 
 vi.mock("@/platform/clipboard", () => ({
   writeClipboardText: (text: string) => clipboard.write(text),
+  // Outside the desktop app the platform helper reads through the WebView.
+  readClipboardPlainText: () => navigator.clipboard.readText(),
 }));
 
 function fakeController(pasted = "unused") {
