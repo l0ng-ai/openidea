@@ -294,10 +294,14 @@ describe("Changes tree diffs follow the commit interface setting (#1863)", () =>
     expect(openFile).not.toHaveBeenCalled();
   });
 
-  it("keeps the Show Diff action item with the non-modal interface", () => {
+  // The row's own diff (under Staged or Unstaged, its side of the index), in an editor tab.
+  it("opens the node's diff in an editor tab with the non-modal interface", async () => {
     modal(false);
     const menu = nodeMenu([node], ["/p"], { roots: [node] });
-    expect(menu).toContainEqual({ kind: "action", action: "vcs.showDiff", arg: "/p/src/a.ts" });
+    const show = menu.find((m) => m.kind !== "separator" && "label" in m && m.label === "Show Diff");
+    (show as { run: () => void }).run();
+    await vi.waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+    expect(openDiffDialog).not.toHaveBeenCalled();
   });
 });
 
