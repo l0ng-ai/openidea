@@ -1120,7 +1120,8 @@ export async function createDatabase(id: string, template: string, sql: string):
   const levels = loadedLevels(id);
   await disconnect(`${id}:${template}`);
   try {
-    await call(commands.dbCreateDatabase(id, template, sql));
+    // Asks for a password the data source does not save, like any statement it runs.
+    await withConnection(id, () => call(commands.dbCreateDatabase(id, template, sql)));
   } catch (e) {
     notifications().notify({ level: "error", title: tx`Cannot create database`, body: message(e) });
     void refresh(id, levels);
@@ -1134,7 +1135,7 @@ export async function createDatabase(id: string, template: string, sql: string):
 export async function dropDatabase(id: string, database: string, sql: string): Promise<boolean> {
   await disconnect(`${id}:${database}`);
   try {
-    await call(commands.dbDropDatabase(id, database, sql));
+    await withConnection(id, () => call(commands.dbDropDatabase(id, database, sql)));
   } catch (e) {
     notifications().notify({ level: "error", title: tx`Cannot drop database ${database}`, body: message(e) });
     return false;
