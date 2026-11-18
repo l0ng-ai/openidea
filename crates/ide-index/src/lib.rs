@@ -400,15 +400,10 @@ impl ProjectIndex {
 
     /// Boost for "recent files" ranking.
     /// Records a recently opened file; a virtual document's URI (library
-    /// class) is kept verbatim, like IDEA lists library classes in Recent Files.
+    /// class) is kept verbatim, and a file outside the project (a scratch file)
+    /// by its absolute path.
     pub fn mark_recent(&self, path: &Path) {
-        let path = match path.to_str() {
-            Some(s) if ide_core::text::is_virtual_uri(s) => path.to_owned(),
-            _ => match self.normalize(path) {
-                Some(p) => p,
-                None => return,
-            },
-        };
+        let Some(path) = self.recent_key(path) else { return };
         {
             let mut r = self.shared.recent.lock();
             r.retain(|p| p != &path);
@@ -420,13 +415,7 @@ impl ProjectIndex {
 
     /// Drops a file from Recent Files (Delete in the ⌘E popup).
     pub fn remove_recent(&self, path: &Path) {
-        let path = match path.to_str() {
-            Some(s) if ide_core::text::is_virtual_uri(s) => path.to_owned(),
-            _ => match self.normalize(path) {
-                Some(p) => p,
-                None => return,
-            },
-        };
+        let Some(path) = self.recent_key(path) else { return };
         {
             let mut r = self.shared.recent.lock();
             let before = r.len();
@@ -471,6 +460,20 @@ impl ProjectIndex {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// How Recent Files stores `path`: a virtual URI verbatim, a project file normalized,
+    /// and an existing file outside the root canonicalized. Excluded files under the root
+    /// are left out.
+    fn recent_key(&self, path: &Path) -> Option<PathBuf> {
+        if path.to_str().is_some_and(ide_core::text::is_virtual_uri) {
+            return Some(path.to_owned());
+        }
+        if let Some(p) = self.normalize(path) {
+            return Some(p);
+        }
+        let p = dunce::canonicalize(path).ok().filter(|p| p.is_file())?;
+        (!p.starts_with(&self.root)).then_some(p)
     }
 
     /// Absolute path inside the root (or a content root), or `None` for paths outside the project.

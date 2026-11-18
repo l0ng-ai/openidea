@@ -241,6 +241,15 @@ impl PathFilter {
         (!rel.is_empty()).then_some(rel)
     }
 
+    /// Recent Files' stored form: the store key for a project file, the absolute
+    /// path for one outside it (a scratch file). Loading joins it to the root,
+    /// which leaves an absolute path as it is.
+    pub(crate) fn recent_key(&self, path: &Path) -> Option<String> {
+        self.store_key(path).or_else(|| {
+            (path.is_absolute() && !path.starts_with(&self.root)).then(|| path.to_str().map(str::to_owned))?
+        })
+    }
+
     fn excluded_rel(&self, rel: &str) -> bool {
         self.excludes.is_match(rel)
     }
