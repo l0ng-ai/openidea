@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { caretOf, setCaret, textOf, typeChars, typeIn } from "./composerTesting";
 import chipStyles from "./ReferenceChip.module.css";
 import { FILES_DRAG, dragSession } from "@/ui";
+import { useProject } from "@/platform/project";
 
 const findFiles = vi.fn();
 const findDirs = vi.fn();
@@ -35,7 +36,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { Composer } from "./Composer";
-import { registerAgentContextSource } from "@/workbench/contributions";
+import { provideNotificationService, registerAgentContextSource } from "@/workbench/contributions";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { composerDraft, sendMessage, setIdeContext, updateComposer, useAgents } from "./store";
 import { emptyDraft, toPrompt } from "./composerModel";
@@ -117,27 +118,74 @@ describe("Composer dropped paths", () => {
     }
     expect(composerDraft(ID).files).toEqual([
       { path: "/p/src/a.ts", rel: "src/a.ts" },
-      { path: "/p/src/dir", rel: "src/dir" },
+      { path: "/p/src/dir", rel: "src/dir/" },
     ]);
-    expect(textOf(box)).toBe("@src/a.ts @src/dir ");
+    expect(textOf(box)).toBe("@src/a.ts @src/dir/ ");
   });
 
   it("deduplicates live references and allows a deleted reference to be dropped again", () => {
     const box = renderComposer();
     drop(box, "/p/src/a.ts\n/p/src/a.ts\n/p/src/dir/");
     drop(box, "/p/src/a.ts\n/p/src/dir/");
-    expect(textOf(box)).toBe("@src/a.ts @src/dir ");
-    typeIn(box, "@src/dir ");
+    expect(textOf(box)).toBe("@src/a.ts @src/dir/ ");
+    typeIn(box, "@src/dir/ ");
     drop(box, "/p/src/a.ts");
-    expect(textOf(box)).toBe("@src/dir @src/a.ts ");
+    expect(textOf(box)).toBe("@src/dir/ @src/a.ts ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/dir", "/p/src/a.ts"]);
   });
 
   it("maps project files and folders into the task worktree, rejecting external paths", () => {
     const box = renderComposer("/worktree");
     drop(box, "/p/src/a.ts\n/p/src/dir/\n/external/a.ts\n/p-other/a.ts\n/p/../external/b.ts\nrelative.ts");
-    expect(textOf(box)).toBe("@src/a.ts @src/dir ");
+    expect(textOf(box)).toBe("@src/a.ts @src/dir/ ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/worktree/src/a.ts", "/worktree/src/dir"]);
+  });
+
+  describe("in a workspace", () => {
+    beforeEach(() => {
+      useProject.setState({ project: { root: "/ws", workspace: { projects: ["/p", "/front"] } } as never });
+      return () => useProject.setState({ project: null });
+    });
+
+    it("references the files and folders of another project by its name", () => {
+      const box = renderComposer("/worktree");
+      drop(box, "/front/src/App.vue\n/front/src/views/\n/p/src/a.ts");
+      expect(textOf(box)).toBe("@front/src/App.vue @front/src/views/ @src/a.ts ");
+      expect(toPrompt(composerDraft(ID)).files).toEqual([
+        "/front/src/App.vue",
+        "/front/src/views",
+        "/worktree/src/a.ts",
+      ]);
+    });
+
+    it("says why a path outside the projects is not added", () => {
+      const notify = vi.fn();
+      provideNotificationService({ notify } as never);
+      const box = renderComposer();
+      drop(box, "/external/a.ts\n/front/b.ts");
+      expect(textOf(box)).toBe("@front/b.ts ");
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Only files of this window's projects can be referenced" }),
+      );
+    });
+
+    it("completes the files of every project, named relative to the task or by project", async () => {
+      findFiles.mockReturnValue(
+        ok([
+          { path: "/p/src/agents.ts", relPath: "p/src/agents.ts", score: 40, indices: [2, 3] },
+          { path: "/front/src/App.vue", relPath: "front/src/App.vue", score: 30, indices: [6] },
+        ]),
+      );
+      findDirs.mockReturnValue(ok([]));
+      const box = renderComposer("/worktree");
+      typeIn(box, "@a");
+      const list = await screen.findByRole("listbox");
+      await within(list).findByText("front/src");
+      expect(within(list).getByText("src")).toBeTruthy();
+      await userEvent.keyboard("{ArrowDown}{Enter}");
+      expect(textOf(box)).toBe("@front/src/App.vue ");
+      expect(toPrompt(composerDraft(ID)).files).toEqual(["/front/src/App.vue"]);
+    });
   });
 });
 

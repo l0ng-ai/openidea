@@ -170,6 +170,46 @@ describe("Find in Files popup", () => {
     expect(replaced[0]!.targets.map((t) => t.path)).toEqual(["/p/a.kt", "/p/b.kt"]);
   });
 
+  // #4083: once the search hit its limit, Replace All asks and replaces every match in the scope.
+  it.each([
+    { name: "one file", files: 1, limitHit: false, asks: false, allInScope: false },
+    { name: "one file at the limit", files: 1, limitHit: true, asks: true, allInScope: true },
+    { name: "two files", files: 2, limitHit: false, asks: true, allInScope: false },
+    { name: "two files at the limit", files: 2, limitHit: true, asks: true, allInScope: true },
+  ])("Replace All: $name", async ({ files, limitHit, asks, allInScope }) => {
+    search = async (onFile) => {
+      for (const name of ["repeated.txt", "other.txt"].slice(0, files)) {
+        onFile({
+          path: `/p/${name}`,
+          relPath: name,
+          matches: [0, 1].map((line) => ({ line, text: "CAP_PROBE", ranges: [[0, 9]], textOffset: 0 })),
+        });
+      }
+      return { files, matches: files * 2, limitHit, cancelled: false, elapsedMs: 0 };
+    };
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(true, { query: "CAP_PROBE" }));
+    await settle();
+    fireEvent.change(screen.getByLabelText("Replace with"), { target: { value: "CAP_CHANGED" } });
+    // Replace Selected (↵) takes the first row only; Replace All leaves it alone afterwards.
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await settle();
+    expect(replaced[0]!.targets).toEqual([{ path: "/p/repeated.txt", only: [{ line: 0, col: 0 }] }]);
+    fireEvent.click(screen.getByRole("button", { name: "Replace All" }));
+    await settle();
+    expect(confirms).toHaveLength(asks ? 1 : 0);
+    if (asks) {
+      expect(JSON.stringify(confirms[0])).toContain(allInScope ? "The search hit its limit" : "Replace ");
+    }
+    expect(replaced).toHaveLength(2);
+    expect(!!replaced[1]!.allInScope).toBe(allInScope);
+    expect(replaced[1]!.targets[0]).toEqual(
+      allInScope
+        ? { path: "/p/repeated.txt", skip: [{ line: 0, col: 0 }] }
+        : { path: "/p/repeated.txt", only: [{ line: 1, col: 0 }] },
+    );
+  });
+
   it("⌥ mnemonics toggle Preserve Case and the file mask", async () => {
     render(<FindInFilesOverlay />);
     act(() => showFindPopup(true, { query: "order" }));

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { codeFolding, foldEffect, foldService, foldedRanges } from "@codemirror/language";
+import { codeFolding, foldEffect, foldService, foldable, foldedRanges } from "@codemirror/language";
+import { EditorView } from "@codemirror/view";
 import {
+  backendFoldingChanged,
+  backendFolds,
   enclosingFoldRange,
   expandToLevelEffects,
   foldSelectionEffects,
-  foldToExpand,
   foldsFromRanges,
+  foldingExtension,
+  foldToExpand,
+  setBackendFolds,
 } from "./folding";
 
 /** Folds `{ … }` blocks whose header line ends with `{`. */
@@ -67,6 +72,29 @@ describe("foldToExpand", () => {
 
 describe("foldsFromRanges", () => {
   const fold = (start_line: number, end_line: number) => ({ start_line, end_line, kind: "region" as const });
+
+  it("collapses an import group beginning with a multiline statement to import only", () => {
+    const s = EditorState.create({
+      doc: [
+        "import Widget, {",
+        "  Formatter,",
+        "  parseValue,",
+        "} from './format.js';",
+        "import { render } from './view.js';",
+        "",
+      ].join("\n"),
+      extensions: [foldingExtension(false)],
+    });
+    const ranges = [{ start_line: 0, end_line: 4, kind: "imports" as const }];
+    const [f] = foldsFromRanges(s, ranges);
+    expect(f).toEqual({ from: "import ".length, to: s.doc.line(5).to, kind: "imports" });
+    const state = s.update({ effects: setBackendFolds.of(ranges) }).state;
+    expect(foldable(state, state.doc.line(1).from, state.doc.line(1).to)).toEqual({ from: f!.from, to: f!.to });
+    const view = new EditorView({ state, parent: document.createElement("div") });
+    view.dispatch({ effects: foldEffect.of({ from: f!.from, to: f!.to }) });
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe("import …");
+    view.destroy();
+  });
 
   it("starts an Allman block's fold on its declaration line", () => {
     const s = EditorState.create({ doc: "namespace Demo\n{\n    class A\n    {\n    }\n}\n" });
@@ -157,5 +185,97 @@ describe("expandToLevelEffects", () => {
     s = s.update({ effects: expandToLevelEffects(s, 1, true) }).state;
     s = s.update({ selection: { anchor: text.indexOf("z()") } }).state;
     expect(folded(s.update({ effects: expandToLevelEffects(s, 2) }).state)).toEqual([]);
+  });
+});
+
+describe("fold gutter chevrons", () => {
+  const doc = ["def f():", '    """doc', "    more", '    """', "    pass"].join("\n");
+
+  it("backendFoldingChanged fires when backend folds arrive, not on selection moves", () => {
+    let changed = false;
+    const view = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [
+          foldingExtension(true),
+          // The same predicate the fold gutter's foldingChanged hook uses.
+          EditorView.updateListener.of((u) => {
+            if (backendFoldingChanged(u)) changed = true;
+          }),
+        ],
+      }),
+      parent: document.body,
+    });
+    view.dispatch({ effects: setBackendFolds.of([{ start_line: 1, end_line: 3, kind: "comment" }]) });
+    expect(changed).toBe(true);
+    changed = false;
+    view.dispatch({ selection: { anchor: 0 } });
+    expect(changed).toBe(false);
+    view.destroy();
+  });
+
+  it("the gutter shows a chevron after backend folds arrive", () => {
+    const view = new EditorView({
+      state: EditorState.create({ doc, extensions: [foldingExtension(true)] }),
+      parent: document.body,
+    });
+    const markers = () =>
+      Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-foldGutter .cm-gutterElement")).map(
+        (el) => el.firstElementChild?.className ?? "",
+      );
+    const before = markers();
+    view.dispatch({ effects: setBackendFolds.of([{ start_line: 1, end_line: 3, kind: "comment" }]) });
+    const after = markers();
+    expect(after.join("|")).not.toBe(before.join("|"));
+    view.destroy();
+  });
+});
+
+describe("fold placeholder chip", () => {
+  const doc = ["def f():", '    """doc', "    more", '    """', "    pass"].join("\n");
+
+  function foldedView() {
+    const view = new EditorView({
+      state: EditorState.create({ doc, extensions: [foldingExtension(true)] }),
+      parent: document.body,
+    });
+    view.dispatch({ effects: setBackendFolds.of([{ start_line: 1, end_line: 3, kind: "comment" }]) });
+    return view;
+  }
+
+  function folded(view: ReturnType<typeof foldedView>) {
+    const out: Array<[number, number]> = [];
+    foldedRanges(view.state).between(0, view.state.doc.length, (a, b) => void out.push([a, b]));
+    return out;
+  }
+
+  function fold(view: ReturnType<typeof foldedView>) {
+    const [f] = view.state.field(backendFolds);
+    view.dispatch({ effects: foldEffect.of({ from: f!.from, to: f!.to }) });
+  }
+
+  it("clicking the chip expands the fold, repeatedly", () => {
+    const view = foldedView();
+    for (let i = 0; i < 3; i++) {
+      fold(view);
+      const chip = view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder");
+      expect(chip, `iteration ${i}`).not.toBeNull();
+      chip!.click();
+      expect(folded(view), `iteration ${i}`).toEqual([]);
+    }
+    view.destroy();
+  });
+
+  it("a chip whose position is the fold's start line still expands", () => {
+    const view = foldedView();
+    const [f] = view.state.field(backendFolds);
+    // A docstring fold starts at the end of its header line: a chip resolved
+    // through the line block would land on that line and find no fold.
+    expect(view.state.doc.lineAt(f!.from).to).toBe(f!.from);
+    fold(view);
+    const chip = view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder")!;
+    chip.click();
+    expect(folded(view)).toEqual([]);
+    view.destroy();
   });
 });

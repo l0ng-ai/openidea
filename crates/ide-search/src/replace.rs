@@ -22,6 +22,11 @@ pub struct ReplaceTarget {
     /// Positions where no match starts any more are skipped.
     #[specta(optional)]
     pub only: Option<Vec<Pos>>,
+    /// Start positions of matches to leave as they are (excluded or already
+    /// replaced usages) when every other match in the file is replaced.
+    #[serde(default)]
+    #[specta(optional)]
+    pub skip: Option<Vec<Pos>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -123,6 +128,18 @@ pub fn replacement_edits(
     preserve: bool,
     only: Option<&[Pos]>,
 ) -> IdeResult<Vec<TextEdit>> {
+    edits_except(text, query, replacement, preserve, only, None)
+}
+
+/// [`replacement_edits`] leaving out the matches that start at `skip`.
+fn edits_except(
+    text: &str,
+    query: &SearchQuery,
+    replacement: &str,
+    preserve: bool,
+    only: Option<&[Pos]>,
+    skip: Option<&[Pos]>,
+) -> IdeResult<Vec<TextEdit>> {
     if query.pattern.is_empty() {
         return Ok(Vec::new());
     }
@@ -131,6 +148,7 @@ pub fn replacement_edits(
     let haystack = text.as_bytes();
     let template = if query.is_regex { crate::unescape_replacement(replacement) } else { replacement.to_owned() };
     let only: Option<HashSet<Pos>> = only.map(|o| o.iter().copied().collect());
+    let skip: HashSet<Pos> = skip.unwrap_or_default().iter().copied().collect();
     let lines = Lines::new(text);
     let mut caps = matcher.new_captures().map_err(|e| IdeError::internal(e.to_string()))?;
     let mut edits = Vec::new();
@@ -138,7 +156,7 @@ pub fn replacement_edits(
     iter::for_each_captures(matcher, haystack, &mut caps, |caps| {
         let Some(m) = caps.get(0) else { return };
         let start = lines.pos(m.start());
-        if only.as_ref().is_some_and(|o| !o.contains(&start)) {
+        if only.as_ref().is_some_and(|o| !o.contains(&start)) || skip.contains(&start) {
             return;
         }
         let mut new_text = if query.is_regex {
@@ -222,12 +240,12 @@ pub fn replace_files(
             break;
         }
         let done = i as u32 + 1;
-        let only = target.only.as_deref();
+        let (only, skip) = (target.only.as_deref(), target.skip.as_deref());
         if only.is_some_and(|o| o.is_empty()) {
             continue;
         }
         let result =
-            host.edit_file(&target.path, &mut |text| replacement_edits(text, query, replacement, preserve, only));
+            host.edit_file(&target.path, &mut |text| edits_except(text, query, replacement, preserve, only, skip));
         match result {
             Ok(n) => {
                 if n > 0 {

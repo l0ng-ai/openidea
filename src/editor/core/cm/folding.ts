@@ -12,7 +12,7 @@ import {
   type Extension,
   type Line,
 } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import type { EditorView, ViewUpdate } from "@codemirror/view";
 import {
   codeFolding,
   foldEffect,
@@ -64,12 +64,14 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
       continue;
     }
     const start = allmanHeader(state, first);
+    const importHead = r.kind === "imports" && /^\s*import\s+/.exec(first.text);
+    const from = importHead && /(?:\{|,)\s*$/.test(first.text) ? first.from + importHead[0].length : start.to;
     const trimmed = end.text.trimStart();
     // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA. An import
     // run ending in `} from '…'` hides that whole statement; a bare `)` / `};` still shows.
     const delimiter = r.kind === "imports" ? /^[}\])]+[;,]?$/.test(trimmed.trimEnd()) : /^[}\])]/.test(trimmed);
     const to = delimiter ? end.from + (end.text.length - trimmed.length) : end.to;
-    if (to > start.to) out.push({ from: start.to, to, kind: r.kind });
+    if (to > from) out.push({ from, to, kind: r.kind });
   }
   return out.sort((a, b) => a.from - b.from || b.to - a.to);
 }
@@ -101,8 +103,8 @@ function foldAtLine(folds: readonly BackendFold[], lineStart: number, lineEnd: n
   let best: BackendFold | null = null;
   for (let i = lo; i < folds.length && folds[i]!.from <= lineEnd; i++) {
     const f = folds[i]!;
-    // Only folds whose header ends on this line (custom regions: on this line); keep the widest.
-    if ((f.from === lineEnd || f.custom) && (!best || f.to > best.to)) best = f;
+    // Multiline import groups and custom regions can start within their header line.
+    if ((f.from === lineEnd || f.custom || f.kind === "imports") && (!best || f.to > best.to)) best = f;
   }
   return best;
 }
@@ -392,22 +394,40 @@ function chevron(open: boolean): HTMLElement {
   return span;
 }
 
+/**
+ * Backend folds arrive asynchronously (`setBackendFolds`) and are not a document,
+ * viewport or language change, so CodeMirror's fold gutter keeps the chevrons it
+ * built before they arrived. A click then hits a gutter element at a stale line
+ * and silently does nothing. Rebuild the markers whenever the backend field changes.
+ */
+export function backendFoldingChanged(update: ViewUpdate): boolean {
+  return update.startState.field(backendFolds, false) !== update.state.field(backendFolds, false);
+}
+
 export function foldingExtension(showOutline = true): Extension {
   return [
     // The chevron column sits right of contributed icon gutters (IDEA new UI).
-    showOutline ? Prec.lowest(foldGutter({ markerDOM: chevron })) : [],
+    showOutline ? Prec.lowest(foldGutter({ markerDOM: chevron, foldingChanged: backendFoldingChanged })) : [],
     backendFolds,
     backendFoldService,
     codeFolding({
       // A folded custom region shows its name, as in IDEA.
       preparePlaceholder: (state, range) => regionNameAt(state, range.from),
-      placeholderDOM: (_view, onclick, name: string | null) => {
+      placeholderDOM: (view, onclick, name: string | null) => {
         const el = document.createElement("span");
         el.className = "cm-foldPlaceholder";
         el.textContent = name ?? "…";
         el.title = "Expand";
         el.setAttribute("aria-label", "folded code");
-        el.onclick = onclick;
+        el.onclick = (event) => {
+          // CodeMirror's own handler resolves the fold through the clicked line
+          // block, which can miss a fold starting at a line boundary (docstring,
+          // Allman header). Resolving at the chip's own position cannot miss.
+          const folded = foldToExpand(view.state, view.posAtDOM(el));
+          if (folded) view.dispatch({ effects: unfoldEffect.of(folded) });
+          else onclick(event);
+          event.preventDefault();
+        };
         return el;
       },
     }),

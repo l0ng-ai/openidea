@@ -49,6 +49,7 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   TODO_DEFAULT_ATTRIBUTES: "todo",
   SEARCH_RESULT_ATTRIBUTES: "searchResult",
   TEXT_SEARCH_RESULT_ATTRIBUTES: "searchResultCurrent",
+  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: "identifierUnderCaretWrite",
   WRITE_SEARCH_RESULT_ATTRIBUTES: "identifierUnderCaretWrite",
   IDENTIFIER_UNDER_CARET_ATTRIBUTES: "identifierUnderCaret",
   MATCHED_BRACE_ATTRIBUTES: "matchedBrace",

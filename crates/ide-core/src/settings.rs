@@ -1504,6 +1504,10 @@ pub struct MavenSettings {
     pub active_profiles: String,
     /// Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ).
     pub delegate_build: bool,
+    /// Download `-sources.jar` of dependencies when the Java language server imports the
+    /// project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
+    /// from a library class's Download Sources banner.
+    pub download_sources: bool,
 }
 
 impl MavenSettings {

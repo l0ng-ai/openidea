@@ -43,6 +43,8 @@ mod window_zoom;
 mod windows;
 #[cfg(windows)]
 mod windows_error_mode;
+#[cfg(windows)]
+mod windows_webview_recovery;
 
 use parking_lot::Mutex;
 use state::AppState;
@@ -137,6 +139,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
     #[cfg(not(target_os = "linux"))]

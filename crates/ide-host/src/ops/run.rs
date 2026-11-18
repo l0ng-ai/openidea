@@ -108,27 +108,53 @@ fn detected_and_saved(
 }
 
 /// Folders of the Maven / Gradle builds linked explicitly (Add Maven Projects, linked Gradle
-/// builds) that detection did not reach: deeper than its folder search and outside the builds
-/// it found, which own their nested folders.
+/// builds) that detection did not reach: deeper than its folder search, or inside the folder of
+/// a build it found without being one of that build's projects (a separate build nested there).
 fn linked_build_dirs(
     root: &Path,
     settings: &ide_core::settings::Settings,
     gradle: Option<&[ide_build::GradleModel]>,
     detected: &[RunConfig],
 ) -> Vec<std::path::PathBuf> {
-    let found: Vec<_> = detected
-        .iter()
-        .filter(|c| matches!(c.kind.as_str(), "maven" | "gradle"))
-        .map(|c| ide_core::project_roots::resolve(root, c.cwd.as_deref().unwrap_or(Path::new(""))))
-        .collect();
+    let found = |kind: &str| -> Vec<std::path::PathBuf> {
+        let mut dirs: Vec<_> = detected
+            .iter()
+            .filter(|c| c.kind == kind)
+            .map(|c| ide_core::project_roots::resolve(root, c.cwd.as_deref().unwrap_or(Path::new(""))))
+            .collect();
+        dirs.dedup();
+        dirs
+    };
+    let canonical = |dir: &Path| dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let profiles = settings.languages.java.maven.profiles(&[]);
+    let maven_builds = found("maven");
     let poms = settings.languages.java.maven.linked_projects.iter().filter_map(|pom| {
         let pom = root.join(pom.trim());
         pom.is_file().then(|| pom.parent().map(Path::to_path_buf)).flatten()
     });
-    poms.chain(gradle.unwrap_or_default().iter().map(|build| root.join(&build.dir)))
-        .map(|dir| ide_core::project_roots::resolve(root, &dir))
-        .filter(|dir| !found.iter().any(|build| dir.starts_with(build)))
-        .collect()
+    let maven = poms.map(|dir| ide_core::project_roots::resolve(root, &dir)).filter(|dir| {
+        let dir_canon = canonical(dir);
+        !maven_builds.iter().any(|build| {
+            dir.starts_with(build) && ide_build::maven::reactor_member_dirs(build, &profiles).contains(&dir_canon)
+        })
+    });
+    let models = gradle.unwrap_or_default();
+    let gradle_builds = found("gradle");
+    let gradle =
+        models.iter().map(|build| ide_core::project_roots::resolve(root, &root.join(&build.dir))).filter(|dir| {
+            !gradle_builds.iter().any(|build| {
+                dir == build
+                    || (dir.starts_with(build)
+                        && models.iter().filter(|m| root.join(&m.dir) == *build).any(|m| {
+                            m.projects
+                                .iter()
+                                .any(|p| ide_core::project_roots::resolve(root, &root.join(&p.dir)) == *dir)
+                        }))
+            })
+        });
+    let mut dirs: Vec<_> = maven.chain(gradle).collect();
+    dirs.dedup();
+    dirs
 }
 
 fn linked_config(
@@ -672,10 +698,58 @@ mod ownership_tests {
             ),
             (
                 "linked module inside the root reactor belongs to the reactor",
-                vec![("pom.xml".into(), "<project></project>"), (format!("{deep}/pom.xml"), BOOT_POM)],
+                vec![
+                    (
+                        "pom.xml".into(),
+                        "<project><modules><module>site/service/03_src/demo-monitor</module></modules></project>",
+                    ),
+                    (format!("{deep}/pom.xml"), BOOT_POM),
+                ],
                 vec!["site/service/03_src/demo-monitor/pom.xml"],
                 None,
                 vec!["maven:package".into(), "maven:test".into()],
+            ),
+            (
+                "a separate Maven build linked inside the root build's folder has its own configurations",
+                vec![("pom.xml".into(), "<project></project>"), (format!("{deep}/pom.xml"), BOOT_POM)],
+                vec!["site/service/03_src/demo-monitor/pom.xml"],
+                None,
+                vec![
+                    "maven:package".into(),
+                    "maven:test".into(),
+                    format!("maven:package:{deep}"),
+                    format!("maven:test:{deep}"),
+                    format!("maven:spring-boot:run:{deep}"),
+                ],
+            ),
+            (
+                "a Gradle subproject linked as a build belongs to the root build",
+                vec![
+                    ("settings.gradle.kts".into(), "rootProject.name = \"root\"\ninclude(\"a:b:c:tool\")\n"),
+                    ("build.gradle.kts".into(), "plugins {\n    java\n}"),
+                    (format!("{tool}/build.gradle.kts"), "plugins {\n    application\n}"),
+                ],
+                vec![],
+                Some(vec![".", tool]),
+                vec!["gradle:build".into(), "gradle:test".into()],
+            ),
+            (
+                "a separate Gradle build linked inside the root build's folder has its own configurations",
+                vec![
+                    ("settings.gradle.kts".into(), "rootProject.name = \"root\"\n"),
+                    ("build.gradle.kts".into(), "plugins {\n    java\n}"),
+                    (format!("{tool}/settings.gradle.kts"), "rootProject.name = \"tool\"\n"),
+                    (format!("{tool}/build.gradle.kts"), "plugins {\n    application\n}"),
+                ],
+                vec![],
+                Some(vec![".", tool]),
+                vec![
+                    "gradle:build".into(),
+                    "gradle:test".into(),
+                    format!("gradle:build:{tool}"),
+                    format!("gradle:test:{tool}"),
+                    format!("gradle:run:{tool}"),
+                ],
             ),
             (
                 "linked module within the search depth is not detected twice",

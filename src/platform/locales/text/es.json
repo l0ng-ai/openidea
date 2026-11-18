@@ -2540,7 +2540,6 @@
   "Stash": "Stash",
   "Remove Recent Project": "Quitar proyecto reciente",
   "Group By": "Agrupar por",
-  "The search hit its limit; only usages found so far are replaced.": "La búsqueda alcanzó su límite; solo se reemplazaron los usos encontrados hasta ahora.",
   "Review": "Revisar",
   "Commit and Push…": "Confirmar y hacer push…",
   "Language server": "Servidor de lenguaje",

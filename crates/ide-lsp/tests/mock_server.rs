@@ -2569,6 +2569,35 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn eslint_configuration_includes_workspace_folder() {
+    let h = harness_configured("mock", "mk", &[("eslint", incremental_caps()), ("mock", incremental_caps())], |cfg| {
+        if cfg.name == "eslint" {
+            cfg.settings = Some(json!({ "workingDirectory": { "mode": "auto" } }));
+        }
+    });
+    h.open("a.mk", "x");
+    h.wait_status("eslint", ServerStatus::Ready).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let items = json!({ "items": [{ "section": "" }] });
+    let eslint: Value =
+        h.launcher.state("eslint").peer().request("workspace/configuration", items.clone(), None).await.unwrap();
+    assert_eq!(
+        eslint,
+        json!([{
+            "flag": true,
+            "nested": { "deep": 1 },
+            "workingDirectory": { "mode": "auto" },
+            "workspaceFolder": {
+                "uri": uri_of(&h.root),
+                "name": h.root.file_name().unwrap().to_string_lossy(),
+            },
+        }])
+    );
+    let other: Value = h.launcher.state("mock").peer().request("workspace/configuration", items, None).await.unwrap();
+    assert_eq!(other, json!([{ "flag": true, "nested": { "deep": 1 } }]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn settings_changes_reach_servers_without_restarts() {
     let h = harness(&[("mock", incremental_caps()), ("extra", incremental_caps())]);
     let settings: Arc<Mutex<Option<Value>>> = Default::default();
@@ -3005,13 +3034,13 @@ async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|arg| (arg["path"].as_str().unwrap().to_owned(), arg["test"].as_bool().unwrap()))
+        .map(|arg| (PathBuf::from(arg["path"].as_str().unwrap()), arg["test"].as_bool().unwrap()))
         .collect();
     assert_eq!(
         paths,
         vec![
-            (h.root.join("target/generated-sources/protobuf/grpc-java").to_string_lossy().into_owned(), false),
-            (h.root.join("target/generated-sources/protobuf/java").to_string_lossy().into_owned(), false),
+            (h.root.join("target/generated-sources/protobuf/grpc-java"), false),
+            (h.root.join("target/generated-sources/protobuf/java"), false),
         ]
     );
 }
@@ -3654,6 +3683,7 @@ async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
     let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
     framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
 
+    #[cfg(unix)]
     let links = tempfile::tempdir().unwrap();
     let mut spellings = Vec::new();
     #[cfg(unix)]

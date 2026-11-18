@@ -96,9 +96,11 @@ export function directoryRows(
   const both = (e: DirectoryCompareEntry) => e.leftKind === "dir" && e.rightKind === "dir";
   const byPath = new Map(entries.map((e) => [e.path, e]));
   const oneSided = new Set(entries.filter((e) => directory(e) && (!e.leftKind || !e.rightKind)).map((e) => e.path));
+  // The outermost one-sided folder: the only row shown for its whole subtree.
   const owner = (path: string) => {
-    for (let p = parentOf(path); p; p = parentOf(p)) if (oneSided.has(p)) return p;
-    return null;
+    let found: string | null = null;
+    for (let p = parentOf(path); p; p = parentOf(p)) if (oneSided.has(p)) found = p;
+    return found;
   };
   const matched = new Set<string>();
   for (const e of entries) if (q && e.path.toLocaleLowerCase().includes(q)) matched.add(owner(e.path) ?? e.path);
@@ -132,7 +134,7 @@ function Side({ entry, side, folder }: { entry: DirectoryCompareEntry; side: "le
   const name = folder ? entry.path : nameOf(entry.path);
   return (
     <>
-      <span role="gridcell" className={clsx(styles.cell, styles.name)}>
+      <span role="gridcell" className={styles.cell}>
         {kind && (
           <>
             <Icon name={kind === "dir" ? "folder" : fileIconName(name)} size={14} />

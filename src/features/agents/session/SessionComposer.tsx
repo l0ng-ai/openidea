@@ -231,7 +231,7 @@ export function SessionComposer({
                   : "Queue a message for when the agent is done (⌘⇧↵ sends it now)"
         }
         root={task.cwd}
-        projectRoot={project?.root ?? task.cwd}
+        projectRoot={task.projectRoot ?? project?.root ?? task.cwd}
         commands={agentCommands}
         history={history}
         config={task.config}
