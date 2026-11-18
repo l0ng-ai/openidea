@@ -64,12 +64,14 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
       continue;
     }
     const start = allmanHeader(state, first);
+    const importHead = r.kind === "imports" && /^\s*import\s+/.exec(first.text);
+    const from = importHead && /(?:\{|,)\s*$/.test(first.text) ? first.from + importHead[0].length : start.to;
     const trimmed = end.text.trimStart();
     // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA. An import
     // run ending in `} from '…'` hides that whole statement; a bare `)` / `};` still shows.
     const delimiter = r.kind === "imports" ? /^[}\])]+[;,]?$/.test(trimmed.trimEnd()) : /^[}\])]/.test(trimmed);
     const to = delimiter ? end.from + (end.text.length - trimmed.length) : end.to;
-    if (to > start.to) out.push({ from: start.to, to, kind: r.kind });
+    if (to > from) out.push({ from, to, kind: r.kind });
   }
   return out.sort((a, b) => a.from - b.from || b.to - a.to);
 }
@@ -101,8 +103,8 @@ function foldAtLine(folds: readonly BackendFold[], lineStart: number, lineEnd: n
   let best: BackendFold | null = null;
   for (let i = lo; i < folds.length && folds[i]!.from <= lineEnd; i++) {
     const f = folds[i]!;
-    // Only folds whose header ends on this line (custom regions: on this line); keep the widest.
-    if ((f.from === lineEnd || f.custom) && (!best || f.to > best.to)) best = f;
+    // Multiline import groups and custom regions can start within their header line.
+    if ((f.from === lineEnd || f.custom || f.kind === "imports") && (!best || f.to > best.to)) best = f;
   }
   return best;
 }
