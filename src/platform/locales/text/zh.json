@@ -5749,6 +5749,7 @@
   "Archive ({count})": "归档（{count}）",
   "Delete ({count})…": "删除（{count}）…",
   "Run pytest tests": "运行 pytest 测试",
+  "Run a Python script or module": "运行 Python 脚本或模块",
   "e.g. pytest, uv, poetry, .venv/bin/pytest, python": "例如 pytest、uv、poetry、.venv/bin/pytest、python",
   "Runner arguments": "运行器实参",
   "e.g. `run pytest` for uv/poetry, `-m pytest` for python; empty calls the command itself": "例如 uv/poetry 使用 `run pytest`，python 使用 `-m pytest`；留空则直接调用命令本身",
