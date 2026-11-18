@@ -1,5 +1,5 @@
-//! ⌘B on a Maven resource-filtering placeholder: `@property@` in a YAML resource
-//! (Spring's `application.yml`) jumps to the `<properties>` entry that defines it,
+//! ⌘B on a Maven resource-filtering placeholder: `@property@` in a YAML or properties
+//! resource (Spring's `application.yml` / `application.properties`) jumps to the `<properties>` entry that defines it,
 //! in the nearest `pom.xml` above the file, up through the project root. Parent
 //! poms the nearest pom declares itself are followed from there; a parent outside
 //! that walk that no pom declares is not.
@@ -11,12 +11,12 @@ use ide_core::{DocId, Location, Pos};
 use std::path::Path;
 
 /// The definition location of the placeholder under `pos` in `doc`, when `doc` is a
-/// YAML file holding a `@token@` there and a pom above it defines that property.
+/// YAML or properties file holding a `@token@` there and a pom above it defines that property.
 pub(crate) async fn definition(host: &Host, window: &str, doc: DocId, pos: Pos) -> Option<Location> {
     let project = host.project(window).ok()?;
     blocking(move || {
         let snap = project.documents.text_snapshot(doc)?;
-        if snap.large || snap.language.as_str() != "yaml" {
+        if snap.large || !matches!(snap.language.as_str(), "yaml" | "properties") {
             return Ok(None);
         }
         let path = project.documents.identity(doc)?.0;

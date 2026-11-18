@@ -359,7 +359,7 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
     if kind != GotoKind::Definition {
         return result;
     }
-    // A Maven placeholder (`@profileActive@` in `application.yml`) navigates to its pom.
+    // A Maven placeholder (`@profileActive@` in `application.yml` or `.properties`) navigates to its pom.
     let maven = super::maven_placeholder::definition(host, window, doc, pos).await;
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else {
         return match maven {
