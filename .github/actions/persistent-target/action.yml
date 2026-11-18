@@ -2,14 +2,14 @@ name: Persistent build output
 description: >-
   On a self-hosted runner, point CARGO_TARGET_DIR at a directory outside the workspace
   (checkout cleans ignored files) that persists between runs, in place of a restored cache.
-  A runner takes one job at a time, so each job's directory has a single user.
+  Each runner (one job at a time) gets its own directory per job, so concurrent jobs never share one.
 runs:
   using: composite
   steps:
     - if: runner.environment == 'self-hosted'
       shell: bash
       run: |
-        dir="$HOME/.cache/openidea-ci/target-$GITHUB_JOB"
+        dir="$HOME/.cache/openidea-ci/$RUNNER_NAME/target-$GITHUB_JOB"
         # Start over once it grows past 60 GB.
         if [ -d "$dir" ] && [ "$(du -sk "$dir" | cut -f1)" -gt 62914560 ]; then rm -rf "$dir"; fi
         echo "CARGO_TARGET_DIR=$dir" >> "$GITHUB_ENV"
