@@ -338,6 +338,13 @@ fn keep_private(root: &Path) {
     }
 }
 
+/// Directory Mappings: the repository roots detection finds, before any are excluded or added.
+#[command(trust = always)]
+pub async fn vcs_detected_roots(host: &Host, window: &str) -> IdeResult<Vec<PathBuf>> {
+    let project = host.project(window)?;
+    blocking(move || project.detected_repository_roots()).await
+}
+
 /// The project's repositories, the primary one first.
 #[command(trust = always)]
 pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
@@ -1633,6 +1640,7 @@ ide_command::domain!(
     vcs_revision_files,
     vcs_reword,
     vcs_roots,
+    vcs_detected_roots,
     vcs_shelf_delete,
     vcs_shelf_diff,
     vcs_shelf_import,

@@ -2515,5 +2515,8 @@
   "E-mail:": "E-mail:",
   "Set properties globally": "Set properties globally",
   "Detect changes with the Git command line": "Detect changes with the Git command line",
-  "Slower, but matches git status where encryption or file protection software makes files look modified.": "Slower, but matches git status where encryption or file protection software makes files look modified."
+  "Slower, but matches git status where encryption or file protection software makes files look modified.": "Slower, but matches git status where encryption or file protection software makes files look modified.",
+  "Directory mappings actions": "Directory mappings actions",
+  "Select Repository Root": "Select Repository Root",
+  "VCS of {name}": "VCS of {name}"
 }

@@ -8889,5 +8889,8 @@
   "E-mail:": "电子邮件：",
   "Set properties globally": "全局设置属性",
   "Detect changes with the Git command line": "使用 Git 命令行检测更改",
-  "Slower, but matches git status where encryption or file protection software makes files look modified.": "速度较慢，但在加密或文件保护软件导致文件被误判为已修改时，结果与 git status 一致。"
+  "Slower, but matches git status where encryption or file protection software makes files look modified.": "速度较慢，但在加密或文件保护软件导致文件被误判为已修改时，结果与 git status 一致。",
+  "Directory mappings actions": "目录映射操作",
+  "Select Repository Root": "选择仓库根目录",
+  "VCS of {name}": "{name} 的 VCS"
 }

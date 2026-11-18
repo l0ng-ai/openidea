@@ -630,6 +630,7 @@ vcs_create_tag                               trusted            project_host bin
 vcs_delete_branch                            trusted            project_host bindings async
 vcs_delete_tag                               trusted            project_host bindings async
 vcs_detected_git                             always             project_host bindings sync
+vcs_detected_roots                           always             project_host bindings async
 vcs_diff_hunks                               always             project_host bindings async
 vcs_diff_numstat                             always             project_host bindings async
 vcs_diff_revisions                           always             project_host bindings async
