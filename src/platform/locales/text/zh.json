@@ -7945,6 +7945,8 @@
   "Download Remote Files Into Folder": "将远程文件下载到文件夹",
   "Download Remote Host files into a local folder (arg: { server, paths, target })": "将远程主机中的文件下载到本地文件夹（参数：{ server, paths, target }）",
   "Delegate IDE build/run actions to Maven": "将 IDE 构建/运行操作委托给 Maven",
+  "Automatically download sources": "自动下载源代码",
+  "The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only.": "Java 语言服务器导入项目时下载所有依赖的源代码。关闭时，库中的类以反编译形式打开，可在其“下载源代码”横幅中只下载该库的源代码。",
   "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "运行和调试时用 Maven（项目的 javac）构建 Maven 模块，而不是用 Java 语言服务器。编辑器中的问题仍来自语言服务器。",
   "Render Documentation Comments": "渲染文档注释",
   "Render documentation comments": "渲染文档注释",

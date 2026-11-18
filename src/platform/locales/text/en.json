@@ -1546,6 +1546,8 @@
   "Examples": "Examples",
   "Remove File": "Remove File",
   "Delegate IDE build/run actions to Maven": "Delegate IDE build/run actions to Maven",
+  "Automatically download sources": "Automatically download sources",
+  "The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only.": "The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only.",
   "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.": "Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server.",
   "Export Keymap as JSON…": "Export Keymap as JSON…",
   "Export Keymap": "Export Keymap",

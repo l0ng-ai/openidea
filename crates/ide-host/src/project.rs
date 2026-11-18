@@ -272,6 +272,7 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
