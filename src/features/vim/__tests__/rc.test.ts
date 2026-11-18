@@ -36,6 +36,15 @@ describe("ideavimrc parsing", () => {
     );
   });
 
+  it.each([
+    ["set clipboard+=unnamedplus", { kind: "set", name: "clipboard", value: "unnamedplus", op: "+=" }],
+    ["set cb^=unnamed", { kind: "set", name: "cb", value: "unnamed", op: "^=" }],
+    ["set tw-=10", { kind: "set", name: "tw", value: "10", op: "-=" }],
+    ["set clipboard=unnamed,unnamedplus", { kind: "set", name: "clipboard", value: "unnamed,unnamedplus" }],
+  ])("parses %s", (line, command) => {
+    expect(parseVimrc(line)).toEqual({ commands: [command], ignored: [] });
+  });
+
   it("parses map variants with modes, noremap and the leader in effect at that line", () => {
     const maps = commands.filter((c) => c.kind !== "set");
     expect(maps).toEqual([

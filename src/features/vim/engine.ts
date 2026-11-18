@@ -13,7 +13,8 @@ import { executeAction, getAction } from "@/platform/actions";
 import { showStatusInfo } from "@/workbench/contributions";
 import { movedToIde, VIM_EDITOR_ATTR } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
-import { resolveActionId, type RcCommand } from "./rc";
+import { installClipboardRegisters } from "./clipboard";
+import { resolveActionId, type RcCommand, type SetOp } from "./rc";
 import { useVimSettings } from "./settings";
 import { mapFunctionTextObjects } from "./textObjects";
 
@@ -332,6 +333,7 @@ const vimTheme = EditorView.theme({
 /** Vim for one editor. Highest precedence: Vim sees keys before the editor's keymaps. */
 export function vimExtension(ctx?: EditorDocContext): Extension {
   defineExCommands();
+  installClipboardRegisters();
   return [
     Prec.highest([
       vimInsert,
@@ -446,9 +448,33 @@ function firstKey(lhs: string): string {
   return /^<[^<>]+>|^./.exec(lhs)?.[0] ?? lhs;
 }
 
+/** Vim's `:set name+=value` and friends: numbers add, subtract or multiply; other options are comma lists. */
+function adjustedOption(name: string, op: SetOp, value: string | boolean): string | number | Error {
+  const current = Vim.getOption(name);
+  if (current instanceof Error) return current;
+  if (typeof current === "boolean" || typeof value === "boolean")
+    return new Error(`invalid argument: ${name}${op}${value}`);
+  if (typeof current === "number" || NUMBER_OPTIONS.has(name)) {
+    const [a, b] = [Number(current), Number(value)];
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return new Error(`number required: ${name}${op}${value}`);
+    return op === "+=" ? a + b : op === "-=" ? a - b : a * b;
+  }
+  const list = (text: string) => text.split(",").filter(Boolean);
+  const items = list(String(current));
+  const given = list(value);
+  if (op === "-=") return items.filter((item) => !given.includes(item)).join(",");
+  const added = given.filter((item) => !items.includes(item));
+  return (op === "+=" ? [...items, ...added] : [...added, ...items]).join(",");
+}
+
+const NUMBER_OPTIONS = new Set(["textwidth", "tw", "insertModeEscKeysTimeout"]);
+
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
 export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   defineExCommands();
+  installClipboardRegisters();
+  // Not a codemirror-vim option, so nothing else resets it when the rc file drops the line.
+  Vim.setOption("clipboard", "");
   Vim.mapclear();
   shadowLeaderBuiltins(commands);
   // `mapclear` drops them with the user mappings; before those, which may remap them.
@@ -457,7 +483,8 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   for (const c of commands) {
     try {
       if (c.kind === "set") {
-        const err = Vim.setOption(c.name, c.value);
+        const value = c.op ? adjustedOption(c.name, c.op, c.value) : c.value;
+        const err = value instanceof Error ? value : Vim.setOption(c.name, value);
         if (err) problems.push(`set ${c.name}: ${err.message}`);
       } else if (c.kind === "map") {
         if (c.noremap) Vim.noremap(c.lhs, c.rhs, c.mode as string);

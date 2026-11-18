@@ -12,10 +12,13 @@ import { IDEA_ACTIONS } from "@/platform/ideaActions";
 export type MapMode = "normal" | "insert" | "visual" | "operatorPending" | undefined;
 
 export type RcCommand =
-  | { kind: "set"; name: string; value: string | boolean }
+  /** `op` is Vim's `+=` (append to a list, add to a number), `-=` (remove, subtract) or `^=` (prepend, multiply). */
+  | { kind: "set"; name: string; value: string | boolean; op?: SetOp }
   | { kind: "map"; mode: MapMode; noremap: boolean; lhs: string; rhs: string }
   /** A key mapped to one Ex command, e.g. `<Action>(ReformatCode)` → `action ReformatCode`. */
   | { kind: "mapEx"; mode: MapMode; lhs: string; ex: string };
+
+export type SetOp = "+=" | "-=" | "^=";
 
 export interface RcIgnored {
   /** The sourced file it came from, as written after `source`; absent for the rc file itself. */
@@ -104,7 +107,16 @@ function normalizeVimKeys(keys: string, rhs = false): string {
   });
 }
 /** Options the Vim engine implements (others, e.g. IdeaVim's `ideajoin`, are reported as ignored). */
-const SUPPORTED_OPTIONS = new Set(["textwidth", "tw", "pcre", "insertModeEscKeysTimeout", "langmap", "lmap"]);
+const SUPPORTED_OPTIONS = new Set([
+  "textwidth",
+  "tw",
+  "pcre",
+  "insertModeEscKeysTimeout",
+  "langmap",
+  "lmap",
+  "clipboard",
+  "cb",
+]);
 const MAP_FLAGS = /^<(silent|unique|nowait|buffer|expr|script)>$/i;
 
 function leaderKeys(value: string): string {
@@ -184,9 +196,11 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
     if (word === "set" || word === "se") {
       if (!restWords.length) return ignore("set without options");
       for (const opt of restWords) {
-        const eq = /^([a-zA-Z]+)=(.*)$/.exec(opt);
+        const eq = /^([a-zA-Z]+)([-+^]?)=(.*)$/.exec(opt);
         const cmd: RcCommand | null = eq
-          ? { kind: "set", name: eq[1]!, value: eq[2]! }
+          ? eq[2]
+            ? { kind: "set", name: eq[1]!, value: eq[3]!, op: `${eq[2]}=` as SetOp }
+            : { kind: "set", name: eq[1]!, value: eq[3]! }
           : /^[a-zA-Z]+$/.test(opt)
             ? !SUPPORTED_OPTIONS.has(opt) && opt.startsWith("no") && SUPPORTED_OPTIONS.has(opt.slice(2))
               ? { kind: "set", name: opt.slice(2), value: false }
