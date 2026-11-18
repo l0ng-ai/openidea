@@ -2580,7 +2580,10 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     // Another bare name for the interpreter comes back as the interpreter's own.
     let mut loaded = saved("python", "python3", &["app.py"], &[]);
     apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
-    assert_eq!(without_derived(&loaded, root, &s).command, exe("python"));
+    let mut normalized = without_derived(&loaded, root, &s);
+    assert_eq!(normalized.command, exe("python"));
+    apply_to_run_configs(std::slice::from_mut(&mut normalized), root, &s);
+    assert_eq!(normalized, loaded, "normalizing the name must preserve the resolved configuration");
 
     // A saved configuration follows a later interpreter change instead of a frozen PATH.
     let mut loaded = saved("ruby", "ruby", &["app.rb"], &[]);
@@ -2706,6 +2709,20 @@ fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
     let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
     assert_eq!(stored.command, "python", "the bare program, also on Windows");
     assert!(!stored.env.contains_key("VIRTUAL_ENV"));
+    let mut reloaded = stored.clone();
+    apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &settings);
+    assert_eq!(reloaded, config, "saving must preserve the complete resolved configuration");
+
+    // A saved bare member must also follow a different primary project's auto-detected venv.
+    let other_primary = root.join("other-primary");
+    let other_python = fake_venv(&other_primary, ".venv");
+    let mut moved = stored;
+    apply_to_run_configs_in(std::slice::from_mut(&mut moved), &bare, Some(&other_primary), &settings);
+    let mut expected = run("python", "python3", &["main.py"]);
+    expected.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut expected), &bare, Some(&other_primary), &settings);
+    assert_eq!(moved.command, other_python.to_string_lossy());
+    assert_eq!(moved, expected, "the saved configuration must not freeze the original venv or PATH");
 
     // The member's explicit interpreter wins over the primary project's venv —
     // when it exists (bare names stay bare; a missing path falls back).
