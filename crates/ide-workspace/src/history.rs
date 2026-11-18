@@ -92,6 +92,8 @@ pub const DEFAULT_MAX_AGE_DAYS: u32 = 5;
 pub const DEFAULT_MAX_BYTES: u64 = 512 * 1024 * 1024;
 /// Label of the snapshot taken before a file is deleted.
 pub const DELETED: &str = "Deleted";
+/// The label of a file's content from before its first edit ([`LocalHistory::record_original`]).
+pub const ORIGINAL: &str = "Original";
 /// Files larger than this are not snapshotted automatically (watcher, deletes, VCS).
 const AUTO_SNAPSHOT_LIMIT: u64 = 2 * 1024 * 1024;
 const DAY_MS: f64 = 86_400_000.0;
@@ -195,6 +197,18 @@ impl LocalHistory {
         if !force && state.last.get(path) == Some(&id) {
             return Ok(());
         }
+        self.store_locked(&mut state, path, id, content, label, now_ms())
+    }
+
+    fn store_locked(
+        &self,
+        state: &mut HistoryState,
+        path: &Path,
+        id: String,
+        content: &str,
+        label: &str,
+        timestamp_ms: f64,
+    ) -> IdeResult<()> {
         let blob = self.blob_path(&id);
         if !blob.exists() {
             fs::create_dir_all(blob.parent().expect("blob has a parent"))?;
@@ -203,12 +217,12 @@ impl LocalHistory {
         let entry = HistoryEntry {
             id,
             path: path.into(),
-            timestamp_ms: now_ms(),
+            timestamp_ms,
             label: label.to_owned(),
             size: content.len() as u64,
             kind: HistoryKind::Snapshot,
         };
-        self.append(&mut state, entry)
+        self.append(state, entry)
     }
 
     /// Records a snapshot unless it equals the latest one recorded for `path`.
@@ -228,6 +242,31 @@ impl LocalHistory {
             Some(text) => self.store(path, &text, label, force).map(|()| true),
             None => Ok(false),
         }
+    }
+
+    /// Before the first edit of a file with no history: its content on disk, so a label put
+    /// before the edit can be reverted to. Dated by the file's modification time, since it
+    /// has had that content from then on, but not before the oldest entry kept, so it neither
+    /// adds a working day of its own nor falls to retention first. Returns whether one was recorded.
+    pub fn record_original(&self, path: &Path) -> IdeResult<bool> {
+        let Some(text) = read_snapshot_text(path) else { return Ok(false) };
+        let modified = fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64() * 1000.0);
+        let mut state = self.state.lock();
+        if state.entries.iter().any(|e| e.kind == HistoryKind::Snapshot && e.path == path) {
+            return Ok(false);
+        }
+        let now = now_ms();
+        let oldest = state.entries.iter().map(|e| e.timestamp_ms).reduce(f64::min);
+        let timestamp = match (modified, oldest) {
+            (Some(modified), Some(oldest)) => modified.max(oldest - 1.0).min(now),
+            _ => now,
+        };
+        let id = blake3::hash(text.as_bytes()).to_hex().to_string();
+        self.store_locked(&mut state, path, id, &text, ORIGINAL, timestamp).map(|()| true)
     }
 
     /// Snapshots `path`, or every file below it when it is a folder (at most `limit`
@@ -658,5 +697,43 @@ mod tests {
         h.apply_retention(Retention { working_days: 5, max_bytes: 10 }).unwrap();
         assert_eq!(h.list(Path::new("/p/a")).unwrap().len(), 1);
         assert_eq!(h.content(&old).unwrap_err().kind, ide_core::error::ErrorKind::NotFound);
+    }
+    #[test]
+    fn a_files_original_content_is_there_at_a_label_put_before_its_first_edit() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let h = LocalHistory::open(&tmp.path().join("history"), &root).unwrap();
+        let set_modified = |path: &Path, at: SystemTime| {
+            std::fs::File::options().write(true).open(path).unwrap().set_modified(at).unwrap();
+        };
+        let old = root.join("old.txt");
+        std::fs::write(&old, "as it was").unwrap();
+        set_modified(&old, SystemTime::now() - Duration::from_secs(3600));
+        h.record(&root.join("other.txt"), "x", "Saved").unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        h.put_label(&root, "checkpoint").unwrap();
+        // Written after the label: it didn't have this content at the label.
+        let new = root.join("new.txt");
+        std::fs::write(&new, "fresh").unwrap();
+        set_modified(&new, SystemTime::now() + Duration::from_secs(1));
+
+        assert!(h.record_original(&old).unwrap());
+        assert!(h.record_original(&new).unwrap());
+        // Only a file without history gets one.
+        assert!(!h.record_original(&old).unwrap());
+        h.record(&old, "edited", "Saved").unwrap();
+
+        let entries = h.list(&old).unwrap();
+        let label = entries.iter().find(|e| e.kind == HistoryKind::Label).unwrap();
+        let original = entries.iter().find(|e| e.label == ORIGINAL).unwrap();
+        assert!(original.timestamp_ms < label.timestamp_ms);
+        assert_eq!(h.content(&original.id).unwrap(), "as it was");
+        // Not dated before the oldest entry kept: no working day of its own.
+        let oldest = h.list(&root.join("other.txt")).unwrap().last().unwrap().timestamp_ms;
+        assert!(original.timestamp_ms >= oldest - 1.0);
+        let fresh = h.list(&new).unwrap().into_iter().find(|e| e.label == ORIGINAL).unwrap();
+        assert!(fresh.timestamp_ms > label.timestamp_ms);
     }
 }
