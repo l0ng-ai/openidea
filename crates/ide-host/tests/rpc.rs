@@ -522,3 +522,126 @@ async fn renames_a_branch_with_the_clients_argument_names() {
     invoke(&peer, "close_project", json!({})).await.unwrap();
     peer.kill();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serves_builtin_mcp_over_remote_dispatch_and_routes_ui_requests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("remote-mcp");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/hello.txt"), "from remote mcp\n").unwrap();
+    let root = dunce::canonicalize(root).unwrap();
+    let base = tmp.path().join("server");
+    let data_dir = base.join("data");
+
+    let peer_slot = Arc::new(OnceLock::new());
+    let sink_peer = peer_slot.clone();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: data_dir.clone(),
+        local_data_dir: data_dir.clone(),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let server_exe = base.join("bin/openidea-server");
+    host.mcp.set_stdio_executable(server_exe.clone());
+    host.mcp.apply(&host);
+
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    let serve_host = host.clone();
+    tokio::spawn(rpc::serve(serve_host, Dispatcher::standard(), peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let client = Arc::new(Client::default());
+    let peer = Peer::connect(cr, cw, client.clone());
+
+    invoke(&peer, "open_project", json!({ "path": root })).await.unwrap();
+    for cmd in ["mcp_server_status", "mcp_regenerate_token", "mcp_ui_ready", "mcp_respond", "mcp_agent_run_closed"] {
+        let err = invoke(&peer, cmd, json!({})).await.unwrap_err();
+        assert!(err.message.contains("Restricted Mode"), "{cmd}: {err:?}");
+    }
+
+    invoke(&peer, "project_trust_set", json!({ "path": root, "trusted": true, "folder": false })).await.unwrap();
+    let initial = invoke(&peer, "mcp_server_status", json!({})).await.unwrap();
+    assert_eq!(initial["running"], false);
+
+    invoke(&peer, "settings_set", json!({ "scope": "global", "key": "mcpServer.fixedPort", "value": "false" }))
+        .await
+        .unwrap();
+    invoke(&peer, "settings_set", json!({ "scope": "global", "key": "mcpServer.fixedToken", "value": "true" }))
+        .await
+        .unwrap();
+    invoke(&peer, "settings_set", json!({ "scope": "global", "key": "mcpServer.enabled", "value": "true" }))
+        .await
+        .unwrap();
+
+    let global = invoke(&peer, "settings_get_global", json!({})).await.unwrap();
+    assert_eq!(global["mcpServer"]["enabled"], true);
+
+    let status = invoke(&peer, "mcp_server_status", json!({})).await.unwrap();
+    assert_eq!(status["running"], true);
+    assert_eq!(status["project"], json!(ide_core::IpcPath::from(&root)));
+    assert_eq!(status["stdioCommand"][0], server_exe.to_string_lossy().as_ref());
+    let first_token = status["token"].as_str().unwrap().to_owned();
+    assert!(status["url"].as_str().unwrap().starts_with("http://127.0.0.1:"));
+
+    invoke(&peer, "mcp_ui_ready", json!({ "ready": true })).await.unwrap();
+    let discovery = ide_mcp::discovery_path(&data_dir);
+
+    let read_call = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "read_file", "arguments": { "file_path": "src/hello.txt" } }
+    });
+    let mut out = Vec::new();
+    ide_mcp::stdio::bridge(&discovery, &root, format!("{read_call}\n").as_bytes(), &mut out).await.unwrap();
+    let reply: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(reply["result"]["content"][0]["text"], "L1: from remote mcp\nL2: ");
+
+    // UI-bound MCP requests stream over RPC events and are answered via routed `mcp_respond`.
+    let open_call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": { "name": "open_file_in_editor", "arguments": { "filePath": "src/hello.txt", "line": 1, "column": 1 } }
+    });
+    let (disc2, root2) = (discovery.clone(), root.clone());
+    let call_task = tokio::spawn(async move {
+        let mut out = Vec::new();
+        ide_mcp::stdio::bridge(&disc2, &root2, format!("{open_call}\n").as_bytes(), &mut out).await.unwrap();
+        serde_json::from_slice::<Value>(&out).unwrap()
+    });
+    until("remote MCP UI request", || {
+        client.events.lock().iter().any(|m| matches!(m.event, ide_core::IdeEvent::McpRequest { .. }))
+    })
+    .await;
+    let req_id = client
+        .events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            event @ ide_core::IdeEvent::McpRequest { id, .. } => {
+                assert!(!rpc::client_accepts(event, false));
+                assert!(rpc::client_accepts(event, true));
+                Some(*id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    invoke(&peer, "mcp_respond", json!({ "id": req_id, "allow": true, "error": null })).await.unwrap();
+    let opened = call_task.await.unwrap();
+    assert_eq!(opened["result"]["isError"], false, "{opened}");
+
+    invoke(&peer, "mcp_regenerate_token", json!({})).await.unwrap();
+    let rotated = invoke(&peer, "mcp_server_status", json!({})).await.unwrap();
+    assert_eq!(rotated["running"], true);
+    assert_ne!(rotated["token"].as_str().unwrap(), first_token);
+
+    host.mcp.stop(&host);
+    invoke(&peer, "close_project", json!({})).await.unwrap();
+    peer.kill();
+}

@@ -125,6 +125,9 @@ type Connector = Arc<
 /// Returns the configured MCP servers (User and Workspace) for this project.
 pub type McpServersFn = dyn Fn() -> Vec<McpServer> + Send + Sync;
 
+/// Returns the executable of the running built-in MCP server, if any.
+pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CopilotBinaryKey {
     command: String,
@@ -148,6 +151,7 @@ struct Shared {
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
     mcp_servers_hook: RwLock<Option<Arc<McpServersFn>>>,
+    mcp_executable_hook: RwLock<Option<Arc<McpExecutableFn>>>,
     /// Monotonic id for [`AgentEvent::Attention`] episodes.
     attention_seq: AtomicU64,
 }
@@ -220,8 +224,17 @@ impl Shared {
         overrides: &BTreeMap<String, bool>,
     ) -> McpForSession {
         let builtin_off = overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false);
-        let mut servers =
-            if builtin_off { Vec::new() } else { mcp_servers_for(init.mcp_stdio(), &self.paths.project_root) };
+        let mut servers = if builtin_off {
+            Vec::new()
+        } else {
+            let exe = self
+                .mcp_executable_hook
+                .read()
+                .as_ref()
+                .map(|hook| hook())
+                .unwrap_or_else(|| MCP_EXECUTABLE.read().clone());
+            stdio_mcp_servers(exe.as_deref(), init.mcp_stdio(), &self.paths.project_root)
+        };
         let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
         servers.extend(mcp::acp_mcp_servers(&configured, provider, init, overrides));
         let off = Self::mcp_off(&configured, provider, overrides);
@@ -516,6 +529,7 @@ impl AgentManager {
             copilot_acp_fallback: Mutex::new(HashSet::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
             mcp_servers_hook: RwLock::new(None),
+            mcp_executable_hook: RwLock::new(None),
             attention_seq: AtomicU64::new(0),
         });
         shared.paths.catalogs.subscribe(&shared);
@@ -648,6 +662,11 @@ impl AgentManager {
     /// Provides the user and workspace MCP servers configured in settings.
     pub fn set_mcp_servers_hook(&self, hook: Box<McpServersFn>) {
         *self.shared.mcp_servers_hook.write() = Some(Arc::from(hook));
+    }
+
+    /// Provides the executable of the running built-in MCP server for this host.
+    pub fn set_mcp_executable_hook(&self, hook: Box<McpExecutableFn>) {
+        *self.shared.mcp_executable_hook.write() = Some(Arc::from(hook));
     }
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
@@ -3775,14 +3794,14 @@ pub fn set_mcp_executable(executable: Option<std::path::PathBuf>) {
     *MCP_EXECUTABLE.write() = executable;
 }
 
-fn mcp_servers_for(supported: bool, root: &std::path::Path) -> Vec<Value> {
-    stdio_mcp_servers(MCP_EXECUTABLE.read().as_deref(), supported, root)
-}
-
 fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
     let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
     let command = ide_mcp::stdio_command(executable, root);
-    vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": [] })]
+    let env: Vec<Value> = ["OPENIDEA_SERVER_HOME", "OPENIDEA_DATA_DIR"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok().map(|value| json!({ "name": name, "value": value })))
+        .collect();
+    vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": env })]
 }
 
 /// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which

@@ -91,6 +91,7 @@ ide_command::domains!(
     java: crate::ops::java,
     jvm_icons: crate::ops::jvm_icons,
     lsp: crate::ops::lsp,
+    mcp: crate::mcp::service,
     mcp_reports: crate::mcp::reports,
     nav: crate::ops::nav,
     notebook: crate::ops::notebook,

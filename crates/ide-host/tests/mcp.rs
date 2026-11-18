@@ -185,7 +185,10 @@ async fn restricted_projects_have_only_read_tools_and_remote_projects_explain_th
     assert!(registry.tools(&h.root).unwrap().iter().all(|t| t.read_only && !t.destructive));
     assert!(!h.host.global_settings.effective().mcp_server.enabled);
     h.host.mcp_reports.set_remote("remote", PathBuf::from("/remote/project"));
-    assert_eq!(registry.tools(Path::new("/remote/project")).unwrap_err(), "not supported for remote projects yet");
+    assert_eq!(
+        registry.tools(Path::new("/remote/project")).unwrap_err(),
+        "project is on a remote host; connect to the MCP server on that host"
+    );
     h.host.close_project_detached("remote");
     assert!(!registry.projects().contains(&PathBuf::from("/remote/project")));
 }

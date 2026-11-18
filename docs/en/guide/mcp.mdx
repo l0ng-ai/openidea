@@ -132,8 +132,11 @@ Plugins can add more tools; they appear in the same list. A plugin tool marked a
 - **Running and building ask first.** `execute_run_configuration`, `build_project`, `run_command` and `http_run_request` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
 - Tools that write refuse paths outside the project.
 
+## Remote development
+
+In a remote window ([SSH](/en/guide/remote/ssh), WSL or [Dev Containers](/en/guide/remote/containers)), `openidea-server` runs its own MCP server on the remote host, configured independently in **Settings › Agents › IDE MCP Server** while that remote window is focused. Coding agents started inside the remote window connect to it automatically; external CLI clients on the remote host can use **Copy Stdio Config** (`~/.openidea/bin/openidea-server --mcp-stdio`) or **Copy HTTP Config**, and clients on your desktop can reach it by forwarding its port in the **Ports** tool window.
+
 ## Limits
 
-- Remote projects (opened over SSH, on a server or in a container) are not supported by the MCP server yet.
 - The server serves only projects open in OpenIDEA. Closing the project's window makes its tools unavailable.
 - Responses are plain JSON; the server does not stream over SSE.

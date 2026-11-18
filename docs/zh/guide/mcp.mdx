@@ -131,8 +131,11 @@ stdio 配置大致如下（路径以你机器上的为准）：
 - **运行和构建会先询问。** `execute_run_configuration`、`build_project`、`run_command` 和 `http_run_request` 会在 OpenIDEA 中弹出对话框，说明是哪个客户端、哪个项目、哪个工具以及要运行什么，选择 **允许** 或 **拒绝**；多个请求会排队。
 - 会写入的工具拒绝项目之外的路径。
 
+## 远程开发
+
+在远程窗口（[SSH](/zh/guide/remote/ssh)、WSL 或[容器](/zh/guide/remote/containers)）中，`openidea-server` 会在远程主机上运行自己的 MCP 服务器，可在该远程窗口的 **Settings › Agents › IDE MCP Server** 中独立配置。远程窗口内启动的编程智能体会立即可用内置工具；在远程主机终端运行的外部客户端可使用 **Copy Stdio Config**（`~/.openidea/bin/openidea-server --mcp-stdio`）或 **Copy HTTP Config**，桌面端客户端则可在 **Ports** 工具窗口转发该端口后连接。
+
 ## 限制
 
-- 远程项目（通过 SSH、服务器或容器打开的项目）暂不支持 MCP 服务器。
 - 服务器只为 OpenIDEA 中已打开的项目提供服务，关闭项目窗口后该项目的工具就不可用了。
 - 响应是普通 JSON，服务器不通过 SSE 推送流式结果。

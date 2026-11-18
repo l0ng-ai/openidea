@@ -11,7 +11,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw_args: Vec<String> = std::env::args().collect();
+    if let Some(project) = ide_mcp::stdio_request(&raw_args) {
+        let base = server_home();
+        std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&base.join("data")), project));
+    }
+    let args: Vec<String> = raw_args.into_iter().skip(1).collect();
     if args.iter().any(|a| a == "--version") {
         println!("openidea-server {} (protocol {})", env!("CARGO_PKG_VERSION"), rpc::PROTOCOL_VERSION);
         return;
@@ -31,7 +36,9 @@ fn main() {
         std::process::exit(code);
     }
     if !args.iter().any(|a| a == "--stdio") {
-        eprintln!("usage: openidea-server --stdio | --connect <host> <port> | --version");
+        eprintln!(
+            "usage: openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <port> | --version"
+        );
         std::process::exit(2);
     }
     // stdout carries the protocol: logs go to stderr.
@@ -39,8 +46,7 @@ fn main() {
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("OPENIDEA_LOG").unwrap_or_else(|_| "info".into()))
         .init();
-    let home = dirs::home_dir().unwrap_or_default();
-    let base = std::env::var_os("OPENIDEA_SERVER_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".openidea"));
+    let base = server_home();
     // An SSH exec channel gets a minimal environment: take the login shell's, read
     // afresh on every start, plus the IDE-managed tools. Before any other thread starts.
     ide_host::shell_env::inherit_login_shell_env("openidea-server");
@@ -51,6 +57,36 @@ fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
     let code = runtime.block_on(run(base));
     std::process::exit(code);
+}
+
+fn server_home() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_default();
+    std::env::var_os("OPENIDEA_SERVER_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".openidea"))
+}
+
+/// Updates `<base>/bin/openidea-server` to point at this executable so `--mcp-stdio` client
+/// configurations copied from Settings keep working across server upgrades; falls back to
+/// `current_exe()` when a symlink cannot be written.
+fn mcp_stdio_executable(base: &std::path::Path) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    #[cfg(unix)]
+    {
+        let bin_dir = base.join("bin");
+        if std::fs::create_dir_all(&bin_dir).is_ok() {
+            let link = bin_dir.join("openidea-server");
+            let tmp = bin_dir.join(format!(".openidea-server.{}", std::process::id()));
+            let _ = std::fs::remove_file(&tmp);
+            if std::os::unix::fs::symlink(&exe, &tmp).is_ok() {
+                if std::fs::rename(&tmp, &link).is_ok() {
+                    return Some(link);
+                }
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = base;
+    Some(exe)
 }
 
 async fn run(base: PathBuf) -> i32 {
@@ -85,6 +121,10 @@ async fn run(base: PathBuf) -> i32 {
         runtime: tokio::runtime::Handle::current(),
         project_environment: true,
     }));
+    if let Some(exe) = mcp_stdio_executable(&base) {
+        host.mcp.set_stdio_executable(exe);
+    }
+    host.mcp.apply(&host);
     // The desktop's code plugins run here, next to the project (`plugin_sync_packages`).
     let plugins = match RemotePlugins::start(&plugins_data, &host, peer.clone()) {
         Ok(p) => Some(p),
@@ -112,6 +152,7 @@ async fn run(base: PathBuf) -> i32 {
         }
     });
     rpc::serve(host.clone(), dispatcher, peer, tokio::io::stdin(), tokio::io::stdout()).await;
+    host.mcp.stop(&host);
     if let Some(plugins) = &plugins {
         plugins.host().shutdown();
     }

@@ -120,12 +120,19 @@ export function activateSettingsWindow(parent: string): () => void {
       if (init.remote) {
         // Reconcile remote-host settings asynchronously without blocking first paint on SSH.
         // `rebaseSettings` updates only `base` / `globalBase` and leaves any staged edits intact.
-        void commands
-          .projectCurrent()
-          .then((fresh) => {
-            if (!fresh || !useSettingsDialog.getState().open) return;
-            useProject.setState({ project: fresh, settings: fresh.settings });
-            rebaseSettings(globalBase);
+        const remoteGlobalPromise = init.remote.commands.includes("settings_get_global")
+          ? commands.settingsGetGlobal().catch(() => null)
+          : Promise.resolve(null);
+        void Promise.all([commands.projectCurrent(), remoteGlobalPromise])
+          .then(([fresh, remoteGlobal]) => {
+            if (!useSettingsDialog.getState().open) return;
+            const nextGlobal = remoteGlobal ? validateSettings(remoteGlobal) : globalBase;
+            if (fresh) {
+              useProject.setState({ project: fresh, settings: fresh.settings });
+            }
+            if (fresh || remoteGlobal) {
+              rebaseSettings(nextGlobal);
+            }
           })
           .catch(() => {});
       }
