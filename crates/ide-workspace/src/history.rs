@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -30,6 +30,35 @@ pub struct HistoryEntry {
     pub size: u64,
     #[serde(default)]
     pub kind: HistoryKind,
+    /// Exact on-disk bytes for Undo when document text omits a BOM or line endings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(skip)]
+    undo_blob: Option<UndoBlob>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct UndoBlob {
+    id: String,
+    size: u64,
+}
+
+impl HistoryEntry {
+    fn snapshot(path: &Path, text: &str, label: &str, timestamp_ms: f64) -> Self {
+        Self {
+            id: blake3::hash(text.as_bytes()).to_hex().to_string(),
+            path: path.into(),
+            timestamp_ms,
+            label: label.to_owned(),
+            size: text.len() as u64,
+            kind: HistoryKind::Snapshot,
+            undo_blob: None,
+        }
+    }
+
+    fn blobs(&self) -> impl Iterator<Item = (&str, u64)> {
+        std::iter::once((self.id.as_str(), self.size))
+            .chain(self.undo_blob.iter().map(|blob| (blob.id.as_str(), blob.size)))
+    }
 }
 
 /// Changes under a folder (Show History on a directory).
@@ -40,6 +69,23 @@ pub struct DirectoryHistory {
     pub entries: Vec<HistoryEntry>,
     /// Files with history that no longer exist on disk.
     pub deleted: Vec<ide_core::IpcPath>,
+}
+
+/// Paths and contents captured for one delete operation. Directory history is
+/// intentionally broader and can contain paths deleted in an earlier operation.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletionUndo {
+    directories: Vec<ide_core::IpcPath>,
+    files: Vec<DeletedFile>,
+    skipped: Vec<ide_core::IpcPath>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedFile {
+    path: ide_core::IpcPath,
+    id: String,
 }
 
 /// How much history is kept (Settings › Advanced › Local History).
@@ -108,22 +154,56 @@ fn valid_id(id: &str) -> bool {
 
 fn valid_entry(e: &HistoryEntry) -> bool {
     match e.kind {
-        HistoryKind::Snapshot => valid_id(&e.id),
+        HistoryKind::Snapshot => valid_id(&e.id) && e.undo_blob.as_ref().is_none_or(|blob| valid_id(&blob.id)),
         HistoryKind::Label => e.id.is_empty(),
     }
 }
 
 /// Text of a file for an automatic snapshot: small, non-binary files only.
 fn read_snapshot_text(path: &Path) -> Option<String> {
+    read_snapshot_disk_text(path).map(|text| document_text(&text).into_owned())
+}
+
+fn read_snapshot_disk_text(path: &Path) -> Option<String> {
     let meta = fs::metadata(path).ok()?;
     if !meta.is_file() || meta.len() > AUTO_SNAPSHOT_LIMIT {
         return None;
     }
-    let bytes = fs::read(path).ok()?;
-    if bytes.iter().take(8192).any(|b| *b == 0) {
+    let mut bytes = Vec::new();
+    fs::File::open(path).ok()?.take(AUTO_SNAPSHOT_LIMIT + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > AUTO_SNAPSHOT_LIMIT || bytes.iter().take(8192).any(|b| *b == 0) {
         return None;
     }
-    String::from_utf8(bytes).ok().map(|text| document_text(&text).into_owned())
+    String::from_utf8(bytes).ok()
+}
+
+/// Directory junctions and similar reparse points must not be traversed.
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn restore_deleted_bytes(path: &Path, bytes: &[u8]) -> IdeResult<()> {
+    let parent = path.parent().ok_or_else(|| IdeError::invalid("missing parent for deleted file"))?;
+    // Publish only a complete file, and never replace a new file at that path.
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".undo.openidea-tmp-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut pending = builder.tempfile_in(parent)?;
+    pending.write_all(bytes)?;
+    pending.persist_noclobber(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// `text` as a document holds it: without the UTF-8 BOM and with `\n` line endings. Saves
@@ -191,55 +271,60 @@ impl LocalHistory {
         Ok(())
     }
 
-    fn store(&self, path: &Path, content: &str, label: &str, force: bool) -> IdeResult<()> {
-        let id = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let mut state = self.state.lock();
-        if !force && state.last.get(path) == Some(&id) {
-            return Ok(());
+    /// Called with the history lock held, so prune cannot remove a blob before its entry exists.
+    fn store_blob(&self, id: &str, bytes: &[u8]) -> IdeResult<()> {
+        let blob = self.blob_path(id);
+        if !blob.exists() {
+            fs::create_dir_all(blob.parent().expect("blob has a parent"))?;
+            ide_vfs::write_atomic(&blob, bytes)?;
         }
-        self.store_locked(&mut state, path, id, content, label, now_ms())
+        Ok(())
+    }
+
+    fn store(&self, path: &Path, content: &str, label: &str, force: bool, original: Option<&str>) -> IdeResult<String> {
+        let mut state = self.state.lock();
+        let entry = HistoryEntry::snapshot(path, content, label, now_ms());
+        if !force && state.last.get(path) == Some(&entry.id) {
+            return Ok(entry.id);
+        }
+        self.store_locked(&mut state, entry, content, original)
     }
 
     fn store_locked(
         &self,
         state: &mut HistoryState,
-        path: &Path,
-        id: String,
+        mut entry: HistoryEntry,
         content: &str,
-        label: &str,
-        timestamp_ms: f64,
-    ) -> IdeResult<()> {
-        let blob = self.blob_path(&id);
-        if !blob.exists() {
-            fs::create_dir_all(blob.parent().expect("blob has a parent"))?;
-            ide_vfs::write_atomic(&blob, content.as_bytes())?;
-        }
-        let entry = HistoryEntry {
-            id,
-            path: path.into(),
-            timestamp_ms,
-            label: label.to_owned(),
-            size: content.len() as u64,
-            kind: HistoryKind::Snapshot,
+        original: Option<&str>,
+    ) -> IdeResult<String> {
+        self.store_blob(&entry.id, content.as_bytes())?;
+        entry.undo_blob = if let Some(original) = original.filter(|text| *text != content) {
+            let id = blake3::hash(original.as_bytes()).to_hex().to_string();
+            self.store_blob(&id, original.as_bytes())?;
+            Some(UndoBlob { id, size: original.len() as u64 })
+        } else {
+            None
         };
-        self.append(state, entry)
+        let undo_id = entry.undo_blob.as_ref().map_or_else(|| entry.id.clone(), |blob| blob.id.clone());
+        self.append(state, entry)?;
+        Ok(undo_id)
     }
 
     /// Records a snapshot unless it equals the latest one recorded for `path`.
     pub fn record(&self, path: &Path, content: &str, label: &str) -> IdeResult<()> {
-        self.store(path, content, label, false)
+        self.store(path, content, label, false, None).map(|_| ())
     }
 
     /// Records a snapshot even when the content did not change, so the event
     /// ("Deleted", "Before refactoring: Move") shows in the history.
     pub fn record_event(&self, path: &Path, content: &str, label: &str) -> IdeResult<()> {
-        self.store(path, content, label, true)
+        self.store(path, content, label, true, None).map(|_| ())
     }
 
     /// Snapshots the file on disk (small text files only); `force` as in [`record_event`](Self::record_event).
     pub fn record_file(&self, path: &Path, label: &str, force: bool) -> IdeResult<bool> {
         match read_snapshot_text(path) {
-            Some(text) => self.store(path, &text, label, force).map(|()| true),
+            Some(text) => self.store(path, &text, label, force, None).map(|_| true),
             None => Ok(false),
         }
     }
@@ -265,8 +350,8 @@ impl LocalHistory {
             (Some(modified), Some(oldest)) => modified.max(oldest - 1.0).min(now),
             _ => now,
         };
-        let id = blake3::hash(text.as_bytes()).to_hex().to_string();
-        self.store_locked(&mut state, path, id, &text, ORIGINAL, timestamp).map(|()| true)
+        let entry = HistoryEntry::snapshot(path, &text, ORIGINAL, timestamp);
+        self.store_locked(&mut state, entry, &text, None).map(|_| true)
     }
 
     /// Snapshots `path`, or every file below it when it is a folder (at most `limit`
@@ -288,6 +373,92 @@ impl LocalHistory {
                 }
             })
             .count()
+    }
+
+    /// Captures only paths that belong to this delete, including empty folders.
+    /// The backup observes the same content limit as automatic history, but
+    /// keeps exact bytes so a recreated file does not pick up new file defaults.
+    pub fn capture_deletion_undo(&self, paths: &[PathBuf], limit: usize) -> DeletionUndo {
+        let mut undo = DeletionUndo::default();
+        let mut remaining = limit;
+        for path in paths {
+            self.capture_deleted_entry(path, &mut remaining, &mut undo);
+        }
+        undo
+    }
+
+    fn capture_deleted_entry(&self, path: &Path, remaining: &mut usize, undo: &mut DeletionUndo) {
+        if *remaining == 0 {
+            undo.skipped.push(path.into());
+            return;
+        }
+        *remaining -= 1;
+
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            undo.skipped.push(path.into());
+            return;
+        };
+        if is_link(&metadata) {
+            undo.skipped.push(path.into());
+        } else if metadata.is_dir() {
+            if path.file_name().is_some_and(|name| name == ".git") {
+                undo.skipped.push(path.into());
+                return;
+            }
+            undo.directories.push(path.into());
+            let Ok(entries) = fs::read_dir(path) else {
+                undo.skipped.push(path.into());
+                return;
+            };
+            for entry in entries {
+                if *remaining == 0 {
+                    // Identify the unscanned subtree without enumerating the rest of it.
+                    undo.skipped.push(path.into());
+                    break;
+                }
+                if let Ok(entry) = entry {
+                    self.capture_deleted_entry(&entry.path(), remaining, undo);
+                } else if !undo.skipped.iter().any(|entry| entry.as_ref() == path) {
+                    undo.skipped.push(path.into());
+                }
+            }
+        } else if let Some(id) = read_snapshot_disk_text(path)
+            .and_then(|raw| self.store(path, &document_text(&raw), DELETED, true, Some(&raw)).ok())
+        {
+            undo.files.push(DeletedFile { path: path.into(), id });
+        } else {
+            undo.skipped.push(path.into());
+        }
+    }
+
+    /// Returns entries the caller should direct the user to recover from the
+    /// system Trash. A newly occupied path and its subtree are left alone.
+    pub fn restore_deletion_undo(&self, undo: DeletionUndo) -> Vec<ide_core::IpcPath> {
+        let mut skipped = undo.skipped;
+        let mut blocked: Vec<ide_core::IpcPath> = Vec::new();
+        for path in undo.directories {
+            if blocked.iter().any(|parent| path.starts_with(parent)) {
+                continue;
+            }
+            if let Err(error) = fs::create_dir(&*path) {
+                tracing::debug!("cannot restore deleted directory {}: {error}", path.display());
+                skipped.push(path.clone());
+                blocked.push(path);
+            }
+        }
+        for file in undo.files {
+            if blocked.iter().any(|parent| file.path.starts_with(parent)) {
+                continue;
+            }
+            let restored = self.read_blob(&file.id).and_then(|bytes| restore_deleted_bytes(&file.path, &bytes));
+            if let Err(error) = restored {
+                tracing::debug!("cannot restore deleted file {}: {error}", file.path.display());
+                skipped.push(file.path);
+            }
+        }
+        skipped.sort();
+        skipped.dedup();
+        skipped
     }
 
     /// The watcher saw `paths` disappear: files with history that are gone get a
@@ -315,6 +486,7 @@ impl LocalHistory {
                 label: DELETED.into(),
                 size,
                 kind: HistoryKind::Snapshot,
+                undo_blob: None,
             };
             self.append(&mut state, entry)?;
         }
@@ -334,6 +506,7 @@ impl LocalHistory {
             label: label.to_owned(),
             size: 0,
             kind: HistoryKind::Label,
+            undo_blob: None,
         };
         let mut state = self.state.lock();
         self.append(&mut state, entry)
@@ -379,15 +552,12 @@ impl LocalHistory {
         Ok(DirectoryHistory { entries, deleted })
     }
 
-    pub fn content(&self, id: &str) -> IdeResult<String> {
+    fn read_blob(&self, id: &str) -> IdeResult<Vec<u8>> {
         if !valid_id(id) {
             return Err(IdeError::invalid(format!("invalid history id {id:?}")));
         }
         match fs::read(self.blob_path(id)) {
-            Ok(bytes) => {
-                let text = String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into());
-                Ok(document_text(&text).into_owned())
-            }
+            Ok(bytes) => Ok(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Err(IdeError::not_found(format!("history snapshot {id} not found")))
             }
@@ -395,11 +565,24 @@ impl LocalHistory {
         }
     }
 
+    pub fn content(&self, id: &str) -> IdeResult<String> {
+        let bytes = self.read_blob(id)?;
+        let text = String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into());
+        Ok(document_text(&text).into_owned())
+    }
+
     /// Bytes stored in blobs.
     pub fn stored_bytes(&self) -> u64 {
         let state = self.state.lock();
         let mut seen = HashSet::new();
-        state.entries.iter().filter(|e| e.kind == HistoryKind::Snapshot && seen.insert(&e.id)).map(|e| e.size).sum()
+        state
+            .entries
+            .iter()
+            .filter(|e| e.kind == HistoryKind::Snapshot)
+            .flat_map(HistoryEntry::blobs)
+            .filter(|(id, _)| seen.insert(*id))
+            .map(|(_, size)| size)
+            .sum()
     }
 
     /// Drops entries older than `max_age_days` calendar days and unreferenced blobs.
@@ -430,7 +613,7 @@ impl LocalHistory {
         }
         ide_vfs::write_atomic(&self.index_path(), text.as_bytes())?;
 
-        let referenced: HashSet<&str> = kept.iter().map(|e| e.id.as_str()).collect();
+        let referenced: HashSet<&str> = kept.iter().flat_map(HistoryEntry::blobs).map(|(id, _)| id).collect();
         for shard in fs::read_dir(self.dir.join("blobs"))?.flatten() {
             let Ok(files) = fs::read_dir(shard.path()) else { continue };
             let mut remaining = 0usize;
@@ -467,8 +650,8 @@ fn retain(entries: Vec<HistoryEntry>, retention: Retention) -> Vec<HistoryEntry>
     };
     // Size bound: unique blob bytes, oldest snapshots dropped first.
     let mut refs: HashMap<String, (usize, u64)> = HashMap::new();
-    for e in kept.iter().filter(|e| e.kind == HistoryKind::Snapshot) {
-        refs.entry(e.id.clone()).or_insert((0, e.size)).0 += 1;
+    for (id, size) in kept.iter().filter(|e| e.kind == HistoryKind::Snapshot).flat_map(HistoryEntry::blobs) {
+        refs.entry(id.to_owned()).or_insert((0, size)).0 += 1;
     }
     let mut total: u64 = refs.values().map(|(_, size)| size).sum();
     if total <= retention.max_bytes {
@@ -482,10 +665,12 @@ fn retain(entries: Vec<HistoryEntry>, retention: Retention) -> Vec<HistoryEntry>
             break;
         }
         drop[i] = true;
-        let r = refs.get_mut(&kept[i].id).expect("counted");
-        r.0 -= 1;
-        if r.0 == 0 {
-            total -= r.1;
+        for (id, _) in kept[i].blobs() {
+            let r = refs.get_mut(id).expect("counted");
+            r.0 -= 1;
+            if r.0 == 0 {
+                total -= r.1;
+            }
         }
     }
     let mut i = 0;
@@ -578,6 +763,7 @@ mod tests {
             label: "Saved".into(),
             size,
             kind,
+            undo_blob: None,
         }
     }
 
@@ -658,6 +844,78 @@ mod tests {
         h.clear().unwrap();
         assert!(h.list(&a).unwrap().is_empty());
         assert_eq!(h.stored_bytes(), 0);
+    }
+
+    #[test]
+    fn deletion_undo_captures_current_bytes_and_empty_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let folder = root.join("subject");
+        let empty = folder.join("empty-child/leaf");
+        fs::create_dir_all(&empty).unwrap();
+        let history = LocalHistory::open(&tmp.path().join("history"), &root).unwrap();
+        let obsolete = folder.join("obsolete.txt");
+        fs::write(&obsolete, "deleted before the folder").unwrap();
+        history.capture_deletion_undo(std::slice::from_ref(&obsolete), 100);
+        fs::remove_file(&obsolete).unwrap();
+        let current = folder.join("current.txt");
+        let original = b"\xEF\xBB\xBFheader\r\nbody\n";
+        fs::write(&current, original).unwrap();
+        history.record(&current, "header\nbody\n", "Saved").unwrap();
+        let large = folder.join("sample.bin");
+        fs::write(&large, vec![0; 2_300_000]).unwrap();
+
+        let undo = history.capture_deletion_undo(std::slice::from_ref(&folder), 100);
+        let revisions = history.list(&current).unwrap();
+        assert!(revisions.iter().any(|entry| entry.label == DELETED));
+        assert_eq!(revisions[0].id, revisions[1].id, "visible revisions share the normalized content");
+        let blob = undo.files[0].id.clone();
+        assert_ne!(blob, revisions[0].id);
+        assert_eq!(
+            history.stored_bytes(),
+            ("deleted before the folder".len() + "header\nbody\n".len() + original.len()) as u64
+        );
+        history.apply_retention(Retention::default()).unwrap();
+        fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(history.restore_deletion_undo(undo), vec![large]);
+        assert_eq!(fs::read(&current).unwrap(), original);
+        assert!(empty.is_dir());
+        assert!(!obsolete.exists());
+        history.clear().unwrap();
+        assert!(!history.blob_path(&blob).exists(), "pruning removes the exact bytes too");
+    }
+
+    #[test]
+    fn deletion_undo_preserves_new_files_and_reports_unavailable_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let folder = root.join("folder");
+        fs::create_dir_all(&folder).unwrap();
+        let history = LocalHistory::open(&tmp.path().join("history"), &root).unwrap();
+        let file = folder.join("old.txt");
+        fs::write(&file, "before deletion").unwrap();
+
+        let undo = history.capture_deletion_undo(std::slice::from_ref(&folder), 100);
+        fs::remove_dir_all(&folder).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(&file, "recreated").unwrap();
+        assert_eq!(history.restore_deletion_undo(undo), vec![folder.clone()]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "recreated");
+
+        let file_only = history.capture_deletion_undo(std::slice::from_ref(&file), 100);
+        fs::write(&file, "new contents").unwrap();
+        assert_eq!(history.restore_deletion_undo(file_only), vec![file.clone()]);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new contents");
+
+        let limited = history.capture_deletion_undo(std::slice::from_ref(&folder), 1);
+        assert_eq!(limited.skipped, vec![folder]);
+        assert!(limited.files.is_empty());
+
+        let expired = history.capture_deletion_undo(std::slice::from_ref(&file), 100);
+        fs::remove_file(&file).unwrap();
+        history.clear().unwrap();
+        assert_eq!(history.restore_deletion_undo(expired), vec![file.clone()]);
+        assert!(!file.exists());
     }
 
     #[test]

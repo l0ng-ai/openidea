@@ -5547,7 +5547,6 @@
   "Editor and {title}": "Éditeur et {title}",
   "{title} Only": "{title} seul",
   "Some items could not be restored": "Certains éléments n'ont pas pu être restaurés",
-  "Not in Local History: {names}. They are in the Trash.": "Absents de l'historique local : {names}. Ils se trouvent dans la corbeille.",
   "Browse for .env Files": "Rechercher des fichiers .env",
   "Django tests": "Tests Django",
   "Run Django tests with manage.py test": "Exécuter les tests Django avec manage.py test",

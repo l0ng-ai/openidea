@@ -248,6 +248,7 @@ fs_create_dir                                always             project_host bin
 fs_create_file                               always             project_host bindings sync
 fs_create_file_bytes                         always             project_host bindings async
 fs_delete                                    always             project_host bindings async
+fs_delete_with_undo                          always             project_host bindings async
 fs_entry_kind                                always             project_host bindings async
 fs_open_with_system                          always             desktop      bindings async
 fs_probe                                     always             project_host bindings async
@@ -258,6 +259,7 @@ fs_read_text                                 always             project_host bin
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
 fs_set_writable                              always             project_host bindings sync
+fs_undo_delete                               always             project_host bindings async
 gh_account_repos                             trusted            desktop      bindings async
 gh_api                                       trusted            desktop      bindings async
 gh_availability                              trusted            desktop      bindings async

@@ -2501,5 +2501,6 @@
   "Cannot load Gradle configurations": "Cannot load Gradle configurations",
   "No resolvable Gradle configurations": "No resolvable Gradle configurations",
   "Restore Tool Windows": "Restore Tool Windows",
-  "Configure {name}…": "Configure {name}…"
+  "Configure {name}…": "Configure {name}…",
+  "Check the system Trash for these items. {names}": "Check the system Trash for these items. {names}"
 }

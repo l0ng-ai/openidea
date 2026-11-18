@@ -5773,7 +5773,6 @@
   "Syntax errors": "Erros de sintaxe",
   "Reports code the built-in parser cannot read, in files no language server checks (none is configured for the language, or it is not installed, stopped or crashed). A running language server reports syntax errors itself.": "Relata código que o analisador integrado não consegue ler, em arquivos que nenhum servidor de linguagem verifica (nenhum está configurado para a linguagem, ou não está instalado, foi parado ou falhou). Um servidor de linguagem em execução relata erros de sintaxe por conta própria.",
   "Some items could not be restored": "Alguns itens não puderam ser restaurados",
-  "Not in Local History: {names}. They are in the Trash.": "Não estão no histórico local: {names}. Eles estão na Lixeira.",
   "Show All Commits": "Mostrar todos os commits",
   "Pin": "Fixar",
   "Unpin": "Desafixar",
