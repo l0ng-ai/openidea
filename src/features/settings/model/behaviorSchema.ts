@@ -76,7 +76,7 @@ export interface AppearanceExtras {
   compactMode: boolean;
   /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
   smallTreeIndents: boolean;
-  /** Linux: WebKit animates each mouse wheel step.*/
+  /** IDEA "Smooth scrolling" (Linux: WebKitGTK animates each mouse wheel step). */
   smoothScrolling: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
@@ -164,7 +164,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   differentToolWindowBackground: false,
   compactMode: false,
   smallTreeIndents: false,
-  smoothScrolling: false,
+  smoothScrolling: true,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,

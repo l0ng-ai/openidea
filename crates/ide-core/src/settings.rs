@@ -889,7 +889,7 @@ impl Default for AppearanceSettings {
             different_tool_window_background: false,
             compact_mode: false,
             small_tree_indents: false,
-            smooth_scrolling: false,
+            smooth_scrolling: true,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
             dnd_with_alt_only: false,
@@ -1759,13 +1759,13 @@ mod tests {
     }
 
     #[test]
-    fn smooth_scrolling_defaults_off_and_round_trips() {
+    fn smooth_scrolling_defaults_on_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"zoom":110}}"#).unwrap();
-        assert!(!old.appearance.smooth_scrolling);
-        let on: Settings = serde_json::from_str(r#"{"appearance":{"smoothScrolling":true}}"#).unwrap();
-        assert!(on.appearance.smooth_scrolling);
-        let json = serde_json::to_value(&on).unwrap();
-        assert_eq!(json["appearance"]["smoothScrolling"], true);
+        assert!(old.appearance.smooth_scrolling);
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"smoothScrolling":false}}"#).unwrap();
+        assert!(!off.appearance.smooth_scrolling);
+        let json = serde_json::to_value(&off).unwrap();
+        assert_eq!(json["appearance"]["smoothScrolling"], false);
     }
 
     #[test]

@@ -386,7 +386,7 @@ function SmoothScrollingRow() {
     <BoundToggle
       k="appearance.smoothScrolling"
       label="Smooth scrolling"
-      hint="Animates each mouse wheel step. Can stutter on some Linux setups"
+      hint="Animates each mouse wheel step. Turn it off if scrolling stutters"
     />
   );
 }

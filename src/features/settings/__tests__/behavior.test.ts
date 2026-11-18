@@ -120,10 +120,10 @@ describe("appearance & behavior settings", () => {
     expect(root.style.getPropertyValue("--tree-indent")).toBe("");
   });
 
-  it("defaults Smooth scrolling to off", () => {
-    expect(validateAppearanceExtras({}).smoothScrolling).toBe(false);
-    expect(validateAppearanceExtras({ smoothScrolling: true }).smoothScrolling).toBe(true);
-    expect(validateAppearanceExtras({ smoothScrolling: "on" }).smoothScrolling).toBe(false);
+  it("defaults Smooth scrolling to on", () => {
+    expect(validateAppearanceExtras({}).smoothScrolling).toBe(true);
+    expect(validateAppearanceExtras({ smoothScrolling: false }).smoothScrolling).toBe(false);
+    expect(validateAppearanceExtras({ smoothScrolling: "off" }).smoothScrolling).toBe(true);
   });
 
   it("opens Settings in a separate window unless turned off", () => {
