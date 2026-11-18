@@ -67,7 +67,7 @@
   right: -3px;
   width: 6px;
   height: 100%;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .rowNumber {
   display: flex;

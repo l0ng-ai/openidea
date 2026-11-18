@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { registerActions } from "@/platform/actions";
+import { getAction, registerActions } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
 import { MainMenu } from "./MainMenu";
 
@@ -59,6 +59,45 @@ afterEach(() => {
 });
 
 const titles = () => within(screen.getByRole("menubar"));
+
+describe("main menu action focus", () => {
+  it.each([
+    { style: "hamburger", narrow: false, row: false },
+    { style: "merged", narrow: false, row: false },
+    { style: "merged", narrow: true, row: false },
+    { style: "toolbar", narrow: false, row: true },
+  ])("restores the invoking field before Undo runs ($style, narrow=$narrow)", async ({ style, narrow, row }) => {
+    if (narrow) available = 100;
+    setStyle(style);
+    const focusAtUndo = vi.fn(() => document.activeElement);
+    vi.mocked(getAction("test.undo")!.run).mockImplementation(() => {
+      focusAtUndo();
+    });
+    render(
+      <>
+        <input aria-label="Editor field" />
+        <MainMenu row={row} />
+      </>,
+    );
+    const field = screen.getByRole("textbox", { name: "Editor field" });
+    field.focus();
+    const open = (button: HTMLElement) => {
+      fireEvent.pointerDown(button);
+      button.focus();
+      fireEvent.click(button);
+    };
+    if (style === "hamburger" || narrow) open(screen.getByRole("button", { name: "Main Menu" }));
+    if (narrow) {
+      const root = await screen.findByRole("menu", { name: "Main Menu" });
+      fireEvent.click(within(root).getByRole("menuitem", { name: /Edit/ }));
+    } else open(within(await screen.findByRole("menubar")).getByRole("menuitem", { name: "Edit" }));
+    const undo = await screen.findByRole("menuitem", { name: "Undo" });
+    expect(undo).toHaveFocus();
+    fireEvent.click(undo);
+    expect(focusAtUndo).toHaveReturnedWith(field);
+    expect(field).toHaveFocus();
+  });
+});
 
 describe("main menu presentation", () => {
   it("keeps the hamburger default, expanding on click and collapsing on Escape", async () => {

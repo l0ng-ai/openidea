@@ -609,6 +609,8 @@ export const commands = {
 	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
+	/**  Moves an item to the Trash and returns the snapshot for Project View Undo. */
+	fsDeleteWithUndo: (path: string) => typedError<DeletionUndo, IdeError>(__TAURI_INVOKE("fs_delete_with_undo", { path })),
 	fsEntryKind: (path: string) => typedError<EntryKind, IdeError>(__TAURI_INVOKE("fs_entry_kind", { path })),
 	/**
 	 *  Opens a project file with its default application (Office, PDF readers). The checks run here,
@@ -636,6 +638,7 @@ export const commands = {
 	 *  state). Returns whether the file is read-only now.
 	 */
 	fsSetWritable: (path: string, writable: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("fs_set_writable", { path, writable })),
+	fsUndoDelete: (undo: DeletionUndo) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("fs_undo_delete", { undo })),
 	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
 	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
 	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
@@ -667,9 +670,9 @@ export const commands = {
 	/**  Shows a GTK file chooser attached to `window`. `None` when the user cancels. */
 	gtkPickPaths: (options: GtkPickOptions) => typedError<IpcPath[] | null, IdeError>(__TAURI_INVOKE("gtk_pick_paths", { options })),
 	historyContent: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("history_content", { id })),
-	historyList: (path: string) => typedError<HistoryEntry[], IdeError>(__TAURI_INVOKE("history_list", { path })),
+	historyList: (path: string) => typedError<HistoryEntry_Serialize[], IdeError>(__TAURI_INVOKE("history_list", { path })),
 	/**  Show History on a folder: snapshots of the files under it (deleted ones included) and labels. */
-	historyListDir: (path: string) => typedError<DirectoryHistory, IdeError>(__TAURI_INVOKE("history_list_dir", { path })),
+	historyListDir: (path: string) => typedError<DirectoryHistory_Serialize, IdeError>(__TAURI_INVOKE("history_list_dir", { path })),
 	/**  Local History › Put Label…: a named point in the history of every file. */
 	historyPutLabel: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_put_label", { label })),
 	/**
@@ -4754,11 +4757,26 @@ export type DeletedBranch = {
 	unmerged: boolean,
 };
 
+export type DeletedFile = {
+	path: IpcPath,
+	id: string,
+};
+
 /**  A deleted tag, enough to restore it (Restore in the tag-deleted notification). */
 export type DeletedTag = {
 	name: string,
 	/**  What the tag pointed at: its tag object (annotated tags) or commit. */
 	target: string,
+};
+
+/**
+ *  Paths and contents captured for one delete operation. Directory history is
+ *  intentionally broader and can contain paths deleted in an earlier operation.
+ */
+export type DeletionUndo = {
+	directories: IpcPath[],
+	files: DeletedFile[],
+	skipped: IpcPath[],
 };
 
 export type Dependency = {
@@ -4997,9 +5015,20 @@ export type DirectoryCompareProgress = {
 export type DirectoryCompareStatus = "leftOnly" | "rightOnly" | "different" | "equal";
 
 /**  Changes under a folder (Show History on a directory). */
-export type DirectoryHistory = {
+export type DirectoryHistory = DirectoryHistory_Serialize | DirectoryHistory_Deserialize;
+
+/**  Changes under a folder (Show History on a directory). */
+export type DirectoryHistory_Deserialize = {
 	/**  Snapshots of files under the folder and labels, newest first. */
-	entries: HistoryEntry[],
+	entries: HistoryEntry_Deserialize[],
+	/**  Files with history that no longer exist on disk. */
+	deleted: IpcPath[],
+};
+
+/**  Changes under a folder (Show History on a directory). */
+export type DirectoryHistory_Serialize = {
+	/**  Snapshots of files under the folder and labels, newest first. */
+	entries: HistoryEntry_Serialize[],
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
 };
@@ -5198,6 +5227,11 @@ export type DockerVolume = {
 /**  Local changes accepted by the editor's shared document model. */
 export type DocumentChanged = {
 	path: string,
+	/**
+	 *  The open project `path` is relative to, set when the event is handed to a plugin
+	 *  (the editor posts the absolute path and `null`).
+	 */
+	project: string | null,
 	baseVersion: number,
 	version: number,
 	changes: DocumentTextChange[],
@@ -6338,6 +6372,8 @@ export type GradleProject = {
 	/**  Project-relative build script, if any. */
 	buildFile: string | null,
 	tasks: GradleTask[],
+	/**  Configurations Gradle can resolve, or null before Gradle reports the project. */
+	resolvableConfigurations?: string[] | null,
 	/**
 	 *  Identity path of the nested build holding the project (`:lib` for `includeBuild`,
 	 *  `:buildSrc`); null for the opened build.
@@ -6604,7 +6640,9 @@ export type Highlight = {
 
 export type HighlightKind = "text" | "read" | "write";
 
-export type HistoryEntry = {
+export type HistoryEntry = HistoryEntry_Serialize | HistoryEntry_Deserialize;
+
+export type HistoryEntry_Deserialize = {
 	/**  Content hash (blake3 hex); identifies the stored blob. Empty for labels. */
 	id: string,
 	path: IpcPath,
@@ -6613,6 +6651,17 @@ export type HistoryEntry = {
 	label: string,
 	size: number,
 	kind?: HistoryKind,
+};
+
+export type HistoryEntry_Serialize = {
+	/**  Content hash (blake3 hex); identifies the stored blob. Empty for labels. */
+	id: string,
+	path: IpcPath,
+	timestampMs: number | null,
+	/**  e.g. "Saved", "External change", "Deleted", "Before refactoring: Move". */
+	label: string,
+	size: number,
+	kind: HistoryKind,
 };
 
 export type HistoryKind = 

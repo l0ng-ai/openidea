@@ -18,8 +18,8 @@ export interface ProjectFs {
   createFileBytes(path: string, data: Uint8Array): Promise<void>;
   createDir(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
-  /** Moves to the trash when possible. */
-  delete(path: string): Promise<void>;
+  /** Moves to the trash when possible and returns a restore function reporting skipped paths. */
+  delete(path: string): Promise<() => Promise<string[]>>;
   copy(from: string, to: string): Promise<void>;
   importLocal(from: string, to: string, upload?: LocalImport): Promise<string[]>;
 }
@@ -37,8 +37,9 @@ export const tauriFs: ProjectFs = {
   createDir: async (path) => void (await call(commands.fsCreateDir(path))),
   rename: async (from, to) => void (await call(commands.fsRename(from, to))),
   delete: async (path) => {
-    await call(commands.fsDelete(path));
+    const undo = await call(commands.fsDeleteWithUndo(path));
     notifyFileOperation({ kind: "deleted", paths: [path] });
+    return () => call(commands.fsUndoDelete(undo));
   },
   copy: async (from, to) => {
     await call(commands.fsCopy(from, to));
@@ -238,8 +239,16 @@ export class MemoryFs implements ProjectFs {
 
   async delete(path: string) {
     if (!this.nodes.has(path)) throw err("notFound", `${path} not found`);
-    for (const p of [...this.nodes.keys()]) if (p === path || isInside(p, path)) this.nodes.delete(p);
+    const deleted = [...this.nodes].filter(([p]) => p === path || isInside(p, path));
+    for (const [p] of deleted) this.nodes.delete(p);
     this.emit({ removed: [path] });
+    return async () => {
+      if (this.nodes.has(path)) return [path];
+      this.mkdirp(parentOf(path));
+      for (const [p, node] of deleted) this.nodes.set(p, node);
+      this.emit({ created: deleted.map(([p]) => p) });
+      return [];
+    };
   }
 
   async copy(from: string, to: string) {

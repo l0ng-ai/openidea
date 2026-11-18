@@ -179,6 +179,19 @@ describe("python scheme attributes", () => {
   });
 });
 
+describe("Julia scheme attributes", () => {
+  it("previews Julia roles and selects their independently scoped attributes", () => {
+    schemePage("editor.colorScheme.julia");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-function-call"]')!));
+    expect(screen.getByRole("treeitem", { name: "Function call", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-type"]')!));
+    expect(screen.getByRole("treeitem", { name: "Class name", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("@show")));
+    expect(screen.getByRole("treeitem", { name: "Metadata", selected: true })).toBeInTheDocument();
+  });
+});
+
 describe("doc comment scheme attributes", () => {
   it.each([
     ["en", "Doc comment", "Tag", "Tag value", "Markup"],

@@ -4,6 +4,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { selectAll } from "@codemirror/commands";
 import { getCM, Vim } from "@replit/codemirror-vim";
 import {
+  adjacentEditor,
   embeddedEditorExtensions,
   externalHistory,
   transientChange,
@@ -153,6 +154,16 @@ describe("Vim engine", () => {
     await tick();
     expect(ran).toEqual(["navigate.declaration"]);
     view.destroy();
+  });
+
+  it("appends list option values from the rc file", () => {
+    try {
+      const problems = applyRcCommands(parseVimrc("set clipboard+=unnamed\nset clipboard+=unnamedplus").commands);
+      expect(problems).toEqual([]);
+      expect(Vim.getOption("clipboard")).toBe("ideaput,autoselect,unnamed,unnamedplus");
+    } finally {
+      Vim.setOption("clipboard", "ideaput,autoselect");
+    }
   });
 
   it("sends u and Ctrl-R to an editor's own history (notebook cells)", () => {
@@ -507,5 +518,47 @@ describe("Vim engine", () => {
     expect(modes).toEqual(expect.arrayContaining(["insert", "normal", "visual"]));
     offModes();
     view.destroy();
+  });
+});
+
+describe("line motions across editors", () => {
+  const key = (view: EditorView, k: string) =>
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+
+  it("continue into the host's neighbouring editor past the first or last line", () => {
+    const moves: [number, number][] = [];
+    const view = makeView([
+      vimExtension(),
+      adjacentEditor.of((direction, column) => (moves.push([direction, column]), true)),
+    ]);
+    // "one two\nthree": on line 1, `k` leaves upwards; `j` stays inside.
+    view.dispatch({ selection: { anchor: 2 } });
+    key(view, "k");
+    key(view, "j");
+    expect(view.state.selection.main.head).toBe(10);
+    key(view, "ArrowDown");
+    expect(moves).toEqual([
+      [-1, 2],
+      [1, 2],
+    ]);
+    view.destroy();
+  });
+
+  it("keep counts, operators and editors without a host inside the editor", () => {
+    const moves: number[] = [];
+    const view = makeView([vimExtension(), adjacentEditor.of((direction) => (moves.push(direction), true))]);
+    view.dispatch({ selection: { anchor: 9 } });
+    key(view, "2");
+    key(view, "j");
+    key(view, "d");
+    key(view, "j");
+    expect(moves).toEqual([]);
+    view.destroy();
+
+    const alone = makeView();
+    alone.dispatch({ selection: { anchor: 9 } });
+    key(alone, "j");
+    expect(alone.state.selection.main.head).toBe(12);
+    alone.destroy();
   });
 });

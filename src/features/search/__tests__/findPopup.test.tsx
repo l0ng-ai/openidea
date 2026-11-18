@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import type { FileMatches, SearchSummary } from "@/platform/ipc";
+import type { FileMatches, SearchQuery, SearchSummary } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import type { ReplaceRequest } from "../find/replaceFlow";
 
 const replaced: ReplaceRequest[] = [];
 const confirms: unknown[] = [];
+const queries: SearchQuery[] = [];
 let validation: Promise<void> | null = null;
 let search: ((onFile: (file: FileMatches) => void) => Promise<SearchSummary | null>) | null = null;
 let confirmation: Promise<boolean> | null = null;
@@ -15,7 +17,8 @@ vi.mock("../find/windowStore", async (orig) => ({
     validate: async () => {
       await validation;
     },
-    start: async (_id: number, _q: unknown, onFile: (f: FileMatches) => void) => {
+    start: async (_id: number, query: SearchQuery, onFile: (f: FileMatches) => void) => {
+      queries.push(query);
       if (search) return search(onFile);
       onFile({
         path: "/p/a.kt",
@@ -87,6 +90,7 @@ const field = () => screen.getByLabelText("Text to find");
 beforeEach(() => {
   replaced.length = 0;
   confirms.length = 0;
+  queries.length = 0;
   localStorage.clear();
   validation = null;
   search = null;
@@ -108,7 +112,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => hideFindPopup());
+  act(() => {
+    hideFindPopup();
+    useProject.setState({ project: null });
+  });
 });
 
 describe("Find in Files popup", () => {
@@ -258,6 +265,53 @@ describe("Find in Files popup", () => {
     await settle();
     expect(dialogOpen).toHaveBeenCalledWith(expect.objectContaining({ directory: true, defaultPath: "/p/src" }));
     expect(useFindPopup.getState().directory).toBe("/p/src/main");
+  });
+
+  it.each([false, true])("waits for a directory instead of searching the project (replace=%s)", async (replace) => {
+    useProject.setState({ project: { root: "/p", name: "p", trusted: true, isGit: false, settings: {} } });
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(replace, { query: "order", directory: "/p" }));
+    await settle();
+    expect(queries.map((q) => q.scope)).toEqual([{ kind: "directory", path: "/p" }]);
+    expect(screen.getByRole("listbox", { name: "Matches" })).toHaveTextContent("a.kt");
+
+    const directory = screen.getByRole("textbox", { name: "Directory" });
+    expect(directory).toHaveValue(".");
+    fireEvent.change(directory, { target: { value: "" } });
+    expect(screen.queryByText("a.kt")).not.toBeInTheDocument();
+    await settle();
+    expect(queries).toHaveLength(1);
+    expect(screen.getByRole("tab", { name: "Directory" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Enter a directory to search")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open in Find Window" })).toBeDisabled();
+    fireEvent.keyDown(field(), { key: "Enter", ctrlKey: true });
+    expect(useFindPopup.getState().open).toBe(true);
+    if (replace) {
+      expect(screen.getByRole("button", { name: "Replace All" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^Replace$/ })).toBeDisabled();
+      fireEvent.keyDown(field(), { key: "Enter" });
+      fireEvent.keyDown(field(), { key: "Enter", altKey: true, shiftKey: true });
+      expect(replaced).toHaveLength(0);
+      expect(confirms).toHaveLength(0);
+    }
+
+    fireEvent.change(directory, { target: { value: "   " } });
+    await settle();
+    expect(queries).toHaveLength(1);
+    fireEvent.change(directory, { target: { value: "" } });
+    act(() => hideFindPopup());
+    act(() => showFindPopup(replace));
+    await settle();
+    expect(screen.getByRole("tab", { name: "Directory" })).toHaveAttribute("aria-selected", "true");
+    expect(queries).toHaveLength(1);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Directory" }), { target: { value: "src" } });
+    await settle();
+    expect(queries.at(-1)?.scope).toEqual({ kind: "directory", path: "/p/src" });
+    fireEvent.click(screen.getByRole("tab", { name: "In Project" }));
+    await settle();
+    expect(queries.at(-1)?.scope).toEqual({ kind: "project" });
+    expect(screen.getByRole("button", { name: "Open in Find Window" })).toBeEnabled();
   });
 
   it("closing remembers the search text", async () => {
