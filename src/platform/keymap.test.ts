@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dispatchForwardedKey,
+  bindingsFor,
   effectiveBindings,
   FORWARDABLE_ACTIONS,
   formatBinding,
@@ -11,8 +12,10 @@ import {
   letterOf,
   normalizeBinding,
   parseDoubleModifier,
+  presetBindings,
   strokeOf,
   useKeymap,
+  withBindings,
 } from "./keymap";
 import { executeAction, registerAction } from "./actions";
 import { clearContext, setContext } from "./context";
@@ -35,6 +38,37 @@ describe("keymap", () => {
     expect(second).not.toBe(first);
     expect(second).toContainEqual(["Meta+L", "t.cached"]);
     useKeymap.setState({ overrides: initial.overrides, extensions: initial.extensions });
+  });
+
+  it("uses platform defaults consistently and preserves explicit Linux middle bindings", () => {
+    const keymap = useKeymap.getState();
+    const platform = usePlatform.getState();
+    const id = "editor.createRectangularSelectionOnMouseDrag";
+    try {
+      useKeymap.setState({ preset: "intellij-windows", overrides: {}, extensions: {} });
+      usePlatform.setState({ os: "windows" });
+      const windows = effectiveBindings();
+      expect(bindingsFor(id)).toEqual(["Alt+Button1", "Button2"]);
+      expect(windows).toContainEqual(["Button2", id]);
+
+      usePlatform.setState({ os: "linux" });
+      expect(effectiveBindings()).not.toBe(windows);
+      expect(effectiveBindings()).not.toContainEqual(["Button2", id]);
+      expect(bindingsFor(id)).toEqual(["Alt+Button1"]);
+      expect(presetBindings("intellij-windows", id)).toEqual(["Alt+Button1"]);
+      const overrides = withBindings({ preset: "intellij-windows", overrides: {} }, id, ["Alt+Button1", "Button2"]);
+      expect(overrides[id]).toEqual(["Alt+Button1", "Button2"]);
+      useKeymap.setState({ overrides });
+      expect(bindingsFor(id)).toEqual(["Alt+Button1", "Button2"]);
+      expect(effectiveBindings()).toContainEqual(["Button2", id]);
+      useKeymap.setState({ overrides: { [id]: [] } });
+      expect(bindingsFor(id)).toEqual([]);
+      useKeymap.setState({ overrides: {} });
+      expect(bindingsFor(id)).toEqual(["Alt+Button1"]);
+    } finally {
+      useKeymap.setState(keymap);
+      usePlatform.setState(platform);
+    }
   });
 
   it("formats macOS style", () => {

@@ -752,6 +752,8 @@ pub struct AppearanceSettings {
     pub compact_mode: bool,
     /// IDEA "Use smaller indents in trees": tool window trees indent less per level.
     pub small_tree_indents: bool,
+    /// Linux: WebKit animates each mouse wheel step
+    pub smooth_scrolling: bool,
     pub full_path_in_title: bool,
     pub project_colors_in_toolbar: bool,
     pub dnd_with_alt_only: bool,
@@ -770,6 +772,8 @@ pub struct AppearanceSettings {
     pub show_tool_window_names: bool,
     pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
+    /// Each tool window keeps its own size; off, the windows of a side share one.
+    pub remember_tool_window_sizes: bool,
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
@@ -783,6 +787,35 @@ pub struct AppearanceSettings {
     pub main_toolbar: Option<MainToolbarSettings>,
     /// Appearance › Background Image: an image shown through the IDE window.
     pub background_image: BackgroundImageSettings,
+    /// Appearance › Presentation Assistant: the name and shortcut of each action run.
+    pub presentation_assistant: PresentationAssistantSettings,
+}
+
+/// Appearance › Presentation Assistant: shows the name and shortcut of each action the user runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PresentationAssistantSettings {
+    pub enabled: bool,
+    /// `small` | `medium` | `large`.
+    pub size: String,
+    /// How long each popup stays, in seconds.
+    pub duration_seconds: u32,
+    /// `top-left`, `top`, `top-right`, `bottom-left`, `bottom` or `bottom-right` of the window.
+    pub position: String,
+    /// Also show the shortcut of the other platform's keymap (macOS ⇄ Windows/Linux).
+    pub alternate_keymap: bool,
+}
+
+impl Default for PresentationAssistantSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: "medium".into(),
+            duration_seconds: 4,
+            position: "bottom".into(),
+            alternate_keymap: false,
+        }
+    }
 }
 
 /// Appearance › Background Image. An empty `path` shows no image.
@@ -856,6 +889,7 @@ impl Default for AppearanceSettings {
             different_tool_window_background: false,
             compact_mode: false,
             small_tree_indents: false,
+            smooth_scrolling: true,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
             dnd_with_alt_only: false,
@@ -869,12 +903,14 @@ impl Default for AppearanceSettings {
             show_tool_window_names: false,
             show_tool_window_badges: true,
             widescreen_tool_windows: false,
+            remember_tool_window_sizes: false,
             show_main_toolbar: true,
             show_status_bar: true,
             navigation_bar: NavigationBarPosition::StatusBar,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
             background_image: BackgroundImageSettings::default(),
+            presentation_assistant: PresentationAssistantSettings::default(),
         }
     }
 }
@@ -1474,6 +1510,10 @@ pub struct MavenSettings {
     pub active_profiles: String,
     /// Delegate IDE build/run actions to Maven: launches build with Maven (`javac`) instead of jdtls (ECJ).
     pub delegate_build: bool,
+    /// Download `-sources.jar` of dependencies when the Java language server imports the
+    /// project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
+    /// from a library class's Download Sources banner.
+    pub download_sources: bool,
 }
 
 impl MavenSettings {
@@ -1716,6 +1756,16 @@ mod tests {
         assert_eq!(a.preferred_dark_theme, "dark");
         let kept: Settings = serde_json::from_str(r#"{"appearance":{"theme":"solarized-dark"}}"#).unwrap();
         assert_eq!(kept.appearance.theme, "solarized-dark");
+    }
+
+    #[test]
+    fn smooth_scrolling_defaults_on_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"zoom":110}}"#).unwrap();
+        assert!(old.appearance.smooth_scrolling);
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"smoothScrolling":false}}"#).unwrap();
+        assert!(!off.appearance.smooth_scrolling);
+        let json = serde_json::to_value(&off).unwrap();
+        assert_eq!(json["appearance"]["smoothScrolling"], false);
     }
 
     #[test]

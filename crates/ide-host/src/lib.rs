@@ -4,8 +4,10 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod agent_secrets;
+pub mod catalogue;
 pub mod data_dirs;
 pub mod diagnostics_store;
+mod direnv;
 pub mod environment;
 mod formatter;
 mod java_runtime;
@@ -23,7 +25,7 @@ pub mod rpc;
 pub mod shell_env;
 pub mod trust;
 
-pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
+pub use project::{Project, apply_git_executable, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -91,6 +93,8 @@ pub struct Host {
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
     pub remote: Arc<ide_remote::RemoteService>,
+    /// Tunnels of Docker connections made through an SSH configuration.
+    pub docker_tunnels: ops::docker::DockerTunnels,
     /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
     pub environment: environment::Environment,
     /// The built-in web server (Open In › Browser, the editor's browser bar). On a remote host the
@@ -161,6 +165,7 @@ impl Host {
             agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
+            docker_tunnels: Default::default(),
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
             web: ide_web::WebServer::new(),
             global_settings,
@@ -248,6 +253,16 @@ impl Host {
         self.project(window)?.require_trust()
     }
 
+    /// [`Self::require_trust`] for IDE-wide toolchain work (SDK detection, tool installs) that
+    /// also runs from a window without a project, such as Settings opened from the Welcome
+    /// screen: there is no project there to trust.
+    pub fn require_trust_if_project(&self, window: &str) -> IdeResult<()> {
+        match self.project(window) {
+            Ok(project) => project.require_trust(),
+            Err(_) => Ok(()),
+        }
+    }
+
     /// The window that owns what `window` starts.
     pub fn owner_window<'a>(&self, window: &'a str) -> &'a str {
         (self.owner)(window)
@@ -314,6 +329,9 @@ impl Host {
         }
         if !project.light {
             self.environment.project_closed();
+            if self.windows_for_root(&project.root).is_empty() {
+                self.environment.direnv_closed(&project.root);
+            }
         }
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();

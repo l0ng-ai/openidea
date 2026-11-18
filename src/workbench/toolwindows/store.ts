@@ -6,6 +6,7 @@
  */
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
 import {
   useContributions,
   type ToolWindowAnchor,
@@ -80,6 +81,8 @@ export interface ToolWindowLayoutState {
   scope: string;
   visible: SlotRecord;
   sizes: Record<ToolWindowAnchor, number>;
+  /** Remember size for each tool window: the last size of each window along its side (persisted). */
+  windowSizes: Readonly<Record<string, number>>;
   /** Per side: the primary area's share when both areas show. */
   splits: Record<ToolWindowAnchor, number>;
   maximized: ToolWindowAnchor | null;
@@ -112,6 +115,7 @@ const initial = (): ToolWindowLayoutState => ({
   scope: "",
   visible: { ...DEFAULT_VISIBLE },
   sizes: { ...DEFAULT_SIZES },
+  windowSizes: {},
   splits: { ...DEFAULT_SPLITS },
   maximized: null,
   focused: null,
@@ -250,6 +254,7 @@ function persist() {
     scope,
     visible: current,
     sizes,
+    windowSizes,
     splits,
     placements,
     stripeButtons,
@@ -262,11 +267,19 @@ function persist() {
   try {
     localStorage.setItem(
       storageKey(scope),
-      JSON.stringify({ v: LAYOUT_VERSION, visible, sizes, splits, placements, stripeButtons, viewModes }),
+      JSON.stringify({ v: LAYOUT_VERSION, visible, sizes, windowSizes, splits, placements, stripeButtons, viewModes }),
     );
   } catch {
     /* storage unavailable */
   }
+}
+
+function sanitizeWindowSizes(sizes: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (sizes && typeof sizes === "object")
+    for (const [id, v] of Object.entries(sizes as Record<string, unknown>))
+      if (typeof v === "number" && isFinite(v) && v >= 80 && v <= 4000) out[id] = Math.round(v);
+  return out;
 }
 
 function sanitizeSizes(sizes: unknown): Record<ToolWindowAnchor, number> {
@@ -393,6 +406,7 @@ export function loadToolWindowLayout(scope: string) {
     scope,
     visible,
     sizes: sanitizeSizes(saved?.sizes),
+    windowSizes: sanitizeWindowSizes(saved?.windowSizes),
     splits: sanitizeSplits(saved?.splits),
     placements,
     stripeButtons: sanitizeStripeButtons(saved?.stripeButtons),
@@ -459,8 +473,34 @@ function publishVisibility() {
   }
 }
 
+/** Settings › Appearance › Remember size for each tool window (off by default, as in IDEA's new UI). */
+function rememberEachSize(): boolean {
+  return useProject.getState().settings?.appearance?.rememberToolWindowSizes === true;
+}
+
+/** The windows docked on `anchor`'s areas in `visible`. */
+function windowsOn(anchor: ToolWindowAnchor, visible: SlotRecord): string[] {
+  return [visible[anchor], visible[`${anchor}-split` as ToolWindowSlot]].filter((id): id is string => !!id);
+}
+
+/** A window shown on a side brings back its remembered size. */
+function withRememberedSizes(patch: Partial<ToolWindowLayoutState>): Partial<ToolWindowLayoutState> {
+  const s = useToolWindowLayout.getState();
+  if (!patch.visible || patch.sizes || !rememberEachSize()) return patch;
+  let sizes: Record<ToolWindowAnchor, number> | null = null;
+  for (const anchor of ANCHORS) {
+    const before = windowsOn(anchor, s.visible);
+    const shown = windowsOn(anchor, patch.visible).find((id) => !before.includes(id) && s.windowSizes[id]);
+    if (shown && s.windowSizes[shown] !== s.sizes[anchor]) {
+      sizes ??= { ...s.sizes };
+      sizes[anchor] = s.windowSizes[shown]!;
+    }
+  }
+  return sizes ? { ...patch, sizes } : patch;
+}
+
 function update(patch: Partial<ToolWindowLayoutState>, save = true) {
-  useToolWindowLayout.setState(patch);
+  useToolWindowLayout.setState(withRememberedSizes(patch));
   keepNarrowStashToHiddenSides();
   publishVisibility();
   if (save) persist();
@@ -555,6 +595,13 @@ export function activateToolWindow(id: string) {
 export function focusToolWindow(id: string) {
   if (!isToolWindowVisible(id)) return showToolWindow(id, true);
   update({ focusRequest: { id, seq: ++focusSeq }, lastActive: id }, false);
+}
+
+/** Whether Hide All Tool Windows would now restore the windows it hid (nothing visible, a stash kept). */
+export function toolWindowsRestorable(
+  s: Pick<ToolWindowLayoutState, "visible" | "stashed"> = useToolWindowLayout.getState(),
+) {
+  return !!s.stashed && !SLOTS.some((slot) => s.visible[slot]);
 }
 
 /** Hides every visible window; called again with nothing visible, restores them. */
@@ -664,7 +711,10 @@ export function setToolWindowSize(anchor: ToolWindowAnchor, px: number) {
   const s = useToolWindowLayout.getState();
   const v = Math.round(px);
   if (s.maximized === anchor || v < 80 || s.sizes[anchor] === v) return;
-  update({ sizes: { ...s.sizes, [anchor]: v } });
+  const windowSizes = rememberEachSize()
+    ? { ...s.windowSizes, ...Object.fromEntries(windowsOn(anchor, s.visible).map((id) => [id, v])) }
+    : s.windowSizes;
+  update({ sizes: { ...s.sizes, [anchor]: v }, windowSizes });
 }
 
 export type ResizeDirection = "left" | "right" | "up" | "down";
@@ -751,6 +801,7 @@ export const toolWindowServiceImpl: ToolWindowService = {
 export interface ToolWindowLayoutSnapshot {
   visible: SlotRecord;
   sizes: Record<ToolWindowAnchor, number>;
+  windowSizes: Record<string, number>;
   splits: Record<ToolWindowAnchor, number>;
   placements: Record<string, ToolWindowPlacement>;
   stripeButtons: Record<string, boolean>;
@@ -762,6 +813,7 @@ export function toolWindowLayoutSnapshot(): ToolWindowLayoutSnapshot {
   return {
     visible: { ...(s.distractionFreeStash ?? s.visible), ...s.narrowStash },
     sizes: { ...s.sizes },
+    windowSizes: { ...s.windowSizes },
     splits: { ...s.splits },
     placements: { ...s.placements },
     stripeButtons: { ...s.stripeButtons },
@@ -775,6 +827,7 @@ export function sanitizeLayoutSnapshot(raw: unknown): ToolWindowLayoutSnapshot {
   return {
     visible: sanitizeVisible(r.visible),
     sizes: sanitizeSizes(r.sizes),
+    windowSizes: sanitizeWindowSizes(r.windowSizes),
     splits: sanitizeSplits(r.splits),
     placements: sanitizePlacements(r.placements),
     stripeButtons: sanitizeStripeButtons(r.stripeButtons),
@@ -799,6 +852,7 @@ export function applyToolWindowLayout(snapshot: ToolWindowLayoutSnapshot) {
   update({
     visible,
     sizes: { ...snapshot.sizes },
+    windowSizes: { ...snapshot.windowSizes },
     splits: { ...snapshot.splits },
     placements,
     stripeButtons: { ...snapshot.stripeButtons },

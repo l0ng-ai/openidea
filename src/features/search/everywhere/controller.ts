@@ -104,6 +104,8 @@ export function sectionLimit(tab: SeTab, section: SectionId, extra: number): num
   return isCustomTab(section) ? Math.min(200, limit) : limit;
 }
 
+const LITERAL_SECTIONS: ReadonlySet<SectionId> = new Set(["endpoints", "actions", "text"]);
+
 export class SeController {
   private gen = 0;
   private sections = new Map<SectionId, SectionState>();
@@ -145,10 +147,14 @@ export class SeController {
     this.req = { query: req.query, tab: req.tab };
     const parsed = parseLocationQuery(req.query, this.deps.root());
     const text = parsed.text.trim();
+    // `File.kt:42` is a location only where a result opens at it; text, actions,
+    // endpoints and plugin categories match the query as typed (`localhost:8080`).
+    const raw = req.query.trim();
+    const queryOf = (id: SectionId) => (LITERAL_SECTIONS.has(id) || isCustomTab(id) ? raw : text);
     const wanted =
       isCustomTab(req.tab) && !this.deps.categories?.().some((c) => c.id === req.tab)
         ? []
-        : sectionsFor(req.tab, !text);
+        : sectionsFor(req.tab, !(req.tab === "all" ? text : queryOf(req.tab)));
     this.started = this.deps.now();
     this.elapsed = null;
 
@@ -180,7 +186,7 @@ export class SeController {
         loading: true,
       });
       this.live.set(id, gen);
-      void this.start(id, gen, { text, line: parsed.line, col: parsed.col, req, limit });
+      void this.start(id, gen, { text: queryOf(id), line: parsed.line, col: parsed.col, req, limit });
     }
     this.notify();
   }
@@ -311,8 +317,9 @@ export class SeController {
             .recentActions()
             .map((aid) => byId.get(aid))
             .filter((a): a is Action => !!a && !a.hidden)
-            .slice(0, limit)
-            .map((a) => actionItem(a, this.deps.isEnabled(a)));
+            .map((a) => actionItem(a, this.deps.isEnabled(a)))
+            .filter((a) => a.enabled || req.includeDisabled !== false)
+            .slice(0, limit);
           this.set(id, gen, items, false, false);
           break;
         }

@@ -35,6 +35,27 @@ export interface BackgroundImageValid {
   fill: BackgroundImageFill;
   anchor: BackgroundImageAnchor;
 }
+export type PresentationAssistantSize = "small" | "medium" | "large";
+export const PRESENTATION_ASSISTANT_POSITIONS = [
+  "top-left",
+  "top",
+  "top-right",
+  "bottom-left",
+  "bottom",
+  "bottom-right",
+] as const;
+export type PresentationAssistantPosition = (typeof PRESENTATION_ASSISTANT_POSITIONS)[number];
+export const PRESENTATION_ASSISTANT_DURATION = { min: 1, max: 60 } as const;
+
+/** Appearance › Presentation Assistant: the name and shortcut of each action the user runs. */
+export interface PresentationAssistantValid {
+  enabled: boolean;
+  size: PresentationAssistantSize;
+  durationSeconds: number;
+  position: PresentationAssistantPosition;
+  /** Also show the other platform's shortcut (macOS ⇄ Windows/Linux). */
+  alternateKeymap: boolean;
+}
 /** Themes selectable as "preferred" when syncing with the OS. */
 export type ConcreteTheme = ThemeChoiceId;
 
@@ -55,6 +76,8 @@ export interface AppearanceExtras {
   compactMode: boolean;
   /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
   smallTreeIndents: boolean;
+  /** IDEA "Smooth scrolling" (Linux: WebKitGTK animates each mouse wheel step). */
+  smoothScrolling: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
@@ -70,6 +93,7 @@ export interface AppearanceExtras {
   showToolWindowNames: boolean;
   showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
+  rememberToolWindowSizes: boolean;
   /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
   showMainToolbar: boolean;
   showStatusBar: boolean;
@@ -77,6 +101,7 @@ export interface AppearanceExtras {
    * the editor, in the status bar, or not at all. */
   navigationBar: NavigationBarPosition;
   backgroundImage: BackgroundImageValid;
+  presentationAssistant: PresentationAssistantValid;
 }
 
 export interface DateFormatValid {
@@ -139,6 +164,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   differentToolWindowBackground: false,
   compactMode: false,
   smallTreeIndents: false,
+  smoothScrolling: true,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
@@ -152,10 +178,18 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showToolWindowNames: false,
   showToolWindowBadges: true,
   widescreenToolWindows: false,
+  rememberToolWindowSizes: false,
   showMainToolbar: true,
   showStatusBar: true,
   navigationBar: "statusBar",
   backgroundImage: { path: "", opacity: 15, fill: "scale", anchor: "center" },
+  presentationAssistant: {
+    enabled: false,
+    size: "medium",
+    durationSeconds: 4,
+    position: "bottom",
+    alternateKeymap: false,
+  },
 };
 
 const NAV_BAR_POSITIONS: readonly NavigationBarPosition[] = ["top", "statusBar", "hidden"];
@@ -215,6 +249,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
     smallTreeIndents: b("smallTreeIndents"),
+    smoothScrolling: b("smoothScrolling"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
@@ -228,6 +263,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     showToolWindowNames: b("showToolWindowNames"),
     showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
+    rememberToolWindowSizes: b("rememberToolWindowSizes"),
     showMainToolbar: b("showMainToolbar"),
     showStatusBar: b("showStatusBar"),
     // Legacy settings stored this as `showNavigationBar: bool` (`true` = shown,
@@ -238,6 +274,19 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
       return oneOf(a.navigationBar, NAV_BAR_POSITIONS, d.navigationBar);
     })(),
     backgroundImage: validateBackgroundImage(a.backgroundImage),
+    presentationAssistant: validatePresentationAssistant(a.presentationAssistant),
+  };
+}
+
+function validatePresentationAssistant(raw: unknown): PresentationAssistantValid {
+  const p = obj(raw);
+  const d = DEFAULT_APPEARANCE_EXTRAS.presentationAssistant;
+  return {
+    enabled: bool(p.enabled, d.enabled),
+    size: oneOf(p.size, ["small", "medium", "large"], d.size),
+    durationSeconds: int(p.durationSeconds, d.durationSeconds, PRESENTATION_ASSISTANT_DURATION),
+    position: oneOf(p.position, PRESENTATION_ASSISTANT_POSITIONS, d.position),
+    alternateKeymap: bool(p.alternateKeymap, d.alternateKeymap),
   };
 }
 

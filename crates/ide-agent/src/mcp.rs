@@ -399,163 +399,429 @@ pub fn apply_save_json(
     Ok(saved_names)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+const COPILOT_PLUGIN_MANIFESTS: &[&str] = &[
+    ".github/plugin/plugin.json",
+    ".plugin/plugin.json",
+    ".claude-plugin/plugin.json",
+    ".cursor-plugin/plugin.json",
+    "plugin.json",
+];
+
+#[derive(Clone, PartialEq, Eq)]
 enum SourceFormat {
     Jsonc,
     CodexToml,
+    CopilotPlugin { root: PathBuf },
 }
 
 #[derive(Clone)]
 struct SourceSpec {
-    id: &'static str,
-    label: &'static str,
+    id: String,
+    label: String,
     path: PathBuf,
     format: SourceFormat,
     suggested_scope: McpScope,
     native_provider: Option<&'static str>,
     claude_project_lookup: bool,
+    disabled_servers: std::sync::Arc<BTreeSet<String>>,
+}
+
+#[derive(Default)]
+struct CopilotSettings {
+    disabled_mcp_servers: std::sync::Arc<BTreeSet<String>>,
+    disabled_plugins: BTreeSet<String>,
 }
 
 fn external_source_specs(home_dir: Option<&Path>, workspace_root: Option<&Path>) -> Vec<SourceSpec> {
     let mut specs = Vec::new();
+    let no_disabled: std::sync::Arc<BTreeSet<String>> = std::sync::Arc::new(BTreeSet::new());
     if let Some(root) = workspace_root {
         specs.push(SourceSpec {
-            id: "workspace-mcp",
-            label: "Project (.mcp.json)",
+            id: "workspace-mcp".into(),
+            label: "Project (.mcp.json)".into(),
             path: root.join(".mcp.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::Workspace,
             native_provider: Some("claude"),
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "vscode-mcp",
-            label: "VS Code (.vscode/mcp.json)",
+            id: "vscode-mcp".into(),
+            label: "VS Code (.vscode/mcp.json)".into(),
             path: root.join(".vscode").join("mcp.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::Workspace,
             native_provider: None,
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "cursor-project",
-            label: "Cursor Project (.cursor/mcp.json)",
+            id: "cursor-project".into(),
+            label: "Cursor Project (.cursor/mcp.json)".into(),
             path: root.join(".cursor").join("mcp.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::Workspace,
             native_provider: Some("cursor"),
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "codex-project",
-            label: "Codex Project (.codex/config.toml)",
+            id: "codex-project".into(),
+            label: "Codex Project (.codex/config.toml)".into(),
             path: root.join(".codex").join("config.toml"),
             format: SourceFormat::CodexToml,
             suggested_scope: McpScope::Workspace,
             native_provider: Some("codex"),
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "gemini-project",
-            label: "Gemini Project (.gemini/settings.json)",
+            id: "gemini-project".into(),
+            label: "Gemini Project (.gemini/settings.json)".into(),
             path: root.join(".gemini").join("settings.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::Workspace,
             native_provider: Some("gemini"),
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
     }
     if let Some(home) = home_dir {
+        let copilot_dir = home.join(".copilot");
+        let copilot_settings = read_copilot_settings(&copilot_dir);
         specs.push(SourceSpec {
-            id: "copilot-cli",
-            label: "GitHub Copilot CLI",
-            path: home.join(".copilot").join("mcp-config.json"),
+            id: "copilot-cli".into(),
+            label: "GitHub Copilot CLI".into(),
+            path: copilot_dir.join("mcp-config.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::User,
             native_provider: Some("copilot"),
             claude_project_lookup: false,
+            disabled_servers: copilot_settings.disabled_mcp_servers.clone(),
         });
+        specs.extend(copilot_plugin_source_specs(&copilot_dir, &copilot_settings));
         specs.push(SourceSpec {
-            id: "claude-code",
-            label: "Claude Code",
+            id: "claude-code".into(),
+            label: "Claude Code".into(),
             path: home.join(".claude.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::User,
             native_provider: Some("claude"),
             claude_project_lookup: true,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "codex",
-            label: "Codex",
+            id: "codex".into(),
+            label: "Codex".into(),
             path: home.join(".codex").join("config.toml"),
             format: SourceFormat::CodexToml,
             suggested_scope: McpScope::User,
             native_provider: Some("codex"),
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "cursor",
-            label: "Cursor",
+            id: "cursor".into(),
+            label: "Cursor".into(),
             path: home.join(".cursor").join("mcp.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::User,
             native_provider: Some("cursor"),
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "gemini",
-            label: "Gemini CLI",
+            id: "gemini".into(),
+            label: "Gemini CLI".into(),
             path: home.join(".gemini").join("settings.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::User,
             native_provider: Some("gemini"),
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "jetbrains-air",
-            label: "JetBrains Air",
+            id: "jetbrains-air".into(),
+            label: "JetBrains Air".into(),
             path: home.join(".jetbrains").join("mcp").join("mcp.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::User,
             native_provider: None,
             claude_project_lookup: false,
+            disabled_servers: no_disabled.clone(),
         });
         specs.push(SourceSpec {
-            id: "copilot-intellij",
-            label: "GitHub Copilot (JetBrains)",
+            id: "copilot-intellij".into(),
+            label: "GitHub Copilot (JetBrains)".into(),
             path: home.join(".config").join("github-copilot").join("intellij").join("mcp.json"),
             format: SourceFormat::Jsonc,
             suggested_scope: McpScope::User,
             native_provider: None,
             claude_project_lookup: false,
+            disabled_servers: no_disabled,
         });
     }
     specs
 }
 
-fn read_source_servers(spec: &SourceSpec, workspace_root: Option<&Path>) -> BTreeMap<String, AgentMcpServer> {
-    let Ok(text) = std::fs::read_to_string(&spec.path) else {
-        return BTreeMap::new();
+fn read_copilot_settings(copilot_dir: &Path) -> CopilotSettings {
+    let Ok(text) = std::fs::read_to_string(copilot_dir.join("settings.json")) else {
+        return CopilotSettings::default();
     };
-    if spec.format == SourceFormat::CodexToml {
-        return parse_codex_toml_servers(&text);
-    }
     let Ok(root) = parse_jsonc_value(&text) else {
-        return BTreeMap::new();
+        return CopilotSettings::default();
     };
-    let mut servers = extract_servers_from_root(&root, None);
-    if spec.claude_project_lookup
-        && let Some(ws) = workspace_root
-        && let Some(projects) = root.get("projects").and_then(Value::as_object)
-    {
-        let ws_canon = dunce::canonicalize(ws).unwrap_or_else(|_| ws.to_path_buf());
-        for (proj_key, proj_val) in projects {
-            let matches = Path::new(proj_key) == ws || dunce::canonicalize(proj_key).is_ok_and(|c| c == ws_canon);
-            if matches {
-                for (name, srv) in extract_servers_from_root(proj_val, None) {
-                    servers.insert(name, srv);
+    let disabled_mcp_servers = root
+        .get("disabledMcpServers")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned))
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let disabled_plugins = root
+        .get("enabledPlugins")
+        .and_then(Value::as_object)
+        .map(|obj| {
+            obj.iter()
+                .filter(|(_, v)| v.as_bool() == Some(false))
+                .map(|(k, _)| k.trim().to_owned())
+                .filter(|k| !k.is_empty())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    CopilotSettings { disabled_mcp_servers: std::sync::Arc::new(disabled_mcp_servers), disabled_plugins }
+}
+
+fn copilot_plugin_source_specs(copilot_dir: &Path, settings: &CopilotSettings) -> Vec<SourceSpec> {
+    let Ok(text) = std::fs::read_to_string(copilot_dir.join("config.json")) else {
+        return Vec::new();
+    };
+    let Ok(root) = parse_jsonc_value(&text) else {
+        return Vec::new();
+    };
+    let Some(installed) = root.get("installedPlugins").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut seen_ids = HashSet::new();
+    let mut specs = Vec::new();
+    for entry in installed {
+        let Some(obj) = entry.as_object() else { continue };
+        if obj.get("enabled").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(name) = obj.get("name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let marketplace = obj.get("marketplace").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+        if settings.disabled_plugins.contains(name)
+            || (!marketplace.is_empty()
+                && (settings.disabled_plugins.contains(&format!("{name}@{marketplace}"))
+                    || settings.disabled_plugins.contains(&format!("{marketplace}/{name}"))))
+        {
+            continue;
+        }
+        let Some(raw_cache) = obj.get("cache_path").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let plugin_root =
+            if Path::new(raw_cache).is_relative() { copilot_dir.join(raw_cache) } else { PathBuf::from(raw_cache) };
+        if !plugin_root.is_dir() {
+            continue;
+        }
+        let Some((manifest_path, _)) = read_copilot_plugin_servers(&plugin_root) else {
+            continue;
+        };
+        let base_id = if marketplace.is_empty() {
+            format!("copilot-plugin:{name}")
+        } else {
+            format!("copilot-plugin:{marketplace}/{name}")
+        };
+        let mut id = base_id.clone();
+        let mut suffix = 2usize;
+        while !seen_ids.insert(id.clone()) {
+            id = format!("{base_id}#{suffix}");
+            suffix += 1;
+        }
+        let label = if marketplace.is_empty() {
+            format!("GitHub Copilot Plugin ({name})")
+        } else {
+            format!("GitHub Copilot Plugin ({name} · {marketplace})")
+        };
+        specs.push(SourceSpec {
+            id,
+            label,
+            path: manifest_path,
+            format: SourceFormat::CopilotPlugin { root: plugin_root },
+            suggested_scope: McpScope::User,
+            native_provider: Some("copilot"),
+            claude_project_lookup: false,
+            disabled_servers: settings.disabled_mcp_servers.clone(),
+        });
+    }
+    specs
+}
+
+fn resolve_within_dir(base_dir: &Path, candidate: &Path) -> Option<PathBuf> {
+    if candidate.as_os_str().is_empty() {
+        return None;
+    }
+    let base_canon = dunce::canonicalize(base_dir).ok()?;
+    let clean = candidate.strip_prefix(".").unwrap_or(candidate);
+    let joined = if clean.is_relative() { base_dir.join(clean) } else { clean.to_path_buf() };
+    let meta = std::fs::metadata(&joined).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let target_canon = dunce::canonicalize(&joined).ok()?;
+    target_canon.starts_with(&base_canon).then_some(joined)
+}
+
+fn expand_plugin_root_vars(value: &str, root: &str) -> String {
+    value.replace("${COPILOT_PLUGIN_ROOT}", root).replace("${CLAUDE_PLUGIN_ROOT}", root).replace("${PLUGIN_ROOT}", root)
+}
+
+fn expand_plugin_servers(servers: &mut BTreeMap<String, AgentMcpServer>, plugin_root: &Path) {
+    let root = plugin_root.to_string_lossy();
+    for srv in servers.values_mut() {
+        if let Some(cmd) = srv.command.as_mut() {
+            *cmd = expand_plugin_root_vars(cmd, &root);
+        }
+        for arg in &mut srv.args {
+            *arg = expand_plugin_root_vars(arg, &root);
+        }
+        if let Some(url) = srv.url.as_mut() {
+            *url = expand_plugin_root_vars(url, &root);
+        }
+        for val in srv.env.values_mut() {
+            *val = expand_plugin_root_vars(val, &root);
+        }
+        for val in srv.headers.values_mut() {
+            *val = expand_plugin_root_vars(val, &root);
+        }
+    }
+}
+
+fn extract_plugin_manifest_servers(
+    plugin_root: &Path,
+    manifest_path: &Path,
+    mcp_val: &Value,
+) -> (PathBuf, BTreeMap<String, AgentMcpServer>) {
+    match mcp_val {
+        Value::String(rel) => {
+            if let Some(path) = resolve_within_dir(plugin_root, Path::new(rel.trim())) {
+                let map = read_external_file(&path);
+                return (path, map);
+            }
+            (manifest_path.to_path_buf(), BTreeMap::new())
+        }
+        Value::Object(_) => {
+            let wrapper = json!({ "mcpServers": mcp_val });
+            (manifest_path.to_path_buf(), extract_servers_from_root(&wrapper, None))
+        }
+        Value::Array(items) => {
+            let mut merged = BTreeMap::new();
+            let mut first_path: Option<PathBuf> = None;
+            for item in items {
+                match item {
+                    Value::String(rel) => {
+                        if let Some(path) = resolve_within_dir(plugin_root, Path::new(rel.trim())) {
+                            let map = read_external_file(&path);
+                            if !map.is_empty() && first_path.is_none() {
+                                first_path = Some(path);
+                            }
+                            merged.extend(map);
+                        }
+                    }
+                    Value::Object(_) => {
+                        let map = extract_servers_from_root(item, None);
+                        if !map.is_empty() && first_path.is_none() {
+                            first_path = Some(manifest_path.to_path_buf());
+                        }
+                        merged.extend(map);
+                    }
+                    _ => {}
                 }
             }
+            (first_path.unwrap_or_else(|| manifest_path.to_path_buf()), merged)
+        }
+        _ => (manifest_path.to_path_buf(), BTreeMap::new()),
+    }
+}
+
+fn read_copilot_plugin_servers(plugin_root: &Path) -> Option<(PathBuf, BTreeMap<String, AgentMcpServer>)> {
+    if let Some(dot_mcp) = resolve_within_dir(plugin_root, Path::new(".mcp.json")) {
+        let mut servers = read_external_file(&dot_mcp);
+        if !servers.is_empty() {
+            expand_plugin_servers(&mut servers, plugin_root);
+            return Some((dot_mcp, servers));
+        }
+    }
+    for rel in COPILOT_PLUGIN_MANIFESTS {
+        let Some(manifest_path) = resolve_within_dir(plugin_root, Path::new(rel)) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = parse_jsonc_value(&text) else {
+            continue;
+        };
+        let Some(mcp_val) = manifest.get("mcpServers") else {
+            continue;
+        };
+        let (source_path, mut servers) = extract_plugin_manifest_servers(plugin_root, &manifest_path, mcp_val);
+        if !servers.is_empty() {
+            expand_plugin_servers(&mut servers, plugin_root);
+            return Some((source_path, servers));
+        }
+    }
+    None
+}
+
+fn read_source_servers(spec: &SourceSpec, workspace_root: Option<&Path>) -> BTreeMap<String, AgentMcpServer> {
+    let mut servers = match &spec.format {
+        SourceFormat::CopilotPlugin { root } => {
+            read_copilot_plugin_servers(root).map(|(_, map)| map).unwrap_or_default()
+        }
+        SourceFormat::CodexToml => {
+            let Ok(text) = std::fs::read_to_string(&spec.path) else {
+                return BTreeMap::new();
+            };
+            parse_codex_toml_servers(&text)
+        }
+        SourceFormat::Jsonc => {
+            let Ok(text) = std::fs::read_to_string(&spec.path) else {
+                return BTreeMap::new();
+            };
+            let Ok(root) = parse_jsonc_value(&text) else {
+                return BTreeMap::new();
+            };
+            let mut map = extract_servers_from_root(&root, None);
+            if spec.claude_project_lookup
+                && let Some(ws) = workspace_root
+                && let Some(projects) = root.get("projects").and_then(Value::as_object)
+            {
+                let ws_canon = dunce::canonicalize(ws).unwrap_or_else(|_| ws.to_path_buf());
+                for (proj_key, proj_val) in projects {
+                    let matches =
+                        Path::new(proj_key) == ws || dunce::canonicalize(proj_key).is_ok_and(|c| c == ws_canon);
+                    if matches {
+                        for (name, srv) in extract_servers_from_root(proj_val, None) {
+                            map.insert(name, srv);
+                        }
+                    }
+                }
+            }
+            map
+        }
+    };
+    for name in spec.disabled_servers.iter() {
+        if let Some(srv) = servers.get_mut(name) {
+            srv.enabled = false;
         }
     }
     servers
@@ -612,8 +878,8 @@ pub fn discover_external_sources(home_dir: Option<&Path>, workspace_root: Option
             })
             .collect();
         out.push(McpExternalSource {
-            id: spec.id.to_owned(),
-            label: spec.label.to_owned(),
+            id: spec.id,
+            label: spec.label,
             path: IpcPath(spec.path),
             suggested_scope: spec.suggested_scope,
             native_provider: spec.native_provider.map(str::to_owned),
@@ -641,7 +907,7 @@ pub fn apply_import_selected(
     let mut by_source: BTreeMap<&str, BTreeMap<String, AgentMcpServer>> = BTreeMap::new();
     for spec in &specs {
         if selections.iter().any(|s| s.source_id == spec.id) {
-            by_source.insert(spec.id, read_source_servers(spec, workspace_root));
+            by_source.insert(spec.id.as_str(), read_source_servers(spec, workspace_root));
         }
     }
     let target = match scope {
@@ -1369,5 +1635,126 @@ mod tests {
         assert_eq!(single, vec!["events-sse".to_string()]);
         assert_eq!(workspace["events-sse"].transport, McpTransport::Sse);
         assert_eq!(workspace["events-sse"].url.as_deref(), Some("https://sse.example.com/events"));
+    }
+
+    #[test]
+    fn discovers_and_imports_copilot_installed_plugin_mcp_servers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let copilot = home.join(".copilot");
+        let azure_root = copilot.join("installed-plugins/_direct/azure-skills");
+        let inline_root = copilot.join("installed-plugins/awesome-copilot/inline-tools");
+        let disabled_root = copilot.join("installed-plugins/_direct/disabled-plug");
+        let outside_root = tmp.path().join("outside");
+
+        std::fs::create_dir_all(azure_root.join(".plugin")).unwrap();
+        std::fs::create_dir_all(inline_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(&disabled_root).unwrap();
+        std::fs::create_dir_all(&outside_root).unwrap();
+
+        std::fs::write(
+            azure_root.join(".plugin/plugin.json"),
+            r#"{"name":"azure","version":"1.2.106","mcpServers":"./.mcp.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            azure_root.join(".mcp.json"),
+            r#"{"mcpServers":{"azure":{"command":"npx","args":["-y","@azure/mcp@latest","${COPILOT_PLUGIN_ROOT}/cfg"],"env":{"PLUG_DIR":"${CLAUDE_PLUGIN_ROOT}"}}}}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            inline_root.join(".claude-plugin/plugin.json"),
+            r#"{"name":"inline-tools","version":"0.1.0","mcpServers":{"inline-srv":{"command":"${PLUGIN_ROOT}/bin/run","args":["--stdio"]},"muted-srv":{"command":"echo","args":["off"]}}}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            disabled_root.join(".mcp.json"),
+            r#"{"mcpServers":{"never":{"command":"npx","args":["never"]}}}"#,
+        )
+        .unwrap();
+
+        std::fs::write(outside_root.join("secret.json"), r#"{"mcpServers":{"escaped":{"command":"sh"}}}"#).unwrap();
+        let escape_root = copilot.join("installed-plugins/_direct/escape-plug");
+        std::fs::create_dir_all(escape_root.join(".plugin")).unwrap();
+        std::fs::write(
+            escape_root.join(".plugin/plugin.json"),
+            r#"{"name":"escape-plug","mcpServers":"../../../../outside/secret.json"}"#,
+        )
+        .unwrap();
+
+        // `~/.copilot/config.json` includes leading `//` comments in Copilot CLI.
+        let config_json = format!(
+            "// Managed automatically.\n{}",
+            serde_json::json!({
+                "installedPlugins": [
+                    {
+                        "name": "azure",
+                        "marketplace": "",
+                        "enabled": true,
+                        "cache_path": azure_root,
+                    },
+                    {
+                        "name": "inline-tools",
+                        "marketplace": "awesome-copilot",
+                        "enabled": true,
+                        "cache_path": inline_root,
+                    },
+                    {
+                        "name": "disabled-plug",
+                        "marketplace": "",
+                        "enabled": false,
+                        "cache_path": disabled_root,
+                    },
+                    {
+                        "name": "escape-plug",
+                        "marketplace": "",
+                        "enabled": true,
+                        "cache_path": escape_root,
+                    }
+                ]
+            })
+        );
+        std::fs::write(copilot.join("config.json"), config_json).unwrap();
+        std::fs::write(copilot.join("settings.json"), r#"{"disabledMcpServers":["muted-srv"]}"#).unwrap();
+
+        let sources = discover_external_sources(Some(&home), None);
+        assert_eq!(sources.len(), 2);
+
+        let azure_src = sources.iter().find(|s| s.id == "copilot-plugin:azure").unwrap();
+        assert_eq!(azure_src.label, "GitHub Copilot Plugin (azure)");
+        assert_eq!(azure_src.native_provider.as_deref(), Some("copilot"));
+        assert_eq!(azure_src.path.0, azure_root.join(".mcp.json"));
+        assert_eq!(azure_src.servers.len(), 1);
+        assert!(azure_src.servers[0].enabled);
+        assert_eq!(
+            azure_src.servers[0].args,
+            vec!["-y", "@azure/mcp@latest", &format!("{}/cfg", azure_root.display())]
+        );
+
+        let inline_src = sources.iter().find(|s| s.id == "copilot-plugin:awesome-copilot/inline-tools").unwrap();
+        assert_eq!(inline_src.label, "GitHub Copilot Plugin (inline-tools · awesome-copilot)");
+        assert_eq!(inline_src.path.0, inline_root.join(".claude-plugin/plugin.json"));
+        let active = inline_src.servers.iter().find(|s| s.name == "inline-srv").unwrap();
+        assert!(active.enabled);
+        assert_eq!(active.command.as_deref(), Some(format!("{}/bin/run", inline_root.display()).as_str()));
+        let muted = inline_src.servers.iter().find(|s| s.name == "muted-srv").unwrap();
+        assert!(!muted.enabled);
+
+        let mut user = BTreeMap::new();
+        let mut workspace = BTreeMap::new();
+        let imported = apply_import_selected(
+            &mut user,
+            &mut workspace,
+            Some(&home),
+            None,
+            McpScope::User,
+            &[McpImportSelection { source_id: "copilot-plugin:azure".into(), name: "azure".into() }],
+            false,
+        )
+        .unwrap();
+        assert_eq!(imported, vec!["azure".to_string()]);
+        assert_eq!(user["azure"].env.get("PLUG_DIR").map(String::as_str), Some(azure_root.to_str().unwrap()));
     }
 }

@@ -39,6 +39,28 @@ function setup(overrides: Partial<SeDeps> = {}) {
 const fm = (rel: string) => ({ path: `/p/${rel}`, relPath: rel, score: 1, indices: [] });
 
 describe("SeController", () => {
+  it("filters recent actions when disabled actions are excluded", async () => {
+    const { c, last } = setup({
+      actions: () => [
+        { id: "blocked", title: "Blocked", run: () => {} },
+        { id: "available", title: "Available", run: () => {} },
+      ],
+      isEnabled: (a) => a.id === "available",
+      recentActions: () => ["blocked", "available"],
+    });
+    const recent = () => last().sections.get("recentActions")!.items;
+    c.run({ query: "", tab: "actions", includeNonProject: false, includeDisabled: false, extra: {} });
+    await flush();
+    expect(recent()).toMatchObject([{ id: "available", enabled: true }]);
+
+    c.run({ query: "", tab: "actions", includeNonProject: true, includeDisabled: true, extra: {} });
+    await flush();
+    expect(recent()).toMatchObject([
+      { id: "blocked", enabled: false },
+      { id: "available", enabled: true },
+    ]);
+  });
+
   it("streams each section independently", async () => {
     const files = deferred<ReturnType<typeof fm>[]>();
     const { c, last } = setup({
@@ -166,6 +188,28 @@ describe("SeController", () => {
     expect(findFiles).toHaveBeenCalledWith("File.kt", 51);
     const item = last().sections.get("files")!.items[0]!;
     expect(item.kind === "file" && [item.line, item.col]).toEqual([41, 2]);
+  });
+
+  // #4080: `:digits` is a location only where a result opens at it.
+  it.each([
+    ["http://localhost:8080", "http://localhost", 8079, null],
+    ["a:1", "a", 0, null],
+    ["key: 2", "key: 2", null, null],
+    ["10:30", "10", 29, null],
+    ["foo.ts:12:3", "foo.ts", 11, 2],
+  ])("%s: files look up %s, text search takes the query as typed", async (query, file, line, col) => {
+    const findFiles = vi.fn(async (_q: string, _limit: number) => [fm("x.ts")]);
+    const searchText = vi.fn(async (_r: number, _q: SearchQuery) => {});
+    const { c, last } = setup({ findFiles, searchText });
+    c.run({ query, tab: "all", includeNonProject: false, extra: {} });
+    await flush();
+    expect(findFiles.mock.calls.at(-1)![0]).toBe(file);
+    const item = last().sections.get("files")!.items[0]!;
+    expect(item.kind === "file" && [item.line ?? null, item.col ?? null]).toEqual([line, col]);
+    expect(searchText.mock.calls.at(-1)![1].pattern).toBe(query);
+    c.run({ query, tab: "text", includeNonProject: false, extra: {} });
+    await flush();
+    expect(searchText.mock.calls.at(-1)![1].pattern).toBe(query);
   });
 
   it("shows recent files for an empty query", async () => {

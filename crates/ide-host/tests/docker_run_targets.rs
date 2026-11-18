@@ -1,4 +1,4 @@
-//! Docker run targets through `ops::run::start`, with a stand-in `docker`
+//! Docker run targets through `ops::run::run_start`, with a stand-in `docker`
 //! (`OPENIDEA_DOCKER`) that prints what it was given.
 #![cfg(unix)]
 
@@ -46,15 +46,16 @@ fn config(target: &str, root: &Path) -> RunConfig {
 async fn output_of(host: &Host, config: RunConfig) -> String {
     let out = Arc::new(Mutex::new(String::new()));
     let sink = out.clone();
-    ops::run::start(
+    ops::run::run_start(
         host,
         "main",
         config,
-        Arc::new(move |chunk| match chunk {
+        ide_host::ops::Channel::new(move |chunk| match chunk {
             OutputChunk::Stdout { text } | OutputChunk::Stderr { text } | OutputChunk::System { text } => {
                 sink.lock().push_str(&text)
             }
         }),
+        None,
     )
     .await
     .unwrap();
@@ -149,9 +150,10 @@ async fn docker_targets_run_through_the_docker_cli() {
         "{out}"
     );
     debug.debug_adapter = Some("delve".into());
-    let err = ops::run::start(&host, "main", debug, Arc::new(|_| {})).await.unwrap_err();
+    let err = ops::run::run_start(&host, "main", debug, ops::Channel::new(|_| {}), None).await.unwrap_err();
     assert!(err.message.contains("only Python"), "{}", err.message);
 
-    let err = ops::run::start(&host, "main", config("far", &root), Arc::new(|_| {})).await.unwrap_err();
+    let err =
+        ops::run::run_start(&host, "main", config("far", &root), ops::Channel::new(|_| {}), None).await.unwrap_err();
     assert!(err.message.contains("another machine"), "{}", err.message);
 }

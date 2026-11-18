@@ -3,6 +3,31 @@
 import type { SymbolKind } from "@/platform/ipc";
 import { opensOtherShare } from "@/platform/paths";
 
+/** Display a structured async answer as the question and answer, keeping its wire ids out of the UI. */
+export function userMessageText(text: string): string {
+  const start = "<send_user_message_question_reply>";
+  const end = "</send_user_message_question_reply>";
+  if (!text.startsWith(start) || !text.endsWith(end)) return text;
+  try {
+    const replies: unknown = JSON.parse(text.slice(start.length, -end.length));
+    if (
+      !Array.isArray(replies) ||
+      !replies.length ||
+      !replies.every(
+        (reply) =>
+          reply &&
+          typeof reply.questionItemId === "string" &&
+          typeof reply.question === "string" &&
+          typeof reply.answer === "string",
+      )
+    )
+      return text;
+    return replies.map((reply) => `${reply.question}\n${reply.answer}`).join("\n\n");
+  } catch {
+    return text;
+  }
+}
+
 /** `text` as a Markdown quote for the composer, followed by an empty line to type in. */
 export function quoteText(text: string): string {
   const lines = text.replace(/\s+$/, "").split("\n");
@@ -27,16 +52,23 @@ const PATH = /^(?:\.\/)?([\w.@-]+(?:\/[\w.@-]+)*\.[A-Za-z][A-Za-z0-9]*)(?::(\d+)
 
 /** Explicit Markdown links can also name files with spaces or non-ASCII names. */
 export function fileHref(href: string, cwd: string): PathLink | null {
-  if (!href || href.startsWith("#") || /^[a-z][a-z\d+.-]*:/i.test(href)) return null;
+  if (!href || href.startsWith("#")) return null;
   let decoded: string;
   try {
     decoded = decodeURIComponent(href);
   } catch {
     return null;
   }
+  decoded = decoded.replace(/^\/(?=[a-z]:[\\/])/i, "");
+  const windows = /^[a-z]:[\\/]/i.test(decoded);
+  if (!windows && /^[a-z][a-z\d+.-]*:/i.test(decoded)) return null;
   const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(decoded);
   if (!match?.[1] || [...decoded].some((char) => char.charCodeAt(0) < 32)) return null;
-  const path = match[1].startsWith("/") ? match[1] : `${cwd.replace(/\/$/, "")}/${match[1]}`;
+  const path = windows
+    ? match[1].replace(/\\/g, "/")
+    : match[1].startsWith("/")
+      ? match[1]
+      : `${cwd.replace(/\/$/, "")}/${match[1]}`;
   if (opensOtherShare(path, match[1], cwd)) return null;
   const link: PathLink = { path };
   const line = match[2] ?? match[4];

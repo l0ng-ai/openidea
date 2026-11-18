@@ -3,16 +3,19 @@
  * Stepping), Python Debugger and Run/Debug. Consumed by the run and debugger
  * features (and `ide-run` for encoding / termination timeout).
  */
-import { CMakeProfiles } from "./cmake";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
 import type { SelectOption } from "@/ui";
 import { ColorSwatches, FormGroup, GlobListEditor, NumberInput, Row, Toggle } from "../components/Form";
-import { GradlePage, MavenPage } from "../languages/LanguagePages";
 import { useSetting } from "../components/context";
+import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
 import { Indented, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import { T } from "@/ui";
+
+const CMakeProfiles = lazyPage("build.cmake", () => import("./cmake").then((m) => m.CMakeProfiles));
+const GradlePage = lazyPage("build.gradle", () => import("../languages/LanguagePages").then((m) => m.GradlePage));
+const MavenPage = lazyPage("build.maven", () => import("../languages/LanguagePages").then((m) => m.MavenPage));
 
 export const BUILD_GROUP = "Build, Execution, Deployment";
 

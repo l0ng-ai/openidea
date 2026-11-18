@@ -219,6 +219,34 @@ it("does not open the worktree when the checkout offer is declined", async () =>
   expect(mocks.executeAction).not.toHaveBeenCalled();
 });
 
+it("names the files git would remove when untracked ones block the checkout", async () => {
+  mocks.checkout.mockResolvedValue(ok({ kind: "untrackedFiles", files: ["TEST.md"], removed: true }));
+  await checkoutBranch("feature/x");
+  expect(mocks.checkout).toHaveBeenCalledTimes(1);
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "error",
+      title: "Untracked files prevent checkout",
+      body: expect.stringContaining(
+        "The following untracked working tree files would be removed by checkout:\nTEST.md",
+      ),
+    }),
+  );
+});
+
+it("still says overwritten when untracked files would be overwritten", async () => {
+  mocks.checkout.mockResolvedValue(ok({ kind: "untrackedFiles", files: ["dir/new.txt"], removed: false }));
+  await checkoutBranch("feature/x");
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      level: "error",
+      body: expect.stringContaining(
+        "The following untracked working tree files would be overwritten by checkout:\ndir/new.txt",
+      ),
+    }),
+  );
+});
+
 it("keeps the branch when the worktree question is turned down", async () => {
   mocks.worktrees.mockResolvedValue(ok([worktree("/p/front-feature-wt", "feature/wt")]));
   mocks.confirm.mockResolvedValue(false);

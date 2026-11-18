@@ -18,6 +18,7 @@ import {
   showServiceView,
 } from "@/workbench/contributions";
 import { registerFileNavigation } from "./fileNavigation";
+import { registerUrlNavigation } from "./urlNavigation";
 import { registerVariableNavigation } from "./variableNavigation";
 import { HTTP_LANGUAGE, httpEditorExtension, refreshRequests, requestAtCaret } from "./editor";
 import { HttpClientHeaderActions, HttpClientView } from "./HttpClientView";
@@ -33,6 +34,13 @@ import {
 import { endpointEditorExtension, OPEN_ENDPOINT, openEndpoint } from "./endpoints";
 import type { EndpointEntry } from "@/workbench/contributions";
 import { registerSpringEndpointProvider } from "./spring/routeIndex";
+import {
+  feignEditorExtension,
+  feignMenuItems,
+  GO_TO_FEIGN_ENDPOINT,
+  goToFeignEndpoint,
+  registerFeignNavigation,
+} from "./spring/feignNavigation";
 
 const SPRING_WHEN = "editorLangId == java || editorLangId == kotlin";
 
@@ -134,7 +142,9 @@ async function newRequest(directory?: string) {
 export function activate(): () => void {
   const disposers = [
     registerSpringEndpointProvider(),
+    registerFeignNavigation(),
     registerVariableNavigation(),
+    registerUrlNavigation(),
     registerFileNavigation(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetHttpClient();
@@ -143,7 +153,13 @@ export function activate(): () => void {
     registerEditorContribution({ id: "http.requests", order: 56, extensions: httpEditorExtension }),
     registerEditorContribution({ id: "http.endpoints", order: 58, extensions: endpointEditorExtension }),
     registerEditorContribution({ id: "http.spring", order: 57, extensions: springEditorExtension }),
-    registerMenuGroup({ id: "http.spring", menus: ["editor"], order: 40, items: (_menu, ctx) => menuGroupItems(ctx) }),
+    registerEditorContribution({ id: "http.feign", order: 59, extensions: feignEditorExtension }),
+    registerMenuGroup({
+      id: "http.spring",
+      menus: ["editor"],
+      order: 40,
+      items: (_menu, ctx) => [...menuGroupItems(ctx), ...feignMenuItems(ctx)],
+    }),
     registerServiceView({
       id: SERVICE_VIEW,
       title: "HTTP Client",
@@ -161,6 +177,15 @@ export function activate(): () => void {
         directory ? [{ kind: "action", action: "http.newRequest", arg: { directory }, label: "HTTP Request" }] : [],
     }),
     registerActions([
+      {
+        id: GO_TO_FEIGN_ENDPOINT,
+        title: "Go to Feign Endpoint",
+        category: "Navigate",
+        icon: "arrow-right",
+        keywords: ["spring", "feign", "microservice", "endpoint"],
+        when: SPRING_WHEN,
+        run: ({ arg }) => goToFeignEndpoint(arg),
+      },
       {
         id: OPEN_ENDPOINT,
         title: "Open in HTTP Client",

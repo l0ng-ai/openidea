@@ -7,13 +7,15 @@ import { EditorShownProvider } from "@/workbench/contributions";
 import { hideContextMenu, useContextMenuStore } from "@/ui";
 import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
-import { SessionEditor, conversationRows } from "./SessionEditor";
+import { SessionEditor } from "./SessionEditor";
+import { conversationRows } from "./session/conversationRows";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import {
   disconnect,
   hideImportSessions,
   importExternalSessions,
   refreshExternalSessions,
+  releaseClosedTaskCache,
   showImportSessions,
   useAgents,
 } from "./store";
@@ -31,10 +33,13 @@ const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
   changes: [] as AgentChange[],
   changesCalls: 0,
+  turnChanges: [] as AgentChange[],
   grouped: { uncommitted: [] as AgentChange[], commits: [] as AgentCommit[] },
   groupedCalls: 0,
   rolledBack: [] as Array<[string, string[] | null, string | null]>,
   answers: [] as Array<[string, number, string | null]>,
+  questionAnswers: [] as Array<[string, string, string | null]>,
+  questionError: null as string | null,
   fetched: [] as string[],
   entryError: null as string | null,
   entryWait: null as Promise<void> | null,
@@ -80,7 +85,8 @@ vi.mock("@/platform/ipc", async (original) => ({
         };
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
-    agentChanges: async () => {
+    agentChanges: async (_task: string, view: string | null) => {
+      if (view === "lastTurn") return { status: "ok", data: backend.turnChanges };
       backend.changesCalls += 1;
       return { status: "ok", data: backend.changes };
     },
@@ -99,6 +105,11 @@ vi.mock("@/platform/ipc", async (original) => ({
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
     agentRespond: async (task: string, permission: number, option: string | null) => {
       backend.answers.push([task, permission, option]);
+      return { status: "ok", data: null };
+    },
+    agentAnswerQuestion: async (task: string, question: string, answer: string | null) => {
+      backend.questionAnswers.push([task, question, answer]);
+      if (backend.questionError) throw new Error(backend.questionError);
       return { status: "ok", data: null };
     },
     agentExternalSessions: async () => {
@@ -221,12 +232,13 @@ beforeEach(() => {
   localStorage.clear();
   backend.changes = [];
   backend.changesCalls = 0;
+  backend.turnChanges = [];
   backend.grouped = { uncommitted: [], commits: [] };
   backend.groupedCalls = 0;
   backend.rolledBack = [];
   backend.external = [];
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
-  useChangesOptions.setState({ groupByCommit: false });
+  useChangesOptions.setState({ groupByCommit: false, scope: "task" });
   backend.imported = [];
   backend.importError = null;
   backend.importErrors = new Map();
@@ -1280,6 +1292,125 @@ describe("a pending question", () => {
   });
 });
 
+describe("an asynchronous Codex question", () => {
+  beforeEach(() => {
+    backend.questionAnswers = [];
+    backend.questionError = null;
+  });
+
+  function freeQuestion() {
+    const answerKey = JSON.stringify(["request_user_input_async", "free", 0]);
+    const entry: AgentEntry = {
+      type: "question",
+      id: "free",
+      title: "What deadline?",
+      chosen: null,
+      questions: [{ answerKey, header: "", question: "What deadline?", multiSelect: false, options: [] }],
+    };
+    backend.entries.set("A", [entry]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    return answerKey;
+  }
+
+  it("accepts a typed answer without suggested choices", async () => {
+    const answerKey = freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "Tomorrow" } });
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.questionAnswers).toEqual([["A", "free", JSON.stringify({ [answerKey]: ["Tomorrow"] })]]),
+    );
+  });
+
+  it("skips without submitting an answer", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    fireEvent.click(within(card).getByRole("button", { name: "Skip" }));
+    await waitFor(() => expect(backend.questionAnswers).toEqual([["A", "free", null]]));
+  });
+
+  it("preserves a draft while a blocking question takes priority", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "Tomorrow" } });
+    const asyncEntry = backend.entries.get("A")![0]!;
+    const blocking = {
+      type: "permission",
+      id: 100,
+      title: "Blocking question",
+      options: [],
+      chosen: null,
+      questions: [{ header: "", question: "Blocking question", multiSelect: false, options: [] }],
+    } as AgentEntry;
+    act(() => useAgents.setState({ entries: new Map([["A", [asyncEntry, blocking]]]) }));
+    expect(await screen.findByRole("form", { name: "Blocking question" })).toBeInTheDocument();
+    act(() => useAgents.setState({ entries: new Map([["A", [asyncEntry, { ...blocking, chosen: "Cancelled" }]]]) }));
+    const restored = await screen.findByRole("form", { name: "What deadline?" });
+    expect(within(restored).getByPlaceholderText("Type your answer")).toHaveValue("Tomorrow");
+  });
+
+  it("hides the card while its task is archived", async () => {
+    freeQuestion();
+    await screen.findByRole("form", { name: "What deadline?" });
+    act(() =>
+      useAgents.setState((s) => ({ tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "archived" }) })),
+    );
+    expect(screen.queryByRole("form", { name: "What deadline?" })).toBeNull();
+  });
+
+  it("keeps the typed answer after a failed submission and allows retry", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "Tomorrow" } });
+    backend.questionError = "reply unavailable";
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    expect(await within(card).findByRole("alert")).toHaveTextContent("reply unavailable");
+    expect(within(card).getByPlaceholderText("Type your answer")).toHaveValue("Tomorrow");
+    backend.questionError = null;
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(backend.questionAnswers).toHaveLength(2));
+    expect(within(card).queryByRole("alert")).toBeNull();
+  });
+
+  it.each(["running", "ready"] as const)("offers answers while the task is %s", async (status) => {
+    const answerKey = JSON.stringify(["request_user_input_async", "call-1", 0]);
+    const question: AgentEntry = {
+      type: "question",
+      id: "call-1",
+      title: "Include retries?",
+      chosen: null,
+      questions: [
+        {
+          answerKey,
+          header: "",
+          question: "Include retries?",
+          multiSelect: false,
+          options: [
+            { label: "Yes", description: "", preview: null },
+            { label: "No", description: "", preview: null },
+          ],
+        },
+      ],
+    };
+    backend.questionAnswers = [];
+    backend.entries.set("A", [{ type: "agent", text: "I can continue while you decide." }, question]);
+    useAgents.setState((s) => ({
+      entries: new Map(backend.entries),
+      tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status }),
+    }));
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Include retries?" });
+    fireEvent.click(within(card).getByRole("radio", { name: /^Yes/ }));
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    await waitFor(() =>
+      expect(backend.questionAnswers).toEqual([["A", "call-1", JSON.stringify({ [answerKey]: ["Yes"] })]]),
+    );
+  });
+});
+
 describe("a pending AskUserQuestion", () => {
   it("keeps separate answers for Codex question ids with identical wording", async () => {
     backend.entries.set("A", [
@@ -1988,6 +2119,69 @@ describe("session state across tasks and hosts", () => {
     act(() => disconnect());
     expect(useAgents.getState().scrollPositions.size).toBe(0);
   });
+
+  it("bounds retained entries for closed tabs (including busy and subagent entries) and refreshes MRU order", () => {
+    const entries = new Map<string, AgentEntry[]>();
+    const entryLoads = new Map<string, { error: string | null }>();
+    const changes = new Map<string, AgentChange[]>();
+    const scrollPositions = new Map<string, { top: number; stick: boolean }>();
+    const tasks = new Map<string, AgentTask>();
+    const baseTask = useAgents.getState().tasks.get("A")!;
+    for (let i = 1; i <= 7; i++) {
+      const id = `T${i}`;
+      tasks.set(id, { ...baseTask, id, title: id, status: i === 2 ? "running" : "ready" });
+      entries.set(id, [{ type: "agent", text: `Reply ${id}` }]);
+      entries.set(`${id}/sub`, [{ type: "agent", text: `Sub ${id}` }]);
+      entryLoads.set(id, { error: "err" });
+      changes.set(id, [{ path: "a.ts", relPath: "a.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }]);
+      scrollPositions.set(id, { top: 10, stick: false });
+    }
+    entries.set("gone", [{ type: "agent", text: "Deleted reply" }]);
+    useAgents.setState({ tasks, entries, entryLoads, changes, scrollPositions });
+    for (let i = 1; i <= 5; i++) releaseClosedTaskCache(`T${i}`);
+    // A deleted task's tab closing drops its data without taking one of the cached slots.
+    releaseClosedTaskCache("gone");
+    expect(useAgents.getState().entries.has("gone")).toBe(false);
+    expect(useAgents.getState().entries.has("T1")).toBe(true);
+    // Re-closing T1 refreshes it so T2 (even though running) becomes the oldest and is evicted next.
+    releaseClosedTaskCache("T1");
+    releaseClosedTaskCache("T6");
+    releaseClosedTaskCache("T7");
+    const state = useAgents.getState();
+    expect(state.entries.has("T1")).toBe(true);
+    expect(state.entries.has("T2")).toBe(false);
+    expect(state.entries.has("T2/sub")).toBe(false);
+    expect(state.entryLoads.has("T2")).toBe(false);
+    expect(state.changes.has("T2")).toBe(false);
+    expect(state.scrollPositions.has("T2")).toBe(false);
+    expect(state.entries.has("T3")).toBe(false);
+    expect(state.entries.has("T7")).toBe(true);
+  });
+
+  it("loads an archived task's conversation and changes again when it reopens after its cache was dropped", async () => {
+    backend.changes = [
+      {
+        path: "/project/kept-change.ts",
+        relPath: "kept-change.ts",
+        kind: "modified",
+        added: 1,
+        removed: 0,
+        oldPath: null,
+      },
+    ];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "archived" }),
+    }));
+    releaseClosedTaskCache("A");
+    expect(useAgents.getState().entries.has("A")).toBe(false);
+    backend.fetched = [];
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const panel = await screen.findByRole("complementary", { name: "Changes" });
+    expect(await within(panel).findByText("kept-change.ts")).toBeInTheDocument();
+    expect(backend.fetched).toEqual(["A"]);
+  });
 });
 
 describe("meters in the task header", () => {
@@ -2202,7 +2396,7 @@ describe("sessions from other apps", () => {
     fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
     await waitFor(() => expect(screen.getByText("Login fix")).toBeInTheDocument());
     expect(screen.getByText("No agent tasks yet")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Import Sessions from Other Apps…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Import Sessions…" })).toBeNull();
   });
 
   it("keeps two pending imports disabled", async () => {
@@ -2661,7 +2855,7 @@ describe("import sessions dialog", () => {
   it("opens from the empty task list", () => {
     act(() => useAgents.setState({ tasks: new Map() }));
     render(<AgentsView />);
-    fireEvent.click(screen.getByRole("button", { name: "Import Sessions from Other Apps…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import Sessions…" }));
     expect(useAgents.getState().importOpen).toBe(true);
   });
 
@@ -2776,6 +2970,43 @@ describe("accept changes", () => {
     await screen.findByRole("complementary", { name: "Changes" });
     expect(screen.queryByRole("button", { name: /Accept .* Changes…/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
+  });
+});
+
+describe("last turn changes", () => {
+  const change = (path: string): AgentChange => ({
+    path: `/project/${path}`,
+    relPath: path,
+    kind: "modified",
+    added: 1,
+    removed: 0,
+    oldPath: null,
+  });
+
+  it("lists and rolls back only what the last turn changed, the session still counting the whole task", async () => {
+    backend.changes = [change("a.ts"), change("b.ts")];
+    backend.turnChanges = [change("b.ts")];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    useAgents.setState({ tasks: new Map([["A", { ...task("A"), status: "ready" }]]) });
+    render(<SessionEditor input={input("A")} />);
+    const pane = await screen.findByRole("complementary", { name: "Changes" });
+    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
+
+    fireEvent.click(within(pane).getByRole("radio", { name: "Last Turn" }));
+    await waitFor(() => expect(within(pane).queryByText("a.ts")).toBeNull());
+    expect(within(pane).getByText("b.ts")).toBeInTheDocument();
+    expect(within(pane).getByText("Since the last turn started")).toBeInTheDocument();
+    expect(useChangesOptions.getState().scope).toBe("turn");
+    expect(screen.getByRole("button", { name: /2 changed files/ })).toBeInTheDocument();
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Rollback All Changes…" }));
+    await waitFor(() => expect(backend.rolledBack).toEqual([["A", null, "lastTurn"]]));
+
+    backend.turnChanges = [];
+    fireEvent.click(within(pane).getByRole("button", { name: "Refresh" }));
+    expect(await within(pane).findByText("The last turn changed no files")).toBeInTheDocument();
+    fireEvent.click(within(pane).getByRole("radio", { name: "Whole Task" }));
+    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
   });
 });
 

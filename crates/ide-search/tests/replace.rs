@@ -18,6 +18,7 @@ fn query(pattern: &str) -> SearchQuery {
         scope: SearchScope::Project,
         max_matches: 0,
         context: Default::default(),
+        include_excluded: false,
     }
 }
 
@@ -65,7 +66,7 @@ impl ReplaceHost for FakeDocs {
 }
 
 fn targets(paths: &[&str]) -> Vec<ReplaceTarget> {
-    paths.iter().map(|p| ReplaceTarget { path: PathBuf::from(p).into(), only: None }).collect()
+    paths.iter().map(|p| ReplaceTarget { path: PathBuf::from(p).into(), only: None, skip: None }).collect()
 }
 
 #[test]
@@ -161,7 +162,7 @@ fn replace_files_runs_off_thread_and_can_be_cancelled_from_outside() {
 #[test]
 fn replace_files_respects_selected_matches_and_invalid_patterns() {
     let docs = FakeDocs::with(&[("a", "foo\nfoo\nfoo")]);
-    let t = vec![ReplaceTarget { path: "a".into(), only: Some(vec![Pos::new(1, 0)]) }];
+    let t = vec![ReplaceTarget { path: "a".into(), only: Some(vec![Pos::new(1, 0)]), skip: None }];
     let s = replace_files(&docs, &query("foo"), "x", false, &t, &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(s.replacements, 1);
     assert_eq!(docs.text("a"), "foo\nx\nfoo");

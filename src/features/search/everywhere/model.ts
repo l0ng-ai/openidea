@@ -331,8 +331,6 @@ export function matchActions(
   const recentRank = new Map(opts.recent.map((id, i) => [id, i]));
   for (const a of actions) {
     if (a.hidden) continue;
-    const enabled = opts.isEnabled(a);
-    if (!enabled && opts.includeDisabled === false) continue;
     let score: number;
     let indices: number[] = [];
     const translated = shown(a, a.title);
@@ -353,6 +351,8 @@ export function matchActions(
       score = Math.max(best, idHit) - 400;
       if (!Number.isFinite(score)) continue;
     }
+    const enabled = opts.isEnabled(a);
+    if (!enabled && opts.includeDisabled === false) continue;
     if (!enabled) score -= 150;
     const r = recentRank.get(a.id);
     if (r !== undefined) score += 40 - Math.min(30, r * 3);

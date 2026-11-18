@@ -192,6 +192,20 @@ describe("replacing a project in this window", () => {
     expect(useProject.getState().project?.root).toBe("/local");
   });
 
+  it("asks about trust before leaving, so Don't Open keeps the current project running", async () => {
+    useProject.setState({
+      ...projectState("/a"),
+      settings: { general: { openProjectIn: "same" } },
+    } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    vi.mocked(confirmProjectTrust).mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    await openProjectWithPolicy("/b");
+    expect(confirmProjectTrust).toHaveBeenCalledWith("/b", "local");
+    expect(confirmLeaveProject).not.toHaveBeenCalled();
+    expect(openProject).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it("opens the local project when its path matches the remote root", async () => {
     useProject.setState({
       ...projectState("/same"),
@@ -792,11 +806,14 @@ describe("trust is asked before a new project window opens", () => {
     expect(windowOpenProject).toHaveBeenCalled();
   });
 
-  it("asks only once, from openProject, when the project opens in this window", async () => {
+  it("asks once this window takes the project, before leaving its current one", async () => {
     windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
     await openProjectInWindow("/p/b", false);
     expect(windowOpenProject).toHaveBeenCalledWith("/p/b", false, []);
-    expect(confirmProjectTrust).not.toHaveBeenCalled();
+    expect(confirmProjectTrust).toHaveBeenCalledOnce();
+    expect(vi.mocked(confirmProjectTrust).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(confirmLeaveProject).mock.invocationCallOrder[0]!,
+    );
     expect(openProject).toHaveBeenCalledWith("/p/b");
   });
 });

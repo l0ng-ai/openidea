@@ -20,6 +20,7 @@ mod auth;
 mod build_graph;
 pub mod commands;
 pub mod commit;
+mod console_rules;
 mod database;
 mod dependencies;
 pub(crate) mod diagnostics;
@@ -437,6 +438,11 @@ impl PluginHost {
     /// Current decoration snapshots for windows opening after a plugin published them.
     pub fn decoration_sets(&self) -> std::collections::BTreeMap<String, Vec<DecorationSet>> {
         self.shared.decoration_sets()
+    }
+
+    /// Every plugin's console highlight rules, for windows opening after they were set.
+    pub fn console_rules(&self) -> std::collections::BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+        self.shared.console_rules()
     }
 
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
@@ -1807,6 +1813,12 @@ impl PluginHost {
         request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
     }
 
+    /// A window answered a plugin's `ClipboardRequested`; false when the call no longer
+    /// waits or asked another window.
+    pub fn answer_clipboard(&self, client: &str, request_id: &str, answer: ClipboardAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_clipboard(client, id, answer))
+    }
+
     pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
         request_id.parse().is_ok_and(|id| self.shared.answer_commit(id, answer))
     }
@@ -2215,6 +2227,7 @@ impl PluginHost {
                 if events.is_empty() {
                     return Ok(());
                 }
+                let events = Self::relativize_documents(&shared, invocation.client.as_deref(), events);
                 rt.handle_events(events, invocation)
             },
             move |result| {
@@ -3088,6 +3101,26 @@ impl PluginHost {
             homepage: m.homepage.clone(),
             change_notes: m.change_notes.clone(),
             icon: p.icon.clone(),
+            java_agent: self.java_agents.for_plugin(&m.id).map(|agent| {
+                let pin = self
+                    .ledger
+                    .lock()
+                    .get(&p.subject())
+                    .filter(|grant| grant.has(&Capability::JavaAgent))
+                    .and_then(|grant| grant.binaries.get(&Capability::JavaAgent.to_string()).cloned());
+                let approved = pin.as_ref().is_some_and(|pin| {
+                    pin.path == agent.jar && ledger::file_hash(&pin.path).is_ok_and(|hash| hash == pin.hash)
+                });
+                PluginJavaAgent {
+                    file_name: agent
+                        .jar
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| agent.jar.display().to_string()),
+                    args: agent.args,
+                    approved,
+                }
+            }),
             source: p.source,
             path: p.dir().to_path_buf().into(),
             enabled: !self.state.lock().disabled.contains(&m.id),

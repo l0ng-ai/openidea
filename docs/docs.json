@@ -19,6 +19,10 @@
   "navbar": {
     "links": [
       {
+        "label": "Marketplace",
+        "href": "/plugins"
+      },
+      {
         "label": "GitHub",
         "href": "https://github.com/l0ng-ai/openidea"
       }
@@ -40,7 +44,14 @@
             "groups": [
               {
                 "group": "Get started",
-                "pages": ["en/index", "en/guide/install", "en/guide/quickstart", "en/guide/migrate", "en/roadmap"]
+                "pages": [
+                  "en/index",
+                  "en/introduction",
+                  "en/guide/install",
+                  "en/guide/quickstart",
+                  "en/guide/migrate",
+                  "en/roadmap"
+                ]
               },
               {
                 "group": "Editing",
@@ -234,13 +245,37 @@
       },
       {
         "language": "zh",
+        "navbar": {
+          "links": [
+            {
+              "label": "插件市场",
+              "href": "/zh/plugins"
+            },
+            {
+              "label": "GitHub",
+              "href": "https://github.com/l0ng-ai/openidea"
+            }
+          ],
+          "primary": {
+            "type": "button",
+            "label": "下载",
+            "href": "https://github.com/l0ng-ai/openidea/releases/latest"
+          }
+        },
         "tabs": [
           {
             "tab": "指南",
             "groups": [
               {
                 "group": "开始",
-                "pages": ["zh/index", "zh/guide/install", "zh/guide/quickstart", "zh/guide/migrate", "zh/roadmap"]
+                "pages": [
+                  "zh/index",
+                  "zh/introduction",
+                  "zh/guide/install",
+                  "zh/guide/quickstart",
+                  "zh/guide/migrate",
+                  "zh/roadmap"
+                ]
               },
               {
                 "group": "编辑",
@@ -434,6 +469,10 @@
       }
     ]
   },
+  "redirects": [
+    { "source": "/en/plugins", "destination": "/plugins" },
+    { "source": "/zh/home", "destination": "/zh" }
+  ],
   "footer": {
     "socials": {
       "github": "https://github.com/l0ng-ai/openidea",

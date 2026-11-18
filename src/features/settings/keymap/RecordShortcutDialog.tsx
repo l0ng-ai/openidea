@@ -7,7 +7,13 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Checkbox, Dialog, Icon, Kbd, T } from "@/ui";
 import type { Action } from "@/platform/actions";
-import { formatBinding, mouseStrokeOf, normalizeBinding, suspendKeyboardDispatch } from "@/platform/keymap";
+import {
+  formatBinding,
+  mouseStrokeOf,
+  normalizeBinding,
+  parseDoubleModifier,
+  suspendKeyboardDispatch,
+} from "@/platform/keymap";
 import { isPageSwipe } from "@/platform/pageSwipe";
 import { ask } from "@/workbench/messages";
 import { findConflicts, resolveBindings, type Conflict, type KeymapDraft } from "./model";
@@ -15,6 +21,7 @@ import { groupPath } from "./groups";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
 import { tx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 
 export interface RecordShortcutDialogProps {
   action: Pick<Action, "id" | "title" | "category" | "when">;
@@ -23,7 +30,7 @@ export interface RecordShortcutDialogProps {
   onCancel: () => void;
   /** `removeConflicts`: also unbind the conflicting assignments. */
   onSubmit: (binding: string, conflicts: Conflict[], removeConflicts: boolean) => void;
-  /** Record a mouse shortcut (modified left clicks or side buttons) instead of keys. */
+  /** Record a mouse shortcut (modified left clicks, middle or side buttons) instead of keys. */
   mouse?: boolean;
 }
 
@@ -31,9 +38,11 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
   const [useSecond, setUseSecond] = useState(false);
+  const os = usePlatform((s) => s.os);
+  const rectangularSelection = action.id === "editor.createRectangularSelectionOnMouseDrag";
 
-  const binding =
-    mouse || isPageSwipe(first) ? first : first && useSecond ? (second ? `${first} ${second}` : "") : first;
+  const allowsSecond = !isPageSwipe(first) && !parseDoubleModifier(first);
+  const binding = !mouse && allowsSecond && first && useSecond ? (second ? `${first} ${second}` : "") : first;
   const conflicts = useMemo(
     () => (binding ? findConflicts(draft, binding, action.id, actions) : []),
     [binding, draft, action.id, actions],
@@ -76,16 +85,22 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
     >
       <div className={styles.recordBody}>
         {mouse ? (
-          <MouseRecorder value={first} onChange={setFirst} />
+          <MouseRecorder value={first} onChange={setFirst} sideButtons={!rectangularSelection} />
         ) : (
           <KeyStrokes
             first={first}
             second={second}
-            useSecond={useSecond && !isPageSwipe(first)}
+            useSecond={useSecond && allowsSecond}
+            allowsSecond={allowsSecond}
             setFirst={setFirst}
             setSecond={setSecond}
             setUseSecond={setUseSecond}
           />
+        )}
+        {mouse && os === "linux" && rectangularSelection && /(?:^|\+)Button2$/.test(binding) && (
+          <div className={styles.recordHint}>
+            <T>On Linux, middle-button rectangular selection conflicts with primary selection paste.</T>
+          </div>
         )}
         <div className={styles.conflictsLabel}>
           <T>Conflicts:</T>
@@ -149,12 +164,13 @@ interface KeyStrokesProps {
   first: string;
   second: string;
   useSecond: boolean;
+  allowsSecond: boolean;
   setFirst: (v: string) => void;
   setSecond: (v: string) => void;
   setUseSecond: (v: boolean) => void;
 }
 
-function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
+function KeyStrokes({ first, second, useSecond, allowsSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
   return (
     <>
       <div className={styles.recordRow}>
@@ -164,11 +180,12 @@ function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecon
         <StrokeRecorder autoFocus value={first} onChange={setFirst} aria-label="First stroke" />
       </div>
       <div className={styles.recordRow}>
-        <Checkbox checked={useSecond} onChange={setUseSecond} disabled={isPageSwipe(first)} label="Second stroke:" />
+        <Checkbox checked={useSecond} onChange={setUseSecond} disabled={!allowsSecond} label="Second stroke:" />
         <StrokeRecorder
           value={second}
           onChange={setSecond}
           disabled={!useSecond}
+          allowDoubleModifier={false}
           placeholder={useSecond ? "Press a shortcut" : ""}
           aria-label="Second stroke"
         />
@@ -180,10 +197,20 @@ function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecon
   );
 }
 
-/** Record modified left clicks and side buttons; shortcuts stay off while the dialog is open. */
-function MouseRecorder({ value, onChange }: { value: string; onChange: (binding: string) => void }) {
+/** Shortcuts stay off while the dialog records mouse buttons and modifiers. */
+function MouseRecorder({
+  value,
+  onChange,
+  sideButtons,
+}: {
+  value: string;
+  onChange: (binding: string) => void;
+  sideButtons: boolean;
+}) {
   useEffect(() => suspendKeyboardDispatch(), []);
   const record = (e: MouseEvent<HTMLDivElement>) => {
+    // Rectangular selection only handles left and middle buttons.
+    if (!sideButtons && e.button > 1) return;
     const stroke = mouseStrokeOf(e.nativeEvent);
     if (!stroke) return;
     e.preventDefault();
@@ -204,7 +231,11 @@ function MouseRecorder({ value, onChange }: { value: string; onChange: (binding:
         <span className={styles.recorded}>{formatBinding(value)}</span>
       ) : (
         <span className={styles.recorderPlaceholder}>
-          <T>Click here with Ctrl, Alt or Command held, or use a mouse side button</T>
+          {sideButtons ? (
+            <T>Click here with Ctrl, Alt or Command held, or use a middle or side mouse button</T>
+          ) : (
+            <T>Click here with Ctrl, Alt or Command held, or use the middle mouse button</T>
+          )}
         </span>
       )}
     </div>

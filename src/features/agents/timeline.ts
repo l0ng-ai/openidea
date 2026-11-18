@@ -126,11 +126,16 @@ export function foldedTurns(entries: readonly AgentEntry[], from: number, busy: 
         break;
       }
       // Something after the reply still wants to be seen (an error, an open question).
-      if (e.type === "error" || (e.type === "permission" && e.chosen === null)) return;
+      if (e.type === "error" || ((e.type === "permission" || e.type === "question") && e.chosen === null)) return;
     }
     if (reply < 0 || reply === user + 1) return;
     // What the user sent into the turn, and an error it ran into, stay in view.
-    if (entries.slice(user + 1, reply).some((e) => e.type === "user" || e.type === "error")) return;
+    if (
+      entries
+        .slice(user + 1, reply)
+        .some((e) => e.type === "user" || e.type === "error" || (e.type === "question" && e.chosen === null))
+    )
+      return;
     turns.set(user, { user, reply, sentMs: asked.sentMs ?? null, doneMs: asked.doneMs ?? null });
   });
   return turns;

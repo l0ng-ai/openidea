@@ -10,6 +10,7 @@ vi.mock("@/platform/ipc", async (orig) => {
     ...real,
     commands: {
       ...real.commands,
+      javaDebugAdapter: () => ok("java-debug"),
       javaDebugServer: (...a: unknown[]) => {
         invoked.push(["javaDebugServer", a]);
         return ok(41234);

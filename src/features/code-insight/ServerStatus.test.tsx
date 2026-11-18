@@ -24,6 +24,18 @@ describe("Language server status popup", () => {
     off();
   });
 
+  it("opens a server's settings from its row", () => {
+    const run = vi.fn();
+    const off = registerAction({ id: "tools.languageServers", title: "Language Servers…", run: ({ arg }) => run(arg) });
+    useServers.setState({ servers: new Map([[1 as never, server("ready", null)]]) });
+    render(<ServerStatus />);
+    fireEvent.click(screen.getByRole("button", { name: /Language servers/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure jdtls…" }));
+    expect(run).toHaveBeenCalledWith("jdtls");
+    expect(screen.queryByRole("button", { name: "Configure jdtls…" })).toBeNull();
+    off();
+  });
+
   it("keeps Restart for other failures", () => {
     useServers.setState({ servers: new Map([[1 as never, server("crashed", "exit code 1")]]) });
     render(<ServerStatus />);

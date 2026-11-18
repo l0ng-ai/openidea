@@ -57,6 +57,7 @@ In a Composer project without `vendor/`, or whose installed packages differ from
 
 - **PHPStan**: when the project has `vendor/bin/phpstan`, saved files are checked with it and its findings appear as diagnostics. The **PHPStan › Configuration file** setting picks the config; empty uses `phpstan.neon`, `phpstan.neon.dist` or `phpstan.dist.neon` in the project root.
 - **PHP-CS-Fixer**: when a folder above the file has `.php-cs-fixer.php` or `.php-cs-fixer.dist.php` and the project has `vendor/bin/php-cs-fixer`, **Reformat Code** (`⌥⌘L` / `Ctrl+Alt+L`) uses PHP-CS-Fixer instead of the language server.
+- **Alignment**: **Settings › Editor › Code Style › PHP › Alignment** has PhpStorm's **Align key-value pairs** (`=>` in multi-line arrays) and **Align consecutive assignments** (`=` in assignment statements on consecutive lines), both off by default. They apply after the language server or PHP-CS-Fixer formats, on save too; for a selection, only to its lines. A blank line, a comment line, another statement or a value spanning several lines starts a new group, and nested arrays align on their own.
 
 ## Run and test
 

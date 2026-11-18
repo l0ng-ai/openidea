@@ -57,6 +57,7 @@ import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
 import { codeLensPositions } from "./codeLens";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -80,7 +81,7 @@ export function matchesFilePatterns(patterns: string, path: string): boolean {
 }
 
 export function softWrapActive(softWrap: boolean | undefined, prefs: EditorExtras, path: string): boolean {
-  return !!softWrap && matchesFilePatterns(prefs.general.softWrapFiles || "*", path);
+  return (softWrap ?? true) && matchesFilePatterns(prefs.general.softWrapFiles || "*", path);
 }
 
 const wrapIndentCache = new Map<number, Decoration>();
@@ -452,9 +453,10 @@ export function resetConfiguredEditorsFontZoom(origin: EditorView): void {
 /** Exported for tests: the ⌘/Ctrl+wheel handler of the prefs compartment. */
 export const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
-    if (!e.metaKey && !e.ctrlKey) return false;
+    const step = wheelZoomStep(e);
+    if (step === null) return false;
     e.preventDefault();
-    stepConfiguredEditorsFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    if (step) stepConfiguredEditorsFontZoom(view, step);
     return true;
   },
 });

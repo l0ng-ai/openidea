@@ -2,8 +2,8 @@
 //! while `mcpServer.enabled` is on, and reports where it listens.
 
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeResult, IpcPath};
-use ide_host::mcp::{FileProblems, FocusedEditor};
 use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
@@ -168,6 +168,7 @@ pub struct McpServerStatus {
     pub stdio_command: Vec<String>,
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_server_status(window: Window, state: State<'_, AppState>) -> IdeResult<McpServerStatus> {
@@ -189,6 +190,7 @@ pub fn mcp_server_status(window: Window, state: State<'_, AppState>) -> IdeResul
 
 /// Settings › Agents › MCP Server › Regenerate Token: forgets the kept token, and restarts the
 /// server with a new one. Clients configured with the old token stop working.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_regenerate_token(state: State<'_, AppState>) -> IdeResult<()> {
@@ -202,40 +204,7 @@ pub fn mcp_regenerate_token(state: State<'_, AppState>) -> IdeResult<()> {
     Ok(())
 }
 
-#[tauri::command]
-#[specta::specta]
-pub fn mcp_set_open_editors(window: Window, state: State<'_, AppState>, paths: Vec<IpcPath>) -> IdeResult<()> {
-    state.project(window.label())?;
-    state.host.mcp_reports.set_open_editors(window.label(), paths.into_iter().map(PathBuf::from).collect());
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn mcp_set_focused_editor(
-    window: Window,
-    state: State<'_, AppState>,
-    editor: Option<FocusedEditor>,
-    focused: bool,
-) -> IdeResult<()> {
-    state.project(window.label())?;
-    state.host.mcp_reports.set_focused_editor(window.label(), editor, focused);
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn mcp_report_problems(
-    window: Window,
-    state: State<'_, AppState>,
-    reset: bool,
-    files: Vec<FileProblems>,
-) -> IdeResult<()> {
-    state.project(window.label())?;
-    state.host.mcp_reports.report_problems(window.label(), reset, files);
-    Ok(())
-}
-
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_ui_ready(window: Window, state: State<'_, AppState>, ready: bool) -> IdeResult<()> {
@@ -245,6 +214,7 @@ pub fn mcp_ui_ready(window: Window, state: State<'_, AppState>, ready: bool) -> 
 }
 
 /// The user closed the Run tool window tab of an agent command (`run_command`).
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_agent_run_closed(window: Window, state: State<'_, AppState>, name: String) -> IdeResult<()> {
@@ -253,6 +223,7 @@ pub fn mcp_agent_run_closed(window: Window, state: State<'_, AppState>, name: St
     Ok(())
 }
 
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn mcp_respond(
@@ -282,3 +253,5 @@ mod tests {
         assert_eq!(port_to_wait_for((local, 64342), None), None);
     }
 }
+
+ide_command::desktop_domain!(mcp_agent_run_closed, mcp_regenerate_token, mcp_respond, mcp_server_status, mcp_ui_ready,);

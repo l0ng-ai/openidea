@@ -1,5 +1,6 @@
 //! Cancellable, non-interactive Search Everywhere providers.
 use super::PluginHost;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId, ipc_path::to_ipc};
 use ide_extension::{Capability, Package, UiDecl, decode, validate_item_id};
 use ide_plugin::{
@@ -26,7 +27,7 @@ struct Decl {
 
 pub(super) fn declaration(pkg: &Package, value: toml::Value) -> Result<UiDecl, String> {
     let d: Decl = decode(POINT, value)?;
-    pkg.manifest.needs_api("contributes.searchCategories", 11)?;
+    pkg.manifest.needs_api("contributes.searchCategories", 13)?;
     validate_item_id(&d.id, "search category id")?;
     if pkg.manifest.wasm.is_none()
         || d.title.trim().is_empty()
@@ -58,10 +59,13 @@ pub struct PluginSearchPage {
     pub has_more: bool,
 }
 
+/// One page of `plugin_id`'s results for its search `category`. Cancellable with
+/// `cancel_request(request)`.
 #[allow(clippy::too_many_arguments)]
-pub async fn search(
+#[command(trust = trusted)]
+pub async fn plugin_search(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     plugin_id: String,
     category: String,
@@ -76,6 +80,7 @@ pub async fn search(
     let invocation = Invocation { workspace_root: root, client: Some(window.to_owned()), ..Default::default() };
     let cancel = host.begin_project_request(window, request);
     let worker_cancel = cancel.clone();
+    let plugins = plugins.clone();
     // Startup and file reads can outlive a provider call. The request still returns
     // promptly; the worker checks this token before doing or publishing more work.
     let result = tokio::select! {
@@ -242,6 +247,8 @@ fn validate(
     }
     Ok(PluginSearchPage { items, has_more: page.has_more && limit < MAX_RESULTS })
 }
+
+ide_command::domain!(plugins_search: plugin_search);
 
 #[cfg(test)]
 mod tests {

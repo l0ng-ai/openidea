@@ -1,7 +1,8 @@
 /**
  * Spring Web request mappings of a Java / Kotlin source: `@RequestMapping` /
  * `@GetMapping`… methods of `@RestController` / `@Controller` classes, with
- * the class-level mapping applied. Constants are resolved within the file.
+ * the class-level mapping applied. Constants are resolved within the file, and
+ * through an {@link ExternalConstant} in other classes (`constants.ts`).
  */
 import {
   allClasses,
@@ -86,12 +87,27 @@ const MEDIA_TYPES: Record<string, string> = {
   TEXT_XML: "text/xml",
 };
 
+/** The value of constant `name` of another class (`qualifier`, or an inherited / statically imported one when absent). */
+export type ExternalConstant = (qualifier: string | undefined, name: string) => string | null;
+
 /** Evaluates string-valued annotation arguments within one file. */
 export class Constants {
   private readonly fields = new Map<string, Expr>();
-  constructor(file: SourceFile) {
-    for (const f of [...file.fields, ...allClasses(file).flatMap((c) => c.fields)])
+  private readonly classes: Set<string>;
+  constructor(
+    file: SourceFile,
+    private readonly external?: ExternalConstant,
+  ) {
+    const classes = allClasses(file);
+    for (const f of [...file.fields, ...classes.flatMap((c) => c.fields)])
       if (f.init && !this.fields.has(f.name)) this.fields.set(f.name, f.init);
+    this.classes = new Set(classes.map((c) => c.name));
+  }
+
+  /** The value of this file's constant `name`. */
+  named(name: string): string | null {
+    const init = this.fields.get(name);
+    return init ? this.value(init, false, new Set([name])) : null;
   }
 
   /** Every element of an array (`{a, b}`, `[a, b]`, `arrayOf(a, b)`) or the single value; unresolvable ones dropped. */
@@ -133,7 +149,8 @@ export class Constants {
         (m, a: string | undefined, b: string | undefined) => {
           const name = (a ?? b)!;
           const init = seen.has(name) ? undefined : this.fields.get(name);
-          return init ? (this.value(init, false, new Set([...seen, name])) ?? m) : m;
+          if (init) return this.value(init, false, new Set([...seen, name])) ?? m;
+          return seen.has(name) ? m : (this.external?.(undefined, name) ?? m);
         },
       );
     if (part.length === 1 && part[0]!.kind === "num") return part[0]!.text;
@@ -144,10 +161,19 @@ export class Constants {
     const last = names[names.length - 1]!;
     const qualifier = names[names.length - 2];
     if (qualifier === "MediaType") return MEDIA_TYPES[last.replace(/_VALUE$/, "")] ?? null;
+    // `Other.NAME` of a class declared elsewhere.
+    if (qualifier && !this.classes.has(qualifier)) {
+      const v = this.external?.(qualifier, last);
+      if (v != null) return v;
+    }
     const init = this.fields.get(last);
     if (init && !seen.has(last)) {
       seen.add(last);
       return this.value(init, enums, seen);
+    }
+    if (!qualifier && !enums) {
+      const v = this.external?.(undefined, last);
+      if (v != null) return v;
     }
     return enums ? last : null;
   }
@@ -267,8 +293,8 @@ function endpoint(cls: ClassDecl, method: ClassDecl["methods"][number], c: Const
   };
 }
 
-export function controllersOf(file: SourceFile): Controller[] {
-  const constants = new Constants(file);
+export function controllersOf(file: SourceFile, external?: ExternalConstant): Controller[] {
+  const constants = new Constants(file, external);
   const out: Controller[] = [];
   for (const cls of allClasses(file)) {
     if (!cls.annotations.some((a) => CONTROLLER.has(a.name))) continue;
@@ -279,10 +305,11 @@ export function controllersOf(file: SourceFile): Controller[] {
 }
 
 /** Controllers of a Java / Kotlin source, with their endpoints. */
-export function springControllers(text: string): Controller[] {
+export function springControllers(text: string, external?: (file: SourceFile) => ExternalConstant): Controller[] {
   // Cheap guard: most files are not controllers.
   if (!/@(?:[\w.]+\.)?(?:Rest)?Controller\b/.test(text)) return [];
-  return controllersOf(parseSource(text));
+  const file = parseSource(text);
+  return controllersOf(file, external?.(file));
 }
 
 /** The controller and endpoint whose declaration holds `offset`. */

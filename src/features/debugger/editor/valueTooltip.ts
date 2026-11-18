@@ -5,11 +5,11 @@
  */
 import type { EditorState, Extension } from "@codemirror/state";
 import type { DebugSessionId, Variable } from "@/bindings";
-import { hoverTooltip, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
-import { showHint } from "@/editor/lsp/hint";
+import { closeHoverTooltips, hoverTooltip, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
+import { hideHint, showHint } from "@/editor/lsp/hint";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { navigationModifierHeld } from "@/platform/navigationModifier";
-import { activeSession, evaluate } from "../state";
+import { activeSession, evaluate, useDebug } from "../state";
 import { inlineValue, shownValue } from "../values";
 import { tx } from "@/platform/i18n";
 import { iconMarkup, selectableText } from "@/ui";
@@ -45,10 +45,20 @@ export function valueHint(
   value: Variable,
   session: DebugSessionId,
   max: number | null = 400,
+  opts: { expanded?: boolean; pin?: () => void } = {},
 ): { dom: HTMLElement; destroy: () => void } {
   const dom = document.createElement("div");
   dom.className = `${styles.valueTooltip} ${selectableText}`;
   let tree: { unmount(): void } | null = null;
+  const expandTree = () => {
+    dom.classList.replace(selectableText, styles.valueTooltipTree!);
+    dom.replaceChildren();
+    tree = mountValueTree(dom, expression, value, session);
+  };
+  if (value.variablesReference > 0 && opts.expanded) {
+    expandTree();
+    return { dom, destroy: () => tree?.unmount() };
+  }
   if (value.variablesReference > 0) {
     // IDEA's value hint: the "+" expands the object into a variables tree in place.
     const expand = document.createElement("button");
@@ -60,10 +70,9 @@ export function valueHint(
     expand.addEventListener("mousedown", (e) => e.preventDefault());
     expand.addEventListener("click", () => {
       if (tree) return;
+      if (opts.pin) return opts.pin();
       expand.remove();
-      dom.classList.replace(selectableText, styles.valueTooltipTree!);
-      dom.replaceChildren();
-      tree = mountValueTree(dom, expression, value, session);
+      expandTree();
     });
     dom.append(expand);
   }
@@ -109,13 +118,46 @@ export function valueTooltip(): Extension {
         pos: expr.from,
         end: expr.to,
         above: true,
-        create: () => {
-          return valueHint(expr.text, value, session.id);
-        },
+        create: (view) =>
+          valueHint(expr.text, value, session.id, 400, {
+            // The tree outgrows the hint and may move to the other side of the line, away from the
+            // mouse, which closed the hover tooltip before it could be reached. Like IDEA's value
+            // popup it stays until Escape, a click in the editor or the next step.
+            pin: () => {
+              view.dispatch({ effects: closeHoverTooltips });
+              showHint(view, () => pinnedTree(view, expr.text, value, session.id), {
+                pos: expr.from,
+                timeout: null,
+              });
+            },
+          }),
       };
     },
     { hoverTime: BASE_HOVER },
   );
+}
+
+/** An expanded value tree, closed when its session leaves the stop it was evaluated in. */
+function pinnedTree(view: EditorView, expression: string, value: Variable, session: DebugSessionId) {
+  const stop = useDebug.getState().stopSeq;
+  const unsubscribe = useDebug.subscribe((s) => {
+    if (s.stopSeq !== stop || s.sessions[session]?.status !== "paused") hideHint(view);
+  });
+  const hint = valueHint(expression, value, session, 400, { expanded: true });
+  // The tree has the focus, so the editor's Escape doesn't reach the hint.
+  hint.dom.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    e.preventDefault();
+    hideHint(view);
+    view.focus();
+  });
+  return {
+    dom: hint.dom,
+    destroy: () => {
+      unsubscribe();
+      hint.destroy();
+    },
+  };
 }
 
 const SELECTION_DELAY = 400;

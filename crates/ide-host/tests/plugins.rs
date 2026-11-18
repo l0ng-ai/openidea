@@ -121,6 +121,7 @@ impl PluginWorkspace for TestWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit,
             context: Default::default(),
+            include_excluded: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
@@ -879,16 +880,15 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
     // Room for activation (about 3_100 on macOS, more on Windows). A background task gets ten
     // times it (5 s / 500 ms): enough for each step of `patient` with its CPU work (32_000 to
     // 80_000), not for the whole run without the refill on each report.
-    let f = fixture(Limits {
+    let limits = Limits {
         fuel: 40_000,
         timeout: Duration::from_millis(500),
         background: Duration::from_millis(5_000),
         ..Limits::default()
-    });
+    };
+    let f = fixture(limits);
     f.install(&misbehave_pkg());
-    if f.host.set_capability("misbehave", "process:git", true).is_err() {
-        return;
-    }
+    f.host.set_capability("misbehave", "process:git", true).expect("grant Git capability");
     // Warm up activation in its own call so `patient` starts with a fresh budget.
     assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
 
@@ -897,6 +897,13 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
 
     let err = f.run("misbehave", "spin", None).unwrap_err();
     assert!(err.contains("exceeded its CPU budget (40000 fuel per call)"), "{err}");
+
+    // Beginning a task alone must not renew its scaled budget.
+    let quiet = fixture(limits);
+    quiet.install(&misbehave_pkg());
+    quiet.host.set_capability("misbehave", "process:git", true).expect("grant Git capability");
+    let err = quiet.run("misbehave", "patient", Some("quiet:4000")).unwrap_err();
+    assert!(err.contains("exceeded its CPU budget (400000 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -2204,6 +2211,10 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
     assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
     assert!(info.contributions.iter().any(|c| c.point == "javaAgents" && c.label == "fixture agent.jar=mode=test"));
+    let agent = info.java_agent.clone().expect("agent metadata");
+    assert_eq!(agent.file_name, "fixture agent.jar");
+    assert_eq!(agent.args.as_deref(), Some("mode=test"));
+    assert!(!agent.approved);
     let source = f.host.java_agents();
     let launch = || {
         let agents = ide_run::java_agent::approved(&source.agents());
@@ -2217,6 +2228,7 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     // Granted: the installed jar with its arguments, one argument after the VM options.
     let info = f.host.set_capability("java-agent", "java.agent", true).unwrap();
     assert!(info.capabilities.iter().any(|c| c.id == "java.agent" && c.granted));
+    assert!(info.java_agent.as_ref().is_some_and(|agent| agent.approved));
     let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
     let option = format!("-javaagent:{}=mode=test", jar.display());
     let mut with_agent = plain.clone();
@@ -2228,7 +2240,11 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let (args, notes) = launch();
     assert_eq!(args, plain);
     assert!(notes.len() == 1 && notes[0].contains("changed since it was approved"), "{notes:?}");
+    let changed = f.host.info_of("java-agent").unwrap();
+    assert!(!changed.java_agent.as_ref().unwrap().approved, "Settings must show the changed jar");
+    f.host.set_capability("java-agent", "java.agent", false).unwrap();
     f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert!(f.host.info_of("java-agent").unwrap().java_agent.as_ref().is_some_and(|a| a.approved));
     assert_eq!(launch(), (with_agent.clone(), vec![]));
 
     // Revoked, then the plugin disabled: no agent either way.
@@ -4845,6 +4861,49 @@ fn plugins_set_their_own_context_keys() {
     assert!(f.host.context_keys(Some("main")).is_empty(), "cleared when the plugin stops");
 }
 
+/// `ui.set-console-rules` (API 1.12) replaces the plugin's rules for every window without a
+/// capability; unknown colours are dropped, an invalid rule keeps the previous list.
+#[test]
+fn plugins_replace_their_console_rules_and_lose_them_when_they_stop() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.run("jobs", "console-rules", None).unwrap();
+    let changed: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, e)| match e {
+            PluginEvent::ConsoleRulesChanged { plugin_id, rules } => Some((client, plugin_id, rules)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed.len(), 1);
+    let (client, plugin_id, rules) = &changed[0];
+    assert_eq!((client.as_deref(), plugin_id.as_str()), (None, "jobs"));
+    assert_eq!(rules.iter().map(|r| r.pattern.as_str()).collect::<Vec<_>>(), [r"\[AUDIT\]", r"job-\d+"]);
+    assert!(
+        rules[0].whole_line && rules[0].styles == ["bold"] && rules[0].foreground.as_deref() == Some("bright-yellow")
+    );
+    assert!(rules[1].ignore_case && rules[1].foreground.as_deref() == Some("cyan") && rules[1].background.is_none());
+    assert_eq!(f.host.console_rules()["jobs"], *rules);
+
+    let err = f.run("jobs", "console-rules", Some("(a+)+b")).unwrap_err();
+    assert!(err.contains("invalid") && err.contains("repeated group"), "{err}");
+    assert!(f.run("jobs", "console-rules", Some(".*a.*b")).unwrap_err().contains("too long"));
+    assert_eq!(f.host.console_rules()["jobs"].len(), 2, "an invalid list keeps the previous one");
+
+    f.run("jobs", "console-rules", Some("")).unwrap();
+    assert!(f.host.console_rules().is_empty());
+
+    f.run("jobs", "console-rules", None).unwrap();
+    f.take_events();
+    f.host.set_enabled("jobs", false).unwrap();
+    assert!(f.host.console_rules().is_empty(), "cleared when the plugin stops");
+    assert!(f.take_events().iter().any(
+        |(_, e)| matches!(e, PluginEvent::ConsoleRulesChanged { plugin_id, rules } if plugin_id == "jobs" && rules.is_empty())
+    ));
+}
+
 #[test]
 fn context_keys_are_capped_and_windows_overlay_global_ones() {
     let f = fixture(Limits::default());
@@ -5273,6 +5332,32 @@ fn plugin_readonly_fields_and_table_row_extensions_round_trip() {
         assert!(f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::ViewChanged { plugin_id, view } if plugin_id == "tables" && view == "tables")));
         assert_eq!(f.host.render_view("tables", "tables", None, f.inv()).unwrap().status.as_deref(), Some(status));
     }
+}
+
+#[test]
+fn document_changes_reach_plugins_relative_to_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("path-events"));
+    f.run("test.path-events", "count", None).unwrap();
+    let deliver = |path: &str| {
+        let change = ide_plugin::DocumentChanged {
+            path: to_ipc(&f.project.join(path)),
+            project: None,
+            base_version: 1,
+            version: 2,
+            changes: Vec::new(),
+        };
+        f.host.post_events(Some("main"), vec![WorkbenchEvent::DocumentChanged(change)]);
+        f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+    };
+    deliver("src/main.rs");
+    assert_eq!(f.run("test.path-events", "document", None).unwrap(), None, "outside the subscribed paths");
+    // Queued with the absolute path, filtered again at delivery, handed over project-relative.
+    deliver("config/app.yaml");
+    assert_eq!(f.run("test.path-events", "document", None).unwrap().as_deref(), Some("config/app.yaml"));
+    // With the project it is relative to: another open project may hold the same path.
+    assert_eq!(f.run("test.path-events", "document-project", None).unwrap(), Some(to_ipc(&f.project)));
 }
 
 #[test]
@@ -6865,7 +6950,7 @@ fn document_indexer_covers_workspace_members() {
     // Discovery: the member file is in the window's project scope.
     let files = f
         ._runtime
-        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, &f.plugins, "main"))
         .unwrap();
     assert!(files.paths.iter().any(|p| p.0 == mapping), "{:?}", files.paths);
     // Indexing the member file through the window's project publishes it: the
@@ -6875,7 +6960,7 @@ fn document_indexer_covers_workspace_members() {
     f._runtime
         .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
             &f.host,
-            f.plugins.clone(),
+            &f.plugins,
             "main",
             vec![mapping.clone()],
             ide_core::RequestId::next(),
@@ -6891,13 +6976,13 @@ fn document_indexer_covers_workspace_members() {
     std::fs::write(&outside, "def outside:item\n").unwrap();
     let files = f
         ._runtime
-        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, &f.plugins, "main"))
         .unwrap();
     assert!(!files.paths.iter().any(|p| p.0 == outside), "{:?}", files.paths);
     f._runtime
         .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
             &f.host,
-            f.plugins.clone(),
+            &f.plugins,
             "main",
             vec![outside.clone()],
             ide_core::RequestId::next(),

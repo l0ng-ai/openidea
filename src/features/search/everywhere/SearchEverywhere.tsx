@@ -442,7 +442,7 @@ function SearchEverywhereDialog() {
       e.preventDefault();
       if (e.altKey) openIntentions();
       else if (hasPrimaryModifier(e) && tab === "text")
-        closeThen(() => void executeAction("find.inPath", { query: parsed.text }));
+        closeThen(() => void executeAction("find.inPath", { query: searchQuery.trim() }));
       else if (listing) activate(activeRow);
       else if (!settled && !sel.moved) pendingEnter.current = { side: e.shiftKey };
       else activateSelection(e.shiftKey);
@@ -482,6 +482,7 @@ function SearchEverywhereDialog() {
   const nothingInProject =
     !custom &&
     !!showEmpty &&
+    tab !== "actions" &&
     !emptyQuery &&
     !listing &&
     !includeNonProject &&
@@ -541,7 +542,7 @@ function SearchEverywhereDialog() {
           {tx(
             emptyQuery
               ? "Type to search"
-              : custom || includeNonProject
+              : custom || includeNonProject || tab === "actions"
                 ? "Nothing found"
                 : "Nothing found in project files",
           )}
@@ -633,7 +634,7 @@ function SearchEverywhereDialog() {
             className={styles.headerButton}
             title={tx("Open in Find Tool Window")}
             shortcut={tab === "text" ? formatBinding(hostBinding("Meta+Enter")) : undefined}
-            onClick={() => closeThen(() => void executeAction("find.inPath", { query: parsed.text }))}
+            onClick={() => closeThen(() => void executeAction("find.inPath", { query: searchQuery.trim() }))}
           />
         </div>
       </div>

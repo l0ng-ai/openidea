@@ -15,6 +15,7 @@ import {
   DB_TOOL_WINDOW,
   OUTPUT_TAB,
   connect,
+  createsDatabases,
   RESULTS_VIEW,
   detailsKey,
   disconnect,
@@ -24,6 +25,7 @@ import {
   loadSources,
   loadTables,
   consoleFiles,
+  newSchemaTarget,
   newConsole,
   openConsole,
   openConsoleFile,
@@ -45,7 +47,7 @@ import {
   removeSource,
 } from "./store";
 import { tableInput } from "./tableInput";
-import { dumpScope } from "./dumpTools";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
 import { tx } from "@/platform/i18n";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { databaseRequest } from "./requests";
@@ -358,6 +360,9 @@ export function registerDatabaseTreeActions(): () => void {
         if (!n) return;
         const id = nodeTarget(n);
         if (n.kind === "source") return void removeSource(n.source);
+        const source = sourceById(id);
+        if (n.kind === "database" && !n.current && !source?.readOnly && createsDatabases(source))
+          return openDialog({ kind: "dropDatabase", id: splitTarget(n.id).id, database: n.name });
         const o = objectOf(n);
         if (id && o && canDrop(driverOf(id), o)) openDialog({ kind: "drop", id, object: o });
       },
@@ -388,6 +393,28 @@ export function registerDatabaseTreeActions(): () => void {
           table: t.table,
           focusColumn: n.kind === "column" ? n.column.name : undefined,
         });
+      },
+    }),
+    tree({
+      id: "db.newDatabase",
+      title: "Database…",
+      icon: "db-database",
+      keywords: ["create database", "new database"],
+      run: ({ arg }) => {
+        const source = sourceOf(nodeFrom(arg));
+        if (source?.id && !source.readOnly && createsDatabases(source))
+          openDialog({ kind: "createDatabase", id: source.id });
+      },
+    }),
+    tree({
+      id: "db.newSchema",
+      title: "Schema…",
+      icon: "db-schema",
+      keywords: ["create schema", "new schema"],
+      run: ({ arg }) => {
+        const n = nodeFrom(arg);
+        const id = n && newSchemaTarget(n);
+        if (id && !sourceById(id)?.readOnly) openDialog({ kind: "createSchema", id });
       },
     }),
     tree({
@@ -466,6 +493,29 @@ export function registerDatabaseTreeActions(): () => void {
         const serverVersion = scope && (await serverVersionOf(scope.target));
         if (scope && serverVersion !== undefined)
           openDialog({ kind: "restore", target: scope.target, database: scope.database, serverVersion });
+      },
+    }),
+    tree({
+      id: "db.dumpWithMysqldump",
+      title: "Export with 'mysqldump'…",
+      icon: "export",
+      keywords: ["backup", "dump", "mysql", "mariadb"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && mysqlDumpScope(n, sourceOf(n));
+        if (scope && (await connect(scope.target))) openDialog({ kind: "mysqlDump", ...scope });
+      },
+    }),
+    tree({
+      id: "db.restoreWithMysql",
+      title: "Restore with 'mysql'…",
+      icon: "download",
+      keywords: ["backup", "restore", "load dump", "mysql", "mariadb"],
+      run: async ({ arg }) => {
+        const n = nodeFrom(arg);
+        const scope = n && mysqlDumpScope(n, sourceOf(n));
+        if (scope && (await connect(scope.target)))
+          openDialog({ kind: "mysqlRestore", target: scope.target, database: scope.database });
       },
     }),
     tree({

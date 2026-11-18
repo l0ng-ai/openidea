@@ -1,7 +1,7 @@
 id = "test.search"
 name = "Search fixture"
 version = "0.1.0"
-engines.openidea = "^1.11"
+engines.openidea = "^1.13"
 wasm = "dist/plugin.wasm"
 capabilities.required = ["project.read"]
 

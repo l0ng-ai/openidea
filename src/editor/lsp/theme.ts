@@ -225,10 +225,11 @@ export const lspTheme = EditorView.theme({
   ".cm-tooltip.cm-tooltip-hover": { ...tooltipSurface, display: "flex", flexDirection: "column" },
   ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
   ".cm-lsp-hover": { maxWidth: "580px", maxHeight: "380px", overflow: "auto", padding: "10px 14px" },
-  ".cm-lsp-hover-diagnostics + .cm-lsp-markdown": {
-    borderTop: "1px solid var(--border-popup)",
-    margin: "10px -14px 0",
-    padding: "10px 14px 0",
+  // With documentation the doc view pads its own body and keeps its toolbar at the bottom.
+  ".cm-lsp-hover.cm-lsp-hover-doc": { padding: "0" },
+  ".cm-lsp-hover-doc > .cm-lsp-hover-diagnostics": {
+    padding: "10px 14px",
+    borderBottom: "1px solid var(--border-popup)",
   },
   ".cm-lsp-diag": {
     display: "flex",
@@ -313,6 +314,7 @@ export const lspTheme = EditorView.theme({
   // --- navigation ---------------------------------------------------------
   ".cm-lsp-link": {
     color: "var(--link)",
+    WebkitTextFillColor: "currentcolor",
     textDecoration: "underline",
     textUnderlineOffset: "2px",
     cursor: "pointer",
@@ -324,6 +326,12 @@ export const lspTheme = EditorView.theme({
     "--lsp-occurrence-bg": "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
   },
   ".cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  // Text fill, not `color`: it reaches the syntax and semantic spans nested inside, and with the
+  // variable unset the declaration drops, so they keep their own colours.
+  "span.cm-lsp-occurrence, .cm-lsp-occurrence-text": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
+  "span.cm-lsp-occurrence-write, .cm-lsp-occurrence-text-write": {
+    WebkitTextFillColor: "var(--fg-identifier-under-caret-write)",
+  },
   // First line of a highlight over several lines: from its start column to the right edge,
   // over the line's own background (the caret row's).
   ".cm-lsp-occurrence-tail": {

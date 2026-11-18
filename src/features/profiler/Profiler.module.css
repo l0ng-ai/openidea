@@ -91,6 +91,13 @@
   outline: 1px solid var(--fg-muted);
   outline-offset: -1px;
 }
+.flame:focus {
+  outline: none;
+}
+.flame:focus .current {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .c1 {
   background: var(--flame-1);
 }

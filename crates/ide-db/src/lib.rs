@@ -812,16 +812,16 @@ impl DbManager {
         let password = self.password(&source).await;
         // Holding the tunnel keeps it open while the tool runs, even if the tree disconnects.
         let (target, _tunnel) = self.endpoint(&source, None, true).await?;
-        let prepared = tools::prepare(job, &target, password.as_deref());
-        tools::run(executable, &prepared.args, &prepared.env, cancel, on_output).await
+        let prepared = tools::prepare(job, executable, &target, password.as_deref())?;
+        tools::run(executable, &prepared.args, &prepared.env, prepared.input.as_deref(), cancel, on_output).await
     }
 
     /// The command [`DbManager::run_tool`] would run, for the dialogs' preview: the data source's
     /// own host and port (not a tunnel's local end), and no password.
     pub fn tool_preview(&self, id: &str, executable: &std::path::Path, job: &tools::DbToolJob) -> IdeResult<String> {
         let source = self.source(id)?;
-        let prepared = tools::prepare(job, &source, None);
-        Ok(tools::command_line(executable, &prepared.args))
+        let prepared = tools::prepare(job, executable, &source, None)?;
+        Ok(tools::command_line(executable, &prepared.args, job.input()))
     }
 
     /// The PostgreSQL server's `server_version_num` (`150013` for 15.13).
@@ -914,6 +914,37 @@ impl DbManager {
             self.disconnect(&t).await;
         }
         self.tunnels.lock().remove(id);
+    }
+
+    /// Creates a database on the server of data source `id` by running `statement` on the data
+    /// source's own database, after closing the IDE's connections to `template`, the database
+    /// the server copies (PostgreSQL and SQL Server refuse to copy one that has sessions).
+    pub async fn create_database(&self, id: &str, template: &str, statement: &str) -> IdeResult<()> {
+        let id = split_target(id).0;
+        if self.source(id)?.read_only {
+            return Err(IdeError::new(ErrorKind::PermissionDenied, "the data source is read-only"));
+        }
+        self.disconnect(&format!("{id}:{template}")).await;
+        self.pool(id).await?.execute(statement, 0, &CancellationToken::new()).await?;
+        self.remember_statement(id, statement);
+        Ok(())
+    }
+
+    /// Drops `database` of the server of data source `id` by running `statement` on the data
+    /// source's own database, after closing the IDE's connections to `database`.
+    /// Refuses the database the data source connects to and read-only data sources.
+    pub async fn drop_database(&self, id: &str, database: &str, statement: &str) -> IdeResult<()> {
+        let id = split_target(id).0;
+        if self.source(id)?.read_only {
+            return Err(IdeError::new(ErrorKind::PermissionDenied, "the data source is read-only"));
+        }
+        if self.databases(id).await?.current == database {
+            return Err(IdeError::invalid(format!("the data source connects to {database}; it cannot drop it")));
+        }
+        self.disconnect(&format!("{id}:{database}")).await;
+        self.pool(id).await?.execute(statement, 0, &CancellationToken::new()).await?;
+        self.remember_statement(id, statement);
+        Ok(())
     }
 
     /// The databases of the server of data source `id` (PostgreSQL), the connected one first.

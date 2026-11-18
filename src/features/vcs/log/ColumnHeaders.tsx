@@ -1,18 +1,30 @@
 import { tx } from "@/platform/i18n";
-import { lockDragCursor, showContextMenu } from "@/ui";
+import { showContextMenu } from "@/ui";
 import clsx from "clsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "../GitLog.module.css";
-import { logOptions, type LogOptions } from "../logOptions";
+import { type LogOptions } from "../logOptions";
 import { updateLogOptions } from "../logStore";
 import { useVcs } from "../store";
+import { ColumnResizeHandle } from "./ColumnResizeHandle";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
+import { columnPrev, resetColumnWidth, type ResizeTarget } from "./useColumnResize";
 
 interface ColumnDrag {
   id: string;
   target: string | null;
   after: boolean;
 }
+
+/** Fixed columns that can be hidden from the header context menu. */
+const HIDDEN_COLUMN_OPTION: Record<string, keyof LogOptions> = {
+  author: "showAuthor",
+  date: "showDate",
+  hash: "showHash",
+  signature: "showSignature",
+  "github-checks": "showGitHubChecks",
+  repository: "showRepository",
+};
 
 export function ColumnHeaders({
   columns,
@@ -35,7 +47,10 @@ export function ColumnHeaders({
   };
   const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
   return (
-    <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
+    <div
+      className={clsx(styles.row, styles.columnHeader, options.showColumnDividers && styles.showDividers)}
+      style={{ minWidth }}
+    >
       {options.showRepository && useVcs.getState().roots.length > 1 && (
         <span className={styles.colRepository}>{tx("Repository")}</span>
       )}
@@ -49,6 +64,7 @@ export function ColumnHeaders({
             subject={cid === SUBJECT_COLUMN.id}
             ids={visibleIds}
             options={options}
+            columns={columns}
             drag={drag}
             onMove={move}
             onDragOver={(id, target, after) =>
@@ -69,6 +85,7 @@ function LogColumnHeader({
   subject,
   ids,
   options,
+  columns,
   drag,
   onMove,
   onDragOver,
@@ -78,6 +95,7 @@ function LogColumnHeader({
   subject?: boolean;
   ids: string[];
   options: LogOptions;
+  columns: LogColumn[];
   drag: ColumnDrag | null;
   onMove(source: string, target: string | null, after: boolean): void;
   onDragOver(id: string, target: string | null, after: boolean): void;
@@ -90,26 +108,16 @@ function LogColumnHeader({
     element: HTMLElement;
     pointerId: number;
   } | null>(null);
-  const resizeDrag = useRef<{
-    x: number;
-    width: number;
-    element: HTMLElement;
-    pointerId: number;
-    releaseCursor: () => void;
-  } | null>(null);
   const cancel = useCallback(() => {
-    const captures = [press.current, resizeDrag.current];
+    const capture = press.current;
     press.current = null;
-    resizeDrag.current?.releaseCursor();
-    resizeDrag.current = null;
-    for (const capture of captures)
-      if (capture?.element.hasPointerCapture?.(capture.pointerId))
-        capture.element.releasePointerCapture(capture.pointerId);
+    if (capture?.element.hasPointerCapture?.(capture.pointerId))
+      capture.element.releasePointerCapture(capture.pointerId);
     onDragCancel();
   }, [onDragCancel]);
   useEffect(() => {
     const escape = (e: globalThis.KeyboardEvent) => {
-      if (e.key !== "Escape" || (!press.current && !resizeDrag.current)) return;
+      if (e.key !== "Escape" || !press.current) return;
       e.preventDefault();
       e.stopPropagation();
       cancel();
@@ -123,11 +131,15 @@ function LogColumnHeader({
     };
   }, [cancel]);
   const width = options.columnWidths[column.id] ?? column.width ?? 120;
-  const resize = (value: number) =>
-    updateLogOptions({
-      columnWidths: { ...logOptions().columnWidths, [column.id]: Math.max(40, Math.min(800, value)) },
-    });
+  const resizeTarget: ResizeTarget = {
+    id: column.id,
+    width,
+    ...columnPrev(ids, column.id, options, columns),
+    // Commit is flex:1 — dragging its left divider only resizes the left neighbour.
+    leftOnly: subject || undefined,
+  };
   const index = ids.indexOf(column.id);
+  const isFirst = index === 0;
   const hitColumn = (x: number, y: number) => {
     const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
     if (!el || el.parentElement !== press.current?.element.parentElement) return null;
@@ -183,59 +195,32 @@ function LogColumnHeader({
             disabled: index === ids.length - 1,
             run: () => onMove(column.id, ids[index + 1] ?? null, true),
           },
-          ...(subject ? [] : [{ label: "Reset Width", run: () => resize(column.width ?? 120) }]),
+          ...(subject
+            ? []
+            : [
+                { label: "Reset Width", run: () => resetColumnWidth(column.id) },
+                { kind: "separator" as const },
+                {
+                  label: tx("Hide Column"),
+                  run: () => {
+                    const key = HIDDEN_COLUMN_OPTION[column.id];
+                    if (key) updateLogOptions({ [key]: false });
+                  },
+                },
+              ]),
         ]);
       }}
     >
       {tx(column.title)}
-      {!subject && (
-        <span
-          className={styles.columnResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={tx`Resize ${tx(column.title)} column`}
-          aria-valuemin={40}
-          aria-valuemax={800}
-          aria-valuenow={width}
-          tabIndex={0}
-          onPointerDown={(e) => {
-            if (e.button !== 0) return;
-            e.preventDefault();
-            e.stopPropagation();
-            resizeDrag.current = {
-              x: e.clientX,
-              width,
-              element: e.currentTarget,
-              pointerId: e.pointerId,
-              releaseCursor: lockDragCursor("ew-resize"),
-            };
-            e.currentTarget.setPointerCapture(e.pointerId);
-          }}
-          onPointerMove={(e) => {
-            if (resizeDrag.current && e.currentTarget.hasPointerCapture(e.pointerId))
-              resize(resizeDrag.current.width + e.clientX - resizeDrag.current.x);
-          }}
-          onPointerUp={(e) => {
-            resizeDrag.current?.releaseCursor();
-            resizeDrag.current = null;
-            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-          }}
-          onPointerCancel={() => {
-            resizeDrag.current?.releaseCursor();
-            resizeDrag.current = null;
-          }}
-          onLostPointerCapture={() => {
-            resizeDrag.current?.releaseCursor();
-            resizeDrag.current = null;
-          }}
-          onKeyDown={(e) => {
-            if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-            e.preventDefault();
-            e.stopPropagation();
-            if (e.altKey)
-              onMove(column.id, ids[index + (e.key === "ArrowLeft" ? -1 : 1)] ?? null, e.key === "ArrowRight");
-            else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
-          }}
+      {subject ? (
+        // Commit's left divider exists only in the header. It is decorative when
+        // Commit is the first column; otherwise it resizes the neighbour on its left.
+        <ColumnResizeHandle target={resizeTarget} title={column.title} disabled={isFirst} />
+      ) : (
+        <ColumnResizeHandle
+          target={resizeTarget}
+          title={column.title}
+          onReorder={(delta) => onMove(column.id, ids[index + delta] ?? null, delta === 1)}
         />
       )}
     </span>

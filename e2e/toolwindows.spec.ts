@@ -178,7 +178,7 @@ test("a tool window resize keeps its cursor over other controls until release", 
   await page.mouse.down();
   await page.mouse.move(box.x + 80, box.y + box.height / 2, { steps: 4 });
   // The pointer is over the Project tree now; the button's own arrow cursor must not win.
-  await expect.poll(cursor).toBe("ew-resize");
+  await expect.poll(cursor).toBe("col-resize");
   expect(await page.evaluate(() => document.documentElement.hasAttribute("data-drag-cursor"))).toBe(true);
 
   await page.mouse.up();

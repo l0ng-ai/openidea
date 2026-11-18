@@ -231,8 +231,8 @@ impl Smoke {
     }
 
     async fn doc(&self, file: &str) -> (DocId, String) {
-        let info = ops::doc::open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
-        let info = ops::doc::snapshot(&self.host, WINDOW, info.id).await.unwrap();
+        let info = ops::doc::doc_open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
+        let info = ops::doc::doc_snapshot(&self.host, WINDOW, info.id).await.unwrap();
         (info.id, info.text)
     }
 
@@ -260,13 +260,13 @@ impl Smoke {
     }
 
     async fn replace(&self, doc: DocId, from: u32, to: u32, insert: &str) {
-        let version = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().version;
+        let version = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().version;
         let changes = ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] };
-        ops::doc::edit(&self.host, WINDOW, doc, version, changes).unwrap();
+        ops::doc::doc_edit(&self.host, WINDOW, doc, version, changes).await.unwrap();
     }
 
     async fn restore(&self, doc: DocId, text: &str) {
-        let current = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().text;
+        let current = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().text;
         self.replace(doc, 0, utf16_len(&current), text).await;
     }
 

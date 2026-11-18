@@ -17,10 +17,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) const SERVER: &str = "jdtls";
+const GENERATED_SOURCES: &str = "openidea.java.generatedSources";
 
 pub(crate) mod configuration;
 mod extract_interface;
 mod formatter;
+mod generated;
+pub(crate) use generated::is_processor_output;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
 mod move_refactoring;
@@ -520,7 +523,10 @@ fn missing_bundle(e: &IdeError) -> bool {
 }
 
 /// Cancel local waits without interrupting a shared server's startup or import.
-async fn cancellable_wait<T>(cancel: &CancellationToken, wait: impl std::future::Future<Output = T>) -> IdeResult<T> {
+pub(crate) async fn cancellable_wait<T>(
+    cancel: &CancellationToken,
+    wait: impl std::future::Future<Output = T>,
+) -> IdeResult<T> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(IdeError::cancelled()),
@@ -638,6 +644,7 @@ impl LspManager {
     /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
     /// change, a Maven sync, other Maven profiles), but does not check open documents
     /// again against the new classpath: their errors would stay until the next edit.
+    /// Generated Maven sources are attached first, so that recheck sees them.
     pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let uris: Vec<String> = self
             .docs
@@ -650,11 +657,10 @@ impl LspManager {
             })
             .map(|d| crate::uri::path_to_uri_string(&d.path))
             .collect();
-        if uris.is_empty() {
-            return;
-        }
+        let mgr = self.clone();
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
+            mgr.sync_generated_sources(&server, &run).await;
             for uri in uris {
                 let params =
                     json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
@@ -666,6 +672,49 @@ impl LspManager {
                 }
             }
         });
+    }
+
+    /// Puts Maven plugin output that already exists on disk (`target/generated-sources/...`)
+    /// onto the jdtls classpath. Best-effort: only a jdtls that is already running is
+    /// touched, so a Maven build does not start the language server by itself.
+    pub async fn sync_maven_generated_sources(&self, root: &Path) {
+        let servers: Vec<_> = self
+            .servers
+            .lock()
+            .iter()
+            .filter(|server| server.name == SERVER && server.running().is_some())
+            .filter(|server| server.root == root || root.starts_with(&server.root) || server.root.starts_with(root))
+            .cloned()
+            .collect();
+        for server in servers {
+            let Some(run) = server.running() else { continue };
+            self.sync_generated_sources(&server, &run).await;
+        }
+    }
+
+    async fn sync_generated_sources(&self, server: &Arc<Server>, run: &Running) {
+        if !run.caps.read().commands().iter().any(|command| command == GENERATED_SOURCES) {
+            return;
+        }
+        let root = server.root.clone();
+        let scan = tokio::task::spawn_blocking(move || generated::scan(&root))
+            .await
+            .unwrap_or(generated::GeneratedScan { maven: false, roots: Vec::new() });
+        if !scan.maven {
+            return;
+        }
+        let arguments: Vec<Value> = scan
+            .roots
+            .into_iter()
+            .map(|root| json!({ "path": root.path.to_string_lossy(), "test": root.test }))
+            .collect();
+        let params = json!({ "command": GENERATED_SOURCES, "arguments": arguments });
+        let request = run.peer.request::<_, Value>("workspace/executeCommand", params, None);
+        if let Ok(Err(e)) | Err(e) =
+            tokio::time::timeout(COMMAND_TIMEOUT, request).await.map_err(|_| ide_jsonrpc::RpcError::Timeout)
+        {
+            tracing::debug!("jdtls: {GENERATED_SOURCES}: {e}");
+        }
     }
 
     /// The jdtls instance serving `path` (a module directory or source file),

@@ -12,23 +12,20 @@ import { notifications, type EditorInput } from "@/workbench/contributions";
 import { DiffEditor } from "./DiffEditor";
 import { confirmDialog } from "./dialogs";
 import { diffInput } from "./diffInput";
-import { baseName, formatTime } from "./model";
+import { baseName, formatSize, formatTime } from "./model";
 import { errorMessage, runOp } from "./ops";
 import styles from "./LocalHistory.module.css";
 import { tx } from "@/platform/i18n";
 
 export { LOCAL_HISTORY_KIND, localHistoryInput, openLocalHistory } from "./localHistoryKind";
 
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
 const isLabel = (e: HistoryEntry) => e.kind === "label";
 const time = (e: HistoryEntry) => e.timestampMs ?? 0;
 
 /** Per file, the newest snapshot recorded before `at` (the state at a label). */
+/** The backend's label of the snapshot taken when a file is deleted (`ide-workspace::history::DELETED`). */
+const DELETED = "Deleted";
+
 export function snapshotsBefore(entries: readonly HistoryEntry[], at: number): Map<string, HistoryEntry> {
   const out = new Map<string, HistoryEntry>();
   for (const e of entries) {
@@ -119,7 +116,17 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
       );
       return;
     }
-    const targets = view.folder ? [...(atLabel?.values() ?? [])] : fileAtLabel ? [fileAtLabel] : [];
+    // A file whose last revision before the label is its deletion was absent then: nothing to restore.
+    const recorded = view.folder ? [...(atLabel?.values() ?? [])] : fileAtLabel ? [fileAtLabel] : [];
+    const targets = recorded.filter((e) => e.label !== DELETED);
+    if (!view.folder && fileAtLabel?.label === DELETED) {
+      notifications().notify({
+        level: "info",
+        title: tx`${baseName(path)} did not exist at label '${current.label}'`,
+        key: "localHistory.revert",
+      });
+      return;
+    }
     if (!targets.length) {
       notifications().notify({
         level: "info",

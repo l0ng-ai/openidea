@@ -11,6 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react"
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
+import { mathExtension, renderMath } from "@/editor/lsp/markdownMath";
 import { iconNode } from "@/ui/iconNode";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -37,7 +38,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-});
+}).use(mathExtension());
 
 /** Rendered messages by text, least recently used first: reopening a conversation renders it again. */
 const rendered = new Map<string, string>();
@@ -56,7 +57,12 @@ function purify(): ReturnType<typeof DOMPurify> {
   // `poster`, `background` and the `src` of other tags would fetch as soon as the reply renders.
   p.addHook("uponSanitizeAttribute", (node, data) => {
     if (data.attrName === "alt" || data.attrName === "title") return;
-    if (data.attrName === "href" && node.tagName === "A") return;
+    if (data.attrName === "href" && node.tagName === "A") {
+      // A drive letter looks like a URL scheme to DOMPurify. Keep only validated local paths.
+      const link = fileHref(data.attrValue, "");
+      if (link && /^[a-z]:\//i.test(link.path)) data.forceKeepAttr = true;
+      return;
+    }
     if (namesHost(data.attrValue)) data.keepAttr = false;
   });
   const sources = new WeakMap<Node, string>();
@@ -128,10 +134,11 @@ function renderHtml(text: string): string {
     FORBID_TAGS: ["style", "form", "source"],
     FORBID_ATTR: ["style", "srcset"],
     ALLOW_DATA_ATTR: false,
-    // Only the mermaid placeholder written by the renderer above; data attributes
+    // Only the mermaid and math placeholders written by the renderer above; data attributes
     // quoted in a reply stay out.
-    ADD_ATTR: ["data-mermaid"],
+    ADD_ATTR: ["data-mermaid", "data-math"],
   }) as HTMLElement;
+  renderMath(root);
   root.querySelectorAll("li").forEach(wrapLooseText);
   // WebKit cuts controls inside <pre> out of a text selection, even when transparent.
   root.querySelectorAll("pre").forEach((pre) => {
@@ -231,6 +238,14 @@ async function linkSymbols(root: HTMLElement, spans: HTMLElement[], cwd: string)
 function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => void {
   let alive = true;
   const disposeImages = loadImages(root, cwd, images);
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
+    const href = anchor.getAttribute("href")!;
+    const link = fileHref(href, cwd);
+    const location =
+      link?.line === undefined ? "" : `:${link.line + 1}${link.col === undefined ? "" : `:${link.col + 1}`}`;
+    const target = link ? `${link.path}${location}` : href;
+    anchor.title = anchor.title && anchor.title !== target ? `${anchor.title}\n${target}` : target;
+  });
   const copies: HTMLButtonElement[] = [];
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement!;

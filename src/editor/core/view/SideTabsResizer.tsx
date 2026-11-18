@@ -62,7 +62,7 @@ export function SideTabsResizer({ side }: { side: "left" | "right" }) {
     handle.setPointerCapture(e.pointerId);
     const origin = e.clientX;
     const previous = pane.style.getPropertyValue(LIMIT_VAR);
-    const releaseCursor = lockDragCursor("ew-resize");
+    const releaseCursor = lockDragCursor("col-resize");
     let next: number | null = null;
     // Only this pane follows the pointer; every group takes the new width on release.
     const move = (ev: globalThis.PointerEvent) => {

@@ -2,9 +2,9 @@
 
 use crate::Host;
 use ide_core::event::NotifyLevel;
-use ide_core::settings::{ExternalFormatter, LanguagesSettings};
-use ide_core::{DocId, IdeError, IdeEvent, IdeResult, Pos, Range, TextEdit};
-use ide_language::LanguageConfig;
+use ide_core::settings::{ExternalFormatter, LanguagesSettings, Settings};
+use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, Pos, Range, TextEdit};
+use ide_language::{LanguageConfig, PhpAlignment, Syntax};
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
 use std::path::Path;
@@ -129,12 +129,101 @@ pub async fn format(
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
     let settings = project.settings.effective();
+    let alignment = php_alignment(&settings, &snap.language);
+    let original = alignment.any().then(|| (snap.language.clone(), snap.text.clone()));
+    let Some(edits) = provider_edits(host, window, &project, snap, settings, range, options).await? else {
+        return Ok(Vec::new());
+    };
+    let Some((language, text)) = original else {
+        return Ok(edits);
+    };
+    let syntax = host.syntax();
+    tokio::task::spawn_blocking(move || align_formatted(&syntax, &language, &text, edits, range, alignment))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// PHP Code Style › Align key-value pairs / Align consecutive assignments (off by default, as in PhpStorm).
+fn php_alignment(settings: &Settings, language: &LanguageId) -> PhpAlignment {
+    let style = settings.editor.code_style.languages.get(language.as_str());
+    PhpAlignment {
+        key_value_pairs: style.and_then(|s| s.align_key_value_pairs).unwrap_or(false),
+        assignments: style.and_then(|s| s.align_consecutive_assignments).unwrap_or(false),
+    }
+}
+
+/// The formatter's `edits` to `text` followed by the alignment, as one set of edits to `text`.
+/// With a `range`, only its lines (where the formatter left them) are aligned.
+fn align_formatted(
+    syntax: &Syntax,
+    language: &LanguageId,
+    text: &str,
+    edits: Vec<TextEdit>,
+    range: Option<Range>,
+    alignment: PhpAlignment,
+) -> IdeResult<Vec<TextEdit>> {
+    let mut formatted = ide_text::Document::new(text);
+    // Edits the editor has to sort out itself (overlapping ones) are passed on unaligned.
+    let Ok((changes, _)) = formatted.apply_edits(&edits) else {
+        return Ok(edits);
+    };
+    let lines = range.map(|range| {
+        let original = ide_text::Document::new(text);
+        let start = formatted.offset_to_pos(map_offset(&changes, original.pos_to_offset(range.start), false));
+        let end = formatted.offset_to_pos(map_offset(&changes, original.pos_to_offset(range.end), true));
+        let last = if end.col == 0 && end.line > start.line { end.line - 1 } else { end.line };
+        (start.line as usize, last as usize)
+    });
+    let Some(aligned) = syntax.align_php(language, &formatted.text(), lines, alignment) else {
+        return Ok(edits);
+    };
+    let original = ide_text::Document::new(text);
+    Ok(original
+        .diff(&aligned)
+        .changes
+        .into_iter()
+        .map(|c| TextEdit {
+            range: Range::new(original.offset_to_pos(c.from), original.offset_to_pos(c.to)),
+            new_text: c.insert,
+        })
+        .collect())
+}
+
+/// Where UTF-16 `offset` of the text before `changes` ends up after them; inside a replaced
+/// part, at its start or (`end`) its end.
+fn map_offset(changes: &ChangeSet, offset: u32, end: bool) -> u32 {
+    let mut shift: i64 = 0;
+    for c in &changes.changes {
+        let inserted = c.insert.encode_utf16().count() as i64;
+        if c.to < offset || (c.to == offset && (c.from < c.to || end)) {
+            shift += inserted - i64::from(c.to - c.from);
+        } else if c.from < offset {
+            return (i64::from(c.from) + shift + if end { inserted } else { 0 }) as u32;
+        } else {
+            break;
+        }
+    }
+    (i64::from(offset) + shift) as u32
+}
+
+/// The edits of the formatter that handles the document; `None` when it doesn't run
+/// (formatting on save is off for it).
+async fn provider_edits(
+    host: &Host,
+    window: &str,
+    project: &crate::Project,
+    snap: ide_workspace::documents::DocumentInfo,
+    settings: Settings,
+    range: Option<Range>,
+    options: FormatOptions,
+) -> IdeResult<Option<Vec<TextEdit>>> {
+    let doc = snap.id;
     let language = project.languages.get(&snap.language);
     if options.tool.is_none()
         && let Some(id) = settings.languages.plugin_formatters.get(snap.language.as_str()).filter(|s| !s.is_empty())
     {
         if options.on_save && !settings.editor.format_on_save {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         if snap.read_only {
             return Err(IdeError::invalid("The file is read-only"));
@@ -160,7 +249,8 @@ pub async fn format(
             )
         })
         .await
-        .map_err(|e| IdeError::internal(e.to_string()))?;
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map(Some);
     }
     // A committed PHP-CS-Fixer configuration takes over Reformat Code for `.php` files.
     if options.tool.is_none()
@@ -168,7 +258,7 @@ pub async fn format(
         && let Some(fixer) = formatter::php_cs_fixer(&snap.path)
     {
         if options.on_save && !settings.editor.format_on_save {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         host.require_trust(window)?;
         if snap.read_only {
@@ -188,7 +278,7 @@ pub async fn format(
                 body: Some("PHP-CS-Fixer does not support selection formatting; formatted the whole file".into()),
             });
         }
-        return Ok(edits);
+        return Ok(Some(edits));
     }
     let mut selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
     if let Some(tool) = selected
@@ -200,13 +290,13 @@ pub async fn format(
     }
     let Some(selected) = selected else {
         if options.on_save && !settings.editor.format_on_save {
-            return Ok(Vec::new());
+            return Ok(None);
         }
-        return project.lsp.format(doc, range, options).await;
+        return project.lsp.format(doc, range, options).await.map(Some);
     };
     let tool_settings = settings.languages.formatter(selected);
     if options.on_save && !tool_settings.run_on_save {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     host.require_trust(window)?;
     if snap.read_only {
@@ -262,7 +352,7 @@ pub async fn format(
             )),
         });
     }
-    edits.map_err(|e| e.with_tool(tool))
+    edits.map(Some).map_err(|e| e.with_tool(tool))
 }
 
 #[cfg(test)]
@@ -411,6 +501,103 @@ mod tests {
             "{}",
             err.message
         );
+    }
+
+    fn after(text: &str, edits: &[TextEdit]) -> String {
+        let mut doc = ide_text::Document::new(text);
+        doc.apply_edits(edits).unwrap();
+        doc.text()
+    }
+
+    fn whole_file(text: &str, formatted: &str) -> Vec<TextEdit> {
+        let doc = ide_text::Document::new(text);
+        doc.diff(formatted)
+            .changes
+            .into_iter()
+            .map(|c| TextEdit {
+                range: Range::new(doc.offset_to_pos(c.from), doc.offset_to_pos(c.to)),
+                new_text: c.insert,
+            })
+            .collect()
+    }
+
+    const ALIGN: PhpAlignment = PhpAlignment { key_value_pairs: true, assignments: true };
+
+    #[test]
+    fn php_alignment_is_off_unless_the_php_code_style_turns_it_on() {
+        let php = LanguageId::new("php");
+        let mut settings = Settings::default();
+        assert_eq!(php_alignment(&settings, &php), PhpAlignment::default());
+        let style =
+            ide_core::editor_settings::LanguageCodeStyle { align_key_value_pairs: Some(true), ..Default::default() };
+        settings.editor.code_style.languages.insert("php".into(), style);
+        assert_eq!(php_alignment(&settings, &php), PhpAlignment { key_value_pairs: true, assignments: false });
+        assert_eq!(php_alignment(&settings, &LanguageId::new("javascript")), PhpAlignment::default());
+    }
+
+    #[test]
+    fn alignment_follows_the_formatter_edits_even_when_there_are_none() {
+        let syntax = Syntax::new();
+        let php = LanguageId::new("php");
+        let text = "<?php\n$a = [\n    'a' => 1,\n    'bbb' => 2,\n];\n";
+        let edits = align_formatted(&syntax, &php, text, Vec::new(), None, ALIGN).unwrap();
+        assert_eq!(after(text, &edits), "<?php\n$a = [\n    'a'   => 1,\n    'bbb' => 2,\n];\n");
+
+        // The language server re-indents the array: the alignment applies to its result.
+        let text = "<?php\n$a = [\n'a' => 1,\n'bbb'   => 2,\n];\n";
+        let formatted = "<?php\n$a = [\n    'a' => 1,\n    'bbb' => 2,\n];\n";
+        let edits = align_formatted(&syntax, &php, text, whole_file(text, formatted), None, ALIGN).unwrap();
+        assert_eq!(after(text, &edits), "<?php\n$a = [\n    'a'   => 1,\n    'bbb' => 2,\n];\n");
+
+        let unchanged = whole_file(text, formatted);
+        let off = align_formatted(&syntax, &php, text, unchanged.clone(), None, PhpAlignment::default()).unwrap();
+        assert_eq!(off, unchanged);
+
+        let overlapping = vec![
+            TextEdit { range: Range::new(Pos::new(1, 0), Pos::new(1, 4)), new_text: "x".into() },
+            TextEdit { range: Range::new(Pos::new(1, 2), Pos::new(1, 6)), new_text: "y".into() },
+        ];
+        let passed = align_formatted(&syntax, &php, text, overlapping.clone(), None, ALIGN).unwrap();
+        assert_eq!(passed, overlapping);
+    }
+
+    #[test]
+    fn a_selection_aligns_only_its_lines_whatever_the_formatter_changed() {
+        let syntax = Syntax::new();
+        let php = LanguageId::new("php");
+        let text = "<?php\n$x = 1;\n$yyy = 2;\n$a = [\n    'a' => 1,\n    'bbb' => 2,\n];\n";
+        // PHP-CS-Fixer formats the whole file (here: adds a line at the top) whatever the selection.
+        let formatted = format!("<?php\n\ndeclare(strict_types=1);\n{}", &text["<?php\n".len()..]);
+        let edits = whole_file(text, &formatted);
+        // Lines 3..=6 select the array, up to the start of the line after it.
+        let range = Range::new(Pos::new(3, 0), Pos::new(7, 0));
+        let aligned = align_formatted(&syntax, &php, text, edits, Some(range), ALIGN).unwrap();
+        assert_eq!(aligned.len(), 2, "one edit per changed region: {aligned:?}");
+        assert_eq!(
+            after(text, &aligned),
+            "<?php\n\ndeclare(strict_types=1);\n$x = 1;\n$yyy = 2;\n$a = [\n    'a'   => 1,\n    'bbb' => 2,\n];\n"
+        );
+        let range = Range::new(Pos::new(1, 0), Pos::new(2, 9));
+        let aligned = align_formatted(&syntax, &php, text, Vec::new(), Some(range), ALIGN).unwrap();
+        assert_eq!(after(text, &aligned), "<?php\n$x   = 1;\n$yyy = 2;\n$a = [\n    'a' => 1,\n    'bbb' => 2,\n];\n");
+    }
+
+    #[test]
+    fn offsets_map_through_changes() {
+        let changes = ChangeSet {
+            changes: vec![
+                ide_core::TextChange { from: 2, to: 2, insert: "ab".into() },
+                ide_core::TextChange { from: 5, to: 8, insert: "x".into() },
+            ],
+        };
+        assert_eq!(map_offset(&changes, 0, false), 0);
+        assert_eq!(map_offset(&changes, 2, false), 2);
+        assert_eq!(map_offset(&changes, 2, true), 4);
+        assert_eq!(map_offset(&changes, 4, false), 6);
+        assert_eq!(map_offset(&changes, 6, false), 7);
+        assert_eq!(map_offset(&changes, 6, true), 8);
+        assert_eq!(map_offset(&changes, 8, false), 8);
+        assert_eq!(map_offset(&changes, 10, false), 10);
     }
 
     #[test]

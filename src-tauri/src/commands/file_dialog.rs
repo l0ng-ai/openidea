@@ -5,6 +5,7 @@
 //! that as a cancelled dialog. The frontend asks `file_dialog_needs_gtk` once, and routes the
 //! pickers through `gtk_pick_paths` when it answers true. GTK3 is already linked by the webview.
 
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, IpcPath};
 use serde::Deserialize;
 use specta::Type;
@@ -33,6 +34,7 @@ pub struct GtkPickOptions {
 
 /// True when the plugin's dialogs can't be shown here: Linux with no portal service on the session
 /// bus (running or activatable) and no `zenity`.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn file_dialog_needs_gtk() -> bool {
@@ -49,6 +51,7 @@ pub async fn file_dialog_needs_gtk() -> bool {
 }
 
 /// Shows a GTK file chooser attached to `window`. `None` when the user cancels.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub async fn gtk_pick_paths(window: tauri::Window, options: GtkPickOptions) -> IdeResult<Option<Vec<IpcPath>>> {
@@ -222,3 +225,5 @@ mod tests {
         assert_eq!(picked, vec![dir]);
     }
 }
+
+ide_command::desktop_domain!(file_dialog_needs_gtk, gtk_pick_paths);

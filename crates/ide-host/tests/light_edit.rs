@@ -1,7 +1,7 @@
 //! LightEdit: a window editing loose files without a project.
 
 use ide_core::{ChangeSet, NullSink, TextChange};
-use ide_host::{Host, HostConfig, ops};
+use ide_host::{Host, HostConfig, catalogue::TrustClass, ops};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,18 +35,18 @@ async fn edits_loose_files_without_project_services() {
     assert_eq!(light.root, a_dir);
     assert!(host.open_light("main", &b_dir).is_err(), "a folder is not opened for LightEdit");
 
-    let doc = ops::doc::open(&host, "main", a_dir.join("one.py")).await.unwrap();
+    let doc = ops::doc::doc_open(&host, "main", a_dir.join("one.py")).await.unwrap();
     assert!(doc.text.starts_with("print"));
     let changes = ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "#\n".into() }] };
-    let version = ops::doc::edit(&host, "main", doc.id, doc.version, changes).unwrap();
+    let version = ops::doc::doc_edit(&host, "main", doc.id, doc.version, changes).await.unwrap();
     assert!(version > doc.version);
-    ops::doc::save(&host, "main", doc.id).await.unwrap();
+    ops::doc::doc_save(&host, "main", doc.id).await.unwrap();
     assert_eq!(std::fs::read_to_string(a_dir.join("one.py")).unwrap(), "#\nprint(1)\n");
 
     // More files join the same session, wherever they are.
     let again = host.open_light("main", &b_dir.join("two.rs")).unwrap();
     assert!(Arc::ptr_eq(&light, &again));
-    ops::doc::open(&host, "main", b_dir.join("two.rs")).await.unwrap();
+    ops::doc::doc_open(&host, "main", b_dir.join("two.rs")).await.unwrap();
 
     assert!(light.index.wait_idle(Duration::from_secs(10)));
     assert_eq!(light.index.status().files, 0, "nothing is indexed");
@@ -106,11 +106,12 @@ async fn light_windows_stay_restricted_when_folder_trust_changes() {
     host.set_project_trust(&root, true, true).await.unwrap();
     assert!(!light.is_trusted());
     assert!(!trusted_folder.is_trusted());
-    for command in ["sdk_detect", "sdk_locate_tools", "notebook_execute", "notebook_restart", "run_start"] {
-        assert!(host.authorize_command("main", command).is_err(), "{command}");
+    for class in [TrustClass::OutsideRestricted, TrustClass::Trusted] {
+        assert!(host.authorize("main", class).is_err(), "{class:?}");
     }
+    assert!(host.authorize("main", TrustClass::Always).is_ok());
 
-    let doc = ops::doc::open(&host, "main", other.join("two.js")).await.unwrap();
+    let doc = ops::doc::doc_open(&host, "main", other.join("two.js")).await.unwrap();
     let error = ops::lsp::lsp_format(
         &host,
         "main",
@@ -156,15 +157,15 @@ async fn light_notebooks_open_without_interpreter_detection_or_execution() {
     .unwrap();
     let host = host(&tmp.path().join("app"));
     host.open_light("main", &file).unwrap();
-    let notebook = ops::notebook::open(&host, "main", file.to_string_lossy().into()).await.unwrap();
-    assert!(ops::notebook::save(&host, "main", notebook.id.clone()).await.is_ok());
+    let notebook = ops::notebook::notebook_open(&host, "main", file.to_string_lossy().into()).await.unwrap();
+    assert!(ops::notebook::notebook_save(&host, "main", notebook.id.clone()).await.is_ok());
     let error = ops::sdk::sdk_detect(&host, "main", ide_sdk::SdkKind::Python).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));
     assert!(ops::sdk::sdk_python_effective(&host, "main", None).is_err());
     assert!(ops::sdk::sdk_locate_tools(&host, "main", vec!["prettier".into()], Some(root)).await.is_err());
-    let error = ops::notebook::restart(&host, "main", notebook.id.clone()).await.unwrap_err();
+    let error = ops::notebook::notebook_restart(&host, "main", notebook.id.clone()).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));
-    let error = ops::notebook::execute(
+    let error = ops::notebook::notebook_execute(
         &host,
         "main",
         notebook.id,
@@ -191,23 +192,24 @@ async fn untitled_buffers_reach_the_disk_through_save_as() {
     // home folder, no watcher yet, doc commands work.
     let empty = host.open_light_empty("main").unwrap();
     assert!(empty.light);
-    let untitled = ops::doc::open_untitled(&host, "main", None).await.unwrap();
+    let untitled = ops::doc::doc_open_untitled(&host, "main", None).await.unwrap();
     assert_eq!(untitled.path, std::path::PathBuf::from("untitled:Untitled-1"));
     assert_eq!(untitled.language.as_str(), "plaintext");
-    let version = ops::doc::edit(&host, "main", untitled.id, untitled.version, untitled_edit("# notes\n")).unwrap();
-    assert!(ops::doc::save(&host, "main", untitled.id).await.is_ok(), "saving nowhere is a no-op");
+    let version =
+        ops::doc::doc_edit(&host, "main", untitled.id, untitled.version, untitled_edit("# notes\n")).await.unwrap();
+    assert!(ops::doc::doc_save(&host, "main", untitled.id).await.is_ok(), "saving nowhere is a no-op");
     assert!(host.project("main").unwrap().documents.is_dirty(untitled.id).unwrap());
 
     // Save As: the buffer lands on the disk and turns into a file document.
     let target = dir.join("deep/notes.md");
-    let saved = ops::doc::save_as(&host, "main", untitled.id, target.clone()).await.unwrap();
+    let saved = ops::doc::doc_save_as(&host, "main", untitled.id, target.clone()).await.unwrap();
     assert_eq!(saved.path, target);
     assert_eq!(saved.language.as_str(), "markdown");
     assert!(!saved.dirty);
     // The platform's default line separator applies to new buffers.
     assert_eq!(std::fs::read_to_string(&target).unwrap().replace("\r\n", "\n"), "# notes\n");
-    ops::doc::edit(&host, "main", untitled.id, version, untitled_edit("x\n")).unwrap();
-    ops::doc::save(&host, "main", untitled.id).await.unwrap();
+    ops::doc::doc_edit(&host, "main", untitled.id, version, untitled_edit("x\n")).await.unwrap();
+    ops::doc::doc_save(&host, "main", untitled.id).await.unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap().replace("\r\n", "\n"), "x\n# notes\n");
 
     // The saved file's folder is followed for external changes now.
@@ -226,9 +228,9 @@ async fn untitled_buffers_follow_the_window_into_a_project() {
 
     // A LightEdit window with an edited untitled buffer (and a clean one).
     host.open_light_empty("main").unwrap();
-    let draft = ops::doc::open_untitled(&host, "main", None).await.unwrap();
-    ops::doc::edit(&host, "main", draft.id, draft.version, untitled_edit("{\"draft\": true}")).unwrap();
-    let clean = ops::doc::open_untitled(&host, "main", None).await.unwrap();
+    let draft = ops::doc::doc_open_untitled(&host, "main", None).await.unwrap();
+    ops::doc::doc_edit(&host, "main", draft.id, draft.version, untitled_edit("{\"draft\": true}")).await.unwrap();
+    let clean = ops::doc::doc_open_untitled(&host, "main", None).await.unwrap();
 
     // The window switches to a project: the buffers follow, contents and dirty flags kept.
     let project_root = tmp_root.join("proj");
@@ -237,15 +239,15 @@ async fn untitled_buffers_follow_the_window_into_a_project() {
     assert!(!project.light);
 
     let carried =
-        ops::doc::open_untitled(&host, "main", Some(draft.path.to_string_lossy().into_owned())).await.unwrap();
+        ops::doc::doc_open_untitled(&host, "main", Some(draft.path.to_string_lossy().into_owned())).await.unwrap();
     assert_eq!(carried.path, draft.path, "same key, fresh registry: a new doc id carries the content");
-    let snap = ops::doc::snapshot(&host, "main", carried.id).await.unwrap();
+    let snap = ops::doc::doc_snapshot(&host, "main", carried.id).await.unwrap();
     assert_eq!(snap.text, "{\"draft\": true}");
     assert!(host.project("main").unwrap().documents.is_dirty(carried.id).unwrap());
     assert_eq!(snap.language.as_str(), "plaintext");
 
     let clean_carried =
-        ops::doc::open_untitled(&host, "main", Some(clean.path.to_string_lossy().into_owned())).await.unwrap();
+        ops::doc::doc_open_untitled(&host, "main", Some(clean.path.to_string_lossy().into_owned())).await.unwrap();
     assert!(!host.project("main").unwrap().documents.is_dirty(clean_carried.id).unwrap());
     host.shutdown().await;
 }

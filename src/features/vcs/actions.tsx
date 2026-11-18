@@ -60,6 +60,7 @@ import {
   showWorktrees,
 } from "./gitMenuDialogs";
 import { currentRepo, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
+import { stagingAreaOn } from "./staging";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
@@ -421,7 +422,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
-      keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
+      keyWhen: "!editorTextFocus && !diffEditorFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
@@ -433,21 +434,24 @@ export function registerVcsActions(): () => void {
         }
         if (await showDirectoryWorkingDiff(paths)) return;
         const state = useVcs.getState();
+        // The tree the Commit tool window shows: with the staging area, Staged / Unstaged and no lists.
+        const staging = stagingAreaOn();
         const tree = buildChangeTree(
           state.status,
           state.root ?? "",
           useCommit.getState().groupByDir,
-          useChangelists.getState().state,
+          staging ? undefined : useChangelists.getState().state,
           state.roots,
-          useCommit.getState().groupByStaging,
+          useCommit.getState().groupByStaging || staging,
           undefined,
           useCommit.getState().groupByRepo,
           useCommit.getState().showUnversionedSeparately,
         );
+        // The selected rows while the tree has focus: a file under Staged or Unstaged diffs that side.
+        const targets = showDiffTargets(tree, paths, !argPaths(arg)?.length && commitWindowFocused());
         // The modal interface has one front diff window (#1863): a file with its group
         // as the F7 chain, or several selected files as the chain.
         if (isModalCommit()) {
-          const targets = showDiffTargets(tree, paths, !argPaths(arg)?.length && commitWindowFocused());
           const [first] = targets;
           const data =
             targets.length > 1
@@ -461,8 +465,9 @@ export function registerVcsActions(): () => void {
           await openVcsDiff({ ...data, line });
           return;
         }
-        for (const path of paths.slice(0, 5)) {
-          await openDiff({ ...groupDiffData(tree, path), line }, { preview: paths.length === 1 });
+        for (const target of targets.slice(0, 5)) {
+          const data = typeof target === "string" ? groupDiffData(tree, target) : changeNodeDiffData(tree, target);
+          await openDiff({ ...data, line }, { preview: targets.length === 1 });
         }
       },
     },

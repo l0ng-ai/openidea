@@ -6,14 +6,20 @@ import { writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
-import { canRevealInFileManager, fileManagerName, fileManagerPath, revealInFileManager } from "@/platform/fileManager";
+import {
+  canRevealInFileManager,
+  fileManagerName,
+  fileManagerPath,
+  openWithSystemApp,
+  revealInFileManager,
+} from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
 import { lastFileRefactoring, nextFileOperation, runFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
-import { call, commands, IpcError, isCancelled } from "@/platform/ipc";
+import { IpcError, isCancelled } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   isInside,
@@ -501,33 +507,31 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   const fs = projectFs(root);
   const parents = new Set<string>();
   const errors: string[] = [];
-  const deleted: string[] = [];
+  const deleted: NonNullable<typeof lastDelete>["items"] = [];
   for (const p of paths) {
     try {
-      await fs.delete(p);
+      const restore = await fs.delete(p);
       parents.add(parentOf(p));
-      deleted.push(p);
+      deleted.push({ path: p, restore });
     } catch (e) {
       errors.push(`${nameOf(p)}: ${errorMessage(e)}`);
     }
   }
-  if (deleted.length) {
-    const dirs = new Set(nodes.filter((n) => n.dir).map((n) => n.path));
-    lastDelete = { paths: deleted, dirs: deleted.filter((p) => dirs.has(p)), seq: nextFileOperation() };
-  }
+  if (deleted.length && get().root === root) lastDelete = { root, items: deleted, seq: nextFileOperation() };
   if (errors.length)
     notifications().notify({ level: "error", title: "Some items could not be deleted", body: errors.join("\n") });
   await Promise.all([...parents].map((d) => loadDir(d, true)));
   if (next) revealPath(next, refocus);
 }
 
-/** The last Delete in the Project view; Undo brings its files back from Local History. */
-let lastDelete: { paths: string[]; dirs: string[]; seq: number } | null = null;
+/** The last Delete in the Project view and the exact snapshots from that operation. */
+let lastDelete: { root: string; items: Array<{ path: string; restore: () => Promise<string[]> }>; seq: number } | null =
+  null;
 
 /** Undo in the Project view: reverts the latest delete or move / rename; false when there is none. */
 export function undoLastFileOperation(): boolean {
   const move = lastFileRefactoring();
-  if (lastDelete && (!move || lastDelete.seq > move.seq)) {
+  if (lastDelete && lastDelete.root === get().root && (!move || lastDelete.seq > move.seq)) {
     void undoDelete();
     return true;
   }
@@ -536,43 +540,37 @@ export function undoLastFileOperation(): boolean {
   return true;
 }
 
-/** Restores the deleted files (and folders) from their last Local History snapshots. */
+/** Restores only entries captured before this Delete. */
 export async function undoDelete(): Promise<boolean> {
   const op = lastDelete;
-  const { root } = get();
-  if (!op || !root) return false;
+  if (!op || get().root !== op.root) return false;
   lastDelete = null;
-  const fs = projectFs(root);
-  const failed: string[] = [];
+  const failed = new Set<string>();
   const parents = new Set<string>();
-  for (const p of op.paths) {
+  let restored: string | undefined;
+  for (const { path, restore } of op.items) {
+    if (get().root !== op.root) break;
     try {
-      const history = await call(commands.historyListDir(p));
-      const gone = new Set(history.deleted);
-      const latest = new Map<string, string>();
-      for (const e of history.entries)
-        if (e.kind === "snapshot" && e.id && gone.has(e.path) && !latest.has(e.path)) latest.set(e.path, e.id);
-      const dir = op.dirs.includes(p);
-      if (!latest.size && !dir) throw new Error("no Local History snapshot");
-      if (dir) await fs.createDir(p);
-      for (const [path, id] of latest) await call(commands.historyRestore(path, id));
-      parents.add(parentOf(p));
+      const skipped = await restore();
+      for (const skippedPath of skipped) failed.add(skippedPath);
+      if (!restored && !skipped.includes(path)) restored = path;
     } catch {
-      failed.push(nameOf(p));
+      failed.add(path);
     }
+    parents.add(parentOf(path));
   }
+  if (get().root !== op.root) return false;
   await Promise.all([...parents].map((d) => loadDir(d, true)));
-  const restored = op.paths.find((p) => !failed.includes(nameOf(p)));
   if (restored) revealPath(restored, true);
-  const names = failed.join(", ");
-  if (failed.length)
+  const names = [...failed].join("\n");
+  if (failed.size)
     notifications().notify({
       level: "warning",
       title: "Some items could not be restored",
-      body: tx`Not in Local History: ${names}. They are in the Trash.`,
+      body: tx`Check the system Trash for these items. ${names}`,
       key: "project.undoDelete",
     });
-  return !failed.length;
+  return !failed.size;
 }
 
 // ---------------------------------------------------------------------------
@@ -902,6 +900,16 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
   } catch (e) {
     const fileManager = tx(fileManagerName());
     fail(tx`Cannot reveal in ${fileManager}`, e);
+  }
+}
+
+/** Opens each selected file with the application the OS associates with it. */
+export async function openWithAssociatedApp(nodes: ProjectNode[] = selectedNodes()) {
+  for (const file of nodes.filter((n) => !n.dir && !n.placeholder)) {
+    if (!(await openWithSystemApp(file.path))) {
+      notifications().notify({ level: "error", title: tx`Cannot open ${nameOf(file.path)} with its application` });
+      return;
+    }
   }
 }
 

@@ -7,6 +7,7 @@ import {
   renameLocations,
   type RecentLocation,
 } from "../common/locations";
+import { useI18n } from "@/platform/i18n";
 import {
   filterLocations,
   filterRecentFiles,
@@ -131,6 +132,23 @@ describe("recent files switcher", () => {
     ).toEqual(["README.md"]);
   });
 
+  it("shows a scratch file under its root's label", () => {
+    const labelled = [{ path: "/data/scratches", label: "Scratches" }];
+    const items = filterRecentFiles(
+      ["/data/scratches/api/generated-requests.http", "/p/src/Main.kt", "/elsewhere/a.txt"],
+      "",
+      {
+        root: "/p",
+        labelled,
+      },
+    );
+    expect(items.map((f) => [f.rel, f.dir])).toEqual([
+      ["Scratches/api/generated-requests.http", "Scratches/api"],
+      ["src/Main.kt", "src"],
+      ["/elsewhere/a.txt", "/elsewhere"],
+    ]);
+  });
+
   it("preselects the previous file when the current one is first", () => {
     const items = filterRecentFiles(paths, "", { root: "/p" });
     expect(initialFileIndex(items, "/p/src/Main.kt", "")).toBe(1);
@@ -193,6 +211,24 @@ describe("recent files switcher", () => {
     ]);
     expect(switcherToolWindows(list, true, "ter").map((x) => x.tw.id)).toEqual(["terminal"]);
     expect(switcherToolWindows(list, false, "")).toEqual([]);
+  });
+
+  it("lists tool windows by their title in the UI language and still finds them by the English one", () => {
+    const previous = useI18n.getState().texts;
+    useI18n.setState({ texts: { ...previous, Terminal: "终端" } });
+    try {
+      const tw = (id: string, title: string, extra: Partial<ToolWindowContribution> = {}) =>
+        ({ id, title, icon: "folder", anchor: "bottom", component: () => null, ...extra }) as ToolWindowContribution;
+      const list = [tw("terminal", "Terminal"), tw("plugin", "Terminal", { verbatim: true })];
+      expect(switcherToolWindows(list, true, "").map((x) => x.title)).toEqual(["终端", "Terminal"]);
+      expect(switcherToolWindows(list, true, "终端")).toEqual([{ tw: list[0], title: "终端", indices: [0, 1] }]);
+      expect(switcherToolWindows(list, true, "term").map((x) => [x.title, x.indices.length])).toEqual([
+        ["终端", 0],
+        ["Terminal", 4],
+      ]);
+    } finally {
+      useI18n.setState({ texts: previous });
+    }
   });
 });
 

@@ -849,6 +849,11 @@ fn stash_push_list_apply_pop() {
     assert!(stashes[0].message.contains("WIP on main"), "{stashes:?}");
     assert!(stashes[1].message.contains("first stash"), "{stashes:?}");
     assert!(stashes[0].time_ms > 0.0);
+    // Each stash lists the files it changed against the commit it was made on.
+    let head = repo.head().unwrap().1.unwrap();
+    assert!(stashes.iter().all(|s| s.base.as_deref() == Some(head.as_str())), "{stashes:?}");
+    let files = repo.commit_files(&stashes[1].id).unwrap();
+    assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["s.txt"]);
 
     repo.stash_apply(1, false, false).unwrap();
     assert_eq!(fx.read("s.txt"), "change 1\n");
@@ -2074,9 +2079,34 @@ fn checkout_reports_untracked_files_it_would_overwrite() {
     for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
         let opts = CheckoutOptions { mode, ..Default::default() };
         let outcome = repo.checkout_with("other", false, &opts).unwrap();
-        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()] });
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()], removed: false });
         assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
         assert_eq!(fx.read("dir/new.txt"), "mine\n");
+    }
+}
+
+/// Untracked on disk but tracked on the current branch and gone from the target
+/// (as after `git rm --cached`): git refuses to *remove* the file, and the outcome
+/// says so (#3980).
+#[test]
+fn checkout_reports_untracked_files_it_would_remove() {
+    let fx = Fixture::new();
+    fx.write("TEST.md", "hi\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "feature/x"]);
+    fx.git(&["rm", "-q", "TEST.md"]);
+    fx.commit_all("remove TEST.md on feature/x");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.git(&["rm", "--cached", "TEST.md"]);
+    fx.write("TEST.md", "local dirty version\n");
+    let repo = fx.repo();
+    for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
+        // The refusal leaves the repository untouched, so both modes see the same state.
+        let opts = CheckoutOptions { mode, ..Default::default() };
+        let outcome = repo.checkout_with("feature/x", false, &opts).unwrap();
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["TEST.md".into()], removed: true });
+        assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+        assert_eq!(fx.read("TEST.md"), "local dirty version\n");
     }
 }
 
@@ -2221,4 +2251,40 @@ fn status_paths_reads_only_the_named_paths() {
 
     // An empty list is the full status, so a caller that lost the paths stays correct.
     assert_eq!(repo.status_paths(&[]).unwrap().len(), 4);
+}
+
+#[test]
+fn sets_the_commit_identity_in_the_repository() {
+    let fx = Fixture::new();
+    fx.git(&["config", "--unset", "user.name"]);
+    fx.git(&["config", "--unset", "user.email"]);
+    let repo = fx.repo();
+    repo.set_user_identity(" Ada Lovelace ", "ada@example.com", false).unwrap();
+    assert_eq!(fx.git(&["config", "--local", "user.name"]), "Ada Lovelace");
+    assert_eq!(fx.git(&["config", "--local", "user.email"]), "ada@example.com");
+    assert_eq!(repo.config_get("user.email").unwrap().as_deref(), Some("ada@example.com"));
+    let blank = repo.set_user_identity("Ada", "  ", false).unwrap_err();
+    assert_eq!(blank.kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn status_from_the_git_command_line_matches_the_in_process_one() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    fx.write("staged.txt", "a\n");
+    fx.write("gone.txt", "a\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "b\n");
+    fx.write("staged.txt", "b\n");
+    fx.git(&["add", "staged.txt"]);
+    std::fs::remove_file(fx.path("gone.txt")).unwrap();
+    fx.write("dir/new.txt", "n\n");
+    let repo = fx.repo();
+    repo.set_ignored_names(ide_core::settings::Settings::default().ignored_names());
+    let show = |s: Vec<FileStatus>| s.into_iter().map(|f| (f.rel_path, f.staged, f.unstaged)).collect::<Vec<_>>();
+    let in_process = show(repo.status().unwrap());
+    repo.set_cli_status(true);
+    let from_git = show(repo.status().unwrap());
+    assert_eq!(from_git, in_process);
+    assert_eq!(from_git.len(), 4, "{from_git:#?}");
 }

@@ -9,6 +9,7 @@ import type {
   ActiveTheme,
   CapabilityInfo,
   CatalogPlugin,
+  ClipboardAnswer,
   CommitAnswer,
   CommandAnswer,
   CommitSelection,
@@ -105,6 +106,8 @@ export interface PluginsBackend {
   finishOperation(id: string, status: number | null, stopped: boolean): Promise<void>;
   contentTabAction(pluginId: string, action: import("@/bindings").ContentTabAction): Promise<void>;
   answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** This window's clipboard for a plugin's `clipboardRequested`. */
+  answerClipboard(requestId: string, answer: ClipboardAnswer): Promise<void>;
   /** Runs plugins' before-commit checks on what `selection` commits. */
   commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
@@ -305,6 +308,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   answerCommit: async (requestId, answer) => {
     await commands.pluginAnswerCommit(requestId, answer);
   },
+  answerClipboard: async (requestId, answer) => {
+    await call(commands.pluginAnswerClipboard(requestId, answer));
+  },
   commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
@@ -464,6 +470,7 @@ function samplePlugins(): PluginInfo[] {
     homepage: null,
     changeNotes: null,
     icon: null,
+    javaAgent: null,
     source: "installed" as const,
     enabled: true,
     error: null,
@@ -731,6 +738,7 @@ export function createMemoryPluginsBackend(
     selectTests: async () => null,
     contentTabAction: async () => {},
     answerCommit: async () => {},
+    answerClipboard: async () => {},
     commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
       onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);

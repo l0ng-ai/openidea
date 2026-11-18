@@ -9,8 +9,7 @@ pub use requests::Requests;
 mod files;
 mod http;
 mod page;
-mod reports;
-mod scope;
+pub mod reports;
 mod search;
 mod symbols;
 mod tool;
@@ -19,7 +18,9 @@ mod util;
 use crate::Host;
 use ide_core::{CancellationToken, IdeError};
 use ide_mcp::{ToolCallError, ToolRegistry};
-pub use reports::{FileProblems, FocusedEditor, Reports};
+pub use reports::{
+    FileProblems, FocusedEditor, Reports, mcp_report_problems, mcp_set_focused_editor, mcp_set_open_editors,
+};
 pub use run::agent::{AGENT_PARAM, AgentRun, AgentRuns, NAME_PREFIX, SHELL_PARAM};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,6 +39,7 @@ fn tools() -> Vec<tool::Tool> {
     tools.push(check::check_files());
     tools.push(symbols::get_symbol_info());
     tools.push(symbols::find_references());
+    tools.push(symbols::get_call_hierarchy());
     tools.extend(edit::tools());
     tools.extend(run::tools());
     tools.extend(vcs::tools());

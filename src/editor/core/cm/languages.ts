@@ -11,6 +11,8 @@ import {
   LanguageDescription,
   LanguageSupport,
   StreamLanguage,
+  delimitedIndent,
+  indentNodeProp,
   indentService,
   language as languageFacet,
   type StreamParser,
@@ -97,6 +99,22 @@ const supports = new Map<string, Promise<LanguageSupport | null>>();
 /** Frontend modes that extend or replace the bundled parsers. */
 const OWN_MODES = [
   LanguageDescription.of({
+    name: "Julia",
+    extensions: ["jl"],
+    load: async () => {
+      const { julia } = await import("@plutojl/lang-julia");
+      const support = julia();
+      // The package's call rule matches VariableName nodes, but its grammar
+      // represents ordinary call targets as Identifier nodes. Cover those too
+      // so a call is not colored like an uncalled variable.
+      const language = support.language as LRLanguage;
+      return new LanguageSupport(
+        language.configure({ props: [styleTags({ "CallExpression/Identifier": t.function(t.variableName) })] }),
+        support.support,
+      );
+    },
+  }),
+  LanguageDescription.of({
     name: "CMake",
     extensions: ["cmake", "cmake.in"],
     filename: /^(?:CMakeLists\.txt|.*\.cmake(?:\.in)?)$/,
@@ -111,6 +129,11 @@ const OWN_MODES = [
     name: "reStructuredText",
     extensions: ["rst"],
     load: () => import("./restructuredtext").then((m) => new LanguageSupport(m.restructuredtextLanguage)),
+  }),
+  LanguageDescription.of({
+    name: "Typst",
+    extensions: ["typ"],
+    load: async () => new LanguageSupport(StreamLanguage.define((await import("./typst")).typstParser)),
   }),
   LanguageDescription.of({
     name: "Gherkin",
@@ -194,6 +217,14 @@ const OWN_MODES = [
         support.support,
       );
     },
+  }),
+  LanguageDescription.of({
+    name: "TOML",
+    load: async () => new LanguageSupport(StreamLanguage.define((await import("./toml")).tomlParser)),
+  }),
+  LanguageDescription.of({
+    name: "Properties files",
+    load: async () => new LanguageSupport((await import("./properties")).propertiesLanguage),
   }),
   LanguageDescription.of({
     name: "Markdown",
@@ -413,12 +444,28 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   YAML: { "Key/Literal Key/QuotedLiteral": t.keyword },
 };
 
+const bracedIndent = delimitedIndent({ closing: "}" });
+
+/** Grammar props the stock languages lack: indentation that follows the language's usual style. */
+const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]>[0]["props"]>> = {
+  // clang-format's built-in styles (NamespaceIndentation: None, no extern block indent) keep the
+  // contents of `namespace x { … }` and `extern "C" { … }` at the level of the braces' line.
+  "C++": [
+    indentNodeProp.add({
+      // The stock rule for every `{ … }` body, except the bodies of these two.
+      CompoundStatement: (cx) =>
+        cx.node.parent?.name === "NamespaceDefinition" || cx.node.parent?.name === "LinkageSpecification"
+          ? cx.baseIndent
+          : bracedIndent(cx),
+    }),
+  ],
+};
+
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
+  const props = [...(extra ? [styleTags(extra)] : []), ...(EXTRA_PROPS[desc.name] ?? [])];
   const language =
-    extra && support.language instanceof LRLanguage
-      ? support.language.configure({ props: [styleTags(extra)] })
-      : support.language;
+    props.length && support.language instanceof LRLanguage ? support.language.configure({ props }) : support.language;
   const result = new LanguageSupport(language, [
     support.support,
     docCommentTags(desc.name),

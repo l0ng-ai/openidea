@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { registerAction } from "@/platform/actions";
+import { clearContext, getContext, setContext, type ContextKeys } from "@/platform/context";
 import type { SeDeps } from "../everywhere/controller";
 
 const defaultFindFiles: SeDeps["findFiles"] = async (q) =>
@@ -29,13 +30,16 @@ vi.mock("../common/open", async (orig) => ({
   openLocation: vi.fn(async () => {}),
 }));
 
-vi.mock("../everywhere/deps", () => ({
-  ipcDeps: () => fakeDeps(),
-  loadLanguages: async () => [
-    { id: "kotlin", name: "Kotlin", extensions: ["kt"] },
-    { id: "markdown", name: "Markdown", extensions: ["md"] },
-  ],
-}));
+vi.mock("../everywhere/deps", async (orig) => {
+  const { ipcDeps } = await orig<typeof import("../everywhere/deps")>();
+  return {
+    ipcDeps: (ctx: ContextKeys) => ({ ...fakeDeps(), isEnabled: ipcDeps(ctx).isEnabled }),
+    loadLanguages: async () => [
+      { id: "kotlin", name: "Kotlin", extensions: ["kt"] },
+      { id: "markdown", name: "Markdown", extensions: ["md"] },
+    ],
+  };
+});
 vi.mock("../find/windowStore", async (orig) => ({
   ...(await orig<typeof import("../find/windowStore")>()),
   ipcFindDeps: () => ({
@@ -108,6 +112,18 @@ describe("Search Everywhere dialog", () => {
     await tick();
     expect(useSearchEverywhere.getState().open).toBe(false);
     expect(run).toHaveBeenCalled();
+    dispose();
+  });
+
+  it("passes the Text tab's query to Find in Files as typed, port included", async () => {
+    const run = vi.fn();
+    const dispose = registerAction({ id: "find.inPath", title: "Find in Files", run });
+    render(<SearchEverywhereOverlay />);
+    act(() => showSearchEverywhere("text", { query: "http://localhost:8080" }));
+    await tick();
+    fireEvent.keyDown(screen.getByLabelText("Search query"), { key: "Enter", metaKey: true, ctrlKey: true });
+    await tick();
+    expect(run.mock.calls[0]![0].arg).toEqual({ query: "http://localhost:8080" });
     dispose();
   });
 
@@ -206,6 +222,73 @@ describe("Search Everywhere dialog", () => {
     expect(assign).toHaveBeenCalledWith("test.pizza");
     expect(useSearchEverywhere.getState().open).toBe(false);
     disposers.forEach((d) => d());
+  });
+
+  it("hides unavailable commands until requested and uses the editor's captured context for available ones", async () => {
+    const unavailable = vi.fn();
+    const available = vi.fn();
+    const disposers = [
+      registerAction({
+        id: "test.cellNull",
+        title: "Set Test Cell NULL",
+        when: "testEditorFocus",
+        enabled: () => false,
+        run: unavailable,
+      }),
+      registerAction({
+        id: "test.cellDefault",
+        title: "Set Test Cell Default",
+        when: "testEditorFocus",
+        enabled: ({ ctx }) => ctx.testEditorFocus === true && !ctx.popupOpen,
+        run: available,
+      }),
+    ];
+    try {
+      render(
+        <>
+          <button
+            onFocus={() => setContext("testEditorFocus", true)}
+            onBlur={() => setContext("testEditorFocus", false)}
+          >
+            Test editor
+          </button>
+          <SearchEverywhereOverlay />
+        </>,
+      );
+      act(() => screen.getByRole("button", { name: "Test editor" }).focus());
+      act(() => showSearchEverywhere("actions", { query: "Set Test Cell NULL" }));
+      await tick();
+      expect(getContext().testEditorFocus).toBe(false);
+      const checkbox = screen.getByLabelText("Include disabled actions");
+      const input = screen.getByLabelText("Search query");
+      const nullAction = () => screen.queryByRole("option", { name: /Set Test Cell NULL/ });
+      expect(checkbox).not.toBeChecked();
+      expect(nullAction()).toBeNull();
+      expect(screen.getByText("Nothing found", { exact: true })).toBeInTheDocument();
+
+      fireEvent.click(checkbox);
+      await tick();
+      expect(checkbox).toBeChecked();
+      expect(nullAction()?.querySelector('[aria-disabled="true"]')).toBeInTheDocument();
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(unavailable).not.toHaveBeenCalled();
+      expect(useSearchEverywhere.getState().open).toBe(true);
+
+      fireEvent.click(checkbox);
+      await tick();
+      expect(nullAction()).toBeNull();
+      fireEvent.change(input, { target: { value: "Set Test Cell Default" } });
+      await tick();
+      const action = screen.getByRole("option", { name: /Set Test Cell Default/ });
+      expect(action.querySelector('[aria-disabled="true"]')).toBeNull();
+      fireEvent.keyDown(input, { key: "Enter" });
+      await tick();
+      expect(available).toHaveBeenCalledOnce();
+      expect(useSearchEverywhere.getState().open).toBe(false);
+    } finally {
+      disposers.forEach((dispose) => dispose());
+      clearContext("testEditorFocus");
+    }
   });
 
   it("filters Files by file type from the funnel, remembering the choice", async () => {

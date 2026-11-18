@@ -52,7 +52,7 @@ import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
+import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
   changeSplitOrientation,
@@ -272,6 +272,14 @@ export function tabTrailing(input: EditorInput, kinds: EditorKinds): ReactNode {
   }
 }
 
+/** Unsaved changes or a VCS status: what Close Unmodified Tabs and the tab limit's policy keep. */
+function tabModified(tab: Tab): boolean {
+  return (
+    (inputDirty(tab.input, useContributions.getState().editorKinds) ?? false) ||
+    !!(tab.input.path && (useDocMeta.getState()[tab.input.path]?.dirty || getFileDecoration(tab.input.path)?.color))
+  );
+}
+
 export class EditorController implements SlotHost {
   manager: DocumentManager;
   readonly slots = new Map<string, EditorSlot>();
@@ -387,10 +395,11 @@ export class EditorController implements SlotHost {
           // Untitled buffers belong to the window, not a project: their tabs
           // survive the switch (the backend carries them into the new
           // registry) and their slots rebuild against the carried documents.
+          // Closing to Welcome drops them; the leave guard already asked about them.
           const carriedUntitled: Tab[] = [];
           let carriedActive: string | null = null;
           const cs = useTabs.getState();
-          for (const pane of Object.values(cs.panes)) {
+          for (const pane of root || s.lightEdit ? Object.values(cs.panes) : []) {
             for (const tab of pane.tabs) {
               if (isUntitledUri(tab.input.path ?? "")) {
                 carriedUntitled.push(tab);
@@ -1440,8 +1449,7 @@ export class EditorController implements SlotHost {
                 paneId,
                 prefs.tabLimit,
                 prefs.closingPolicy,
-                (tab) =>
-                  inputDirty(tab.input, kinds) ?? !!(tab.input.path && useDocMeta.getState()[tab.input.path]?.dirty),
+                tabModified,
                 keep ?? current.panes[paneId]?.active ?? undefined,
                 protect,
               )
@@ -1725,13 +1733,10 @@ export class EditorController implements SlotHost {
       protect: (tab) => tab.pinned,
     });
   }
-  /** Keeps tabs with unsaved changes or a VCS status (IDEA: tabs shown as modified). */
+  /** Keeps tabs with unsaved changes or a VCS status (tabs shown as modified). */
   closeUnmodified(paneId: string): Promise<boolean> {
-    const modified = (tab: Tab) =>
-      (inputDirty(tab.input, useContributions.getState().editorKinds) ?? false) ||
-      !!(tab.input.path && (useDocMeta.getState()[tab.input.path]?.dirty || getFileDecoration(tab.input.path)?.color));
-    return this.removeGuarded((s) => (s.panes[paneId] ? closeUnmodified(s, paneId, modified) : s), {
-      protect: (tab) => tab.pinned || modified(tab),
+    return this.removeGuarded((s) => (s.panes[paneId] ? closeUnmodified(s, paneId, tabModified) : s), {
+      protect: (tab) => tab.pinned || tabModified(tab),
     });
   }
   closeReadOnly(paneId: string): Promise<boolean> {
@@ -2250,7 +2255,7 @@ export class EditorController implements SlotHost {
   }
 }
 
-/** Open In › for a file: Project View, Finder / Explorer / Files, Terminal. */
+/** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */
 function openInMenu(path: string, line?: number): MenuItem {
   return {
     label: "Open In",
@@ -2258,6 +2263,16 @@ function openInMenu(path: string, line?: number): MenuItem {
       { kind: "action", action: "navigate.selectIn", arg: { path }, label: "Project View" },
       ...(canRevealInFileManager()
         ? [{ kind: "action" as const, action: "project.revealInFinder", arg: path, label: fileManagerName() }]
+        : []),
+      ...(canOpenWithSystemApp()
+        ? [
+            {
+              kind: "action" as const,
+              action: "project.openWithAssociatedApp",
+              arg: path,
+              label: "Associated Application",
+            },
+          ]
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },

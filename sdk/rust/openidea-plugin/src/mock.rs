@@ -121,6 +121,7 @@ struct State {
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     window_status: BTreeMap<String, StatusItem>,
+    console_rules: Vec<ConsoleRule>,
     ipc: BTreeMap<u64, VecDeque<u8>>,
     next_ipc: u64,
     loopbacks: BTreeSet<u64>,
@@ -138,6 +139,8 @@ struct State {
     fetches: u32,
     fetch_error: Option<Error>,
     clipboard: Option<String>,
+    clipboard_image: Option<Vec<u8>>,
+    unattended: bool,
     opened_urls: Vec<String>,
     opened_projects: Vec<(String, bool)>,
     answers: VecDeque<Option<Vec<String>>>,
@@ -246,6 +249,7 @@ const ALL: &[&str] = &[
     "events",
     "events.input",
     "clipboard",
+    "clipboard.read",
 ];
 
 impl MockHost {
@@ -453,6 +457,11 @@ impl MockHost {
         s.status.iter().chain(&s.window_status).map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
+    /// The rules of the last successful [`crate::host::set_console_rules`].
+    pub fn console_rules(&self) -> Vec<ConsoleRule> {
+        self.state.borrow().console_rules.clone()
+    }
+
     pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
         self.state.borrow().context.clone()
     }
@@ -493,6 +502,19 @@ impl MockHost {
     /// Last text copied with [`crate::host::copy_to_clipboard`].
     pub fn clipboard(&self) -> Option<String> {
         self.state.borrow().clipboard.clone()
+    }
+
+    /// What [`crate::host::read_clipboard`] finds: text and an image's PNG bytes.
+    pub fn set_clipboard(&self, text: Option<&str>, image: Option<&[u8]>) {
+        let mut state = self.state.borrow_mut();
+        state.clipboard = text.map(str::to_owned);
+        state.clipboard_image = image.map(<[u8]>::to_vec);
+    }
+
+    /// Calls run as an event handler or background work does (`true`), where reading the
+    /// clipboard is denied, or as a command the user ran (`false`, the default).
+    pub fn set_unattended(&self, unattended: bool) {
+        self.state.borrow_mut().unattended = unattended;
     }
 
     /// URLs opened with [`crate::host::open_url`], in order.
@@ -983,6 +1005,19 @@ pub mod current {
         with(|s| s.status.insert(id.to_owned(), item.clone()));
     }
 
+    /// The host's count and length limits; it also refuses patterns that could
+    /// backtrack for long, which the mock doesn't check.
+    pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+        if rules.len() > 100 {
+            return Err(Error::Invalid("at most 100 console rules".into()));
+        }
+        if let Some(i) = rules.iter().position(|r| r.pattern.is_empty() || r.pattern.len() > 512) {
+            return Err(Error::Invalid(format!("console rule {i}: a pattern is 1-512 bytes")));
+        }
+        with(|s| s.console_rules = rules.to_vec());
+        Ok(())
+    }
+
     pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {
         with(|s| {
             s.window_status.insert(id.into(), item.clone());
@@ -1079,7 +1114,20 @@ pub mod current {
         with(|s| {
             require(s, "clipboard")?;
             s.clipboard = Some(text.to_owned());
+            s.clipboard_image = None;
             Ok(())
+        })
+    }
+
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        with(|s| {
+            require(s, "clipboard.read")?;
+            // A command run through `execute_command` is not one the user ran.
+            if s.unattended || s.command_depth > 0 {
+                return Err(Error::Denied("clipboard.read (only in a command or view action the user ran)".into()));
+            }
+            let text = s.clipboard.clone().filter(|t| !t.is_empty());
+            Ok(ClipboardContent { text, image: s.clipboard_image.clone() })
         })
     }
 

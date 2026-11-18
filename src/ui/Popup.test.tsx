@@ -114,6 +114,7 @@ describe("Popup", () => {
     );
     const popup = screen.getByRole("dialog", { name: "Branches" });
     expect([popup.style.width, popup.style.height]).toEqual(["400px", "300px"]);
+    expect(popup.hasAttribute("data-resized")).toBe(true);
     // jsdom lays nothing out: the popup measures what its style says, at the origin.
     popup.getBoundingClientRect = () =>
       new DOMRect(0, 0, parseFloat(popup.style.width), parseFloat(popup.style.height));
@@ -136,6 +137,7 @@ describe("Popup", () => {
       </Popup>,
     );
     expect(screen.getByRole("dialog", { name: "Menu" }).style.width).toBe("");
+    expect(screen.getByRole("dialog", { name: "Menu" }).hasAttribute("data-resized")).toBe(false);
     expect(screen.queryByRole("separator", { name: "Resize" })).toBeNull();
   });
 });

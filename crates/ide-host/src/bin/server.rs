@@ -1,6 +1,7 @@
 //! `openidea-server --stdio`: the IDE backend for remote development, serving
 //! one desktop client over stdin / stdout (started by the client over SSH).
 
+use ide_host::catalogue::TrustClass;
 use ide_host::plugins::remote::{RemotePluginLanguages, SYNC_COMMAND};
 use ide_host::plugins::remote_host::RemotePlugins;
 use ide_host::rpc::{self, Dispatcher};
@@ -102,7 +103,7 @@ async fn run(base: PathBuf) -> i32 {
     if let Some(plugins) = &plugins {
         plugins.register(&mut dispatcher);
     }
-    dispatcher.add(SYNC_COMMAND, move |c| {
+    dispatcher.add(SYNC_COMMAND, TrustClass::Trusted, move |c| {
         let remote = plugin_languages.clone();
         async move {
             let report = remote.sync(c.arg("languages")?);

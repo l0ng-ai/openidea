@@ -194,6 +194,36 @@ declarations, key and animation binding names (`(keydown.enter)`, `[@fade]`,
 `(@fade.done)`), runs of text that entities split (`a && b`) parsed as one, and one
 token for `{` and `}`.
 
+## Julia CodeMirror language support
+
+[`@plutojl/lang-julia`](https://github.com/JuliaPluto/lang-julia) 1.2.0 and its
+[`@plutojl/lezer-julia`](https://github.com/JuliaPluto/lezer-julia) parser dependency
+provide the Julia CodeMirror 6 language mode. Both packages are MIT licensed;
+the full license text is below. The mode wraps a Lezer grammar and exposes its
+syntax tags through `julia()`.
+
+### MIT License (@plutojl/lang-julia and @plutojl/lezer-julia)
+
+Copyright (c) 2021 Andrey Popp
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## nvim-treesitter queries
 
 `crates/ide-syntax/queries/<grammar>/locals.scm` are derived from the `locals.scm`

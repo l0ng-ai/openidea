@@ -5,10 +5,18 @@ import { fileSourceName, parseSourceUrl } from "./model";
 import { VENDORS, vendorPreset } from "./vendors";
 import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
 import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
-import { connectedTargets, openDialog, openSourceDialog, sourceById, useDatabase } from "./store";
+import {
+  connectedTargets,
+  createsDatabases,
+  newSchemaTarget,
+  openDialog,
+  openSourceDialog,
+  sourceById,
+  useDatabase,
+} from "./store";
 import { readClipboardPlainText } from "@/platform/clipboard";
 import { useRemote } from "@/platform/remote";
-import { dumpScope } from "./dumpTools";
+import { dumpScope, mysqlDumpScope } from "./dumpTools";
 
 const act = (
   action: string,
@@ -83,14 +91,17 @@ function sqlScripts(n: DbNode, table: boolean): MenuItem {
   return { label: "SQL Scripts", submenu: [act("db.ddlToClipboard", n), act("db.ddlToConsole", n), sep, ...scripts] };
 }
 
-/** Export with 'pg_dump' / Restore of a PostgreSQL node; the tools run on this machine, so not in remote windows. */
+/** Export / Restore with the client tools of a PostgreSQL or MySQL node; they run on this machine, so not in remote windows. */
 function dumpItems(n: DbNode, restore: boolean): MenuItem[] {
   const source = sourceById(nodeTarget(n));
-  if (useRemote.getState().session || !dumpScope(n, source)) return [];
-  return [
-    act("db.dumpWithPgDump", n),
-    ...(restore ? [act("db.restoreWithPgRestore", n, { disabled: !!source?.readOnly })] : []),
-  ];
+  if (useRemote.getState().session) return [];
+  const [dump, load] = dumpScope(n, source)
+    ? ["db.dumpWithPgDump", "db.restoreWithPgRestore"]
+    : mysqlDumpScope(n, source)
+      ? ["db.dumpWithMysqldump", "db.restoreWithMysql"]
+      : [];
+  if (!dump || !load) return [];
+  return [act(dump, n), ...(restore ? [act(load, n, { disabled: !!source?.readOnly })] : [])];
 }
 
 function importExport(items: MenuItem[]): MenuItem[] {
@@ -110,6 +121,8 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
   const rename = act("db.rename", n, { disabled: !(n.kind === "source" || (o && canRename(driver, o))) });
   const drop = act("db.drop", n, { disabled: !o || !canDrop(driver, o) });
   const copyRef = act("db.copyReference", n);
+  const readOnly = !!sourceById(id)?.readOnly;
+  const newSchema = newSchemaTarget(n) ? [act("db.newSchema", n, { disabled: readOnly })] : [];
   const navigation = (extra: MenuItem[] = []): MenuItem => ({
     label: "Navigation",
     submenu: [...extra, act("db.jumpToConsole", n)],
@@ -121,7 +134,18 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
       return [
         act("db.properties", n, { label: "Properties" }),
         sep,
-        { label: "New", icon: "plus", submenu: [newConsole, sep, ...dataSourceItems()] },
+        {
+          label: "New",
+          icon: "plus",
+          submenu: [
+            newConsole,
+            sep,
+            ...(createsDatabases(n.source) ? [act("db.newDatabase", n, { disabled: readOnly })] : []),
+            ...newSchema,
+            ...(createsDatabases(n.source) || newSchema.length ? [sep] : []),
+            ...dataSourceItems(),
+          ],
+        },
         { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
         refresh,
         ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
@@ -141,7 +165,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     }
     case "database":
       return [
-        { label: "New", icon: "plus", submenu: [newConsole] },
+        { label: "New", icon: "plus", submenu: [newConsole, ...(newSchema.length ? [sep, ...newSchema] : [])] },
         { label: "Copy/Paste", submenu: [copyRef] },
         refresh,
         act("db.disconnect", n, { disabled: !useDatabase.getState().connected.has(id) || n.current }),
@@ -149,6 +173,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         navigation(),
         sqlScripts(n, false),
         ...importExport(dumpItems(n, true)),
+        ...(createsDatabases(sourceById(id)) ? [sep, act("db.drop", n, { disabled: n.current || readOnly })] : []),
       ];
     case "schema":
     case "folder":

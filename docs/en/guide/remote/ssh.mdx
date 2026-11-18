@@ -110,7 +110,9 @@ choose **File › Reload Environment** so new terminals, runs and tools get the 
 running keep the old environment. When variables changed, the notification offers **Restart Language Servers**.
 
 If the remote project has a `.devcontainer/devcontainer.json` or `.devcontainer.json`, its `remoteEnv` is applied too,
-and its `postStartCommand` runs once each time the server starts.
+and its `postStartCommand` runs once each time the server starts. A project with an `.envrc` gets its direnv environment
+on the host as it does locally (a Nix flake's devshell with `use flake`), and Reload Environment loads it again; see
+[direnv and Nix flakes](/en/guide/run#direnv-and-nix-flakes).
 
 ## Start an SSH terminal
 

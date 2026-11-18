@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Branch } from "@/bindings";
 import {
   branchFolderKeys,
+  branchNamePrefixes,
   buildBranchRows,
   buildBranchTree,
   filterBranchTree,
@@ -180,6 +181,19 @@ describe("buildBranchRows", () => {
     ]);
     expect(summary(buildBranchRows(branches, [], "v1.1", [], null, tags))).toEqual(["v Tags", "  tag:v1.10"]);
     expect(summary(buildBranchRows([], [], "", [], null, tags, { showTags: false }))).toEqual([]);
+  });
+});
+
+describe("branchNamePrefixes", () => {
+  it("lists local branch folders shallowest first, once each, without remote ones", () => {
+    const prefixes = branchNamePrefixes([
+      b("feat/2610/08/login"),
+      b("feat/2610/signup"),
+      b("fix/crash"),
+      b("main"),
+      b("origin/release/1.0"),
+    ]);
+    expect(prefixes).toEqual(["feat/", "fix/", "feat/2610/", "feat/2610/08/"]);
   });
 });
 

@@ -48,6 +48,8 @@ export interface DiffLine {
 export interface DocEntry {
   markup: Markup;
   language: string | null;
+  /** The file the documentation was asked about in (its imports qualify Go signatures). */
+  file?: string;
   /** Declaration of the documented element (Edit Source), resolved on demand. */
   source?: () => Promise<Location | null>;
 }

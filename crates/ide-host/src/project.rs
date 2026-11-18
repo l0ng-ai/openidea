@@ -2,6 +2,7 @@
 //! watchers and the per-project services, opened by [`crate::Host::open_project`].
 
 use crate::Host;
+use ide_core::workflow_settings::VcsMappings;
 use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink};
 use ide_index::ProjectIndex;
 use ide_language::{FileTypes, LanguageRegistry, SyntaxCache};
@@ -108,6 +109,9 @@ impl Host {
         let trusted = Arc::new(AtomicBool::new(self.trust.window_trusted(&root)?));
         let post_start =
             trusted.load(Ordering::Acquire).then(|| self.environment.project_opened(&root, &sink)).flatten();
+        if trusted.load(Ordering::Acquire) {
+            self.environment.direnv_opened(&root, &sink);
+        }
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
         let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
@@ -180,7 +184,14 @@ impl Host {
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
+                let container_python = effective.languages.python.run_target().is_some();
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
+                // Attached dependency projects are source, so basedpyright/Pyright should
+                // resolve imports into them. A container target already supplies its own
+                // `extraPaths` (the site-packages snapshot); don't mix local sources into it.
+                if !container_python {
+                    ide_sdk::apply::configure_python_extra_paths(cfg, &python_dependency_roots(&effective, root));
+                }
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
@@ -262,6 +273,7 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
@@ -275,6 +287,8 @@ impl Host {
                         effective.languages.java.gradle.linked_projects.as_deref(),
                         build_files.as_deref(),
                     );
+                    // After the import settings: they extend the workspace folder's name.
+                    ide_sdk::jdtls_workspaces::use_own_temp(cfg, &data_dir);
                 }
             }));
         }
@@ -306,12 +320,12 @@ impl Host {
         }
         {
             let documents = documents.clone();
-            lsp.set_apply_edit_hook(Box::new(move |edit| apply_workspace_edit(&documents, &edit).is_ok()));
+            lsp.set_apply_edit_hook(Box::new(move |edit| documents.apply_workspace_edit(&edit).is_ok()));
         }
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
         documents.add_observer(Arc::new(LspObserver(lsp.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         documents.add_observer(Arc::new(DeployObserver {
             remote: self.remote.clone(),
             settings: settings.clone(),
@@ -386,6 +400,14 @@ impl Host {
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
                     if composer_changed(&root, changed.iter().chain(&batch.removed)) {
                         lsp.reconfigure_soon();
+                    }
+                    // Not while loading: a first `use flake` may write `flake.lock` itself.
+                    if trusted.load(Ordering::Acquire)
+                        && !ide_core::project_env::is_loading(&root)
+                        && let Some(file) = crate::direnv::reload_offer(&root, changed.iter().chain(&batch.removed))
+                    {
+                        let status = ide_core::event::DirenvStatus::Changed { file };
+                        sink.emit(IdeEvent::Direnv { root: root.clone().into(), status });
                     }
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&[&changed[..], &ignored].concat());
@@ -764,7 +786,7 @@ impl Host {
         lsp.set_servers_hook(Box::new(|_, _| Vec::new()));
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         let watcher = match watch_dir {
             Some(dir) => light_watcher(dir, &sink, &documents, &history)?,
             // A quiet private folder stands in until the first save brings a
@@ -934,10 +956,27 @@ fn scan_repositories(
     }
 }
 
-/// The repository containing `root` and those nested below it or below a content root.
+/// The repository containing `root` and those nested below it or below a content root,
+/// with the project's Directory Mappings applied.
 /// The project-open scan and the watcher's rescan share these skip rules.
 fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path, trusted: bool) -> IdeResult<Repos> {
-    let ignored = settings.effective().ignored_names();
+    let settings = settings.effective();
+    let found = detect_repositories(root, &settings, build_cache, trusted)?;
+    let mappings = &settings.vcs.mappings;
+    if mappings.is_empty() {
+        return Ok(found);
+    }
+    let resolve = |list: &[String]| -> Vec<PathBuf> { list.iter().map(|p| VcsMappings::resolve(root, p)).collect() };
+    Ok(found.mapped(&resolve(&mappings.excluded), &resolve(&mappings.added), root))
+}
+
+fn detect_repositories(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+    build_cache: &Path,
+    trusted: bool,
+) -> IdeResult<Repos> {
+    let ignored = settings.ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
             let name = n.to_string_lossy();
@@ -947,11 +986,17 @@ fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Pa
         })
     };
     let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root, build_cache, trusted));
+    roots.extend(content_roots(settings, root, build_cache, trusted));
     Repos::discover_roots(&roots, &skip)
 }
 
 impl Project {
+    /// The repository roots detection finds, before Directory Mappings exclude or add any.
+    pub fn detected_repository_roots(&self) -> IdeResult<Vec<PathBuf>> {
+        let settings = self.settings.effective();
+        Ok(detect_repositories(&self.root, &settings, &self.build_cache_dir(), self.is_trusted())?.roots())
+    }
+
     pub fn refresh_repositories(&self) {
         scan_repositories(
             &self.root,
@@ -1055,6 +1100,7 @@ impl Project {
             apply_git_executable(&settings);
         }
         repo.set_ignored_names(settings.ignored_names());
+        repo.set_cli_status(settings.vcs.git.cli_status);
         f(repo)
     }
 
@@ -1320,11 +1366,6 @@ impl Project {
     }
 }
 
-/// Applies a multi-file edit through the document layer so open editors update live.
-pub fn apply_workspace_edit(documents: &Documents, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
-    documents.apply_workspace_edit(edit)
-}
-
 /// Files the watcher reports per batch that Local History snapshots.
 const HISTORY_BATCH_LIMIT: usize = 500;
 
@@ -1486,6 +1527,30 @@ fn member_dependencies_for<'a>(map: &'a BTreeMap<String, Vec<String>>, own_key: 
         return Some(deps);
     }
     map.iter().find(|(key, _)| ide_core::ipc_path::to_ipc(&PathBuf::from(key)) == own_key).map(|(_, deps)| deps)
+}
+
+/// Dependency roots of `root`, for a Python language server's `analysis.extraPaths`.
+/// In a workspace a member depends only on the roots picked for it in Project
+/// Structure › Dependencies; outside one, the project-level `dependencies` list applies.
+fn python_dependency_roots(settings: &ide_core::settings::Settings, root: &Path) -> Vec<PathBuf> {
+    let own_key = ide_core::ipc_path::to_ipc(root);
+    let configured = if ide_workspace::workspace::Workspace::load(root).ok().flatten().is_some() {
+        member_dependencies_for(&settings.project_structure.member_dependencies, &own_key).cloned().unwrap_or_default()
+    } else {
+        settings.project_structure.dependencies.clone()
+    };
+    configured
+        .into_iter()
+        .map(|p| PathBuf::from(p.trim()))
+        .filter(|p| p.is_absolute() && p.is_dir())
+        // A `src` layout keeps its packages one level down; basedpyright searches a
+        // project's own `src` by itself, but not an extra path's.
+        .flat_map(|p| {
+            let src = p.join("src");
+            let src = src.is_dir().then_some(src);
+            std::iter::once(p).chain(src)
+        })
+        .collect()
 }
 
 fn extra_content_roots(
@@ -1850,13 +1915,41 @@ impl DocumentObserver for SyntaxObserver {
     }
 }
 
-struct HistoryObserver(Arc<LocalHistory>);
+struct HistoryObserver {
+    history: Arc<LocalHistory>,
+    /// Documents edited since they were opened: only the first edit looks for a missing original.
+    edited: Mutex<HashSet<ide_core::DocId>>,
+}
+
+impl HistoryObserver {
+    fn new(history: Arc<LocalHistory>) -> Self {
+        Self { history, edited: Mutex::default() }
+    }
+}
 
 impl DocumentObserver for HistoryObserver {
-    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
-        if let Err(e) = self.0.record(path, text, "Saved") {
+    fn changed(
+        &self,
+        doc: ide_core::DocId,
+        path: &Path,
+        _version: u32,
+        _changes: &[AppliedChange],
+        _full_text: &dyn Fn() -> String,
+    ) {
+        // The file on disk still has its content from before the edit.
+        if self.edited.lock().insert(doc)
+            && let Err(e) = self.history.record_original(path)
+        {
             tracing::warn!("local history: {e}");
         }
+    }
+    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
+        if let Err(e) = self.history.record(path, text, "Saved") {
+            tracing::warn!("local history: {e}");
+        }
+    }
+    fn closed(&self, doc: ide_core::DocId, _path: &Path) {
+        self.edited.lock().remove(&doc);
     }
 }
 
@@ -2149,11 +2242,12 @@ mod workspace_edit_tests {
             version: None,
             edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
         };
-        apply_workspace_edit(
-            &documents,
-            &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)], ..Default::default() },
-        )
-        .unwrap();
+        documents
+            .apply_workspace_edit(&WorkspaceEdit {
+                files: vec![changes(real.clone()), changes(alias)],
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }
@@ -2219,6 +2313,47 @@ mod content_roots_tests {
             vec![dep.to_string_lossy().into_owned(), root.to_string_lossy().into_owned()];
         let roots = content_roots(&settings, &root, &tmp.path().join("build"), false);
         assert_eq!(roots, vec![shared, dep]);
+    }
+
+    #[test]
+    fn python_dependency_roots_use_project_dependencies_outside_a_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("app");
+        let dep = tmp.path().join("lib");
+        let missing = tmp.path().join("gone");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&dep).unwrap();
+        let src_layout = tmp.path().join("pkg");
+        std::fs::create_dir_all(src_layout.join("src/pkg")).unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        settings.project_structure.dependencies = vec![
+            dep.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+            "relative".into(),
+            src_layout.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(
+            super::python_dependency_roots(&settings, &root),
+            vec![dep, src_layout.clone(), src_layout.join("src")]
+        );
+    }
+
+    #[test]
+    fn python_dependency_roots_use_the_members_own_picks_inside_a_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let (app, lib, other) = (ws.join("app"), ws.join("lib"), ws.join("other"));
+        for dir in [&app, &lib, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        ide_workspace::workspace::Workspace::attach(&app, "ws", vec![app.clone(), lib.clone(), other.clone()]).unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        let key = |p: &std::path::Path| ide_core::ipc_path::to_ipc(p);
+        settings.project_structure.member_dependencies.insert(key(&app), vec![key(&lib)]);
+        settings.project_structure.member_dependencies.insert(key(&other), vec![key(&app)]);
+        // Project-level dependencies are ignored: inside a workspace, members pick their own.
+        settings.project_structure.dependencies = vec![key(&other)];
+        assert_eq!(super::python_dependency_roots(&settings, &app), vec![lib]);
     }
 
     #[test]

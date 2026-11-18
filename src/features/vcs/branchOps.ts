@@ -5,7 +5,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { ask } from "@/workbench/messages";
-import { isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
+import { branchNamePrefixes, isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
 import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
@@ -104,11 +104,17 @@ async function performCheckout(
         return true;
       case "untrackedFiles": {
         const files = outcome.files.join("\n");
+        // git refuses untracked files in two ways: they would be overwritten by the
+        // checkout (present in the target), or removed by it (tracked here, absent
+        // from the target); each names its files the way git's own message does.
+        const body = outcome.removed
+          ? tx`The following untracked working tree files would be removed by checkout:\n${files}\nPlease move or remove them before you switch branches.`
+          : tx`The following untracked working tree files would be overwritten by checkout:\n${files}\nPlease move or remove them before you switch branches.`;
         notifications().notify({
           group: "vcs",
           level: "error",
           title: "Untracked files prevent checkout",
-          body: tx`The following untracked working tree files would be overwritten by checkout:\n${files}\nPlease move or remove them before you switch branches.`,
+          body,
         });
         return false;
       }
@@ -193,6 +199,7 @@ export async function newBranch(from?: string, repo = currentRepo()) {
     label: "New branch name:",
     // Kept even when that branch exists (the current one always does): the user edits it.
     initial: suggestion,
+    prefixes: branchNamePrefixes(branches),
     mono: true,
     okLabel: "Create",
     sanitize: cleanUpBranchNameOnTyping,

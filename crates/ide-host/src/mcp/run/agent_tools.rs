@@ -305,7 +305,7 @@ pub fn list_runs() -> Tool {
 start of the command, exit code and times. `get_run_status` gives a tab's whole status.",
         |call| async move {
             let page = Page::of(&call, LIST_LIMIT)?;
-            let dir = crate::mcp::scope::Scope::of(&call)?;
+            let paths = crate::mcp::search::PathScope::of(&call)?;
             let wanted = call.opt_str("state")?.filter(|s| s != "all");
             let states = match wanted.as_deref() {
                 None => None,
@@ -327,7 +327,7 @@ start of the command, exit code and times. `get_run_status` gives a tab's whole 
                 .rev()
                 .map(|r| r.status())
                 // A tab belongs where its command runs.
-                .filter(|s| dir.contains_shown(call.root(), s["workingDirectory"].as_str().unwrap_or_default()))
+                .filter(|s| paths.matches_dir(&call.root().join(s["workingDirectory"].as_str().unwrap_or_default())))
                 .filter(|s| {
                     states.as_ref().is_none_or(|states| s["state"].as_str().is_some_and(|v| states.contains(&v)))
                 })
@@ -344,7 +344,7 @@ start of the command, exit code and times. `get_run_status` gives a tab's whole 
         ParamType::String,
         "all (default), running, idle (not running), error (failed, crashed, startFailed), or one state",
     ))
-    .param(crate::mcp::scope::param())
+    .param(crate::mcp::search::paths_param())
     .param(Param::optional("limit", ParamType::Integer, "Tabs to return at most (default 10)"))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
@@ -418,10 +418,10 @@ input). Terminal keys (arrows, Escape, Backspace, Ctrl+Z…) are refused. To ans
                             host.processes.write_stdin(id, &std::mem::take(&mut data))?;
                         }
                         if key == Key::EndOfInput {
-                            crate::ops::run::close_stdin(&host, id)?;
+                            crate::ops::run::run_close_stdin(&host, id)?;
                         } else {
                             run.agent_stopping();
-                            crate::ops::run::stop(&host, &run.window(), id)?;
+                            crate::ops::run::run_stop(&host, &run.window(), id)?;
                             break;
                         }
                     }
@@ -455,10 +455,10 @@ keeps `stopping`: call again with `force`. The tab stays open with its output."
             let deadline = deadline(&call, STOP_TIMEOUT_MS)?;
             let host = call.host();
             run.agent_stopping();
-            crate::ops::run::stop(&host, &run.window(), id)?;
+            crate::ops::run::run_stop(&host, &run.window(), id)?;
             if force {
                 // A second Stop kills the tree.
-                crate::ops::run::stop(&host, &run.window(), id)?;
+                crate::ops::run::run_stop(&host, &run.window(), id)?;
             }
             let end = run.wait(deadline, None, run.log_len(), &call.cancel).await?;
             let mut extra = Map::new();

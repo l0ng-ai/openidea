@@ -16,7 +16,8 @@ import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { OutputActivity } from "./activity";
 import { fitScheduler, settledResize } from "./fit";
-import { watchWindowsPty, windowsPty } from "./windowsPty";
+import { OutputGate, type TerminalMaxFps } from "./outputGate";
+import { watchWindowsPty, windowsPtyOptions } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
@@ -42,6 +43,7 @@ import {
   type TerminalFontSettings,
   MIN_CONTRAST_RATIO,
 } from "./theme";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 export interface TerminalSearchOptions {
   caseSensitive: boolean;
@@ -260,6 +262,11 @@ export class TerminalSession {
   /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
   private outputTail = "";
+  private readonly outputGate = new OutputGate({
+    maxFps: () => workflowSettings().terminal.maxFps as TerminalMaxFps,
+    hidden: () => typeof document !== "undefined" && document.hidden,
+    write: (data) => this.term.write(data),
+  });
   private lastSize = { cols: 0, rows: 0 };
   /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
   private fontZoom = 0;
@@ -310,7 +317,7 @@ export class TerminalSession {
     const settings = workflowSettings().terminal;
     const font = fontFor(settings);
     this.term = new Terminal({
-      windowsPty: windowsPty(),
+      ...windowsPtyOptions(),
       fontFamily: font.family,
       fontSize: font.size,
       lineHeight: font.lineHeight,
@@ -464,10 +471,12 @@ export class TerminalSession {
   }
 
   private onWheelZoom = (e: WheelEvent) => {
-    if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+    if (!editorPrefs().general.wheelZoom) return;
+    const zoom = wheelZoomStep(e);
+    if (zoom === null) return;
     e.preventDefault();
     e.stopPropagation();
-    this.stepFontSize(e.deltaY < 0 ? 1 : -1);
+    if (zoom) this.stepFontSize(zoom);
   };
 
   private onMiddleClick = (e: MouseEvent) => {
@@ -742,7 +751,7 @@ export class TerminalSession {
     }
     this.outputTail = output.slice(output.length - held);
     output = output.slice(0, output.length - held);
-    if (output) this.term.write(output);
+    if (output) this.outputGate.push(output);
   }
 
   private doFit() {
@@ -782,6 +791,7 @@ export class TerminalSession {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
     this.outputTail = "";
+    this.outputGate.clear();
     this.resetActivity();
     const custom = this.opts.command;
     this.update({
@@ -1041,6 +1051,7 @@ export class TerminalSession {
       this.opts.command?.onExit?.(null, true);
     this.fitter.cancel();
     this.ptyResize.cancel();
+    this.outputGate.dispose();
     if (this.activityTimer !== null) clearTimeout(this.activityTimer);
     this.pendingInput = "";
     this.resizeObserver?.disconnect();

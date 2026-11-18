@@ -144,7 +144,12 @@ function createSession(cwd: string, command?: SessionOptions["command"], fallbac
 }
 
 function disposeSession(key: string) {
-  sessions.get(key)?.dispose();
+  const session = sessions.get(key);
+  const focus = document.activeElement;
+  // Removing the focused pane fires no blur, so `terminalFocus` would stay set (⌘T would keep
+  // opening terminal tabs). Another pane taking the caret sets it again.
+  if (focus && session?.host?.contains(focus)) publishFocus(false);
+  session?.dispose();
   sessions.delete(key);
   useTerminals.setState((s) => {
     const next = { ...s.sessions };

@@ -90,6 +90,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("toml", include_str!("../../../languages/toml.toml")),
     ("typescript", include_str!("../../../languages/typescript.toml")),
     ("typescriptreact", include_str!("../../../languages/typescriptreact.toml")),
+    ("typst", include_str!("../../../languages/typst.toml")),
     ("vue", include_str!("../../../languages/vue.toml")),
     ("xml", include_str!("../../../languages/xml.toml")),
     ("yaml", include_str!("../../../languages/yaml.toml")),
@@ -370,6 +371,7 @@ impl LanguageRegistry {
     pub fn framework_ui_mode(&self, language: &LanguageId, path: &Path, project_root: Option<&Path>) -> Option<String> {
         let state = self.state();
         let cfg = state.languages.iter().find(|l| &l.id == language)?;
+        let path = &*crate::project_spelling(path, |p| project_root.is_none_or(|root| p.starts_with(root)));
         cfg.framework_ui_modes
             .iter()
             .find(|f| crate::marked_root(project_root, path, &f.root_markers).is_some())
@@ -612,6 +614,7 @@ mod tests {
         "TTCN",
         "TTCN_CFG",
         "Turtle",
+        "Typst",
         "Web IDL",
         "VB.NET",
         "VBScript",
@@ -924,6 +927,38 @@ mod tests {
         assert_eq!(detect("shop/templates/shop/product_list.html"), "django-html");
         assert_eq!(detect("shop/templates/shop/email/order.txt"), "django-html");
         assert_eq!(detect("pages/promo.html"), "html");
+    }
+
+    /// #4061: the project root is canonical; a template reached under another
+    /// spelling of it is still the project's.
+    #[test]
+    fn templates_spelt_differently_from_the_project_use_framework_modes() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("Develop/shop");
+        std::fs::create_dir_all(root.join("node_modules/@angular/core")).unwrap();
+        let template = root.join("apps/myapp/src/app/example.component.html");
+        std::fs::create_dir_all(template.parent().unwrap()).unwrap();
+        std::fs::write(&template, "<button (click)=\"onConfirm()\">Confirm</button>\n").unwrap();
+        let mode = |path: &Path| reg.framework_ui_mode(&LanguageId::new("html"), path, Some(&root));
+        let links = tempfile::tempdir().unwrap();
+        let mut spellings = Vec::new();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, links.path().join("shop")).unwrap();
+            spellings.push(links.path().join("shop").join(template.strip_prefix(&root).unwrap()));
+        }
+        // Only on a case-insensitive disk (macOS, Windows): `develop` for `Develop`.
+        let lower = PathBuf::from(template.to_string_lossy().replace("Develop", "develop"));
+        if lower.exists() {
+            spellings.push(lower);
+        }
+        for path in &spellings {
+            assert_eq!(mode(path).as_deref(), Some("Angular Template"), "{}", path.display());
+        }
+        // Still nothing for files that are elsewhere under every spelling.
+        std::fs::create_dir_all(links.path().join("other")).unwrap();
+        assert_eq!(mode(&links.path().join("other/index.html")), None);
     }
 
     #[test]

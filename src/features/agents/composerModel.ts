@@ -127,6 +127,40 @@ export function resolveTyped(root: string, rel: string): string {
   return isDrive(out[0]) ? out.join("/") : `/${out.join("/")}`;
 }
 
+/** `abs` relative to the first of `bases` it is under ("." for the base itself). */
+export function relativeTo(bases: readonly string[], abs: string): string | null {
+  const source = resolveTyped("", abs.replace(/\\/g, "/"));
+  const base = bases
+    .filter(Boolean)
+    .map((path) => resolveTyped(path, "."))
+    .find((path) => source === path || source.startsWith(`${path}/`));
+  if (!base) return null;
+  return source === base ? "." : source.slice(base.length + 1);
+}
+
+export interface ReferenceRoots {
+  /** The folder the agent works in. */
+  root: string;
+  /** The project `root` is a worktree of (or `root` itself): its files are referenced inside `root`. */
+  projectRoot: string;
+  /** The workspace's projects: the files of another one are referenced by path, named by that project. */
+  members?: readonly string[];
+}
+
+/** How the composer references `abs`: the path it sends and the name written after `@`. */
+export function referenceOf(roots: ReferenceRoots, abs: string): { path: string; rel: string } | null {
+  const own = relativeTo([roots.root, roots.projectRoot], abs);
+  if (own !== null) return { path: resolveTyped(roots.root, own), rel: own };
+  const source = resolveTyped("", abs.replace(/\\/g, "/"));
+  for (const member of roots.members ?? []) {
+    const rel = relativeTo([member], source);
+    if (rel === null) continue;
+    const name = resolveTyped(member, ".").split("/").pop() ?? "";
+    return { path: source, rel: rel === "." ? name : `${name}/${rel}` };
+  }
+  return null;
+}
+
 interface IndexMatch {
   path: string;
   relPath: string;
@@ -360,6 +394,15 @@ export function toPrompt(draft: ComposerDraft): AgentPrompt {
     files: files.map((f) => f.path),
     images: draft.images,
   };
+}
+
+/**
+ * The shell command of a message starting with `!` (Claude Code's bash mode): it runs in the
+ * task's folder instead of going to the agent. `null` for any other message.
+ */
+export function shellCommand(d: ComposerDraft): string | null {
+  if (!d.text.startsWith("!") || d.images.length > 0 || d.files.some((f) => f.attached)) return null;
+  return d.text.slice(1).trim() || null;
 }
 
 export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);

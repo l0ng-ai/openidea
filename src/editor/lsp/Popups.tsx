@@ -28,17 +28,9 @@ import {
   type ListPreview,
   type LspPopup,
 } from "./popupStore";
-import { shortcutLabel } from "@/platform/keymap";
-import {
-  docLinkHandler,
-  docStep,
-  editDocSource,
-  moveDocPopupToWindow,
-  useDocWindow,
-  type DocHistory,
-  type DocHost,
-} from "./docs";
-import { renderCode, renderMarkup } from "./markdown";
+import { DOC_MIN_HEIGHT, DOC_MIN_WIDTH, loadDocSize, saveDocSize, useDocWindow } from "./docs";
+import { DocView, DomContent } from "./DocView";
+import { renderCode } from "./markdown";
 import { describeSummary } from "./workspaceEdit";
 import { useUsagesStatus } from "./navigation";
 import styles from "./Popups.module.css";
@@ -352,90 +344,6 @@ function RenamePopup({ popup }: { popup: Extract<LspPopup, { kind: "rename" }> }
   );
 }
 
-function DomContent({ build, className }: { build: () => HTMLElement; className?: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const node = build();
-    el.replaceChildren(node);
-    return () => el.replaceChildren();
-    // Built once per popup.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return <div ref={ref} className={className} />;
-}
-
-/** Documentation with its history toolbar; shared by the popup and the Documentation tool window. */
-function DocView({ host, history, themeClasses }: { host: DocHost; history: DocHistory; themeClasses: string }) {
-  const entry = history.entries[history.index];
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      e.preventDefault();
-      docStep(host, e.key === "ArrowLeft" ? -1 : 1);
-    } else if (e.key === "F4" && entry?.source) {
-      e.preventDefault();
-      void editDocSource(host);
-    }
-  };
-  const ref = useRef<HTMLDivElement>(null);
-  return (
-    <div
-      ref={ref}
-      tabIndex={-1}
-      data-lsp-doc={host}
-      className={clsx(themeClasses, host === "popup" ? styles.docFrame : styles.docWindowFrame)}
-      onKeyDown={onKeyDown}
-    >
-      {entry && (
-        <DomContent
-          key={`${history.index}:${history.entries.length}`}
-          className={clsx(styles.docBody, selectableText)}
-          build={() => renderMarkup(entry.markup, entry.language, docLinkHandler(host))}
-        />
-      )}
-      <div className={styles.docToolbar}>
-        <IconButton
-          icon="arrow-left"
-          size="small"
-          title="Back"
-          shortcut="←"
-          disabled={history.index === 0}
-          onClick={() => docStep(host, -1)}
-        />
-        <IconButton
-          icon="arrow-right"
-          size="small"
-          title="Forward"
-          shortcut="→"
-          disabled={history.index >= history.entries.length - 1}
-          onClick={() => docStep(host, 1)}
-        />
-        <span className={styles.spacer} />
-        {entry?.source && (
-          <IconButton
-            icon="edit"
-            size="small"
-            title="Edit Source"
-            shortcut="F4"
-            onClick={() => void editDocSource(host)}
-          />
-        )}
-        {host === "popup" && (
-          <IconButton
-            icon="open-in-tool-window"
-            size="small"
-            title="Show in Documentation Tool Window"
-            shortcut={shortcutLabel("code.quickDocumentation") || undefined}
-            onClick={() => moveDocPopupToWindow()}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
 function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   const focusSeq = useLspPopup((s) => s.focusSeq);
   const scope = useRef<HTMLDivElement>(null);
@@ -444,6 +352,7 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
     if (focusSeq !== opened.current)
       scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
   }, [focusSeq]);
+  const [initialSize] = useState(loadDocSize);
   return (
     <Popup
       open
@@ -453,6 +362,11 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
       className={styles.docPopup}
       // As in IDEA the popup leaves the keyboard to the editor until F1 focuses it.
       autoFocus={false}
+      resizable="both"
+      minWidth={DOC_MIN_WIDTH}
+      minHeight={DOC_MIN_HEIGHT}
+      initialSize={initialSize}
+      onResized={saveDocSize}
     >
       <div ref={scope} data-testid="doc-popup" className={styles.docScope}>
         <DocView host="popup" history={popup} themeClasses={popup.themeClasses} />
