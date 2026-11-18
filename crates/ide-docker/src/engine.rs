@@ -569,9 +569,9 @@ fn map_containers(body: &str) -> Vec<DockerContainer> {
 fn port_text(p: &ApiPort) -> String {
     let kind = if p.kind.is_empty() { "tcp" } else { &p.kind };
     match (p.ip.as_deref().filter(|ip| !ip.is_empty()), p.public_port) {
-        (Some(ip), Some(public)) => format!("{ip}:{public}->{}:{kind}", p.private_port),
-        (None, Some(public)) => format!("{public}->{}:{kind}", p.private_port),
-        _ => format!("{}:{kind}", p.private_port),
+        (Some(ip), Some(public)) => format!("{ip}:{public}->{}/{kind}", p.private_port),
+        (None, Some(public)) => format!("{public}->{}/{kind}", p.private_port),
+        _ => format!("{}/{kind}", p.private_port),
     }
 }
 
@@ -907,7 +907,7 @@ mod tests {
         assert_eq!(db.ports, "");
         assert!(db.networks.is_empty());
         let web = rows.iter().find(|c| c.name == "web").unwrap();
-        assert_eq!(web.ports, "0.0.0.0:8080->80:tcp, 443:tcp");
+        assert_eq!(web.ports, "0.0.0.0:8080->80/tcp, 443/tcp");
         assert_eq!(web.networks, vec!["bridge", "webnet"]);
         assert_eq!(web.mounts, vec!["data", "/home/me/app"]);
         assert_eq!(web.compose_project.as_deref(), Some("demo"));
