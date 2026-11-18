@@ -268,6 +268,24 @@ pub async fn agent_prompt(host: &Host, window: &str, task: String, prompt: Agent
     host.project(window)?.agents.prompt(&task, prompt, now).await
 }
 
+/// Runs a `!` line of the composer in the task's folder with the user's shell, without
+/// starting a turn; its output goes to the agent with the next message.
+#[command(trust = trusted)]
+pub async fn agent_shell(
+    host: &Host,
+    window: &str,
+    task: String,
+    command: String,
+    request: RequestId,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    let cancel = host.begin_request(request);
+    let result = agents.run_shell(&task, &command, cancel).await;
+    host.end_request(request);
+    result
+}
+
 /// Answers a non-blocking question, without cancelling the current turn.
 #[command(trust = trusted)]
 pub async fn agent_answer_question(
@@ -1080,6 +1098,7 @@ ide_command::domain!(
     agent_rollback_changes,
     agent_send_queued_now,
     agent_set_command,
+    agent_shell,
     agent_set_config,
     agent_set_env,
     agent_set_mcp_overrides,
