@@ -4,14 +4,12 @@
  * merge and Local History editors, remote operations.
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
-import { COMBINED_DIFF_KIND, type CombinedDiffData } from "./allInOneDiff";
 import { editorsFor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
   registerEditorKind,
   registerMenuGroup,
   registerOverlay,
-  registerSettingsPage,
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
@@ -30,7 +28,7 @@ import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidge
 import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
-import { DIFF_KIND, diffInputAtCaret, diffTitle, type DiffData } from "./diffInput";
+import { activateDiffViewer } from "./diffViewer";
 import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
@@ -55,6 +53,7 @@ import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
+import { activateSettingsPages } from "./settingsPages";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
 function trackMergeRebaseItem(): () => void {
@@ -153,43 +152,6 @@ function conflictsBody(names: string[]): string {
   return names.length === 1
     ? tx`${names.length} file has conflicts: ${list}`
     : tx`${names.length} files have conflicts: ${list}`;
-}
-
-/** Settings › Version Control › Log (also used by the Settings window). */
-export { activateComparisonWindow, ComparisonWindow } from "./ComparisonWindow";
-export { activateDiffWindow, DiffWindow } from "./DiffWindow";
-
-/** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
-export function activateDiffViewer(): () => void {
-  const single = registerEditorKind({
-    kind: DIFF_KIND,
-    standalone: true,
-    component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
-    title: (input) => diffTitle(input.data as DiffData),
-    icon: () => "diff",
-    navigationInput: diffInputAtCaret,
-  });
-  const combined = registerEditorKind({
-    kind: COMBINED_DIFF_KIND,
-    standalone: true,
-    component: lazyComponent(() => import("./CombinedDiff").then((m) => m.CombinedDiffTab)),
-    title: (input) => (input.data as CombinedDiffData).title ?? tx("Combined Changes Diff"),
-    icon: () => "diff",
-  });
-  return () => {
-    single();
-    combined();
-  };
-}
-
-export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: "vcs.log",
-    title: "Log",
-    order: 6,
-    keywords: ["git log", "references", "tags", "columns", "commit time"],
-    component: lazyComponent(() => import("./LogSettingsPage").then((m) => m.LogSettingsPage)),
-  });
 }
 
 export function activate(): () => void {
