@@ -229,6 +229,16 @@ fn dirty_events(events: &[IdeEvent]) -> Vec<bool> {
 }
 
 #[test]
+fn closing_a_modified_buffer_reports_it_clean() {
+    let f = fixture();
+    let info = f.docs.open_untitled(None).unwrap();
+    f.docs.edit(info.id, 0, change(0, 0, "draft")).unwrap();
+    assert_eq!(dirty_events(&f.events.lock()), vec![true]);
+    f.docs.close(info.id);
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false]);
+}
+
+#[test]
 fn open_edit_save_close() {
     let f = fixture();
     let path = f.root.join("main.rs");
