@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Profile, ProfileMode } from "@/platform/ipc";
 import { useI18n } from "@/platform/i18n";
 import { ProfilerTabs, ProfilerView } from "./ProfilerView";
@@ -35,6 +36,69 @@ beforeEach(() => {
 afterEach(() => useI18n.setState({ texts: {} }));
 
 describe("ProfilerView", () => {
+  it("reaches Flame Graph from Search frames and navigates and zooms with the keyboard", async () => {
+    const data = profile("cpu", 120);
+    data.frames.push({ name: "Main.wait", file: null, line: null, kind: "code" });
+    data.nodes[1]!.children.push(3);
+    data.nodes[2]!.total = data.nodes[2]!.selfWeight = 100;
+    data.nodes.push({ frame: 3, total: 20, selfWeight: 20, children: [] });
+    addSnapshot("App", data);
+    render(<ProfilerView />);
+    const user = userEvent.setup();
+    const search = screen.getByRole("textbox", { name: "Search frames" });
+    const graph = screen.getByRole("tree", { name: "Flame graph" });
+    const frame = (name: string | RegExp) => within(graph).getByRole("treeitem", { name });
+    const active = (name: string | RegExp) => expect(graph).toHaveAttribute("aria-activedescendant", frame(name).id);
+
+    search.focus();
+    await user.tab();
+    expect(graph).toHaveFocus();
+    active(/^all/);
+    expect(
+      within(graph)
+        .getAllByRole("treeitem")
+        .every((node) => node.tabIndex < 0),
+    ).toBe(true);
+    await user.keyboard("{ArrowDown}");
+    active("Main.run");
+    await user.keyboard("{ArrowRight}");
+    active("Main.work");
+    await user.keyboard("{ArrowDown}");
+    active("Main.wait");
+    await user.keyboard("{ArrowLeft}");
+    active("Main.run");
+    await user.keyboard("{End}{Enter}");
+    expect(screen.getByText("Zoomed into Main.wait")).toBeInTheDocument();
+    expect(within(graph).queryByRole("treeitem", { name: "Main.work" })).not.toBeInTheDocument();
+    expect(graph).toHaveFocus();
+    active("Main.wait");
+
+    await user.keyboard("{Escape}");
+    expect(frame("Main.work")).toBeInTheDocument();
+    expect(graph).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(search).toHaveFocus();
+  });
+
+  it("starts at a search match and restores focus to the graph after reset", async () => {
+    addSnapshot("App", profile("cpu", 120));
+    render(<ProfilerView />);
+    const user = userEvent.setup();
+    const search = screen.getByRole("textbox", { name: "Search frames" });
+    const graph = screen.getByRole("tree", { name: "Flame graph" });
+    await user.type(search, "work");
+    await user.tab();
+    const match = within(graph).getByRole("treeitem", { name: "Main.work" });
+    expect(graph).toHaveAttribute("aria-activedescendant", match.id);
+    await user.keyboard(" ");
+    expect(screen.getByText("Zoomed into Main.work")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset Zoom" }));
+    expect(graph).toHaveFocus();
+    expect(screen.queryByText("Zoomed into Main.work")).not.toBeInTheDocument();
+    await user.click(within(graph).getByRole("treeitem", { name: "Main.run" }));
+    expect(screen.getByText("Zoomed into Main.run")).toBeInTheDocument();
+  });
+
   it("allocation profile shows bytes and marks type frames", () => {
     addSnapshot("App", profile("allocations", 640_000_000));
     useProfiler.setState({ tab: "tree" });

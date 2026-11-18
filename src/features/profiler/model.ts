@@ -78,9 +78,9 @@ export interface FlameRect {
 }
 
 /**
- * Flame graph rectangles (root at depth 0, callees above their callers in rows
- * below) for the subtree under `focus`, dropping those narrower than `minWidth`.
- * The focused node's ancestors are shown full width above it, as in IDEA.
+ * Flame graph rectangles in tree order (callers before callees, siblings left
+ * to right), dropping those narrower than `minWidth`. The focused node's
+ * ancestors are shown full width below it, as in IDEA.
  */
 export function flameLayout(profile: Profile, focus = 0, minWidth = 0.002): { rects: FlameRect[]; depth: number } {
   const nodes = profile.nodes;
@@ -102,10 +102,12 @@ export function flameLayout(profile: Profile, focus = 0, minWidth = 0.002): { re
     rects.push({ node, depth, x, width });
     maxDepth = Math.max(maxDepth, depth);
     let cx = x;
-    for (const c of n.children) {
-      stack.push({ node: c, depth: depth + 1, x: cx });
+    const children = n.children.map((c) => {
+      const child = { node: c, depth: depth + 1, x: cx };
       cx += (nodes[c]!.total ?? 0) / total;
-    }
+      return child;
+    });
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]!);
   }
   return { rects, depth: maxDepth + 1 };
 }

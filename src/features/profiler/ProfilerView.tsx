@@ -3,12 +3,12 @@
  * (click to zoom, search highlights), the call tree (top-down) and the method
  * list (self / total). Double-click opens a frame's source when known.
  */
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { Profile } from "@/platform/ipc";
 import { EmptyState, Icon, IconButton, Input, Tabs, Tree, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { colorSlot, flameLayout, formatWeight, frameLocation, matchingFrames, share } from "./model";
+import { colorSlot, flameLayout, formatWeight, frameLocation, matchingFrames, parentIndex, share } from "./model";
 import { activeSnapshot, closeSnapshot, useProfiler, type ProfilerTab } from "./store";
 import styles from "./Profiler.module.css";
 import { useTx } from "@/platform/i18n";
@@ -85,8 +85,11 @@ export function ProfilerTabs() {
 function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
   const tx = useTx();
   const ref = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<HTMLDivElement>(null);
+  const graphId = useId();
   const [width, setWidth] = useState(0);
-  const [focus, setFocus] = useState(0);
+  const [zoom, setZoom] = useState(0);
+  const [cursor, setCursor] = useState<{ node: number; query: string } | null>(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -95,21 +98,94 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
     setWidth(el.clientWidth);
     return () => ro.disconnect();
   }, []);
-  const layout = useMemo(() => flameLayout(profile, focus, width > 0 ? 1 / width : 0.002), [profile, focus, width]);
+  const layout = useMemo(() => flameLayout(profile, zoom, width > 0 ? 1 / width : 0.002), [profile, zoom, width]);
   const matches = useMemo(() => matchingFrames(profile, query), [profile, query]);
+  const parents = useMemo(() => parentIndex(profile), [profile]);
+  const active =
+    (cursor?.query === query ? layout.rects.find((r) => r.node === cursor.node) : undefined) ??
+    (matches ? layout.rects.find((r) => matches.has(profile.nodes[r.node]!.frame)) : undefined) ??
+    layout.rects.find((r) => r.node === zoom);
+  const activeId = width > 0 && active ? `${graphId}-${active.node}` : undefined;
+  const scrollToActive = useCallback(() => {
+    const graph = graphRef.current;
+    if (activeId && graph && graph.ownerDocument.activeElement === graph) {
+      graph.ownerDocument.getElementById(activeId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [activeId]);
+  useLayoutEffect(scrollToActive, [scrollToActive, layout.depth]);
+
+  const zoomTo = (node: number) => {
+    setZoom(node);
+    setCursor({ node, query });
+    graphRef.current?.focus({ preventScroll: true });
+  };
+  const resetZoom = () => {
+    setZoom(0);
+    graphRef.current?.focus({ preventScroll: true });
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!active || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const index = layout.rects.indexOf(active);
+    const next = layout.rects[index + 1];
+    let target: number | undefined;
+    switch (event.key) {
+      case "ArrowUp":
+        target = layout.rects[index - 1]?.node;
+        break;
+      case "ArrowDown":
+        target = next?.node;
+        break;
+      case "ArrowLeft":
+        target = parents[active.node];
+        break;
+      case "ArrowRight":
+        if (next && parents[next.node] === active.node) target = next.node;
+        break;
+      case "Home":
+        target = layout.rects[0]?.node;
+        break;
+      case "End":
+        target = layout.rects.at(-1)?.node;
+        break;
+      case "Enter":
+      case " ":
+        zoomTo(active.node);
+        break;
+      case "Escape":
+        if (zoom === 0) return;
+        resetZoom();
+        break;
+      default:
+        return;
+    }
+    if (target !== undefined && target >= 0) setCursor({ node: target, query });
+    event.preventDefault();
+    event.stopPropagation();
+  };
   const unit = profile.unit;
   const total = profile.total ?? 0;
 
   return (
     <div className={styles.flamePane}>
-      {focus !== 0 && (
+      {zoom !== 0 && (
         <div className={styles.flameBar}>
-          <IconButton icon="close" size="small" title="Reset Zoom" onClick={() => setFocus(0)} />
-          <span className={styles.muted}>{tx`Zoomed into ${profile.frames[profile.nodes[focus]!.frame]!.name}`}</span>
+          <IconButton icon="close" size="small" title="Reset Zoom" onClick={resetZoom} />
+          <span className={styles.muted}>{tx`Zoomed into ${profile.frames[profile.nodes[zoom]!.frame]!.name}`}</span>
         </div>
       )}
       <div className={styles.flameScroll} ref={ref}>
-        <div className={styles.flame} style={{ height: layout.depth * ROW }} role="tree" aria-label={tx("Flame graph")}>
+        <div
+          ref={graphRef}
+          className={styles.flame}
+          style={{ height: layout.depth * ROW }}
+          role="tree"
+          aria-label={tx("Flame graph")}
+          aria-activedescendant={activeId}
+          aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Home End Enter Space Escape"
+          tabIndex={activeId ? 0 : -1}
+          onFocus={scrollToActive}
+          onKeyDown={onKeyDown}
+        >
           {width > 0 &&
             layout.rects.map((r) => {
               const node = profile.nodes[r.node]!;
@@ -120,8 +196,11 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
               return (
                 <div
                   key={r.node}
+                  id={`${graphId}-${r.node}`}
                   role="treeitem"
                   aria-label={label}
+                  aria-level={r.depth + 1}
+                  aria-selected={r.node === active?.node}
                   className={clsx(
                     styles.frame,
                     styles[`c${colorSlot(frame.name)}`],
@@ -130,7 +209,7 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
                   )}
                   style={{ left: r.x * width, width: Math.max(w - 1, 1), bottom: r.depth * ROW }}
                   title={`${frame.kind === "allocatedType" ? `${tx("Allocated type")}\n` : ""}${frame.name}${location ? ` (${location})` : ""}\nTotal: ${formatWeight(node.total ?? 0, unit)} (${share(node.total ?? 0, total)})\nSelf: ${formatWeight(node.selfWeight ?? 0, unit)}`}
-                  onClick={() => setFocus(r.node)}
+                  onClick={() => zoomTo(r.node)}
                   onDoubleClick={() => openFrame(profile, node.frame)}
                 >
                   {w > 28 && <span className={styles.frameText}>{label}</span>}

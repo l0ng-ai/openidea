@@ -78,6 +78,7 @@ describe("profiler model", () => {
   it("lays out the flame graph and zooms into a node", () => {
     const { rects, depth } = flameLayout(profile);
     expect(depth).toBe(3);
+    expect(rects.map((r) => r.node)).toEqual([0, 1, 2, 3]);
     const at = (node: number) => rects.find((r) => r.node === node)!;
     expect(at(0)).toEqual({ node: 0, depth: 0, x: 0, width: 1 });
     expect(at(2)).toMatchObject({ depth: 2, x: 0, width: 0.6 });
