@@ -6,7 +6,14 @@ import { writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
-import { canRevealInFileManager, fileManagerName, fileManagerPath, revealInFileManager } from "@/platform/fileManager";
+import {
+  canOpenWithSystemApp,
+  canRevealInFileManager,
+  fileManagerName,
+  fileManagerPath,
+  openWithSystemApp,
+  revealInFileManager,
+} from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
@@ -894,6 +901,27 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
   } catch (e) {
     const fileManager = tx(fileManagerName());
     fail(tx`Cannot reveal in ${fileManager}`, e);
+  }
+}
+
+/** Opens each selected file with its OS-associated application (#4352). */
+export async function openWithAssociatedApp(nodes: ProjectNode[] = selectedNodes()) {
+  if (!canOpenWithSystemApp()) {
+    notifications().notify({
+      level: "warning",
+      title: tx("Remote project files cannot be opened with a local application"),
+    });
+    return;
+  }
+  const files = nodes.filter((n) => !n.dir && !n.placeholder);
+  for (const file of files) {
+    if (!(await openWithSystemApp(file.path))) {
+      notifications().notify({
+        level: "error",
+        title: tx`Cannot open ${nameOf(file.path)} with its application`,
+      });
+      return;
+    }
   }
 }
 
