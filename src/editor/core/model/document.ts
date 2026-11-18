@@ -711,7 +711,11 @@ export class DocModel {
         if (await this.manager.saveAs(this)) this.modified.clear();
         return;
       }
-      await this.manager.backend.save(this.doc);
+      const backend = this.manager.backend;
+      // Autosave never overwrites external changes made after the buffer was edited.
+      if (reason === "auto" && backend.autosave) {
+        if (!(await backend.autosave(this.doc))) return;
+      } else await backend.save(this.doc);
       this.modified.clear();
       this.setMeta({ dirty: false });
       _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
