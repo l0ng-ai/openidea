@@ -496,6 +496,21 @@ fn use_snapshot_on(
     copies
 }
 
+/// The debug adapter for the JVMs of `module`: `java-debug` inside jdtls, or `java-analyzer`
+/// (`java-analyzer dap`) when jdtls doesn't serve the module and java-analyzer does.
+#[command(trust = trusted)]
+pub fn java_debug_adapter(host: &Host, window: &str, module: PathBuf) -> IdeResult<String> {
+    let project = host.project(window)?;
+    let module = project.root.join(module);
+    let lsp = &project.lsp;
+    Ok(if !lsp.java_served_by_jdtls(&module) && lsp.java_analyzer_binary(&module).is_some() {
+        ide_dap::adapter::JAVA_ANALYZER
+    } else {
+        "java-debug"
+    }
+    .to_owned())
+}
+
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
 #[command(trust = trusted)]
 pub async fn java_debug_server(host: &Host, window: &str, module: PathBuf) -> IdeResult<u16> {
@@ -793,4 +808,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(java: java_build_workspace, java_debug_server, java_resolve_launch);
+ide_command::domain!(java: java_build_workspace, java_debug_adapter, java_debug_server, java_resolve_launch);

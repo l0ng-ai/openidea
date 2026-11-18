@@ -28,6 +28,15 @@ impl LspManager {
         self.servers_for(&LanguageId::new("java"), path).iter().any(|s| s.name == JDTLS)
     }
 
+    /// The java-analyzer executable among the Java servers of `path`, whatever the server is
+    /// named in settings: its `dap` subcommand debugs modules jdtls doesn't serve.
+    pub fn java_analyzer_binary(&self, path: &Path) -> Option<PathBuf> {
+        self.servers_for(&LanguageId::new("java"), path).into_iter().find_map(|s| {
+            let binary = s.resolved_binary.read().clone().unwrap_or_else(|| s.effective_config().command.into());
+            is_java_analyzer(&binary).then_some(binary)
+        })
+    }
+
     /// Runtime (`test == false`) or test classpath of the module at `path` from the first
     /// Java server other than jdtls. `None` when there is none or it doesn't support the query.
     pub async fn java_server_classpath(
@@ -90,9 +99,23 @@ fn parse(v: &Value) -> Option<ServerClasspath> {
     })
 }
 
+/// `java-analyzer` or `java-analyzer.exe`, wherever it is installed.
+fn is_java_analyzer(binary: &Path) -> bool {
+    binary.file_stem().is_some_and(|stem| stem == "java-analyzer")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognises_java_analyzer_by_its_executable() {
+        assert!(is_java_analyzer(Path::new("/src/java-analyzer/target/release/java-analyzer")));
+        assert!(is_java_analyzer(Path::new("java-analyzer")));
+        assert!(is_java_analyzer(Path::new("/tools/java-analyzer.exe")));
+        assert!(!is_java_analyzer(Path::new("/opt/jdtls/bin/jdtls")));
+        assert!(!is_java_analyzer(Path::new("/opt/java-analyzer/bin/start.sh")));
+    }
 
     #[test]
     fn parses_a_classpath_answer() {

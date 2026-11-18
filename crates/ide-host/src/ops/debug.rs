@@ -113,7 +113,11 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             })
             .await?;
     }
+    let java_analyzer = java_analyzer_command(host, window, &config)?;
     let custom = |command: &str| {
+        if let Some(binary) = java_analyzer {
+            return Some(binary.to_string_lossy().into_owned());
+        }
         let path = ide_sdk::apply::tool_command(&root, &settings, command)
             .or_else(|| ruby_tools.into_iter().find(|(name, _)| *name == command).map(|(_, path)| path))?;
         Some(path.to_string_lossy().into_owned())
@@ -140,6 +144,28 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         attach_jvm_inspector(host, window, *id, port);
     }
     result
+}
+
+/// For java-analyzer's debugger, the executable of the java-analyzer serving the module
+/// (`projectRoot`, else the working directory), so the session debugs with the server that
+/// analyzes the code.
+fn java_analyzer_command(host: &Host, window: &str, config: &LaunchConfig) -> IdeResult<Option<PathBuf>> {
+    if config.adapter != ide_dap::adapter::JAVA_ANALYZER {
+        return Ok(None);
+    }
+    let project = host.project(window)?;
+    let extra: serde_json::Value =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok()).unwrap_or_default();
+    let module = extra["projectRoot"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| config.cwd.clone().map(PathBuf::from))
+        .unwrap_or_else(|| project.root.clone());
+    project.lsp.java_analyzer_binary(&module).map(Some).ok_or_else(|| {
+        ide_core::IdeError::unavailable(
+            "No java-analyzer serves this module: configure it as a Java language server to debug without jdtls",
+        )
+    })
 }
 
 fn require_unity_editor(pid: u32) -> IdeResult<()> {
@@ -178,13 +204,16 @@ fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port
 }
 
 /// A JVM the debugger starts itself: an Application or Spring Boot configuration, launched by
-/// java-debug or the Kotlin debugger (JAR Application debugs through a run with a JDWP agent).
+/// java-debug, java-analyzer or the Kotlin debugger (JAR Application debugs through a run with a
+/// JDWP agent).
 fn is_jvm_launch(config: &LaunchConfig) -> bool {
-    config.request == "launch" && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER)
+    config.request == "launch"
+        && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER | ide_dap::adapter::JAVA_ANALYZER)
 }
 
 /// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
-/// java-debug's `vmArgs` (one line, or a list) or the Kotlin debugger's `vmArguments` (a list).
+/// java-debug's and java-analyzer's `vmArgs` (one line, or a list) or the Kotlin debugger's
+/// `vmArguments` (a list).
 fn add_java_agents(mut config: LaunchConfig, options: &[String]) -> LaunchConfig {
     if options.is_empty() || !is_jvm_launch(&config) {
         return config;
@@ -194,7 +223,7 @@ fn add_java_agents(mut config: LaunchConfig, options: &[String]) -> LaunchConfig
     else {
         return config;
     };
-    let key = if config.adapter == "java-debug" { "vmArgs" } else { "vmArguments" };
+    let key = if config.adapter == ide_dap::kotlin::ADAPTER { "vmArguments" } else { "vmArgs" };
     let value = match extra.get(key) {
         None | Some(serde_json::Value::Null) if key == "vmArgs" => {
             ide_run::java_agent::add_to_vm_args_text("", options).into()
@@ -735,6 +764,9 @@ mod tests {
         assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!(["-Xmx1g", agent]));
         let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({}));
         assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!([agent]));
+        let java_analyzer =
+            launch(ide_dap::adapter::JAVA_ANALYZER, "launch", serde_json::json!({"vmArgs": ["-Xmx1g"]}));
+        assert_eq!(vm_args(&add_java_agents(java_analyzer, options)), serde_json::json!(["-Xmx1g", agent]));
         // Attaching (remote debug included), other adapters, and no granted agent: unchanged.
         for config in [
             launch("java-debug", "attach", serde_json::json!({"vmArgs": "-Xmx1g"})),
