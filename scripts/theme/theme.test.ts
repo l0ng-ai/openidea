@@ -170,6 +170,23 @@ describe("IntelliJ theme import", () => {
     });
   });
 
+  it("maps the caret identifier foregrounds (#4109)", () => {
+    const s = convertIcls(`<scheme name="Caret" version="142" parent_scheme="Darcula"><attributes>
+      <option name="IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="aa0000" /><option name="BACKGROUND" value="220000" />
+      </value></option>
+      <option name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="00aa00" /><option name="BACKGROUND" value="002200" />
+      </value></option>
+    </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--fg-identifier-under-caret": "#aa0000",
+      "--bg-identifier-under-caret": "#220000",
+      "--fg-identifier-under-caret-write": "#00aa00",
+      "--bg-identifier-under-caret-write": "#002200",
+    });
+  });
+
   it("only targets tokens that exist in tokens.css", () => {
     const declared = new Set([...css.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]!));
     // Read with a fallback by the editor (no tokens.css default), still themeable.

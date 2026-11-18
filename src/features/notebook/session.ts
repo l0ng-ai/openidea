@@ -59,6 +59,8 @@ export interface CellReveal {
   cell: string;
   /** 0-based line, UTF-16 column within the cell. */
   selection?: { line: number; col: number };
+  /** Where the cell lands in the viewport: at the top, or scrolled only as far as needed. */
+  align?: "start" | "auto";
   seq: number;
 }
 
@@ -189,9 +191,23 @@ export class NotebookSession {
     return null;
   }
   /** Shows `cell` (and a location in it) in the notebook's editor. */
-  reveal(cell: string, selection?: { line: number; col: number }) {
+  reveal(cell: string, selection?: { line: number; col: number }, align: CellReveal["align"] = "start") {
     this.selectedCell = cell;
-    this.publish({ reveal: { cell, selection, seq: ++this.revealSeq } });
+    this.publish({ reveal: { cell, selection, align, seq: ++this.revealSeq } });
+  }
+  /**
+   * Moves the caret from `cell` into the nearest cell before or after it that shows an editor
+   * (code, or Markdown being edited), at `col` of its last or first line. False when there is none.
+   */
+  revealAdjacent(cell: string, direction: 1 | -1, col: number): boolean {
+    const cells = this.cells();
+    for (let i = cells.findIndex((c) => c.id === cell) + direction; i >= 0 && i < cells.length; i += direction) {
+      const next = cells[i]!;
+      if (next.cellType !== "code" && !(next.cellType === "markdown" && this.markdownEditing.has(next.id))) continue;
+      this.reveal(next.id, { line: direction > 0 ? 0 : Number.MAX_SAFE_INTEGER, col }, "auto");
+      return true;
+    }
+    return false;
   }
   /** Resolves once queued edits reached the backend (or failed); never rejects. */
   async settled() {

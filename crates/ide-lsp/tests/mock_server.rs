@@ -2569,6 +2569,35 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn eslint_configuration_includes_workspace_folder() {
+    let h = harness_configured("mock", "mk", &[("eslint", incremental_caps()), ("mock", incremental_caps())], |cfg| {
+        if cfg.name == "eslint" {
+            cfg.settings = Some(json!({ "workingDirectory": { "mode": "auto" } }));
+        }
+    });
+    h.open("a.mk", "x");
+    h.wait_status("eslint", ServerStatus::Ready).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let items = json!({ "items": [{ "section": "" }] });
+    let eslint: Value =
+        h.launcher.state("eslint").peer().request("workspace/configuration", items.clone(), None).await.unwrap();
+    assert_eq!(
+        eslint,
+        json!([{
+            "flag": true,
+            "nested": { "deep": 1 },
+            "workingDirectory": { "mode": "auto" },
+            "workspaceFolder": {
+                "uri": uri_of(&h.root),
+                "name": h.root.file_name().unwrap().to_string_lossy(),
+            },
+        }])
+    );
+    let other: Value = h.launcher.state("mock").peer().request("workspace/configuration", items, None).await.unwrap();
+    assert_eq!(other, json!([{ "flag": true, "nested": { "deep": 1 } }]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn settings_changes_reach_servers_without_restarts() {
     let h = harness(&[("mock", incremental_caps()), ("extra", incremental_caps())]);
     let settings: Arc<Mutex<Option<Value>>> = Default::default();

@@ -18,6 +18,7 @@ import { useChangelists } from "../changelists";
 import { useCommit } from "../commitStore";
 import { inclusionChecks, isCommitAll, stagingChecks } from "../staging";
 import { useVcs } from "../store";
+import { provideEditorService } from "@/workbench/contributions";
 
 const file = (rel: string, staged: FileStatus["staged"], unstaged: FileStatus["unstaged"]): FileStatus => ({
   path: `/p/${rel}`,
@@ -128,6 +129,38 @@ describe("staging operations of the tree's nodes", () => {
       enabled(nodeMenu([underUnstaged], []), "Stage"),
       enabled(nodeMenu([underUnstaged], []), "Unstage"),
     ]).toEqual([true, false]);
+  });
+
+  it("shows a row's side of the index from Show Diff: HEAD ↔ Index under Staged, Index ↔ working copy under Unstaged", async () => {
+    useSettings(true);
+    const openInput = vi.fn(async () => undefined);
+    provideEditorService({ openInput } as never);
+    const show = (node: (typeof roots)[number]) => {
+      const menu = nodeMenu([node], [], { roots });
+      (menu.find((m) => "label" in m && m.label === "Show Diff") as { run: () => void }).run();
+    };
+    const sides = () => {
+      const data = (openInput.mock.calls.at(-1) as unknown as [{ data: { left: unknown; right: unknown } }])[0].data;
+      return [data.left, data.right];
+    };
+    show(group("staged").children!.find((n) => n.label === "Partial.kt")!);
+    await vi.waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+    expect(sides()).toEqual([
+      { type: "rev", rev: "HEAD" },
+      { type: "rev", rev: ":0", label: "Index" },
+    ]);
+    show(group("unstaged").children!.find((n) => n.label === "Partial.kt")!);
+    await vi.waitFor(() => expect(openInput).toHaveBeenCalledTimes(2));
+    expect(sides()).toEqual([{ type: "rev", rev: ":0", label: "Index" }, { type: "worktree" }]);
+  });
+
+  it("has no Commit File…: a commit takes the whole index", () => {
+    useSettings(true);
+    const labels = (items: MenuItem[]) => items.map((i) => ("label" in i ? i.label : null));
+    for (const node of [group("staged").children![0]!, group("unstaged").children![0]!])
+      expect(labels(nodeMenu([node], []))).not.toContain("Commit File…");
+    useSettings(false);
+    expect(labels(nodeMenu([group("unstaged").children![0]!], []))).toContain("Commit File…");
   });
 });
 

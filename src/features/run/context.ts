@@ -5,6 +5,7 @@
  */
 import type { RunConfig } from "@/platform/ipc";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { systemPython } from "./pythonTypes";
 import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
 import { goBuildType } from "./goTypes";
@@ -122,7 +123,8 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
       configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
       relPath,
     );
-  const py = configs.find((c) => c.kind === "python");
+  // A detected configuration says what the project uses; one made by hand only what it runs itself.
+  const py = configs.find((c) => c.kind === "python" && c.detected) ?? configs.find((c) => c.kind === "python");
   if (py) {
     // The interpreter part ends where the program starts: `-m`, or the script (`manage.py`). What follows
     // (`runserver`, `test`…) belongs to that program, never to the interpreter.
@@ -142,11 +144,6 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
   if (pytest.args[0] === "run" && pytest.args[1] === "pytest")
     return { command: pytest.command, prefix: ["run", "python"] };
   return null;
-}
-
-/** `python` on Windows (where `python3` is not a command), `python3` elsewhere. */
-function systemPython(): string {
-  return isWindows() ? "python" : "python3";
 }
 
 /**

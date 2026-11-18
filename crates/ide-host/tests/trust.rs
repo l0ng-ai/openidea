@@ -45,6 +45,9 @@ async fn a_commands_trust_class_decides_where_it_runs() {
         assert_eq!(allowed("main", class), in_restricted, "{class:?} in Restricted Mode");
         assert_eq!(allowed("welcome", class), without_project, "{class:?} without a project");
     }
+    // Toolchain detection runs from Settings opened on the Welcome screen, but not in Restricted Mode.
+    assert!(ide_host::ops::sdk::sdk_detect(&host, "welcome", ide_sdk::SdkKind::Zig).await.is_ok());
+    assert!(ide_host::ops::sdk::sdk_detect(&host, "main", ide_sdk::SdkKind::Zig).await.is_err());
     // These requests validate the vendor before any network access, independently of project trust.
     let error = ide_host::ops::tools::jdk_download_releases(&host, "unknown-vendor".into(), ide_core::RequestId(901))
         .await

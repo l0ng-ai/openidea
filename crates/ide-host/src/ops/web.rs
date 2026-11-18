@@ -47,12 +47,19 @@ pub async fn serves_page(url: &str) -> bool {
     response.status().is_success() && html
 }
 
-/// The built-in server's URL for `path` (started on first use).
+/// The built-in server's URL for `path` (started on first use). A file whose language is
+/// HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
 #[command(trust = always)]
 pub async fn web_url(host: &Host, window: &str, path: IpcPath) -> IdeResult<String> {
     // Under the window's project when it holds the file.
-    let root = host.project(window).ok().map(|p| p.root.clone());
-    host.web.url_for(root.as_deref(), &path).await
+    let project = host.project(window).ok();
+    let root = project.as_ref().map(|p| p.root.as_path());
+    let languages = project.as_ref().map_or(&host.languages, |p| &p.languages);
+    if matches!(languages.detect(&path, None).as_str(), "html" | "django-html") {
+        host.web.page_url_for(root, &path).await
+    } else {
+        host.web.url_for(root, &path).await
+    }
 }
 
 #[cfg(test)]

@@ -122,6 +122,9 @@ importers:
       immer:
         specifier: ^11.1.21
         version: 11.1.21
+      katex:
+        specifier: ^0.19.1
+        version: 0.19.1
       marked:
         specifier: ^18.1.1
         version: 18.1.1
@@ -1806,6 +1809,10 @@ packages:
 
   katex@0.18.10:
     resolution: {integrity: sha512-/B6p9eY9DX7aHBfpkHdpirDTZ5QH9xTwL9y837PWuzuv41O5jFdqNQwVQEQsimY0/iVNkwBY4+4hMfhQ7d4Dbw==}
+    hasBin: true
+
+  katex@0.19.1:
+    resolution: {integrity: sha512-jG8uKntjSEcm2EpQOh0XturpPuuC9r3Sq5HLHdsFdWZT27E672SF19QEi+of0/YeOy15lDgRhKvr5614uRrEfA==}
     hasBin: true
 
   khroma@2.1.0:
@@ -3811,6 +3818,10 @@ snapshots:
       - '@noble/hashes'
 
   katex@0.18.10:
+    dependencies:
+      commander: 15.1.0
+
+  katex@0.19.1:
     dependencies:
       commander: 15.1.0
 

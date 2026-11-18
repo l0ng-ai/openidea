@@ -10,6 +10,9 @@ import { commands, type FileEntry, type OutlineItem } from "@/bindings";
 import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
 import { libraryEntryPaths } from "@/platform/virtualDocs";
+import { isIgnoredName } from "@/platform/ignoredNames";
+import { tx } from "@/platform/i18n";
+import { notifications } from "@/workbench/contributions";
 import { ipcPath } from "@/platform/paths";
 import {
   DEFAULT_TREE_OPTIONS,
@@ -122,7 +125,8 @@ interface ProjectTreeState {
   editing: Editing | null;
   clipboard: Clipboard | null;
   /** A path to select (and scroll to) once its row is visible. */
-  revealRequest: { path: string; focus: boolean; seq: number } | null;
+  /** `explain`: say which view option hides the path when only an ancestor can be selected. */
+  revealRequest: { path: string; focus: boolean; seq: number; explain?: boolean } | null;
   /** Folder key highlighted as drop target. */
   dropTarget: string | null;
   mode: ViewMode;
@@ -635,7 +639,7 @@ export function dropOutlines(paths: readonly string[]) {
 let revealSeq = 0;
 
 /** Expands the ancestors of `path` and selects it once visible. */
-export function revealPath(requested: string, focus = false) {
+export function revealPath(requested: string, focus = false, explain = false) {
   const { expanded } = get();
   const project = get().root;
   if (!project) return false;
@@ -668,7 +672,7 @@ export function revealPath(requested: string, focus = false) {
       changed = true;
     }
   if (changed) setExpanded(next);
-  set({ revealRequest: { path, focus, seq: ++revealSeq } });
+  set({ revealRequest: { path, focus, seq: ++revealSeq, ...(explain ? { explain } : {}) } });
   for (const a of folders) void loadDir(a);
   return true;
 }
@@ -732,6 +736,45 @@ function groupAncestors(model: TreeModel, key: string): string[] {
     out.unshift(parent);
     child = parent;
   }
+}
+
+/**
+ * The view option that hides `path` below its shown ancestor `shown`: a hidden name
+ * (Show Hidden Files) or an ignored entry (Show Excluded Files). Null when no option does.
+ */
+export function hidingOption(path: string, shown: string): "showHidden" | "showExcluded" | null {
+  const { listings, options } = get();
+  if (!isSameOrInside(path, shown) || path === shown) return null;
+  let dir = shown;
+  for (const name of path.slice(shown.length + 1).split("/")) {
+    if (isIgnoredName(name)) return options.showHidden ? null : "showHidden";
+    if (listings.get(dir)?.find((e) => e.name === name)?.ignored) return options.showExcluded ? null : "showExcluded";
+    dir = `${dir}/${name}`;
+  }
+  return null;
+}
+
+const OPTION_TITLES = { showHidden: "Show Hidden Files", showExcluded: "Show Excluded Files" } as const;
+
+/** Select Opened File reached only `shown`: say which option hides `path`, offering to turn it on. */
+export function explainHiddenPath(path: string, shown: string) {
+  const option = hidingOption(path, shown);
+  if (!option) return;
+  const title = OPTION_TITLES[option];
+  notifications().notify({
+    level: "info",
+    key: "project.hiddenPath",
+    title: tx`${nameOf(path)} is hidden because ${title} is off`,
+    actions: [
+      {
+        label: tx(title),
+        run: () => {
+          setViewOption(option, true);
+          revealPath(path, true);
+        },
+      },
+    ],
+  });
 }
 
 export function clearRevealRequest(seq: number) {

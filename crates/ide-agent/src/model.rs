@@ -672,6 +672,8 @@ pub enum AgentChangesView {
     SinceStart,
     /// The uncommitted files against `HEAD`; commits made since the start stay.
     Group,
+    /// What the last turn changed, against the checkout as that turn started.
+    LastTurn,
 }
 
 /// A task's uncommitted files and the commits made since it started.

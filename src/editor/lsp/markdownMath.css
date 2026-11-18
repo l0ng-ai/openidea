@@ -1,0 +1,13 @@
+.katex {
+  overflow-wrap: normal;
+}
+
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+.katex-error {
+  color: var(--danger) !important;
+}

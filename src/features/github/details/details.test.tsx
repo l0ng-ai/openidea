@@ -1,12 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
-import type { GHPRMergeabilityState, GHPullRequest, GHRepository, GHUser } from "../api/types";
+import * as api from "../api/requests";
+import type {
+  GHPRMergeabilityState,
+  GHPullRequest,
+  GHPullRequestPendingReview,
+  GHRepository,
+  GHUser,
+} from "../api/types";
 import { reviewersStates } from "../data/model";
+import { submitOrCreateReview } from "../data/operations";
 import { clearPullRequests, setPullRequestData } from "../data/pullRequest";
 import { useGhRepository } from "../data/repository";
+import { GithubDialogHost } from "../ui/dialogs";
 import { ReviewActions } from "./ReviewActions";
+import { useReviewText } from "./state";
 import { StatusSection } from "./StatusSection";
+import { showSubmitReview } from "./SubmitReviewPopup";
 
 const me: GHUser = { __typename: "User", id: "U1", login: "me", url: "", avatarUrl: "", name: null };
 const bob: GHUser = { __typename: "User", id: "U2", login: "bob", url: "", avatarUrl: "", name: "Bob" };
@@ -173,5 +184,114 @@ describe("ReviewActions", () => {
     cleanup();
     actions(pr({ author: bob, viewerDidAuthor: false }));
     expect(screen.getByText("Set Myself as Reviewer")).toBeTruthy();
+  });
+});
+
+describe("Submit Review draft", () => {
+  const editor = () => screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Review comment" });
+  const close = () => fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+  function open(number: number) {
+    act(() => {
+      setPullRequestData(number, "details", () => pr({ number }));
+      setPullRequestData(number, "pendingReview", () => null);
+      void showSubmitReview(number);
+    });
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useReviewText.setState({ text: {} });
+  });
+
+  it("restores the draft only for the same repository, account and pull request", () => {
+    const connection = useGhRepository.getState().connection!;
+    render(<GithubDialogHost />);
+
+    open(7);
+    fireEvent.change(editor(), { target: { value: "Draft for org/app #7" } });
+    close();
+
+    open(8);
+    expect(editor().value).toBe("");
+    close();
+
+    act(() => {
+      useGhRepository.setState({
+        connection: {
+          ...connection,
+          coordinates: { owner: "org", name: "other" },
+          repository: { ...repository, id: "R2", nameWithOwner: "org/other" },
+        },
+      });
+    });
+    open(7);
+    const otherRepositoryDraft = editor().value;
+    close();
+
+    act(() => useGhRepository.setState({ connection: { ...connection, currentUser: bob } }));
+    open(7);
+    const otherAccountDraft = editor().value;
+    close();
+
+    act(() => useGhRepository.setState({ connection }));
+    open(7);
+    const restoredDraft = editor().value;
+    close();
+
+    expect(otherRepositoryDraft).toBe("");
+    expect(otherAccountDraft).toBe("");
+    expect(restoredDraft).toBe("Draft for org/app #7");
+  });
+
+  it("closes an open review popup when its account changes", () => {
+    const connection = useGhRepository.getState().connection!;
+    render(<GithubDialogHost />);
+    open(7);
+    fireEvent.change(editor(), { target: { value: "Draft for me" } });
+
+    act(() => useGhRepository.setState({ connection: { ...connection, currentUser: bob } }));
+    const remainingEditor = screen.queryByRole("textbox", { name: "Review comment" });
+    if (remainingEditor) close();
+    expect(remainingEditor).toBeNull();
+  });
+
+  it("cancels submission if the account changes during the pull request lookup", async () => {
+    const connection = useGhRepository.getState().connection!;
+    const lookup = deferred<string>();
+    const findPullRequestId = vi.spyOn(api, "findPullRequestId").mockReturnValue(lookup.promise);
+    const createReview = vi.spyOn(api, "createReview").mockRejectedValue(new Error("Unexpected review mutation"));
+
+    const submission = submitOrCreateReview(7, "COMMENT", "Draft for me", connection);
+    await vi.waitFor(() => expect(findPullRequestId).toHaveBeenCalledWith(7));
+    useGhRepository.setState({ connection: { ...connection, currentUser: bob } });
+    lookup.resolve("PR1");
+
+    await expect(submission).resolves.toBe(false);
+    expect(createReview).not.toHaveBeenCalled();
+  });
+
+  it("cancels submission if the connection closes during the pending review lookup", async () => {
+    const connection = useGhRepository.getState().connection!;
+    setPullRequestData(8, "details", () => pr({ number: 8 }));
+    const lookup = deferred<GHPullRequestPendingReview>();
+    const findPendingReview = vi.spyOn(api, "findPendingReview").mockReturnValue(lookup.promise);
+    const submitReview = vi.spyOn(api, "submitReview").mockRejectedValue(new Error("Unexpected review mutation"));
+
+    const submission = submitOrCreateReview(8, "COMMENT", "Draft for me", connection);
+    await vi.waitFor(() => expect(findPendingReview).toHaveBeenCalledWith("PR1"));
+    useGhRepository.setState({ connection: null });
+    lookup.resolve({ id: "review-1", commentsCount: 0, state: "PENDING" });
+
+    await expect(submission).resolves.toBe(false);
+    expect(submitReview).not.toHaveBeenCalled();
   });
 });
