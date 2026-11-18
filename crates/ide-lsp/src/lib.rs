@@ -835,6 +835,9 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
+            // The project's direnv environment (a Nix devshell) may hold the server and its
+            // toolchain: start once it has loaded.
+            ide_core::project_env::wait(&tail.root, &launch_cancel);
             if !me.execution_allowed.load(Ordering::Acquire) {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }

@@ -7,6 +7,7 @@ pub mod agent_secrets;
 pub mod catalogue;
 pub mod data_dirs;
 pub mod diagnostics_store;
+mod direnv;
 pub mod environment;
 mod formatter;
 mod java_runtime;
@@ -318,6 +319,9 @@ impl Host {
         }
         if !project.light {
             self.environment.project_closed();
+            if self.windows_for_root(&project.root).is_empty() {
+                self.environment.direnv_closed(&project.root);
+            }
         }
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();

@@ -479,6 +479,23 @@ async fn dart_file_watching_requires_an_explicit_registration() {
 // ------------------------------------------------------------------ tests
 
 #[tokio::test(flavor = "multi_thread")]
+async fn servers_start_once_the_project_environment_has_loaded() {
+    let h = harness(&[("mock", incremental_caps())]);
+    // The project's direnv environment (a Nix devshell) is still being read.
+    ide_core::project_env::begin_loading(&h.root);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Starting).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let server = h.launcher.state("mock");
+    assert_eq!(server.launches.load(Ordering::SeqCst), 0);
+    ide_core::project_env::set(&h.root, vec![("OPENIDEA_TEST_DEVSHELL".into(), Some("1".into()))]);
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert_eq!(server.launches.load(Ordering::SeqCst), 1);
+    ide_core::project_env::remove(&h.root);
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn linked_projects_initialize_separate_language_server_roots() {
     let h = harness(&[("mock", incremental_caps())]);
     let first = tempfile::tempdir().unwrap();

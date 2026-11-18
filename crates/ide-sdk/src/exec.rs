@@ -11,6 +11,15 @@ use std::time::{Duration, Instant};
 
 pub(crate) use ide_core::tool_path::search_path;
 
+/// The search path of a command about to run: the `PATH` of the project holding its working
+/// directory (its direnv `.envrc`) first.
+fn search_path_for(cmd: &Command) -> std::ffi::OsString {
+    match cmd.get_current_dir() {
+        Some(dir) => ide_core::tool_path::search_path_in(dir),
+        None => search_path(),
+    }
+}
+
 /// `dir` in front of the search path, as a `PATH` value.
 pub(crate) fn path_with(dirs: &[&Path]) -> String {
     let mut all: Vec<PathBuf> = dirs.iter().map(|d| d.to_path_buf()).collect();
@@ -86,7 +95,7 @@ fn query_command_cancellable(
         return None;
     }
     if !cmd.get_envs().any(|(k, _)| k == "PATH") {
-        cmd.env("PATH", search_path());
+        cmd.env("PATH", search_path_for(cmd));
     }
     let mut child = ide_core::process::prepare(cmd)
         .stdin(Stdio::null())
@@ -189,12 +198,13 @@ pub(crate) fn stream(
     on_line: &dyn Fn(String),
 ) -> IdeResult<String> {
     let mut cmd = Command::new(program);
-    ide_core::process::prepare(&mut cmd);
-    cmd.args(args).env("PATH", search_path()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
+    ide_core::process::prepare(&mut cmd);
+    let path = search_path_for(&cmd);
+    cmd.args(args).env("PATH", path).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     on_line(format!("$ {} {}", program.display(), args.join(" ")));
     let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run {}: {e}", program.display())))?;
     let (tx, rx) = mpsc::channel::<String>();
