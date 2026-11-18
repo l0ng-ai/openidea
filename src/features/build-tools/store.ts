@@ -657,6 +657,8 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
         ...buildToolRecovery(error),
         key: `build-sync-${tool}`,
       });
+    // A clean reload takes down the previous failure's balloon; the log keeps it.
+    else notifications().expire?.(`build-sync-${tool}`);
   } catch (e) {
     if (!isCancelled(e))
       notifications().notify({
