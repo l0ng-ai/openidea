@@ -179,14 +179,16 @@ export const MCP_SERVER_PAGE: PageSpec = {
           key: "mcpServer.fixedPort",
           label: "Use a fixed port",
           hint: "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.",
-        },
-        {
-          kind: "number",
-          key: "mcpServer.port",
-          label: "Port",
-          ...MCP_PORT_LIMITS,
-          integer: true,
-          hint: "The fixed port, used while Use a fixed port is on.",
+          children: [
+            {
+              kind: "number",
+              key: "mcpServer.port",
+              label: "Port",
+              ...MCP_PORT_LIMITS,
+              integer: true,
+              hint: "The fixed port, used while Use a fixed port is on.",
+            },
+          ],
         },
         {
           kind: "toggle",
