@@ -1,5 +1,5 @@
 use super::page::{OFFSET, Page};
-use super::scope::{self, Scope};
+use super::search::{PathScope, paths_param};
 use super::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::{Diagnostic, IdeResult, Severity};
 use serde_json::{Map, Value, json};
@@ -16,7 +16,7 @@ pub fn tools() -> Vec<Tool> {
 Use this tool to explore current open editors.",
             open_editors,
         )
-        .param(scope::param()),
+        .param(paths_param()),
         Tool::new(
             "get_current_file",
             "Returns the focused editor's file and selection reported by the IDE.
@@ -45,20 +45,20 @@ Lines and UTF-16 columns are 1-based.",
             project_problems,
         )
         .param(Param::optional("errorsOnly", ParamType::Boolean, "Only errors (default) or warnings too"))
-        .param(scope::param())
+        .param(paths_param())
         .param(Param::optional("limit", ParamType::Integer, "Problems to return at most (default 100)"))
         .param(Param::optional("offset", ParamType::Integer, OFFSET)),
     ]
 }
 
 async fn open_editors(call: Call) -> IdeResult<Output> {
-    let dir = Scope::of(&call)?;
+    let paths = PathScope::of(&call)?;
     let windows = call.host.mcp_windows(call.root());
     let open = call.host.mcp_reports.editors(&windows);
-    let active = call.host.mcp_reports.focused(call.window()).filter(|e| dir.contains(&e.path.0));
+    let active = call.host.mcp_reports.focused(call.window()).filter(|e| paths.matches_path(&e.path.0));
     Output::json(json!({
         "activeFilePath": active.map(|e| call.display(&e.path.0)),
-        "openFiles": open.iter().filter(|p| dir.contains(p)).map(|p| call.display(p)).collect::<Vec<_>>(),
+        "openFiles": open.iter().filter(|p| paths.matches_path(p)).map(|p| call.display(p)).collect::<Vec<_>>(),
     }))
 }
 
@@ -103,11 +103,11 @@ async fn file_problems(call: Call) -> IdeResult<Output> {
 async fn project_problems(call: Call) -> IdeResult<Output> {
     let page = Page::of(&call, PROBLEMS_LIMIT)?;
     let errors_only = call.flag("errorsOnly", true)?;
-    let dir = Scope::of(&call)?;
+    let paths = PathScope::of(&call)?;
     let files = call.host.mcp_reports.problems(&call.host.mcp_windows(call.root()));
     let problems: Vec<(String, Value)> = files
         .into_iter()
-        .filter(|f| dir.contains(&f.path.0))
+        .filter(|f| paths.matches_path(&f.path.0))
         .flat_map(|f| {
             let path = call.display(&f.path.0);
             let wanted = f.items.into_iter().filter(|d| !errors_only || d.severity == Severity::Error);
