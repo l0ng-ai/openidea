@@ -134,7 +134,8 @@ output matches `pattern`; a command still running then keeps running, and `wait_
 start one, pass `pattern` for the line it prints once ready (e.g. `Listening on|Started .* in|ready in`) rather than \
 a long `timeout`, so the call returns as soon as it is up. Returns the tab's status (`state`: starting, running, stopping, succeeded, failed, \
 crashed, stoppedByAgent, stoppedByUser or startFailed; `exitCode`; `crash` with the signal or exception of a crashed \
-process) and its output so far.{OUTPUT}{SEQUENCE}{INTERVENTIONS}"
+process) and its output so far. Commands work on the project: do not run one that acts on files outside it \
+unless the user explicitly asks.{OUTPUT}{SEQUENCE}{INTERVENTIONS}"
         ),
         |call| async move {
             let name = tab_name(&call.str("name")?)?;

@@ -129,6 +129,7 @@ Plugins can add more tools; they appear in the same list. A plugin tool marked a
 - **Untrusted projects** expose only the read-only tools. Tools that write files, rename, reformat, build or run need a project you have trusted.
 - **Running and building ask first.** `execute_run_configuration`, `build_project`, `run_command` and `http_run_request` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
 - Tools that write refuse paths outside the project.
+- **Agents are told to stay inside the project.** The instructions the server gives every client say: change only files inside the project (its folder and the projects attached to it); read outside it only the project's dependencies, anything else once you allow it; build, run and test only the project's code, inside the project; and never use `run_command` for commands or scripts that act on files outside it, unless you ask for it.
 
 ## Limits
 
