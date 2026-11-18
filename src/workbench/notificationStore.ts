@@ -177,6 +177,8 @@ export function dismissBalloon(id: number) {
 
 /** Hides the balloon for `key`: the condition it reported no longer holds. */
 export function expireNotification(key: string) {
+  // Called on every success (a server turning ready): nothing shown, no new state.
+  if (!useNotifications.getState().items.some((x) => x.key === key && x.balloon)) return;
   useNotifications.setState((s) => ({
     items: s.items.flatMap((x) => (x.key !== key || !x.balloon ? [x] : x.logged ? [{ ...x, balloon: false }] : [])),
   }));

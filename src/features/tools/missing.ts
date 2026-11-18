@@ -7,6 +7,8 @@
 import { executeAction } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { expiredKey } from "./expired";
+import { jdkRequiredKey } from "./jdk";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
 import { tx } from "@/platform/i18n";
 
@@ -74,6 +76,17 @@ export function installMissingServerPrompts(): () => void {
         if (await promptInstall(e.name, true, offered)) offered.add(e.name);
       })
       .catch(() => {});
+  });
+}
+
+/**
+ * A server that starts after all (installed from the Language Servers page, given a JDK,
+ * updated) takes down the balloons that said it could not.
+ */
+export function installServerReadyExpiry(): () => void {
+  return onIdeEvent("languageServer", (e) => {
+    if (e.status !== "ready") return;
+    for (const key of [missingKey(e.name), jdkRequiredKey(e.name), expiredKey(e.name)]) notifications().expire?.(key);
   });
 }
 
