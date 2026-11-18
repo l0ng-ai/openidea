@@ -14,7 +14,9 @@ async function reset(page: Page, doc: string) {
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await page.evaluate(async (text) => {
-    const { activeEditor } = await import("/src/editor/api.ts" as string);
+    // Load the app module in the browser's Vite realm; the variable keeps knip from resolving the URL.
+    const apiPath = "/src/editor/api.ts";
+    const { activeEditor } = await import(apiPath);
     const view = activeEditor()!.view;
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: text },
@@ -49,7 +51,9 @@ async function expectClipboard(page: Page, text: string) {
 
 const documentText = (page: Page) =>
   page.evaluate(async () => {
-    const { activeEditor } = await import("/src/editor/api.ts" as string);
+    // Load the app module in the browser's Vite realm; the variable keeps knip from resolving the URL.
+    const apiPath = "/src/editor/api.ts";
+    const { activeEditor } = await import(apiPath);
     return activeEditor()!.view.state.doc.toString();
   });
 
@@ -64,8 +68,10 @@ test.beforeEach(async ({ page, context }) => {
   await stubDesktop(page);
   await bridgeClipboard(page);
   await page.evaluate(async (path) => {
-    const { docBackend } = await import("/src/editor/core/backend.ts" as string);
-    const { editorService } = await import("/src/workbench/contributions.ts" as string);
+    const backendPath = "/src/editor/core/backend.ts";
+    const contributionsPath = "/src/workbench/contributions.ts";
+    const { docBackend } = await import(backendPath);
+    const { editorService } = await import(contributionsPath);
     docBackend().files.set(path, "alpha\nbravo\ncharlie\n");
     await editorService().openFile(path);
   }, FILE);
