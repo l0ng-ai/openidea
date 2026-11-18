@@ -4263,6 +4263,7 @@
   "Supported: set options, map / nmap / imap / vmap / noremap variants, let mapleader, source, and :action / <Action>() mappings that run IDE actions. :w saves, :q closes the editor tab.": "支持：set 选项、map / nmap / imap / vmap / noremap 等映射、let mapleader、source，以及运行 IDE 操作的 :action / <Action>() 映射。:w 保存，:q 关闭编辑器标签页。",
   "Shortcut conflicts": "快捷键冲突",
   "Keys Vim also handles. With Vim as the handler the key goes to the editor while Vim mode is on and an editor has focus; with IDE, an enabled IDE action runs first.": "Vim 也会处理的按键。处理程序为 Vim 时，在 Vim 模式开启且编辑器获得焦点时按键交给编辑器；为 IDE 时，先运行可用的 IDE 操作。",
+  "Ctrl+V pastes in Insert mode and starts a Visual block in Normal and Visual modes. Ctrl+C copies the selection in Visual mode and otherwise leaves the current mode.": "Ctrl+V 在插入模式下粘贴，在普通模式和可视模式下开始可视块选择。Ctrl+C 在可视模式下复制选区，其他模式下退出当前模式。",
   "Shortcut": "快捷键",
   "IDE action": "IDE 操作",
   "Handler": "处理程序",

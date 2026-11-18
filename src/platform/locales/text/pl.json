@@ -3488,6 +3488,7 @@
   "No ~/.openideavimrc or ~/.ideavimrc found.": "Nie znaleziono pliku ~/.openideavimrc ani ~/.ideavimrc.",
   "Shortcut conflicts": "Konflikty skrótów",
   "Keys Vim also handles. With Vim as the handler the key goes to the editor while Vim mode is on and an editor has focus; with IDE, an enabled IDE action runs first.": "Klawisze obsługiwane również przez Vima. Gdy obsługa należy do Vima, klawisz trafia do edytora, gdy tryb Vim jest aktywny i edytor posiada fokus; w przypadku wyboru IDE najpierw wykonywana jest aktywna akcja IDE.",
+  "Ctrl+V pastes in Insert mode and starts a Visual block in Normal and Visual modes. Ctrl+C copies the selection in Visual mode and otherwise leaves the current mode.": "Ctrl+V wkleja w trybie wstawiania, a w trybie normalnym i wizualnym rozpoczyna zaznaczanie blokowe. Ctrl+C kopiuje zaznaczenie w trybie wizualnym, a w pozostałych trybach opuszcza bieżący tryb.",
   "Shortcut": "Skrót",
   "IDE action": "Akcja IDE",
   "Handler": "Procesor obsługi",

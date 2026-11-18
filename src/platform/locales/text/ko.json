@@ -3567,6 +3567,7 @@
   "Supported: set options, map / nmap / imap / vmap / noremap variants, let mapleader, source, and :action / <Action>() mappings that run IDE actions. :w saves, :q closes the editor tab.": "지원: set 옵션, map / nmap / imap / vmap / noremap 변형, let mapleader, source, IDE 액션을 실행하는 :action / <Action>() 매핑. :w는 저장하고 :q는 편집기 탭을 닫습니다.",
   "Shortcut conflicts": "단축키 충돌",
   "Keys Vim also handles. With Vim as the handler the key goes to the editor while Vim mode is on and an editor has focus; with IDE, an enabled IDE action runs first.": "Vim에서도 처리하는 키입니다. 처리기가 Vim이면 Vim 모드가 켜져 있고 편집기에 포커스가 있을 때 키가 편집기로 전달되고, IDE이면 활성화된 IDE 액션이 먼저 실행됩니다.",
+  "Ctrl+V pastes in Insert mode and starts a Visual block in Normal and Visual modes. Ctrl+C copies the selection in Visual mode and otherwise leaves the current mode.": "Ctrl+V는 입력 모드에서 붙여넣고, 일반 및 비주얼 모드에서는 비주얼 블록을 시작합니다. Ctrl+C는 비주얼 모드에서 선택 영역을 복사하고, 그 외 모드에서는 현재 모드를 종료합니다.",
   "Shortcut": "단축키",
   "IDE action": "IDE 액션",
   "Handler": "처리기",

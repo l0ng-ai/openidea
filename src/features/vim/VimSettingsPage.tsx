@@ -92,6 +92,12 @@ export function VimSettingsPage() {
             has focus; with IDE, an enabled IDE action runs first.
           </T>
         </p>
+        <p className={styles.hint}>
+          <T>
+            Ctrl+V pastes in Insert mode and starts a Visual block in Normal and Visual modes. Ctrl+C copies the
+            selection in Visual mode and otherwise leaves the current mode.
+          </T>
+        </p>
         <table className={styles.table}>
           <thead>
             <tr>
