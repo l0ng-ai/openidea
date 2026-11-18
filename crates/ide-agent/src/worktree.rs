@@ -3,6 +3,7 @@
 use crate::model::{AgentChange, AgentChanges, AgentCommit};
 use ide_core::{IdeError, IdeResult, IpcPath};
 use ide_vcs::{ChangeKind, LogQuery, Repo};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
@@ -610,7 +611,6 @@ pub(crate) fn restore(
     before: &BTreeMap<String, Stamp>,
     saved: Option<&Path>,
 ) -> IdeResult<()> {
-    let path = &change.path.0;
     let content = match before.get(&change.rel_path) {
         Some(None) => None,
         Some(Some(_)) => {
@@ -626,11 +626,16 @@ pub(crate) fn restore(
         None => match rev {
             Some(rev) => {
                 let repo = Repo::discover(cwd)?.ok_or_else(|| IdeError::invalid("not in a git repository"))?;
-                repo.file_bytes_at(path, Some(rev))?
+                repo.file_bytes_at(&change.path.0, Some(rev))?
             }
             None => None,
         },
     };
+    put(&change.path.0, content)
+}
+
+/// Writes `content` to `path`, or removes the file when there is none.
+fn put(path: &Path, content: Option<Vec<u8>>) -> IdeResult<()> {
     match content {
         Some(bytes) => {
             if let Some(parent) = path.parent() {
@@ -644,6 +649,187 @@ pub(crate) fn restore(
         },
     }
     Ok(())
+}
+
+/// The bytes of the copy of `rel` saved in `dir`, if there is one.
+pub(crate) fn saved_copy(dir: &Path, rel: &str) -> Option<Vec<u8>> {
+    std::fs::read(dir.join(saved_name(rel))).ok()
+}
+
+/// The checkout as the task's last turn started: what that turn's changes are compared with
+/// and rolled back to. Recorded like the task's own start: `HEAD`, the files already changed,
+/// and copies of those.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TurnStart {
+    /// `HEAD` then (`None` outside a repository or before its first commit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// The files already changed then, stamped.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub before: BTreeMap<String, Stamp>,
+    /// The files among `before` with a copy in the task's turn folder.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub saved: BTreeSet<String>,
+    /// The files that changed while the turn ran, recorded as it ended (`None` while it runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<BTreeSet<String>>,
+}
+
+/// Records the checkout at `cwd` as a turn starts, with copies of its changed files in `dir`.
+/// The copies `previous` saved of files unchanged since are kept rather than made again, so
+/// starting a turn copies little more than what the turn before it changed.
+pub(crate) fn start_turn(cwd: &Path, dir: &Path, previous: Option<&TurnStart>) -> IdeResult<TurnStart> {
+    let Some(repo) = discover(cwd)? else { return Ok(TurnStart::default()) };
+    let head = repo.head()?.1;
+    // As the turn's end is read, so the two compare.
+    let before = snapshot(cwd)?;
+    let mut saved = BTreeSet::new();
+    match previous {
+        Some(previous) => {
+            for rel in &previous.saved {
+                let unchanged =
+                    before.get(rel).is_some_and(|now| now.is_some() && previous.before.get(rel) == Some(now));
+                if unchanged {
+                    saved.insert(rel.clone());
+                } else {
+                    let _ = std::fs::remove_file(dir.join(saved_name(rel)));
+                }
+            }
+        }
+        None => {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+    for (rel, stamp) in &before {
+        let path = repo.root().join(rel);
+        if stamp.is_none()
+            || saved.contains(rel)
+            || !std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= SAVED_MAX)
+        {
+            continue;
+        }
+        std::fs::create_dir_all(dir)?;
+        // One that can't be copied is listed but can't be rolled back, as a large one.
+        if std::fs::copy(&path, dir.join(saved_name(rel))).is_ok() {
+            saved.insert(rel.clone());
+        }
+    }
+    Ok(TurnStart { head, before, saved, changed: None })
+}
+
+/// The files that changed in `cwd` since the turn `start` began: in the working tree (as
+/// `changed_between` sees them), and in the commits made since.
+pub(crate) fn changed_in_turn(cwd: &Path, start: &TurnStart) -> IdeResult<(Vec<String>, BTreeSet<String>)> {
+    let end = snapshot(cwd)?;
+    let worktree = changed_between(&start.before, &end);
+    let mut all: BTreeSet<String> = worktree.iter().cloned().collect();
+    if let Some(repo) = discover(cwd)?
+        && let (Some(from), Some(to)) = (&start.head, repo.head()?.1)
+        && *from != to
+    {
+        for f in repo.diff_revisions(from, &to)? {
+            all.extend(f.old_path);
+            all.insert(f.path);
+        }
+    }
+    Ok((worktree, all))
+}
+
+/// The content of `rel` as the turn `start` began (`None`: no file), its copies in `dir`.
+fn at_turn_start(repo: &Repo, rel: &str, start: &TurnStart, dir: &Path) -> IdeResult<Option<Vec<u8>>> {
+    match start.before.get(rel) {
+        Some(None) => Ok(None),
+        Some(Some(_)) => match start.saved.contains(rel).then(|| saved_copy(dir, rel)).flatten() {
+            Some(bytes) => Ok(Some(bytes)),
+            None => Err(IdeError::invalid(format!(
+                "{rel} had changes when the turn started that weren't saved; roll it back in Git instead"
+            ))),
+        },
+        None => match &start.head {
+            Some(head) => repo.file_bytes_at(&repo.root().join(rel), Some(head)),
+            None => Ok(None),
+        },
+    }
+}
+
+/// Added and removed lines from `old` to `new`; none for binary content.
+fn line_stats(old: Option<&[u8]>, new: Option<&[u8]>) -> (u32, u32) {
+    if [old, new].iter().flatten().any(|b| b.contains(&0)) {
+        return (0, 0);
+    }
+    let text = |b: Option<&[u8]>| b.map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
+    ide_vcs::diff_hunks(&text(old), &text(new))
+        .iter()
+        .fold((0, 0), |(added, removed), h| (added + h.lines, removed + h.old_lines))
+}
+
+/// The files among `changed` that differ from how they were as the turn `start` began.
+pub(crate) fn turn_changes(
+    cwd: &Path,
+    start: &TurnStart,
+    dir: &Path,
+    changed: &BTreeSet<String>,
+) -> IdeResult<Vec<AgentChange>> {
+    let Some(repo) = discover(cwd)? else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for rel in changed {
+        let path = repo.root().join(rel);
+        // A folder (a submodule, say) or a file that can't be read has nothing to compare.
+        let Some(now) = existing(&path) else { continue };
+        let (kind, (added, removed)) = match at_turn_start(&repo, rel, start, dir) {
+            Ok(then) if then == now => continue,
+            Ok(then) => {
+                let kind = match (&then, &now) {
+                    (None, _) => ChangeKind::Added,
+                    (_, None) => ChangeKind::Deleted,
+                    _ => ChangeKind::Modified,
+                };
+                (kind, line_stats(then.as_deref(), now.as_deref()))
+            }
+            // Its start wasn't saved: listed, without counts.
+            Err(_) => (ChangeKind::Modified, (0, 0)),
+        };
+        out.push(AgentChange { path: IpcPath(path), rel_path: rel.clone(), kind, added, removed, old_path: None });
+    }
+    Ok(out)
+}
+
+/// The text of `path` as the turn `start` began, `None` when there was no file.
+pub(crate) fn turn_text(cwd: &Path, path: &Path, start: &TurnStart, dir: &Path) -> IdeResult<Option<String>> {
+    let Some(repo) = discover(cwd)? else { return Ok(None) };
+    let rel = rel_in(repo.root(), path)?;
+    if let (None, Some(head)) = (start.before.get(&rel), &start.head) {
+        return file_at(cwd, path, head);
+    }
+    let Some(bytes) = at_turn_start(&repo, &rel, start, dir)? else { return Ok(None) };
+    let encoding = match ide_vfs::load_text(path) {
+        Ok(loaded) => encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
+        Err(_) => ide_vfs::detect_encoding(&bytes, None),
+    };
+    Ok(Some(encoding.decode(&bytes).0.into_owned()))
+}
+
+/// `path` relative to the repository at `root`, with `/` separators.
+fn rel_in(root: &Path, path: &Path) -> IdeResult<String> {
+    let rel = path
+        .strip_prefix(root)
+        .map(Path::to_path_buf)
+        .ok()
+        .or_else(|| {
+            // Another spelling of the same place (a link, `/var` and `/private/var`); the file may be gone.
+            let root = dunce::canonicalize(root).ok()?;
+            let parent = dunce::canonicalize(path.parent()?).ok()?;
+            Some(parent.strip_prefix(&root).ok()?.join(path.file_name()?))
+        })
+        .ok_or_else(|| IdeError::invalid(format!("{} is outside the repository", path.display())))?;
+    Ok(rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
+}
+
+/// Puts `change` back as it was when the turn `start` began.
+pub(crate) fn restore_turn(cwd: &Path, start: &TurnStart, dir: &Path, change: &AgentChange) -> IdeResult<()> {
+    let repo = repo_at(cwd)?;
+    put(&change.path.0, at_turn_start(&repo, &change.rel_path, start, dir)?)
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {
@@ -813,6 +999,67 @@ mod tests {
         assert_eq!(create(&repo, &tmp.path().join("wt"), "Edit A", None).unwrap().branch, "agent/edit-a-2");
         remove(&repo, &tmp.path().join("wt"), &created.path).unwrap();
         assert!(!created.path.exists());
+    }
+
+    #[test]
+    fn a_turn_copies_only_what_changed_since_the_last_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        let dir = tmp.path().join("turn");
+        let set = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<BTreeSet<_>>();
+
+        std::fs::write(repo.join("a.txt"), "turn 1\n").unwrap();
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        let first = start_turn(&repo, &dir, None).unwrap();
+        assert_eq!(first.saved, set(&["a.txt", "b.txt"]));
+        // A copy made again would replace this mark.
+        std::fs::write(dir.join(saved_name("b.txt")), "kept\n").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(repo.join("a.txt"), "turn two\n").unwrap();
+        let second = start_turn(&repo, &dir, Some(&first)).unwrap();
+        assert_eq!(second.saved, set(&["a.txt", "b.txt"]));
+        assert_eq!(saved_copy(&dir, "a.txt").as_deref(), Some(&b"turn two\n"[..]));
+        assert_eq!(saved_copy(&dir, "b.txt").as_deref(), Some(&b"kept\n"[..]));
+
+        // Back as committed: nothing to keep a copy of.
+        git(&repo, &["checkout", "--", "a.txt"]);
+        let third = start_turn(&repo, &dir, Some(&second)).unwrap();
+        assert_eq!(third.saved, set(&["b.txt"]));
+        assert_eq!(saved_copy(&dir, "a.txt"), None);
+        // Without a record of the last turn (a task from before), every copy is made afresh.
+        let fresh = start_turn(&repo, &dir, None).unwrap();
+        assert_eq!(fresh.saved, set(&["b.txt"]));
+        assert_eq!(saved_copy(&dir, "b.txt").as_deref(), Some(&b"b\n"[..]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_turns_start_is_found_through_another_spelling_of_the_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = dunce::canonicalize(tmp.path()).unwrap().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+        std::fs::write(repo.join("a.txt"), "turn 1\n").unwrap();
+        let dir = tmp.path().join("turn");
+        let start = start_turn(&repo, &dir, None).unwrap();
+        std::fs::write(repo.join("a.txt"), "turn 2\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        for at in [&repo, &link] {
+            assert_eq!(turn_text(&repo, &at.join("a.txt"), &start, &dir).unwrap().as_deref(), Some("turn 1\n"));
+            assert_eq!(turn_text(&repo, &at.join("new.txt"), &start, &dir).unwrap(), None);
+        }
+        assert!(turn_text(&repo, &tmp.path().join("elsewhere.txt"), &start, &dir).is_err());
     }
 
     #[test]
