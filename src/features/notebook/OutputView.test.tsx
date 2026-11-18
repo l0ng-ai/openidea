@@ -104,6 +104,19 @@ describe("notebook Markdown preview", () => {
     rerender(<MarkdownCell source="plain" attachments={{}} path="/p/a.ipynb" />);
     expect(container.querySelector("p")).toBe(paragraph);
   });
+
+  it("renders LaTeX math in Markdown cells while blocking unsafe styles", () => {
+    const { container } = render(
+      <MarkdownCell
+        source={'Inline $x^2$ and <div style="position:fixed">hi</div>\n\n$$\n\\sum_{i=1}^n i\n$$'}
+        attachments={{}}
+        path="/p/a.ipynb"
+      />,
+    );
+    expect(container.querySelectorAll(".katex")).toHaveLength(2);
+    expect(container.querySelector(".katex-display")).not.toBeNull();
+    expect(container.querySelector("div[style]")).toBeNull();
+  });
 });
 
 describe("notebook image outputs", () => {

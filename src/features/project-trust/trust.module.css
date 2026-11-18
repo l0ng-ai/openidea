@@ -58,8 +58,12 @@
   justify-content: space-between;
   gap: var(--space-3);
 }
-.sectionHead h3 {
+.content h3 {
   margin: 0;
+}
+.content > h3,
+.sectionHead {
+  margin-top: var(--space-3);
 }
 .hint {
   color: var(--fg-secondary);

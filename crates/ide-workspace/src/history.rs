@@ -121,7 +121,14 @@ fn read_snapshot_text(path: &Path) -> Option<String> {
     if bytes.iter().take(8192).any(|b| *b == 0) {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    String::from_utf8(bytes).ok().map(|text| document_text(&text).into_owned())
+}
+
+/// `text` as a document holds it: without the UTF-8 BOM and with `\n` line endings. Saves
+/// record the document's text, so a file read from disk must match it to dedupe, and
+/// Revert writes it back through the document, which adds the file's BOM and line endings.
+fn document_text(text: &str) -> std::borrow::Cow<'_, str> {
+    ide_text::normalize_line_endings(text.strip_prefix('\u{feff}').unwrap_or(text))
 }
 
 impl LocalHistory {
@@ -338,7 +345,10 @@ impl LocalHistory {
             return Err(IdeError::invalid(format!("invalid history id {id:?}")));
         }
         match fs::read(self.blob_path(id)) {
-            Ok(bytes) => Ok(String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into())),
+            Ok(bytes) => {
+                let text = String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into());
+                Ok(document_text(&text).into_owned())
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Err(IdeError::not_found(format!("history snapshot {id} not found")))
             }
@@ -530,6 +540,25 @@ mod tests {
             size,
             kind,
         }
+    }
+
+    #[test]
+    fn a_file_read_from_disk_matches_the_saved_document_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        fs::create_dir_all(&root).unwrap();
+        let h = LocalHistory::open(&tmp.path().join("history"), &root).unwrap();
+        let a = root.join("a.txt");
+        // A save records the document's text; the file on disk has a BOM and CRLF.
+        fs::write(&a, b"\xEF\xBB\xBFheader\r\nbody\r\n").unwrap();
+        h.record(&a, "header\nbody\n", "Saved").unwrap();
+        assert!(h.record_file(&a, "External change", false).unwrap());
+        let list = h.list(&a).unwrap();
+        assert_eq!(list.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["Saved"], "no second revision");
+        // A snapshot stored with its BOM before reads back as document text.
+        h.record(&a, "\u{feff}old\r\n", "External change").unwrap();
+        let old = &h.list(&a).unwrap()[0];
+        assert_eq!(h.content(&old.id).unwrap(), "old\n");
     }
 
     #[test]

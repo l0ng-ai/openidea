@@ -370,6 +370,9 @@
   font-size: var(--fs-small);
   color: var(--fg-muted);
 }
+.formFull {
+  grid-column: 1 / -1;
+}
 .paramInput {
   font-family: var(--openidea-editor-font, var(--font-mono));
   font-weight: var(--fw-code);

@@ -81,8 +81,6 @@ function tableTarget(arg: unknown): TableCommandTarget {
   return { rows: activeCellGrid()?.selectedRows() ?? [], editor: null };
 }
 
-export { activateSettingsPages } from "./settingsPages";
-
 export function activate(): () => void {
   const disposers = [
     onIdeEvent("dbSourcesChanged", () => {

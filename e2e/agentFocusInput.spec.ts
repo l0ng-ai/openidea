@@ -416,6 +416,7 @@ test("dragging the Changes pane's edge resizes it for the next session too", asy
 
   // The next session starts with the dragged width.
   await page.reload();
+  await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
   await seedTasks(page, "editor");
   await seedChanges(page);
   await expect.poll(async () => Math.round((await changes.boundingBox())!.width)).toBe(Math.round(widened));

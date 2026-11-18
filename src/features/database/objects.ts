@@ -180,6 +180,63 @@ export function truncateSql(
   return `truncate table ${q}${opts.restartIdentity ? " restart identity" : ""}${opts.cascade ? " cascade" : ""};`;
 }
 
+const literal = (value: string) => `'${value.replace(/'/g, "''")}'`;
+
+/** Options of New › Database / New › Schema; an empty or absent one is left to the server. */
+export interface CreateOptions {
+  owner?: string;
+  template?: string;
+  encoding?: string;
+  tablespace?: string;
+  charset?: string;
+  collation?: string;
+}
+
+/** New › Database (PostgreSQL, SQL Server). */
+export function createDatabaseSql(driver: DbDriver, name: string, opts: CreateOptions): string {
+  const clauses: string[] = [];
+  const add = (keyword: string, value: string | undefined, quote = (v: string) => ident(driver, v)) => {
+    if (value?.trim()) clauses.push(`${keyword} ${quote(value.trim())}`);
+  };
+  if (driver === "postgres") {
+    add("owner", opts.owner);
+    add("template", opts.template);
+    add("encoding", opts.encoding, literal);
+    add("tablespace", opts.tablespace);
+  } else if (driver === "sqlServer") {
+    add("collate", opts.collation, (v) => v);
+  }
+  return `create database ${ident(driver, name)}${clauses.map((c) => ` ${c}`).join("")};`;
+}
+
+/** The database the server copies for New › Database: the chosen template on PostgreSQL, `model` on SQL Server. */
+export function templateOf(driver: DbDriver, opts: CreateOptions): string {
+  return driver === "sqlServer" ? "model" : opts.template?.trim() || "template1";
+}
+
+/** New › Schema; on MySQL a schema is a database, with a character set and collation instead of an owner. */
+export function createSchemaSql(driver: DbDriver, name: string, opts: CreateOptions): string {
+  if (driver === "mysql") {
+    const charset = opts.charset?.trim() ? ` character set ${opts.charset.trim()}` : "";
+    const collation = opts.collation?.trim() ? ` collate ${opts.collation.trim()}` : "";
+    return `create database ${ident(driver, name)}${charset}${collation};`;
+  }
+  const owner = opts.owner?.trim() ? ` authorization ${ident(driver, opts.owner.trim())}` : "";
+  return `create schema ${ident(driver, name)}${owner};`;
+}
+
+/**
+ * Drop on a database node. `force` ends the sessions of other clients first:
+ * `with (force)` on PostgreSQL 13+, single-user mode on SQL Server.
+ */
+export function dropDatabaseSql(driver: DbDriver, name: string, force: boolean): string {
+  const db = ident(driver, name);
+  // One batch: the session that sets single-user mode is the single user, so it must drop too.
+  if (driver === "sqlServer" && force)
+    return `alter database ${db} set single_user with rollback immediate;\ndrop database ${db};`;
+  return `drop database ${db}${force && driver === "postgres" ? " with (force)" : ""};`;
+}
+
 export type ScriptKind = "selectAll" | "selectFirst" | "insert" | "update" | "delete";
 
 export const SCRIPT_LABELS: Record<ScriptKind, string> = {

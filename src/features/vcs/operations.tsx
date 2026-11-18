@@ -56,6 +56,17 @@ export function inProgress(op: string | null | undefined = useVcs.getState().bra
   return op === "rebase" || op === "merge" || op === "cherry-pick" || op === "revert" || op === "am" ? op : null;
 }
 
+/**
+ * Expires the conflict notices (key `vcs.conflicts`: Merge conflicts, All conflicts resolved) once
+ * the merge / rebase / cherry-pick they offer to continue or abort is over, however it ended.
+ */
+export function installOperationNoticeExpiry(): () => void {
+  return useVcs.subscribe((s, prev) => {
+    if (inProgress(prev.branch?.operation) && !inProgress(s.branch?.operation))
+      notifications().expire?.("vcs.conflicts");
+  });
+}
+
 /** "Rebasing main", "Merging", "Cherry-picking"… for the branch widget and banner. */
 export function operationTitle(op: InProgress, head: string | null): string {
   if (!head)

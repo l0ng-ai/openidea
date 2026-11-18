@@ -1,7 +1,9 @@
 /** Imperative dialogs for VCS actions, rendered by one overlay contribution. */
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useId, useState, type KeyboardEvent, type ReactNode } from "react";
 import { create } from "zustand";
-import { Checkbox, Dialog, Input, T, useSanitizedField } from "@/ui";
+import { Checkbox, Dialog, HighlightedText, Input, List, Popup, T, listNavigate, useSanitizedField } from "@/ui";
+import { isImeKey } from "@/platform/ime";
+import { useTx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
 import styles from "./common.module.css";
 
@@ -50,6 +52,8 @@ export interface PromptOptions {
   /** Optional checkbox below the field. */
   checkbox?: { label: string; initial: boolean };
   overwriteBranch?: (value: string) => boolean;
+  /** Branch name prefixes in the order the New Branch dialog should suggest them. */
+  prefixes?: readonly string[];
 }
 
 export interface PromptResult {
@@ -73,17 +77,64 @@ export function promptText(opts: PromptOptions): Promise<PromptResult | null> {
 }
 
 function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) => void }) {
-  const { title, label, initial = "", placeholder, okLabel = "OK", mono, validate, sanitize, checkbox, onDone } = props;
+  const {
+    title,
+    label,
+    initial = "",
+    placeholder,
+    okLabel = "OK",
+    mono,
+    validate,
+    sanitize,
+    checkbox,
+    prefixes,
+    onDone,
+  } = props;
+  const tx = useTx();
+  const listId = useId();
   const { ref, clean } = useSanitizedField(sanitize);
   const [value, setValue] = useState(initial);
   const [checked, setChecked] = useState(checkbox?.initial ?? false);
   const [overwrite, setOverwrite] = useState(false);
   const [touched, setTouched] = useState(!!props.validateInitial && initial !== "");
+  const [completing, setCompleting] = useState(false);
+  const [active, setActive] = useState(-1);
+  const hasPrefixes = !!prefixes?.length;
+  const suggestions =
+    completing && value ? (prefixes?.filter((p) => p.length > value.length && p.startsWith(value)) ?? []) : [];
+  const shown = suggestions.length > 0;
   const canOverwrite = props.overwriteBranch?.(value) ?? false;
   const error = validate ? validate(value, canOverwrite && overwrite) : value.trim() ? null : "Value must not be empty";
   const submit = () => {
     setTouched(true);
     if (!error) onDone({ value: value.trim(), checked, ...(canOverwrite ? { overwrite } : {}) });
+  };
+
+  const acceptPrefix = (prefix: string) => {
+    setValue(prefix);
+    setOverwrite(false);
+    // A trailing slash is expected while the user finishes the name.
+    setTouched(false);
+    setCompleting(false);
+  };
+
+  const onPrefixKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (!shown || isImeKey(e.nativeEvent) || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const next = listNavigate(e.key, { items: suggestions, active, wrap: true });
+      if (next !== null) {
+        e.preventDefault();
+        setActive(next);
+      }
+      return;
+    }
+    const prefix = suggestions[active];
+    if (e.key === "Enter" || (e.key === "Tab" && prefix)) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (prefix) acceptPrefix(prefix);
+      else submit();
+    }
   };
   return (
     <Dialog
@@ -112,6 +163,11 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
           ref={ref}
           data-autofocus
           aria-label={label ?? title}
+          role={hasPrefixes ? "combobox" : undefined}
+          aria-autocomplete={hasPrefixes ? "list" : undefined}
+          aria-expanded={hasPrefixes ? shown : undefined}
+          aria-controls={shown ? listId : undefined}
+          aria-activedescendant={shown && suggestions[active] ? `${listId}-${active}` : undefined}
           value={value}
           mono={mono}
           placeholder={placeholder}
@@ -122,8 +178,47 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
             const next = clean(e);
             if (next.trim() !== value.trim()) setOverwrite(false);
             setValue(next);
+            if (hasPrefixes) {
+              setActive(-1);
+              setCompleting(true);
+            }
           }}
+          onKeyDown={hasPrefixes ? onPrefixKey : undefined}
+          onBlur={hasPrefixes ? () => setCompleting(false) : undefined}
         />
+        <Popup
+          open={shown}
+          anchor={ref}
+          matchWidth
+          role="presentation"
+          autoFocus={false}
+          restoreFocus={false}
+          onClose={() => setCompleting(false)}
+          className={styles.prefixPopup}
+        >
+          <div style={{ height: Math.min(suggestions.length, 8) * 24 }}>
+            <List
+              id={listId}
+              items={suggestions}
+              getKey={(prefix) => prefix}
+              activeIndex={active}
+              onActivate={acceptPrefix}
+              focusable={false}
+              rowHeight={24}
+              aria-label={tx("Branch name prefixes")}
+              className={styles.prefixList}
+              renderItem={(prefix, state) => (
+                <span className={styles.targetName} title={prefix}>
+                  <HighlightedText
+                    text={prefix}
+                    indices={Array.from({ length: value.length }, (_, i) => i)}
+                    tone={state.active ? "accent" : "strong"}
+                  />
+                </span>
+              )}
+            />
+          </div>
+        </Popup>
         {touched && error && value && <div className={styles.error}>{error}</div>}
         {checkbox && <Checkbox checked={checked} onChange={setChecked} label={checkbox.label} />}
         {canOverwrite && <Checkbox checked={overwrite} onChange={setOverwrite} label="Overwrite existing branch" />}
