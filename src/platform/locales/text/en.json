@@ -680,6 +680,7 @@
   "Remove Module Overrides": "Remove Module Overrides",
   "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}",
   "Cannot choose a directory": "Cannot choose a directory",
+  "Enter a directory to search": "Enter a directory to search",
   "Open in HTTP Client": "Open in HTTP Client",
   "Cannot generate the HTTP request": "Cannot generate the HTTP request",
   "Cannot start container debugging": "Cannot start container debugging",
