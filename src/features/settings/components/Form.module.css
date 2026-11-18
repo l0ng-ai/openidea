@@ -59,6 +59,9 @@
 .matched {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
 }
+.disabled > .label {
+  color: var(--fg-faint);
+}
 .stacked {
   grid-template-columns: minmax(0, 1fr);
   row-gap: var(--space-1-5);

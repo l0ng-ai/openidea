@@ -12,7 +12,7 @@ import { LANGUAGE_PAGES } from "./languages";
 import { OptionsPage } from "./OptionsPage";
 import { RUN_TARGET_PAGES } from "./runTargets";
 import { SCOPE_PAGES } from "./scopes";
-import { specLabels, type PageSpec } from "./spec";
+import { flattenOptions, specLabels, type PageSpec } from "./spec";
 import { SSH_PAGES } from "./ssh";
 import { TOOLS_PAGES } from "./tools";
 import { VCS_PAGES } from "./vcs";
@@ -51,7 +51,7 @@ export function pageLabels(id: string): string[] {
 /** Labels of a built-in page's options (each is a Search Everywhere entry). */
 export function optionLabels(id: string): string[] {
   const spec = specs.get(id);
-  return (spec?.sections ?? []).flatMap((s) => s.options.map((o) => o.label)).filter((l) => !!l.trim());
+  return (spec?.sections ?? []).flatMap((s) => flattenOptions(s.options).map((o) => o.label)).filter((l) => !!l.trim());
 }
 
 function toContribution(spec: PageSpec): SettingsPageContribution {
