@@ -232,7 +232,8 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../src/
 | `--syn-tag`, `--syn-attribute`, `--syn-todo`, `--syn-invalid` | `DEFAULT_TAG`, `DEFAULT_ATTRIBUTE`, `TODO_DEFAULT_ATTRIBUTES`, `BAD_CHARACTER` |
 | `--syn-rainbow-1` … `--syn-rainbow-5` (Semantic highlighting, rainbow indent guides) | `RAINBOW_COLOR1` … `RAINBOW_COLOR5` |
 | `--wave-error`, `--wave-warning` | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES` (effect colour) |
-| `--bg-matched-brace`, `--bg-identifier-under-caret` | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES` |
+| `--bg-matched-brace`, `--bg-identifier-under-caret`, `--fg-identifier-under-caret` | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES` |
+| `--bg-identifier-under-caret-write`, `--fg-identifier-under-caret-write` | `WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES` |
 | `--bg-text-search-result`, `--bg-search-result` | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES` |
 | `--syn-self`, `--syn-keyword-arg`, `--syn-docstring`, `--syn-predefined` | `PY.SELF_PARAMETER`, `PY.KEYWORD_ARGUMENT`, `PY.DOC_COMMENT`, `PY.BUILTIN_NAME` |
 | `--ansi-*` | `CONSOLE_*_OUTPUT` (`CONSOLE_DARKGRAY_OUTPUT` is bright black, `CONSOLE_GRAY_OUTPUT` white) |
@@ -332,7 +333,7 @@ a token.
 
 <!-- BEGIN GENERATED TOKEN REFERENCE: pnpm gen:theme-docs -->
 
-269 themeable tokens: 125 in the UI theme file, 144 in the editor colour scheme file.
+271 themeable tokens: 125 in the UI theme file, 146 in the editor colour scheme file.
 
 ### Surfaces (UI theme)
 
@@ -528,6 +529,8 @@ a token.
 | `--fg-deprecated` | `#8c8f95` | `#6c707e` |
 | `--bg-identifier-under-caret` | `#373b39` | `#edebfc` |
 | `--bg-identifier-under-caret-write` | `#402f33` | `#fce8f4` |
+| `--fg-identifier-under-caret` | `inherit` | `inherit` |
+| `--fg-identifier-under-caret-write` | `inherit` | `inherit` |
 | `--fg-inlay` | `#868a91` | `#73767c` |
 | `--bg-inlay` | `#393b40` | `#00000012` |
 | `--wave-error` | `#fa6675` | `#f50000` |
