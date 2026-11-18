@@ -277,6 +277,25 @@ pub fn copy_merge(
     let target_base = project.filter(|p| to.starts_with(p)).or(Some(roots.1));
     let rules = Rules::new(from, source_base, excludes);
     let target_rules = Rules::new(to, target_base, excludes);
+    // Find a conflict before writing anything, so declining to overwrite leaves the
+    // destination untouched. Nothing below a missing destination can conflict.
+    if !overwrite {
+        let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
+        while let Some((src, dst)) = pending.pop() {
+            let meta = fs::symlink_metadata(&src)?;
+            if rules.excluded(&src, meta.is_dir()) || target_rules.excluded(&dst, meta.is_dir()) {
+                continue;
+            }
+            let Ok(existing) = fs::symlink_metadata(&dst) else { continue };
+            if !(meta.is_dir() && existing.is_dir()) {
+                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, dst.display().to_string()).into());
+            }
+            for entry in fs::read_dir(&src)? {
+                let entry = entry?;
+                pending.push((entry.path(), dst.join(entry.file_name())));
+            }
+        }
+    }
     let mut pending = vec![(from.to_path_buf(), to.to_path_buf())];
     while let Some((src, dst)) = pending.pop() {
         let meta = fs::symlink_metadata(&src)?;
@@ -492,6 +511,23 @@ mod tests {
                 ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[test]
+    fn a_declined_overwrite_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left = tmp.path().join("left");
+        let right = tmp.path().join("right");
+        put(&left, "merge/a-clash.txt", b"source");
+        put(&left, "merge/z-new.txt", b"source only");
+        put(&left, "merge/deep/new.txt", b"new");
+        put(&right, "merge/a-clash.txt", b"destination");
+        let error =
+            copy_merge(&left.join("merge"), &right.join("merge"), false, None, &[], (&left, &right)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(right.join("merge/a-clash.txt")).unwrap(), b"destination");
+        assert!(!right.join("merge/z-new.txt").exists());
+        assert!(!right.join("merge/deep").exists());
     }
 
     #[test]

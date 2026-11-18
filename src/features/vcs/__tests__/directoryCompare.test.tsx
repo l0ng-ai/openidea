@@ -116,6 +116,13 @@ describe("disk directory comparison", () => {
       "dir/sub/c.txt",
     ]);
     expect(directoryRows(entries, all, "inside").map(label)).toEqual(["gone"]);
+    // A match nested deeper inside a one-sided folder still shows that folder's row (#4085).
+    const nested = [
+      row("only-left", "leftOnly", "dir", null),
+      row("only-left/sub", "leftOnly", "dir", null),
+      row("only-left/sub/nested.txt", "leftOnly", "file", null),
+    ];
+    expect(directoryRows(nested, new Set(["leftOnly"]), "nested.txt").map(label)).toEqual(["only-left"]);
     expect(directoryRows(entries, new Set(["rightOnly"]), "").map(label)).toEqual(["<dir/sub>", "dir/sub/c.txt"]);
   });
 
