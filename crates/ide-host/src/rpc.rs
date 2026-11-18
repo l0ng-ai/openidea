@@ -209,7 +209,8 @@ pub fn client_accepts(event: &IdeEvent) -> bool {
         | IdeEvent::ProjectRootsChanged { .. }
         | IdeEvent::Askpass { .. }
         | IdeEvent::AskpassDone { .. }
-        | IdeEvent::NotebookKernel { .. } => true,
+        | IdeEvent::NotebookKernel { .. }
+        | IdeEvent::NotebookChanged { .. } => true,
     }
 }
 

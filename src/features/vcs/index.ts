@@ -14,9 +14,11 @@ import {
   registerSettingsPage,
   registerTitleItem,
   registerToolWindow,
+  maybeEditorService,
+  type EditorInput,
 } from "@/workbench/contributions";
 import { executeAction, registerActions } from "@/platform/actions";
-import { getContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import { registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
@@ -51,7 +53,8 @@ import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
-import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs, type VcsState } from "./store";
+import { registerProjectResource, subscribeProjectResource } from "@/platform/projectResources";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
@@ -192,7 +195,7 @@ export function activateSettingsPages(): () => void {
   });
 }
 
-export function activate(): () => void {
+export function activate(options: { projectServices?: boolean } = {}): () => void {
   onConflictsAppeared((files) =>
     notifications().notify({
       group: "vcs",
@@ -232,17 +235,34 @@ export function activate(): () => void {
 
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
-    installVcsStore(),
-    installRootSync(),
-    installGitLog(),
-    installDiagnosticsTracking(),
-    installCommitChecks(),
-    installPreparedMessage(),
-    installDraftRevision(),
-    provideCommit(),
-    installIncomingCheck(),
-    installFileConfirmations(),
-    installDiffEditorHost(),
+    ...(options.projectServices !== false
+      ? [
+          installVcsStore(),
+          installRootSync(),
+          installGitLog(),
+          installDiagnosticsTracking(),
+          installCommitChecks(),
+          installPreparedMessage(),
+          installDraftRevision(),
+          provideCommit(),
+          installIncomingCheck(),
+          installFileConfirmations(),
+          installDiffEditorHost(),
+          registerProjectResource("vcs", {
+            snapshot: (scope) => {
+              const value = useVcs.getState();
+              const paths = (scope as { paths?: string[]; full?: boolean } | null)?.paths;
+              const full = (scope as { full?: boolean } | null)?.full;
+              return {
+                ...value,
+                status: paths && !full ? value.status.filter((file) => paths.includes(file.path)) : value.status,
+                byPath: undefined,
+              };
+            },
+            subscribe: (changed) => useVcs.subscribe(changed),
+          }),
+        ]
+      : []),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.
     onWorkflowSettingsChange(
       (w) => w.vcs.git.signOff,
@@ -255,7 +275,7 @@ export function activate(): () => void {
     registerLogPaneActions(),
     activateSettingsPages(),
     registerLocalHistoryActions(),
-    installChangelists(),
+    ...(options.projectServices !== false ? [installChangelists()] : []),
     trackOperationContext(),
     registerCompareActions(),
     registerMergeActions(),
@@ -359,5 +379,65 @@ export function activate(): () => void {
   return () => {
     onConflictsAppeared(() => undefined);
     disposers.reverse().forEach((d) => d());
+  };
+}
+
+/** The same viewers and actions, backed by the project's existing status service. */
+export async function activateEditorRuntime(input: EditorInput): Promise<() => void> {
+  const stop = activate({ projectServices: false });
+  let stopResource = () => {};
+  let first = true;
+  let ready!: () => void;
+  const initialized = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const subscribe = (active: EditorInput | null) => {
+    stopResource();
+    const data = active?.kind === DIFF_KIND ? (active.data as DiffData) : null;
+    const paths = [
+      ...new Set(
+        [active?.path, ...(data?.chain?.map((diff) => diff.path) ?? [])].filter((path): path is string => !!path),
+      ),
+    ];
+    stopResource = subscribeProjectResource<Omit<VcsState, "byPath">>(
+      "vcs",
+      { paths, full: active?.kind === "git-log" },
+      (value) => {
+        const previous = useVcs.getState();
+        const roots =
+          value.roots.length === previous.roots.length && value.roots.every((root, i) => root === previous.roots[i])
+            ? previous.roots
+            : value.roots;
+        useVcs.setState({ ...value, roots, byPath: new Map(value.status.map((file) => [file.path, file])) });
+        setContext("vcsAvailable", value.available);
+        if (first) {
+          first = false;
+          ready();
+        }
+      },
+    );
+  };
+  subscribe(input);
+  const stopInput = maybeEditorService()?.onActiveInputChange?.(subscribe);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      initialized,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(tx("The project service did not respond"))), 15000);
+      }),
+    ]);
+  } catch (error) {
+    stopInput?.();
+    stopResource();
+    stop();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  return () => {
+    stopInput?.();
+    stopResource();
+    stop();
   };
 }

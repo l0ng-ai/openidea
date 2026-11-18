@@ -26,7 +26,6 @@ import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme, windowBackgroundHex } from "@/workbench/theme";
 import { DIFF_KIND, diffInput, diffTitle, openDiff, type DiffData, type DiffSide } from "./diffInput";
-import { refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 
 const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
@@ -75,7 +74,7 @@ function openSource(parent: string, path: string, options?: OpenOptions) {
 }
 
 /** Loads the diff of this window's launch and hands its editor commands to the project window. */
-export function activateDiffWindow(parent: string): () => void {
+export function activateDiffWindow(parent: string, prepare: (data: DiffData) => Promise<() => void>): () => void {
   const native = getCurrentWindow();
   const documents = activateEmbeddedDocuments();
   provideEditorService({
@@ -90,12 +89,21 @@ export function activateDiffWindow(parent: string): () => void {
     },
     activePath: () => null,
     activeCursor: () => null,
+    activeInput: () => {
+      const data = useDiff.getState().data;
+      return data ? diffInput(data) : null;
+    },
+    onActiveInputChange: (changed) =>
+      useDiff.subscribe((state, previous) => {
+        if (state.data !== previous.data) changed(state.data ? diffInput(state.data) : null);
+      }),
     saveAll: documents.save,
   });
   let disposed = false;
   let closing = false;
   let stopClose: (() => void) | undefined;
   let stopSave: (() => void) | undefined;
+  let stopRuntime: (() => void) | undefined;
   const unregisterSave = registerAction({
     id: "file.save",
     title: "Save All",
@@ -201,16 +209,14 @@ export function activateDiffWindow(parent: string): () => void {
     if (!project) throw new Error(tx("The diff’s project is no longer open"));
     // Settings only: restoring the project's editor session here would overwrite the main window's tabs.
     useProject.setState({ settings: project.settings });
-    const roots = await call(commands.vcsRoots());
-    useVcs.setState({
-      available: roots.length > 0,
-      root: project.root,
-      roots: roots.map((root) => root.root),
-    });
     setContext("projectOpen", true);
-    setContext("vcsAvailable", roots.length > 0);
-    await refreshNow();
     const data = toDiffData(launch);
+    const stop = await prepare(data);
+    if (disposed) {
+      stop();
+      return;
+    }
+    stopRuntime = stop;
     useDiff.setState({ project: project.name, data });
     showCaption(diffCaption(data));
   })().catch((error) => useDiff.setState({ error: String(error) }));
@@ -218,6 +224,7 @@ export function activateDiffWindow(parent: string): () => void {
     disposed = true;
     stopClose?.();
     stopSave?.();
+    stopRuntime?.();
     unregisterSave();
     unregisterToEditor();
     window.removeEventListener("keydown", onKey);

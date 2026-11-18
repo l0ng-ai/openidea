@@ -10,8 +10,19 @@ import {
   registerOverlay,
   registerStatusItem,
 } from "@/workbench/contributions";
-import { _provideCodePreview, _provideDocumentAttacher, editorsFor } from "@/editor/api";
 import { isUntitledUri } from "@/platform/virtualDocs";
+import {
+  _provideCodePreview,
+  _provideDocumentAttacher,
+  editorsFor,
+  librarySourceRoots,
+  onLibrarySourceRootsChanged,
+} from "@/editor/api";
+import { registerProjectResource } from "@/platform/projectResources";
+import { installDocumentWindowSave } from "@/platform/documentWindows";
+import { auxiliaryWindow } from "@/platform/auxWindow";
+import { isTauri } from "@/platform/ipc";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { formatDocument } from "@/editor/lsp/format";
 import { chooserTitle, locationItems, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
@@ -39,9 +50,9 @@ import {
 /** The workbench navigation bar (View › Appearance › Navigation Bar). */
 export { Breadcrumbs } from "./view/StatusItems";
 
-export function activate(): void | (() => void) {
+export function activate(options: { persistSession?: boolean } = {}): void | (() => void) {
   const ctrl = editorController();
-  ctrl.start();
+  ctrl.start(options);
   provideEditorService({
     openFile: (path, options) => ctrl.openFile(path, options),
     openInput: (input, options) => ctrl.openInput(input, options),
@@ -83,6 +94,7 @@ export function activate(): void | (() => void) {
     previewExtensions(path, ctrl.manager.settings()?.editor, ctrl.manager.backend, editable),
   );
   const disposers = [
+    registerProjectResource("librarySources", { snapshot: librarySourceRoots, subscribe: onLibrarySourceRootsChanged }),
     installColorScheme(),
     provideEditorArea(EditorAreaView),
     registerEditorActions(),
@@ -141,10 +153,16 @@ export function activate(): void | (() => void) {
       lightEdit: true,
     }),
   ];
+  let disposed = false;
+  if (isTauri())
+    void installDocumentWindowSave(auxiliaryWindow()?.parent ?? getCurrentWindow().label, (opts) =>
+      ctrl.saveLocalDocuments(opts),
+    ).then((off) => (disposed ? off() : disposers.push(off)));
   return () => {
+    disposed = true;
     disposers.reverse().forEach((d) => d());
     _provideDocumentAttacher(null);
     _provideCodePreview(null);
-    ctrl.stop();
+    void ctrl.stop();
   };
 }

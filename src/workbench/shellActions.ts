@@ -1,5 +1,5 @@
 import { showBackgroundTasks } from "./StatusBar";
-import { executeAction, getAction, registerActions } from "@/platform/actions";
+import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
 import { isTauri } from "@/platform/ipc";
 import { closeProject, confirmLeaveProject, openProject, useProject } from "@/platform/project";
 import { runSearchFieldCommand, showContextMenu } from "@/ui";
@@ -53,8 +53,8 @@ export function stopBackgroundProcesses() {
 }
 
 /** Generic actions owned by the shell. */
-export function registerShellActions(): () => void {
-  return registerActions([
+export function registerShellActions(options: { projectActions?: boolean } = {}): () => void {
+  const actions: Action[] = [
     {
       id: "file.openProject",
       title: "Open…",
@@ -146,5 +146,10 @@ export function registerShellActions(): () => void {
       when: "searchFieldHistory",
       run: () => void runSearchFieldCommand("history"),
     },
-  ]);
+  ];
+  return registerActions(
+    options.projectActions === false
+      ? actions.filter((action) => action.id !== "file.openProject" && action.id !== "file.closeProject")
+      : actions,
+  );
 }

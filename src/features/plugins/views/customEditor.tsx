@@ -10,7 +10,7 @@
  *   is open, else this tab's own;
  * - unsaved changes, Save, and the close prompts are the document's.
  */
-import { history } from "@codemirror/commands";
+import { history, historyField } from "@codemirror/commands";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useEffect, useMemo, useState } from "react";
@@ -102,10 +102,23 @@ interface Session {
 
 const sessions = new Map<string, Promise<Session>>();
 
+export const customEditorTransfer: import("@/workbench/contributions").EditorTransferLifecycle = {
+  capture: async (input) => {
+    const current = await sessions.get(input.key);
+    return current?.view.state.toJSON({ history: historyField });
+  },
+  adopt: async (input, state) => {
+    if (input.path) await session(input.key, input.path, state as Record<string, unknown> | undefined);
+  },
+  release: async (input) => {
+    await closeSession(input.key);
+  },
+};
+
 /** Edits settle in the backend before the plugin renders the table again. */
 const RENDER_DELAY_MS = 120;
 
-function session(key: string, path: string): Promise<Session> {
+function session(key: string, path: string, transferred?: Record<string, unknown>): Promise<Session> {
   let s = sessions.get(key);
   if (!s) {
     s = attachDocument(path).then((attachment) => {
@@ -132,15 +145,17 @@ function session(key: string, path: string): Promise<Session> {
           });
         }, RENDER_DELAY_MS);
       };
+      const text = attachment.text();
+      const extensions = [
+        attachment.extension,
+        history(),
+        EditorView.updateListener.of((u) => u.docChanged && changed(framing)),
+      ];
       const view = new EditorView({
-        state: EditorState.create({
-          doc: attachment.text(),
-          extensions: [
-            attachment.extension,
-            history(),
-            EditorView.updateListener.of((u) => u.docChanged && changed(framing)),
-          ],
-        }),
+        state:
+          transferred?.doc === text
+            ? EditorState.fromJSON(transferred, { extensions }, { history: historyField })
+            : EditorState.create({ doc: text, extensions }),
       });
       const frameDocument: FrameDocument = {
         read: () => ({ version, text: view.state.doc.toString(), readOnly: attachment.readOnly, name: basename(path) }),

@@ -159,6 +159,25 @@ export interface EditorKindContribution {
    * `input.key` (splits) share one document.
    */
   document?: EditorDocumentLifecycle;
+  /** Moves a live tab between windows without closing its project resources. */
+  transfer?: EditorTransferLifecycle;
+}
+
+export interface EditorTransferLifecycle {
+  capture(input: EditorInput): unknown | Promise<unknown>;
+  adopt(input: EditorInput, state: unknown): void | Promise<void>;
+  release?(input: EditorInput): void | Promise<void>;
+}
+
+let editorRuntime: ((input: EditorInput) => Promise<void>) | null = null;
+export function provideEditorRuntime(prepare: (input: EditorInput) => Promise<void>): () => void {
+  editorRuntime = prepare;
+  return () => {
+    if (editorRuntime === prepare) editorRuntime = null;
+  };
+}
+export function prepareEditorInput(input: EditorInput): Promise<void> {
+  return editorRuntime?.(input) ?? Promise.resolve();
 }
 
 /**
@@ -176,8 +195,9 @@ export interface EditorDocumentLifecycle {
   /**
    * Before a close decision: stops admitting edits and runs, flushes, and
    * interrupts and drains execution, so `isDirty` holds until `cancelClose`.
+   * Returns false when another window still owns the document.
    */
-  prepareClose(input: EditorInput): Promise<void>;
+  prepareClose(input: EditorInput): Promise<boolean | void>;
   /** The close didn't happen (Cancel, a failed save, a tab of it opened again): edits and runs resume. */
   cancelClose(input: EditorInput): void;
   /** Don't Save: drops unsaved changes without saving them. */
@@ -493,8 +513,10 @@ export function uriOpenerFor(uri: string): UriOpener | undefined {
 }
 
 /** The non-text editor input for `path`, or null for the text editor. Provider failures fall through. */
-export async function resolveFileEditor(path: string): Promise<FileEditorResolution | null> {
-  const providers = [...fileEditorProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
+export async function resolveFileEditor(path: string, skipProvider?: string): Promise<FileEditorResolution | null> {
+  const providers = [...fileEditorProviders.values()]
+    .filter((p) => p.id !== skipProvider)
+    .sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
   for (const p of providers) {
     const acquisitions: Array<{ commit: () => void; rollback: () => Promise<void> }> = [];
     let admitted = false;
@@ -687,8 +709,8 @@ export interface EditorService {
   activePath(): string | null;
   /** Doc id + cursor of the focused text editor. */
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
-  /** Save all dirty documents; rejects with the failures once every save was tried. */
-  saveAll(opts?: { skipUntitled?: boolean }): Promise<void>;
+  /** Save dirty documents; include peer windows unless the caller already saved them. */
+  saveAll(opts?: { skipUntitled?: boolean; includeOtherWindows?: boolean }): Promise<void>;
   /** Doc ids of untitled buffers with unsaved changes (they follow the window, not a project). */
   untitledDirtyDocumentIds?(): number[];
   /** Includes local edits not yet acknowledged by the backend. */

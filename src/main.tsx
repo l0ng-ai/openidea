@@ -1,19 +1,6 @@
-import React, { useEffect } from "react";
+import React, { useEffect, type ComponentType } from "react";
 import ReactDOM from "react-dom/client";
 import "./styles/global.css";
-import { Workbench } from "./workbench/Workbench";
-import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate";
-import {
-  activateComparisonWindowFeatures,
-  activateDeploymentWindowFeatures,
-  activateDiffWindowFeatures,
-  activateFeatures,
-  activateSettingsWindowFeatures,
-  ComparisonWindow,
-  DeploymentWindow,
-  DiffWindow,
-  SettingsWindow,
-} from "./features";
 import { auxiliaryWindow } from "./platform/auxWindow";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging, logError } from "./platform/errorLog";
@@ -26,7 +13,7 @@ import { installKeyboardDispatcher } from "./platform/keymap";
 import { installPointerFocus } from "./platform/pointerFocus";
 import { call, commands, isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
-import { prefetchLazyComponents } from "./ui";
+import { prefetchLazyComponents } from "./ui/lazy";
 import { installWindowDrag } from "./workbench/window-drag";
 import { installFullscreenEscapeGuard } from "./workbench/fullscreenEscape";
 
@@ -53,41 +40,51 @@ installImeKeyGuard();
 installErrorLogging();
 installPageSwipeTracking(window);
 
-// Auxiliary windows (Settings `settings-<parent>`, comparisons `comparison-<parent>-<n>`, Sync with
-// Deployed `deployment-<parent>`) load this page too.
+// Choose the entry before importing features: auxiliary windows have their own module graphs.
 const aux = auxiliaryWindow();
+let Window: ComponentType;
 
-if (aux?.kind === "settings") {
-  activateSecondaryWindow();
-  activateSettingsWindowFeatures(aux.parent);
-} else if (aux?.kind === "comparison") {
-  activateSecondaryWindow();
-  activateComparisonWindowFeatures(aux.parent);
-  installKeyboardDispatcher();
-} else if (aux?.kind === "diff") {
-  activateSecondaryWindow();
-  activateDiffWindowFeatures(aux.parent);
-  installKeyboardDispatcher();
-} else if (aux?.kind === "deployment") {
-  activateSecondaryWindow();
-  activateDeploymentWindowFeatures(aux.parent);
+if (aux?.kind === "editor" || aux?.kind === "diff") {
+  const entry = await (aux.kind === "editor" ? import("./windows/editor") : import("./windows/diff"));
+  entry.activate(aux.parent);
+  Window = entry.Window;
 } else {
-  // Before the features' and the dispatcher's key handlers: it wraps the Escape they see.
-  installFullscreenEscapeGuard();
-  activateWorkbench();
-  // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
-  const perfBuild = import.meta.env.MODE === "perf";
-  if ((import.meta.env.DEV || perfBuild) && !isTauri()) {
-    const { registerDevSamples } = await import("./workbench/devSamples");
-    registerDevSamples();
+  const features = await import("./features");
+  if (aux) {
+    const { activateSecondaryWindow } = await import("./workbench/activateSecondary");
+    activateSecondaryWindow();
+    if (aux.kind === "settings") {
+      features.activateSettingsWindowFeatures(aux.parent);
+      Window = features.SettingsWindow;
+    } else if (aux.kind === "comparison") {
+      features.activateComparisonWindowFeatures(aux.parent);
+      Window = features.ComparisonWindow;
+    } else {
+      features.activateDeploymentWindowFeatures(aux.parent);
+      Window = features.DeploymentWindow;
+    }
+  } else {
+    const { activateWorkbench } = await import("./workbench/activate");
+    const { Workbench } = await import("./workbench/Workbench");
+    // Before the features' and the dispatcher's key handlers: it wraps the Escape they see.
+    installFullscreenEscapeGuard();
+    activateWorkbench();
+    // `vite build --mode perf` is a production bundle for the performance harness (`perf/`).
+    const perfBuild = import.meta.env.MODE === "perf";
+    if ((import.meta.env.DEV || perfBuild) && !isTauri()) {
+      const { registerDevSamples } = await import("./workbench/devSamples");
+      registerDevSamples();
+    }
+    if (import.meta.env.DEV || perfBuild) {
+      const { installPerfProbe } = await import("./workbench/perfProbe");
+      installPerfProbe();
+    }
+    features.activateFeatures();
+    Window = Workbench;
   }
-  if (import.meta.env.DEV || perfBuild) {
-    const { installPerfProbe } = await import("./workbench/perfProbe");
-    installPerfProbe();
-  }
-  // Order matters: features (e.g. the terminal) install capture-phase key handlers
-  // that must run before the global dispatcher.
-  activateFeatures();
+}
+// Feature capture-phase key handlers must be installed before the global dispatcher.
+if (!aux || aux.kind === "comparison") {
   installKeyboardDispatcher();
 }
 
@@ -97,17 +94,7 @@ function App() {
     // Views split out of the start-up bundle load in the background once the UI is up.
     if (!aux) return prefetchLazyComponents();
   }, []);
-  return aux?.kind === "settings" ? (
-    <SettingsWindow />
-  ) : aux?.kind === "comparison" ? (
-    <ComparisonWindow />
-  ) : aux?.kind === "diff" ? (
-    <DiffWindow />
-  ) : aux?.kind === "deployment" ? (
-    <DeploymentWindow />
-  ) : (
-    <Workbench />
-  );
+  return <Window />;
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement, {

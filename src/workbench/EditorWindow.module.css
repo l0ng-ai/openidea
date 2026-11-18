@@ -1,0 +1,43 @@
+.window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-frame);
+  color: var(--fg);
+}
+.caption {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--h-titlebar);
+  padding-left: 10px;
+  background: var(--bg-elev);
+  box-shadow: inset 0 -1px 0 var(--border);
+  user-select: none;
+}
+.overlay {
+  padding-left: max(82px, calc(82px / var(--titlebar-zoom, 1)));
+}
+.title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-ui);
+}
+.drag {
+  flex: 1;
+  align-self: stretch;
+}
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.error {
+  padding: 20px;
+  color: var(--fg-secondary);
+  white-space: pre-wrap;
+}

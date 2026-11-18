@@ -41,6 +41,8 @@ const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
 const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const EDITOR_SIZE: (f64, f64) = (1000.0, 700.0);
+const EDITOR_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -77,6 +79,48 @@ pub struct Launch {
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
+    /// A live editor tab moving within this project's application instance.
+    #[serde(default)]
+    pub editor: Option<Box<EditorWindowLaunch>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct EditorWindowLaunch {
+    pub id: String,
+    pub source: String,
+    pub payload: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+pub struct EditorDropPosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum EditorHandoffAction {
+    Status,
+    Ready,
+    Commit,
+    Finish,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum EditorHandoffState {
+    Opening,
+    Ready,
+    Committed,
+    Finished,
+    Cancelled,
+}
+
+struct EditorHandoff {
+    source: String,
+    target: String,
+    state: EditorHandoffState,
 }
 
 /// Local files to compare with a deployment server (Sync with Deployed).
@@ -218,6 +262,9 @@ pub struct WindowsState {
     restart: AtomicBool,
     /// Numbers windows of kinds that can open several times per project window.
     aux_serial: AtomicU64,
+    /// Project input references held by window views, independent of tab/split counts.
+    editor_inputs: Mutex<HashMap<(String, String), std::collections::HashSet<String>>>,
+    editor_handoffs: Mutex<HashMap<String, EditorHandoff>>,
     /// Logical sizes remembered per [`AuxKind`] on macOS (`auxiliary-windows.json`), avoiding
     /// `tauri-plugin-window-state`'s physical-pixel scale-factor drift across mixed-DPI displays.
     #[cfg(target_os = "macos")]
@@ -240,6 +287,77 @@ pub(crate) struct AuxGeometry {
 }
 
 impl WindowsState {
+    fn begin_editor_handoff(&self, launch: &EditorWindowLaunch, target: &str) -> IdeResult<()> {
+        use std::collections::hash_map::Entry;
+        match self.editor_handoffs.lock().entry(launch.id.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(EditorHandoff {
+                    source: launch.source.clone(),
+                    target: target.to_owned(),
+                    state: EditorHandoffState::Opening,
+                });
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(IdeError::invalid("editor transfer already exists")),
+        }
+    }
+
+    pub fn editor_handoff(&self, window: &str, id: &str, action: EditorHandoffAction) -> IdeResult<EditorHandoffState> {
+        use EditorHandoffAction as Action;
+        use EditorHandoffState as State;
+        let mut handoffs = self.editor_handoffs.lock();
+        let Some(handoff) = handoffs.get_mut(id) else {
+            return Ok(State::Cancelled);
+        };
+        let source = window == handoff.source;
+        let target = window == handoff.target;
+        match action {
+            Action::Status if source || target => {}
+            Action::Ready if target => {
+                if handoff.state == State::Opening {
+                    handoff.state = State::Ready;
+                }
+            }
+            Action::Commit if source => {
+                if handoff.state == State::Ready {
+                    handoff.state = State::Committed;
+                }
+            }
+            Action::Finish if source => {
+                if handoff.state == State::Committed {
+                    handoff.state = State::Finished;
+                }
+            }
+            Action::Cancel if source || target => {
+                if matches!(handoff.state, State::Opening | State::Ready) {
+                    handoff.state = State::Cancelled;
+                }
+            }
+            _ => return Err(IdeError::invalid("editor transfer does not belong to this window")),
+        }
+        Ok(handoff.state)
+    }
+
+    pub fn retain_editor_input(&self, window: &str, key: String) {
+        let owner = auxiliary_parent(window).unwrap_or(window).to_owned();
+        self.editor_inputs.lock().entry((owner, key)).or_default().insert(window.to_owned());
+    }
+
+    pub fn release_editor_input(&self, window: &str, key: String) -> bool {
+        let owner = auxiliary_parent(window).unwrap_or(window).to_owned();
+        let mut inputs = self.editor_inputs.lock();
+        let id = (owner, key);
+        let Some(views) = inputs.get_mut(&id) else {
+            return true;
+        };
+        views.remove(window);
+        if !views.is_empty() {
+            return false;
+        }
+        inputs.remove(&id);
+        true
+    }
+
     pub fn close_requested(&self, label: &str) {
         let mut requests = self.close_requests.lock();
         if !requests.iter().any(|l| l == label) {
@@ -308,6 +426,19 @@ impl WindowsState {
 
     pub fn forget(&self, label: &str) {
         self.close_settled(label);
+        self.editor_handoffs.lock().retain(|_, transfer| {
+            if transfer.source == label {
+                transfer.state = match transfer.state {
+                    EditorHandoffState::Committed | EditorHandoffState::Finished => EditorHandoffState::Finished,
+                    _ => EditorHandoffState::Cancelled,
+                };
+            }
+            transfer.target != label
+        });
+        self.editor_inputs.lock().retain(|(owner, _), views| {
+            views.remove(label);
+            owner != label && !views.is_empty()
+        });
         {
             let mut launches = self.launches.lock();
             let mut opening = self.opening.lock();
@@ -353,10 +484,12 @@ pub enum AuxKind {
     Comparison,
     Diff,
     Deployment,
+    Editor,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
+    const ALL: [AuxKind; 5] =
+        [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment, AuxKind::Editor];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
@@ -365,12 +498,13 @@ impl AuxKind {
             AuxKind::Comparison => "comparison",
             AuxKind::Diff => "diff",
             AuxKind::Deployment => "deployment",
+            AuxKind::Editor => "editor",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        matches!(self, AuxKind::Comparison | AuxKind::Diff)
+        matches!(self, AuxKind::Comparison | AuxKind::Diff | AuxKind::Editor)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -386,7 +520,7 @@ impl AuxKind {
 
     /// Needs its parent to have a project open.
     fn needs_project(self) -> bool {
-        self != AuxKind::Settings
+        !matches!(self, AuxKind::Settings | AuxKind::Editor)
     }
 
     pub fn min_size(self) -> (f64, f64) {
@@ -395,6 +529,7 @@ impl AuxKind {
             AuxKind::Comparison => COMPARISON_MIN_SIZE,
             AuxKind::Diff => DIFF_MIN_SIZE,
             AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
+            AuxKind::Editor => EDITOR_MIN_SIZE,
         }
     }
 
@@ -404,6 +539,7 @@ impl AuxKind {
             AuxKind::Comparison => COMPARISON_SIZE,
             AuxKind::Diff => DIFF_SIZE,
             AuxKind::Deployment => DEPLOYMENT_SIZE,
+            AuxKind::Editor => EDITOR_SIZE,
         }
     }
 }
@@ -1498,6 +1634,40 @@ pub struct AuxWindow {
 /// Opens an auxiliary window of `caller`'s project window, centred over it. A kind with one window
 /// per parent reuses it: the new launch is handed over ([`LAUNCH_EVENT`]) and the window focused.
 pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWindow) -> IdeResult<()> {
+    build_auxiliary_window(app, caller, aux, None).map(|_| ())
+}
+
+pub fn detach_editor(
+    app: &AppHandle,
+    caller: &WebviewWindow,
+    launch: EditorWindowLaunch,
+    position: Option<EditorDropPosition>,
+) -> IdeResult<OpenOutcome> {
+    if launch.source != caller.label() {
+        return Err(IdeError::invalid("editor transfer source does not match its window"));
+    }
+    let window = build_auxiliary_window(
+        app,
+        caller,
+        AuxWindow {
+            kind: AuxKind::Editor,
+            launch: Launch { editor: Some(Box::new(launch)), ..Default::default() },
+            title: "OpenIDEA",
+            size: AuxKind::Editor.default_size(),
+            min_size: AuxKind::Editor.min_size(),
+            background: None,
+        },
+        position,
+    )?;
+    Ok(OpenOutcome::Opened { label: window.label().to_owned() })
+}
+
+fn build_auxiliary_window(
+    app: &AppHandle,
+    caller: &WebviewWindow,
+    aux: AuxWindow,
+    position: Option<EditorDropPosition>,
+) -> IdeResult<WebviewWindow> {
     // Asked from an auxiliary window itself: open it for that window's parent.
     let parent_label = auxiliary_parent(caller.label()).unwrap_or(caller.label()).to_owned();
     if aux.kind.needs_project() {
@@ -1520,7 +1690,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
             let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
         }
         focus(&existing);
-        return Ok(());
+        return Ok(existing);
     }
     let parent = app.get_webview_window(&parent_label).ok_or_else(|| IdeError::not_found("no parent window"))?;
     let mut config = window_config(app)?;
@@ -1547,6 +1717,9 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // Paint the theme's frame colour before the page loads.
     if let Some(color) = aux.background.as_deref().and_then(hex_color) {
         config.background_color = Some(color);
+    }
+    if let Some(editor) = &aux.launch.editor {
+        windows.begin_editor_handoff(editor, &label)?;
     }
     windows.set_launch(&label, aux.launch);
     #[cfg(target_os = "linux")]
@@ -1585,8 +1758,21 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     if let Err(e) = place_over_parent(&window, &parent) {
         tracing::warn!("cannot place {} window: {e}", aux.kind.name());
     }
+    if let Some(point) = position.filter(|p| p.x.is_finite() && p.y.is_finite()) {
+        let placement = (|| {
+            let origin = caller.inner_position()?;
+            let scale = caller.scale_factor()?;
+            let zoom = f64::from(app.state::<AppState>().global_settings.effective().appearance.zoom) / 100.0;
+            let x = f64::from(origin.x) + point.x * scale * zoom;
+            let y = f64::from(origin.y) + point.y * scale * zoom;
+            window.set_position(tauri::PhysicalPosition::new((x - 40.0 * scale) as i32, (y - 20.0 * scale) as i32))
+        })();
+        if let Err(error) = placement {
+            tracing::warn!("cannot place editor window at drop position: {error}");
+        }
+    }
     focus(&window);
-    Ok(())
+    Ok(window)
 }
 
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
@@ -1997,6 +2183,28 @@ fn dev_font_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_handoff_records_commit_and_finish_for_either_window() {
+        use EditorHandoffAction as Action;
+        use EditorHandoffState as State;
+        let windows = WindowsState::default();
+        let source = "main";
+        let target = "editor-main-0";
+        let id = "handoff";
+        let launch = EditorWindowLaunch { id: id.into(), source: source.into(), payload: String::new() };
+
+        windows.begin_editor_handoff(&launch, target).unwrap();
+        assert_eq!(windows.editor_handoff(source, id, Action::Commit).unwrap(), State::Opening);
+        assert_eq!(windows.editor_handoff(target, id, Action::Ready).unwrap(), State::Ready);
+        assert_eq!(windows.editor_handoff(source, id, Action::Commit).unwrap(), State::Committed);
+        assert_eq!(windows.editor_handoff(target, id, Action::Cancel).unwrap(), State::Committed);
+        assert_eq!(windows.editor_handoff(source, id, Action::Finish).unwrap(), State::Finished);
+        assert_eq!(windows.editor_handoff(source, id, Action::Finish).unwrap(), State::Finished);
+        assert_eq!(windows.editor_handoff(target, id, Action::Status).unwrap(), State::Finished);
+        windows.forget(target);
+        assert_eq!(windows.editor_handoff(source, id, Action::Status).unwrap(), State::Cancelled);
+    }
 
     #[test]
     fn diff_window_identity_keeps_revisions_distinct_and_ignores_reveal_line() {

@@ -746,6 +746,16 @@ export function _provideOpenEditorPaths(provider: () => string[]) {
 // --- library sources -----------------------------------------------------------------
 
 const libraryRoots = new Map<string, readonly string[]>();
+const librarySourceListeners = new Set<() => void>();
+
+export function onLibrarySourceRootsChanged(changed: () => void): () => void {
+  librarySourceListeners.add(changed);
+  return () => void librarySourceListeners.delete(changed);
+}
+
+export function librarySourceRoots(): string[] {
+  return [...new Set([...libraryRoots.values()].flat())];
+}
 
 /**
  * Folders of library / SDK sources ("External Libraries") contributed by `owner`;
@@ -754,8 +764,12 @@ const libraryRoots = new Map<string, readonly string[]>();
  */
 export function setLibraryRoots(owner: string, roots: readonly string[]): () => void {
   libraryRoots.set(owner, roots);
+  librarySourceListeners.forEach((changed) => changed());
   return () => {
-    if (libraryRoots.get(owner) === roots) libraryRoots.delete(owner);
+    if (libraryRoots.get(owner) === roots) {
+      libraryRoots.delete(owner);
+      librarySourceListeners.forEach((changed) => changed());
+    }
   };
 }
 

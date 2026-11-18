@@ -1,6 +1,6 @@
 //! Native notebook operations shared by desktop IPC and the remote dispatcher.
 use crate::Host;
-pub use crate::notebook::NotebookOutputEvent;
+pub use crate::notebook::{NotebookOutputEvent, NotebookSessionInfo};
 use crate::ops::Channel;
 use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
@@ -13,12 +13,26 @@ pub async fn notebook_open(host: &Host, window: &str, path: String) -> IdeResult
     let path = PathBuf::from(path);
     let path = if path.is_absolute() { path } else { project.root.join(path) };
     let notebooks = project.notebooks.clone();
-    host.blocking(move || notebooks.open(&path)).await
+    let window = window.to_owned();
+    host.blocking(move || notebooks.open(&path, &window)).await
 }
 
 #[command(trust = always)]
 pub fn notebook_get(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     host.project(window)?.notebooks.get(&id)
+}
+
+/// Attaches a view to the shared document and returns its kernel state.
+#[command(trust = always)]
+pub async fn notebook_session_info(host: &Host, window: &str, id: String) -> IdeResult<NotebookSessionInfo> {
+    let notebooks = host.project(window)?.notebooks.clone();
+    let window = window.to_owned();
+    host.blocking(move || notebooks.session_info(&id, &window)).await
+}
+
+#[command(trust = always)]
+pub fn notebook_view_close_decision(host: &Host, window: &str, id: String, begin: bool) -> IdeResult<bool> {
+    host.project(window)?.notebooks.view_close_decision(&id, window, begin)
 }
 
 #[command(trust = trusted)]
@@ -62,8 +76,9 @@ pub async fn notebook_redo(host: &Host, window: &str, id: String) -> IdeResult<N
 #[command(trust = always)]
 pub async fn notebook_reload(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     let notebooks = host.project(window)?.notebooks.clone();
+    let window = window.to_owned();
     // An abandoned IPC future must not leave a lifecycle transition half applied.
-    tokio::spawn(async move { notebooks.reload(&id, false).await })
+    tokio::spawn(async move { notebooks.reload(&id, &window, false).await })
         .await
         .map_err(|error| IdeError::internal(error.to_string()))?
 }
@@ -72,7 +87,8 @@ pub async fn notebook_reload(host: &Host, window: &str, id: String) -> IdeResult
 pub async fn notebook_restart(host: &Host, window: &str, id: String) -> IdeResult<NotebookSnapshot> {
     host.require_trust(window)?;
     let notebooks = host.project(window)?.notebooks.clone();
-    tokio::spawn(async move { notebooks.reload(&id, true).await })
+    let window = window.to_owned();
+    tokio::spawn(async move { notebooks.reload(&id, &window, true).await })
         .await
         .map_err(|error| IdeError::internal(error.to_string()))?
 }
@@ -80,7 +96,8 @@ pub async fn notebook_restart(host: &Host, window: &str, id: String) -> IdeResul
 #[command(trust = always)]
 pub async fn notebook_close(host: &Host, window: &str, id: String) -> IdeResult<()> {
     let notebooks = host.project(window)?.notebooks.clone();
-    tokio::spawn(async move { notebooks.close(&id).await })
+    let window = window.to_owned();
+    tokio::spawn(async move { notebooks.close(&id, &window).await })
         .await
         .map_err(|error| IdeError::internal(error.to_string()))?
 }
@@ -161,5 +178,7 @@ ide_command::domain!(
     notebook_reload,
     notebook_restart,
     notebook_save,
+    notebook_session_info,
     notebook_undo,
+    notebook_view_close_decision,
 );

@@ -487,13 +487,19 @@ export function closeLogTab(id: string) {
  * Another project (the window switched projects): forget its commits, filters, selection
  * and console. Repository selection does not change the log or its history tabs.
  */
-export function installGitLog(): () => void {
+export function installGitLog(options: { persistSession?: boolean } = {}): () => void {
+  const saveSession = (root: string | null) => {
+    if (options.persistSession !== false) saveLogSession(root);
+  };
+  const restoreSession = (root: string | null) => {
+    if (options.persistSession !== false) restoreLogSession(root);
+  };
   const trackFocus = (event: FocusEvent) =>
     setContext("vcsLogFocus", event.target instanceof Element && !!event.target.closest("[data-git-log]"));
   document.addEventListener("focusin", trackFocus);
-  restoreLogSession(useVcs.getState().root);
-  const unsubscribeLog = useGitLog.subscribe(() => saveLogSession(useVcs.getState().root));
-  const unsubscribeOptions = useLogOptions.subscribe(() => saveLogSession(useVcs.getState().root));
+  restoreSession(useVcs.getState().root);
+  const unsubscribeLog = useGitLog.subscribe(() => saveSession(useVcs.getState().root));
+  const unsubscribeOptions = useLogOptions.subscribe(() => saveSession(useVcs.getState().root));
   const migratedBookmarks = new Set<string>();
   const syncBookmarks = () => {
     const root = useVcs.getState().root;
@@ -522,7 +528,7 @@ export function installGitLog(): () => void {
   const unsubscribeBookmarks = useBookmarks.subscribe(syncBookmarks);
   const unsubscribeVcs = useVcs.subscribe((s, prev) => {
     if (s.root !== prev.root) {
-      saveLogSession(prev.root);
+      saveSession(prev.root);
       restoring = true;
       cancelLogRequests();
       loadPromises.clear();
@@ -534,7 +540,7 @@ export function installGitLog(): () => void {
         generation: l.generation + 1,
       }));
       clearConsole();
-      restoreLogSession(s.root);
+      restoreSession(s.root);
       syncBookmarks();
       restoring = false;
     } else if (s.roots !== prev.roots) {
@@ -543,7 +549,7 @@ export function installGitLog(): () => void {
     }
   });
   return () => {
-    saveLogSession(useVcs.getState().root);
+    saveSession(useVcs.getState().root);
     cancelLogRequests();
     unsubscribeLog();
     unsubscribeOptions();

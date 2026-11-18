@@ -28,6 +28,13 @@ pub struct NotebookOutputEvent {
     pub changed_cells: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Type)]
+pub struct NotebookSessionInfo {
+    pub snapshot: NotebookSnapshot,
+    pub running: bool,
+    pub kernel: String,
+}
+
 #[derive(Default)]
 struct Registry {
     stopped: bool,
@@ -44,11 +51,26 @@ struct ManagedDocument {
 
 struct DocumentState {
     document: NotebookDocument,
+    views: HashSet<String>,
+    close_decision: Option<ViewCloseDecision>,
     generation: u64,
     transitioning: bool,
     closed: bool,
     active: Option<Arc<Batch>>,
     kernel_status: Option<(String, Option<String>)>,
+}
+
+struct ViewCloseDecision {
+    window: String,
+    last: bool,
+}
+
+impl DocumentState {
+    fn cancel_close(&mut self, window: &str) {
+        if self.close_decision.as_ref().is_some_and(|decision| decision.window == window) {
+            self.close_decision = None;
+        }
+    }
 }
 
 struct Batch {
@@ -138,6 +160,7 @@ impl NotebookService {
 
     /// Called with the document's state locked, so observers see its changes in order.
     fn changed(&self, path: &Path, snapshot: &NotebookSnapshot) {
+        self.sink.emit(IdeEvent::NotebookChanged { id: snapshot.id.clone(), path: path.to_owned().into() });
         if let Some(observer) = self.observer.read().clone() {
             observer.changed(path, snapshot);
         }
@@ -148,7 +171,7 @@ impl NotebookService {
         Ok(self.resolve(id)?.path.clone())
     }
 
-    pub fn open(&self, path: &Path) -> IdeResult<NotebookSnapshot> {
+    pub fn open(&self, path: &Path, window: &str) -> IdeResult<NotebookSnapshot> {
         let path = dunce::canonicalize(path)?;
         // Serialize first load with path insertion: split views share one incarnation.
         let mut registry = self.registry.lock();
@@ -156,7 +179,9 @@ impl NotebookService {
             return Err(IdeError::cancelled());
         }
         if let Some(id) = registry.paths.get(&path) {
-            return snapshot(&registry.documents[id]);
+            let mut state = registry.documents[id].state.lock();
+            attach_view(&mut state, window)?;
+            return Ok(state.document.snapshot());
         }
         let document = NotebookDocument::load(&path)?;
         let initial = document.snapshot();
@@ -170,6 +195,8 @@ impl NotebookService {
                 path,
                 state: Mutex::new(DocumentState {
                     document,
+                    views: HashSet::from([window.to_owned()]),
+                    close_decision: None,
                     generation: 0,
                     transitioning: false,
                     closed: false,
@@ -192,6 +219,51 @@ impl NotebookService {
 
     pub fn get(&self, id: &str) -> IdeResult<NotebookSnapshot> {
         snapshot(self.resolve(id)?.as_ref())
+    }
+
+    pub fn session_info(&self, id: &str, window: &str) -> IdeResult<NotebookSessionInfo> {
+        let document = self.resolve(id)?;
+        let mut state = document.state.lock();
+        attach_view(&mut state, window)?;
+        Ok(NotebookSessionInfo {
+            snapshot: state.document.snapshot(),
+            running: state.active.is_some(),
+            kernel: state.kernel_status.as_ref().map(|s| s.0.clone()).unwrap_or_else(|| "idle".to_owned()),
+        })
+    }
+
+    /// Serializes close decisions for this notebook. A last-view decision also blocks new views.
+    pub fn view_close_decision(&self, id: &str, window: &str, begin: bool) -> IdeResult<bool> {
+        if !begin {
+            if let Ok(document) = self.resolve(id) {
+                document.state.lock().cancel_close(window);
+            }
+            return Ok(false);
+        }
+        let document = self.resolve(id)?;
+        let mut state = document.state.lock();
+        mutable(&state)?;
+        if !state.views.contains(window) {
+            return Err(IdeError::not_found("notebook view is closed"));
+        }
+        if let Some(decision) = &state.close_decision {
+            return if decision.window == window {
+                Ok(decision.last)
+            } else {
+                Err(IdeError::unavailable("notebook is closing in another window"))
+            };
+        }
+        let last = state.views.len() == 1;
+        state.close_decision = Some(ViewCloseDecision { window: window.to_owned(), last });
+        Ok(last)
+    }
+
+    pub fn forget_view(&self, window: &str) {
+        for document in self.registry.lock().documents.values() {
+            let mut state = document.state.lock();
+            state.views.remove(window);
+            state.cancel_close(window);
+        }
     }
 
     pub fn edit(&self, id: &str, version: u32, edit: NotebookEdit) -> IdeResult<NotebookSnapshot> {
@@ -252,10 +324,16 @@ impl NotebookService {
         Ok(())
     }
 
-    pub async fn reload(&self, id: &str, restart: bool) -> IdeResult<NotebookSnapshot> {
+    pub async fn reload(&self, id: &str, window: &str, restart: bool) -> IdeResult<NotebookSnapshot> {
         let document = self.resolve(id)?;
         let _control = document.control.lock().await;
-        let batch = invalidate(&document)?;
+        let batch = {
+            let mut state = document.state.lock();
+            if !restart && (state.views.len() != 1 || !state.views.contains(window)) {
+                return Err(IdeError::unavailable("notebook is open in another window"));
+            }
+            invalidate_state(&mut state)?
+        };
         let result = async {
             let _ = self.kernels.interrupt(&document.path).await;
             self.drain(&document, batch).await?;
@@ -291,17 +369,28 @@ impl NotebookService {
     }
 
     /// Frontend disposal may arrive after project replacement has already retired this id.
-    pub async fn close(&self, id: &str) -> IdeResult<()> {
+    pub async fn close(&self, id: &str, window: &str) -> IdeResult<()> {
         let document = match self.resolve(id) {
             Ok(document) => document,
             Err(error) if error.kind == ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
         let _control = document.control.lock().await;
-        if document.state.lock().closed {
-            return Ok(());
-        }
-        let batch = invalidate(&document)?;
+        let batch = {
+            let mut state = document.state.lock();
+            if state.closed || !state.views.contains(window) {
+                return Ok(());
+            }
+            // A peer could disappear after this view was authorized to leave without saving.
+            let shared_decision =
+                state.close_decision.as_ref().is_some_and(|decision| decision.window == window && !decision.last);
+            if state.views.len() > 1 || shared_decision {
+                state.views.remove(window);
+                state.cancel_close(window);
+                return Ok(());
+            }
+            invalidate_state(&mut state)?
+        };
         let result = async {
             let _ = self.kernels.interrupt(&document.path).await;
             self.drain(&document, batch).await?;
@@ -309,7 +398,9 @@ impl NotebookService {
         }
         .await;
         if let Err(error) = result {
-            document.state.lock().transitioning = false;
+            let mut state = document.state.lock();
+            state.transitioning = false;
+            state.cancel_close(window);
             return Err(error);
         }
         document.state.lock().closed = true;
@@ -384,6 +475,7 @@ impl NotebookService {
             let callback_error = output_error.clone();
             let callback_cell = cell.clone();
             let channel = on_output.clone();
+            let output_sink = self.sink.clone();
             let result = self
                 .kernels
                 .execute(
@@ -407,6 +499,7 @@ impl NotebookService {
                                 return;
                             }
                         };
+                        output_sink.emit(IdeEvent::NotebookChanged { id: event.id.clone(), path: event.path.clone() });
                         let _ = channel.send(event);
                     }),
                 )
@@ -495,9 +588,17 @@ fn snapshot(document: &ManagedDocument) -> IdeResult<NotebookSnapshot> {
     Ok(state.document.snapshot())
 }
 
-fn invalidate(document: &ManagedDocument) -> IdeResult<Option<Arc<Batch>>> {
-    let mut state = document.state.lock();
-    mutable(&state)?;
+fn attach_view(state: &mut DocumentState, window: &str) -> IdeResult<()> {
+    mutable(state)?;
+    if state.close_decision.as_ref().is_some_and(|decision| decision.last) {
+        return Err(IdeError::unavailable("notebook is closing"));
+    }
+    state.views.insert(window.to_owned());
+    Ok(())
+}
+
+fn invalidate_state(state: &mut DocumentState) -> IdeResult<Option<Arc<Batch>>> {
+    mutable(state)?;
     state.transitioning = true;
     state.generation += 1;
     if let Some(batch) = &state.active {
@@ -600,8 +701,37 @@ mod tests {
             ]
         })).unwrap()).unwrap();
         let service = NotebookService::new(dir.path().join("kernels"), Arc::new(ide_core::NullSink));
-        let snapshot = service.open(&path).unwrap();
+        let snapshot = service.open(&path, "main").unwrap();
         (dir, service, snapshot)
+    }
+
+    #[tokio::test]
+    async fn shared_view_close_preserves_edits_and_execution() {
+        let (dir, service, initial) = fixture();
+        let id = &initial.id;
+        let peer = "editor-main-1";
+        let edited = service
+            .edit(
+                id,
+                initial.version,
+                NotebookEdit::SetSource { cell: initial.cells[0].id.clone(), source: "unsaved".into() },
+            )
+            .unwrap();
+        assert_eq!(service.session_info(id, peer).unwrap().snapshot.version, edited.version);
+        let cancel = CancellationToken::new();
+        let execution = service.admit(id, vec![initial.cells[0].id.clone()], cancel.clone()).unwrap();
+        assert!(!service.view_close_decision(id, "main", true).unwrap());
+        assert!(service.view_close_decision(id, peer, true).is_err());
+        assert!(service.reload(id, "main", false).await.is_err());
+        service.close(id, "main").await.unwrap();
+        assert!(!cancel.is_cancelled());
+        assert!(service.get(id).unwrap().dirty);
+        assert!(service.view_close_decision(id, peer, true).unwrap());
+        let path = dir.path().join("session.ipynb");
+        assert!(service.open(&path, "main").is_err());
+        service.view_close_decision(id, peer, false).unwrap();
+        assert_eq!(service.open(&path, "main").unwrap().id, *id);
+        drop(execution);
     }
 
     fn output(kind: &str, content: serde_json::Value) -> KernelOutput {
@@ -625,8 +755,8 @@ mod tests {
         let (dir, service, initial) = fixture();
         let seen = Arc::new(Seen::default());
         service.set_observer(seen.clone());
-        service.close(&initial.id).await.unwrap();
-        let opened = service.open(&dir.path().join("session.ipynb")).unwrap();
+        service.close(&initial.id, "main").await.unwrap();
+        let opened = service.open(&dir.path().join("session.ipynb"), "main").unwrap();
         assert_eq!(
             service.path_of(&opened.id).unwrap(),
             dunce::canonicalize(dir.path().join("session.ipynb")).unwrap()
@@ -635,9 +765,9 @@ mod tests {
         let edited = service.edit(&opened.id, opened.version, edit).unwrap();
         service.undo(&opened.id, false).unwrap();
         // A second view of the open notebook changes nothing.
-        service.open(&dir.path().join("session.ipynb")).unwrap();
+        service.open(&dir.path().join("session.ipynb"), "main").unwrap();
         assert!(edited.version > opened.version);
-        service.close(&opened.id).await.unwrap();
+        service.close(&opened.id, "main").await.unwrap();
         assert_eq!(
             *seen.0.lock(),
             [
@@ -655,17 +785,17 @@ mod tests {
     async fn canonical_split_opens_share_incarnation_but_reopen_and_projects_do_not() {
         let (dir, service, initial) = fixture();
         let alternate = dir.path().join(".").join("session.ipynb");
-        assert_eq!(service.open(&alternate).unwrap().id, initial.id);
+        assert_eq!(service.open(&alternate, "main").unwrap().id, initial.id);
         let other = NotebookService::new(dir.path().join("other-runtime"), Arc::new(ide_core::NullSink));
-        let independent = other.open(&alternate).unwrap();
+        let independent = other.open(&alternate, "main").unwrap();
         assert_ne!(initial.id, independent.id);
         assert_eq!(other.get(&initial.id).unwrap_err().kind, ErrorKind::NotFound);
-        service.close(&initial.id).await.unwrap();
-        let reopened = service.open(&alternate).unwrap();
+        service.close(&initial.id, "main").await.unwrap();
+        let reopened = service.open(&alternate, "main").unwrap();
         assert_ne!(reopened.id, initial.id);
         assert_eq!(service.get(&initial.id).unwrap_err().kind, ErrorKind::NotFound);
         // A delayed old-incarnation close cannot dispose a new session at that path.
-        service.close(&initial.id).await.unwrap();
+        service.close(&initial.id, "main").await.unwrap();
         assert_eq!(service.get(&reopened.id).unwrap().id, reopened.id);
         service.shutdown().await;
         other.shutdown().await;
@@ -676,7 +806,7 @@ mod tests {
         let (dir, service, _) = fixture();
         let ui_path =
             format!("{}/session.ipynb", ide_core::ipc_path::to_ipc(&dunce::canonicalize(dir.path()).unwrap()));
-        let snapshot = service.open(Path::new(&ui_path)).unwrap();
+        let snapshot = service.open(Path::new(&ui_path), "main").unwrap();
         assert_eq!(serde_json::to_value(&snapshot).unwrap()["path"], ui_path);
         service.shutdown().await;
     }
@@ -687,19 +817,19 @@ mod tests {
         // A batch that never drains models a kernel that ignores interrupt and shutdown.
         let admission =
             service.admit(&initial.id, vec![initial.cells[0].id.clone()], CancellationToken::new()).unwrap();
-        let error = service.close(&initial.id).await.unwrap_err();
+        let error = service.close(&initial.id, "main").await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::Unavailable);
         assert!(admission.guard.batch.cancel.is_cancelled());
         // The backend still owns the incarnation: a reopen shares it instead of
         // starting a second kernel, and the failed close left it usable.
-        let reopened = service.open(&dir.path().join("session.ipynb")).unwrap();
+        let reopened = service.open(&dir.path().join("session.ipynb"), "main").unwrap();
         assert_eq!(reopened.id, initial.id);
         assert!(matches!(service.admit(&initial.id, vec![initial.cells[0].id.clone()], CancellationToken::new()),
             Err(error) if error.kind == ErrorKind::Unavailable));
         drop(admission);
-        service.close(&initial.id).await.unwrap();
+        service.close(&initial.id, "main").await.unwrap();
         assert_eq!(service.get(&initial.id).unwrap_err().kind, ErrorKind::NotFound);
-        assert_ne!(service.open(&dir.path().join("session.ipynb")).unwrap().id, initial.id);
+        assert_ne!(service.open(&dir.path().join("session.ipynb"), "main").unwrap().id, initial.id);
         service.shutdown().await;
     }
 
@@ -794,7 +924,7 @@ mod tests {
         );
         assert_eq!(service.get(&initial.id).unwrap().version, deleted.version);
         let other = initial.cells[1].id.clone();
-        invalidate(&document).unwrap();
+        invalidate_state(&mut document.state.lock()).unwrap();
         assert!(admission.guard.batch.cancel.is_cancelled());
         assert!(
             commit_output(
@@ -834,7 +964,7 @@ mod tests {
                 NotebookEdit::SetSource { cell: initial.cells[0].id.clone(), source: "changed".into() },
             )
             .unwrap();
-        let reloaded = service.reload(&initial.id, false).await.unwrap();
+        let reloaded = service.reload(&initial.id, "main", false).await.unwrap();
         assert_eq!(reloaded.id, initial.id);
         assert!(reloaded.version > changed.version);
         assert_eq!(reloaded.cells[0].source, "x = 1");
@@ -898,6 +1028,6 @@ mod tests {
         drop(next);
         let undone = service.undo(&initial.id, false).unwrap();
         assert_eq!(undone.cells[0].source, "x = 1");
-        service.close(&initial.id).await.unwrap();
+        service.close(&initial.id, "main").await.unwrap();
     }
 }

@@ -798,12 +798,15 @@ function exclusiveSource(ctx: CompletionContext): CompletionSource | null {
 /** Show suggestions as you type: sources only answer explicit requests when it is off. */
 function gated(source: CompletionSource): CompletionSource {
   return (ctx) => {
+    const local = () => !ctx.view || (ctx.view.dom.ownerDocument.hasFocus() && (ctx.explicit || ctx.view.hasFocus));
+    if (!local()) return null;
     const only = exclusiveSource(ctx);
     if (only) return source === contributedSource ? only(ctx) : null;
     if (!ctx.explicit && (!editorPrefs().completion.autoPopup || inplaceRenameActive(ctx.state))) return null;
-    if (!editorPrefs().completion.sortAlphabetically) return source(ctx);
-    return Promise.resolve(source(ctx)).then(
-      (r) => r && sortAlphabetically(r, ctx.state.sliceDoc(r.from, r.to ?? ctx.pos)),
+    if (!editorPrefs().completion.sortAlphabetically)
+      return Promise.resolve(source(ctx)).then((result) => (local() ? result : null));
+    return Promise.resolve(source(ctx)).then((r) =>
+      local() && r ? sortAlphabetically(r, ctx.state.sliceDoc(r.from, r.to ?? ctx.pos)) : null,
     );
   };
 }
@@ -916,6 +919,7 @@ const lookupTracker = ViewPlugin.fromClass(
 
 /** ⌃Space: explicit completion (a focused lookup; a sole candidate is inserted at once). */
 export function explicitCompletion(view: EditorView): boolean {
+  view.focus();
   explicitPending.add(view);
   const started = startCompletion(view);
   if (!started) explicitPending.delete(view);

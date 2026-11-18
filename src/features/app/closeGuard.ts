@@ -16,6 +16,7 @@ import { IpcError, commands, isCancelled, isTauri, onIdeEvent, type Settings } f
 import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { withEditorTransfersHeld } from "@/platform/editorTransfer";
 import {
   maybeEditorService,
   notifications,
@@ -208,6 +209,10 @@ function forgetTabs(): boolean {
 }
 
 async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
+  return withEditorTransfersHeld(() => closeAfterTransfers(deps));
+}
+
+async function closeAfterTransfers(deps: CloseDeps): Promise<boolean> {
   if (closing) return false;
   closing = true;
   let forgot = false;
@@ -291,6 +296,10 @@ export async function confirmLeave(
   project = (useProject.getState().project?.displayName || useProject.getState().project?.name) ?? null,
   keepUntitled = true,
 ): Promise<boolean> {
+  return withEditorTransfersHeld(() => leaveAfterTransfers(deps, project, keepUntitled));
+}
+
+async function leaveAfterTransfers(deps: CloseDeps, project: string | null, keepUntitled: boolean): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
   const confirmTerminate = workflowSettings().run.confirmTerminate;
   // Untitled buffers follow the window into another project: they are neither counted nor

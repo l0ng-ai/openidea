@@ -1,5 +1,5 @@
 /**
- * Auxiliary windows: Settings, comparison and deployment windows that belong
+ * Auxiliary windows: Settings, comparisons, diffs, editors and deployment windows that belong
  * to a project window (their parent) and share its project. Labels name the
  * kind and the parent (`settings-main`, `comparison-project-2-3`), mirroring
  * `windows::auxiliary` in src-tauri/src/windows.rs.
@@ -8,11 +8,11 @@ import { getAllWindows, getCurrentWindow } from "@tauri-apps/api/window";
 import { TauriEvent } from "@tauri-apps/api/event";
 import { isTauri } from "./ipc";
 
-export type AuxKind = "settings" | "comparison" | "diff" | "deployment";
+export type AuxKind = "settings" | "comparison" | "diff" | "editor" | "deployment";
 
 /** Kinds with several windows per parent (`<kind>-<parent>-<n>`); the others have one (`<kind>-<parent>`). */
-const MULTIPLE: ReadonlySet<AuxKind> = new Set(["comparison", "diff"]);
-const KINDS: readonly AuxKind[] = ["settings", "comparison", "diff", "deployment"];
+const MULTIPLE: ReadonlySet<AuxKind> = new Set(["comparison", "diff", "editor"]);
+const KINDS: readonly AuxKind[] = ["settings", "comparison", "diff", "editor", "deployment"];
 
 /** An auxiliary window reports to its parent whether it closed, and which documents it released. */
 export const AUX_CLOSED = "openidea://auxiliary/closed";
