@@ -286,6 +286,8 @@ impl Host {
                         effective.languages.java.gradle.linked_projects.as_deref(),
                         build_files.as_deref(),
                     );
+                    // After the import settings: they extend the workspace folder's name.
+                    ide_sdk::jdtls_workspaces::use_own_temp(cfg, &data_dir);
                 }
             }));
         }
