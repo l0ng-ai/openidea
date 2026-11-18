@@ -359,10 +359,22 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
     if kind != GotoKind::Definition {
         return result;
     }
-    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else { return result };
+    // A Maven placeholder (`@profileActive@` in `application.yml`) navigates to its pom.
+    let maven = super::maven_placeholder::definition(host, window, doc, pos).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else {
+        return match maven {
+            None => result,
+            Some(found) => {
+                let in_string = in_string_literal(host, window, doc, pos).await;
+                definition_targets(result, vec![found], in_string)
+            }
+        };
+    };
     let found = plugin_call(move || plugins.provide_definition(&d, pos)).await.unwrap_or_default();
-    let found: Vec<Location> =
-        found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect();
+    let found: Vec<Location> = maven
+        .into_iter()
+        .chain(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }))
+        .collect();
     let in_string = !found.is_empty() && in_string_literal(host, window, doc, pos).await;
     definition_targets(result, found, in_string)
 }
