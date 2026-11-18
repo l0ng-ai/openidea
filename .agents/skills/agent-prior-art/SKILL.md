@@ -1,6 +1,6 @@
 ---
 name: agent-prior-art
-description: Survey how popular AI coding agents and IDEs (Cursor, OpenAI Codex, Claude Code, Cline, GitHub Copilot, VS Code Chat, Zed, OpenCode, JetBrains AI) design and implement a capability — reading open-source code, SDKs, protocol specs, design docs, and user/developer manuals — then critique what is good vs bad with verifiable links/citations and adapt only the best ideas to OpenIDEA. Use whenever creating an issue, reviewing/triaging an issue, planning/creating a PR, or reviewing a PR that involves features, UX flows, agent harnesses, skills, MCP, prompts, context, tools, or architecture.
+description: Survey how popular AI coding agents and IDEs (Cursor, OpenAI Codex, Claude Code, Cline, GitHub Copilot, VS Code Chat, JetBrains Air, Zed, OpenCode) design and implement a capability — reading open-source code, SDKs, protocol specs, design docs, and user/developer manuals — then critique what is good vs bad with verifiable links/citations and adapt only the best ideas to OpenIDEA. Use whenever creating an issue, reviewing/triaging an issue, planning/creating a PR, or reviewing a PR that involves features, UX flows, agent harnesses, skills, MCP, prompts, context, tools, or architecture.
 ---
 
 # Agent & IDE Prior-Art Review: survey → critique → adapt
@@ -27,16 +27,17 @@ Verify from primary sources — never rely on stale model memory alone. Prefer e
 
 Check sibling checkouts when present in a multi-repo workspace (for example `../cline`, `../copilot-cli`) before fetching remotely, then query upstream repositories via semantic code search or `gh`:
 
-| Product / Ecosystem             | Primary Code, SDKs & Specs to Inspect                                                                                                        |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OpenAI Codex**                | `openai/codex` (Rust CLI, `app-server` JSON-RPC protocol, sandboxing, skills, approvals), `@openai/codex-sdk`, `developers.openai.com/codex` |
-| **Cline**                       | `cline/cline` (task loop, tool calling, checkpoints, MCP/skills UX, context truncation), `docs.cline.bot`                                    |
-| **GitHub Copilot & VS Code**    | `microsoft/vscode`, `microsoft/vscode-copilot-chat`, `github/copilot-sdk` (`@github/copilot-sdk`), `docs.github.com/en/copilot`              |
-| **Claude Code & Anthropic**     | `anthropics/claude-code` (issues/changelog/plugins), `@anthropic-ai/claude-agent-sdk`, `code.claude.com/docs`                                |
-| **Cursor**                      | `cursor.com/docs`, `cursor.com/changelog` (Composer, Custom Modes, Rules/Skills, Context Ring, Background Agents, `agent-plugins.org`)       |
-| **Zed & ACP**                   | `zed-industries/zed` (Assistant panel, slash commands, worktrees), `agentclientprotocol/agent-client-protocol` (`@agentclientprotocol/sdk`)  |
-| **OpenCode / Continue / Aider** | `anomalyco/opencode`, `continuedev/continue`, `Aider-AI/aider` (repo map, edit formats, git hygiene)                                         |
-| **JetBrains AI / Junie & MCP**  | `JetBrains/skills`, `jetbrains.com/help/ai-assistant`, `modelcontextprotocol/modelcontextprotocol`                                           |
+| Product / Ecosystem             | Primary Code, SDKs & Specs to Inspect                                                                                                                                                                                         |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OpenAI Codex**                | `openai/codex` (Rust CLI, `app-server` JSON-RPC protocol, sandboxing, skills, approvals), `@openai/codex-sdk`, `developers.openai.com/codex`                                                                                  |
+| **Cline**                       | `cline/cline` (task loop, tool calling, checkpoints, MCP/skills UX, context truncation), `docs.cline.bot`                                                                                                                     |
+| **GitHub Copilot & VS Code**    | `microsoft/vscode`, `microsoft/vscode-copilot-chat`, `github/copilot-sdk` (`@github/copilot-sdk`), `docs.github.com/en/copilot`                                                                                               |
+| **Claude Code & Anthropic**     | `anthropics/claude-code` (issues/changelog/plugins), `@anthropic-ai/claude-agent-sdk`, `code.claude.com/docs`                                                                                                                 |
+| **Cursor**                      | `cursor.com/docs`, `cursor.com/changelog` (Composer, Custom Modes, Rules/Skills, Context Ring, Background Agents, `agent-plugins.org`)                                                                                        |
+| **Zed & ACP**                   | `zed-industries/zed` (Assistant panel, slash commands, worktrees), `agentclientprotocol/agent-client-protocol` (`@agentclientprotocol/sdk`)                                                                                   |
+| **OpenCode / Continue / Aider** | `anomalyco/opencode`, `continuedev/continue`, `Aider-AI/aider` (repo map, edit formats, git hygiene)                                                                                                                          |
+| **JetBrains Air & AI**          | `jetbrains.com/air` (`Air in IDEs`, `Air Gateway`, `Air Context`, `Air Teams`, Junie, ACP registry, inline diff comments, worktree sessions), `jetbrains.com/help/air`, `JetBrains/skills`, `jetbrains.com/help/ai-assistant` |
+| **MCP**                         | `modelcontextprotocol/modelcontextprotocol` (`@modelcontextprotocol/sdk`, specs & transports)                                                                                                                                 |
 
 ### B. Evidence order for every agent surveyed
 
