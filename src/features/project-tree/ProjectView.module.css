@@ -56,12 +56,19 @@
 .excluded {
   color: var(--vcs-ignored);
 }
+.deprecated {
+  text-decoration-line: line-through;
+}
 .error {
   text-decoration-line: underline;
   text-decoration-style: wavy;
   text-decoration-color: var(--danger);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
+}
+/* The error's wavy underline takes the text decoration; the strike-out is drawn underneath. */
+.deprecated.error {
+  background: linear-gradient(currentColor, currentColor) 0 55% / 100% 1px no-repeat;
 }
 .suffix {
   display: inline-flex;
