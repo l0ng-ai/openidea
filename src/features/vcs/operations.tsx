@@ -9,6 +9,7 @@ import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange }
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
+import { useFilePresentation } from "@/ui/filePresentation";
 import { notifications } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { diffInput, openVcsDiff, vcsDiffInFront, type DiffData, type DiffSide } from "./diffInput";
@@ -614,6 +615,16 @@ export interface ComparisonFile extends ChangedFile {
   removed?: number;
 }
 
+function WorktreeJavaIcon({ path }: { path: string }) {
+  const { icon } = useFilePresentation(path);
+  return <Icon name={icon} size={14} />;
+}
+
+function renderWorktreeJavaIcon(file: ComparisonFile) {
+  if (!file.root || file.kind === "deleted" || !file.path.endsWith(".java")) return null;
+  return <WorktreeJavaIcon path={repositoryPath(file.root, file.path)} />;
+}
+
 /**
  * Diff content of one comparison file. `swapped` exchanges the two sides
  * (the Compare tool window's Swap Sides), for worktree and revision diffs alike.
@@ -804,6 +815,7 @@ export function ChangesBetweenDialog({
           current={current}
           onSelect={setCurrent}
           diffFor={diffFor}
+          renderFileIcon={listOnly && !to ? renderWorktreeJavaIcon : undefined}
           getColor={(f) => KIND_COLOR[f.kind === "untracked" ? "added" : f.kind]}
           ariaLabel="Changed files"
           inlineDiff={!listOnly}

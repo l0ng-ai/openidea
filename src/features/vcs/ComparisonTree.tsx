@@ -12,6 +12,7 @@ export function ComparisonTree<F>({
   current,
   onSelect,
   diffFor,
+  renderFileIcon,
   renderDetails,
   ariaLabel,
   openOnActivate = false,
@@ -23,6 +24,7 @@ export function ComparisonTree<F>({
   current: F | null;
   onSelect: (entry: F | null) => void;
   diffFor: (entry: F) => DiffData | null;
+  renderFileIcon?: (file: F) => ReactNode;
   renderDetails: (node: FileTreeNode<F>) => ReactNode;
   ariaLabel: string;
   openOnActivate?: boolean;
@@ -64,7 +66,7 @@ export function ComparisonTree<F>({
         className={styles.comparisonTree}
         renderNode={(n) => (
           <span className={styles.fileRow} style={{ flex: 1, padding: 0 }}>
-            <Icon name={n.file ? fileIconName(n.name) : "folder"} size={14} />
+            {(n.file && renderFileIcon?.(n.file)) ?? <Icon name={n.file ? fileIconName(n.name) : "folder"} size={14} />}
             <span className={styles.fileName} style={{ color: n.file ? getColor?.(n.file) : undefined }}>
               {n.name}
             </span>
