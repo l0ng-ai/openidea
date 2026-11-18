@@ -142,6 +142,7 @@
     "search_5k/literal": 100000,
     "search_5k/regex": 100000,
     "search_5k/dense_limit": 20000,
+    "search_dense_files/24x40k_limit": 20000,
 
     "plugins/load_50": 20000,
     "plugins/cold_activation": 30000,

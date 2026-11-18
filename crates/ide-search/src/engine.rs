@@ -22,6 +22,9 @@ pub(crate) const DEFAULT_MAX_MATCHES: u32 = 10_000;
 /// How many matched lines a sink handles between cancellation-token checks
 /// (reads from disk check on every buffer refill).
 const CANCEL_CHECK_LINES: u32 = 256;
+/// How many matches a file keeps before claiming them from the shared budget: each file
+/// searched in parallel holds about this many unclaimed matches at most, not up to the whole budget.
+const CLAIM_BATCH: u32 = 64;
 
 pub(crate) struct Request<'a> {
     pub root: &'a Path,
@@ -86,6 +89,11 @@ impl Control<'_> {
                 Err(actual) => cur = actual,
             }
         }
+    }
+
+    /// Returns matches claimed for a file whose matches are then dropped.
+    fn release(&self, n: u32) {
+        self.matches.fetch_sub(n, Relaxed);
     }
 }
 
@@ -322,24 +330,16 @@ impl Ctx<'_> {
                 None => self.search_disk(path, matcher, searcher, &mut sink),
             },
         };
-        if let Err(err) = result {
-            if !self.ctl.stopped() {
-                tracing::debug!("search {}: {err}", path.display());
-            }
-            if sink.lines.is_empty() || self.ctl.cancelled.load(Relaxed) {
-                return;
-            }
+        if let Err(err) = result
+            && !self.ctl.stopped()
+        {
+            tracing::debug!("search {}: {err}", path.display());
         }
         if sink.binary || sink.lines.is_empty() || self.ctl.cancelled.load(Relaxed) {
+            self.ctl.release(sink.claimed);
             return;
         }
-        let found = u32::try_from(sink.count).unwrap_or(u32::MAX);
-        let granted = self.ctl.reserve(found);
-        if granted < found {
-            self.ctl.limit_hit.store(true, Relaxed);
-            self.ctl.stop.store(true, Relaxed);
-            truncate(&mut sink.lines, granted as usize);
-        }
+        sink.settle();
         if sink.lines.is_empty() {
             return;
         }
@@ -364,14 +364,17 @@ impl Ctx<'_> {
         } else {
             !reader.is_utf8()
         };
-        if !decode || self.ctl.stopped() {
+        // A stopped search needs the decoded text only to fill what the byte search claimed.
+        if !decode || (self.ctl.stopped() && sink.claimed == 0) {
             return result;
         }
         let Some(text) = (self.text.decode)(path, &std::fs::read(path)?) else {
             sink.binary = true;
             return Ok(());
         };
+        let claimed = sink.claimed;
         *sink = FileSink::new(matcher, &self.ctl, None);
+        sink.claimed = claimed;
         searcher.search_slice(matcher, text.as_bytes(), sink)
     }
 }
@@ -389,8 +392,11 @@ struct FileSink<'a> {
     matcher: &'a RegexMatcher,
     ctl: &'a Control<'a>,
     lines: Vec<LineMatch>,
-    /// Match ranges collected so far.
-    count: usize,
+    /// Match ranges kept so far.
+    count: u32,
+    /// Matches claimed from the shared budget: up to `count`, or more while a decoded
+    /// file is searched again under the claim of its byte search.
+    claimed: u32,
     binary: bool,
     ticks: u32,
     /// Scratch buffers reused across lines.
@@ -411,11 +417,42 @@ impl<'a> FileSink<'a> {
             ctl,
             lines: Vec::new(),
             count: 0,
+            claimed: 0,
             binary: false,
             ticks: 0,
             found: Vec::new(),
             ranges: Vec::new(),
             context,
+        }
+    }
+
+    /// Claims the matches kept since the last claim. When the budget cannot take them
+    /// all, keeps the ones it can, marks the limit hit and returns false.
+    fn claim(&mut self) -> bool {
+        if self.count <= self.claimed {
+            return true;
+        }
+        let unclaimed = self.count - self.claimed;
+        let granted = self.ctl.reserve(unclaimed);
+        self.claimed += granted;
+        if granted == unclaimed {
+            return true;
+        }
+        self.ctl.limit_hit.store(true, Relaxed);
+        self.ctl.stop.store(true, Relaxed);
+        truncate(&mut self.lines, self.claimed as usize);
+        self.count = self.claimed;
+        false
+    }
+
+    /// Makes the claim match the matches kept once the file is done: claims the rest, or
+    /// gives back the part of a byte search's claim the decoded text did not use.
+    fn settle(&mut self) {
+        if self.count < self.claimed {
+            self.ctl.release(self.claimed - self.count);
+            self.claimed = self.count;
+        } else {
+            self.claim();
         }
     }
 }
@@ -431,7 +468,9 @@ impl Sink for FileSink<'_> {
 
     fn matched(&mut self, _searcher: &Searcher, m: &SinkMatch<'_>) -> Result<bool, io::Error> {
         self.ticks += 1;
-        if self.ctl.stopped() || (self.ticks.is_multiple_of(CANCEL_CHECK_LINES) && self.ctl.should_stop()) {
+        let stop = self.ctl.stopped() || (self.ticks.is_multiple_of(CANCEL_CHECK_LINES) && self.ctl.should_stop());
+        // Unless cancelled, a decoded file still fills the claim its byte search took.
+        if stop && (self.count >= self.claimed || self.ctl.cancelled.load(Relaxed)) {
             return Ok(false);
         }
         let buffer = m.buffer();
@@ -475,7 +514,7 @@ impl Sink for FileSink<'_> {
                 ranges.push((a - line_start, b - line_start));
             }
             if !ranges.is_empty() {
-                self.count += ranges.len();
+                self.count = self.count.saturating_add(u32::try_from(ranges.len()).unwrap_or(u32::MAX));
                 let line_no = u32::try_from(line_no).unwrap_or(u32::MAX);
                 self.lines.push(line_match(line_no, &block[line_start..content_end], &ranges));
             }
@@ -485,7 +524,8 @@ impl Sink for FileSink<'_> {
         self.found = found;
         self.ranges = ranges;
         // One match beyond the remaining budget is enough to know the limit is hit.
-        Ok(self.count <= self.ctl.remaining() as usize)
+        let unclaimed = self.count.saturating_sub(self.claimed);
+        Ok(if unclaimed >= CLAIM_BATCH || unclaimed > self.ctl.remaining() { self.claim() } else { true })
     }
 
     fn binary_data(&mut self, _searcher: &Searcher, _offset: u64) -> Result<bool, io::Error> {
@@ -640,5 +680,54 @@ mod walk_tests {
             })
         });
         assert!(seen.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn control(cancel: &CancellationToken, max: u32) -> Control<'_> {
+        Control {
+            cancel,
+            stop: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+            limit_hit: AtomicBool::new(false),
+            matches: AtomicU32::new(0),
+            files: AtomicU32::new(0),
+            max,
+        }
+    }
+
+    /// Searches `lines` matching lines without finishing the file, like a walker thread mid-file.
+    fn scan<'a>(ctl: &'a Control<'a>, matcher: &'a RegexMatcher, lines: usize) -> FileSink<'a> {
+        let mut sink = FileSink::new(matcher, ctl, None);
+        let mut searcher = SearcherBuilder::new().line_number(true).build();
+        searcher.search_slice(matcher, "x\n".repeat(lines).as_bytes(), &mut sink).unwrap();
+        sink
+    }
+
+    #[test]
+    fn files_in_flight_never_hold_more_matches_than_the_budget() {
+        let cancel = CancellationToken::new();
+        let ctl = control(&cancel, 100);
+        let matcher = RegexMatcher::new("x").unwrap();
+        let (first, second) = (scan(&ctl, &matcher, 150), scan(&ctl, &matcher, 150));
+        assert_eq!((first.lines.len(), second.lines.len()), (100, 0));
+        assert_eq!(ctl.matches.load(Relaxed), 100);
+        assert!(ctl.limit_hit.load(Relaxed));
+    }
+
+    #[test]
+    fn unclaimed_matches_of_a_file_in_flight_stay_within_the_budget() {
+        let cancel = CancellationToken::new();
+        let ctl = control(&cancel, 1000);
+        let matcher = RegexMatcher::new("x").unwrap();
+        let mut first = scan(&ctl, &matcher, 40);
+        let second = scan(&ctl, &matcher, 2000);
+        assert_eq!((first.lines.len(), second.lines.len()), (40, 1000));
+        assert!(!first.claim());
+        assert_eq!((first.lines.len(), ctl.matches.load(Relaxed)), (0, 1000));
+        assert!(ctl.limit_hit.load(Relaxed));
     }
 }
