@@ -25,6 +25,18 @@ pub(crate) struct GeneratedScan {
     pub roots: Vec<GeneratedRoot>,
 }
 
+/// Whether `path` is in (or is) an annotation-processor output folder:
+/// `generated-sources/annotations` or `generated-test-sources/test-annotations`. jdtls
+/// runs the processors itself and writes there; javac (a Maven build) writes the same
+/// files, and jdtls must not take those as edits (#4128).
+pub(crate) fn is_processor_output(path: &Path) -> bool {
+    let parts: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    parts.windows(2).any(|w| {
+        (w[0] == "generated-sources" && w[1] == "annotations")
+            || (w[0] == "generated-test-sources" && w[1] == "test-annotations")
+    })
+}
+
 /// Generated Java source folders under `root` (a reactor or one module).
 pub(crate) fn scan(root: &Path) -> GeneratedScan {
     let mut modules = Vec::new();
@@ -259,6 +271,20 @@ fn plugins_removed(build: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_annotation_processor_output() {
+        for (path, expected) in [
+            ("/p/m/target/generated-sources/annotations/com/x/FooMappingImpl.java", true),
+            ("/p/m/target/generated-sources/annotations", true),
+            ("/p/m/build-out/generated-test-sources/test-annotations/com/x/T.java", true),
+            ("/p/m/target/generated-sources/protobuf/java/com/x/Hello.java", false),
+            ("/p/m/src/main/java/annotations/Foo.java", false),
+            ("/p/m/target/classes/com/x/FooMappingImpl.class", false),
+        ] {
+            assert_eq!(is_processor_output(Path::new(path)), expected, "{path}");
+        }
+    }
 
     fn write(root: &Path, rel: &str, text: &str) {
         let path = root.join(rel);
