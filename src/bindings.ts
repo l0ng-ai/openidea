@@ -1810,7 +1810,10 @@ export const commands = {
 	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  Paths in an HTML document or stylesheet that name no existing file. */
 	webUnresolvedReferences: (doc: DocId) => typedError<FileReference[], IdeError>(__TAURI_INVOKE("web_unresolved_references", { doc })),
-	/**  The built-in server's URL for `path` (started on first use). */
+	/**
+	 *  The built-in server's URL for `path` (started on first use). A file whose language is
+	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
+	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */

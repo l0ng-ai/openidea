@@ -54,6 +54,11 @@ export function validateFileTypeOverrides(raw: unknown): Record<string, string> 
   return out;
 }
 
+/** Settings key of a file: project-relative inside the project, else absolute. */
+export function overrideKey(path: string, root: string | null): string {
+  return root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+}
+
 /** Built-in file name patterns of a language definition: `*.ext` and file names. */
 export function builtinPatterns(lang: Pick<LanguageInfo, "extensions" | "filenames">): string[] {
   return [...lang.extensions.map((e) => `*.${e}`), ...(lang.filenames ?? [])];
@@ -156,6 +161,32 @@ export function userFileType(assoc: FileTypeAssociations, fileName: string): str
     }
   }
   return glob?.id ?? ext?.id ?? null;
+}
+
+/**
+ * Whether Settings › File Types leave `path` in one of `languages`, decided without asking the
+ * backend. Same order as `LanguageRegistry::detect`: Override File Type, the user's patterns,
+ * then the built-in `extensions` they did not remove. Hashbangs and first lines need the content.
+ */
+export function hasFileType(
+  path: string,
+  languages: readonly string[],
+  extensions: ReadonlySet<string>,
+  files: { fileTypes?: unknown; fileTypeOverrides?: unknown } | undefined,
+  root: string | null,
+): boolean {
+  const assoc = validateFileTypes(files?.fileTypes);
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const assigned =
+    validateFileTypeOverrides(files?.fileTypeOverrides)[overrideKey(path, root)] ?? userFileType(assoc, name);
+  if (assigned) return languages.includes(assigned);
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return false;
+  const pattern = `*${name.slice(dot).toLowerCase()}`;
+  return (
+    extensions.has(pattern.slice(2)) &&
+    !languages.some((l) => assoc[l]?.removedPatterns.some((p) => p.toLowerCase() === pattern))
+  );
 }
 
 /** File name standing for a language when picking its icon (`x.py`). */
