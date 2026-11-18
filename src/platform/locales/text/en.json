@@ -2484,5 +2484,6 @@
   "Restricted projects": "Restricted projects",
   "These projects open in Restricted Mode, even inside a trusted location.": "These projects open in Restricted Mode, even inside a trusted location.",
   "Trust": "Trust",
-  "{name} is hidden because {title} is off": "{name} is hidden because {title} is off"
+  "{name} is hidden because {title} is off": "{name} is hidden because {title} is off",
+  "{name} did not exist at label '{label}'": "{name} did not exist at label '{label}'"
 }
