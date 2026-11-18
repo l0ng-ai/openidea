@@ -327,6 +327,23 @@ test("editor Go to Line stays available while a docked agent conversation is vis
   await expect(messageBox(page)).toHaveText(draft);
 });
 
+for (const placement of ["editor", "toolWindow"] as const) {
+  test(`${placement}: the shortcut jumps to the shown task's input from the project tree`, async ({
+    workbench: page,
+  }) => {
+    await openFromTree(page, "README.md");
+    await seedTasks(page, placement);
+    const box = messageBox(page);
+    await box.fill(draft);
+    await page.getByRole("treeitem", { name: "README.md", exact: true }).click();
+    await expect(box).not.toBeFocused();
+    await page.keyboard.press("Meta+L");
+    await expect(box).toBeFocused();
+    await expect(box).toHaveText(draft);
+    await expect(page.getByRole("dialog", { name: "Go to Line:Column", exact: true })).toHaveCount(0);
+  });
+}
+
 for (const preset of ["intellij-windows", "vscode-windows", "eclipse-windows"]) {
   test(`${preset} uses Ctrl+L to focus the task message`, async ({ workbench: page }) => {
     await seedTasks(page, "editor");

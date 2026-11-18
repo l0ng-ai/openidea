@@ -5,7 +5,7 @@ use ide_extension::Capability;
 use ide_plugin::{EventKind, HostError, WorkbenchEvent};
 use std::{
     collections::{BTreeSet, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[derive(Clone, Default)]
@@ -136,32 +136,14 @@ impl PluginHost {
                 if !path.is_absolute() {
                     return None;
                 }
-                let workspace = workspace.as_ref()?;
-                let real = ide_plugin::resolve_real(path);
-                // The file's own project, not the invoking window's: annotations follow
-                // the file, so a plugin hears about a file another window has open.
-                let root = match client {
-                    Some(client) => workspace
-                        .project_of(client)
-                        .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
-                        .or_else(|| {
-                            workspace
-                                .projects()
-                                .into_iter()
-                                .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
-                                .max_by_key(|r| r.components().count())
-                        }),
-                    None => workspace
-                        .projects()
-                        .into_iter()
-                        .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
-                        .max_by_key(|r| r.components().count()),
-                }?;
+                let root = file_project(workspace.as_deref()?, client, path)?;
                 if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
                     return None;
                 }
-                if let WorkbenchEvent::DocumentChanged(change) = event {
+                if let WorkbenchEvent::DocumentChanged(_) = event {
                     // Typed text: only for plugins that may read editors, and only for paths they named.
+                    // The path stays absolute until delivery (`relativize_documents`): the batch is
+                    // filtered again then, against the grants and subscriptions of that moment.
                     let filter = filters.and_then(|filters| filters.get(event.kind().name()))?;
                     let granted = &plugin.meta.lock().granted;
                     if !granted.contains(&Capability::ProjectRead)
@@ -170,11 +152,7 @@ impl PluginHost {
                     {
                         return None;
                     }
-                    let real = ide_plugin::resolve_real(path);
-                    let relative = real.strip_prefix(ide_plugin::resolve_real(&root)).ok()?;
-                    let mut change = change.clone();
-                    change.path = relative.to_string_lossy().replace('\\', "/");
-                    return Some(WorkbenchEvent::DocumentChanged(change));
+                    return Some(event.clone());
                 }
                 filters
                     .and_then(|filters| filters.get(event.kind().name()))
@@ -183,6 +161,41 @@ impl PluginHost {
             })
             .collect()
     }
+
+    /// What a plugin receives for `document-changed`: the path relative to the file's own project.
+    pub(super) fn relativize_documents(
+        shared: &super::api::Shared,
+        client: Option<&str>,
+        events: Vec<WorkbenchEvent>,
+    ) -> Vec<WorkbenchEvent> {
+        let workspace = shared.workspace();
+        events
+            .into_iter()
+            .filter_map(|event| {
+                let WorkbenchEvent::DocumentChanged(mut change) = event else { return Some(event) };
+                let path = Path::new(&change.path);
+                let root = file_project(workspace.as_deref()?, client, path)?;
+                let relative = ide_plugin::resolve_real(path)
+                    .strip_prefix(ide_plugin::resolve_real(&root))
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                change.path = relative;
+                Some(WorkbenchEvent::DocumentChanged(change))
+            })
+            .collect()
+    }
+}
+
+/// The open project an absolute `path` belongs to: the invoking window's when the file is in
+/// it, else the innermost open project containing it. Annotations follow the file, so a
+/// plugin hears about a file another window has open.
+fn file_project(workspace: &dyn super::api::PluginWorkspace, client: Option<&str>, path: &Path) -> Option<PathBuf> {
+    let real = ide_plugin::resolve_real(path);
+    let contains = |r: &PathBuf| real.starts_with(ide_plugin::resolve_real(r));
+    client
+        .and_then(|client| workspace.project_of(client).filter(contains))
+        .or_else(|| workspace.projects().into_iter().filter(contains).max_by_key(|r| r.components().count()))
 }
 
 #[cfg(test)]

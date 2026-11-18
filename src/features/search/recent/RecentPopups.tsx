@@ -363,7 +363,7 @@ function RecentFilesDialog() {
             focusable={false}
             rowHeight={24}
             aria-label="Tool windows"
-            renderItem={(t) => <ToolRow tw={t.tw} indices={t.indices} />}
+            renderItem={(t) => <ToolRow tw={t.tw} title={t.title} indices={t.indices} />}
           />
           {!switcher && (
             <button
@@ -416,12 +416,12 @@ function RecentFilesDialog() {
   );
 }
 
-function ToolRow({ tw, indices }: { tw: ToolWindowContribution; indices: number[] }) {
+function ToolRow({ tw, title, indices }: { tw: ToolWindowContribution; title: string; indices: number[] }) {
   const shortcut = shortcutLabel(`toolwindow.${tw.id}`);
   return (
     <>
       <Icon name={tw.icon} size={16} className={styles.icon} />
-      <HighlightedText className={styles.name} text={tw.title} indices={indices} tone="strong" />
+      <HighlightedText className={styles.name} text={title} indices={indices} tone="strong" />
       {shortcut && <span className={styles.shortcut}>{shortcut}</span>}
     </>
   );

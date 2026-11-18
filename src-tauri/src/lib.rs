@@ -1,7 +1,10 @@
 //! OpenIDEA desktop shell: wires the backend crates into Tauri.
 //!
-//! This crate is glue only. Each `commands/<domain>.rs` is a thin, typed
-//! adapter from IPC to a backend crate; no domain logic lives here.
+//! This crate is glue only. `commands/<domain>.rs` holds the commands only the desktop runs; the
+//! Tauri adapters of project-host commands are derived from their `ide-host` declarations. No
+//! domain logic lives here.
+// `commands::catalogue!` recurses a few times per command domain.
+#![recursion_limit = "256"]
 
 mod application_focus;
 mod cli;
@@ -40,6 +43,8 @@ mod window_zoom;
 mod windows;
 #[cfg(windows)]
 mod windows_error_mode;
+#[cfg(windows)]
+mod windows_webview_recovery;
 
 use parking_lot::Mutex;
 use state::AppState;
@@ -47,6 +52,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use windows::WindowsState;
+
+pub use commands::declarations;
 
 /// Builds the tauri-specta builder holding every command and exported type.
 /// Also used by `export_bindings` (tests) to regenerate `src/bindings.ts`.
@@ -132,6 +139,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
     #[cfg(not(target_os = "linux"))]
@@ -173,9 +182,14 @@ pub fn run() {
         if let Some(state) = webview.try_state::<AppState>() {
             let label = AppState::owner_window(webview.label());
             let command = request.message.command();
-            let authorized = match state.remote_dev.get(label) {
-                Some(connection) => connection.authorize_command(&state.host.trust, command),
-                None => state.host.authorize_command(webview.label(), command),
+            let authorized = match commands::trust_of(command) {
+                Some(trust) => match state.remote_dev.get(label) {
+                    Some(connection) => connection.authorize(&state.host.trust, trust),
+                    None => state.host.authorize(webview.label(), trust),
+                },
+                // Tauri's own commands (events, channels, windows, the plugins `lib.rs` adds).
+                None if command.starts_with("plugin:") => Ok(()),
+                None => Err(ide_core::IdeError::not_found(format!("no command {command}"))),
             };
             if let Err(error) = authorized {
                 request.resolver.reject(error);
@@ -281,7 +295,7 @@ pub fn run() {
                 if let Some(state) = window.try_state::<AppState>() {
                     #[cfg(target_os = "macos")]
                     if let Some(w) = window.try_state::<WindowsState>() {
-                        let settings = ide_host::ops::project::settings(&state.host, window.label());
+                        let settings = ide_host::ops::project::settings_get(&state.host, window.label());
                         w.keep_alive.store(settings.general.close_without_welcome, std::sync::atomic::Ordering::SeqCst);
                     }
                     state.updates.forget_window(window.label());
@@ -381,6 +395,11 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
+            if matches!(route.action.as_str(), "file.settings" | "file.newProjectsSettings")
+                && windows::open_settings_from_menu(app, &w, &route.action, route.arg.clone())
+            {
+                return;
+            }
             // The window to bring back to the front once what the action shows is closed (Settings).
             let mut return_to = None;
             let label = match windows::menu_destination(w.label(), &route.action) {

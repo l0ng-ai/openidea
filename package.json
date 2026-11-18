@@ -2,7 +2,7 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -25,6 +25,7 @@
     "gen:django-grammar": "lezer-generator src/editor/core/cm/django/django.grammar --typeScript -o src/editor/core/cm/django/parser.ts",
     "gen:astro-grammar": "lezer-generator src/editor/core/cm/astro/astro.grammar --typeScript -o src/editor/core/cm/astro/parser.ts",
     "gen:theme-docs": "node scripts/theme/gen-docs.ts",
+    "gen:plugin-catalog": "node scripts/gen-plugin-catalog.ts",
     "theme:import-intellij": "node scripts/theme/import-intellij-theme.ts",
     "dev:app": "node scripts/tauri.ts dev --config src-tauri/tauri.dev.conf.json",
     "dev:status": "node scripts/dev-status.ts",
@@ -32,8 +33,7 @@
     "perf": "node perf/run.ts",
     "perf:rust": "node perf/rust.ts",
     "eval": "node evals/run.ts",
-    "release:prepare": "node scripts/release-prepare.ts",
-    "nightly:prepare": "node scripts/nightly-prepare.ts"
+    "release:prepare": "node scripts/release-prepare.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"

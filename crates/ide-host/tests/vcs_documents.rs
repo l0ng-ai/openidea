@@ -137,7 +137,7 @@ async fn directory_compare_overwrite_reloads_clean_open_documents() {
     let path = destination.join("query.sql");
     std::fs::write(&path, ORIGINAL).unwrap();
     let doc = f.project.documents.open(&path).unwrap();
-    ide_host::ops::fs::copy_merge(&f.host, "main", source, destination, "query.sql".into(), true).await.unwrap();
+    ide_host::ops::fs::fs_copy_merge(&f.host, "main", source, destination, "query.sql".into(), true).await.unwrap();
     let snapshot = f.project.documents.snapshot(doc.id).unwrap();
     assert_eq!(snapshot.text, OTHER);
     assert!(!snapshot.dirty);

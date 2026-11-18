@@ -35,9 +35,14 @@ const hintField = StateField.define<Hint | null>({
             pos: h.pos,
             above: true,
             strictSide: false,
-            create: () => {
+            create: (view) => {
               const dom = document.createElement("div");
               dom.className = `cm-lsp-hint cm-lsp-hint-${h.tone}`;
+              // Clicked or focused (a value tree expanded in it): the user works in the hint, so
+              // it stays until an edit, a caret move or Escape.
+              const keep = () => clearTimeout(timers.get(view));
+              dom.addEventListener("pointerdown", keep);
+              dom.addEventListener("focusin", keep);
               dom.setAttribute("role", "status");
               if (h.pending) dom.dataset.pending = "true";
               Object.assign(dom.dataset, h.data);
@@ -63,7 +68,8 @@ const timers = new WeakMap<EditorView, ReturnType<typeof setTimeout>>();
 export function showHint(
   view: EditorView,
   content: Hint["content"],
-  opts: { pos?: number; tone?: Hint["tone"]; timeout?: number; pending?: boolean; data?: Hint["data"] } = {},
+  /** `timeout: null`: the hint stays until an edit, a caret move or Escape. */
+  opts: { pos?: number; tone?: Hint["tone"]; timeout?: number | null; pending?: boolean; data?: Hint["data"] } = {},
 ) {
   const pos = opts.pos ?? view.state.selection.main.head;
   const effects: StateEffect<unknown>[] = [
@@ -72,6 +78,7 @@ export function showHint(
   if (!view.state.field(hintField, false)) effects.push(StateEffect.appendConfig.of(hintExtension()));
   view.dispatch({ effects });
   clearTimeout(timers.get(view));
+  if (opts.timeout === null) return;
   timers.set(
     view,
     // Also while the view is hidden: it would show the hint again when its tab is shown.

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DataSource, DbTableInfo } from "@/platform/ipc";
 import {
   DEFAULT_DUMP,
+  DEFAULT_MYSQLDUMP,
   DEFAULT_RESTORE,
   baseName,
   dumpMismatch,
@@ -9,7 +10,13 @@ import {
   dumpScope,
   formatElapsed,
   majorOf,
+  mysqlDumpScope,
+  mysqldumpOptions,
   outputPath,
+  patternName,
+  unquoteName,
+  restoreTargetProblem,
+  toggleName,
   pickInstall,
   restoreOptions,
   restoreToolFor,
@@ -29,6 +36,25 @@ describe("forms", () => {
     });
     expect(options.schemas).toEqual(['"My Schema"', "audit"]);
     expect(options.tables).toEqual(['public."Order Items"', '"a,""b"".c"']);
+  });
+
+  it("send mysqldump tables only with one database, and masking policies only to a client that knows them", () => {
+    const one = mysqldumpOptions({ ...DEFAULT_MYSQLDUMP, databases: "shop", tables: "orders, items" }, false);
+    expect(one).toMatchObject({ databases: ["shop"], tables: ["orders", "items"], maskingPolicies: null });
+    const two = mysqldumpOptions({ ...DEFAULT_MYSQLDUMP, databases: "a b", tables: "orders" }, true);
+    expect(two).toMatchObject({ databases: ["a", "b"], tables: [], maskingPolicies: false });
+  });
+
+  it("turn names into pg_dump patterns and back", () => {
+    for (const name of ["public", "My Schema", 'a"b', "Orders"]) expect(unquoteName(patternName(name))).toBe(name);
+    expect(patternName("Orders")).toBe('"Orders"');
+    expect(unquoteName("Public")).toBe("public");
+  });
+
+  it("toggle a name chosen from a list", () => {
+    expect(toggleName("", "shop")).toBe("shop");
+    expect(toggleName("shop crm", "audit")).toBe("shop, crm, audit");
+    expect(toggleName("shop, crm", "shop")).toBe("crm");
   });
 
   it("send the typed name lists as lists", () => {
@@ -66,6 +92,26 @@ describe("restore", () => {
     expect(dumpMismatch("psql", "postgresSql")).toBeNull();
     expect(dumpMismatch("psql", "unknown")).toBeNull();
     expect(dumpMismatch("pgRestore", null)).toBeNull();
+    expect(dumpMismatch("mysql", "postgresSql")).toBe("postgresIntoMysql");
+    expect(dumpMismatch("mysql", "postgresArchive")).toBe("postgresIntoMysql");
+    expect(dumpMismatch("mysql", "mysqlSql")).toBeNull();
+  });
+});
+
+describe("restore target", () => {
+  const existing = ["postgres", "shop"];
+
+  it("needs an existing database", () => {
+    expect(restoreTargetProblem("shop", existing, false, false)).toBeNull();
+    expect(restoreTargetProblem(" shop ", existing, true, false)).toBeNull();
+    expect(restoreTargetProblem("shop_new", existing, false, true)).toBe("missing");
+    expect(restoreTargetProblem("shop_new", null, false, false)).toBeNull();
+  });
+
+  it("lets MySQL run without a database only for a dump that creates its databases", () => {
+    expect(restoreTargetProblem("", existing, true, false)).toBe("noDatabase");
+    expect(restoreTargetProblem("", existing, true, true)).toBeNull();
+    expect(restoreTargetProblem("", existing, false, false)).toBeNull();
   });
 });
 
@@ -100,6 +146,24 @@ describe("dumpScope", () => {
     expect(dumpScope({ kind: "table", key: "k", id: "s1:crm", schema: "public", table }, pg)).toMatchObject({
       tables: 'public."Orders"',
     });
+  });
+
+  it("applies to MySQL sources, schemas (databases) and tables with mysqlDumpScope", () => {
+    const mysql = { ...pg, driver: "mysql", database: "shop" } as DataSource;
+    expect(mysqlDumpScope({ kind: "source", key: "s1", source: mysql }, mysql)).toEqual({
+      target: "s1",
+      database: "shop",
+    });
+    expect(mysqlDumpScope({ kind: "schema", key: "k", id: "s1", schema: "crm" }, mysql)).toEqual({
+      target: "s1",
+      database: "crm",
+    });
+    expect(mysqlDumpScope({ kind: "table", key: "k", id: "s1", schema: "crm", table }, mysql)).toEqual({
+      target: "s1",
+      database: "crm",
+      tables: "Orders",
+    });
+    expect(mysqlDumpScope({ kind: "source", key: "s1", source: pg }, pg)).toBeNull();
   });
 
   it("does not apply to other drivers or views", () => {

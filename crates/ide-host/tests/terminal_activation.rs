@@ -35,7 +35,7 @@ fn terminal_activation_uses_the_resolved_default_shell() {
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         for shell in [None, Some("".to_owned()), Some(" \t ".to_owned())] {
-            let terminal = ops::term::spawn(
+            let terminal = ops::term::term_spawn(
                 &host,
                 "main",
                 ide_terminal::TerminalOptions {
@@ -47,8 +47,9 @@ fn terminal_activation_uses_the_resolved_default_shell() {
                     rows: 24,
                     shell_integration: false,
                 },
-                Arc::new(|_| {}),
+                ops::Channel::new(|_| {}),
             )
+            .await
             .unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
             while !std::fs::read_to_string(root.join("activation.marker")).is_ok_and(|s| s.trim() == "activated") {

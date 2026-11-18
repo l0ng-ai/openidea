@@ -283,7 +283,7 @@ fn run_exit(host: &crate::Host, id: RunId) -> Option<Option<i32>> {
     match host.processes.exit_code(id) {
         Ok(exit) => exit,
         // Remote (SSH) runs, or a finished run already forgotten: the run list knows whether it runs.
-        Err(_) => match crate::ops::run::list(host).into_iter().find(|r| r.id == id) {
+        Err(_) => match crate::ops::run::run_list(host).into_iter().find(|r| r.id == id) {
             Some(r) if r.running => None,
             _ => Some(None),
         },
@@ -304,7 +304,7 @@ async fn wait_exit(call: &Call, id: RunId, deadline: Option<Instant>) -> IdeResu
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(50)) => {}
             _ = call.cancel.cancelled() => {
-                let _ = crate::ops::run::stop(&host, call.window(), id);
+                let _ = crate::ops::run::run_stop(&host, call.window(), id);
                 return Err(IdeError::cancelled());
             }
         }
@@ -313,9 +313,9 @@ async fn wait_exit(call: &Call, id: RunId, deadline: Option<Instant>) -> IdeResu
 
 /// An output callback that skips the IDE's own lines (`Process finished…`), as JetBrains
 /// skips `ProcessOutputType.SYSTEM`.
-fn process_output(mut f: impl FnMut(&str) + Send + 'static) -> crate::ops::Emit<OutputChunk> {
+fn process_output(mut f: impl FnMut(&str) + Send + 'static) -> crate::ops::Channel<OutputChunk> {
     let f = Mutex::new(move |t: &str| f(t));
-    Arc::new(move |chunk: OutputChunk| match &chunk {
+    crate::ops::Channel::new(move |chunk: OutputChunk| match &chunk {
         OutputChunk::Stdout { text } | OutputChunk::Stderr { text } => (f.lock())(text),
         OutputChunk::System { .. } => {}
     })
@@ -356,7 +356,7 @@ async fn run_to_end(call: &Call, config: RunConfig, errors: &mut BuildErrors) ->
             t.drain(..cut);
         }
     });
-    let info = crate::ops::run::start(&call.host(), call.window(), config, emit).await?;
+    let info = crate::ops::run::run_start(&call.host(), call.window(), config, emit, None).await?;
     let exit = wait_exit(call, info.id, None).await?.flatten();
     if exit == Some(0) {
         return Ok(true);
@@ -612,7 +612,7 @@ one by one",
             let output_path = collector.lock().path.clone();
             let sink = collector.clone();
             let emit = process_output(move |text| sink.lock().append(text));
-            let info = match crate::ops::run::start(&call.host(), call.window(), config, emit).await {
+            let info = match crate::ops::run::run_start(&call.host(), call.window(), config, emit, None).await {
                 Ok(info) => info,
                 Err(e) => {
                     let _ = std::fs::remove_file(&output_path);

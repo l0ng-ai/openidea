@@ -4,6 +4,7 @@
 //! the desktop for local projects, `openidea-server` for remote ones.
 
 use super::{PluginEditor, PluginHost, PluginOutputLine};
+use ide_command::command;
 use ide_core::{DocId, IdeError, IdeResult};
 use ide_plugin::{EditorContext, Invocation, ServiceTab, View, ViewEvent, Viewport};
 use std::sync::Arc;
@@ -38,10 +39,13 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
     tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
+/// a tool window, the window's active editor, as commands get it).
 #[allow(clippy::too_many_arguments)]
-pub async fn render(
+#[command(trust = trusted)]
+pub async fn plugin_view_render(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     plugin_id: String,
     view: String,
@@ -49,14 +53,17 @@ pub async fn render(
     doc: Option<DocId>,
     editor: Option<PluginEditor>,
 ) -> IdeResult<View> {
+    let plugins = plugins.clone();
     let invocation = view_invocation(host, window, doc, editor)?;
     blocking(move || plugins.render_view(&plugin_id, &view, viewport, invocation)).await
 }
 
+/// A user action in a plugin view or custom editor (`doc`, `editor`: as for rendering).
 #[allow(clippy::too_many_arguments)]
-pub async fn event(
+#[command(trust = trusted)]
+pub async fn plugin_view_event(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     plugin_id: String,
     view: String,
@@ -64,39 +71,45 @@ pub async fn event(
     doc: Option<DocId>,
     editor: Option<PluginEditor>,
 ) -> IdeResult<()> {
+    let plugins = plugins.clone();
     let invocation = view_invocation(host, window, doc, editor)?;
     blocking(move || plugins.view_event(&plugin_id, &view, event, invocation)).await
 }
 
-/// The Services pane of node `key` of a plugin's services view.
-pub async fn service_detail(
+/// The Services pane of node `key` of a plugin's `location = "services"` view.
+#[command(trust = trusted)]
+pub async fn plugin_service_detail(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
     plugin_id: String,
     view: String,
     key: String,
 ) -> IdeResult<Vec<ServiceTab>> {
+    let plugins = plugins.clone();
     let invocation = view_invocation(host, window, None, None)?;
     blocking(move || plugins.service_detail(&plugin_id, &view, &key, invocation)).await
 }
 
-/// Runs the program of the log tab `tab` of node `key`'s pane in the window's
-/// project root, streaming its lines until it exits or request `request` is
-/// cancelled; returns its exit code.
+/// Runs the program of the log tab `tab` of node `key`'s Services pane (with
+/// the toggles in `on`), streaming its output until it exits or `request` is
+/// cancelled; returns the exit code.
 #[allow(clippy::too_many_arguments)]
-pub async fn service_log(
+#[command(trust = trusted)]
+pub async fn plugin_service_log(
     host: &crate::Host,
-    plugins: Arc<PluginHost>,
+    plugins: &Arc<PluginHost>,
     window: &str,
+    request: ide_core::RequestId,
     plugin_id: String,
     view: String,
     key: String,
     tab: String,
     on: Vec<String>,
-    request: ide_core::RequestId,
     on_line: crate::ops::Channel<PluginOutputLine>,
 ) -> IdeResult<Option<i32>> {
+    // Runs in the window's project root.
+    let plugins = plugins.clone();
     let invocation = view_invocation(host, window, None, None)?;
     let cancel = host.begin_project_read_request(window, request);
     let result = blocking(move || {
@@ -137,3 +150,11 @@ mod tests {
         assert!(view_invocation(&host, "main", None, None).unwrap().editor.is_none());
     }
 }
+
+ide_command::domain!(
+    plugins_views:
+    plugin_service_detail,
+    plugin_service_log,
+    plugin_view_event,
+    plugin_view_render,
+);

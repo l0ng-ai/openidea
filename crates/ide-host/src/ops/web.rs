@@ -1,9 +1,10 @@
 //! The built-in web server's URLs.
 
 use crate::Host;
+use ide_command::command;
 use ide_core::IdeResult;
+use ide_core::IpcPath;
 use ide_core::proxy_settings::{ProxyMode, ProxySettings};
-use std::path::Path;
 use std::time::Duration;
 
 /// Whether `url` names this machine (`localhost` or a loopback address).
@@ -46,10 +47,12 @@ pub async fn serves_page(url: &str) -> bool {
     response.status().is_success() && html
 }
 
-/// The URL serving `file`, under the window's project when it holds the file.
-pub async fn url(host: &Host, window: &str, file: &Path) -> IdeResult<String> {
+/// The built-in server's URL for `path` (started on first use).
+#[command(trust = always)]
+pub async fn web_url(host: &Host, window: &str, path: IpcPath) -> IdeResult<String> {
+    // Under the window's project when it holds the file.
     let root = host.project(window).ok().map(|p| p.root.clone());
-    host.web.url_for(root.as_deref(), file).await
+    host.web.url_for(root.as_deref(), &path).await
 }
 
 #[cfg(test)]
@@ -105,3 +108,5 @@ mod tests {
         assert!(!serves_page("not a url").await);
     }
 }
+
+ide_command::domain!(web: web_url);

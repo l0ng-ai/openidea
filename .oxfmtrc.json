@@ -9,6 +9,7 @@
     "dist",
     "target",
     "src/bindings.ts",
+    "docs/snippets/plugin-catalog.jsx",
     "evals/*/golden",
     "src/editor/core/cm/angular/parser*.ts",
     "src/editor/core/cm/jsp/parser*.ts",

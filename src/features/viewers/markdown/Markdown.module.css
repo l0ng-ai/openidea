@@ -5,17 +5,21 @@
   display: flex;
   position: relative;
 }
+.group {
+  flex: 1;
+}
 .editor {
-  flex: 1 1 50%;
+  flex: 1;
+  min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
-.mode-preview .editor {
-  display: none;
+.mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
+  display: none !important;
 }
-.mode-split .editor {
-  border-right: 1px solid var(--border-editor-tabs, var(--border));
+.mode-preview > :global([data-group]) > :global([data-panel]:last-child) {
+  flex-grow: 1 !important;
 }
 
 .layoutActions {
@@ -28,7 +32,8 @@
 }
 
 .preview {
-  flex: 1 1 50%;
+  flex: 1;
+  min-height: 0;
   min-width: 0;
   position: relative;
   overflow: auto;
@@ -117,12 +122,21 @@
   opacity: 0.8;
 }
 .preview :global(table) {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
 }
 .preview :global(th),
 .preview :global(td) {
   padding: 4px 10px;
   border: 1px solid var(--border-strong);
+  overflow-wrap: normal;
+}
+.preview :global(td code),
+.preview :global(td a) {
+  overflow-wrap: anywhere;
 }
 .preview :global(th) {
   background: var(--bg-editor-inline, var(--bg-elev));

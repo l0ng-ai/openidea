@@ -23,6 +23,7 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    omit_server_info: std::sync::atomic::AtomicBool,
     binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
@@ -149,7 +150,11 @@ impl Handler for MockHandler {
                 if let Some(error) = s.errors.lock().get("initialize").cloned() {
                     return Err(error);
                 }
-                Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
+                let mut result = json!({ "capabilities": s.caps.lock().clone() });
+                if !s.omit_server_info.load(Ordering::SeqCst) {
+                    result["serverInfo"] = json!({ "name": "mock" });
+                }
+                Ok(result)
             }
             "shutdown" => Ok(Value::Null),
             _ => {
@@ -477,6 +482,23 @@ async fn dart_file_watching_requires_an_explicit_registration() {
 }
 
 // ------------------------------------------------------------------ tests
+
+#[tokio::test(flavor = "multi_thread")]
+async fn servers_start_once_the_project_environment_has_loaded() {
+    let h = harness(&[("mock", incremental_caps())]);
+    // The project's direnv environment (a Nix devshell) is still being read.
+    ide_core::project_env::begin_loading(&h.root);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Starting).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let server = h.launcher.state("mock");
+    assert_eq!(server.launches.load(Ordering::SeqCst), 0);
+    ide_core::project_env::set(&h.root, vec![("OPENIDEA_TEST_DEVSHELL".into(), Some("1".into()))]);
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert_eq!(server.launches.load(Ordering::SeqCst), 1);
+    ide_core::project_env::remove(&h.root);
+    h.mgr.shutdown_all().await;
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn linked_projects_initialize_separate_language_server_roots() {
@@ -1608,6 +1630,36 @@ async fn a_cancelled_pull_is_retried_and_a_refresh_pulls_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn show_message_request_unknown_action_replies_null() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("dismiss.mk", "abc\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let request = peer.request(
+        "window/showMessageRequest",
+        json!({ "type": 2, "message": "Continue?", "actions": [{ "title": "Yes" }] }),
+        None,
+    );
+    tokio::pin!(request);
+    let id = loop {
+        if let Some(id) = h.events.lock().iter().find_map(|event| match event {
+            IdeEvent::LspMessageRequest { id, message, .. } if message == "Continue?" => Some(*id),
+            _ => None,
+        }) {
+            break id;
+        }
+        tokio::select! {
+            _ = &mut request => panic!("showMessageRequest finished before the UI event"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    // An action that was not offered must not be sent back as a choice.
+    assert!(ide_lsp::answer_message_request(id, Some("No".into())));
+    let reply: Value = request.await.unwrap();
+    assert_eq!(reply, Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn apply_edit_hook_and_server_requests() {
     let h = harness(&[("mock", incremental_caps())]);
     let (_doc, path) = h.open("a.mk", "abc\n");
@@ -1657,15 +1709,34 @@ async fn apply_edit_hook_and_server_requests() {
     assert_eq!(folders[0]["uri"], json!(uri_of(&h.root)));
     let v: Value = peer.request("window/workDoneProgress/create", json!({ "token": "t" }), None).await.unwrap();
     assert_eq!(v, Value::Null);
-    let v: Value = peer
-        .request(
-            "window/showMessageRequest",
-            json!({ "type": 1, "message": "boom", "actions": [{ "title": "OK" }] }),
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(v, Value::Null);
+    let request = peer.request(
+        "window/showMessageRequest",
+        json!({ "type": 1, "message": "Rename Anyway?", "actions": [{ "title": "Rename Anyway" }, { "title": "Cancel" }] }),
+        None,
+    );
+    tokio::pin!(request);
+    let id = loop {
+        if let Some(id) = h.events.lock().iter().find_map(|event| match event {
+            IdeEvent::LspMessageRequest { id, message, actions, .. } if message == "Rename Anyway?" => {
+                assert_eq!(actions, &["Rename Anyway".to_owned(), "Cancel".to_owned()]);
+                Some(*id)
+            }
+            _ => None,
+        }) {
+            break id;
+        }
+        tokio::select! {
+            _ = &mut request => panic!("showMessageRequest finished before the UI event"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    assert!(ide_lsp::answer_message_request(id, Some("Rename Anyway".into())));
+    let v: Value = request.await.unwrap();
+    assert_eq!(v, json!({ "title": "Rename Anyway" }));
+    eventually(|| {
+        h.events.lock().iter().any(|event| matches!(event, IdeEvent::LspMessageRequestDone { id: done } if *done == id))
+    })
+    .await;
     let v: Value = peer
         .request(
             "client/registerCapability",
@@ -1691,8 +1762,8 @@ async fn apply_edit_hook_and_server_requests() {
     .await;
     let notifies = h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { .. })).count();
     assert_eq!(
-        notifies, 2,
-        "showMessageRequest error + showMessage warning; info and rust-analyzer's developer notices are not surfaced"
+        notifies, 1,
+        "showMessageRequest is now a question with actions, not a notification; info and developer notices are not surfaced"
     );
 
     // Dynamically registered capability is now usable.
@@ -2895,6 +2966,57 @@ async fn open_java_files_are_checked_again_after_a_project_update() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"]["commands"].as_array_mut().unwrap().push(json!("openidea.java.generatedSources"));
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (_, _) = h.open("App.java", "package com.example;\nclass App {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let write = |rel: &str, text: &str| {
+        let path = h.root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("pom.xml", "<project><artifactId>app</artifactId></project>");
+    write(
+        "target/generated-sources/protobuf/java/com/example/hello/Hello.java",
+        "package com.example.hello;\npublic class Hello {}",
+    );
+    write(
+        "target/generated-sources/protobuf/grpc-java/com/example/hello/HelloGrpc.java",
+        "package com.example.hello;\npublic class HelloGrpc {}",
+    );
+    write(
+        "target/generated-sources/annotations/com/example/hello/HelloMapperImpl.java",
+        "package com.example.hello;\nclass HelloMapperImpl {}",
+    );
+    let state = h.launcher.state("jdtls");
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    eventually(|| {
+        let requests = state.requested("workspace/executeCommand");
+        let generated = requests.iter().position(|p| p["command"] == "openidea.java.generatedSources");
+        let refresh = requests.iter().position(|p| p["command"] == "java.project.refreshDiagnostics");
+        matches!((generated, refresh), (Some(generated), Some(refresh)) if generated < refresh)
+    })
+    .await;
+    let requests = state.requested("workspace/executeCommand");
+    let generated = requests.iter().find(|p| p["command"] == "openidea.java.generatedSources").unwrap();
+    let paths: Vec<_> = generated["arguments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| (PathBuf::from(arg["path"].as_str().unwrap()), arg["test"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            (h.root.join("target/generated-sources/protobuf/grpc-java"), false),
+            (h.root.join("target/generated-sources/protobuf/java"), false),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
     use std::io::Write;
     let jar = |path: &Path, entries: &[(&str, &str)]| {
@@ -3511,6 +3633,52 @@ async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     h.wait_status("alt", ServerStatus::Ready).await;
 }
 
+/// #4061: an Angular template opened under another spelling of the project's
+/// (canonical) path, other letter case on macOS or a symlinked folder, still
+/// gets the Angular server, which answers hover and Go to Declaration there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
+    let h = harness_configured("mock", "html", &[("framework", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["angular.json".into()];
+        cfg.require_root_marker = true;
+    });
+    std::fs::write(h.root.join("angular.json"), "{}").unwrap();
+    let app = h.root.join("apps/myapp/src/app");
+    std::fs::create_dir_all(&app).unwrap();
+    let (template, component) = (app.join("example.component.html"), app.join("example.component.ts"));
+    std::fs::write(&template, "<button (click)=\"onConfirm()\">Confirm</button>\n").unwrap();
+    std::fs::write(&component, "export class ExampleComponent {\n  onConfirm() {}\n}\n").unwrap();
+    let framework = h.launcher.state("framework");
+    framework.respond("textDocument/hover", json!({ "contents": "(method) ExampleComponent.onConfirm(): void" }));
+    let target = Range::new(Pos::new(1, 2), Pos::new(1, 11));
+    let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
+    framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
+
+    #[cfg(unix)]
+    let links = tempfile::tempdir().unwrap();
+    let mut spellings = Vec::new();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&h.root, links.path().join("linked")).unwrap();
+        spellings.push(links.path().join("linked").join(template.strip_prefix(&h.root).unwrap()));
+    }
+    // Only on a case-insensitive disk (macOS, Windows).
+    let upper = PathBuf::from(template.to_string_lossy().to_uppercase());
+    if upper.exists() {
+        spellings.push(upper);
+    }
+    for path in spellings {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &path, &h.lang, 1, "<button (click)=\"onConfirm()\">Confirm</button>\n");
+        eventually(|| framework.docs.lock().contains_key(&uri_of(&path))).await;
+        let hover = h.mgr.hover(doc, Pos::new(0, 20), Default::default()).await.unwrap();
+        assert!(hover.is_some_and(|h| h.contents.value.contains("onConfirm")), "{}", path.display());
+        let defs = h.mgr.goto(doc, Pos::new(0, 20), GotoKind::Definition).await.unwrap();
+        assert_eq!((&*defs[0].path, defs[0].range), (component.as_path(), target), "{}", path.display());
+    }
+    assert_eq!(h.statuses("framework").iter().filter(|s| **s == ServerStatus::Starting).count(), 1);
+}
+
 /// A server that `replaces` another (a PHP server with its own Laravel support and
 /// `laravel-lsp`) keeps it away while it serves, and only then.
 #[tokio::test(flavor = "multi_thread")]
@@ -3834,16 +4002,31 @@ async fn navigation_rename_format_and_decorations() {
     let item = json!({ "name": "foo", "kind": 12, "uri": uri, "range": r(0,0,0,11), "selectionRange": r(0,3,0,6), "data": "id" });
     s.respond("textDocument/prepareCallHierarchy", json!([item]));
     s.respond("callHierarchy/incomingCalls", json!([{ "from": { "name": "main", "kind": 12, "uri": uri, "range": r(1,0,1,6), "selectionRange": r(1,0,1,3) }, "fromRanges": [r(1,0,1,3)] }]));
-    let calls = h
-        .mgr
-        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default())
-        .await
-        .unwrap()
-        .items;
+    let hierarchy =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    let root = hierarchy.root.expect("the prepared item");
+    assert_eq!((root.name.as_str(), root.selection_range), ("foo", rng(0, 3, 0, 6)));
+    assert_eq!(root.path.to_path_buf(), path);
+    let calls = hierarchy.items;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "main");
     assert_eq!(calls[0].from_ranges, vec![rng(1, 0, 1, 3)]);
     assert_eq!(s.requested("callHierarchy/incomingCalls")[0]["item"]["data"], "id");
+
+    // Outgoing calls of each prepared item are in that item's file.
+    let other = path.with_file_name("b.mk");
+    let second =
+        json!({ "name": "foo", "kind": 12, "uri": uri_of(&other), "range": r(4,0,4,11), "selectionRange": r(4,3,4,6) });
+    s.respond("textDocument/prepareCallHierarchy", json!([item, second]));
+    s.respond("callHierarchy/outgoingCalls", json!([{ "to": { "name": "bar", "kind": 12, "uri": uri, "range": r(2,0,2,6), "selectionRange": r(2,0,2,3) }, "fromRanges": [r(0,8,0,11)] }]));
+    let callees = h
+        .mgr
+        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Outgoing, Default::default())
+        .await
+        .unwrap()
+        .items;
+    let from: Vec<_> = callees.iter().map(|c| c.from_path.clone().map(|p| p.into_path_buf())).collect();
+    assert_eq!(from, [Some(path.clone()), Some(other)]);
 
     // No documentSymbolProvider → None so callers fall back to tree-sitter.
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);
@@ -7640,6 +7823,39 @@ async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
     h.mgr.restart(server).await.unwrap();
     eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
         .await;
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_go_file_reuses_module_and_reopens_after_restart() {
+    let h = harness_configured("go", "go", &[("gopls", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["go.work".into(), "go.mod".into()];
+    });
+    h.launcher.state("gopls").omit_server_info.store(true, Ordering::SeqCst);
+    let module = h.root.join("service");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.test/service\n").unwrap();
+    h.open("service/main.go", "package service\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let cache = tempfile::tempdir().unwrap();
+    let external = cache.path().join("dependency.go");
+    std::fs::write(&external, "package dependency\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &external, &h.lang, 1, "package dependency\n");
+    let state = h.launcher.state("gopls");
+    let opened_external = || {
+        state.notified("textDocument/didOpen").iter().filter(|p| p["textDocument"]["uri"] == uri_of(&external)).count()
+    };
+    eventually(|| opened_external() == 1).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| opened_external() == 2).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    assert_eq!(h.mgr.servers().len(), 1);
+    let inits = state.requested("initialize");
+    assert_eq!(inits.len(), 2);
+    assert!(inits.iter().all(|p| p["rootUri"] == uri_of(&module)));
     h.mgr.shutdown_all().await;
 }
 

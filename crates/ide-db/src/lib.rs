@@ -812,16 +812,16 @@ impl DbManager {
         let password = self.password(&source).await;
         // Holding the tunnel keeps it open while the tool runs, even if the tree disconnects.
         let (target, _tunnel) = self.endpoint(&source, None, true).await?;
-        let prepared = tools::prepare(job, &target, password.as_deref());
-        tools::run(executable, &prepared.args, &prepared.env, cancel, on_output).await
+        let prepared = tools::prepare(job, executable, &target, password.as_deref())?;
+        tools::run(executable, &prepared.args, &prepared.env, prepared.input.as_deref(), cancel, on_output).await
     }
 
     /// The command [`DbManager::run_tool`] would run, for the dialogs' preview: the data source's
     /// own host and port (not a tunnel's local end), and no password.
     pub fn tool_preview(&self, id: &str, executable: &std::path::Path, job: &tools::DbToolJob) -> IdeResult<String> {
         let source = self.source(id)?;
-        let prepared = tools::prepare(job, &source, None);
-        Ok(tools::command_line(executable, &prepared.args))
+        let prepared = tools::prepare(job, executable, &source, None)?;
+        Ok(tools::command_line(executable, &prepared.args, job.input()))
     }
 
     /// The PostgreSQL server's `server_version_num` (`150013` for 15.13).

@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.10.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.11.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -368,6 +368,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                               |
 | `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                            |
 | `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                               |
+| `clipboard.read`    | medium | API 1.11: `host::read_clipboard`, the clipboard's text and image, only in commands and view actions the user ran                                                        |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -425,9 +426,21 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.11
+
+API 1.11.0 is in development on `main`. Use `engines.openidea = "^1.11"` and the
+matching SDK. Released 1.10 plugins keep working. New in 1.11:
+
+- **Reading the clipboard.** `host::read_clipboard()` (`ui.read-clipboard`)
+  returns the clipboard's text and image (PNG bytes), behind the new
+  medium-risk `clipboard.read` capability, separate from the write-only
+  `clipboard`. It works only in a command the user ran or a view action from a
+  window; event handlers and other unattended calls get `denied`. See _Reading
+  the clipboard_.
+
 ### API 1.10
 
-API 1.10.0 is in development on `main`. Use `engines.openidea = "^1.10"` and the
+API 1.10.0 shipped with OpenIDEA 0.1.47. Use `engines.openidea = "^1.10"` and the
 matching SDK. Released 1.9 plugins keep working. New in 1.10:
 
 - `host::open_file_diff(&FileDiff { .. }, file_name)` (`views.open-file-diff`) is
@@ -720,6 +733,7 @@ then run `openidea-plugin check`.
 | `host::notify(level, title, body)`                                                                             | `ui.show-notification`                       | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                                                                                                                                                           |
 | `Project::notify(level, title, body, actions)`                                                                 | `ui.notify-project`                          | API 1.5: balloon only in a window of that project (the most recently focused one), with or without an invoking window; see _Notifications with commands_.                                                                                                                                                                                                 |
 | `host::copy_to_clipboard(text)`                                                                                | `ui.copy-to-clipboard`                       | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                                                                                                                                                                 |
+| `host::read_clipboard()` → `ClipboardContent`                                                                  | `ui.read-clipboard`                          | API 1.11: the clipboard's `text` and `image` (PNG bytes), `None` for what it doesn't hold. Needs `clipboard.read`; only in a command the user ran or a view action, else `denied`. See _Reading the clipboard_.                                                                                                                                           |
 | `host::open_url(url)`                                                                                          | `ui.open-url`                                | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                                                                                                                                                       |
 | `host::pick(title, items)`, `pick_many`                                                                        | `ui.pick`, `ui.pick-many`                    | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                                                                                                                                                       |
 | `host::input(prompt, value)`                                                                                   | `ui.input`                                   | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                                                                                                                                                                 |
@@ -928,6 +942,45 @@ for (i, node) in graph.iter().enumerate() {
 
 In tests, `MockHost::set_build_dependencies(nodes)` sets the graph that
 `build_dependencies(None)` returns; a module narrows it as the IDE does.
+
+### Reading the clipboard (API 1.11)
+
+A command can work on what the user just copied: turn a `curl` command from the
+browser's DevTools into request code, or upload a screenshot and insert its
+link. Declare `clipboard.read` (medium risk; `clipboard` only writes):
+
+```toml
+engines.openidea = "^1.11"
+
+[capabilities]
+required = ["clipboard.read"]
+```
+
+```rust
+let clip = host::read_clipboard()?;
+if let Some(png) = clip.image {
+    // upload `png`, then insert the link
+} else if let Some(text) = clip.text {
+    // convert `text`
+}
+```
+
+- `text` is the plain text; `image` an image (a screenshot) as PNG bytes. Both
+  `None` when the clipboard holds neither (`ClipboardContent::is_empty`). Text
+  or an image over 16 MiB fails the call.
+- Only calls the user started read it: a command (from the palette, a menu, a
+  shortcut, a notification button, a code lens) and a view's actions (buttons,
+  tree and table clicks, fields). Event handlers (content tab buttons
+  included, which arrive as events), scheduled and background work, provider
+  calls, web view messages and a command another plugin ran through
+  `command-runner` get `denied`, so a plugin can't read the clipboard behind
+  the user's back.
+- The clipboard is that of the user's computer. In a remote project the plugin
+  runs on the server, so the IDE asks the user first; refusing is `denied`.
+- Web views keep reading `navigator.clipboard` with `clipboard`.
+
+In tests, `MockHost::set_clipboard(text, image)` sets what is read, and
+`MockHost::set_unattended(true)` makes the calls fail as an event handler's do.
 
 ### Database sources (API 1.4)
 
@@ -2217,8 +2270,10 @@ args = "optional-arguments"                # optional
   `[capabilities]` (a manifest that lists it is refused). On grant the IDE
   records the jar's content hash and checks it again before every launch; a
   changed jar is left out, with a line in the console, until the user approves
-  `java.agent` again in Settings › Plugins, which shows the agent's file name
-  and arguments next to the permission. Refusing or revoking it keeps the rest
+  `java.agent` again in Settings › Plugins. Settings shows the agent's file name
+  and arguments next to the permission, and when the jar no longer matches the
+  approved hash it shows the reason and an **Approve new jar** action. Refusing
+  or revoking it keeps the rest
   of the plugin working, and the next launch has no agent.
 - The IDE adds one `-javaagent:<absolute path>[=<args>]` argument to the Java
   command line of **Application**, **Spring Boot** and **JAR Application**

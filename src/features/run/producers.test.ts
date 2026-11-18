@@ -612,6 +612,26 @@ describe("single-file producers (scratches)", () => {
     expect(p.config!.args).toEqual(["-cp", "${classpath}", "com.example.ShopApplication"]);
   });
 
+  it("Java: a main in a Maven project linked from outside the project runs on its classpath (#4066)", () => {
+    const svc = "/work/billing";
+    const boot =
+      "package com.example;\n@SpringBootApplication\npublic class ShopApplication {\n" +
+      "  public static void main(String[] args) {}\n}";
+    const maven = [cfg({ id: `maven:test:${svc}`, kind: "maven", args: ["test"], cwd: svc, isTest: true })];
+    const p = produceContext(
+      {
+        path: `${svc}/src/main/java/com/example/ShopApplication.java`,
+        root: ROOT,
+        configs: maven,
+        content: boot,
+        line: 3,
+        contentRoots: [svc],
+      },
+      ALL,
+    )!;
+    expect(p.config).toMatchObject({ kind: "spring-boot", module: svc, cwd: null });
+  });
+
   it("Java: a class whose superclass declares main runs as a Spring Boot application", async () => {
     const path = `${ROOT}/src/main/java/demo/AiChatApplication.java`;
     const content = "package demo;\n\n@SpringBootApplication\npublic class AiChatApplication extends AtomStarter {}\n";
@@ -656,6 +676,12 @@ describe("single-file producers (scratches)", () => {
         kind: "gradle",
         dir: "services/api",
         file: "services/api/app/src/main/java/org/dromara/DromaraApplication.java",
+      },
+      // #4066: linked through Add Maven Projects, deeper than the folder search reaches.
+      {
+        kind: "maven",
+        dir: "site/service/03_src/demo-monitor",
+        file: "site/service/03_src/demo-monitor/src/main/java/org/dromara/DromaraApplication.java",
       },
     ] as const;
     for (const { kind, dir, file } of cases) {

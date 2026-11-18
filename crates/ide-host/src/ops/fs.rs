@@ -1,10 +1,12 @@
 use super::Channel;
 use crate::Host;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_vfs::FileEntry;
 use std::path::{Path, PathBuf};
 
-pub async fn entry_kind(host: &Host, path: PathBuf) -> IdeResult<ide_vfs::EntryKind> {
+#[command(trust = always)]
+pub async fn fs_entry_kind(host: &Host, path: PathBuf) -> IdeResult<ide_vfs::EntryKind> {
     host.blocking(move || {
         let meta = std::fs::metadata(path)?;
         Ok(if meta.is_dir() { ide_vfs::EntryKind::Dir } else { ide_vfs::EntryKind::File })
@@ -12,7 +14,8 @@ pub async fn entry_kind(host: &Host, path: PathBuf) -> IdeResult<ide_vfs::EntryK
     .await
 }
 
-pub async fn compare_directories(
+#[command(trust = always)]
+pub async fn fs_compare_directories(
     host: &Host,
     window: &str,
     left: PathBuf,
@@ -38,7 +41,8 @@ pub async fn compare_directories(
     result
 }
 
-pub async fn copy_merge(
+#[command(trust = always)]
+pub async fn fs_copy_merge(
     host: &Host,
     window: &str,
     source_root: PathBuf,
@@ -73,8 +77,9 @@ pub async fn copy_merge(
 /// Files of a deleted folder snapshotted in Local History.
 const DELETE_SNAPSHOT_LIMIT: usize = 2000;
 
-/// Runs on the blocking pool: on a network share (`\\wsl.localhost`) every stat is slow.
-pub async fn read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
+#[command(trust = always)]
+pub async fn fs_read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec<FileEntry>> {
+    // Runs on the blocking pool: on a network share (`\\wsl.localhost`) every stat is slow.
     let project = host.project(window);
     host.blocking(move || {
         let excludes = project
@@ -99,7 +104,8 @@ pub async fn read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<Vec
 
 /// Creates an empty file; inside a project, honours the EditorConfig
 /// `charset` (writes the BOM for `utf-8-bom` / UTF-16).
-pub fn create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
+#[command(trust = always)]
+pub fn fs_create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     match host.project(window) {
         Ok(p) => {
             let defaults = p.documents.file_defaults();
@@ -124,7 +130,8 @@ pub fn create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     }
 }
 
-pub async fn create_file_bytes(host: &Host, window: &str, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
+#[command(trust = always)]
+pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
         ide_vfs::create_file_bytes(&path, &data)?;
@@ -138,17 +145,25 @@ pub async fn create_file_bytes(host: &Host, window: &str, path: PathBuf, data: V
     .await
 }
 
+#[command(trust = always)]
+pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
+    ide_vfs::create_dir(&path)
+}
+
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's
 /// state). Returns whether the file is read-only now.
-pub fn set_writable(host: &Host, window: &str, path: PathBuf, writable: bool) -> IdeResult<bool> {
+#[command(trust = always)]
+pub fn fs_set_writable(host: &Host, window: &str, path: PathBuf, writable: bool) -> IdeResult<bool> {
     match host.project(window) {
         Ok(p) => p.documents.set_writable(&path, writable),
         Err(_) => ide_vfs::set_writable(&path, writable).map(|()| !writable),
     }
 }
 
-/// Moves to the trash; Local History keeps the contents so deleted files can be restored.
-pub async fn delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
+/// Moving to the trash can take a while (large trees): kept off the main thread.
+#[command(trust = always)]
+pub async fn fs_delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
+    // Local History keeps the contents so deleted files can be restored.
     let project = host.project(window).ok();
     let history = project.as_ref().map(|p| p.history.clone());
     host.blocking(move || {
@@ -168,7 +183,8 @@ pub async fn delete(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     .await
 }
 
-pub async fn copy(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> IdeResult<()> {
+#[command(trust = always)]
+pub async fn fs_copy(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
         ide_workspace::file_ops::copy(&from, &to)?;
@@ -183,7 +199,8 @@ pub async fn copy(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> IdeR
     .await
 }
 
-pub async fn rename(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> IdeResult<()> {
+#[command(trust = always)]
+pub async fn fs_rename(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
         ide_workspace::file_ops::rename(&from, &to)?;
@@ -199,8 +216,10 @@ pub async fn rename(host: &Host, window: &str, from: PathBuf, to: PathBuf) -> Id
     .await
 }
 
-/// Reads a text file without opening it as a document; prefers the unsaved buffer.
-pub async fn read_text(host: &Host, window: &str, path: PathBuf) -> IdeResult<String> {
+/// Reads a text file without opening it as a document (previews, quick
+/// definition). Prefers the unsaved buffer when the file is open.
+#[command(trust = always)]
+pub async fn fs_read_text(host: &Host, window: &str, path: PathBuf) -> IdeResult<String> {
     let project = host.project(window).ok();
     host.blocking(move || match project {
         Some(p) => p.text_of(&path),
@@ -251,3 +270,19 @@ mod tests {
         assert!(!inside_any_root(Path::new("/work/spec.pdf"), &[]));
     }
 }
+
+ide_command::domain!(
+    fs:
+    fs_compare_directories,
+    fs_copy,
+    fs_copy_merge,
+    fs_create_dir,
+    fs_create_file,
+    fs_create_file_bytes,
+    fs_delete,
+    fs_entry_kind,
+    fs_read_dir,
+    fs_read_text,
+    fs_rename,
+    fs_set_writable,
+);

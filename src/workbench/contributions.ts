@@ -1212,6 +1212,28 @@ export function registerSettingsPage(page: SettingsPageContribution): () => void
     });
 }
 
+/** Registers a batch of settings pages in one store update; returns a batched disposer. */
+export function registerSettingsPages(list: SettingsPageContribution[]): () => void {
+  if (!list.length) return () => {};
+  const owned = new Map<string, SettingsPageContribution>();
+  for (const page of list) owned.set(page.id, page);
+  useSettingsPages.setState((s) => {
+    const pages = new Map(s.pages);
+    for (const [id, page] of owned) pages.set(id, page);
+    return { pages };
+  });
+  return () =>
+    useSettingsPages.setState((s) => {
+      let next: Map<string, SettingsPageContribution> | null = null;
+      for (const [id, page] of owned) {
+        if (s.pages.get(id) !== page) continue;
+        next ??= new Map(s.pages);
+        next.delete(id);
+      }
+      return next ? { pages: next } : s;
+    });
+}
+
 /** A searchable settings entry: a page, or an option label on it (Search Everywhere's "Settings: …" items). */
 export interface SettingsSearchEntry {
   pageId: string;

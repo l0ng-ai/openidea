@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { Chunk, MergeView } from "@codemirror/merge";
+import { Chunk, MergeView, unifiedMergeView } from "@codemirror/merge";
 import { ChangeSet, Text } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { applyChunk, arrowControls } from "../diffControls";
 import {
   DEFAULT_DIFF_OPTIONS,
@@ -363,6 +363,35 @@ describe("diff options", () => {
     parent.remove();
   });
 
+  it("paints whole inserted and deleted blocks of the unified viewer as blocks, without word marks", () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      doc: "keep\nvalue = new\nmid\n  first();\n  second();\nend\n",
+      parent,
+      extensions: [
+        viewerBase({ readOnly: true }),
+        diffWords,
+        unifiedMergeView({
+          original: "dropped\nkeep\nvalue = old\nmid\nend\n  gone();\n  away();\n",
+          highlightChanges: true,
+          mergeControls: false,
+          diffConfig: ideaDiffConfig("none", "words"),
+        }),
+      ],
+    });
+    const texts = (selector: string) => [...view.dom.querySelectorAll(selector)].map((e) => e.textContent);
+    // A whole block (IDEA's fragment without inner ones) has no words to compare: a full-width line tint only.
+    expect(texts(".cm-diffLine-inserted:not(.cm-diffLine-fine)")).toEqual(["  first();", "  second();"]);
+    expect(texts(".cm-changedText")).toEqual(["new"]);
+    expect(texts(".cm-deletedChunk .cm-deletedLine")).toEqual(["dropped", "value = old", "  gone();", "  away();"]);
+    expect(texts(".cm-deletedText")).toEqual(["old"]);
+    // The old lines of the compared chunk take its lighter colour, whole deleted blocks the full one.
+    expect(texts(".cm-diffWords .cm-deletedChunk:has(+ .cm-diffLine-fine)")).toEqual(["value = old"]);
+    view.destroy();
+    parent.remove();
+  });
+
   it("gives a read-only side a tab stop and leaves an editable side alone", () => {
     const parent = document.createElement("div");
     document.body.appendChild(parent);
@@ -467,6 +496,8 @@ describe("oversized line comparison", () => {
       [updatedA, nextA, b],
     ] as const) {
       expect(chunks.length).toBeGreaterThan(0);
+      // No words compared: the unified viewer paints whole blocks, as for IDEA's own chunks.
+      expect(chunks.every((chunk) => chunk.changes.length === 0)).toBe(true);
       let restored = target;
       for (const chunk of [...chunks].reverse()) {
         const edit = transferChunk(chunk, "a", source, restored);

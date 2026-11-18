@@ -11,6 +11,7 @@ path = "src/bin/server.rs"
 
 [dependencies]
 encoding_rs.workspace = true
+ide-command.workspace = true
 ide-core.workspace = true
 ide-mcp.workspace = true
 futures.workspace = true

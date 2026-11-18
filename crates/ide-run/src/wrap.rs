@@ -45,6 +45,17 @@ pub fn search_path(config: &RunConfig) -> OsString {
         .unwrap_or_else(ide_core::tool_path::search_path)
 }
 
+/// [`search_path`] for a program started in `dir`: the `PATH` of the project holding it
+/// (its direnv `.envrc`) comes first.
+pub fn search_path_in(config: &RunConfig, dir: &Path) -> OsString {
+    config
+        .env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| OsString::from(v))
+        .unwrap_or_else(|| ide_core::tool_path::search_path_in(dir))
+}
+
 /// `node_modules/.bin/<name>` in `dir` or an ancestor up to (and including) `root`.
 pub fn node_bin(name: &str, dir: &Path, root: &Path) -> Option<PathBuf> {
     let names = crate::which::executable_names(name, cfg!(windows), std::env::var("PATHEXT").ok().as_deref());
@@ -87,16 +98,15 @@ fn node_package_json(package: &str, dir: &Path, root: &Path) -> Option<PathBuf> 
 
 /// A tool from the project (`node_modules/.bin`) or the search path.
 pub fn find_tool(name: &str, config: &RunConfig, dir: &Path, root: &Path) -> Option<PathBuf> {
-    node_bin(name, dir, root).or_else(|| crate::which::find_executable(name, &search_path(config)))
+    node_bin(name, dir, root).or_else(|| crate::which::find_executable(name, &search_path_in(config, dir)))
 }
 
 /// Whether `argv` runs and exits successfully (version probes); output is discarded.
 pub fn probe(argv: &[String], dir: &Path, config: &RunConfig) -> bool {
     let Some((program, args)) = argv.split_first() else { return false };
-    let program = resolve(program, config);
-    ide_core::process::prepare(&mut Command::new(program))
+    let program = resolve(program, config, dir);
+    ide_core::process::prepare(Command::new(program).current_dir(dir))
         .args(args)
-        .current_dir(dir)
         .envs(&config.env)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -106,10 +116,10 @@ pub fn probe(argv: &[String], dir: &Path, config: &RunConfig) -> bool {
 }
 
 /// `program` as spawnable: bare names through the configuration's search path.
-fn resolve(program: &str, config: &RunConfig) -> PathBuf {
+fn resolve(program: &str, config: &RunConfig, dir: &Path) -> PathBuf {
     let p = Path::new(program);
     if p.components().count() == 1
-        && let Some(found) = crate::which::find_executable(program, &search_path(config))
+        && let Some(found) = crate::which::find_executable(program, &search_path_in(config, dir))
     {
         return found;
     }

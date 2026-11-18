@@ -6,7 +6,7 @@ import {
   commands,
   type DbDumpContent,
   type DbDumpFormat,
-  type DbDumpKind,
+  type DbDumpInfo,
   type DbDumpStatements,
   type DbPsqlOptions,
   type DbTool,
@@ -39,15 +39,30 @@ import {
   outputPath,
   pickInstall,
   restoreOptions,
+  nameList,
+  patternName,
+  restoreTargetProblem,
   restoreToolFor,
+  toggleName,
+  unquoteName,
   versionFit,
   withExtension,
   type DumpForm,
   type DumpMismatch,
   type RestoreForm,
+  type TargetProblem,
 } from "./dumpTools";
 import { splitTarget } from "./model";
-import { closeDialog, refresh, sourceById } from "./store";
+import {
+  closeDialog,
+  loadDatabases,
+  loadSchemas,
+  loadTables,
+  refresh,
+  sourceById,
+  tablesKey,
+  useDatabase,
+} from "./store";
 import { TOOL_PROGRAMS, startToolRun, stopToolRun, useToolRuns } from "./toolRuns";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import styles from "./Database.module.css";
@@ -176,36 +191,184 @@ export function ExecutableField({
       <span />
       <span className={clsx(styles.formHint, (current?.error || hint?.warn) && styles.dumpError)}>
         {installs && !value.trim()
-          ? tx`${program} was not found. Install the PostgreSQL client tools or choose the executable.`
+          ? tool === "mysqldump" || tool === "mysql"
+            ? tx`${program} was not found. Install the MySQL or MariaDB client tools or choose the executable.`
+            : tx`${program} was not found. Install the PostgreSQL client tools or choose the executable.`
           : (hint?.text ?? current?.error ?? "\u00a0")}
       </span>
     </>
   );
 }
 
-/** What made the dump at `path`, read from its header (`null` while unknown). */
-export function useDumpKind(path: string): DbDumpKind | null {
-  const [known, setKnown] = useState<{ path: string; kind: DbDumpKind } | null>(null);
+/** What made the dump at `path` and whether it creates its database, from its header (`null` while unknown). */
+export function useDumpInfo(path: string): DbDumpInfo | null {
+  const [known, setKnown] = useState<{ path: string; info: DbDumpInfo } | null>(null);
   useEffect(() => {
     const p = path.trim();
     if (!p) return;
     let live = true;
     const timer = setTimeout(() => {
-      call(commands.dbDumpKind(p))
-        .then((kind) => live && setKnown({ path: p, kind }))
-        .catch(() => live && setKnown({ path: p, kind: "unknown" }));
+      call(commands.dbDumpInfo(p))
+        .then((info) => live && setKnown({ path: p, info }))
+        .catch(() => live && setKnown({ path: p, info: { kind: "unknown", createsDatabase: false } }));
     }, 250);
     return () => {
       live = false;
       clearTimeout(timer);
     };
   }, [path]);
-  return known?.path === path.trim() ? known.kind : null;
+  return known?.path === path.trim() ? known.info : null;
+}
+
+/** The databases of the data source of `target` (MySQL: its schemas); `null` while unknown. */
+export function useDatabaseNames(target: string): { names: string[]; current: string } | null {
+  const { id } = splitTarget(target);
+  const mysql = sourceById(id)?.driver === "mysql";
+  const databases = useDatabase((s) => s.databases[id]);
+  const schemas = useDatabase((s) => s.schemas[id]);
+  const loaded = mysql ? schemas : databases;
+  useEffect(() => {
+    if (!loaded) void (mysql ? loadSchemas(id) : loadDatabases(id));
+  }, [id, mysql, loaded]);
+  if (mysql) return schemas?.status === "ok" ? { names: schemas.value, current: "" } : null;
+  return databases?.status === "ok" ? databases.value : null;
+}
+
+/** The schemas on connection target `target` (`null` while unknown). */
+function useSchemaNames(target: string): string[] | null {
+  const loaded = useDatabase((s) => s.schemas[target]);
+  useEffect(() => {
+    if (!loaded) void loadSchemas(target);
+  }, [target, loaded]);
+  return loaded?.status === "ok" ? loaded.value : null;
+}
+
+/** The tables of `schemas` on connection target `id` (`null` while one of them is unknown, or without schemas). */
+export function useTableNames(
+  id: string,
+  schemas: readonly string[] | null,
+): { schema: string; name: string }[] | null {
+  const all = useDatabase((s) => s.tables);
+  const keys = (schemas ?? []).join("\u0000");
+  useEffect(() => {
+    for (const schema of schemas ?? []) if (!all[tablesKey(id, schema)]) void loadTables(id, schema);
+    // `keys` stands for `schemas`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, keys, all]);
+  if (!schemas?.length) return null;
+  const out: { schema: string; name: string }[] = [];
+  for (const schema of schemas) {
+    const loaded = all[tablesKey(id, schema)];
+    if (loaded?.status !== "ok") return null;
+    for (const t of loaded.value) if (t.kind === "table") out.push({ schema, name: t.name });
+  }
+  return out;
+}
+
+/** A typed name list with a button that ticks names off a list of the server's. */
+export function NamesField({
+  label,
+  value,
+  onChange,
+  names,
+  placeholder,
+  disabled,
+  title,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  names: string[] | null;
+  placeholder: string;
+  disabled?: boolean;
+  title?: string;
+}) {
+  const chosen = nameList(value);
+  return (
+    <div className={styles.formRow}>
+      <Input
+        mono
+        className={styles.dumpPath}
+        aria-label={label}
+        placeholder={placeholder}
+        disabled={disabled}
+        title={title}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <IconButton
+        icon="list"
+        title="Choose from the server…"
+        disabled={disabled || !names?.length}
+        onClick={(e) =>
+          showContextMenu(
+            e,
+            (names ?? []).map((n) => ({
+              label: n,
+              verbatim: true,
+              checked: chosen.includes(n),
+              run: () => onChange(toggleName(value, n)),
+            })),
+          )
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * The database a restore runs in: the data source's databases to pick from, or a text field
+ * while they are unknown. `empty` labels a choice of no database.
+ */
+export function DatabaseField({
+  value,
+  onChange,
+  names,
+  empty,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  names: string[] | null;
+  empty?: string;
+}) {
+  if (!names) return <Input aria-label="Database" value={value} onChange={(e) => onChange(e.target.value)} />;
+  const options = [
+    ...(empty !== undefined ? [{ value: "", label: empty }] : []),
+    ...names.map((n) => ({ value: n, label: n, verbatim: true })),
+  ];
+  if (value && !names.includes(value)) options.push({ value, label: value, verbatim: true });
+  return <Select aria-label="Database" searchable value={value} options={options} onChange={onChange} />;
+}
+
+/** The hint under a restore's database: what is wrong with it, else what happens there. */
+export function TargetHint({
+  problem,
+  database,
+  note,
+}: {
+  problem: TargetProblem | null;
+  database: string;
+  note?: string;
+}) {
+  const text =
+    problem === "missing"
+      ? tx`Database ${database} does not exist.`
+      : problem === "noDatabase"
+        ? tx("This dump does not create its database. Choose the database to restore into.")
+        : note;
+  return (
+    <>
+      <span />
+      <span className={clsx(styles.formHint, problem && styles.dumpError)}>{text ?? "\u00a0"}</span>
+    </>
+  );
 }
 
 /** Why the chosen tool cannot restore the chosen dump, as a hint under the path. */
 export function mismatchText(m: DumpMismatch): string {
   switch (m) {
+    case "postgresIntoMysql":
+      return tx("This is a PostgreSQL dump: restore it into a PostgreSQL data source.");
     case "mysqlIntoPostgres":
       return tx("This is a MySQL dump: restore it into a MySQL data source.");
     case "archiveIntoPsql":
@@ -215,8 +378,8 @@ export function mismatchText(m: DumpMismatch): string {
   }
 }
 
-/** The command line the backend would run for `job` on target `id` (empty while unknown). */
-function useToolPreview(id: string, executable: string, job: DbToolJob): string {
+/** The command line the backend would run for `job` on target `id`; the previous one while the next loads. */
+export function useToolPreview(id: string, executable: string, job: DbToolJob): string {
   const key = JSON.stringify([id, executable, job]);
   const [shown, setShown] = useState<{ key: string; line: string } | null>(null);
   useEffect(() => {
@@ -233,10 +396,10 @@ function useToolPreview(id: string, executable: string, job: DbToolJob): string 
     // `key` stands for the three inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
-  return shown?.key === key ? shown.line : "";
+  return shown?.line ?? "";
 }
 
-function Preview({ text }: { text: string }) {
+export function Preview({ text }: { text: string }) {
   return (
     <div className={clsx(styles.dumpPreview, selectableText)} onKeyDown={(e) => void copySelectionOnKeyDown(e)}>
       <code aria-label="Command line">{text || "\u00a0"}</code>
@@ -309,6 +472,9 @@ export function RunOutput({ runKey }: { runKey: number }) {
             {l.text || " "}
           </div>
         ))}
+        {run.status === "done" && !run.lines.length && (
+          <div className={styles.formHint}>{tx`${PROGRAM[run.tool]} printed no output.`}</div>
+        )}
       </div>
     </div>
   );
@@ -371,6 +537,16 @@ export function DumpDialog({
       setOptions((o) => ({ ...o, [k]: v }));
   const plain = options.format === "plain";
   const runTarget = targetOf(target, database);
+  const databases = useDatabaseNames(target);
+  const shown = database || (databases?.current ?? "");
+  const schemaNames = useSchemaNames(runTarget);
+  const typedSchemas = nameList(options.schemas)
+    .map(unquoteName)
+    .filter((n) => schemaNames?.includes(n));
+  const tableNames =
+    useTableNames(runTarget, typedSchemas.length ? typedSchemas : schemaNames)?.map(
+      (t) => `${patternName(t.schema)}.${patternName(t.name)}`,
+    ) ?? null;
   const jobFor = (file: string): DbToolJob => ({ tool: "pgDump", file, options: dumpOptions(options) });
   const preview = useToolPreview(runTarget, executable || "pg_dump", jobFor(output));
 
@@ -385,7 +561,7 @@ export function DumpDialog({
   };
 
   const run = async () => {
-    const file = outputPath(output, { dataSource: source?.name ?? "", database, now: new Date() });
+    const file = outputPath(output, { dataSource: source?.name ?? "", database: shown, now: new Date() });
     const job = jobFor(file);
     localStorage.setItem(pathKey("pgDump"), executable);
     const commandLine = await call(commands.dbToolPreview(runTarget, executable, job)).catch(() => "");
@@ -396,7 +572,7 @@ export function DumpDialog({
         job,
         commandLine,
         output: file,
-        from: database || (source?.name ?? target),
+        from: shown || (source?.name ?? target),
         to: file,
       }),
     );
@@ -431,7 +607,7 @@ export function DumpDialog({
           <span className={styles.formLabel}>
             <T>Database:</T>
           </span>
-          <Input aria-label="Database" value={database} onChange={(e) => setDatabase(e.target.value)} />
+          <DatabaseField value={shown} onChange={setDatabase} names={databases?.names ?? null} />
           <span className={styles.formLabel}>
             <T>Output result to:</T>
           </span>
@@ -480,20 +656,14 @@ export function DumpDialog({
           <Select aria-label="Content" value={options.content} options={CONTENT_OPTIONS} onChange={set("content")} />
           {(
             [
-              ["schemas", "Schemas:"],
-              ["tables", "Tables:"],
-              ["excludeTables", "Exclude tables:"],
+              ["schemas", "Schemas:", schemaNames?.map(patternName) ?? null],
+              ["tables", "Tables:", tableNames],
+              ["excludeTables", "Exclude tables:", tableNames],
             ] as const
-          ).map(([k, label]) => (
+          ).map(([k, label, names]) => (
             <Fragment key={k}>
               <span className={styles.formLabel}>{tx(label)}</span>
-              <Input
-                mono
-                aria-label={tx(label)}
-                placeholder="All"
-                value={options[k]}
-                onChange={(e) => set(k)(e.target.value)}
-              />
+              <NamesField label={tx(label)} placeholder="All" value={options[k]} onChange={set(k)} names={names} />
             </Fragment>
           ))}
           {options.format === "directory" && (
@@ -562,11 +732,15 @@ export function RestoreDialog({
   const [psql, setPsql] = useState<DbPsqlOptions>(DEFAULT_PSQL);
   const [runKey, setRunKey] = useState<number | null>(null);
   const running = useToolRuns((s) => (runKey !== null ? s.runs[runKey]?.status === "running" : false));
-  const kind = useDumpKind(file);
-  const tool = picked ?? restoreToolFor(file, kind);
-  const mismatch = dumpMismatch(tool, kind);
+  const info = useDumpInfo(file);
+  const tool = picked ?? restoreToolFor(file, info?.kind ?? null);
+  const mismatch = dumpMismatch(tool, info?.kind ?? null);
   const executable = executables[tool];
   const readOnly = !!source?.readOnly;
+  const databases = useDatabaseNames(target);
+  const shown = database || (databases?.current ?? "");
+  const problem = restoreTargetProblem(shown, databases?.names ?? null, false, false);
+  const creates = tool === "pgRestore" ? restore.create : !!info?.createsDatabase;
 
   const changeFile = setFile;
   const browse = async (directory: boolean) => {
@@ -602,8 +776,11 @@ export function RestoreDialog({
         job,
         commandLine,
         from: file,
-        to: database || (source?.name ?? target),
-        onSuccess: () => void refresh(runTarget),
+        to: shown || (source?.name ?? target),
+        onSuccess: () => {
+          void refresh(runTarget);
+          if (creates) void refresh(splitTarget(target).id);
+        },
       }),
     );
   };
@@ -616,7 +793,7 @@ export function RestoreDialog({
           {
             label: "Run",
             role: "default",
-            disabled: readOnly || !!mismatch || !executable.trim() || !file.trim(),
+            disabled: readOnly || !!mismatch || !!problem || !executable.trim() || !file.trim(),
             title: readOnly ? tx`The data source is read-only` : undefined,
             onClick: () => void run(),
           },
@@ -655,7 +832,18 @@ export function RestoreDialog({
             <span className={styles.formLabel}>
               <T>Database:</T>
             </span>
-            <Input aria-label="Database" value={database} onChange={(e) => setDatabase(e.target.value)} />
+            <DatabaseField value={shown} onChange={setDatabase} names={databases?.names ?? null} />
+            <TargetHint
+              problem={problem}
+              database={shown}
+              note={
+                !creates
+                  ? undefined
+                  : tool === "pgRestore"
+                    ? tx`pg_restore connects to ${shown} and creates the database the archive names.`
+                    : tx`The dump creates its own database. psql connects to ${shown} first.`
+              }
+            />
             <span className={styles.formLabel}>
               <T>Path to dump:</T>
             </span>
@@ -724,6 +912,11 @@ export function RestoreDialog({
                 />
                 <span />
                 <div className={styles.dumpChecks}>
+                  <Checkbox
+                    checked={restore.create}
+                    onChange={setR("create")}
+                    label="Create the database from the archive (--create)"
+                  />
                   <Checkbox
                     checked={restore.clean}
                     onChange={setR("clean")}

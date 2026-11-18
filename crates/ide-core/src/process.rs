@@ -1,6 +1,7 @@
 //! Child-process helpers shared by every crate that spawns tools.
 
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 #[cfg(windows)]
 use std::process::Stdio;
 use std::process::{Child, Command};
@@ -18,7 +19,8 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 ///   console child flashes a `cmd` window.
 /// - Linux AppImage, reloaded and project variables: see [`host_env`].
 ///
-/// Variables the call site has already set are kept; call it before `env_clear`.
+/// Variables the call site has already set are kept; call it before `env_clear` and after
+/// `current_dir`, which picks the project environment.
 pub fn prepare(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
@@ -516,10 +518,13 @@ mod windows_job {
 /// those of a manual HTTP proxy ([`crate::proxy_settings::ProxySettings::child_env`]),
 /// and the login shell's variables this process lacks ([`shell_env`]: an app started from
 /// Finder/Dock doesn't have what rc files export, such as `GOPATH`, `JAVA_HOME` or
-/// `MAVEN_OPTS`). Variables the call site has already set are kept.
+/// `MAVEN_OPTS`). A child whose `current_dir` is inside a project also gets the project's
+/// environment ([`crate::project_env`]), so set it first. Variables the call site has
+/// already set are kept.
 pub fn host_env(cmd: &mut Command) -> &mut Command {
-    let fixes = child_env_changes();
-    let shell: Vec<_> = shell_env().collect();
+    let dir = cmd.get_current_dir().map(Path::to_path_buf);
+    let fixes = child_env_changes(dir.as_deref());
+    let shell: Vec<_> = shell_env_for(dir.as_deref()).collect();
     if fixes.is_empty() && shell.is_empty() {
         return cmd;
     }
@@ -540,22 +545,40 @@ pub fn host_env(cmd: &mut Command) -> &mut Command {
 /// that are not a `std::process::Command` (a PTY `CommandBuilder`). Apply before the call
 /// site's own variables. Empty outside an AppImage without an overlay.
 pub fn host_env_fixes() -> Vec<(OsString, Option<OsString>)> {
-    child_env_changes()
+    child_env_changes(None)
+}
+
+/// [`host_env_fixes`] for a child started in `dir`, the environment of the project holding it included.
+pub fn host_env_fixes_in(dir: &Path) -> Vec<(OsString, Option<OsString>)> {
+    child_env_changes(Some(dir))
 }
 
 /// This process's environment as a child should inherit it (see [`host_env`]), for call
 /// sites that build a child's environment from the IDE's own instead of inheriting it.
 pub fn host_vars() -> impl Iterator<Item = (OsString, OsString)> {
-    apply_changes(std::env::vars_os().collect(), &child_env_changes()).into_iter()
+    apply_changes(std::env::vars_os().collect(), &child_env_changes(None)).into_iter()
+}
+
+/// [`host_vars`] for a child started in `dir`.
+pub fn host_vars_in(dir: &Path) -> impl Iterator<Item = (OsString, OsString)> {
+    apply_changes(std::env::vars_os().collect(), &child_env_changes(Some(dir))).into_iter()
 }
 
 /// [`std::env::var_os`] as a child should see it (see [`host_env`]), the login shell's value
 /// included when this process lacks the variable.
 pub fn host_var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
-    let key = key.as_ref();
-    match child_env_changes().into_iter().find(|(k, _)| k == key) {
+    host_var_os_for(None, key.as_ref())
+}
+
+/// [`host_var_os`] for a child started in `dir`.
+pub fn host_var_os_in(dir: &Path, key: impl AsRef<OsStr>) -> Option<OsString> {
+    host_var_os_for(Some(dir), key.as_ref())
+}
+
+fn host_var_os_for(dir: Option<&Path>, key: &OsStr) -> Option<OsString> {
+    match child_env_changes(dir).into_iter().find(|(k, _)| k == key) {
         Some((_, fixed)) => fixed,
-        None => std::env::var_os(key).or_else(|| shell_env().find(|(k, _)| k == key).map(|(_, v)| v)),
+        None => std::env::var_os(key).or_else(|| shell_env_for(dir).find(|(k, _)| k == key).map(|(_, v)| v)),
     }
 }
 
@@ -578,8 +601,9 @@ fn apply_changes(
     vars
 }
 
-/// The AppImage fixes, the overlay, then the manual proxy's (a later one wins); one entry per name.
-fn child_env_changes() -> Vec<(OsString, Option<OsString>)> {
+/// The AppImage fixes, the overlay, the manual proxy's, then those of the project holding
+/// `dir` (a later one wins); one entry per name.
+fn child_env_changes(dir: Option<&Path>) -> Vec<(OsString, Option<OsString>)> {
     let mut changes = appimage_fixes();
     let overlay = env_overlay();
     changes.retain(|(k, _)| !overlay.iter().any(|(o, _)| o == k));
@@ -588,6 +612,11 @@ fn child_env_changes() -> Vec<(OsString, Option<OsString>)> {
     let proxy = crate::proxy_settings::proxy().child_env();
     changes.retain(|(k, _)| !proxy.iter().any(|(p, _)| p == k));
     changes.extend(proxy);
+    if let Some(dir) = dir {
+        let project = crate::project_env::for_dir(dir);
+        changes.retain(|(k, _)| !project.iter().any(|(p, _)| p == k));
+        changes.extend(project.iter().cloned());
+    }
     changes
 }
 
@@ -667,11 +696,26 @@ pub fn login_env() -> Option<Vars> {
 /// Apply before a call site's own variables so those win. Empty until the shell has been read.
 /// Names the overlay sets are left out: [`host_env`] gives them their value.
 pub fn shell_env() -> impl Iterator<Item = (OsString, OsString)> {
+    shell_env_for(None)
+}
+
+/// [`shell_env`] for a child started in `dir`: names the environment of the project holding
+/// it sets are left out too.
+pub fn shell_env_in(dir: &Path) -> impl Iterator<Item = (OsString, OsString)> {
+    shell_env_for(Some(dir))
+}
+
+fn shell_env_for(dir: Option<&Path>) -> impl Iterator<Item = (OsString, OsString)> {
     let overlay = env_overlay();
+    let project = dir.map(crate::project_env::for_dir).unwrap_or_default();
     let vars = login_env().unwrap_or_default();
     let lacking: Vec<_> = vars
         .iter()
-        .filter(|(k, _)| std::env::var_os(k).is_none() && !overlay.iter().any(|(o, _)| o == k))
+        .filter(|(k, _)| {
+            std::env::var_os(k).is_none()
+                && !overlay.iter().any(|(o, _)| o == k)
+                && !project.iter().any(|(p, _)| p == k)
+        })
         .cloned()
         .collect();
     lacking.into_iter()
@@ -1013,6 +1057,45 @@ mod tests {
         assert!(host_vars().any(|(k, v)| k == "OPENIDEA_OVERLAY_A" && v == "project"));
         assert_eq!(host_env_fixes().len(), env_overlay().len());
         set_env_overlay(Vec::new());
+    }
+
+    #[test]
+    fn a_child_inside_a_project_gets_its_environment() {
+        let root = std::path::Path::new("/openidea-test-process/project");
+        crate::project_env::set(
+            root,
+            vec![
+                ("OPENIDEA_PROJECT_VAR".into(), Some("devshell".into())),
+                ("PATH".into(), Some("/nix/store/x-devshell/bin".into())),
+                ("OPENIDEA_PROJECT_UNSET".into(), None),
+            ],
+        );
+        let get = |cmd: &Command, k: &str| cmd.get_envs().find(|(n, _)| *n == k).map(|(_, v)| v.map(OsStr::to_owned));
+
+        let mut inside = Command::new("true");
+        inside.current_dir(root.join("src")).env("OPENIDEA_PROJECT_VAR", "call site");
+        host_env(&mut inside);
+        assert_eq!(get(&inside, "PATH"), Some(Some("/nix/store/x-devshell/bin".into())));
+        assert_eq!(get(&inside, "OPENIDEA_PROJECT_UNSET"), Some(None));
+        assert_eq!(get(&inside, "OPENIDEA_PROJECT_VAR"), Some(Some("call site".into())), "the call site's value wins");
+
+        let mut outside = Command::new("true");
+        outside.current_dir("/openidea-test-process/other");
+        host_env(&mut outside);
+        assert_eq!(get(&outside, "OPENIDEA_PROJECT_VAR"), None);
+        let mut no_dir = Command::new("true");
+        host_env(&mut no_dir);
+        assert_eq!(get(&no_dir, "OPENIDEA_PROJECT_VAR"), None);
+
+        // Spawners that build the environment themselves (PTYs, runs) and `PATH` lookups.
+        assert!(host_env_fixes_in(root).iter().any(|(k, v)| k == "OPENIDEA_PROJECT_VAR" && v.is_some()));
+        assert!(host_vars_in(root).any(|(k, v)| k == "OPENIDEA_PROJECT_VAR" && v == "devshell"));
+        assert_eq!(host_var_os_in(root, "OPENIDEA_PROJECT_VAR"), Some("devshell".into()));
+        assert_eq!(host_var_os("OPENIDEA_PROJECT_VAR"), None);
+        let search = crate::tool_path::search_path_in(root);
+        assert_eq!(std::env::split_paths(&search).next(), Some("/nix/store/x-devshell/bin".into()));
+        crate::project_env::remove(root);
+        assert!(host_vars_in(root).all(|(k, _)| k != "OPENIDEA_PROJECT_VAR"));
     }
 
     #[test]

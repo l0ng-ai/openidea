@@ -849,6 +849,11 @@ fn stash_push_list_apply_pop() {
     assert!(stashes[0].message.contains("WIP on main"), "{stashes:?}");
     assert!(stashes[1].message.contains("first stash"), "{stashes:?}");
     assert!(stashes[0].time_ms > 0.0);
+    // Each stash lists the files it changed against the commit it was made on.
+    let head = repo.head().unwrap().1.unwrap();
+    assert!(stashes.iter().all(|s| s.base.as_deref() == Some(head.as_str())), "{stashes:?}");
+    let files = repo.commit_files(&stashes[1].id).unwrap();
+    assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["s.txt"]);
 
     repo.stash_apply(1, false, false).unwrap();
     assert_eq!(fx.read("s.txt"), "change 1\n");
@@ -2074,9 +2079,34 @@ fn checkout_reports_untracked_files_it_would_overwrite() {
     for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
         let opts = CheckoutOptions { mode, ..Default::default() };
         let outcome = repo.checkout_with("other", false, &opts).unwrap();
-        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()] });
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()], removed: false });
         assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
         assert_eq!(fx.read("dir/new.txt"), "mine\n");
+    }
+}
+
+/// Untracked on disk but tracked on the current branch and gone from the target
+/// (as after `git rm --cached`): git refuses to *remove* the file, and the outcome
+/// says so (#3980).
+#[test]
+fn checkout_reports_untracked_files_it_would_remove() {
+    let fx = Fixture::new();
+    fx.write("TEST.md", "hi\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "feature/x"]);
+    fx.git(&["rm", "-q", "TEST.md"]);
+    fx.commit_all("remove TEST.md on feature/x");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.git(&["rm", "--cached", "TEST.md"]);
+    fx.write("TEST.md", "local dirty version\n");
+    let repo = fx.repo();
+    for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
+        // The refusal leaves the repository untouched, so both modes see the same state.
+        let opts = CheckoutOptions { mode, ..Default::default() };
+        let outcome = repo.checkout_with("feature/x", false, &opts).unwrap();
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["TEST.md".into()], removed: true });
+        assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+        assert_eq!(fx.read("TEST.md"), "local dirty version\n");
     }
 }
 

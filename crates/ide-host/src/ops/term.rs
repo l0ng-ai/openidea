@@ -1,5 +1,6 @@
-use super::Emit;
+use super::{Channel, Emit};
 use crate::Host;
+use ide_command::command;
 use ide_core::{IdeResult, TerminalId};
 use ide_terminal::{TerminalInfo, TerminalOptions};
 
@@ -7,7 +8,8 @@ mod images;
 
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
-pub async fn store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
+#[command(trust = always)]
+pub async fn term_store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
     if data.len() > MAX_IMAGE_BYTES {
         return Err(ide_core::IdeError::invalid("image is too large to paste (limit 20 MB)"));
     }
@@ -18,11 +20,14 @@ pub async fn store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: Strin
     host.blocking(move || images::store(&data_dir, &data, &mime)).await
 }
 
-pub fn spawn(
+/// Async to stay off the main thread: forking the IDE (its whole address space)
+/// to start the shell takes tens of milliseconds, a frozen UI if run there.
+#[command(trust = always)]
+pub async fn term_spawn(
     host: &Host,
     window: &str,
     mut options: TerminalOptions,
-    on_output: Emit<String>,
+    on_output: Channel<String>,
 ) -> IdeResult<TerminalInfo> {
     if !host.project(window).is_ok_and(|p| p.is_trusted()) {
         // Project terminal settings can otherwise start a command as soon as a tab restores.
@@ -41,7 +46,14 @@ pub fn spawn(
         .filter(|p| p.is_trusted())
         .and_then(|p| ide_sdk::apply::terminal_activation(&p.root, &p.settings.effective(), &shell));
     let key = host.owner_window(window).to_owned();
-    let info = host.terminals.spawn(options, key, host.window_sink(window), Box::new(move |chunk| on_output(chunk)))?;
+    let info = host.terminals.spawn(
+        options,
+        key,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )?;
     if let Some(line) = activation {
         let _ = host.terminals.write(info.id, &format!(" {line}\r"));
     }
@@ -133,20 +145,38 @@ impl ide_terminal::TerminalChannel for SshTerminal {
     }
 }
 
-pub fn write(host: &Host, id: TerminalId, data: &str) -> IdeResult<()> {
-    host.terminals.write(id, data)
+#[command(trust = always)]
+pub fn term_write(host: &Host, id: TerminalId, data: String) -> IdeResult<()> {
+    host.terminals.write(id, &data)
 }
 
-pub fn resize(host: &Host, id: TerminalId, cols: u16, rows: u16) -> IdeResult<()> {
+#[command(trust = always)]
+pub fn term_resize(host: &Host, id: TerminalId, cols: u16, rows: u16) -> IdeResult<()> {
     host.terminals.resize(id, cols, rows)
 }
 
-pub fn kill(host: &Host, id: TerminalId) -> IdeResult<()> {
+#[command(trust = always)]
+pub fn term_kill(host: &Host, id: TerminalId) -> IdeResult<()> {
     host.terminals.kill(id)
 }
 
-pub fn is_busy(host: &Host, id: TerminalId) -> IdeResult<bool> {
+/// Whether the session is running a command (closing its tab asks first). A
+/// `tcgetpgrp` or one process snapshot: async only to stay off the main thread.
+#[command(trust = always)]
+pub async fn term_is_busy(host: &Host, id: TerminalId) -> IdeResult<bool> {
     host.terminals.is_busy(id)
+}
+
+/// Shell used when Settings › Terminal › Shell path is empty.
+#[command(trust = always)]
+pub fn term_default_shell() -> String {
+    ide_terminal::default_shell_path()
+}
+
+/// Installed shells for the Terminal's "New Predefined Session" menu.
+#[command(trust = always)]
+pub fn term_available_shells() -> Vec<String> {
+    ide_terminal::available_shells()
 }
 
 #[cfg(test)]
@@ -171,11 +201,23 @@ mod tests {
             project_environment: false,
         });
         let id = TerminalId::next();
-        let error = store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1], "image/png".into()).await.unwrap_err();
+        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1], "image/png".into()).await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidInput);
         assert_eq!(error.message, "image is too large to paste (limit 20 MB)");
-        let error = store_image(&host, id, vec![0; MAX_IMAGE_BYTES], "image/png".into()).await.unwrap_err();
+        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES], "image/png".into()).await.unwrap_err();
         assert_eq!(error.message, "terminal session not found");
         assert!(!host.data_dir.join("terminal-images").exists());
     }
 }
+
+ide_command::domain!(
+    term:
+    term_available_shells,
+    term_default_shell,
+    term_is_busy,
+    term_kill,
+    term_resize,
+    term_spawn,
+    term_store_image,
+    term_write,
+);

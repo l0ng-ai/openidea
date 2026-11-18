@@ -129,6 +129,14 @@ OpenIDEA 会为 Java 和 Kotlin 中的 Spring Web 端点（带 `@RequestMapping`
 
 插件可以提供其他框架的端点，这些端点旁会有 **在 HTTP 客户端中打开** 边栏图标。
 
+### Feign 导航
+
+在 Java 或 Kotlin 的 `@FeignClient` 接口中，点击装订线上的 **跳转到 Feign 端点** 箭头，或从编辑器菜单、查找操作中执行同名操作。在 `@GetMapping("/users/{id}")` 等字面量路径上，也可以使用修饰键点击或跳转到声明。有多个候选时会显示已有的声明选择器；方法声明仍保留原来的查找用法行为。
+
+内置索引按 HTTP 方法和字面量路径匹配控制器，支持完整的 `{variable}` 路径段。Feign 的字面量 `name` 或 `value` 会与目标模块 `src/main/resources` 或其 `config` 子目录中 `application.properties`、`.yml`、`.yaml` 的明确 `spring.application.name` 比较。不会继承父模块或测试资源的配置。配置身份缺失、动态或有冲突，以及客户端指定显式或动态 `url` 时，仍保留方法和路径匹配的候选。导航不会发送 HTTP 请求。
+
+这是源码导航，不解析服务发现或运行时生效配置。首个版本不支持自定义源码目录、组合或别名注解、继承映射、动态路径、`@RequestLine`、Ant/正则路径模式及控制器到客户端的反向导航。配置读取有数量和大小限制；跳转前会重新检查当前控制器文本，包括未保存的编辑。
+
 ## 暂不支持
 
 - JavaScript 响应处理脚本（`> {% ... %}`、`> handler.js`）和请求前脚本。处理脚本行能被识别，但会跳过。

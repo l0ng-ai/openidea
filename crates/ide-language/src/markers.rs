@@ -2,7 +2,22 @@
 //! framework's project there (`Cargo.toml`, `angular.json`). Language server
 //! roots (`root-markers`) and framework modes (`framework-ui-modes`) share them.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+
+/// `path` as the project's roots spell it, `inside` telling whether a path is
+/// under one. Roots are canonical, while a file can arrive under another
+/// spelling (other letter case on macOS, a symlinked folder) and would look
+/// outside the project, missing its frameworks' markers.
+pub fn project_spelling<'a>(path: &'a Path, inside: impl Fn(&Path) -> bool) -> Cow<'a, Path> {
+    if inside(path) {
+        return path.into();
+    }
+    match dunce::canonicalize(path) {
+        Ok(canonical) if inside(&canonical) => canonical.into(),
+        _ => path.into(),
+    }
+}
 
 /// The outermost ancestor of `file` containing a root marker, within
 /// `project_root` (any ancestor without one: loose files). A directory counts

@@ -86,8 +86,15 @@
   pointer-events: none;
 }
 
+/* The per-tab detach button mirrors .close on the right edge, centred like it by the row. */
 .detach {
   position: absolute;
-  right: var(--stripe-outer-padding);
-  top: 0;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+.item:hover .detach,
+.item:focus-within .detach {
+  opacity: 1;
 }

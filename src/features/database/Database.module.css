@@ -1425,7 +1425,8 @@
 }
 .dumpPreview {
   grid-column: 1 / -1;
-  max-height: 96px;
+  flex: none;
+  height: 96px;
   overflow: auto;
   padding: 6px 8px;
   border: 1px solid var(--border);

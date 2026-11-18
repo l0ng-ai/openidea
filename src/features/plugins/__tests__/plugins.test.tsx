@@ -69,6 +69,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     homepage: null,
     changeNotes: null,
     icon: null,
+    javaAgent: null,
     source: "installed",
     path: `/plugins/${partial.id}`,
     enabled: true,
@@ -266,6 +267,41 @@ describe("plugin actions", () => {
       stop();
       offAction();
       useProject.setState({ project: null });
+    }
+  });
+
+  it("reports UI-side diagnostic changes (Typo saved to dictionary) to problems-changed plugins", async () => {
+    const posted: unknown[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      eventKinds: async () => ["problems-changed"],
+      postEvents: async (events) => void posted.push(...events),
+    });
+    const project = { root: "/p", trusted: true } as never;
+    act(() => useProject.setState({ project }));
+    const stop = startRuntimeUi();
+    try {
+      await new Promise((r) => setTimeout(r, 20));
+      // The file first has a Typo; saving the word to the dictionary re-checks
+      // it and clears the diagnostic through setFileDiagnostics ->
+      // publishLocalDiagnostics, not a backend `diagnostics` event. Plugins
+      // drawing problems must be woken by that clear too.
+      const { setFileDiagnostics } = await import("@/editor/lsp/diagnostics");
+      const typo = {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 6 } },
+        severity: "info" as const,
+        message: "Typo: In word 'mesage'",
+        source: "Spelling",
+        code: null,
+      };
+      act(() => setFileDiagnostics("/p/a.txt", "spelling", [typo]));
+      await waitFor(() => expect(posted).toContainEqual({ kind: "problemsChanged" }));
+      posted.length = 0;
+      act(() => setFileDiagnostics("/p/a.txt", "spelling", []));
+      await waitFor(() => expect(posted).toContainEqual({ kind: "problemsChanged" }));
+    } finally {
+      stop();
+      act(() => useProject.setState({ project: null }));
     }
   });
 });
@@ -1569,6 +1605,7 @@ describe("marketplace", () => {
             },
           ],
           contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
+          javaAgent: { fileName: "spring-agent.jar", args: "port=0", approved: true },
         }),
       ]),
     );
@@ -1576,6 +1613,47 @@ describe("marketplace", () => {
     const permissions = await screen.findByRole("list", { name: "Permissions" });
     expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
     expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+  });
+
+  it("warns when a granted Java agent jar changed and can approve it again", async () => {
+    const user = userEvent.setup();
+    const base = createMemoryPluginsBackend([
+      plugin({
+        id: "spring",
+        name: "Spring",
+        hasCode: false,
+        status: "static",
+        javaAgent: { fileName: "spring-agent.jar", args: null, approved: false },
+        capabilities: [
+          {
+            id: "java.agent",
+            risk: "high",
+            description: "Run code inside the Java applications you start",
+            optional: true,
+            granted: true,
+          },
+        ],
+        contributions: [{ point: "javaAgents", label: "spring-agent.jar" }],
+      }),
+    ]);
+    const calls: [string, string, boolean][] = [];
+    setPluginsBackend({
+      ...base,
+      setCapability: async (id, capability, granted) => {
+        calls.push([id, capability, granted]);
+        return base.setCapability(id, capability, granted);
+      },
+    });
+    render(<PluginsPage initialTab="installed" />);
+    const permissions = await screen.findByRole("list", { name: "Permissions" });
+    expect(within(permissions).getByRole("alert")).toHaveTextContent("The agent jar changed since you approved it");
+    await user.click(within(permissions).getByRole("button", { name: "Approve new jar" }));
+    await waitFor(() =>
+      expect(calls).toEqual([
+        ["spring", "java.agent", false],
+        ["spring", "java.agent", true],
+      ]),
+    );
   });
 
   it("offers to roll back an update", async () => {

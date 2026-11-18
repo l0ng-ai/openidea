@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.47"
+version = "0.1.48"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -42,6 +42,7 @@ ide-fonts = { path = "crates/ide-fonts" }
 ide-ssh = { path = "crates/ide-ssh" }
 ide-remote = { path = "crates/ide-remote" }
 ide-host = { path = "crates/ide-host" }
+ide-command = { path = "crates/ide-command" }
 ide-mcp = { path = "crates/ide-mcp" }
 ide-scaffold = { path = "crates/ide-scaffold" }
 ide-notebook = { path = "crates/ide-notebook" }
@@ -123,6 +124,12 @@ uuid = { version = "1", features = ["v4"] }
 # OS credential stores
 keyring = "4.2"
 keyring-core = "1"
+
+# proc macros
+heck = "0.5"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
 
 # testing
 insta = { version = "1", features = ["yaml"] }

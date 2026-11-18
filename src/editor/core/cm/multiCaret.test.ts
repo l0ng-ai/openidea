@@ -82,3 +82,52 @@ describe("caret mouse bindings", () => {
     expect(styles(event({ button: 1, altKey: false }))[1]).toBeNull();
   });
 });
+
+describe("rectangular mouse bindings", () => {
+  const id = "editor.createRectangularSelectionOnMouseDrag";
+
+  it.each(Object.keys(PRESETS))("%s exposes both default gestures", (preset) => {
+    useKeymap.setState({ preset });
+    expect(PRESETS[preset]![id]).toEqual(["Alt+Button1", "Button2"]);
+    expect(styles(event())[1]).not.toBeNull();
+    expect(styles(event({ button: 1, altKey: false }))[1]).not.toBeNull();
+  });
+
+  it("uses the full rebound stroke immediately instead of the old defaults", () => {
+    useKeymap.setState({ overrides: { [id]: ["ctrl+alt+shift+button1"] } });
+    expect(styles(event())[1]).toBeNull();
+    expect(styles(event({ button: 1, altKey: false }))[1]).toBeNull();
+    expect(styles(event({ ctrlKey: true, shiftKey: true }))[1]).not.toBeNull();
+    expect(styles(event({ ctrlKey: true, shiftKey: true, metaKey: true }))[1]).toBeNull();
+  });
+
+  it("honours removal and restoration without changing the column mode", () => {
+    useKeymap.setState({ overrides: { [id]: [] } });
+    expect(styles(event())[1]).toBeNull();
+    expect(styles(event({ button: 1, altKey: false }))[1]).toBeNull();
+    useKeymap.setState({ overrides: {} });
+    expect(styles(event())[1]).not.toBeNull();
+  });
+
+  it("keeps Linux middle paste by default but accepts an explicit middle binding", () => {
+    usePlatform.setState({ os: "linux" });
+    expect(styles(event())[1]).not.toBeNull();
+    expect(styles(event({ button: 1, altKey: false }))[1]).toBeNull();
+    useKeymap.setState({ overrides: { [id]: ["Button2"] } });
+    expect(styles(event({ button: 1, altKey: false }))[1]).not.toBeNull();
+    expect(styles(event())[1]).toBeNull();
+  });
+
+  it("leaves a shared stroke to the add-caret gesture", () => {
+    useKeymap.setState({ overrides: { [id]: ["Alt+Shift+Button1"] } });
+    const [caret, rectangle] = styles(event({ shiftKey: true }));
+    expect(caret).not.toBeNull();
+    expect(rectangle).toBeNull();
+  });
+
+  it("does not claim right or side buttons", () => {
+    useKeymap.setState({ overrides: { [id]: ["Alt+Button3", "Alt+Button4"] } });
+    expect(styles(event({ button: 2 }))[1]).toBeNull();
+    expect(styles(event({ button: 3 }))[1]).toBeNull();
+  });
+});
