@@ -56,7 +56,7 @@ fn reconfigure_servers(host: &Host) {
 }
 
 /// Status of every known language server / debug adapter and the languages using it.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
@@ -65,7 +65,7 @@ pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
 
 /// Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
 /// `on_event`. Cancel with `cancel_request(request)`.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_install(
     host: &Host,
     window: &str,
@@ -93,7 +93,7 @@ pub async fn tools_install(
 
 /// Newer versions of the tools the IDE installed (release downloads and npm packages).
 /// Cancel with `cancel_request(request)`.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<ToolUpdate>> {
     let tools = tools(host, window)?;
     let cancel = host.begin_request(request);
@@ -103,7 +103,7 @@ pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> Ide
 }
 
 /// Removes a tool the IDE installed.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn tools_uninstall(host: &Host, window: &str, name: String) -> IdeResult<ToolInfo> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);

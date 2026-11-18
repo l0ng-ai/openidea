@@ -34,7 +34,7 @@ pub struct ProjectInterpreter {
 }
 
 /// Installed interpreters / toolchains of `kind`; project-local ones first.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<Vec<Sdk>> {
     host.require_trust_if_project(window)?;
     let project = host.project(window).ok();
@@ -63,7 +63,7 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
 }
 
 /// The Python interpreters of the recently opened projects, each with its project.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeResult<Vec<ProjectInterpreter>> {
     // Newest first. The open project is skipped: `sdk_detect` lists its own.
     host.require_trust_if_project(window)?;
@@ -111,7 +111,7 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
 }
 
 /// An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<Sdk>> {
     host.require_trust_if_project(window)?;
     let root = host.project(window).ok().map(|p| p.root.clone());
@@ -123,7 +123,7 @@ pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) ->
 /// The interpreter the project uses: the configured one, else its virtualenv.
 #[command(trust = trusted)]
 pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) -> IdeResult<Option<ide_core::IpcPath>> {
-    host.require_trust_if_project(window)?;
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|w| {
         let near = near.as_deref()?;
@@ -149,7 +149,7 @@ pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) ->
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
 #[command(trust = trusted)]
 pub fn sdk_php_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core::IpcPath>> {
-    host.require_trust_if_project(window)?;
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let settings = project.settings.effective();
     Ok(ide_sdk::apply::setting_path(&project.root, &settings.languages.php.interpreter).map(Into::into))
@@ -245,7 +245,7 @@ pub async fn sdk_project_libraries(
     request: RequestId,
     on_groups: Channel<Vec<ide_sdk::libraries::LibraryGroup>>,
 ) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
-    host.require_trust_if_project(window)?;
+    host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     let cancel = host.begin_project_request(window, request);
@@ -320,7 +320,7 @@ pub async fn sdk_locate_tools(
 }
 
 /// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_create_venv(
     host: &Host,
     window: &str,
@@ -343,7 +343,7 @@ pub async fn sdk_python_create_venv(
     result?
 }
 
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_packages(
     host: &Host,
     window: &str,
@@ -360,7 +360,7 @@ pub async fn sdk_python_packages(
 
 /// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
 #[allow(clippy::too_many_arguments)]
-#[command(trust = trusted)]
+#[command(trust = outside_restricted)]
 pub async fn sdk_python_pip(
     host: &Host,
     window: &str,
