@@ -1,6 +1,7 @@
 /** Settings › Editor › Vim: on/off, the rc file, and IdeaVim's "Shortcut conflicts" table. */
 import { useEffect, useMemo } from "react";
-import { useActions } from "@/platform/actions";
+import { executeAction, useActions } from "@/platform/actions";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { effectiveBindings, formatBinding, useKeymap } from "@/platform/keymap";
 import { Button, Checkbox, Select, T } from "@/ui";
 import { conflictRows, VIM_KEYS } from "./conflicts";
@@ -8,6 +9,7 @@ import { loadRcFile, useVimRc } from "./rcFile";
 import { updateVimSettings, useVimSettings, type Handler } from "./settings";
 import styles from "./Vim.module.css";
 import { tx } from "@/platform/i18n";
+import { useSettingsForm } from "@/workbench/contributions";
 
 const HANDLERS = [
   { value: "vim" as const, label: "Vim" },
@@ -15,38 +17,49 @@ const HANDLERS = [
 ];
 
 export function VimSettingsPage() {
-  const s = useVimSettings();
+  const form = useSettingsForm();
+  const saved = useVimSettings();
+  const enabled = form.useExternal("enabled", saved.enabled, async (value) => {
+    updateVimSettings({ enabled: value });
+    return value;
+  });
+  const { value: handlers, set: setHandlers } = form.useExternal("handlers", saved.handlers, async (value) => {
+    updateVimSettings({ handlers: value });
+    return value;
+  });
   const rc = useVimRc();
   const keymap = useKeymap();
   const actions = useActions((a) => a.actions);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- the keymap store is the input of effectiveBindings()
-  const rows = useMemo(() => conflictRows(effectiveBindings(), s.handlers), [keymap, s.handlers]);
+  const rows = useMemo(() => conflictRows(effectiveBindings(), handlers), [keymap, handlers]);
 
   useEffect(() => {
     if (!useVimRc.getState().loaded) void loadRcFile();
   }, []);
 
+  const reload = async () => {
+    await executeAction("vim.reloadRc", "settings");
+    // The native Settings window forwards the action to its editor window.
+    if (auxiliaryWindow()?.kind === "settings") await loadRcFile();
+  };
+
   const setHandler = (stroke: string, handler: Handler) => {
-    const handlers = { ...s.handlers };
-    if (VIM_KEYS.find((k) => k.stroke === stroke)?.handler === handler) delete handlers[stroke];
-    else handlers[stroke] = handler;
-    updateVimSettings({ handlers });
+    const next = { ...handlers };
+    if (VIM_KEYS.find((k) => k.stroke === stroke)?.handler === handler) delete next[stroke];
+    else next[stroke] = handler;
+    setHandlers(next);
   };
 
   return (
     <div className={styles.page}>
-      <Checkbox
-        checked={s.enabled}
-        onChange={(enabled) => updateVimSettings({ enabled })}
-        label="Enable Vim emulation"
-      />
+      <Checkbox checked={enabled.value} onChange={enabled.set} label="Enable Vim emulation" />
 
       <section className={styles.section} aria-label={tx("Vim rc file")}>
         <div className={styles.header}>
           <span>
             <T>Configuration file</T>
           </span>
-          <Button size="small" onClick={() => void loadRcFile()}>
+          <Button size="small" disabled={!actions.has("vim.reloadRc")} onClick={() => void reload()}>
             Reload
           </Button>
         </div>
@@ -63,6 +76,12 @@ export function VimSettingsPage() {
           <T>
             Supported: set options, map / nmap / imap / vmap / noremap variants, let mapleader, source, and :action /
             &lt;Action&gt;() mappings that run IDE actions. :w saves, :q closes the editor tab.
+          </T>
+        </p>
+        <p className={styles.hint}>
+          <T>
+            Unnamed yanks and deletes stay in Vim's registers. Add set clipboard+=unnamed (or set clipboard=unnamedplus)
+            to the rc file to mirror them to the system clipboard.
           </T>
         </p>
         {rc.ignored.length > 0 && (
@@ -90,6 +109,12 @@ export function VimSettingsPage() {
           <T>
             Keys Vim also handles. With Vim as the handler the key goes to the editor while Vim mode is on and an editor
             has focus; with IDE, an enabled IDE action runs first.
+          </T>
+        </p>
+        <p className={styles.hint}>
+          <T>
+            Ctrl+V pastes in Insert mode and starts a Visual block in Normal and Visual modes. Ctrl+C copies the
+            selection in Visual mode and otherwise leaves the current mode.
           </T>
         </p>
         <table className={styles.table}>
@@ -130,11 +155,7 @@ export function VimSettingsPage() {
           </tbody>
         </table>
         <div>
-          <Button
-            size="small"
-            onClick={() => updateVimSettings({ handlers: {} })}
-            disabled={!Object.keys(s.handlers).length}
-          >
+          <Button size="small" onClick={() => setHandlers({})} disabled={!Object.keys(handlers).length}>
             Reset to Defaults
           </Button>
         </div>
