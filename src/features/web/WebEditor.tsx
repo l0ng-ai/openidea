@@ -5,10 +5,11 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { onIdeEvent } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { onEditorEvent } from "@/editor/api";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { FloatingToolbar, IconButton } from "@/ui";
 import { browserIcon, openInBrowser, useBrowsers, useWebPreview, webUrl } from "./browsers";
+import { previewResources } from "./previewResources";
 import styles from "./Web.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -46,7 +47,7 @@ export function WebEditor({ path, children }: { path: string; tabId: string; chi
           </div>
         </FloatingToolbar>
       </div>
-      {preview && <WebPreview path={path} />}
+      {preview && <WebPreview key={path} path={path} />}
     </div>
   );
 }
@@ -55,39 +56,57 @@ function WebPreview({ path }: { path: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [seq, setSeq] = useState(0);
-  const root = useProject((s) => s.project?.root ?? null);
-
   useEffect(() => {
     let live = true;
-    webUrl(path).then(
-      (u) => live && setUrl(u),
-      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pageUrl: string | null = null;
+    let resources = new Set([path]);
+    let scan = 0;
+    let pageChanged = false;
+
+    const updateResources = async (url: string) => {
+      const id = ++scan;
+      const next = await call(commands.fsReadText(path))
+        .then((html) => previewResources(path, url, html))
+        .catch(() => new Set([path]));
+      if (!live || scan !== id) return false;
+      resources = next;
+      return true;
+    };
+    void webUrl(path)
+      .then(async (url) => {
+        if (!live) return;
+        pageUrl = url;
+        await updateResources(url);
+        if (live) setUrl(url);
+      })
+      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
+
+    const changed = (paths: readonly string[]) => {
+      if (!paths.some((changedPath) => resources.has(changedPath))) return;
+      pageChanged ||= paths.includes(path);
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!pageUrl) return;
+        if (pageChanged) {
+          pageChanged = false;
+          void updateResources(pageUrl).then((current) => {
+            if (current) setSeq((n) => n + 1);
+          });
+        } else setSeq((n) => n + 1);
+      }, RELOAD_DELAY);
+    };
+    const offFs = onIdeEvent("fsChanged", (e) => changed([...e.created, ...e.modified, ...e.removed]));
+    const offSaved = onEditorEvent((e) => {
+      if (e.type === "docSaved") changed([e.path]);
+    });
     return () => {
       live = false;
-    };
-  }, [path]);
-
-  // Saved edits anywhere in the project (scripts, styles) reload the page.
-  useEffect(() => {
-    const scope = root ?? path.slice(0, path.lastIndexOf("/"));
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const reload = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => setSeq((n) => n + 1), RELOAD_DELAY);
-    };
-    const offFs = onIdeEvent("fsChanged", (e) => {
-      if ([...e.created, ...e.modified, ...e.removed].some((p) => p === scope || p.startsWith(scope + "/"))) reload();
-    });
-    const offDirty = onIdeEvent("docDirty", (e) => {
-      if (!e.dirty) reload();
-    });
-    return () => {
       clearTimeout(timer);
       offFs();
-      offDirty();
+      offSaved();
     };
-  }, [path, root]);
+  }, [path]);
 
   if (error) return <div className={clsx(styles.preview, styles.message)}>{error}</div>;
   if (!url) return <div className={styles.preview} />;
