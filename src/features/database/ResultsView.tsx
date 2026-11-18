@@ -326,6 +326,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
     !!pk &&
     !readOnlySource &&
     driver !== "clickhouse" &&
+    driver !== "jdbc" &&
     sources.some((s) => s !== null);
 
   // The pending edits belong to the result they were made on: fresh rows (a re-run,
@@ -493,7 +494,8 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const tablePkCount = detailsValue?.columns.filter((c) => c.primaryKey).length ?? 0;
   let notice: string | null = null;
   if (!editable) {
-    if (driver === "clickhouse") notice = tx("Use the query console to change ClickHouse data.");
+    if (driver === "jdbc") notice = tx("Use the query console to change JDBC data.");
+    else if (driver === "clickhouse") notice = tx("Use the query console to change ClickHouse data.");
     else if (readOnlySource) notice = tx("Read-only data source.");
     else if (editability.kind === "readonly") notice = readonlyNotice(editability.reason);
     else if (!target) notice = tx("Read-only: the table schema could not be identified in the result database.");

@@ -70,6 +70,7 @@ pub fn sqlserver_databases() -> &'static str {
 
 pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Sqlite => "SELECT name FROM pragma_database_list WHERE name <> 'temp' ORDER BY seq",
         DbDriver::Clickhouse if system => "SELECT name FROM system.databases ORDER BY name",
         DbDriver::Clickhouse => {
@@ -114,6 +115,7 @@ pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
 /// Rows: `name, kind` where kind is `table`, `view` or `materialized view`.
 pub fn tables(driver: DbDriver, schema: &str) -> String {
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse => format!(
             "SELECT name, CASE engine WHEN 'View' THEN 'view' WHEN 'MaterializedView' THEN 'materialized view' \
              WHEN 'WindowView' THEN 'view' ELSE 'table' END FROM system.tables \
@@ -164,6 +166,7 @@ const SNOWFLAKE_TYPE: &str = "CASE WHEN data_type = 'NUMBER' THEN 'NUMBER(' || n
 pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse => format!(
             "SELECT name, type, CASE WHEN startsWith(type, 'Nullable(') \
              OR startsWith(type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, \
@@ -225,6 +228,7 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
 pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse => format!(
             "SELECT * FROM (SELECT 'PRIMARY KEY' AS index_name, 0 AS is_unique, primary_key AS expression \
              FROM system.tables WHERE database = {s} AND name = {t} AND primary_key != '' \
@@ -269,6 +273,7 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
 /// for SQL completion, grouped by table in column order.
 pub fn completion_columns(driver: DbDriver) -> &'static str {
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse => {
             "SELECT c.database, c.table, CASE t.engine WHEN 'View' THEN 'view' \
              WHEN 'MaterializedView' THEN 'materialized view' WHEN 'WindowView' THEN 'view' ELSE 'table' END, \
@@ -357,6 +362,7 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
 /// when the key references the primary key implicitly.
 pub fn foreign_keys(driver: DbDriver) -> &'static str {
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse => "SELECT '', '', '', '', '', '', '' WHERE 0",
         DbDriver::Snowflake => "SELECT '', '', '', '', '', '', '' WHERE 1 = 0",
         DbDriver::Sqlite => {
@@ -409,6 +415,7 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
 pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse | DbDriver::Snowflake => foreign_keys(driver).to_owned(),
         DbDriver::Sqlite => format!(
             "SELECT {s}, {t}, f.id, f.\"from\", {s}, f.\"table\", f.\"to\"              FROM pragma_foreign_key_list({t}, {s}) f ORDER BY f.id, f.seq"
@@ -432,7 +439,7 @@ pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String
 pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
     match driver {
         DbDriver::Clickhouse => Some("SELECT currentDatabase()"),
-        DbDriver::Sqlite => None,
+        DbDriver::Sqlite | DbDriver::Jdbc => None,
         DbDriver::Postgres => Some("SELECT current_schema()"),
         DbDriver::Mysql => Some("SELECT DATABASE()"),
         DbDriver::SqlServer => Some("SELECT DB_NAME()"),
@@ -446,7 +453,7 @@ pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
 /// has no schema to switch — SQLite's `main`, ClickHouse's `USE` differs).
 pub fn use_schema(driver: DbDriver, schema: &str) -> Option<String> {
     match driver {
-        DbDriver::Sqlite | DbDriver::Clickhouse => None,
+        DbDriver::Sqlite | DbDriver::Clickhouse | DbDriver::Jdbc => None,
         DbDriver::Postgres => Some(format!("SET search_path TO {}", quote_ident(driver, schema))),
         DbDriver::Mysql | DbDriver::SqlServer => Some(format!("USE {}", quote_ident(driver, schema))),
         DbDriver::Oracle => Some(format!("ALTER SESSION SET CURRENT_SCHEMA = {}", quote_ident(driver, schema))),
@@ -462,17 +469,13 @@ pub struct SortKey {
     pub descending: bool,
 }
 
-/// One page of a table: `limit + 1` rows so the caller knows whether more exist.
-pub fn table_page(
-    driver: DbDriver,
-    schema: &str,
-    table: &str,
+pub(crate) fn table_select(
+    qualified_name: &str,
     filter: Option<&str>,
     sort: &[SortKey],
-    offset: u64,
-    limit: u64,
+    quote: impl Fn(&str) -> String,
 ) -> String {
-    let mut sql = format!("SELECT * FROM {}", qualified(driver, schema, table));
+    let mut sql = format!("SELECT * FROM {}", qualified_name);
     if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
         let mut f = f.strip_prefix("WHERE ").or_else(|| f.strip_prefix("where ")).unwrap_or(f);
         if let Some(i) = f.find(';') {
@@ -484,12 +487,24 @@ pub fn table_page(
         }
     }
     if !sort.is_empty() {
-        let keys: Vec<String> = sort
-            .iter()
-            .map(|k| format!("{}{}", quote_ident(driver, &k.column), if k.descending { " DESC" } else { "" }))
-            .collect();
+        let keys: Vec<String> =
+            sort.iter().map(|k| format!("{}{}", quote(&k.column), if k.descending { " DESC" } else { "" })).collect();
         sql.push_str(&format!(" ORDER BY {}", keys.join(", ")));
     }
+    sql
+}
+
+/// One page of a table: `limit + 1` rows so the caller knows whether more exist.
+pub fn table_page(
+    driver: DbDriver,
+    schema: &str,
+    table: &str,
+    filter: Option<&str>,
+    sort: &[SortKey],
+    offset: u64,
+    limit: u64,
+) -> String {
+    let mut sql = table_select(&qualified(driver, schema, table), filter, sort, |name| quote_ident(driver, name));
     if driver == DbDriver::SqlServer {
         if sort.is_empty() {
             sql.push_str(" ORDER BY (SELECT 1)");
@@ -535,6 +550,9 @@ fn where_key(driver: DbDriver, key: &[CellValue]) -> String {
 /// The DML statement for `edit`. Values are written as quoted literals, which
 /// every supported database coerces to the column type.
 pub fn edit_statement(driver: DbDriver, schema: &str, table: &str, edit: &DbRowEdit) -> Result<String, String> {
+    if driver == DbDriver::Jdbc {
+        return Err("Custom JDBC table editing is unsupported".into());
+    }
     if driver == DbDriver::Clickhouse {
         return Err("ClickHouse table editing is unsupported: primary keys do not uniquely identify rows and edits require transactions".into());
     }
@@ -631,6 +649,7 @@ pub fn postgres_ddl_indexes(oid: u32) -> String {
 pub fn triggers(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
+        DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
         DbDriver::Clickhouse => "SELECT '', '', '' WHERE 0".to_owned(),
         DbDriver::Snowflake => "SELECT '', '', '' WHERE 1 = 0".to_owned(),
         DbDriver::Sqlite => format!(
@@ -691,7 +710,7 @@ pub fn postgres_legacy(sql: &str) -> Option<String> {
 pub fn routines(driver: DbDriver, schema: &str) -> Option<String> {
     let s = quote_literal(driver, schema);
     match driver {
-        DbDriver::Sqlite | DbDriver::Clickhouse => None,
+        DbDriver::Sqlite | DbDriver::Clickhouse | DbDriver::Jdbc => None,
         // Functions of extensions are left out, as in IDEA.
         DbDriver::Postgres => Some(format!(
             "SELECT p.proname, CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END, \

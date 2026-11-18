@@ -477,7 +477,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   // SQL resolution scopes in the settings can move the console to another data source.
   useProject((s) => s.settings);
   const boundId = bound ? splitTarget(bound).id : null;
-  const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
+  const jdbc = sourceById(boundId)?.driver === "jdbc";
+  const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse" && !jdbc;
   const sqlServer = sourceById(boundId)?.driver === "sqlServer";
   const switchable = schemaSwitchable(sourceById(boundId)?.driver);
   // The console's active schema: its pick, else the connection's default (`completion.defaultSchema`).
@@ -549,12 +550,14 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         disabled={!bound || running}
         onClick={() => void executeScriptInView(view, path)}
       />
-      <IconButton
-        icon="db-plan"
-        title="Explain Plan"
-        disabled={!bound || running}
-        onClick={() => void explainInView(view, path)}
-      />
+      {!jdbc && (
+        <IconButton
+          icon="db-plan"
+          title="Explain Plan"
+          disabled={!bound || running}
+          onClick={() => void explainInView(view, path)}
+        />
+      )}
       <IconButton
         icon="stop"
         title="Cancel Running Statement"
