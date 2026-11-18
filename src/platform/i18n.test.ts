@@ -297,6 +297,7 @@ describe("catalogs", () => {
     "Docker",
     "URL",
     "ID:",
+    "Perforce",
     "Code Vision",
     "JUnit",
     "HotSwap",

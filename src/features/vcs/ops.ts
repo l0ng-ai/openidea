@@ -77,7 +77,7 @@ export function errorMessage(e: unknown): string {
 }
 
 /** Feedback for an explicit Git command stays visible when background VCS notifications are muted. */
-function notify(n: Omit<Parameters<NotificationService["notify"]>[0], "group" | "userInitiated">) {
+export function notify(n: Omit<Parameters<NotificationService["notify"]>[0], "group" | "userInitiated">) {
   // Hook output (linters, test runners) is often coloured; a balloon shows it as plain text.
   notifications().notify({
     ...n,

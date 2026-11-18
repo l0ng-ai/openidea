@@ -29,6 +29,7 @@ import {
   comparisonPaneIds,
   type BranchComparisonData,
 } from "./CompareBranches";
+import { registerPerforce } from "./perforce";
 import { controlLabel, controlOperation, inProgress, installOperationNoticeExpiry } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { activateRevisionAnnotations } from "./annotateRevisionProvider";
@@ -276,6 +277,7 @@ export function activate(): () => void {
     registerCopyRepositoryPath(),
     registerHistoryActions(),
     registerLogPaneActions(),
+    registerPerforce(),
     activateSettingsPages(),
     registerLocalHistoryActions(),
     installChangelists(),

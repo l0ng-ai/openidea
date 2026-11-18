@@ -259,6 +259,12 @@ impl crate::Host {
                 project.refresh_index_scope();
                 let p = project.clone();
                 tokio::task::spawn_blocking(move || p.refresh_repositories());
+            } else {
+                // `p4` runs for a trusted project only: its workspace shows up (or goes) now.
+                let p = project.clone();
+                tokio::task::spawn_blocking(move || p.refresh_p4_workspaces());
+            }
+            if project.content_roots() != roots {
                 project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
             }
             if let Some(bridge) = &project.kotlin_bridge {

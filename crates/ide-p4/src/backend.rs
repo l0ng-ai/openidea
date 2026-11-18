@@ -469,6 +469,9 @@ impl Backend for Workspace {
         if options.amend {
             return Err(unsupported("Amend"));
         }
+        if !options.partial.is_empty() {
+            return Err(unsupported("Submitting only some changes of a file"));
+        }
         let files = self.commit_selection(options)?;
         if files.is_empty() {
             return Err(IdeError::invalid("no opened files to submit"));

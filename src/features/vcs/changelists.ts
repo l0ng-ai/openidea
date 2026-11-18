@@ -4,14 +4,21 @@
  * active one); the state is persisted per project in `.openidea/changelists.json`.
  */
 import { create } from "zustand";
-import type { Changelist, ChangelistState, CommitApplySource, FileStatus, PendingCommitApply } from "@/bindings";
+import type {
+  Changelist,
+  ChangelistState,
+  CommitApplySource,
+  FileStatus,
+  PendingChangelist,
+  PendingCommitApply,
+} from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { setLocalChanges, type LocalChangelist } from "@/workbench/contributions";
+import { notifications, setLocalChanges, type LocalChangelist } from "@/workbench/contributions";
 import type { CheckState } from "./changes";
 import { checkOf, groupOf } from "./changes";
 import { effectiveKind, relTo, stripSlash } from "./model";
-import { localChangesMayBeAside, useVcs } from "./store";
+import { localChangesMayBeAside, refreshNow, useVcs } from "./store";
 
 export const DEFAULT_LIST_ID = "default";
 export const DEFAULT_LIST_NAME = "Changes";
@@ -60,6 +67,8 @@ export function syncAssignments(
 export function validateListName(state: ChangelistState, name: string, exceptId?: string): string | null {
   const n = name.trim();
   if (!n) return "Name must not be empty";
+  // Perforce changelists are told apart by number: two may share a description.
+  if (perforceRoot()) return null;
   if (state.lists.some((l) => l.id !== exceptId && l.name.toLowerCase() === n.toLowerCase()))
     return `A changelist named '${n}' already exists`;
   return null;
@@ -224,10 +233,119 @@ export function flushChangelists(): Promise<void> {
   return saving;
 }
 
+// ---------------------------------------------------------------------------
+// Perforce: the lists are the workspace's pending changelists. The server holds
+// them, so they are read from it after every status change and an edit made in
+// the UI is sent to it instead of being saved in the project.
+
+/** The project's Perforce workspace root, when its primary VCS root is one. */
+export function perforceRoot(): string | null {
+  const { roots, kinds } = useVcs.getState();
+  const root = roots[0];
+  return root && kinds[root] === "perforce" ? root : null;
+}
+
+/** The changelist number behind a list id (0 = the default changelist). */
+export function perforceChange(id: string): number {
+  return id === DEFAULT_LIST_ID ? 0 : Number(id);
+}
+
+function describe(list: Changelist): string {
+  const comment = list.comment?.trim();
+  return comment ? `${list.name.trim()}\n${comment}` : list.name.trim();
+}
+
+/** Pending changelists as the lists of the Commit window; `active` is kept when it still exists. */
+export function perforceState(pending: readonly PendingChangelist[], root: string, active: string): ChangelistState {
+  const lists: Changelist[] = [];
+  const files: Record<string, string> = {};
+  for (const change of pending) {
+    const id = change.number === 0 ? DEFAULT_LIST_ID : String(change.number);
+    const [first = "", ...rest] = change.description.split("\n");
+    lists.push({
+      id,
+      name: change.number === 0 ? "Default" : first.trim() || `Changelist ${change.number}`,
+      comment: rest.join("\n").trim(),
+    });
+    for (const file of change.files) files[relTo(root, stripSlash(file.path))] = id;
+  }
+  if (!lists.length) lists.push({ id: DEFAULT_LIST_ID, name: "Default", comment: "" });
+  return { lists, files, active: lists.some((l) => l.id === active) ? active : DEFAULT_LIST_ID };
+}
+
+let perforceLoad = 0;
+
+async function loadPerforceChangelists(root: string): Promise<void> {
+  const token = ++perforceLoad;
+  try {
+    const pending = await call(commands.p4Changelists(root));
+    if (token !== perforceLoad || perforceRoot() !== root) return;
+    useChangelists.setState({
+      state: perforceState(pending, useVcs.getState().root ?? root, useChangelists.getState().state.active),
+      loaded: true,
+    });
+  } catch (e) {
+    if (token === perforceLoad) notifyPerforce("Cannot read Perforce changelists", e);
+  }
+}
+
+function notifyPerforce(title: string, e: unknown) {
+  notifications().notify({ group: "vcs", level: "error", title, body: e instanceof Error ? e.message : String(e) });
+}
+
+/** Sends the difference between two list states to the server, then reads its answer back. */
+async function applyPerforce(root: string, cur: ChangelistState, next: ChangelistState): Promise<void> {
+  const projectRoot = useVcs.getState().root ?? root;
+  const abs = (rel: string) => (rel.startsWith("/") ? rel : `${projectRoot}/${rel}`);
+  // The active list is the IDE's own notion; show it at once.
+  useChangelists.setState({ state: { ...cur, active: next.active } });
+  try {
+    const created = new Map<string, number>();
+    for (const list of next.lists) {
+      if (cur.lists.some((l) => l.id === list.id)) continue;
+      // oxlint-disable-next-line no-await-in-loop -- one p4 command at a time: each changes the same workspace
+      created.set(list.id, await call(commands.p4ChangelistCreate(root, describe(list), [])));
+    }
+    const number = (id: string) => created.get(id) ?? perforceChange(id);
+    for (const list of next.lists) {
+      const before = cur.lists.find((l) => l.id === list.id);
+      if (!before || list.id === DEFAULT_LIST_ID) continue;
+      if (before.name !== list.name || before.comment !== list.comment)
+        // oxlint-disable-next-line no-await-in-loop -- one p4 command at a time: each changes the same workspace
+        await call(commands.p4ChangelistUpdate(root, perforceChange(list.id), describe(list)));
+    }
+    const moves = new Map<number, string[]>();
+    for (const [rel, id] of Object.entries(next.files ?? {})) {
+      const from = cur.files?.[rel];
+      if (from === undefined || from === id) continue;
+      const target = number(id);
+      moves.set(target, [...(moves.get(target) ?? []), abs(rel)]);
+    }
+    // oxlint-disable-next-line no-await-in-loop -- files must reach their lists before an emptied list is deleted
+    for (const [target, paths] of moves) await call(commands.p4Reopen(paths, target));
+    for (const list of cur.lists) {
+      if (list.id !== DEFAULT_LIST_ID && !next.lists.some((l) => l.id === list.id))
+        // oxlint-disable-next-line no-await-in-loop -- one p4 command at a time: each changes the same workspace
+        await call(commands.p4ChangelistDelete(root, perforceChange(list.id)));
+    }
+    const active = created.get(next.active);
+    if (active !== undefined) useChangelists.setState((s) => ({ state: { ...s.state, active: String(active) } }));
+  } catch (e) {
+    notifyPerforce("Perforce changelist was not updated", e);
+  }
+  await loadPerforceChangelists(root);
+  void refreshNow();
+}
+
 export function updateChangelists(fn: (s: ChangelistState) => ChangelistState) {
   const cur = useChangelists.getState().state;
   const next = fn(cur);
   if (next === cur) return;
+  const perforce = perforceRoot();
+  if (perforce) {
+    void applyPerforce(perforce, cur, next);
+    return;
+  }
   useChangelists.setState({ state: next });
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => void flushChangelists(), 250);
@@ -275,7 +393,13 @@ export function installChangelists(): () => void {
   let loadRequest = 0;
   const sync = () => {
     const { status, root, available, statusLoaded, operations, heads } = useVcs.getState();
-    if (!available || !root || !statusLoaded || !useChangelists.getState().loaded) return;
+    if (!available || !root || !statusLoaded) return;
+    const perforce = perforceRoot();
+    if (perforce) {
+      void loadPerforceChangelists(perforce);
+      return;
+    }
+    if (!useChangelists.getState().loaded) return;
     const { state } = useChangelists.getState();
     const keepGone = localChangesMayBeAside();
     const next = syncAssignments(state, changedRels(status, root), keepGone) ?? state;
@@ -314,7 +438,7 @@ export function installChangelists(): () => void {
     if (s.project !== p.project) load();
   });
   const offVcs = useVcs.subscribe((s, p) => {
-    if (s.status !== p.status) sync();
+    if (s.status !== p.status || s.kinds !== p.kinds) sync();
   });
   let clearPublished: (() => void) | null = null;
   const publish = () => {

@@ -144,7 +144,7 @@ import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
-import { existsOnDisk, refreshNow, useVcs } from "./store";
+import { existsOnDisk, refreshNow, useNoStash, usePerforce, useVcs } from "./store";
 import { StashesPanel } from "./StashesPanel";
 import { saveVcsSetting } from "./settingsUi";
 import { TOGGLE_IGNORED_FILES, useIgnoredFiles } from "./ignoredFiles";
@@ -199,16 +199,17 @@ export function CommitTabs() {
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   const tab = useCommit((s) => s.tab);
   const counts = useStashTabCounts(available);
+  const noStash = useNoStash();
   return (
     <Tabs
       variant="compact"
       className={styles.tabs}
-      activeId={stashTabOf(tab, combine)}
+      activeId={stashTabOf(tab, combine, noStash)}
       onSelect={(id) => useCommit.setState({ tab: id as CommitTab })}
       aria-label="Commit"
       items={tabItems([
         { id: "changes", label: "Commit" },
-        ...(available ? stashTabs({ combine, tab, ...counts }) : []),
+        ...(available ? stashTabs({ combine, tab, noStash, ...counts }) : []),
       ])}
     />
   );
@@ -217,9 +218,11 @@ export function CommitTabs() {
 export function CommitToolWindow() {
   const available = useVcs((s) => s.available);
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
+  const noStash = useNoStash();
   const tab = stashTabOf(
     useCommit((s) => s.tab),
     combine,
+    noStash,
   );
   if (!available)
     return (
@@ -237,7 +240,8 @@ export function StashContent({ tab, toolWindow = "commit" }: { tab: CommitTab; t
     (s) => s.placements[toolWindow]?.anchor ?? (toolWindow === "git" ? "bottom" : "left"),
   );
   const orientation = anchor === "bottom" ? "horizontal" : "vertical";
-  if (combine)
+  const noStash = useNoStash();
+  if (combine && !noStash)
     return (
       <SplitGroup orientation="vertical" className={styles.split} storageKey="openidea.vcs.stashShelfSplit">
         <SplitPanel id="stashes" defaultSize="50%" minSize="80px">
@@ -1447,6 +1451,7 @@ export function CommitMessageField({
 }) {
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
+  const perforce = usePerforce();
   const focusTick = useCommit((s) => s.focusTick);
   const ref = useRef<HTMLTextAreaElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1482,8 +1487,8 @@ export function CommitMessageField({
   return (
     <>
       <div className={styles.commitBar}>
-        <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
-        {chooseAmendTarget && amendRoot && <AmendTargetMenu root={amendRoot} />}
+        {!perforce && <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />}
+        {!perforce && chooseAmendTarget && amendRoot && <AmendTargetMenu root={amendRoot} />}
         <IconButton
           icon="history"
           title="Commit Message History"
@@ -1639,7 +1644,8 @@ function CommitMessageActions() {
 }
 
 /** Label of the Commit button. */
-export function commitLabel(amend: boolean, problems: boolean, all = false): string {
+export function commitLabel(amend: boolean, problems: boolean, all = false, perforce = false): string {
+  if (perforce) return problems ? "Submit Anyway" : "Submit";
   return problems ? "Commit Anyway" : amend ? "Amend Commit" : all ? "Commit All" : "Commit";
 }
 
@@ -1663,6 +1669,7 @@ function CommitPanel({ included }: { included: number }) {
   const staging = useStagingArea();
   const allowCommitAll = useWorkflowSettings((s) => s.vcs.commit.commitAllWhenNothingStaged);
   const commitAll = useVcs((s) => staging && allowCommitAll && isCommitAll(s.status));
+  const perforce = usePerforce();
 
   return (
     <div className={styles.commit}>
@@ -1695,9 +1702,9 @@ function CommitPanel({ included }: { included: number }) {
       )}
       <div className={styles.commitActions}>
         <Button variant="primary" disabled={!canCommit} onClick={() => void runner.run(false)} title="⌘↩">
-          <T>{commitLabel(amend, blocked, commitAll)}</T>
+          <T>{commitLabel(amend, blocked, commitAll, perforce)}</T>
         </Button>
-        {fixup ? (
+        {perforce ? null : fixup ? (
           <Button
             className={styles.pushButton}
             disabled={!canCommit}

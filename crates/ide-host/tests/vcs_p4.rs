@@ -142,4 +142,9 @@ async fn restricted_mode_never_runs_p4() {
     project.refresh_repositories();
     assert!(project.p4_workspaces().is_empty(), "a P4CONFIG file can name a command to run");
     assert!(vcs::p4::p4_changelists(&host, "main", None).await.is_err());
+
+    // Trusting the open project is enough: no reopening.
+    host.set_project_trust(&root, true, false).await.unwrap();
+    assert!(wait_for_workspace(&project).await, "the workspace shows up once the project is trusted");
+    assert_eq!(vcs::p4::p4_changelists(&host, "main", None).await.unwrap().len(), 1);
 }

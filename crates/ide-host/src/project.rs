@@ -1211,6 +1211,19 @@ impl Project {
         );
     }
 
+    /// Looks for Perforce workspaces again: they are found in a trusted project only, so
+    /// trusting one (or restricting it) changes the answer.
+    pub fn refresh_p4_workspaces(&self) {
+        scan_p4_workspaces(
+            &self.root,
+            &self.p4,
+            &self.settings,
+            &self.sink,
+            &self.build_cache_dir(),
+            self.is_trusted(),
+        );
+    }
+
     /// Tells the UI that what version control reports changed without a file event
     /// (a file was opened or moved between changelists).
     pub fn vcs_changed(&self) {
