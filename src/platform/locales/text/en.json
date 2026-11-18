@@ -2447,5 +2447,9 @@
   "{file} changed": "{file} changed",
   "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.": "Reload the environment so new terminals, runs and language servers get the project's direnv environment again.",
   "Show files only on left": "Show files only on left",
-  "Show files only on right": "Show files only on right"
+  "Show files only on right": "Show files only on right",
+  "Add as Maven Project": "Add as Maven Project",
+  "This Maven project is not loaded": "This Maven project is not loaded",
+  "Load Maven Project": "Load Maven Project",
+  "Skip": "Skip"
 }
