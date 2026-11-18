@@ -239,7 +239,7 @@
 }
 .quickLabel {
   flex: none;
-  width: 52px;
+  width: 72px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
 }
