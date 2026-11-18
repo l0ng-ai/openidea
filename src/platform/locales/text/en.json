@@ -2451,5 +2451,6 @@
   "Add as Maven Project": "Add as Maven Project",
   "This Maven project is not loaded": "This Maven project is not loaded",
   "Load Maven Project": "Load Maven Project",
-  "Skip": "Skip"
+  "Skip": "Skip",
+  "Resize Markdown preview": "Resize Markdown preview"
 }
