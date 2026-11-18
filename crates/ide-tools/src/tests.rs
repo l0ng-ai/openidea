@@ -1074,8 +1074,8 @@ fn npm_tools_report_a_newer_registry_version() {
     assert_eq!(tools("5.4.0").updates(&cancel).unwrap(), vec![]);
 }
 
-/// Tools › Download sources: the official host is tried first, then the mirror serves what
-/// it cannot.
+/// Tools › Download sources: a configured mirror serves a GitHub release the official host
+/// cannot, and the official host is kept as the fallback.
 #[cfg(unix)]
 #[test]
 fn a_mirror_serves_what_the_official_host_cannot() {
@@ -1095,18 +1095,19 @@ fn a_mirror_serves_what_the_official_host_cannot() {
         b.into_inner().unwrap().finish().unwrap();
     }
     let digest = sources::sha256_file(&archive).unwrap();
+    // Release assets live on github.com: only those addresses are mirrored.
     let assets: Vec<String> = ["darwin-arm64.tar.gz", "darwin-x64.tar.gz", "linux-x64.tar.gz", "linux-arm64.tar.gz"]
         .iter()
         .map(|s| {
             format!(
-                r#"{{"name":"lua-language-server-3.13.5-{s}","browser_download_url":"https://example.invalid/{s}","size":{},"digest":"sha256:{digest}"}}"#,
+                r#"{{"name":"lua-language-server-3.13.5-{s}","browser_download_url":"https://github.com/LuaLS/lua-language-server/releases/download/3.13.5/{s}","size":{},"digest":"sha256:{digest}"}}"#,
                 fs::metadata(&archive).unwrap().len()
             )
         })
         .collect();
     let json = fixtures.join("release.json");
     fs::write(&json, format!(r#"{{"tag_name":"3.13.5","assets":[{}]}}"#, assets.join(","))).unwrap();
-    // The official host refuses every archive; only a URL carrying the mirror prefix is served.
+    // The mirror serves the asset; the official host is unreachable.
     let log = fixtures.join("asked.log");
     env.script(
         &env.sys,
@@ -1117,7 +1118,7 @@ while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--conn
 /bin/echo "$url" >> '{log}'
 case "$url" in
   https://api.github.com/*) /bin/cat '{json}';;
-  https://mirror.test/https://example.invalid/*) /bin/cp '{archive}' "$out";;
+  https://mirror.test/https://github.com/*) /bin/cp '{archive}' "$out";;
   *) exit 22;;
 esac"#,
             log = log.display(),
@@ -1132,10 +1133,9 @@ esac"#,
         .install("lua-language-server", &langs(), &CancellationToken::new(), &emit)
         .unwrap();
     let asked = fs::read_to_string(&log).unwrap();
-    // The official asset was asked first, and the mirror only after it failed.
-    let official_at = asked.find("https://example.invalid/").expect("the official host is tried first");
-    let mirror_at = asked.find("https://mirror.test/https://example.invalid/").expect("the mirror is tried");
-    assert!(official_at < mirror_at, "{asked}");
+    // A configured mirror is tried first — waiting for a slow official host would defeat it.
+    let mirror_at = asked.find("https://mirror.test/https://github.com/").expect("the mirror is tried");
+    assert!(!asked[..mirror_at].contains("releases/download"), "the mirror goes first: {asked}");
 }
 
 /// A mirror may only deliver bytes something can vouch for; the official host may not.

@@ -1713,9 +1713,13 @@ fn fetch_verified(
         if index > 0 {
             let _ = std::fs::remove_file(&archive);
         }
-        emit(InstallEvent::Line {
-            text: format!("Trying {} ({} of {})…", candidate.describe(), index + 1, candidates.len()),
-        });
+        // Only worth saying when there is a choice of source: with one candidate the line
+        // would just repeat the download message that follows.
+        if candidates.len() > 1 {
+            emit(InstallEvent::Line {
+                text: format!("Trying {} ({} of {})…", candidate.describe(), index + 1, candidates.len()),
+            });
+        }
         let attempt = http.download(&candidate.url, &archive, dl.size, cancel, emit);
         match attempt {
             Ok(()) => match check_sha256(&archive, dl, expected.as_deref(), candidate.mirror.is_some(), emit) {

@@ -813,7 +813,7 @@ export const TOOLS_PAGES: PageSpec[] = [
   MCP_SERVER_PAGE,
   {
     id: "tools.downloadSources",
-    title: "Download Sources",
+    title: "Download Mirrors",
     group: TOOLS_GROUP,
     order: 590,
     keywords: ["mirror", "download", "github", "proxy", "slow", "language server", "accelerate"],
