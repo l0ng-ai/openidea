@@ -101,6 +101,8 @@ export function sectionLimit(tab: SeTab, section: SectionId, extra: number): num
   return (tab === "all" ? ALL_TAB_LIMIT : TAB_LIMIT) + extra;
 }
 
+const LITERAL_SECTIONS: ReadonlySet<SectionId> = new Set(["endpoints", "actions", "text"]);
+
 export class SeController {
   private gen = 0;
   private sections = new Map<SectionId, SectionState>();
@@ -132,7 +134,11 @@ export class SeController {
     this.req = { query: req.query, tab: req.tab };
     const parsed = parseLocationQuery(req.query, this.deps.root());
     const text = parsed.text.trim();
-    const wanted = sectionsFor(req.tab, !text);
+    // `File.kt:42` is a location only where a result opens at it; text, actions and
+    // endpoints match the query as typed (`localhost:8080`).
+    const raw = req.query.trim();
+    const queryOf = (id: SectionId) => (LITERAL_SECTIONS.has(id) ? raw : text);
+    const wanted = sectionsFor(req.tab, !(req.tab === "all" ? text : queryOf(req.tab)));
     this.started = this.deps.now();
     this.elapsed = null;
 
@@ -160,7 +166,7 @@ export class SeController {
       const prev = this.sections.get(id);
       this.sections.set(id, { items: prev?.items ?? [], hasMore: prev?.hasMore ?? false, loading: true });
       this.live.set(id, gen);
-      void this.start(id, gen, { text, line: parsed.line, col: parsed.col, req, limit });
+      void this.start(id, gen, { text: queryOf(id), line: parsed.line, col: parsed.col, req, limit });
     }
     this.notify();
   }
