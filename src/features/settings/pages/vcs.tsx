@@ -556,6 +556,12 @@ export const VCS_PAGES: PageSpec[] = [
             key: "vcs.git.showBranchInProjectView",
             label: "Show branch and incoming/outgoing commits in the Project view",
           },
+          {
+            kind: "toggle",
+            key: "vcs.git.cliStatus",
+            label: "Detect changes with the Git command line",
+            hint: "Slower, but matches git status where encryption or file protection software makes files look modified.",
+          },
         ],
       },
       {
