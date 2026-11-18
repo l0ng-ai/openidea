@@ -17,7 +17,7 @@ import {
   registerMenuGroup,
   registerMenuSlotItem,
   registerOverlay,
-  registerSettingsPage,
+  registerSettingsPages,
   registerStatusItem,
   registerToolWindow,
   toolWindowService,
@@ -36,7 +36,7 @@ import {
   providerIcon,
 } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
-import { focusedSession } from "./sessionFocus";
+import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
 import { clearAgentTabFontZoom } from "./fontZoom";
 import {
@@ -55,8 +55,8 @@ import { replyActions } from "./replyActions";
 
 /** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
-  const disposers = [
-    registerSettingsPage({
+  return registerSettingsPages([
+    {
       id: REGISTRY_PAGE,
       title: "Coding Agents",
       group: AGENTS_GROUP,
@@ -64,8 +64,8 @@ export function activateSettingsPages(): () => void {
       order: 450,
       keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-    }),
-    registerSettingsPage({
+    },
+    {
       id: WORKING_STATUS_PAGE,
       title: "Working Status",
       group: AGENTS_GROUP,
@@ -73,25 +73,24 @@ export function activateSettingsPages(): () => void {
       order: 465,
       keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
       component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
-    }),
-    registerSettingsPage({
+    },
+    {
       id: MCP_PAGE,
       title: "External MCP Servers",
       group: AGENTS_GROUP,
       order: 475,
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
-    }),
-    registerSettingsPage({
+    },
+    {
       id: POLICY_PAGE,
       title: "Command Permissions",
       group: AGENTS_GROUP,
       order: 490,
       keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
       component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
-    }),
-  ];
-  return () => disposers.reverse().forEach((d) => d());
+    },
+  ]);
 }
 
 export function activate(): () => void {
@@ -227,11 +226,13 @@ export function activate(): () => void {
       {
         id: "agents.focusInput",
         title: "Focus Agent Input",
-        description: "Focuses the message input of the current agent task without moving the caret.",
+        description:
+          "Focuses the message input of the current agent task, or of the one on screen when focus is elsewhere and no panel claims the shortcut, without moving the caret.",
         category: "Agents",
-        when: "agentSessionFocus && agentInputAvailable",
-        keyWhen: "agentSessionFocus && !popupOpen",
-        run: () => focusedSession()?.focusInput?.(),
+        when: "agentInputAvailable",
+        // In a task view it wins over the editor's Go to Line; elsewhere it yields wherever that applies.
+        keyWhen: "!popupOpen && (agentSessionFocus || !(textEditorActive && (editorFocus || !toolWindowFocus)))",
+        run: () => inputSession()?.focusInput?.(),
       },
       {
         id: "agents.cycleEffort",

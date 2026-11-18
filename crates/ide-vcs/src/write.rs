@@ -771,9 +771,14 @@ fn overwritten_files(stderr: &str) -> Option<Vec<String>> {
     listed_files(stderr, "local changes to the following files would be overwritten")
 }
 
-/// Untracked files git refuses to overwrite, from its error message.
-fn overwritten_untracked(stderr: &str) -> Option<Vec<String>> {
-    listed_files(stderr, "untracked working tree files would be")
+/// Untracked files git refuses to lose, from its error message: they would be *removed*
+/// by the checkout (tracked here, absent from the target) or *overwritten* by it (present
+/// in the target). Returns the files and whether they would be removed.
+fn refused_untracked(stderr: &str) -> Option<(Vec<String>, bool)> {
+    if let Some(files) = listed_files(stderr, "untracked working tree files would be removed") {
+        return Some((files, true));
+    }
+    Some((listed_files(stderr, "untracked working tree files would be")?, false))
 }
 
 /// The branch git refused to check out or update because another worktree has it, from
@@ -840,8 +845,8 @@ pub(crate) fn checkout_with(
     if let Some((branch, path)) = branch_of_other_worktree(&stderr) {
         return Ok(CheckoutOutcome::CheckedOutInWorktree { branch, path: path.into() });
     }
-    if let Some(files) = overwritten_untracked(&stderr) {
-        return Ok(CheckoutOutcome::UntrackedFiles { files });
+    if let Some((files, removed)) = refused_untracked(&stderr) {
+        return Ok(CheckoutOutcome::UntrackedFiles { files, removed });
     }
     let Some(files) = overwritten_files(&stderr) else {
         return Err(cli::failure(&argv, &out.stderr, &out.stdout, out.code));

@@ -176,6 +176,24 @@ describe("run config → launch config", () => {
     expect(extra(uv)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python" });
   });
 
+  it("debugpy: a Windows venv interpreter or tool path debugs with that interpreter", () => {
+    usePlatform.setState({ os: "windows" });
+    const venv = "C:\\work\\app\\.venv\\Scripts\\";
+    const script = launchConfigFor(
+      rc({ kind: "python", command: `${venv}python.exe`, args: ["main.py"], debugAdapter: "debugpy" }),
+      "C:/work/app",
+    )!;
+    expect(extra(script).python).toBe(`${venv}python.exe`);
+    expect(extra(script).module).toBeUndefined();
+    expect(script.program).toBe("C:/work/app/main.py");
+
+    const pytest = launchConfigFor(
+      rc({ kind: "pytest", command: `${venv}pytest.exe`, args: ["-x"], debugAdapter: "debugpy" }),
+      "C:/work/app",
+    )!;
+    expect(extra(pytest)).toMatchObject({ module: "pytest", python: `${venv}python.exe` });
+  });
+
   it("js-debug: npm scripts run through the package manager, node scripts directly", () => {
     const npm = launchConfigFor(
       rc({ kind: "npm", command: "pnpm", args: ["run", "dev"], cwd: "web", debugAdapter: "js-debug" }),

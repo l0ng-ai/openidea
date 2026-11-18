@@ -281,6 +281,22 @@ pub struct AgentImage {
     pub name: Option<String>,
 }
 
+impl AgentImage {
+    /// The type the bytes are in. Agents reject an image whose declared type doesn't match its
+    /// bytes, and a pasted image's declared type can be wrong (a browser's JPEG or WebP copied as
+    /// `image/png`). Falls back to `mime_type` for formats not recognised here.
+    pub fn media_type(&self) -> &str {
+        let head = crate::acp::normalize_base64(&self.data[..self.data.len().min(16)]);
+        match head.as_slice() {
+            [0x89, b'P', b'N', b'G', ..] => "image/png",
+            [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
+            [b'G', b'I', b'F', b'8', ..] => "image/gif",
+            [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+            _ => &self.mime_type,
+        }
+    }
+}
+
 /// A message to the agent: text, plus files to look at and images.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -452,6 +468,14 @@ pub enum AgentEntry {
     },
     Agent {
         text: String,
+    },
+    /// A question that can be answered while the agent keeps working, or after the turn ends.
+    Question {
+        id: String,
+        title: String,
+        questions: Vec<AgentQuestion>,
+        /// The submitted answers, or `Skipped`; `None` while unanswered.
+        chosen: Option<String>,
     },
     Thought {
         text: String,

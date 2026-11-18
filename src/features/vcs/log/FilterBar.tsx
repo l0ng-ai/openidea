@@ -491,6 +491,7 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
         toggle("GitHub Commit Checks", o, "showGitHubChecks"),
         { kind: "separator" },
         toggle("Column Headers", o, "showColumnHeaders"),
+        toggle("Column Dividers", o, "showColumnDividers"),
       ],
     },
     { kind: "separator" },

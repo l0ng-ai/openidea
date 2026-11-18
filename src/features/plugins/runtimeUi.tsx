@@ -4,7 +4,7 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, readClipboardPng, writeClipboardText } from "@/platform/clipboard";
 import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
 import {
   contentTabData,
@@ -17,6 +17,7 @@ import {
 import { create } from "zustand";
 import { refreshRunTargets, startRunTargets } from "./runTargets";
 import type {
+  ClipboardAnswer,
   CommitAnswer,
   CommandAnswer,
   CommitRequest,
@@ -34,6 +35,7 @@ import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
+import { onLocalDiagnostics } from "@/platform/localDiagnostics";
 import { isOpenable, openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -48,7 +50,7 @@ import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
 import { askNetPermission } from "./netAsk";
-import { confirmRemoteCopy, confirmRemoteOpen } from "./remoteAsk";
+import { confirmRemoteClipboardRead, confirmRemoteCopy, confirmRemoteOpen } from "./remoteAsk";
 import { usePluginT } from "./pluginText";
 import { setPluginOutput } from "./views/outputStore";
 import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
@@ -364,16 +366,21 @@ function trackWorkbenchEvents(): () => void {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
   // Diagnostics arrive from language servers and builds without a file event; plugins
-  // that draw them (Inspection Lens) re-read the snapshot when this fires.
-  const offProblems = onIdeEvent("diagnostics", () => {
+  // that draw them (Inspection Lens) re-read the snapshot when this fires. Typo and
+  // other UI-side inspections publish through localDiagnostics instead, without an
+  // `IdeEvent::diagnostics`, so wire both sources to the same notification.
+  const problemsChanged = () => {
     if (wanted.has("problems-changed")) post({ kind: "problemsChanged" });
-  });
+  };
+  const offProblems = onIdeEvent("diagnostics", problemsChanged);
+  const offLocalProblems = onLocalDiagnostics(problemsChanged);
   return () => {
     offEditor();
     offActions();
     offVcs();
     offSettings();
     offProblems();
+    offLocalProblems();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
     queue = [];
@@ -462,6 +469,37 @@ async function answerCommit(requestId: string, request: CommitRequest) {
   }
   await pluginsBackend()
     .answerCommit(requestId, answer)
+    .catch(() => {});
+}
+
+/**
+ * Reads this machine's clipboard for a plugin command the user ran (`ui.read-clipboard`). A remote
+ * window's plugin runs on its server, so the user confirms first. A read that fails is reported, not
+ * sent as an empty clipboard.
+ */
+async function answerClipboard(requestId: string, pluginId: string) {
+  const controller = new AbortController();
+  openPrompts.set(requestId, controller);
+  let answer: ClipboardAnswer;
+  try {
+    if (isRemoteWindow() && !(await confirmRemoteClipboardRead(pluginId, controller.signal))) {
+      answer = { kind: "refused" };
+    } else {
+      const [text, png] = await Promise.allSettled([readClipboardPlainText(), readClipboardPng()]);
+      const plain = (text.status === "fulfilled" && text.value) || null;
+      const image = png.status === "fulfilled" ? png.value : null;
+      // Either kind read is an answer; nothing read and a failure is not an empty clipboard.
+      if (text.status === "rejected" && !image) throw text.reason;
+      if (png.status === "rejected" && !plain) throw png.reason;
+      answer = { kind: "content", text: plain, png: image };
+    }
+  } catch (error) {
+    answer = { kind: "failed", message: error instanceof Error ? error.message : String(error) };
+  }
+  openPrompts.delete(requestId);
+  if (controller.signal.aborted) return;
+  await pluginsBackend()
+    .answerClipboard(requestId, answer)
     .catch(() => {});
 }
 
@@ -653,6 +691,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "commitRequested":
       void answerCommit(e.requestId, e.request);
+      return true;
+    case "clipboardRequested":
+      void answerClipboard(e.requestId, e.pluginId);
       return true;
     case "revealView":
       revealWindowView(e.pluginId, e.view);

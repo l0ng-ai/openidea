@@ -52,6 +52,17 @@ describe("markdown rendering", () => {
     expect(el.querySelector("img")?.getAttribute("onerror")).toBeNull();
   });
 
+  it("puts the names a grammar can't parse in spans too (signature links find them)", async () => {
+    const md = await freshMarkdown();
+    await md.loadMarkdown();
+    const el = md.renderMarkup({
+      kind: "markdown",
+      value: "```typescript\n(method) Cart.add(product: Product, quantity?: number): Cart\n```",
+    });
+    await vi.waitFor(() => expect(el.querySelector(".tok-name")?.textContent).toBe("Product"));
+    expect(el.querySelector("code")?.textContent).toBe("(method) Cart.add(product: Product, quantity?: number): Cart");
+  });
+
   it("renders synchronously once loaded", async () => {
     const md = await freshMarkdown();
     await md.loadMarkdown();
@@ -68,6 +79,7 @@ describe("sourceLink", () => {
   it("reads the file and position a documentation link names", () => {
     project("C:/repo");
     expect(sourceLink("file:///C:/repo/src/a.py#L12,5")).toEqual({ path: "/C:/repo/src/a.py", line: 11, col: 4 });
+    expect(sourceLink("file:///p/src/cart.ts#L20%2C3")).toEqual({ path: "/p/src/cart.ts", line: 19, col: 2 });
     expect(sourceLink("https://example.com/a.py")).toBeNull();
   });
 

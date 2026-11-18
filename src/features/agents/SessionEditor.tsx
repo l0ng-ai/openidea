@@ -5,7 +5,7 @@ import { onIdeEvent } from "@/platform/ipc";
 import { isSameOrInside } from "@/platform/paths";
 import { useProject } from "@/platform/project";
 import { EmptyState, Icon, IconButton, T } from "@/ui";
-import { useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { useEditorShown, useToolWindowShown, type EditorInput } from "@/workbench/contributions";
 import clsx from "clsx";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -28,7 +28,7 @@ import { FoldedContent } from "./session/Folds";
 import { QuestionCard } from "./session/QuestionForm";
 import { SessionComposer } from "./session/SessionComposer";
 import { Stream } from "./session/Stream";
-import { focusedSession, setFocusedSession, type FocusedSession } from "./sessionFocus";
+import { focusedSession, registerReachableSession, setFocusedSession, type FocusedSession } from "./sessionFocus";
 import { cancelTask, loadEntries, markVisible, refreshChanges, scheduleChanges, useAgents } from "./store";
 
 export function SessionEditor({ input, docked = false }: { input: EditorInput; docked?: boolean }) {
@@ -102,7 +102,10 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const { fitWindowWidth } = useAgentSettings();
   const sessionRoot = useRef<HTMLDivElement>(null);
   const { fontZoom, zoomStyle } = useAgentFontZoomSurface(sessionRoot, sessionKey(id), docked, !!task);
-  const canFocusInput = shown && !!task && task.status !== "archived" && !view;
+  // A docked task is on screen while its tool window is; a tab's own `shown` is its editor slot's.
+  const toolWindowShown = useToolWindowShown();
+  const onScreen = docked ? toolWindowShown : shown;
+  const canFocusInput = onScreen && !!task && task.status !== "archived" && !view;
   const session = useMemo<FocusedSession>(
     () => ({
       openFind: () => {
@@ -124,6 +127,9 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       if (focusedSession() === session) setFocusedSession(null);
     };
   }, [session, shown]);
+  useLayoutEffect(() => {
+    if (session.focusInput) return registerReachableSession(session);
+  }, [session]);
   if (!task) return <EmptyState title="This agent task no longer exists" />;
   return (
     <div

@@ -1,7 +1,7 @@
 //! Proofreading › Typo: spell checking of open documents.
 use crate::Host;
 use crate::Project;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
 use super::doc::blocking;
 use ide_core::settings::SpellingSettings;
@@ -36,6 +36,7 @@ fn speller(project: &Project) -> Speller {
 /// Misspelt words in the comments, string literals and declared names of
 /// `doc` that `scope` includes (all of its text for prose). Cancel with
 /// `cancel_request(request)`.
+#[command(trust = always)]
 pub async fn spell_check(
     host: &Host,
     window: &str,
@@ -105,6 +106,7 @@ pub async fn spell_check(
 }
 
 /// Replacements for a misspelt `word`, best first (Typo › Change to…).
+#[command(trust = always)]
 pub async fn spell_suggest(host: &Host, window: &str, word: String) -> IdeResult<Vec<String>> {
     let project = host.project(window).ok();
     blocking(move || {
@@ -114,10 +116,4 @@ pub async fn spell_suggest(host: &Host, window: &str, word: String) -> IdeResult
     .await
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("spell_check", |c| async move {
-        spell_check(&c.host, &c.window, c.arg("doc")?, c.arg("scope")?, c.arg("request")?).await
-    });
-    d.add("spell_suggest", |c| async move { spell_suggest(&c.host, &c.window, c.arg("word")?).await });
-}
+ide_command::domain!(spell: spell_check, spell_suggest);

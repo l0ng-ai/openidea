@@ -54,6 +54,7 @@ import {
 import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 /** Loaded local images by absolute path (data URLs), shared by all previews. */
 const imageCache = new Map<string, Promise<string>>();
@@ -380,11 +381,13 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const root = ref.current;
     if (!root) return;
     const onWheel = (e: WheelEvent) => {
-      if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+      if (!editorPrefs().general.wheelZoom) return;
+      const zoom = wheelZoomStep(e);
+      if (zoom === null) return;
       if ((e.target as Element | null)?.closest?.('.mermaid-output[data-zoomed="true"]')) return;
       e.preventDefault();
       e.stopPropagation();
-      stepMarkdownPreviewFontZoom(path, root, e.deltaY < 0 ? 1 : -1);
+      if (zoom) stepMarkdownPreviewFontZoom(path, root, zoom);
     };
     root.addEventListener("wheel", onWheel, { capture: true, passive: false });
     const release = registerFontZoomSurface(root, (delta) => stepMarkdownPreviewFontZoom(path, root, delta));

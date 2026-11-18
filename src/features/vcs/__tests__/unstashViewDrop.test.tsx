@@ -48,7 +48,7 @@ import { VcsDialogHost } from "../dialogs";
 import { showUnstashDialog } from "../changeOps";
 import { useVcs } from "../store";
 
-const stash = (index: number, message: string): Stash => ({ index, message, timeMs: null });
+const stash = (index: number, message: string): Stash => ({ index, message, timeMs: null, id: `s${index}`, base: "b" });
 
 beforeEach(() => {
   mocks.stashes = new Map([

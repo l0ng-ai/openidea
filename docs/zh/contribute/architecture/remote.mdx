@@ -91,17 +91,15 @@ openidea-server --stdio | --connect <host> <port> | --version
 
 ## 信任
 
-受限模式在远程窗口中同样生效：转发一个不在受限模式白名单里的命令之前，桌面端会先问服务端远程项目是否受信任，服务端还会对每个 `invoke` 用 `Host::authorize_command` 再校验一次。对于用户已经信任的文件夹所对应的 dev container，桌面端启动服务端时会把该项目目录标记为受信任（`OPENIDEA_TRUSTED_ROOT`，从不持久化）。
+受限模式在远程窗口中同样生效：转发一个信任级别不是 `always` 的命令之前，桌面端会先查它自己对远程项目的信任决定，服务端还会对每个 `invoke` 用 `Host::authorize` 和命令声明的信任级别再校验一次。对于用户已经信任的文件夹所对应的 dev container，桌面端启动服务端时会把该项目目录标记为受信任（`OPENIDEA_TRUSTED_ROOT`，从不持久化）。
 
 WSL 和容器两种传输方式都直接带参数运行程序（`wsl.exe --exec`、`docker exec`）；只有固定脚本才会交给 `sh -c`，所有变量值都作为位置参数传递。
 
 ## 让命令支持远程
 
-1. 在 `ide-host::ops::<domain>` 中实现，参数是 `&Host` 和窗口标签，不要用 Tauri 类型。
-2. 注册到服务端的 `Dispatcher`（在 `rpc.rs` 或 `ops` 模块中写 `d.add("name", |c| async move { ... })`），用 `c.arg("…")` 读取参数。
-3. 桌面命令只是对同一函数的薄适配。
+在 `ide-host::ops::<domain>` 的实现上用 `#[command(trust = …)]` 声明它，并把它加到该模块的 `domain!` 列表里（见 [UI 与 Rust 的通信](/zh/contribute/architecture/ipc)）。服务端 `Dispatcher` 的处理函数和桌面端的路由都来自这一处声明。桌面端要路由的命令列表来自它自己的构建，而不是服务端，所以服务端无法把命令挪到桌面端执行。
 
-没有注册到 dispatcher 的命令，在远程窗口中会在本地执行——对任何涉及项目的命令来说这都是错的。
+用 `#[desktop_command]` 在 `src-tauri` 中声明的命令，在远程窗口中也在桌面端执行——对任何涉及项目的命令来说这都是错的。
 
 ## 测试
 

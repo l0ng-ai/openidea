@@ -1032,6 +1032,7 @@ pub fn call_item(conv: &Conv, item: &lsp::CallHierarchyItem, from_ranges: Vec<Ra
         path: path.into(),
         uri,
         from_ranges,
+        from_path: None,
     })
 }
 
@@ -1056,6 +1057,7 @@ pub fn type_item(conv: &Conv, item: &lsp::TypeHierarchyItem) -> Option<Hierarchy
         path: path.into(),
         uri,
         from_ranges: Vec::new(),
+        from_path: None,
     })
 }
 

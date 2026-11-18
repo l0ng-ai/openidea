@@ -56,7 +56,12 @@ function purify(): ReturnType<typeof DOMPurify> {
   // `poster`, `background` and the `src` of other tags would fetch as soon as the reply renders.
   p.addHook("uponSanitizeAttribute", (node, data) => {
     if (data.attrName === "alt" || data.attrName === "title") return;
-    if (data.attrName === "href" && node.tagName === "A") return;
+    if (data.attrName === "href" && node.tagName === "A") {
+      // A drive letter looks like a URL scheme to DOMPurify. Keep only validated local paths.
+      const link = fileHref(data.attrValue, "");
+      if (link && /^[a-z]:\//i.test(link.path)) data.forceKeepAttr = true;
+      return;
+    }
     if (namesHost(data.attrValue)) data.keepAttr = false;
   });
   const sources = new WeakMap<Node, string>();
@@ -231,6 +236,14 @@ async function linkSymbols(root: HTMLElement, spans: HTMLElement[], cwd: string)
 function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => void {
   let alive = true;
   const disposeImages = loadImages(root, cwd, images);
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
+    const href = anchor.getAttribute("href")!;
+    const link = fileHref(href, cwd);
+    const location =
+      link?.line === undefined ? "" : `:${link.line + 1}${link.col === undefined ? "" : `:${link.col + 1}`}`;
+    const target = link ? `${link.path}${location}` : href;
+    anchor.title = anchor.title && anchor.title !== target ? `${anchor.title}\n${target}` : target;
+  });
   const copies: HTMLButtonElement[] = [];
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement!;

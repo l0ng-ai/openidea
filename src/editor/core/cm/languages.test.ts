@@ -1,8 +1,10 @@
 import { EditorState } from "@codemirror/state";
+import { LanguageDescription, type Language } from "@codemirror/language";
 import { describe, expect, it } from "vitest";
+import { getIndentation } from "@codemirror/language";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { logWarning } from "./highlight";
-import { findLanguageDescription, loadSupport } from "./languages";
+import { fencedCodeMode, findLanguageDescription, loadSupport } from "./languages";
 
 describe("language modes", () => {
   it("distinguishes PHP classes, method declarations and fields for imported schemes", async () => {
@@ -270,6 +272,28 @@ describe("language modes", () => {
     }
   });
 
+  it('keeps C++ namespace and extern "C" contents at the level of their braces', async () => {
+    const support = await loadSupport(findLanguageDescription("C++", "/p/a.cpp")!);
+    const doc = [
+      "namespace foo {",
+      "class Bar {",
+      "  int x;",
+      "};",
+      "namespace inner {",
+      "void f() {",
+      "  g();",
+      "}",
+      "}  // namespace inner",
+      "}  // namespace foo",
+      'extern "C" {',
+      "int h();",
+      "}",
+    ].join("\n");
+    const state = EditorState.create({ doc, extensions: [support!, EditorState.tabSize.of(2)] });
+    const indent = (line: number) => getIndentation(state, state.doc.line(line).from);
+    expect([2, 3, 4, 5, 6, 7, 9, 10, 12, 13].map(indent)).toEqual([0, 2, 0, 0, 0, 2, 0, 0, 0, 0]);
+  });
+
   it("colours `this`, `super` and Rust's `self` as keywords", async () => {
     const highlighter = tagHighlighter([
       { tag: t.keyword, class: "keyword" },
@@ -308,5 +332,164 @@ describe("language modes", () => {
       const support = await loadSupport(desc!);
       expect(support?.language).toBeTruthy();
     }
+  });
+
+  const keywordHighlighter = tagHighlighter([{ tag: t.keyword, class: "keyword" }]);
+
+  function keywords(language: Language, source: string) {
+    const found: string[] = [];
+    highlightTree(language.parser.parse(source), keywordHighlighter, (from, to) => found.push(source.slice(from, to)));
+    return found;
+  }
+
+  it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
+    for (const path of ["/p/Cargo.toml", "/p/uv.lock"]) {
+      const support = await loadSupport(findLanguageDescription("TOML", path)!);
+      expect(keywords(support!.language, '[package]\nname = "x"'), path).toEqual(["package", "name"]);
+    }
+    const fenced = fencedCodeMode("toml")!;
+    expect(fenced.name).toBe("TOML");
+    const language =
+      fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
+    expect(keywords(language, 'name = "x"')).toEqual(["name"]);
+  });
+
+  const propertiesHighlighter = tagHighlighter([
+    { tag: t.keyword, class: "keyword" },
+    { tag: t.operator, class: "operator" },
+    { tag: t.string, class: "string" },
+    { tag: t.comment, class: "comment" },
+    { tag: t.heading, class: "heading" },
+  ]);
+
+  function highlightProperties(language: Language, source: string) {
+    const found: Array<[string, string]> = [];
+    highlightTree(language.parser.parse(source), propertiesHighlighter, (from, to, style) =>
+      found.push([source.slice(from, to), style]),
+    );
+    return found;
+  }
+
+  it("colours properties and .env keys as keywords, the first separator as an operator and the whole value as a string", async () => {
+    const support = await loadSupport(findLanguageDescription("Properties files", "/p/.env")!);
+    const source = [
+      "APP_NAME=core-user",
+      "DATABASE_URL=postgres://u:p@h:5432/db",
+      "APP_KEY=base64:abc==",
+      "key = value",
+      "key: value",
+      "export A=b",
+      "# c",
+      "[section]",
+      "a=b\\",
+      "  c",
+      "=x",
+      // A blank line ends a continued value.
+      "d=e\\",
+      "",
+      "f=g",
+    ].join("\n");
+    expect(highlightProperties(support!.language, source)).toEqual([
+      ["APP_NAME", "keyword"],
+      ["=", "operator"],
+      ["core-user", "string"],
+      ["DATABASE_URL", "keyword"],
+      ["=", "operator"],
+      ["postgres://u:p@h:5432/db", "string"],
+      ["APP_KEY", "keyword"],
+      ["=", "operator"],
+      ["base64:abc==", "string"],
+      ["key ", "keyword"],
+      ["=", "operator"],
+      [" value", "string"],
+      ["key", "keyword"],
+      [":", "operator"],
+      [" value", "string"],
+      ["export A", "keyword"],
+      ["=", "operator"],
+      ["b", "string"],
+      ["# c", "comment"],
+      ["[section]", "heading"],
+      ["a", "keyword"],
+      ["=", "operator"],
+      ["b\\", "string"],
+      ["  c", "string"],
+      ["=", "operator"],
+      ["x", "string"],
+      ["d", "keyword"],
+      ["=", "operator"],
+      ["e\\", "string"],
+      ["f", "keyword"],
+      ["=", "operator"],
+      ["g", "string"],
+    ]);
+  });
+
+  it("colours properties keys in ```ini and ```properties code blocks", async () => {
+    for (const info of ["ini", "properties"]) {
+      const fenced = fencedCodeMode(info)!;
+      expect(fenced.name, info).toBe("Properties files");
+      const language =
+        fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
+      expect(highlightProperties(language, "a=b"), info).toEqual([
+        ["a", "keyword"],
+        ["=", "operator"],
+        ["b", "string"],
+      ]);
+    }
+  });
+  it("colours Typst markup, embedded code and math", async () => {
+    const support = await loadSupport(findLanguageDescription("Typst", "/p/notes.typ")!);
+    const highlighter = tagHighlighter([
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.comment, class: "comment" },
+      { tag: t.heading, class: "heading" },
+      { tag: t.strong, class: "strong" },
+      { tag: t.emphasis, class: "emphasis" },
+      { tag: t.string, class: "string" },
+      { tag: t.number, class: "number" },
+      { tag: t.function(t.variableName), class: "function" },
+      { tag: t.labelName, class: "label" },
+      { tag: t.monospace, class: "raw" },
+      { tag: t.atom, class: "atom" },
+    ]);
+    const source = [
+      "#set page(width: 10cm)",
+      "// note",
+      "= Intro <intro>",
+      "Some *bold* and _it_ in snake_case, `raw` and $x^2$ see @intro.",
+      "#let total = 1 + 2",
+      "#if true [yes]",
+      "```rust",
+      "let x = 1;",
+      "```",
+    ].join("\n");
+    const found: string[] = [];
+    highlightTree(support!.language.parser.parse(source), highlighter, (from, to, cls) =>
+      found.push(`${source.slice(from, to)}:${cls}`),
+    );
+    expect(found).toEqual(
+      expect.arrayContaining([
+        "#set:keyword",
+        "page:function",
+        "10cm:number",
+        "// note:comment",
+        "= Intro :heading",
+        "<intro>:label",
+        "*bold*:strong",
+        "_it_:emphasis",
+        "`raw`:raw",
+        "$:keyword",
+        "@intro:label",
+        "#let:keyword",
+        "1:number",
+        "#if:keyword",
+        "true:atom",
+        "```rust:raw",
+        "let x = 1;:raw",
+      ]),
+    );
+    expect(found.filter((f) => f.endsWith(":emphasis"))).toEqual(["_it_:emphasis"]);
+    expect(found).not.toContain("yes:keyword");
   });
 });

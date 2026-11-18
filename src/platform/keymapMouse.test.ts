@@ -15,6 +15,7 @@ import {
 } from "./keymap";
 import { registerAction } from "./actions";
 import { setContext } from "./context";
+import { setLocale, useI18n } from "./i18n";
 
 const noMods = { metaKey: false, ctrlKey: false, altKey: false, shiftKey: false };
 
@@ -28,7 +29,9 @@ describe("mouse shortcuts", () => {
     expect(mouseStrokeOf({ ...noMods, button: 3 })).toBe("Button4");
     expect(mouseStrokeOf({ ...noMods, button: 4 })).toBe("Button5");
     expect(mouseStrokeOf({ ...noMods, button: 3, altKey: true, shiftKey: true })).toBe("Alt+Shift+Button4");
-    for (const button of [0, 1, 2]) expect(mouseStrokeOf({ ...noMods, button })).toBeNull();
+    for (const button of [0, 2]) expect(mouseStrokeOf({ ...noMods, button })).toBeNull();
+    expect(mouseStrokeOf({ ...noMods, button: 1 })).toBe("Button2");
+    expect(mouseStrokeOf({ ...noMods, button: 1, altKey: true })).toBe("Alt+Button2");
   });
 
   it("parses, normalizes and formats mouse bindings", () => {
@@ -41,10 +44,26 @@ describe("mouse shortcuts", () => {
     expect(formatBinding("Ctrl+Button5", false)).toBe("Ctrl+Button5 Click");
   });
 
+  it.each([
+    ["en", "Middle Click"],
+    ["zh", "鼠标中键"],
+  ])("formats middle mouse shortcuts in %s", async (locale, label) => {
+    const originalLocale = useI18n.getState().locale;
+    try {
+      await setLocale(locale);
+      expect(formatBinding("Button2", false)).toBe(label);
+      expect(formatBinding("Button2", true)).toBe(label);
+      expect(formatBinding("Ctrl+Alt+Button2", false)).toBe(`Ctrl+Alt+${label}`);
+      expect(formatBinding("Alt+Meta+Button2", true)).toBe(`⌥⌘${label}`);
+    } finally {
+      await setLocale(originalLocale);
+    }
+  });
+
   it("records modified left clicks without capturing selection and context-menu clicks", () => {
     expect(mouseStrokeOf({ ...noMods, button: 0, altKey: true, metaKey: true })).toBe("Alt+Meta+Button1");
     expect(mouseStrokeOf({ ...noMods, button: 0, shiftKey: true })).toBeNull();
-    for (const button of [1, 2]) expect(mouseStrokeOf({ ...noMods, button, metaKey: true })).toBeNull();
+    expect(mouseStrokeOf({ ...noMods, button: 2, metaKey: true })).toBeNull();
     expect(normalizeBinding("Meta+Alt+Button1")).toBe("Alt+Meta+Button1");
     expect(formatBinding("Alt+Meta+Button1", true)).toBe("⌥⌘Left Click");
     expect(formatBinding("Ctrl+Alt+Button1", false)).toBe("Ctrl+Alt+Left Click");
@@ -103,6 +122,19 @@ describe("mouse shortcuts", () => {
       }
     });
 
+    it("does not consume a rectangular gesture or run its action outside the editor", () => {
+      const run = vi.fn();
+      const id = "editor.createRectangularSelectionOnMouseDrag";
+      const remove = registerAction({ id, title: "Create Rectangular Selection on Mouse Drag", run });
+      try {
+        const [down] = click(document.getElementById("tree")!, 0, { altKey: true });
+        expect(down!.defaultPrevented).toBe(false);
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        remove();
+      }
+    });
+
     it.each([
       ["the editor", () => editor],
       ["another component", () => document.getElementById("tree")!],
@@ -138,6 +170,26 @@ describe("mouse shortcuts", () => {
       expect(reached).toHaveBeenCalledTimes(3);
       expect(back).not.toHaveBeenCalled();
       expect(forward).not.toHaveBeenCalled();
+    });
+
+    it("leaves a configured middle gesture to the editor and other components", () => {
+      const run = vi.fn();
+      const remove = registerAction({ id: "test.middle", title: "Middle", run });
+      useKeymap.setState({ overrides: { "test.middle": ["Button2"] } });
+      const reached = vi.fn();
+      editor.addEventListener("mousedown", reached);
+      const tree = document.getElementById("tree")!;
+      tree.addEventListener("mousedown", reached);
+      try {
+        for (const target of [editor, tree]) {
+          const [down] = click(target, 1);
+          expect(down!.defaultPrevented).toBe(false);
+        }
+        expect(reached).toHaveBeenCalledTimes(2);
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        remove();
+      }
     });
 
     it("follows keymap overrides and modifiers", async () => {

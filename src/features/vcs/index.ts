@@ -36,6 +36,7 @@ import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
 import { installHunkPopup } from "./HunkPopup";
 import { LOCAL_HISTORY_KIND } from "./localHistoryKind";
+import { DIRECTORY_COMPARE_KIND, directoryCompareTitle, type DirectoryCompareData } from "./directoryCompareKind";
 import { SELECTION_HISTORY_KIND, type SelectionHistoryData } from "./selectionHistoryKind";
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
@@ -311,6 +312,13 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),
       title: (input) => `Merge: ${baseName((input.data as MergeData).path)}`,
       icon: () => "branch",
+    }),
+    registerEditorKind({
+      kind: DIRECTORY_COMPARE_KIND,
+      component: lazyComponent(() => import("./DirectoryCompare").then((m) => m.DirectoryCompareEditor)),
+      title: (input) => directoryCompareTitle(input.data as DirectoryCompareData),
+      icon: () => "diff",
+      restorable: true,
     }),
     registerEditorKind({
       kind: LOCAL_HISTORY_KIND,

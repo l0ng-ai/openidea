@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
-import { closeAll, getSession, newTab, useTerminals } from "./store";
+import { getContext, setContext } from "@/platform/context";
+import { closeAll, closeTab, getSession, newTab, useTerminals } from "./store";
 
 const { focused } = vi.hoisted(() => ({ focused: [] as string[] }));
 
@@ -93,5 +94,38 @@ describe("shell exit with sessions left", () => {
     shellExit(a.session);
     expect(focused).toEqual([]);
     expect(document.activeElement).toBe(editor);
+  });
+});
+
+describe("terminalFocus after the focused pane goes away", () => {
+  function typeInto(key: string) {
+    const host = (getSession(key) as unknown as { host: HTMLDivElement }).host;
+    const input = document.createElement("textarea");
+    host.appendChild(input);
+    document.body.appendChild(host);
+    input.focus();
+    setContext("terminalFocus", true);
+  }
+
+  it("is cleared when the shell exits and the last tab closes", () => {
+    const tab = newTab("/repo");
+    typeInto(tab.session);
+    shellExit(tab.session);
+    expect(getContext().terminalFocus).toBe(false);
+  });
+
+  it("is cleared when the focused tab is closed", () => {
+    const tab = newTab("/repo");
+    typeInto(tab.session);
+    closeTab(tab.id);
+    expect(getContext().terminalFocus).toBe(false);
+  });
+
+  it("is left alone when a background session ends", () => {
+    const a = newTab("/repo");
+    const b = newTab("/repo");
+    typeInto(b.session);
+    closeTab(a.id);
+    expect(getContext().terminalFocus).toBe(true);
   });
 });

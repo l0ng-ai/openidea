@@ -605,9 +605,11 @@ export function overrideDeclarations(
     const o = overrides[attr.id];
     if (!o) continue;
     if (setOrCleared(o.foreground) && attr.fg) {
-      out.push([attr.fg, o.foreground]);
+      // No foreground means the default text colour, not invisible text.
+      const fg = o.foreground === CLEAR_COLOR && attr.id !== "text" ? "var(--fg-editor)" : o.foreground!;
+      out.push([attr.fg, fg]);
       // Terminal prefers `--terminal-ansi-*`; keep it in sync with console `--ansi-*`.
-      if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, o.foreground]);
+      if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, fg]);
     }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);

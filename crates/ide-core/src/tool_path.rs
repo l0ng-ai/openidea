@@ -2,7 +2,7 @@
 //! their settings come from, installers. An app started from the desktop gets a
 //! minimal `PATH`, and version managers set theirs up in shell rc files.
 
-use crate::process::{host_var_os, login_env};
+use crate::process::{host_var_os, host_var_os_in, login_env};
 use crate::version_managers;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -14,6 +14,16 @@ use std::path::{Path, PathBuf};
 /// launchers, their settings hooks and tool detection all look here, so a settings
 /// hook finds the executable its server is launched from.
 pub fn search_path() -> OsString {
+    search_path_for(None)
+}
+
+/// [`search_path`] for a child started in `dir`: the `PATH` of the project holding it
+/// ([`crate::project_env`], e.g. a Nix devshell's) comes first.
+pub fn search_path_in(dir: &Path) -> OsString {
+    search_path_for(Some(dir))
+}
+
+fn search_path_for(dir: Option<&Path>) -> OsString {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
     let shell_path = login_env().and_then(|env| env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()));
     let shims: Vec<PathBuf> = version_managers::managers().iter().map(|m| m.shims()).collect();
@@ -21,7 +31,11 @@ pub fn search_path() -> OsString {
     // entries after the inherited ones so missing user tools still resolve.
     let user_path = crate::process::user_path();
     let dirs = search_dirs(
-        host_var_os("PATH").as_deref(),
+        match dir {
+            Some(dir) => host_var_os_in(dir, "PATH"),
+            None => host_var_os("PATH"),
+        }
+        .as_deref(),
         shell_path.as_deref(),
         user_path.as_deref(),
         home.as_deref(),

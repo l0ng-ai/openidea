@@ -8,6 +8,7 @@
 //! next prompt when the agent supports `session/load`.
 
 mod acp;
+mod async_questions;
 mod catalogs;
 mod config;
 mod conversation;
@@ -415,11 +416,15 @@ struct Task {
     live: Mutex<Option<Live>>,
     /// Serializes starting the agent.
     connecting: tokio::sync::Mutex<()>,
+    /// Serializes replies from multiple windows to the same async question.
+    answering_questions: tokio::sync::Mutex<()>,
     /// Unanswered permission requests: where to send the chosen option id.
     permissions: Mutex<HashMap<u32, std::sync::mpsc::Sender<Option<String>>>>,
     next_permission: AtomicU32,
     /// Set while `session/load` replays history we already have.
     replaying: AtomicBool,
+    /// The saved session failed to load and the user was told: the next start opens a new one.
+    start_fresh: AtomicBool,
     /// The current turn is being cancelled to send the first queued message right away.
     send_now: AtomicBool,
     /// The user stopped the current turn. A stop that reaches the agent before it took the
@@ -1409,6 +1414,53 @@ impl AgentManager {
         }
     }
 
+    /// Replies to a non-blocking question without interrupting the agent's current turn.
+    pub async fn answer_question(&self, id: &str, question: &str, answer: Option<String>) -> IdeResult<()> {
+        let task = self.task(id)?;
+        let _answering = task.answering_questions.lock().await;
+        let questions = {
+            let s = task.state.lock();
+            s.conversation
+                .main
+                .entries
+                .iter()
+                .find_map(|entry| match entry {
+                    AgentEntry::Question { id, questions, chosen: None, .. } if id == question => {
+                        Some(questions.clone())
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| IdeError::not_found("the question was already answered"))?
+        };
+        let chosen = match answer {
+            None => "Skipped".to_owned(),
+            Some(answer) => {
+                let (text, record) = async_questions::reply(&questions, &answer)?;
+                let prompt = AgentPrompt { text, files: Vec::new(), images: Vec::new() };
+                if let Err(prompt) = task.steer(prompt).await {
+                    if task.state.lock().busy {
+                        return Err(IdeError::unavailable("the reply could not join the running turn; try again"));
+                    }
+                    self.prompt(id, prompt, false).await?;
+                }
+                record
+            }
+        };
+        let changed = {
+            let mut s = task.state.lock();
+            s.conversation.main.entries.iter_mut().enumerate().find_map(|(index, entry)| match entry {
+                AgentEntry::Question { id, chosen: current, .. } if id == question => {
+                    *current = Some(chosen.clone());
+                    Some((None, index))
+                }
+                _ => None,
+            })
+        };
+        task.mark_dirty(changed);
+        task.persist();
+        Ok(())
+    }
+
     /// Stops the agent and moves the task to Archived; its worktree stays.
     pub fn archive(&self, id: &str) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -1707,9 +1759,11 @@ impl Task {
             }),
             live: Mutex::new(None),
             connecting: tokio::sync::Mutex::new(()),
+            answering_questions: tokio::sync::Mutex::new(()),
             permissions: Mutex::new(HashMap::new()),
             next_permission: AtomicU32::new(1),
             replaying: AtomicBool::new(false),
+            start_fresh: AtomicBool::new(false),
             send_now: AtomicBool::new(false),
             cancel_pending: AtomicBool::new(false),
             turn_started: AtomicBool::new(false),
@@ -2318,7 +2372,8 @@ impl Task {
 
         let mut tried_auth = false;
         let mut session = None;
-        if let (Some(id), true) = (saved, can_load) {
+        let start_fresh = self.start_fresh.load(Ordering::Acquire);
+        if let (Some(id), true, false) = (saved, can_load, start_fresh) {
             self.replaying.store(true, Ordering::Release);
             let mut params = session_params(&cwd_s, &mcp_servers);
             params["sessionId"] = json!(&id);
@@ -2327,7 +2382,23 @@ impl Task {
             self.replaying.store(false, Ordering::Release);
             match loaded {
                 Ok(v) => session = Some((id, v)),
-                Err(e) => tracing::info!("agent task {}: session/load failed, starting a new session: {e}", self.id),
+                // Not silently: a new session would lose the conversation and replace the saved id.
+                Err(e) => {
+                    tracing::info!("agent task {}: session/load failed: {e}", self.id);
+                    if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
+                        return Err(SessionOpenError { message, allow_acp_fallback: false });
+                    }
+                    self.start_fresh.store(true, Ordering::Release);
+                    return Err(SessionOpenError {
+                        message: format!(
+                            "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
+                             continue in a new session. The agent won't see the earlier conversation.",
+                            spec.name,
+                            self.describe(e)
+                        ),
+                        allow_acp_fallback: false,
+                    });
+                }
             }
         }
         let resumed = session.is_some();
@@ -2432,6 +2503,7 @@ impl Task {
             s.task.config = options;
             s.task.capabilities = capabilities;
             s.session_id = Some(session_id.clone());
+            self.start_fresh.store(false, Ordering::Release);
             // The (re)started process runs nothing yet: whatever it reports next is all of it.
             s.background_tasks = Vec::new();
             s.task.background.clear();
@@ -2655,7 +2727,7 @@ impl Task {
         let applied = self.state.lock().conversation.apply(session, update, now_ms());
         self.mark_dirty(applied);
         // A subagent can start or finish after the turn that started it: saved right away.
-        if kind == "subagent_update" {
+        if matches!(kind, "subagent_update" | "user_question") {
             self.persist();
         }
     }
@@ -3042,7 +3114,7 @@ fn blocks(prompt: &AgentPrompt, contents: &[Option<String>]) -> Vec<Value> {
         });
     }
     for i in &prompt.images {
-        out.push(json!({ "type": "image", "mimeType": i.mime_type, "data": i.data }));
+        out.push(json!({ "type": "image", "mimeType": i.media_type(), "data": i.data }));
     }
     out
 }

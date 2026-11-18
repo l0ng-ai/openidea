@@ -6,10 +6,10 @@ import { Icon, IconButton, showContextMenu, T } from "@/ui";
 import styles from "../Session.module.css";
 import { costLabel, limitLabel, usageLabel, workTime } from "../composerModel";
 import { formatDuration, formatSentAt } from "../conversation";
-import { branchLabel, hasTaskTerminal, isBusy, statusLabel } from "../model";
+import { branchLabel, hasTaskTerminal, isBusy, providerIcon, statusLabel } from "../model";
 import { useAgents } from "../store";
 import { taskMenu } from "../taskActions";
-import { useNow } from "./shared";
+import { providerName, useNow } from "./shared";
 
 /** The task's terminal, at the end of its status line. */
 function StatusActions({ task }: { task: AgentTask }) {
@@ -64,6 +64,11 @@ export function SessionStatus({
     >
       {/* Where the task works, in one quiet line like the new-task page: project (in a workspace), branch, worktree. */}
       <span className={styles.where} title={task.cwd}>
+        {/* Which agent runs the task: with several tasks side by side, this tells their answers apart. */}
+        <span className={styles.fact} title={providerName(task.provider)}>
+          <Icon name={providerIcon(task.provider)} size={13} />
+          <span className={styles.factText}>{providerName(task.provider)}</span>
+        </span>
         {project?.workspace && projectName && (
           <span className={styles.fact}>
             <Icon name="folder" size={13} />

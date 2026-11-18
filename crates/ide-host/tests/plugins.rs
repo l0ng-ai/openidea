@@ -2204,6 +2204,10 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
     assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
     assert!(info.contributions.iter().any(|c| c.point == "javaAgents" && c.label == "fixture agent.jar=mode=test"));
+    let agent = info.java_agent.clone().expect("agent metadata");
+    assert_eq!(agent.file_name, "fixture agent.jar");
+    assert_eq!(agent.args.as_deref(), Some("mode=test"));
+    assert!(!agent.approved);
     let source = f.host.java_agents();
     let launch = || {
         let agents = ide_run::java_agent::approved(&source.agents());
@@ -2217,6 +2221,7 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     // Granted: the installed jar with its arguments, one argument after the VM options.
     let info = f.host.set_capability("java-agent", "java.agent", true).unwrap();
     assert!(info.capabilities.iter().any(|c| c.id == "java.agent" && c.granted));
+    assert!(info.java_agent.as_ref().is_some_and(|agent| agent.approved));
     let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
     let option = format!("-javaagent:{}=mode=test", jar.display());
     let mut with_agent = plain.clone();
@@ -2228,7 +2233,11 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let (args, notes) = launch();
     assert_eq!(args, plain);
     assert!(notes.len() == 1 && notes[0].contains("changed since it was approved"), "{notes:?}");
+    let changed = f.host.info_of("java-agent").unwrap();
+    assert!(!changed.java_agent.as_ref().unwrap().approved, "Settings must show the changed jar");
+    f.host.set_capability("java-agent", "java.agent", false).unwrap();
     f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert!(f.host.info_of("java-agent").unwrap().java_agent.as_ref().is_some_and(|a| a.approved));
     assert_eq!(launch(), (with_agent.clone(), vec![]));
 
     // Revoked, then the plugin disabled: no agent either way.
@@ -5276,6 +5285,29 @@ fn plugin_readonly_fields_and_table_row_extensions_round_trip() {
 }
 
 #[test]
+fn document_changes_reach_plugins_relative_to_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("path-events"));
+    f.run("test.path-events", "count", None).unwrap();
+    let deliver = |path: &str| {
+        let change = ide_plugin::DocumentChanged {
+            path: to_ipc(&f.project.join(path)),
+            base_version: 1,
+            version: 2,
+            changes: Vec::new(),
+        };
+        f.host.post_events(Some("main"), vec![WorkbenchEvent::DocumentChanged(change)]);
+        f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+    };
+    deliver("src/main.rs");
+    assert_eq!(f.run("test.path-events", "document", None).unwrap(), None, "outside the subscribed paths");
+    // Queued with the absolute path, filtered again at delivery, handed over project-relative.
+    deliver("config/app.yaml");
+    assert_eq!(f.run("test.path-events", "document", None).unwrap().as_deref(), Some("config/app.yaml"));
+}
+
+#[test]
 fn path_filtered_events_do_not_wake_idle_plugins_and_recheck_queued_filters() {
     let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
     f.install(&sample("path-events"));
@@ -6865,7 +6897,7 @@ fn document_indexer_covers_workspace_members() {
     // Discovery: the member file is in the window's project scope.
     let files = f
         ._runtime
-        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, &f.plugins, "main"))
         .unwrap();
     assert!(files.paths.iter().any(|p| p.0 == mapping), "{:?}", files.paths);
     // Indexing the member file through the window's project publishes it: the
@@ -6875,7 +6907,7 @@ fn document_indexer_covers_workspace_members() {
     f._runtime
         .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
             &f.host,
-            f.plugins.clone(),
+            &f.plugins,
             "main",
             vec![mapping.clone()],
             ide_core::RequestId::next(),
@@ -6891,13 +6923,13 @@ fn document_indexer_covers_workspace_members() {
     std::fs::write(&outside, "def outside:item\n").unwrap();
     let files = f
         ._runtime
-        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, &f.plugins, "main"))
         .unwrap();
     assert!(!files.paths.iter().any(|p| p.0 == outside), "{:?}", files.paths);
     f._runtime
         .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
             &f.host,
-            f.plugins.clone(),
+            &f.plugins,
             "main",
             vec![outside.clone()],
             ide_core::RequestId::next(),

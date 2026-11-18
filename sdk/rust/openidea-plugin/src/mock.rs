@@ -138,6 +138,8 @@ struct State {
     fetches: u32,
     fetch_error: Option<Error>,
     clipboard: Option<String>,
+    clipboard_image: Option<Vec<u8>>,
+    unattended: bool,
     opened_urls: Vec<String>,
     opened_projects: Vec<(String, bool)>,
     answers: VecDeque<Option<Vec<String>>>,
@@ -246,6 +248,7 @@ const ALL: &[&str] = &[
     "events",
     "events.input",
     "clipboard",
+    "clipboard.read",
 ];
 
 impl MockHost {
@@ -493,6 +496,19 @@ impl MockHost {
     /// Last text copied with [`crate::host::copy_to_clipboard`].
     pub fn clipboard(&self) -> Option<String> {
         self.state.borrow().clipboard.clone()
+    }
+
+    /// What [`crate::host::read_clipboard`] finds: text and an image's PNG bytes.
+    pub fn set_clipboard(&self, text: Option<&str>, image: Option<&[u8]>) {
+        let mut state = self.state.borrow_mut();
+        state.clipboard = text.map(str::to_owned);
+        state.clipboard_image = image.map(<[u8]>::to_vec);
+    }
+
+    /// Calls run as an event handler or background work does (`true`), where reading the
+    /// clipboard is denied, or as a command the user ran (`false`, the default).
+    pub fn set_unattended(&self, unattended: bool) {
+        self.state.borrow_mut().unattended = unattended;
     }
 
     /// URLs opened with [`crate::host::open_url`], in order.
@@ -1079,7 +1095,20 @@ pub mod current {
         with(|s| {
             require(s, "clipboard")?;
             s.clipboard = Some(text.to_owned());
+            s.clipboard_image = None;
             Ok(())
+        })
+    }
+
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        with(|s| {
+            require(s, "clipboard.read")?;
+            // A command run through `execute_command` is not one the user ran.
+            if s.unattended || s.command_depth > 0 {
+                return Err(Error::Denied("clipboard.read (only in a command or view action the user ran)".into()));
+            }
+            let text = s.clipboard.clone().filter(|t| !t.is_empty());
+            Ok(ClipboardContent { text, image: s.clipboard_image.clone() })
         })
     }
 

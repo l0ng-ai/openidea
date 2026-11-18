@@ -54,6 +54,23 @@ impl Timeline {
         let mut out = Applied::default();
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
         match kind {
+            "user_question" => {
+                let id = str_field(update, "id");
+                let Ok(questions) = serde_json::from_value::<Vec<crate::model::AgentQuestion>>(
+                    update.get("questions").cloned().unwrap_or(Value::Null),
+                ) else {
+                    return out;
+                };
+                if id.is_empty()
+                    || questions.is_empty()
+                    || self.entries.iter().any(|e| matches!(e, AgentEntry::Question { id: known, .. } if known == &id))
+                {
+                    return out;
+                }
+                let index =
+                    self.push(AgentEntry::Question { id, title: str_field(update, "title"), questions, chosen: None });
+                out.changed.push(index);
+            }
             "agent_message_chunk" | "agent_thought_chunk" => {
                 let Some(text) = content_text(update.get("content")) else { return out };
                 out.changed.push(self.append_text(kind == "agent_thought_chunk", &text));
@@ -387,6 +404,25 @@ fn tail(mut text: String) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn asynchronous_questions_survive_turn_end_restart_and_duplicate_notifications() {
+        let mut t = Timeline::default();
+        let update = json!({"sessionUpdate":"user_question","id":"call-1","title":"Which?",
+            "questions":[{"answerKey":"q1","question":"Which?","options":[]}]});
+        assert_eq!(t.apply(&update).changed, vec![0]);
+        assert!(t.end_turn(None).is_empty());
+        assert!(matches!(&t.entries[0], AgentEntry::Question { chosen: None, .. }));
+        let saved = serde_json::to_string(&t.entries).unwrap();
+        let mut t = Timeline::from_entries(serde_json::from_str(&saved).unwrap());
+        assert!(t.apply(&update).changed.is_empty());
+        assert_eq!(t.entries.len(), 1);
+        if let AgentEntry::Question { chosen, .. } = &mut t.entries[0] {
+            *chosen = Some("One".into());
+        }
+        assert!(t.apply(&update).changed.is_empty());
+        assert!(matches!(&t.entries[0], AgentEntry::Question { chosen: Some(answer), .. } if answer == "One"));
+    }
 
     #[test]
     fn chunks_merge_into_one_message_until_another_entry_comes() {

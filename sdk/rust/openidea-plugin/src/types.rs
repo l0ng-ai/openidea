@@ -153,6 +153,22 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// What [`crate::host::read_clipboard`] found (API 1.11): `None` for a kind the clipboard
+/// doesn't hold.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardContent {
+    pub text: Option<String>,
+    /// An image (a screenshot), always as PNG bytes.
+    pub image: Option<Vec<u8>>,
+}
+
+impl ClipboardContent {
+    /// The clipboard holds neither text nor an image.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none() && self.image.is_none()
+    }
+}
+
 /// An entry of [`crate::host::pick`] and [`crate::host::pick_many`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickItem {

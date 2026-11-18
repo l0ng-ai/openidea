@@ -20,6 +20,7 @@ import { eclipseWindows } from "./keymaps/eclipse-windows";
 import { vscodeMacos } from "./keymaps/vscode-macos";
 import { vscodeWindows } from "./keymaps/vscode-windows";
 import { usePlatform } from "./platformInfo";
+import { tx } from "./i18n";
 import { isImeKey } from "./ime";
 import { isPageSwipe, PAGE_SWIPE_EVENT } from "./pageSwipe";
 
@@ -86,14 +87,14 @@ export function isMouseBinding(binding: string): boolean {
 }
 
 /**
- * Side buttons, or a left click with Ctrl/Alt/Meta. Plain and Shift-only
- * left clicks keep selection semantics; middle/right clicks keep their own meaning.
+ * Middle/side buttons, or a left click with Ctrl/Alt/Meta. Plain and Shift-only
+ * left clicks keep selection semantics; right clicks keep the context menu.
  */
 export function mouseStrokeOf(
   e: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
   if (!Number.isInteger(e.button) || e.button < 0) return null;
-  if (e.button < 3 && !(e.button === 0 && (e.ctrlKey || e.altKey || e.metaKey))) return null;
+  if (e.button === 2 || (e.button === 0 && !(e.ctrlKey || e.altKey || e.metaKey))) return null;
   const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
   return [...mods, `Button${e.button + 1}`].join("+");
 }
@@ -194,39 +195,50 @@ export function suspendKeyboardDispatch(): () => void {
   };
 }
 
+/** Linux reserves middle paste by default; explicit overrides bypass this filter. */
+function platformPreset(preset: string): Keymap {
+  const own = PRESETS[preset] ?? {};
+  const id = "editor.createRectangularSelectionOnMouseDrag";
+  if (usePlatform.getState().os !== "linux" || !own[id]) return own;
+  return { ...own, [id]: own[id].filter((binding) => binding !== "Button2") };
+}
+
 export function bindingsFor(actionId: string): string[] {
   const { preset, overrides, extensions } = useKeymap.getState();
-  return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? usableExtensionBindings(extensions)[actionId] ?? [];
+  return overrides[actionId] ?? platformPreset(preset)[actionId] ?? usableExtensionBindings(extensions)[actionId] ?? [];
 }
 
 let bindingsCache: {
   preset: string;
   overrides: Keymap;
   extensions: Keymap;
+  os: string;
   pairs: Array<[string, string]>;
 } | null = null;
 
 /** Every (binding, actionId) pair of the effective keymap. */
 export function effectiveBindings(): Array<[string, string]> {
   const { preset, overrides, extensions } = useKeymap.getState();
+  const { os } = usePlatform.getState();
   // The dispatcher asks for these on every keystroke; merging and normalizing
   // the whole keymap each time costs more than handling the key. The store
   // replaces `overrides` / `extensions` wholesale, so identity tracks changes.
   if (
     bindingsCache?.preset === preset &&
+    bindingsCache.os === os &&
     bindingsCache.overrides === overrides &&
     bindingsCache.extensions === extensions
   )
     return bindingsCache.pairs;
-  const merged: Keymap = { ...usableExtensionBindings(extensions), ...PRESETS[preset], ...overrides };
+  const merged: Keymap = { ...usableExtensionBindings(extensions), ...platformPreset(preset), ...overrides };
   const pairs = Object.entries(merged).flatMap(([id, keys]) =>
     keys.map((k) => [normalizeBinding(k), id] as [string, string]),
   );
-  bindingsCache = { preset, overrides, extensions, pairs };
+  bindingsCache = { preset, overrides, extensions, os, pairs };
   return pairs;
 }
 
-let extensionCache: { source: Keymap; preset: string; overrides: Keymap; usable: Keymap } | null = null;
+let extensionCache: { source: Keymap; preset: string; overrides: Keymap; os: string; usable: Keymap } | null = null;
 
 /**
  * Plugin default bindings that stay: those of actions the preset and the
@@ -235,13 +247,15 @@ let extensionCache: { source: Keymap; preset: string; overrides: Keymap; usable:
  */
 function usableExtensionBindings(extensions: Keymap | undefined = {}): Keymap {
   const { preset, overrides } = useKeymap.getState();
+  const { os } = usePlatform.getState();
   if (
     extensionCache?.source === extensions &&
     extensionCache.preset === preset &&
+    extensionCache.os === os &&
     extensionCache.overrides === overrides
   )
     return extensionCache.usable;
-  const builtIn: Keymap = { ...PRESETS[preset], ...overrides };
+  const builtIn: Keymap = { ...platformPreset(preset), ...overrides };
   const taken = new Set(Object.values(builtIn).flatMap((keys) => keys.map(normalizeBinding)));
   const usable: Keymap = {};
   for (const [id, keys] of Object.entries(extensions)) {
@@ -250,7 +264,7 @@ function usableExtensionBindings(extensions: Keymap | undefined = {}): Keymap {
     for (const k of free) taken.add(normalizeBinding(k));
     if (free.length) usable[id] = free;
   }
-  extensionCache = { source: extensions, preset, overrides, usable };
+  extensionCache = { source: extensions, preset, overrides, os, usable };
   return usable;
 }
 
@@ -390,7 +404,7 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
   if (isMouseBinding(binding)) {
     const parts = normalizeBinding(binding).split("+");
     const key = parts.pop();
-    const button = key === "Button1" ? "Left Click" : `${key} Click`;
+    const button = key === "Button1" ? "Left Click" : key === "Button2" ? tx("Middle Click") : `${key} Click`;
     return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
   }
   if (!mac)
@@ -489,6 +503,8 @@ export function dispatchMouseShortcut(e: MouseEvent, prepare?: (id: string) => b
   for (const id of ids.reverse()) {
     const action = getAction(id);
     if (!action || !isActionKeyEnabled(action)) continue;
+    // A rectangular selection needs the drag; do not consume it as an ordinary click.
+    if (id === "editor.createRectangularSelectionOnMouseDrag") return false;
     if (prepare && !prepare(id)) return false;
     void executeAction(id, arg);
     return true;
@@ -753,6 +769,8 @@ export function installKeyboardDispatcher(
       reset();
       return;
     }
+    // Editors arbitrate middle click/drag; other components may use middle paste.
+    if (e.button === 1) return;
     const stroke = mouseStrokeOf(e);
     if (!stroke) return;
     if (e.button === 0) {
@@ -831,7 +849,7 @@ export interface KeymapDraft {
  * override like any other.
  */
 export function presetBindings(preset: string, id: string): string[] {
-  const own = PRESETS[preset];
+  const own = platformPreset(preset);
   const keys = own && id in own ? own[id] : useKeymap.getState().extensions?.[id];
   return (keys ?? []).map(normalizeBinding);
 }

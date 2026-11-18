@@ -1352,6 +1352,8 @@ export const stopBackgroundTask = (task: string, background: string) =>
   call(commands.agentStopBackground(task, background));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
+export const answerQuestion = (task: string, question: string, answer: string | null) =>
+  call(commands.agentAnswerQuestion(task, question, answer));
 export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));
 export const renameTask = (task: string, title: string) => call(commands.agentRename(task, title));
 export const archiveTask = (task: string) => call(commands.agentArchive(task));

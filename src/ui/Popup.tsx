@@ -69,7 +69,7 @@ export interface PopupProps {
   resizable?: "both";
   minWidth?: number;
   minHeight?: number;
-  /** Size to open at, such as one remembered from `onResized`. */
+  /** Size to open at, such as one remembered from `onResized`. While a size applies the popup has `data-resized`. */
   initialSize?: { w: number; h: number } | null;
   /** The size a resize ended at. */
   onResized?: (size: { w: number; h: number }) => void;
@@ -246,6 +246,7 @@ function PopupInner({
       tabIndex={-1}
       className={clsx(styles.popup, !unstyled && styles.surface, className)}
       data-positioned={isPositioned || undefined}
+      data-resized={size ? "" : undefined}
       style={{ ...floatingStyles, ...(size && { width: size.w, height: size.h }), ...style }}
     >
       <PopupAncestry.Provider value={ancestry}>{children}</PopupAncestry.Provider>

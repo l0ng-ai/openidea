@@ -11,8 +11,10 @@ import { commitKey, commitRepo } from "../multiRoot";
 import { repoName, useVcs } from "../store";
 import { CommitMessage, RefLabels } from "./CommitMessage";
 import { GraphCell } from "./GraphCell";
+import { RowResizeHandle } from "./RowResizeHandle";
 import { commitMenu } from "./commitMenu";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
+import { columnPrev } from "./useColumnResize";
 
 function CommitRowView({
   id,
@@ -152,7 +154,12 @@ function CommitRowView({
       id={id}
       role="option"
       aria-selected={selected}
-      className={clsx(styles.row, onBranch && styles.currentBranch, selected && styles.selected)}
+      className={clsx(
+        styles.row,
+        onBranch && styles.currentBranch,
+        selected && styles.selected,
+        opts.showColumnDividers && styles.showDividers,
+      )}
       style={{ top }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks
@@ -168,10 +175,11 @@ function CommitRowView({
           {repoName(commitRepo(c)!)}
         </span>
       )}
-      {columnSequence(opts.columnOrder, columns).map((cid) => {
+      {columnSequence(opts.columnOrder, columns).map((cid, _index, ids) => {
         if (cid === SUBJECT_COLUMN.id) return subjectCell;
         const column = columns.find((col) => col.id === cid);
         if (!column) return null;
+        const width = opts.columnWidths[column.id] ?? column.width ?? 120;
         return (
           <span
             key={cid}
@@ -181,10 +189,11 @@ function CommitRowView({
               column.id === "author" && mine && styles.mine,
               column.id === "hash" && styles.hash,
             )}
-            style={{ width: opts.columnWidths[column.id] ?? column.width ?? 120 }}
+            style={{ width }}
             title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
           >
             {column.render(c)}
+            <RowResizeHandle target={{ id: column.id, width, ...columnPrev(ids, column.id, opts, columns) }} />
           </span>
         );
       })}

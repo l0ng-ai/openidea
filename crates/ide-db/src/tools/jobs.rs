@@ -2,6 +2,7 @@
 //! The connection arguments come from [`super::connection`]; these are the rest.
 
 use super::DbTool;
+use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::Path;
@@ -58,6 +59,8 @@ pub struct DbPgDumpOptions {
 pub struct DbPgRestoreOptions {
     pub content: DbDumpContent,
     pub schemas: Vec<String>,
+    /// Creates the database the archive names; the target is only connected to.
+    pub create: bool,
     pub clean: bool,
     pub if_exists: bool,
     pub no_owner: bool,
@@ -73,6 +76,40 @@ pub struct DbPgRestoreOptions {
 pub struct DbPsqlOptions {
     pub single_transaction: bool,
     pub stop_on_error: bool,
+}
+
+/// Switches that `mysqldump` turns on by default (`--opt`) only take a flag when turned off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DbMysqldumpOptions {
+    /// Empty: every database.
+    pub databases: Vec<String>,
+    /// Only with exactly one database.
+    pub tables: Vec<String>,
+    pub add_drop_table: bool,
+    pub disable_keys: bool,
+    pub add_locks: bool,
+    pub add_drop_trigger: bool,
+    pub no_data: bool,
+    pub complete_insert: bool,
+    pub create_options: bool,
+    pub routines: bool,
+    pub events: bool,
+    /// A consistent InnoDB snapshot without locks; needs no RELOAD privilege.
+    pub single_transaction: bool,
+    /// Wins over `single_transaction`.
+    pub lock_all_tables: bool,
+    /// `None`: the client has no `--masking-policies`.
+    pub masking_policies: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DbMysqlOptions {
+    /// Empty: the databases the dump names.
+    pub database: String,
+    /// Runs the remaining statements after an error.
+    pub force: bool,
 }
 
 /// A run of a client tool: which one, the file it writes or reads, and its options.
@@ -92,6 +129,15 @@ pub enum DbToolJob {
         file: String,
         options: DbPsqlOptions,
     },
+    Mysqldump {
+        file: String,
+        options: DbMysqldumpOptions,
+    },
+    /// `file` goes to the standard input.
+    Mysql {
+        file: String,
+        options: DbMysqlOptions,
+    },
 }
 
 impl DbToolJob {
@@ -100,7 +146,28 @@ impl DbToolJob {
             DbToolJob::PgDump { .. } => DbTool::PgDump,
             DbToolJob::PgRestore { .. } => DbTool::PgRestore,
             DbToolJob::Psql { .. } => DbTool::Psql,
+            DbToolJob::Mysqldump { .. } => DbTool::Mysqldump,
+            DbToolJob::Mysql { .. } => DbTool::Mysql,
         }
+    }
+
+    /// The file piped to the tool's standard input.
+    pub fn input(&self) -> Option<&str> {
+        match self {
+            DbToolJob::Mysql { file, .. } if !file.is_empty() => Some(file),
+            _ => None,
+        }
+    }
+
+    /// Refuses names that the tool would read as options: `mysqldump` takes databases and tables
+    /// as plain arguments.
+    pub fn check(&self) -> IdeResult<()> {
+        if let DbToolJob::Mysqldump { options, .. } = self
+            && let Some(name) = options.databases.iter().chain(&options.tables).find(|n| n.trim().starts_with('-'))
+        {
+            return Err(IdeError::invalid(format!("mysqldump cannot dump a database or table named {name}")));
+        }
+        Ok(())
     }
 
     /// The arguments after the connection ones.
@@ -109,6 +176,8 @@ impl DbToolJob {
             DbToolJob::PgDump { file, options } => pg_dump(options, file),
             DbToolJob::PgRestore { file, options } => pg_restore(options, file),
             DbToolJob::Psql { file, options } => psql(options, file),
+            DbToolJob::Mysqldump { file, options } => mysqldump(options, file),
+            DbToolJob::Mysql { options, .. } => mysql(options),
         }
     }
 }
@@ -162,6 +231,7 @@ fn pg_dump(o: &DbPgDumpOptions, file: &str) -> Vec<String> {
 fn pg_restore(o: &DbPgRestoreOptions, file: &str) -> Vec<String> {
     let mut args: Vec<String> = content(o.content).into_iter().collect();
     args.extend(each(&o.schemas, "schema"));
+    args.extend(flag(o.create, "--create"));
     args.extend(flag(o.clean, "--clean"));
     args.extend(flag(o.clean && o.if_exists, "--if-exists"));
     args.extend(flag(o.no_owner, "--no-owner"));
@@ -187,8 +257,53 @@ fn psql(o: &DbPsqlOptions, file: &str) -> Vec<String> {
     args
 }
 
-/// The command as a shell would need it typed: the dialogs' preview.
-pub fn command_line(program: &Path, args: &[String]) -> String {
+fn names(list: &[String]) -> impl Iterator<Item = String> {
+    list.iter().map(|n| n.trim()).filter(|n| !n.is_empty()).map(str::to_owned)
+}
+
+fn mysqldump(o: &DbMysqldumpOptions, file: &str) -> Vec<String> {
+    let skip = |on: bool, option: &str| (!on).then(|| format!("--skip-{option}"));
+    let mut args = vec![format!("--result-file={file}")];
+    args.extend(skip(o.add_drop_table, "add-drop-table"));
+    args.extend(skip(o.disable_keys, "disable-keys"));
+    args.extend(skip(o.add_locks, "add-locks"));
+    args.extend(skip(o.create_options, "create-options"));
+    args.extend(flag(o.add_drop_trigger, "--add-drop-trigger"));
+    args.extend(flag(o.no_data, "--no-data"));
+    args.extend(flag(o.complete_insert, "--complete-insert"));
+    args.extend(flag(o.routines, "--routines"));
+    args.extend(flag(o.events, "--events"));
+    args.extend(flag(o.lock_all_tables, "--lock-all-tables"));
+    args.extend(flag(!o.lock_all_tables && o.single_transaction, "--single-transaction"));
+    // On by default where it exists; reading the policies needs privileges most users lack.
+    args.extend(flag(o.masking_policies == Some(false), "--skip-masking-policies"));
+    // Tablespace statements need the PROCESS privilege and rarely matter in a dump.
+    args.push("--no-tablespaces".into());
+    args.push("--verbose".into());
+    let databases: Vec<String> = names(&o.databases).collect();
+    match databases.as_slice() {
+        [] => args.push("--all-databases".into()),
+        [one] => {
+            args.push(one.clone());
+            args.extend(names(&o.tables));
+        }
+        _ => {
+            args.push("--databases".into());
+            args.extend(databases);
+        }
+    }
+    args
+}
+
+fn mysql(o: &DbMysqlOptions) -> Vec<String> {
+    let database = o.database.trim();
+    let mut args: Vec<String> = (!database.is_empty()).then(|| format!("--database={database}")).into_iter().collect();
+    args.extend(flag(o.force, "--force"));
+    args
+}
+
+/// The command as a shell would need it typed: the dialogs' preview. `input` is piped in.
+pub fn command_line(program: &Path, args: &[String], input: Option<&str>) -> String {
     let quote = |s: &str| {
         if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c)) {
             s.to_owned()
@@ -196,11 +311,15 @@ pub fn command_line(program: &Path, args: &[String]) -> String {
             format!("'{}'", s.replace('\'', "'\\''"))
         }
     };
-    std::iter::once(program.to_string_lossy().into_owned())
+    let line = std::iter::once(program.to_string_lossy().into_owned())
         .chain(args.iter().cloned())
         .map(|a| quote(&a))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    match input {
+        Some(file) => format!("{line} < {}", quote(file)),
+        None => line,
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +347,7 @@ mod tests {
         DbPgRestoreOptions {
             content: DbDumpContent::All,
             schemas: vec![],
+            create: false,
             clean: false,
             if_exists: false,
             no_owner: false,
@@ -309,6 +429,13 @@ mod tests {
     }
 
     #[test]
+    fn creates_the_database_of_the_archive_when_asked() {
+        let options = DbPgRestoreOptions { create: true, ..restore() };
+        let a = args(DbToolJob::PgRestore { file: "/tmp/shop.dump".into(), options });
+        assert_eq!(a, ["--create", "--exit-on-error", "--verbose", "/tmp/shop.dump"]);
+    }
+
+    #[test]
     fn leaves_out_an_archive_not_chosen_yet() {
         let a = args(DbToolJob::PgRestore { file: String::new(), options: restore() });
         assert_eq!(a, ["--exit-on-error", "--verbose"]);
@@ -328,8 +455,92 @@ mod tests {
         let line = command_line(
             Path::new("/usr/bin/pg_dump"),
             &["--port=5432".into(), "--file=/tmp/my dump.sql".into(), "--table=it's".into()],
+            None,
         );
         assert_eq!(line, r#"/usr/bin/pg_dump --port=5432 '--file=/tmp/my dump.sql' '--table=it'\''s'"#);
+        let line = command_line(Path::new("mysql"), &["--force".into()], Some("/tmp/my dump.sql"));
+        assert_eq!(line, "mysql --force < '/tmp/my dump.sql'");
+    }
+
+    fn mysqldump_options() -> DbMysqldumpOptions {
+        DbMysqldumpOptions {
+            databases: vec!["shop".into()],
+            tables: vec![],
+            add_drop_table: true,
+            disable_keys: true,
+            add_locks: true,
+            add_drop_trigger: false,
+            no_data: false,
+            complete_insert: false,
+            create_options: true,
+            routines: false,
+            events: false,
+            single_transaction: true,
+            lock_all_tables: false,
+            masking_policies: None,
+        }
+    }
+
+    #[test]
+    fn mysqldump_flags_only_what_differs_from_its_defaults() {
+        let job = DbToolJob::Mysqldump { file: "/tmp/shop.sql".into(), options: mysqldump_options() };
+        assert_eq!(
+            args(job),
+            ["--result-file=/tmp/shop.sql", "--single-transaction", "--no-tablespaces", "--verbose", "shop"]
+        );
+        let options = DbMysqldumpOptions {
+            add_drop_table: false,
+            create_options: false,
+            routines: true,
+            lock_all_tables: true,
+            masking_policies: Some(false),
+            ..mysqldump_options()
+        };
+        let a = args(DbToolJob::Mysqldump { file: "/tmp/x.sql".into(), options });
+        for expected in ["--skip-add-drop-table", "--skip-create-options", "--routines", "--lock-all-tables"] {
+            assert!(a.contains(&expected.to_owned()), "{expected} missing from {a:?}");
+        }
+        assert!(a.contains(&"--skip-masking-policies".to_owned()), "{a:?}");
+        assert!(!a.contains(&"--single-transaction".to_owned()), "{a:?}");
+    }
+
+    #[test]
+    fn mysqldump_names_tables_only_of_a_single_database() {
+        let tables = vec!["orders".to_owned(), "items".to_owned()];
+        let one = DbMysqldumpOptions { tables: tables.clone(), ..mysqldump_options() };
+        assert!(args(DbToolJob::Mysqldump { file: "f".into(), options: one }).ends_with(&[
+            "shop".into(),
+            "orders".into(),
+            "items".into()
+        ]));
+        let two = DbMysqldumpOptions { databases: vec!["a".into(), "b".into()], tables, ..mysqldump_options() };
+        assert!(args(DbToolJob::Mysqldump { file: "f".into(), options: two }).ends_with(&[
+            "--databases".into(),
+            "a".into(),
+            "b".into()
+        ]));
+        let all = DbMysqldumpOptions { databases: vec![], ..mysqldump_options() };
+        assert_eq!(args(DbToolJob::Mysqldump { file: "f".into(), options: all }).last().unwrap(), "--all-databases");
+    }
+
+    #[test]
+    fn mysqldump_refuses_names_it_would_read_as_options() {
+        let options = DbMysqldumpOptions { tables: vec!["--result-file=/etc/x".into()], ..mysqldump_options() };
+        assert!(DbToolJob::Mysqldump { file: "f".into(), options }.check().is_err());
+        assert!(DbToolJob::Mysqldump { file: "f".into(), options: mysqldump_options() }.check().is_ok());
+    }
+
+    #[test]
+    fn mysql_reads_the_dump_from_its_standard_input() {
+        let job = DbToolJob::Mysql {
+            file: "/tmp/shop.sql".into(),
+            options: DbMysqlOptions { database: " shop ".into(), force: true },
+        };
+        assert_eq!(args(job.clone()), ["--database=shop", "--force"]);
+        assert_eq!(job.input(), Some("/tmp/shop.sql"));
+        let none =
+            DbToolJob::Mysql { file: String::new(), options: DbMysqlOptions { database: String::new(), force: false } };
+        assert!(args(none.clone()).is_empty() && none.input().is_none());
     }
 
     #[test]

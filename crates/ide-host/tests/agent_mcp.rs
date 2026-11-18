@@ -3,7 +3,10 @@
 use ide_agent::{McpScope, McpServer, McpServerInput};
 use ide_core::NullSink;
 use ide_core::settings::McpTransport;
-use ide_host::ops::agent::{mcp_import, mcp_list, mcp_save, mcp_set_enabled};
+use ide_host::ops::agent::{
+    agent_mcp_import as mcp_import, agent_mcp_list as mcp_list, agent_mcp_save as mcp_save,
+    agent_mcp_set_enabled as mcp_set_enabled,
+};
 use ide_host::{Host, HostConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

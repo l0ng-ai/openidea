@@ -13,7 +13,7 @@ import styles from "../Session.module.css";
 import { SubmitButton } from "../SubmitButton";
 import { useAgentSettings } from "../agentSettings";
 import { messageTokens, parseMention } from "../composerModel";
-import { formatDuration, formatSentAt } from "../conversation";
+import { formatDuration, formatSentAt, userMessageText } from "../conversation";
 import { useAgentErrorText } from "../loginHint";
 import { isBusy, type ReplyTimes, type ReplyTurn } from "../model";
 import { useRevealedText } from "../reveal";
@@ -181,6 +181,20 @@ export const Entry = memo(function Entry({
     case "permission":
       // Waiting for an answer, it is asked above the composer; the conversation keeps the record.
       return entry.chosen || entry.questions?.length ? <PermissionLine task={task} entry={entry} /> : null;
+    case "question":
+      return (
+        <div className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}>
+          <Icon name={!entry.chosen ? "warning" : entry.chosen === "Skipped" ? "minus" : "check"} size={14} />
+          <div className={styles.permissionBody}>
+            <span className={styles.permissionTitle}>{entry.title}</span>
+            {entry.chosen && (
+              <span className={styles.permissionRecord}>
+                {entry.chosen === "Skipped" ? <T>Skipped</T> : entry.chosen}
+              </span>
+            )}
+          </div>
+        </div>
+      );
     case "error":
       return (
         <div className={styles.error} role="alert">
@@ -216,10 +230,11 @@ function UserMessage({
   const inPlace = !archived && rollback && turn !== null;
   // A copy up to an earlier turn drops the later ones from the copied session.
   const canFork = idle && fork && (rollback || turn === turnCount - 1);
+  const text = userMessageText(entry.text);
   if (editing && turn !== null) {
     return (
       <MessageEditor
-        initial={entry.text}
+        initial={text}
         initialImages={entry.images ?? []}
         later={turn < turnCount - 1}
         onCancel={() => setEditing(false)}
@@ -233,7 +248,7 @@ function UserMessage({
   // Images are listed after the files in `attachments` and shown as thumbnails instead.
   // Files mentioned in the text are chips there already.
   const mentioned = new Set(
-    messageTokens(entry.text).flatMap((t) => {
+    messageTokens(text).flatMap((t) => {
       const m = t.kind === "file" ? parseMention(t.value) : null;
       return m ? [basename(m.rel.replace(/\/$/, ""))] : [];
     }),
@@ -244,7 +259,7 @@ function UserMessage({
       {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
       <div className={styles.messageHead}>
         <MessageActions>
-          <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
+          <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(text)} />
           {inPlace && entry.text && (
             <IconButton size="small" icon="edit" title="Edit" onClick={() => setEditing(true)} />
           )}
@@ -285,7 +300,7 @@ function UserMessage({
         </span>
       </div>
       <div className={styles.user}>
-        <ReferencedText text={entry.text} cwd={task.cwd} />
+        <ReferencedText text={text} cwd={task.cwd} />
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>

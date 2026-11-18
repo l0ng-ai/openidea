@@ -221,6 +221,7 @@ export function PhpPage() {
             emptyText="No include paths"
             itemLabel="Include path"
             aria-label="Include paths"
+            browse={{ directory: true, title: "Choose Include Path" }}
           />
         </Row>
         <Row

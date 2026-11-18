@@ -12,18 +12,12 @@ import { notifications, type EditorInput } from "@/workbench/contributions";
 import { DiffEditor } from "./DiffEditor";
 import { confirmDialog } from "./dialogs";
 import { diffInput } from "./diffInput";
-import { baseName, formatTime } from "./model";
+import { baseName, formatSize, formatTime } from "./model";
 import { errorMessage, runOp } from "./ops";
 import styles from "./LocalHistory.module.css";
 import { tx } from "@/platform/i18n";
 
 export { LOCAL_HISTORY_KIND, localHistoryInput, openLocalHistory } from "./localHistoryKind";
-
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
 
 const isLabel = (e: HistoryEntry) => e.kind === "label";
 const time = (e: HistoryEntry) => e.timestampMs ?? 0;

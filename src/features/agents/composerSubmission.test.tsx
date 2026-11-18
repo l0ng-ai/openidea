@@ -373,6 +373,11 @@ describe("composer UI during submission", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
+  it("names the task's agent under the composer", () => {
+    render(<SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("A"), data: { task: "A" } }} />);
+    expect(screen.getByTitle("Codex")).toHaveTextContent("Codex");
+  });
+
   it("clears an unchanged session draft after only moving the caret", async () => {
     const response = deferred();
     backend.prompt.mockReturnValue(response.promise);
