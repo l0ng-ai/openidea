@@ -30,6 +30,14 @@ pub fn db_approve_jdbc_source(host: &Host, window: &str, source: DataSource) -> 
 }
 
 #[command(trust = trusted)]
+pub async fn db_jdbc_driver_classes(host: &Host, window: &str, jars: Vec<String>) -> IdeResult<Vec<String>> {
+    host.project(window)?;
+    tokio::task::spawn_blocking(move || ide_db::jdbc_driver_classes(&jars))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+#[command(trust = trusted)]
 pub fn db_jdbc_drivers(host: &Host, window: &str) -> IdeResult<Vec<ide_db::DbJdbcDriver>> {
     host.project(window)?.db.jdbc_drivers()
 }
@@ -534,6 +542,7 @@ ide_command::domain!(
     db_explain,
     db_finish_transaction,
     db_history,
+    db_jdbc_driver_classes,
     db_jdbc_drivers,
     db_approve_jdbc_source,
     db_save_jdbc_driver,

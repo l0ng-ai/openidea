@@ -7,6 +7,7 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
     let sources: Record<string, unknown>[] = [];
     Object.assign(window.__ipc.handlers, {
       db_jdbc_drivers: () => drivers,
+      db_jdbc_driver_classes: () => ["org.example.jdbc.Driver"],
       db_save_jdbc_driver: ({ driver }: { driver: Record<string, unknown> }) => {
         const at = drivers.findIndex((d) => d.id === driver.id);
         if (at < 0) drivers.push(driver);
@@ -62,20 +63,24 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
   const editor = page.getByRole("dialog", { name: "Add JDBC Driver", exact: true });
   await editor.getByLabel("Name:", { exact: true }).fill("Example local driver");
   await editor.getByRole("button", { name: "Add JARs…", exact: true }).click();
-  await expect(editor.getByText("/mock/dependency.jar", { exact: true })).toBeVisible();
-  await editor.getByLabel("Driver class:", { exact: true }).fill("org.example.jdbc.Driver");
-  await editor.getByLabel("URL template:", { exact: true }).fill("jdbc:example://<host>/<database>");
+  await expect(editor.getByText("dependency.jar", { exact: true })).toBeVisible();
+  await expect(editor.getByLabel("Driver class:", { exact: true })).toHaveValue("org.example.jdbc.Driver");
+  await editor.getByLabel("URL template:", { exact: true }).fill("jdbc:example://{host}/{database}");
+  await editor.screenshot({ path: info.outputPath("jdbc-profile-editor.png"), animations: "disabled" });
   await editor.getByRole("button", { name: "Save", exact: true }).click();
   const trust = page.getByRole("dialog", { name: "Trust JDBC Driver?", exact: true });
   await expect(trust).toContainText("execute local code with your user permissions");
   expect(await ipcCalls(page, "db_save_jdbc_driver")).toHaveLength(0);
   await trust.screenshot({ path: info.outputPath("mock-jdbc-driver-trust.png"), animations: "disabled" });
   await trust.getByRole("button", { name: "Trust and Save", exact: true }).click();
-  await profiles.getByText("Close", { exact: true }).click();
+  await profiles.getByRole("button", { name: "Use Driver", exact: true }).click();
   await expect(source.getByRole("button", { name: "JDBC driver profile", exact: true })).toHaveText(
     "Example local driver",
   );
-  await expect(source.locator("#db-url")).toHaveValue("jdbc:example://<host>/<database>");
+  await source.getByLabel("Host:", { exact: true }).fill("example.invalid");
+  await source.getByLabel("Database:", { exact: true }).fill("catalog");
+  await expect(source.locator("#db-url")).toHaveValue("jdbc:example://example.invalid/catalog");
+  await source.screenshot({ path: info.outputPath("jdbc-template.png"), animations: "disabled" });
   const url = "jdbc:example://example.invalid/catalog?ssl=true";
   await source.locator("#db-url").fill(url);
   const test = source.getByRole("button", { name: "Test Connection", exact: true });

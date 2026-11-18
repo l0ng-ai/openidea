@@ -18,6 +18,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       dbJdbcDrivers: request("list"),
+      dbJdbcDriverClasses: request("classes"),
       dbApproveJdbcSource: request("approve"),
       dbSaveJdbcDriver: request("save"),
       dbRemoveJdbcDriver: request("remove"),
@@ -46,13 +47,66 @@ function select(label: string, option: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  backend.call.mockImplementation(async ([command]: [string]) => (command === "list" ? [driver] : "Example database"));
+  backend.call.mockImplementation(async ([command]: [string]) =>
+    command === "list" ? [driver] : command === "classes" ? [] : "Example database",
+  );
   backend.saveSource.mockResolvedValue(undefined);
   backend.pick.mockResolvedValue(driver.jars);
   useDatabase.setState({ sources: [], dialog: null, loaded: true });
 });
 
 describe("custom JDBC data sources", () => {
+  it("expands the selected profile's URL template for testing and saving, and keeps a manual URL editable", async () => {
+    const first = { ...driver, urlTemplate: "jdbc:example://{host}:{port}/{database}" };
+    const second = { ...driver, id: "duck", name: "DuckDB", urlTemplate: "jdbc:duckdb:{file}" };
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [first, second] : "OK"));
+    render(<SourceDialog initial={null} preset={{ driver: "jdbc" }} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "JDBC driver profile" })).toBeEnabled());
+    select("JDBC driver profile", first.name);
+    const test = screen.getByRole("button", { name: "Test Connection" });
+    expect(test).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Host:"), { target: { value: "localhost" } });
+    fireEvent.change(screen.getByLabelText("Port:"), { target: { value: "5433" } });
+    fireEvent.change(screen.getByLabelText("Database:"), { target: { value: "sample" } });
+    expect(screen.getByLabelText("URL:")).toHaveValue("jdbc:example://localhost:5433/sample");
+    fireEvent.click(test);
+    await screen.findByText("Succeeded: OK");
+    expect(backend.call).toHaveBeenCalledWith([
+      "test",
+      expect.objectContaining({ url: "jdbc:example://localhost:5433/sample" }),
+      null,
+      null,
+    ]);
+    select("JDBC driver profile", second.name);
+    fireEvent.change(screen.getByLabelText("File:"), { target: { value: "/tmp/example.db" } });
+    expect(screen.getByLabelText("URL:")).toHaveValue("jdbc:duckdb:/tmp/example.db");
+    fireEvent.change(screen.getByLabelText("URL:"), { target: { value: "jdbc:duckdb:" } });
+    expect(screen.queryByLabelText("File:")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use URL template" }));
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() =>
+      expect(backend.saveSource).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "jdbc:duckdb:/tmp/example.db" }),
+        undefined,
+        undefined,
+      ),
+    );
+  });
+
+  it("blocks a saved read-only source until the user explicitly chooses database-enforced protection", async () => {
+    render(
+      <SourceDialog initial={{ driver: "jdbc", jdbcDriver: driver.id, url: "jdbc:example:local", readOnly: true }} />,
+    );
+    await screen.findByText("Use database-enforced read-only access");
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "Options" }));
+    expect(screen.queryByRole("checkbox", { name: "Read-only" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "General" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use database-enforced read-only access" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled());
+  });
+
   it("offers Custom JDBC in the new data source menu", () => {
     const dataSource = newMenu().find((item) => "label" in item && item.label === "Data Source");
     expect(dataSource && "submenu" in dataSource && dataSource.submenu).toEqual(
@@ -182,7 +236,7 @@ describe("local JDBC driver profiles", () => {
     fireEvent.change(screen.getByLabelText("Name:"), { target: { value: "Example JDBC" } });
     fireEvent.change(screen.getByLabelText("Driver class:"), { target: { value: "Driver" } });
     fireEvent.click(screen.getByRole("button", { name: "Add JARs…" }));
-    await screen.findByText(driver.jars[1]!);
+    await screen.findByTitle(driver.jars[1]!);
     expect(backend.pick).toHaveBeenCalledWith(
       expect.objectContaining({ multiple: true, filters: [{ name: "Java archives", extensions: ["jar"] }] }),
     );
@@ -192,7 +246,7 @@ describe("local JDBC driver profiles", () => {
     fireEvent.click(save);
     const trust = screen.getByRole("dialog", { name: "Trust JDBC Driver?" });
     expect(trust).toHaveTextContent("execute local code with your user permissions");
-    expect(backend.call).not.toHaveBeenCalled();
+    expect(backend.call.mock.calls.some(([[command]]) => command === "save")).toBe(false);
     fireEvent.click(within(trust).getByRole("button", { name: "Cancel" }));
     expect(saved).not.toHaveBeenCalled();
     fireEvent.click(save);
@@ -260,8 +314,8 @@ describe("local JDBC driver profiles", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit…" }));
     fireEvent.click(screen.getByRole("button", { name: "Add JARs…" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Add JARs…" })).toBeEnabled());
-    expect(screen.getAllByText(driver.jars[0]!)).toHaveLength(1);
+    expect(screen.getAllByTitle(driver.jars[0]!)).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: `Remove JAR ${driver.jars[1]}` }));
-    expect(screen.queryByText(driver.jars[1]!)).toBeNull();
+    expect(screen.queryByTitle(driver.jars[1]!)).toBeNull();
   });
 });

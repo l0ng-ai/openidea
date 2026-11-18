@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { call, commands, type DbJdbcDriver } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
 import { Button, Dialog, IconButton, Input, Select, T } from "@/ui";
+import { baseName } from "./dumpTools";
 import { newSourceId } from "./model";
 import styles from "./Database.module.css";
 
@@ -44,12 +45,14 @@ export function JdbcDriverProfiles({
   drivers,
   selected,
   onSave,
+  onUse,
   onRemove,
   onClose,
 }: {
   drivers: DbJdbcDriver[];
   selected: string;
   onSave: (driver: DbJdbcDriver) => void;
+  onUse?: (driver: DbJdbcDriver) => void;
   onRemove: (id: string) => void;
   onClose: () => void;
 }) {
@@ -61,6 +64,7 @@ export function JdbcDriverProfiles({
   const [confirm, setConfirm] = useState<"trust" | "delete" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [classes, setClasses] = useState<string[]>([]);
   const current = drivers.find((d) => d.id === selection);
   const name = current?.name ?? "";
   const set = (patch: Partial<DbJdbcDriver>) => setDraft((d) => d && { ...d, ...patch });
@@ -70,6 +74,7 @@ export function JdbcDriverProfiles({
   const valid = !!draft?.name.trim() && !!draft.jars.length && classValid && templateValid;
   const edit = (driver: DbJdbcDriver) => {
     setError(null);
+    setClasses([]);
     setDraft({ ...driver, jars: [...driver.jars] });
   };
 
@@ -84,7 +89,13 @@ export function JdbcDriverProfiles({
         directory: false,
         filters: [{ name: tx("Java archives"), extensions: ["jar"] }],
       });
-      if (files) setDraft((d) => d && { ...d, jars: [...new Set([...d.jars, ...files])] });
+      if (files && draft) {
+        const jars = [...new Set([...draft.jars, ...files])];
+        set({ jars });
+        const names = await call(commands.dbJdbcDriverClasses(jars));
+        setClasses(names);
+        if (!draft.className && names.length) set({ className: names[0] });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -150,7 +161,12 @@ export function JdbcDriverProfiles({
                 { label: "Cancel", role: "cancel", disabled: busy },
                 { label: "Save", role: "default", disabled: busy || !valid, onClick: () => setConfirm("trust") },
               ]
-            : [{ label: "Close", role: "cancel", disabled: busy }]
+            : [
+                { label: "Close", role: "cancel", disabled: busy },
+                ...(onUse && current
+                  ? [{ label: "Use Driver", role: "default" as const, onClick: () => onUse(current) }]
+                  : []),
+              ]
         }
       >
         <div className={styles.form}>
@@ -175,12 +191,15 @@ export function JdbcDriverProfiles({
                 <ul aria-label={tx("Driver and dependency JARs")}>
                   {draft.jars.map((jar) => (
                     <li key={jar}>
-                      <span>{jar}</span>
+                      <span title={jar}>{baseName(jar)}</span>
                       <IconButton
                         icon="close"
                         aria-label={tx`Remove JAR ${jar}`}
                         disabled={busy}
-                        onClick={() => set({ jars: draft.jars.filter((path) => path !== jar) })}
+                        onClick={() => {
+                          setClasses([]);
+                          set({ jars: draft.jars.filter((path) => path !== jar) });
+                        }}
                       />
                     </li>
                   ))}
@@ -194,6 +213,7 @@ export function JdbcDriverProfiles({
               </label>
               <Input
                 id="jdbc-driver-class"
+                list="jdbc-driver-providers"
                 mono
                 value={draft.className}
                 disabled={busy}
@@ -202,7 +222,12 @@ export function JdbcDriverProfiles({
               />
               <span />
               <span className={styles.formHint}>
-                <T>Fully qualified Java class name, including its package.</T>
+                <datalist id="jdbc-driver-providers">
+                  {classes.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+                <T>Select a class declared by the JARs, or enter its fully qualified name.</T>
               </span>
               <label className={styles.formLabel} htmlFor="jdbc-url-template">
                 <T>URL template:</T>
@@ -217,7 +242,7 @@ export function JdbcDriverProfiles({
               />
               <span />
               <span className={styles.formHint}>
-                <T>Optional JDBC URL example. Enter the actual connection URL in each data source.</T>
+                <T>{"Use {host}, {port}, {database} or {file} for fields on the connection form."}</T>
               </span>
             </>
           ) : (
@@ -260,7 +285,9 @@ export function JdbcDriverProfiles({
                   <dd>
                     <ul>
                       {current.jars.map((jar) => (
-                        <li key={jar}>{jar}</li>
+                        <li key={jar} title={jar}>
+                          {baseName(jar)}
+                        </li>
                       ))}
                     </ul>
                   </dd>
@@ -304,7 +331,9 @@ export function JdbcDriverProfiles({
             {confirm === "trust" && (
               <ul className={styles.formFull}>
                 {draft?.jars.map((jar) => (
-                  <li key={jar}>{jar}</li>
+                  <li key={jar} title={jar}>
+                    {baseName(jar)}
+                  </li>
                 ))}
               </ul>
             )}

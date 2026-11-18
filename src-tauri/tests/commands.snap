@@ -106,6 +106,7 @@ db_explain                                   trusted            project_host bin
 db_export_file                               always             desktop      bindings async
 db_finish_transaction                        trusted            project_host bindings async
 db_history                                   trusted            project_host bindings async
+db_jdbc_driver_classes                       trusted            project_host bindings async
 db_jdbc_drivers                              trusted            project_host bindings sync
 db_object_ddl                                trusted            project_host bindings async
 db_remove_history                            trusted            project_host bindings async

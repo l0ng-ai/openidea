@@ -2,7 +2,7 @@
  * Data source properties (IDEA's Data Sources and Drivers page): name, colour and
  * comment above General / Options / SSH/SSL / Schemas / Advanced tabs, Test Connection.
  */
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import {
   call,
   commands,
@@ -10,6 +10,7 @@ import {
   type DataSource,
   type DbColor,
   type DbIntrospection,
+  type DbJdbcDriver,
   type DbOptions,
   type DbProperty,
   type DbSnowflake,
@@ -400,7 +401,16 @@ export function SourceDialog({
   const jdbc = s.driver === "jdbc";
   const jdbcProfiles = useJdbcDrivers(jdbc);
   const jdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
-  const migratingClickhouse = nativeSource?.driver === "clickhouse";
+  const reviewJdbcSecurity =
+    nativeSource &&
+    (nativeSource.driver === "clickhouse" ||
+      nativeSource.ssh?.enabled ||
+      nativeSource.urlOnly ||
+      ["require", "verifyCa", "verifyFull"].includes(nativeSource.ssl ?? "") ||
+      nativeSource.sslCaFile ||
+      nativeSource.sslCertFile ||
+      nativeSource.sslKeyFile ||
+      nativeSource.properties?.length);
   const loadedDbs = useDatabase((st) => (initial?.id ? st.databases[initial.id] : undefined));
   const loadedSchemas = useDatabase((st) => (initial?.id ? st.schemas[initial.id] : undefined));
 
@@ -448,9 +458,23 @@ export function SourceDialog({
         : `${database || s.user || "db"}@${host || "localhost"}`);
   // Snowflake is reached over HTTPS, where a tunnel to another host name cannot pass certificate checks.
   const sshOn = !sqlite && !snowflake && !jdbc && !!ssh.enabled;
-  const jdbcUrlValid = /^jdbc:[^\s:]+:[^\r\n]*$/.test(s.url ?? "") && !/<[^>]+>/.test(s.url ?? "");
+  const template = jdbcProfile?.urlTemplate ?? "";
+  const templateFields = (["host", "port", "database", "file"] as const).filter((key) => template.includes(`{${key}}`));
+  const renderedUrl = template.replace(
+    /\{(host|port|database|file)\}/g,
+    (token, key: "host" | "port" | "database" | "file") => String(s[key] || token),
+  );
+  const fromTemplate = !!templateFields.length && (s.url === template || s.url === renderedUrl);
+  const jdbcUrl = fromTemplate ? renderedUrl : (s.url ?? "");
+  const chooseProfile = (profile?: DbJdbcDriver) => {
+    const wasDefault = !s.url || fromTemplate || s.url === jdbcProfile?.urlTemplate;
+    set({ jdbcDriver: profile?.id ?? "", url: wasDefault ? (profile?.urlTemplate ?? "") : s.url });
+    setTest(null);
+  };
+  const jdbcUrlValid =
+    /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) && !/<[^>]+>|\{(?:host|port|database|file)\}/.test(jdbcUrl);
   const valid = jdbc
-    ? !!jdbcProfile && jdbcUrlValid && (!migratingClickhouse || jdbcSecurityConfirmed)
+    ? !s.readOnly && !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || jdbcSecurityConfirmed)
     : sqlite
       ? !!s.file?.trim()
       : (urlOnly ? urlValid : !!s.host?.trim()) &&
@@ -466,6 +490,7 @@ export function SourceDialog({
     ...(jdbc
       ? {
           jdbcDriver: s.jdbcDriver ?? "",
+          url: jdbcUrl,
           urlOnly: true,
           ssh: null,
           options: { ...options, transaction: "auto" as const },
@@ -485,7 +510,7 @@ export function SourceDialog({
         ...s,
         driver: "jdbc",
         vendor: "",
-        port: null,
+        port: s.port ?? vendor.port,
         urlOnly: true,
         url: "",
         jdbcDriver: "",
@@ -656,10 +681,7 @@ export function SourceDialog({
                   aria-label="JDBC driver profile"
                   value={s.jdbcDriver ?? ""}
                   disabled={!jdbcProfiles.drivers}
-                  onChange={(jdbcDriver) => {
-                    const template = jdbcProfiles.drivers?.find((d) => d.id === jdbcDriver)?.urlTemplate;
-                    set({ jdbcDriver, url: s.url || template || "" });
-                  }}
+                  onChange={(id) => chooseProfile(jdbcProfiles.drivers?.find((d) => d.id === id))}
                   options={[
                     { value: "", label: "Choose a JDBC driver profile" },
                     ...(jdbcProfiles.drivers ?? []).map((d) => ({ value: d.id, label: d.name, verbatim: true })),
@@ -672,6 +694,42 @@ export function SourceDialog({
                   <T>Manage Drivers…</T>
                 </Button>
               </div>
+              {fromTemplate &&
+                templateFields.map((key) => (
+                  <Fragment key={key}>
+                    <label className={styles.formLabel} htmlFor={`jdbc-template-${key}`}>
+                      {tx({ host: "Host:", port: "Port:", database: "Database:", file: "File:" }[key])}
+                    </label>
+                    <div className={styles.formRow}>
+                      <Input
+                        id={`jdbc-template-${key}`}
+                        className={styles.fill}
+                        value={s[key] ?? ""}
+                        inputMode={key === "port" ? "numeric" : undefined}
+                        onChange={(e) =>
+                          set({ [key]: key === "port" ? parsePort(e.target.value) : e.target.value, url: template })
+                        }
+                      />
+                      {key === "file" && (
+                        <Button
+                          onClick={() =>
+                            void pickFile("Database File").then((file) => file && set({ file, url: template }))
+                          }
+                        >
+                          <T>Browse…</T>
+                        </Button>
+                      )}
+                    </div>
+                  </Fragment>
+                ))}
+              {!fromTemplate && templateFields.length > 0 && (
+                <>
+                  <span />
+                  <Button onClick={() => set({ url: template })}>
+                    <T>Use URL template</T>
+                  </Button>
+                </>
+              )}
               {jdbcProfiles.error ? (
                 <div className={styles.formFull} role="alert">
                   {jdbcProfiles.error}{" "}
@@ -850,7 +908,7 @@ export function SourceDialog({
           <Input
             id="db-url"
             mono
-            value={jdbc || urlOnly ? (s.url ?? "") : (urlDraft ?? sourceUrl(s))}
+            value={jdbc ? jdbcUrl : urlOnly ? (s.url ?? "") : (urlDraft ?? sourceUrl(s))}
             invalid={
               jdbc
                 ? !!s.url && !jdbcUrlValid
@@ -866,7 +924,7 @@ export function SourceDialog({
           <span className={styles.formHint}>
             {jdbc
               ? tx(
-                  "Enter an explicit JDBC URL. It is passed verbatim to the selected driver. Configure connection properties in Advanced.",
+                  "The URL and Advanced properties are saved with the data source. Enter passwords in the Password field.",
                 )
               : txTemplate(
                   urlOnly
@@ -876,12 +934,25 @@ export function SourceDialog({
                     : "Editing the URL fills in the settings above.",
                 )}
           </span>
-          {jdbc && migratingClickhouse && (
+          {jdbc && s.readOnly && (
+            <div className={styles.formWide}>
+              <p>
+                <T>
+                  This source requires read-only access. Select a database account with read-only privileges before
+                  switching to JDBC.
+                </T>
+              </p>
+              <Button onClick={() => set({ readOnly: false })}>
+                <T>Use database-enforced read-only access</T>
+              </Button>
+            </div>
+          )}
+          {jdbc && reviewJdbcSecurity && (
             <div className={styles.formWide}>
               <span className={styles.formHint}>
                 <T>
-                  Native ClickHouse TLS settings, certificates and connection properties are not converted to JDBC.
-                  Configure the equivalent security in the JDBC URL and Advanced properties before connecting.
+                  Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH
+                  tunnel, configure the equivalent route before connecting.
                 </T>
               </span>
               <Checkbox
@@ -900,7 +971,13 @@ export function SourceDialog({
     <>
       <Section title="Connection" />
       <span />
-      <Checkbox checked={!!s.readOnly} onChange={(readOnly) => set({ readOnly })} label="Read-only" />
+      {jdbc ? (
+        <span className={styles.formHint}>
+          <T>For read-only access, use a database account with read-only privileges.</T>
+        </span>
+      ) : (
+        <Checkbox checked={!!s.readOnly} onChange={(readOnly) => set({ readOnly })} label="Read-only" />
+      )}
       {!jdbc && (
         <>
           <span className={styles.formLabel}>
@@ -1439,7 +1516,11 @@ export function SourceDialog({
           onClose={() => setShowJdbcProfiles(false)}
           onSave={(driver) => {
             jdbcProfiles.setDrivers((drivers) => [...(drivers ?? []).filter((d) => d.id !== driver.id), driver]);
-            set({ jdbcDriver: driver.id, url: s.url || driver.urlTemplate });
+            if (!s.jdbcDriver || s.jdbcDriver === driver.id) chooseProfile(driver);
+          }}
+          onUse={(driver) => {
+            chooseProfile(driver);
+            setShowJdbcProfiles(false);
           }}
           onRemove={(id) => jdbcProfiles.setDrivers((drivers) => (drivers ?? []).filter((d) => d.id !== id))}
         />

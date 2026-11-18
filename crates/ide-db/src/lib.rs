@@ -5,7 +5,7 @@
 pub mod catalog;
 mod clickhouse;
 mod jdbc;
-pub use jdbc::DbJdbcDriver;
+pub use jdbc::{DbJdbcDriver, jdbc_driver_classes};
 pub mod conn;
 pub mod history;
 mod oracle;
@@ -1415,7 +1415,7 @@ impl DbManager {
         let driver = pool.driver();
         let mut tables: Vec<CompletionTable> = Vec::new();
         let rows = match &*pool {
-            Pool::Jdbc(_) => return self.jdbc_completion(id).await,
+            Pool::Jdbc(p) => return self.jdbc_completion(id, p).await,
             Pool::Snowflake(p) => {
                 tables = snowflake::meta::completion(p).await?;
                 Vec::new()
@@ -1693,7 +1693,7 @@ impl DbManager {
             let quote = |s: &str| format!("{q}{}{q}", s.replace(q, &format!("{q}{q}")));
             let name = if schema.is_empty() { quote(table) } else { format!("{}.{}", quote(schema), quote(table)) };
             let sql = sql::table_select(&name, filter, sort, quote);
-            p.query(&sql, offset as usize, limit as usize, cancel).await?
+            p.page(&sql, offset, limit, cancel).await?
         } else {
             let sql = sql::table_page(pool.driver(), schema, table, filter, sort, offset, limit);
             pool.execute(&sql, limit as usize, cancel).await?

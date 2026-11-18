@@ -26,6 +26,59 @@ pub struct DbJdbcDriver {
     pub url_template: String,
 }
 
+fn persist_local(path: &Path, data: &[u8]) -> IdeResult<()> {
+    let dir = path.parent().expect("registry paths have a parent");
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    std::io::Write::write_all(&mut tmp, data)?;
+    tmp.persist(path).map_err(|e| IdeError::from(e.error))?;
+    Ok(())
+}
+
+fn local_jar(jar: &str) -> IdeResult<&Path> {
+    let path = Path::new(jar);
+    if !path.is_absolute() || !path.is_file() || !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jar")) {
+        return Err(IdeError::invalid("Choose an existing local .jar file for each JDBC driver file"));
+    }
+    Ok(path)
+}
+
+/// Read the standard JDBC service descriptors without executing any driver code.
+pub fn jdbc_driver_classes(jars: &[String]) -> IdeResult<Vec<String>> {
+    let mut classes = Vec::new();
+    if jars.len() > 128 {
+        return Err(IdeError::invalid("Choose at most 128 JDBC driver files"));
+    }
+    for jar in jars {
+        let file = std::fs::File::open(local_jar(jar)?)?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|_| IdeError::invalid("Invalid JDBC JAR archive"))?;
+        let descriptor = match archive.by_name("META-INF/services/java.sql.Driver") {
+            Ok(entry) => entry,
+            Err(zip::result::ZipError::FileNotFound) => continue,
+            Err(_) => return Err(IdeError::invalid("Cannot read the JDBC driver descriptor")),
+        };
+        let mut text = String::new();
+        descriptor.take(65537).read_to_string(&mut text)?;
+        if text.len() > 65536 {
+            return Err(IdeError::invalid("JDBC driver descriptor is too large"));
+        }
+        for line in text.lines() {
+            let name = line.split('#').next().unwrap_or_default().trim();
+            if !name.is_empty()
+                && name.split('.').all(|part| {
+                    let mut chars = part.chars();
+                    chars.next().is_some_and(|c| c.is_alphabetic() || matches!(c, '_' | '$'))
+                        && chars.all(|c| c.is_alphanumeric() || matches!(c, '_' | '$'))
+                })
+                && !classes.iter().any(|s| s == name)
+            {
+                classes.push(name.to_owned());
+            }
+        }
+    }
+    Ok(classes)
+}
+
 impl DbJdbcDriver {
     fn validate(&self) -> IdeResult<()> {
         if self.id.is_empty()
@@ -39,10 +92,7 @@ impl DbJdbcDriver {
             return Err(IdeError::invalid("The JDBC URL template must start with jdbc:"));
         }
         for jar in &self.jars {
-            let p = Path::new(jar);
-            if !p.is_absolute() || !p.is_file() || !p.extension().is_some_and(|v| v.eq_ignore_ascii_case("jar")) {
-                return Err(IdeError::invalid("Choose an existing local .jar file for each JDBC driver file"));
-            }
+            local_jar(jar)?;
         }
         Ok(())
     }
@@ -73,12 +123,8 @@ impl DbManager {
         let mut list = self.jdbc_drivers()?;
         list.retain(|d| d.id != id);
         list.extend(driver);
-        let dir = path.parent().expect("registry has a parent");
-        std::fs::create_dir_all(dir)?;
-        let temp = tempfile::NamedTempFile::new_in(dir)?;
-        serde_json::to_writer_pretty(temp.as_file(), &list).map_err(|e| IdeError::internal(e.to_string()))?;
-        temp.persist(path).map_err(|e| IdeError::from(e.error))?;
-        Ok(())
+        let data = serde_json::to_vec_pretty(&list).map_err(|e| IdeError::internal(e.to_string()))?;
+        persist_local(&path, &data)
     }
 
     pub fn save_jdbc_driver(&self, driver: DbJdbcDriver) -> IdeResult<()> {
@@ -117,12 +163,7 @@ impl DbManager {
             return Err(IdeError::invalid("Expected a user-managed JDBC data source"));
         }
         let (path, fingerprint) = self.jdbc_approval(source)?;
-        let dir = path.parent().expect("approval has a parent");
-        std::fs::create_dir_all(dir)?;
-        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-        std::io::Write::write_all(&mut tmp, fingerprint.as_bytes())?;
-        tmp.persist(path).map_err(|e| IdeError::from(e.error))?;
-        Ok(())
+        persist_local(&path, fingerprint.as_bytes())
     }
 
     pub(crate) async fn open_pool(
@@ -133,6 +174,11 @@ impl DbManager {
     ) -> IdeResult<crate::Pool> {
         if source.driver != crate::DbDriver::Jdbc {
             return crate::Pool::connect(source, password, Some(&self.root)).await;
+        }
+        if source.read_only {
+            return Err(IdeError::invalid(
+                "Custom JDBC cannot enforce read-only access. Use a database account with read-only privileges.",
+            ));
         }
         if source.plugin_owner.is_some() {
             return Err(IdeError::invalid("Plugins cannot start custom JDBC drivers"));
@@ -179,8 +225,10 @@ impl Bridge {
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("OpenIdeaJdbc.java");
         std::fs::write(&file, include_bytes!("OpenIdeaJdbc.java"))?;
-        let mut child = Command::new(ide_sdk::java::java_executable(&jdk.home))
-            .current_dir(dir.path())
+        let mut command = Command::new(ide_sdk::java::java_executable(&jdk.home));
+        command.current_dir(dir.path());
+        ide_core::process::prepare(command.as_std_mut());
+        let mut child = command
             .arg("-Xmx192m")
             .arg(&file)
             .env_remove("CLASSPATH")
@@ -234,7 +282,6 @@ impl JdbcPool {
             source.url.clone(),
             source.user.clone(),
             password.unwrap_or_default().to_owned(),
-            source.read_only.to_string(),
             driver.jars.len().to_string(),
         ];
         fields.extend(driver.jars);
@@ -298,6 +345,16 @@ impl JdbcPool {
             cancel,
         )
         .await
+    }
+
+    pub(crate) async fn page(
+        &self,
+        sql: &str,
+        offset: u64,
+        limit: u64,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        self.request(&["page", sql, &offset.to_string(), &limit.min(i32::MAX as u64).to_string()], sql, cancel).await
     }
 
     pub(crate) async fn metadata(&self, fields: &[&str]) -> IdeResult<Vec<Vec<Option<String>>>> {
@@ -394,7 +451,7 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
 }
 
 impl DbManager {
-    pub(crate) async fn jdbc_completion(&self, id: &str) -> IdeResult<crate::CompletionModel> {
+    pub(crate) async fn jdbc_completion(&self, id: &str, pool: &JdbcPool) -> IdeResult<crate::CompletionModel> {
         let mut tables = vec![];
         let schemas = self.schemas(id).await?;
         for schema in &schemas {
@@ -414,7 +471,14 @@ impl DbManager {
             }
         }
         Ok(crate::CompletionModel {
-            default_schema: schemas.into_iter().next().unwrap_or_default(),
+            default_schema: pool
+                .metadata(&["namespace"])
+                .await?
+                .into_iter()
+                .flatten()
+                .flatten()
+                .next()
+                .unwrap_or_default(),
             tables,
             foreign_keys: vec![],
         })

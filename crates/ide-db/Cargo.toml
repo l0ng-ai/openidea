@@ -9,6 +9,7 @@ license.workspace = true
 ide-core.workspace = true
 ide-sdk.workspace = true
 tempfile.workspace = true
+zip.workspace = true
 dunce.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }

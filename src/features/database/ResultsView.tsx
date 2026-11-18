@@ -3,6 +3,7 @@
  * executed statement with its outcome, and a `Result N` tab per result set —
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
+import { canModifyTable } from "./objects";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
   useCallback,
@@ -325,8 +326,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
     !!target &&
     !!pk &&
     !readOnlySource &&
-    driver !== "clickhouse" &&
-    driver !== "jdbc" &&
+    canModifyTable(driver) &&
     sources.some((s) => s !== null);
 
   // The pending edits belong to the result they were made on: fresh rows (a re-run,

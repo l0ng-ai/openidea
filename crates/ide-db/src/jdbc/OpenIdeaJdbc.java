@@ -48,24 +48,22 @@ class OpenIdeaJdbc {
         out.writeLong(affected);
     }
 
+    private static class UnsupportedUrl extends SQLException {}
+
     void open(List<String> a, DataOutputStream out) throws Exception {
         String className = a.get(0), url = a.get(1);
-        int n = Integer.parseInt(a.get(5));
+        int n = Integer.parseInt(a.get(4));
         URL[] jars = new URL[n];
-        for (int i = 0; i < n; i++) jars[i] = Path.of(a.get(6+i)).toUri().toURL();
+        for (int i = 0; i < n; i++) jars[i] = Path.of(a.get(5+i)).toUri().toURL();
         var loader = new URLClassLoader(jars, ClassLoader.getPlatformClassLoader());
         Thread.currentThread().setContextClassLoader(loader);
         Driver driver = Class.forName(className, false, loader).asSubclass(Driver.class).getConstructor().newInstance();
         var props = new Properties();
-        for (int i = 6+n; i < a.size(); i += 2) props.setProperty(a.get(i), a.get(i+1));
+        for (int i = 5+n; i < a.size(); i += 2) props.setProperty(a.get(i), a.get(i+1));
         if (!a.get(2).isEmpty()) props.setProperty("user", a.get(2));
         if (!a.get(3).isEmpty()) props.setProperty("password", a.get(3));
         connection = driver.connect(url, props);
-        if (connection == null) throw new SQLException("The selected JDBC driver does not accept this URL");
-        if (Boolean.parseBoolean(a.get(4))) {
-            connection.setReadOnly(true);
-            if (!connection.isReadOnly()) throw new SQLException("This JDBC driver did not enable read-only mode");
-        }
+        if (connection == null) throw new UnsupportedUrl();
         var m = connection.getMetaData();
         header(out, "version", "quote");
         row(out, m.getDatabaseProductName() + " " + m.getDatabaseProductVersion(), m.getIdentifierQuoteString());
@@ -138,10 +136,14 @@ class OpenIdeaJdbc {
         }
     }
 
-    void execute(List<String> a, DataOutputStream out) throws Exception {
+    void execute(List<String> a, DataOutputStream out, boolean tablePage) throws Exception {
         long skip = Long.parseLong(a.get(1));
         int limit = Integer.parseInt(a.get(2));
         try (Statement st = connection.createStatement()) {
+            long window = skip + limit + 1;
+            if (tablePage && window > 0 && window <= Integer.MAX_VALUE) {
+                try { st.setMaxRows((int)window); } catch (SQLFeatureNotSupportedException ignored) {}
+            }
             if (!st.execute(a.get(0))) {
                 header(out);
                 end(out, false, st.getUpdateCount());
@@ -152,7 +154,10 @@ class OpenIdeaJdbc {
                 int cols = m.getColumnCount();
                 out.writeInt(cols);
                 for (int c = 1; c <= cols; c++) { text(out, m.getColumnLabel(c)); text(out, m.getColumnTypeName(c)); }
-                while (skip > 0 && rs.next()) skip--;
+                while (skip > 0) {
+                    if (!rs.next()) { end(out, false, -1); return; }
+                    skip--;
+                }
                 int n = 0;
                 while (n < limit && rs.next()) {
                     out.writeBoolean(true);
@@ -168,7 +173,7 @@ class OpenIdeaJdbc {
                     }
                     n++;
                 }
-                end(out, rs.next(), -1);
+                end(out, n == limit && rs.next(), -1);
             }
         }
     }
@@ -190,21 +195,29 @@ class OpenIdeaJdbc {
                     case "open" -> open(a, reply);
                     case "schemas" -> schemas(reply);
                     case "tables", "columns" -> metadata(op, a, reply);
+                    case "namespace" -> {
+                        header(reply, "namespace");
+                        String name = null;
+                        try { name = catalogs ? connection.getCatalog() : connection.getSchema(); }
+                        catch (SQLFeatureNotSupportedException | AbstractMethodError ignored) {}
+                        row(reply, name);
+                    }
+                    case "page" -> execute(a, reply, true);
                     case "query" -> {
                         if (a.size() == 3 || a.get(3).isEmpty()) {
-                            execute(a, reply);
+                            execute(a, reply, false);
                         } else {
                             if (!namespaceKnown) schemas(new DataOutputStream(OutputStream.nullOutputStream()));
                             String previous = catalogs ? connection.getCatalog() : connection.getSchema();
                             String wanted = a.get(3);
                             if (Objects.equals(previous, wanted)) {
-                                execute(a, reply);
+                                execute(a, reply, false);
                             } else {
                                 try {
                                     if (catalogs) connection.setCatalog(wanted); else connection.setSchema(wanted);
                                     if (!Objects.equals(wanted, catalogs ? connection.getCatalog() : connection.getSchema()))
                                         throw new SQLException("The JDBC driver cannot switch to the selected schema");
-                                    execute(a, reply);
+                                    execute(a, reply, false);
                                 } finally {
                                     try {
                                         if (catalogs) connection.setCatalog(previous); else connection.setSchema(previous);
@@ -218,7 +231,7 @@ class OpenIdeaJdbc {
                     }
                     default -> throw new IOException("Unknown JDBC operation");
                 }
-                if (!op.equals("query")) end(reply, false, -1);
+                if (!op.equals("query") && !op.equals("page")) end(reply, false, -1);
             } catch (Exception | LinkageError e) {
                 buffer = new ByteArrayOutputStream();
                 reply = new DataOutputStream(buffer);
@@ -226,6 +239,8 @@ class OpenIdeaJdbc {
                 if ((e instanceof ClassNotFoundException || e instanceof NoClassDefFoundError)
                         && e.getMessage() != null && e.getMessage().matches("[A-Za-z0-9_.$/]+")) {
                     text(reply, "JDBC class " + e.getMessage() + " was not found. Check the driver class and include its dependency JARs.");
+                } else if (e instanceof UnsupportedUrl) {
+                    text(reply, "The selected JDBC driver does not accept this URL");
                 } else if (op.equals("open")) {
                     // Login exceptions may contain properties or credentials embedded in a vendor URL.
                     String state = e instanceof SQLException ? ((SQLException)e).getSQLState() : null;

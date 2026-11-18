@@ -34,6 +34,12 @@ async fn jdbc_profiles_persist_and_project_files_cannot_start_drivers() -> IdeRe
     reopened.save_sources(vec![source.clone()]).await?;
     let denied = reopened.pool("local").await.err().expect("project JDBC requires explicit approval");
     assert!(denied.message.contains("Review this project"));
+    let readonly = DataSource { read_only: true, ..source.clone() };
+    let err = reopened.test(&readonly, None, None).await.unwrap_err();
+    assert!(err.message.contains("cannot enforce read-only"));
+    reopened.approve_jdbc_source(&readonly)?;
+    reopened.save_sources(vec![readonly]).await?;
+    assert!(reopened.pool("local").await.err().unwrap().message.contains("cannot enforce read-only"));
     reopened.approve_jdbc_source(&source)?;
     let mut changed = source.clone();
     changed.url.push_str("changed");
@@ -55,6 +61,7 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     let tmp = tempfile::tempdir()?;
     let db = manager(tmp.path());
     let jar = std::env::var("DUCKDB_JDBC_JAR").expect("DUCKDB_JDBC_JAR");
+    assert_eq!(ide_db::jdbc_driver_classes(std::slice::from_ref(&jar))?, ["org.duckdb.DuckDBDriver"]);
     db.save_jdbc_driver(DbJdbcDriver {
         id: "duck".into(),
         name: "DuckDB".into(),
@@ -85,6 +92,7 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert!(result.has_more);
     assert_eq!(result.rows, vec![vec![Some("1".into()), None]]);
     assert_eq!(result.columns[1].name, "label");
+    assert_eq!(db.completion("test").await?.default_schema, "main");
     db.disconnect("test").await;
     Ok(())
 }
@@ -94,10 +102,12 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
 async fn clickhouse_vendor_driver_reads_catalog_and_results() -> IdeResult<()> {
     let tmp = tempfile::tempdir()?;
     let db = manager(tmp.path());
-    let jars =
+    let jars: Vec<String> =
         std::env::split_paths(&std::env::var_os("CLICKHOUSE_JDBC_CLASSPATH").expect("CLICKHOUSE_JDBC_CLASSPATH"))
             .map(|p| p.display().to_string())
             .collect();
+    let classes = ide_db::jdbc_driver_classes(&jars)?;
+    assert_eq!(classes.first().map(String::as_str), Some("com.clickhouse.jdbc.ClickHouseDriver"));
     let port: u16 = std::env::var("CLICKHOUSE_JDBC_TEST_PORT").unwrap().parse().unwrap();
     db.save_jdbc_driver(DbJdbcDriver {
         id: "clickhouse".into(),
