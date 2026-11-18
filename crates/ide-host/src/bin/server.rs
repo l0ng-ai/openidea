@@ -98,6 +98,7 @@ async fn run(base: PathBuf) -> i32 {
     }));
     // A stable path for `--mcp-stdio` client configurations across server upgrades.
     host.mcp.set_stdio_link(base.join("bin").join("openidea-server"));
+    host.mcp_background.serve_none();
     host.mcp.apply(&host);
     // The desktop's code plugins run here, next to the project (`plugin_sync_packages`).
     let plugins = match RemotePlugins::start(&plugins_data, &host, peer.clone()) {

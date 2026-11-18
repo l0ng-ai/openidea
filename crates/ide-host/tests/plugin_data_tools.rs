@@ -194,6 +194,41 @@ async fn mcp_listing_dispatch_confirmation_and_lifecycle_use_plugin_authority() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_tool_call_holds_its_background_project_until_it_ends() {
+    use ide_host::mcp::{BackgroundProjects, McpBackgroundHold};
+    // The fixture's `spin` runs until it is cancelled or its budget ends.
+    let f = Harness::with_timeout(Duration::from_secs(10));
+    let inventory = f.root.parent().unwrap().join("inventory");
+    std::fs::create_dir(&inventory).unwrap();
+    for (key, value) in [
+        ("enabled", serde_json::json!(true)),
+        ("backgroundProjects", serde_json::json!("listed")),
+        ("backgroundProjectPaths", serde_json::json!([inventory])),
+    ] {
+        let key = format!("mcpServer.{key}");
+        f.host.global_settings.set(ide_workspace::SettingsScope::Global, &key, value).unwrap();
+    }
+    let held_by = || {
+        let loaded = f.host.mcp_background.snapshot(&f.host, std::time::Instant::now());
+        loaded.into_iter().next().map(|project| project.kept_open_by)
+    };
+    let (registry, root, cancel) = (Registry::new(f.host.clone()), inventory.clone(), CancellationToken::new());
+    let stop = cancel.clone();
+    let call = tokio::task::spawn_blocking(move || registry.call(&root, "test_data_tools__spin", "{}", cancel));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while held_by() != Some(Some(McpBackgroundHold::Request)) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the call holds the project while the plugin runs");
+    stop.cancel();
+    assert!(call.await.unwrap().is_err());
+    assert_eq!(held_by(), Some(None), "the project stays loaded with nothing holding it");
+    f.host.close_project(&BackgroundProjects::key(&inventory));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn database_imports_are_denied_without_the_optional_grant() {
     let f = Harness::new();
     f.host.set_project_trust(&f.root, true, false).await.unwrap();

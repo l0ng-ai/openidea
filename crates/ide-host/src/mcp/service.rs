@@ -1,6 +1,7 @@
 //! Agents › IDE MCP Server: runs `ide_mcp::McpServer` over built-in host tools
 //! while `mcpServer.enabled` is on, and reports where it listens.
 
+use super::McpBackgroundProject;
 use crate::Host;
 use ide_command::command;
 use ide_core::{IdeResult, IpcPath};
@@ -10,6 +11,7 @@ use specta::Type;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// The server while it runs, or why it doesn't.
 #[derive(Default)]
@@ -57,6 +59,17 @@ impl McpService {
     /// Starts, stops or restarts the server to match the global `mcpServer` settings:
     /// `enabled`, and the address, port and token it listens with.
     pub fn apply(&self, host: &Arc<Host>) {
+        // Callers include the main thread (sync commands, app set-up), which must not wait for
+        // a background project that is being opened.
+        let worker = {
+            let host = host.clone();
+            host.runtime.clone().spawn_blocking(move || host.apply_background_policy())
+        };
+        host.runtime.spawn(async move {
+            if let Err(error) = worker.await {
+                tracing::warn!(%error, "applying the background project policy failed");
+            }
+        });
         let settings = host.global_settings.effective().mcp_server;
         let mut server = self.server.lock();
         if !settings.enabled {
@@ -247,6 +260,24 @@ pub fn mcp_regenerate_token(host: &Arc<Host>) -> IdeResult<()> {
     Ok(())
 }
 
+/// Settings › Agents › IDE MCP Server › Background projects: the projects this host's server
+/// keeps loaded without a window.
+#[command(trust = always)]
+pub fn mcp_background_projects(host: &Host) -> IdeResult<Vec<McpBackgroundProject>> {
+    Ok(host.mcp_background.snapshot(host, Instant::now()))
+}
+
+/// Unloads one background project; a root that is not loaded is already unloaded.
+#[command(trust = always)]
+pub async fn mcp_unload_background_project(host: &Arc<Host>, root: IpcPath) -> IdeResult<()> {
+    let h = host.clone();
+    host.blocking(move || {
+        h.mcp_background.detach(&h, &root, None);
+        Ok(())
+    })
+    .await
+}
+
 #[command(trust = trusted)]
 pub fn mcp_ui_ready(host: &Host, window: &str, ready: bool) -> IdeResult<()> {
     let window = host.owner_window(window);
@@ -289,8 +320,10 @@ mod tests {
 ide_command::domain!(
     mcp:
     mcp_agent_run_closed,
+    mcp_background_projects,
     mcp_regenerate_token,
     mcp_respond,
     mcp_server_status,
     mcp_ui_ready,
+    mcp_unload_background_project,
 );

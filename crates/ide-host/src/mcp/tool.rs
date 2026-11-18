@@ -236,7 +236,7 @@ impl Tool {
                 destructive: false,
                 output_schema: None,
                 input_schema: json!({ "type": "object", "properties": {
-                    "projectPath": { "type": "string", "description": "Any directory inside an open project. Defaults to the connection's project (`?project=`) or the only open one." }
+                    "projectPath": { "type": "string", "description": "Any directory inside a project that is open in a window or served in the background. Defaults to the connection's project (`?project=`) or the only one open in a window." }
                 }, "required": [] }),
             },
             handler: Arc::new(move |call| Box::pin(handler(call))),

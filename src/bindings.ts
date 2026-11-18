@@ -961,6 +961,11 @@ export const commands = {
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
 	/**
+	 *  Settings › Agents › IDE MCP Server › Background projects: the projects this host's server
+	 *  keeps loaded without a window.
+	 */
+	mcpBackgroundProjects: () => typedError<McpBackgroundProject_Serialize[], IdeError>(__TAURI_INVOKE("mcp_background_projects")),
+	/**
 	 *  Settings › Agents › IDE MCP Server › Regenerate Token: forgets the kept token, and restarts the
 	 *  server with a new one. Clients configured with the old token stop working.
 	 */
@@ -976,6 +981,8 @@ export const commands = {
 } | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
+	/**  Unloads one background project; a root that is not loaded is already unloaded. */
+	mcpUnloadBackgroundProject: (root: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_unload_background_project", { root })),
 	/**
 	 *  Sets the menu's labels / accelerators and updates the menu when the visible
 	 *  items changed. Accelerators of actions that are not on the menu must not call
@@ -6903,6 +6910,8 @@ export type IdeEvent =
 { type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
+/**  A project was loaded or unloaded for the MCP server without a window of its own. */
+{ type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
 /**
@@ -8340,6 +8349,54 @@ export type MavenSettings = {
 	downloadSources?: boolean,
 };
 
+/**  What keeps an idle background project loaded. */
+export type McpBackgroundHold = 
+/**  A tool call is in flight. */
+{ kind: "request" } | 
+/**  A run it started is alive; `name` is the first one's. */
+{ kind: "run"; name: string };
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject = McpBackgroundProject_Serialize | McpBackgroundProject_Deserialize;
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject_Deserialize = {
+	root: IpcPath,
+	/**  Seconds since its last tool call began or ended. */
+	idleSeconds: number,
+	/**
+	 *  Seconds until it is unloaded for being idle. Absent while something keeps it open
+	 *  and when idle projects are never unloaded.
+	 */
+	unloadsInSeconds?: number | null,
+	keptOpenBy?: McpBackgroundHold | null,
+};
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject_Serialize = {
+	root: IpcPath,
+	/**  Seconds since its last tool call began or ended. */
+	idleSeconds: number,
+	/**
+	 *  Seconds until it is unloaded for being idle. Absent while something keeps it open
+	 *  and when idle projects are never unloaded.
+	 */
+	unloadsInSeconds?: number | null,
+	keptOpenBy?: McpBackgroundHold | null,
+};
+
+/**  Which folders without an open window the MCP server still serves tools for. */
+export type McpBackgroundProjects = 
+/**  Only projects open in a window. */
+"off" | 
+/**
+ *  Also folders the user trusts: trusted projects, recent projects and the repositories inside
+ *  trusted locations.
+ */
+"trusted" | 
+/**  Only the folders in [`McpServerSettings::background_project_paths`] (and below them). */
+"listed";
+
 /**  Summary of one server discovered inside an external MCP configuration file. */
 export type McpDiscoveredServer = {
 	name: string,
@@ -8431,7 +8488,10 @@ export type McpServerInput = {
 };
 
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
-export type McpServerSettings = {
+export type McpServerSettings = McpServerSettings_Serialize | McpServerSettings_Deserialize;
+
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings_Deserialize = {
 	/**  Serve the tools on [`Self::address`] while the IDE runs. */
 	enabled?: boolean,
 	/**
@@ -8460,6 +8520,72 @@ export type McpServerSettings = {
 	 *  make a new one each run.
 	 */
 	fixedToken?: boolean,
+	/**
+	 *  Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+	 *  project loads when an agent first asks for it.
+	 */
+	backgroundProjects?: McpBackgroundProjects,
+	/**
+	 *  The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+	 *  when untrusted.
+	 */
+	backgroundProjectPaths?: string[],
+	/**
+	 *  Minutes a background project may go without a tool call before it is unloaded, at most
+	 *  1440; 0 keeps it until the IDE quits.
+	 */
+	backgroundIdleMinutes?: number,
+	/**  Background projects loaded at once, 1 to 32; the least recently used one makes room. */
+	backgroundProjectLimit?: number,
+};
+
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings_Serialize = {
+	/**  Serve the tools on [`Self::address`] while the IDE runs. */
+	enabled: boolean,
+	/**
+	 *  Run the tools that change the project or start processes without asking first
+	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+	 */
+	runWithoutConfirmation: boolean,
+	/**  Finished agent tabs (`run_command`) the Run tool window shows; older ones are archived. */
+	agentTabLimit: number,
+	/**  Archived agent tabs kept; older ones are closed. */
+	agentArchiveLimit: number,
+	/**
+	 *  The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+	 *  address of this computer, or `0.0.0.0` / `::` for every address.
+	 */
+	address: string,
+	/**
+	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
+	 *  port forwards keep working after a restart.
+	 */
+	fixedPort: boolean,
+	/**  The port of [`Self::fixed_port`]. */
+	port: number,
+	/**
+	 *  Keep the bearer token across runs (in the app data, readable by this user only) rather than
+	 *  make a new one each run.
+	 */
+	fixedToken: boolean,
+	/**
+	 *  Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+	 *  project loads when an agent first asks for it.
+	 */
+	backgroundProjects: McpBackgroundProjects,
+	/**
+	 *  The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+	 *  when untrusted.
+	 */
+	backgroundProjectPaths: string[],
+	/**
+	 *  Minutes a background project may go without a tool call before it is unloaded, at most
+	 *  1440; 0 keeps it until the IDE quits.
+	 */
+	backgroundIdleMinutes: number,
+	/**  Background projects loaded at once, 1 to 32; the least recently used one makes room. */
+	backgroundProjectLimit: number,
 };
 
 /**  What Settings › Agents › IDE MCP Server shows. */
@@ -10918,7 +11044,7 @@ export type Settings_Deserialize = {
 	/**  Settings › Agents. */
 	agents?: AgentSettings_Deserialize,
 	/**  Agents › MCP Server (global only). */
-	mcpServer?: McpServerSettings,
+	mcpServer?: McpServerSettings_Deserialize,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity?: AgentSecuritySettings,
 	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
@@ -10992,7 +11118,7 @@ export type Settings_Serialize = {
 	/**  Settings › Agents. */
 	agents: AgentSettings_Serialize,
 	/**  Agents › MCP Server (global only). */
-	mcpServer: McpServerSettings,
+	mcpServer: McpServerSettings_Serialize,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity: AgentSecuritySettings,
 	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
