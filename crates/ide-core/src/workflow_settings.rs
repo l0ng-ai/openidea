@@ -77,6 +77,9 @@ pub struct GitSettings {
     /// The non-modal Commit tool window works on the index: Staged / Unstaged groups,
     /// stage and unstage instead of inclusion checkboxes, and no change lists.
     pub staging_area: bool,
+    /// Scan the working tree with `git status` (for file systems whose metadata only
+    /// the system git reads correctly) instead of in process.
+    pub cli_status: bool,
 }
 
 impl Default for GitSettings {
@@ -101,6 +104,7 @@ impl Default for GitSettings {
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
             staging_area: false,
+            cli_status: false,
         }
     }
 }

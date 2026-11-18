@@ -6279,6 +6279,11 @@ export type GitSettings = {
 	 *  stage and unstage instead of inclusion checkboxes, and no change lists.
 	 */
 	stagingArea?: boolean,
+	/**
+	 *  Scan the working tree with `git status` (for file systems whose metadata only
+	 *  the system git reads correctly) instead of in process.
+	 */
+	cliStatus?: boolean,
 };
 
 export type GoBuildTags = {
