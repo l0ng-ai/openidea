@@ -7,7 +7,8 @@
  */
 import { registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
-import { basename, useProject } from "@/platform/project";
+import { onFileTypesChange } from "@/platform/fileTypes";
+import { basename } from "@/platform/project";
 import { lazyComponent, type MenuItem } from "@/ui";
 import {
   maybeEditorService,
@@ -65,17 +66,11 @@ function browserMenu(path: string): MenuItem {
   };
 }
 
-const fileTypesKey = ({ settings }: ReturnType<typeof useProject.getState>) =>
-  JSON.stringify([settings?.files?.fileTypes, settings?.files?.fileTypeOverrides]);
-
 export function activate(): () => void {
   void loadBrowsers();
   const disposers = [
     // Open tabs gain or lose the browser bar and preview when File Types change.
-    useProject.subscribe((s, prev) => {
-      if (s.settings !== prev.settings && fileTypesKey(s) !== fileTypesKey(prev))
-        useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }));
-    }),
+    onFileTypesChange(() => useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }))),
     registerEditorBanner(djangoTemplateBanner),
     registerEditorContribution({ id: "web.djangoContent", order: 57, extensions: djangoContentWatcher }),
     registerTextEditorWrapper({
