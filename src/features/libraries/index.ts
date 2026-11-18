@@ -149,19 +149,27 @@ export function activate(): () => void {
   /** The last complete result: what a refresh shows for ecosystems that haven't reported yet. */
   let settled: LibraryGroup[] = [];
   let request: RequestId | undefined;
+  /** The project whose libraries are shown (and `settled`). */
+  let shownFor: string | null = null;
   const clear = () => {
     disposeRoot();
     disposeReadOnly();
     disposeRoot = disposeReadOnly = () => {};
     shown = "";
     settled = [];
+    shownFor = null;
   };
   const refresh = () => {
     const id = ++seq;
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     request = undefined;
-    if (!useProject.getState().project || useProject.getState().project?.trusted === false || !isTauri())
-      return clear();
+    const project = useProject.getState().project;
+    if (!project || project.trusted === false || !isTauri()) return clear();
+    // Another project's libraries must not show (or fill in) while this one's are discovered.
+    if (shownFor !== project.root) {
+      clear();
+      shownFor = project.root;
+    }
     let collected: LibraryGroup[] = [];
     const show = (groups: LibraryGroup[]) => {
       if (id !== seq) return;
