@@ -143,6 +143,8 @@ pub fn run() {
     let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
+    #[cfg(target_os = "linux")]
+    let app = app.plugin(linux_webkit::smooth_scrolling_plugin());
     #[cfg(not(target_os = "linux"))]
     let window_state = tauri_plugin_window_state::Builder::default()
         .with_state_flags(window_state_flags())

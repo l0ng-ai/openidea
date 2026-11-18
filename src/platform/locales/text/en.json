@@ -2401,6 +2401,8 @@
   "Reformat Code cancelled after {done} of {length} files": "Reformat Code cancelled after {done} of {length} files",
   "Reformatted {formatted} of {length} files": "Reformatted {formatted} of {length} files",
   "Skipped {count} files without a formatter: {names}": "Skipped {count} files without a formatter: {names}",
+  "Smooth scrolling": "Smooth scrolling",
+  "Animates each mouse wheel step. Can stutter on some Linux setups": "Animates each mouse wheel step. Can stutter on some Linux setups",
   "Open Settings in a separate window": "Open Settings in a separate window",
   "When off, Settings opens as a dialog in the project window, which is faster": "When off, Settings opens as a dialog in the project window, which is faster",
   "Run code inside the Java applications you start": "Run code inside the Java applications you start",

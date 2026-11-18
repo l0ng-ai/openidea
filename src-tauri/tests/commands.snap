@@ -720,6 +720,7 @@ window_open_project                          always             desktop      bin
 window_open_projects                         always             desktop      bindings sync
 window_open_remote                           always             desktop      bindings async
 window_open_settings                         always             desktop      bindings async
+window_set_smooth_scrolling                  always             desktop      bindings sync
 window_set_titlebar_height                   always             desktop      bindings sync
 window_start_drag                            always             desktop      bindings sync
 window_take_launch                           always             desktop      bindings sync
