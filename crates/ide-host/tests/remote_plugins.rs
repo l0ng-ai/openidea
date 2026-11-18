@@ -1080,3 +1080,35 @@ async fn cancelling_one_request_does_not_interrupt_another_running_command() {
     assert_eq!(plugins.host().info_of("jobs").unwrap().stats.crashes, 0);
     plugins.host().shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_remote_command_reads_the_clipboard_of_the_desktop_window() {
+    let (_tmp, plugins, peer, client) = command_rpc_fixture().await;
+    plugins.host().install_from_dir(&fixture("clipboard"), &Consent::all()).unwrap();
+    let read = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "test.clipboard", "commandId": "read" })).await
+        }
+    });
+    until("the server asks the window for its clipboard", 5, || {
+        client.plugin_events.lock().iter().any(|m| matches!(m.event, PluginEvent::ClipboardRequested { .. }))
+    })
+    .await;
+    let (window, request) = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            PluginEvent::ClipboardRequested { request_id, .. } => Some((m.window.clone(), request_id.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(window.as_deref(), Some("main"), "the invoking window reads its own clipboard");
+    let answer = json!({ "kind": "content", "text": "from the desktop", "png": null });
+    let answered = invoke(&peer, "plugin_answer_clipboard", json!({ "requestId": request, "answer": answer }));
+    assert_eq!(answered.await.unwrap(), true);
+    let reply = tokio::time::timeout(Duration::from_secs(5), read).await.unwrap().unwrap().unwrap();
+    assert_eq!(reply, "text=from the desktop image=-");
+    plugins.host().shutdown();
+}

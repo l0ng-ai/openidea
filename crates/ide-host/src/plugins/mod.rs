@@ -1806,6 +1806,12 @@ impl PluginHost {
         request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
     }
 
+    /// A window answered a plugin's `ClipboardRequested`; false when the call no longer
+    /// waits or asked another window.
+    pub fn answer_clipboard(&self, client: &str, request_id: &str, answer: ClipboardAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_clipboard(client, id, answer))
+    }
+
     pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
         request_id.parse().is_ok_and(|id| self.shared.answer_commit(id, answer))
     }
