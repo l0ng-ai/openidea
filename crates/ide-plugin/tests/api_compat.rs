@@ -91,16 +91,28 @@ fn the_sdk_carries_the_hosts_wit() {
 
 #[test]
 fn the_version_check_runs_compatible_components_and_explains_the_rest() {
-    let host = v("1.11.0");
-    for ok in ["1.0.0", "1.3.0", "1.4.7", "1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0", "1.0.0-rc.1"]
-    {
+    let host = v("1.12.0");
+    for ok in [
+        "1.0.0",
+        "1.3.0",
+        "1.4.7",
+        "1.5.0",
+        "1.6.0",
+        "1.7.0",
+        "1.8.0",
+        "1.9.0",
+        "1.10.0",
+        "1.11.0",
+        "1.12.0",
+        "1.0.0-rc.1",
+    ] {
         assert_eq!(check_api(&v(ok), &host), Ok(()), "{ok}");
     }
-    let newer = check_api(&v("1.12.0"), &host).unwrap_err();
-    assert!(newer.contains("1.12") && newer.contains("update OpenIDEA"), "{newer}");
+    let newer = check_api(&v("1.13.0"), &host).unwrap_err();
+    assert!(newer.contains("1.13") && newer.contains("update OpenIDEA"), "{newer}");
     assert!(check_api(&v("2.0.0"), &host).unwrap_err().contains("update OpenIDEA"));
     let older = check_api(&v("0.2.0"), &host).unwrap_err();
-    assert!(older.contains("rebuild it with the 1.11 SDK"), "{older}");
+    assert!(older.contains("rebuild it with the 1.12 SDK"), "{older}");
     // 0.x: every minor is its own API.
     assert_eq!(check_api(&v("0.2.0"), &v("0.2.5")), Ok(()));
     assert!(check_api(&v("0.1.0"), &v("0.2.0")).is_err());
@@ -125,6 +137,21 @@ fn shipped_components_are_built_for_this_api() {
         let built_for = built_for.unwrap_or_else(|| panic!("{} uses no plugin interface", wasm.display()));
         assert_eq!((built_for.major, built_for.minor), (host.major, host.minor), "{}", wasm.display());
     }
+}
+
+#[test]
+fn a_1_12_component_exports_the_optional_hover_gutter_actions_world() {
+    let engine = PluginEngine::new().unwrap();
+    let component =
+        engine.compile(&repo().join("crates/ide-plugin/tests/fixtures/language-features/dist/plugin.wasm")).unwrap();
+    let exports: Vec<String> =
+        component.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
+    assert!(exports.iter().any(|name| name.starts_with("openidea:plugin/hover-gutter-actions@1.12.0")), "{exports:?}");
+    // A 1.10-compatible plugin that does not export the new world stays valid.
+    let old = engine.compile(&repo().join("plugins/official/test-runner/dist/plugin.wasm")).unwrap();
+    let old_exports: Vec<String> =
+        old.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
+    assert!(!old_exports.iter().any(|name| name.starts_with("openidea:plugin/hover-gutter-actions")));
 }
 
 // --- a later host, simulated -------------------------------------------------------------

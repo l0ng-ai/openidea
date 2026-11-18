@@ -1,0 +1,24 @@
+package openidea:plugin@1.12.0;
+
+/// Gutter actions that are only visible while the pointer is over the left
+/// gutter at their source line. The released `gutter-actions` interface is
+/// unchanged; this is an additional optional export.
+interface hover-gutter-actions {
+    use language-features.{document, gutter-action};
+
+    /// Actions to show on gutter hover. Each item has the same shape as
+    /// `language-features.gutter-action`; the host treats all of them as
+    /// hover-only.
+    hover-gutter-actions: func(doc: document) -> list<gutter-action>;
+}
+
+/// The optional export-only world the SDK merges with `plugin`.
+world hover-gutter-actions-provider {
+    export hover-gutter-actions;
+}
+
+/// The host-side world used to instantiate a component that exports it.
+world plugin-hover-gutter-actions {
+    include plugin;
+    export hover-gutter-actions;
+}

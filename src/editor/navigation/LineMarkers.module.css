@@ -8,3 +8,14 @@
   border-radius: var(--radius-small);
   cursor: pointer;
 }
+
+/* A gutter action that opted into `hoverOnly` is hidden until its gutter line is hovered or focused. */
+.marker[data-hover-only] {
+  opacity: 0;
+  pointer-events: none;
+}
+.marker[data-hover-only][data-hover-line],
+.marker[data-hover-only]:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}

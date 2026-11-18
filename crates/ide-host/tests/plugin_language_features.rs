@@ -151,7 +151,11 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     );
     let visuals = ops::lsp::plugin_language_visuals(&host, "main", doc.id).await.unwrap();
     assert_eq!(visuals.colors.len(), 1);
-    assert_eq!(visuals.gutter_actions.len(), 1);
+    assert_eq!(visuals.gutter_actions.len(), 2);
+    assert_eq!(visuals.gutter_actions[0].1.line, 0);
+    assert_eq!(visuals.gutter_actions[1].1.line, 0);
+    assert_eq!(visuals.gutter_actions[0].1.hover_only, None);
+    assert_eq!(visuals.gutter_actions[1].1.hover_only, Some(true));
     assert_eq!(
         ops::lsp::plugin_color_presentations(&host, "main", doc.id, ID.into(), visuals.colors[0].1.clone())
             .await
@@ -217,7 +221,7 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let listed = invoke(&peer, "plugin_formatters", serde_json::json!({})).await;
     assert_eq!(listed[0]["id"], ID);
     let visual = invoke(&peer, "plugin_language_visuals", serde_json::json!({"doc":doc.id})).await;
-    assert_eq!(visual["gutterActions"].as_array().unwrap().len(), 1);
+    assert_eq!(visual["gutterActions"].as_array().unwrap().len(), 2);
     set_editor_providers(Some(&p));
     injected_lsp(&host, &p, &root, &peer).await;
     p.set_enabled(ID, false).unwrap();

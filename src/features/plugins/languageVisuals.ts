@@ -64,13 +64,20 @@ class ActionMarker extends GutterMarker {
       other.action.icon === this.action.icon &&
       other.action.tooltip === this.action.tooltip &&
       other.action.command === this.action.command &&
-      other.action.argument === this.action.argument
+      other.action.argument === this.action.argument &&
+      other.action.hoverOnly === this.action.hoverOnly
     );
   }
   override toDOM() {
     const el = document.createElement("button");
     el.type = "button";
     el.className = `${styles.marker} cm-plugin-gutter-action`;
+    if (this.action.hoverOnly) {
+      el.dataset.hoverOnly = "true";
+      el.dataset.actionLine = String(this.action.line);
+      el.addEventListener("focus", () => el.setAttribute("data-hover-line", "true"));
+      el.addEventListener("blur", () => el.removeAttribute("data-hover-line"));
+    }
     el.title = this.action.tooltip;
     el.setAttribute("aria-label", this.action.tooltip);
     el.innerHTML = gutterIconMarkup(markerIcon(this.action.icon)) ?? "";
@@ -97,6 +104,39 @@ const actions = StateField.define<{ pos: number; marker: ActionMarker }[]>({
     return v.map((a) => ({ ...a, pos: mapLineStart(tr, a.pos) }));
   },
 });
+/** Reveal opt-in gutter actions only while the pointer is over the left gutter at their line. */
+const gutterActionHover = ViewPlugin.define((view) => {
+  const apply = (line: number | null) => {
+    for (const button of view.dom.querySelectorAll<HTMLElement>(".cm-plugin-gutter-action[data-hover-only]")) {
+      button.toggleAttribute("data-hover-line", line !== null && Number(button.dataset.actionLine) === line);
+    }
+  };
+  const lineAt = (target: EventTarget | null, event: MouseEvent): number | null => {
+    if (!(target instanceof Node)) return null;
+    const button = target instanceof Element ? target.closest<HTMLElement>(".cm-plugin-gutter-action") : null;
+    if (button?.dataset.actionLine) return Number(button.dataset.actionLine);
+    const gutter = target instanceof Element ? target.closest(".cm-gutters") : null;
+    if (!gutter) return null;
+    try {
+      const content = view.contentDOM.getBoundingClientRect();
+      const pos = view.posAtCoords({ x: content.left + 1, y: event.clientY });
+      return pos === null ? null : view.state.doc.lineAt(pos).number - 1;
+    } catch {
+      return null;
+    }
+  };
+  const move = (event: MouseEvent) => apply(lineAt(event.target, event));
+  const leave = () => apply(null);
+  view.dom.addEventListener("mousemove", move);
+  view.dom.addEventListener("mouseleave", leave);
+  return {
+    destroy() {
+      view.dom.removeEventListener("mousemove", move);
+      view.dom.removeEventListener("mouseleave", leave);
+    },
+  };
+});
+
 /** In the shared icon area, beside the plugins' line markers. */
 const actionSource = iconAreaSource.of({
   order: 65,
@@ -112,6 +152,7 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
     highlights,
     actions,
     actionSource,
+    gutterActionHover,
     ViewPlugin.define(
       (view) =>
         new (class {

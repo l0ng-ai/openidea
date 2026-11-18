@@ -242,10 +242,11 @@ async fn official_api_examples_install_and_render_real_component_contributions()
         let doc =
             ide_plugin::ProviderDocument { path: f.root.join("example.tests"), text: "test adds\n".into(), ..doc };
         assert!(eventually(|| {
-            f.plugins
-                .language_gutter_actions(&doc)
+            let actions = f.plugins.language_gutter_actions(&doc);
+            let action = actions
                 .iter()
-                .any(|(owner, action)| owner == "openidea.test-runner" && action.argument.as_deref() == Some("adds"))
+                .find(|(owner, action)| owner == "openidea.test-runner" && action.argument.as_deref() == Some("adds"));
+            action.is_some_and(|(_, action)| action.hover_only.is_none())
         }));
         f.plugins.refresh_run_configurations(&f.root);
         let configs = f.plugins.run_detection().detect(&f.root);

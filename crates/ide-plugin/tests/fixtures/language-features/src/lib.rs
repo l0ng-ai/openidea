@@ -1,6 +1,7 @@
 use openidea_plugin::language_features::*;
 use openidea_plugin::{
-    Diagnostic, Error, Invocation, Location, Plugin, Position, Range, Severity, TextEdit, register_plugin, text,
+    Diagnostic, Error, HoverGutterActions, Invocation, Location, Plugin, Position, Range, Severity, TextEdit,
+    register_plugin, text,
 };
 #[derive(Default)]
 struct Fixture {
@@ -102,6 +103,17 @@ impl LanguageFeatures for Fixture {
         }]
     }
 }
+impl HoverGutterActions for Fixture {
+    fn hover_gutter_actions(&mut self, _: &Document) -> Vec<GutterAction> {
+        vec![GutterAction {
+            line: 0,
+            icon: Some("run".into()),
+            tooltip: "Hover fixture".into(),
+            command: "run".into(),
+            argument: Some("hover".into()),
+        }]
+    }
+}
 impl Injections for Fixture {
     fn injections(&mut self, d: &Document) -> Vec<Injection> {
         if d.language == "sql" {
@@ -141,4 +153,4 @@ impl openidea_plugin::diagnostics::DiagnosticsProvider for Fixture {
         ]
     }
 }
-register_plugin!(Fixture, language_features, injections, providers, hover, diagnostics);
+register_plugin!(Fixture, language_features, hover_gutter_actions, injections, providers, hover, diagnostics);

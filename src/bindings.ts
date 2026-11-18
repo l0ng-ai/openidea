@@ -6379,6 +6379,8 @@ export type GutterAction = {
 	tooltip: string,
 	command: string,
 	argument: string | null,
+	/**  Show only while the pointer is over the left gutter at this line. */
+	hoverOnly?: boolean | null,
 };
 
 /**  HEAD before and after a history rewrite, for its Undo. */

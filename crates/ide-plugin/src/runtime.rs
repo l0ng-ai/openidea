@@ -16,6 +16,7 @@ use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
+use crate::wit_host::hover_gutter_bindings::exports::openidea::plugin::hover_gutter_actions as wit_hga;
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
 use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
@@ -56,7 +57,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.11";
+pub const API_VERSION: &str = "1.12";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -1027,6 +1028,7 @@ pub struct Runtime {
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
     run_target_validation: Option<wit_rtv::Guest>,
+    hover_gutter: Option<wit_hga::Guest>,
     language_features: Option<wit_lf::Guest>,
     injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
@@ -1187,6 +1189,7 @@ impl Runtime {
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
+        let hover_gutter_indices = wit_hga::GuestIndices::new(&pre).ok();
         let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
         let mcp_indices =
             crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::GuestIndices::new(&pre).ok();
@@ -1198,6 +1201,7 @@ impl Runtime {
             launch_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let hover_gutter = hover_gutter_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let run_target_validation =
             validation_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
@@ -1255,6 +1259,7 @@ impl Runtime {
             exports: Exports {
                 run_target_validation,
                 language_features,
+                hover_gutter,
                 injections,
                 plugin,
                 syntax,
@@ -2555,6 +2560,19 @@ fn gutter_action_from(v: wit_lf::GutterAction) -> crate::language_features::Gutt
         tooltip: crate::runtime::clip(v.tooltip, 65536),
         command: crate::runtime::clip(v.command, 65536),
         argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+        hover_only: None,
+    }
+}
+fn hover_gutter_action_from(
+    v: crate::wit_host::hover_gutter_bindings::openidea::plugin::language_features::GutterAction,
+) -> crate::language_features::GutterAction {
+    crate::language_features::GutterAction {
+        line: v.line,
+        icon: v.icon.map(|v| crate::runtime::clip(v, 65536)),
+        tooltip: crate::runtime::clip(v.tooltip, 65536),
+        command: crate::runtime::clip(v.command, 65536),
+        argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+        hover_only: Some(true),
     }
 }
 fn parameter_label_from(v: wit_lf::ParameterLabel) -> crate::language_features::ParameterLabel {
@@ -2785,6 +2803,31 @@ impl Runtime {
         let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
     }
+    pub fn has_hover_gutter_actions(&self) -> bool {
+        self.exports.hover_gutter.is_some()
+    }
+
+    pub fn language_hover_gutter_actions(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::GutterAction>, CallError> {
+        if self.exports.hover_gutter.is_none() {
+            return Err(CallError::missing_export("hover-gutter-actions"));
+        }
+        let d = wit_hga::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.call(Invocation::default(), timeout, |exports, store| {
+            let p = exports.hover_gutter.as_ref().expect("checked");
+            p.call_hover_gutter_actions(store, &d)
+        })?;
+        Ok(result.into_iter().take(10000).map(hover_gutter_action_from).collect())
+    }
+
     pub fn provide_injections(
         &mut self,
         doc: &ProviderDocument,

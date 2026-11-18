@@ -281,9 +281,25 @@ impl PluginHost {
         for (d, bounds) in self.feature_documents(doc, None) {
             let lines = d.text.split('\n').count() as u32;
             let snapshot = d.clone();
+            let snapshot2 = d.clone();
             let d = Arc::new(d);
+            let hover_doc = d.clone();
             let results = self
                 .document_calls(ProviderKind::GutterActions, &snapshot, move |rt, t| rt.language_gutter_actions(&d, t));
+            for (p, items) in results {
+                let commands: std::collections::HashSet<_> =
+                    self.ui.items(super::COMMANDS, Some(p.id())).into_iter().map(|c| c.key).collect();
+                for i in items {
+                    if i.line < lines && bounds.lines(i.line, i.line) && commands.contains(&i.command) {
+                        out.push((p.id().to_owned(), i));
+                    }
+                }
+            }
+            // The optional hover-gutter-actions export is additive; a plugin
+            // without it keeps the released always-visible behavior.
+            let results = self.document_calls(ProviderKind::GutterActions, &snapshot2, move |rt, t| {
+                rt.language_hover_gutter_actions(&hover_doc, t)
+            });
             for (p, items) in results {
                 let commands: std::collections::HashSet<_> =
                     self.ui.items(super::COMMANDS, Some(p.id())).into_iter().map(|c| c.key).collect();

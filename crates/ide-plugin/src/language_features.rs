@@ -99,6 +99,9 @@ pub struct GutterAction {
     pub tooltip: String,
     pub command: String,
     pub argument: Option<String>,
+    /// Show only while the pointer is over the left gutter at this line.
+    #[serde(default)]
+    pub hover_only: Option<bool>,
 }
 /// Injection data.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

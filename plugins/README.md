@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.11.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.12.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -426,9 +426,44 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.12
+
+API 1.12.0 is in development on `main`. Use `engines.openidea = "^1.12"` and the
+matching SDK. Released 1.11 plugins keep working. New in 1.12:
+
+- **Hover-only gutter actions.** An optional `hover-gutter-actions` export
+  (world `plugin-hover-gutter-actions`, SDK `HoverGutterActions`, registration
+  `register_plugin!(Plugin, hover_gutter_actions)`) contributes gutter actions
+  that the host shows only while the pointer is over the left gutter at their
+  line. The released `language-features.gutter-actions` interface and its
+  `gutter-action` record are unchanged; a component that does not export the
+  new world keeps today's always-visible behavior. Hidden actions reveal on
+  keyboard focus, and the gutter keeps its width when they appear.
+
+Example:
+
+```rust
+#[derive(Default)]
+struct MyPlugin;
+impl openidea_plugin::HoverGutterActions for MyPlugin {
+    fn hover_gutter_actions(&mut self, doc: &openidea_plugin::language_features::Document)
+        -> Vec<openidea_plugin::language_features::GutterAction>
+    {
+        vec![openidea_plugin::language_features::GutterAction {
+            line: 0,
+            icon: Some("run".into()),
+            tooltip: "Call this method".into(),
+            command: "call".into(),
+            argument: None,
+        }]
+    }
+}
+openidea_plugin::register_plugin!(MyPlugin, hover_gutter_actions);
+```
+
 ### API 1.11
 
-API 1.11.0 is in development on `main`. Use `engines.openidea = "^1.11"` and the
+API 1.11.0 shipped on `main`. Use `engines.openidea = "^1.11"` and the
 matching SDK. Released 1.10 plugins keep working. New in 1.11:
 
 - **Reading the clipboard.** `host::read_clipboard()` (`ui.read-clipboard`)

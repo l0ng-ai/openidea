@@ -149,3 +149,43 @@ it("retains buttons on refresh failures and removes them when the provider confi
   await vi.advanceTimersByTimeAsync(300);
   expect(view.dom.querySelector(".cm-plugin-gutter-action")).toBeNull();
 });
+
+it("reveals hover-only gutter actions from their gutter line and keeps keyboard focus usable", async () => {
+  vi.useFakeTimers();
+  const visual = {
+    version: 1,
+    injections: [],
+    colors: [],
+    gutterActions: [
+      ["test", { line: 0, icon: "run", tooltip: "Call", command: "call", argument: null, hoverOnly: true }],
+      ["test", { line: 0, icon: "run", tooltip: "Always", command: "always", argument: null }],
+    ],
+  };
+  ipc.pluginLanguageVisuals.mockResolvedValueOnce({ status: "ok", data: visual });
+  const view = new EditorView({
+    state: EditorState.create({ doc: "method", extensions: [iconAreaExtension, pluginLanguageVisuals(ctx)] }),
+    parent: document.body,
+  });
+  views.push(view);
+  await vi.advanceTimersByTimeAsync(300);
+  const [hover, always] = [...view.dom.querySelectorAll<HTMLButtonElement>(".cm-plugin-gutter-action")];
+  expect(hover!.dataset.hoverOnly).toBe("true");
+  expect(hover!.hasAttribute("data-hover-line")).toBe(false);
+  expect(always!.dataset.hoverOnly).toBeUndefined();
+  expect(always!.hasAttribute("data-hover-line")).toBe(false);
+  const reserved = view.dom.querySelectorAll(".cm-openidea-iconArea .cm-openidea-iconSpacer").length;
+  expect(reserved).toBeGreaterThan(0);
+
+  hover!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+  expect(hover!.hasAttribute("data-hover-line")).toBe(true);
+  expect(always!.hasAttribute("data-hover-line")).toBe(false);
+
+  expect(view.dom.querySelectorAll(".cm-openidea-iconArea .cm-openidea-iconSpacer").length).toBe(reserved);
+  hover!.focus();
+  expect(hover!.hasAttribute("data-hover-line")).toBe(true);
+  hover!.blur();
+  expect(hover!.hasAttribute("data-hover-line")).toBe(false);
+
+  view.contentDOM.querySelector(".cm-line")?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+  expect(hover!.hasAttribute("data-hover-line")).toBe(false);
+});

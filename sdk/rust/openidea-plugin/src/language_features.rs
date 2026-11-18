@@ -94,6 +94,15 @@ pub struct Injection {
     pub range: Range,
     pub language: String,
 }
+/// Additional gutter actions that appear only while the pointer is over the
+/// left gutter at their source line. Export with
+/// `register_plugin!(Plugin, hover_gutter_actions)`.
+pub trait HoverGutterActions {
+    fn hover_gutter_actions(&mut self, _doc: &Document) -> Vec<GutterAction> {
+        Vec::new()
+    }
+}
+
 /// Implement only the kinds declared under contributes.providers.
 pub trait LanguageFeatures {
     fn format(
