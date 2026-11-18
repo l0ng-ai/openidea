@@ -4,7 +4,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlameLine, Commit } from "@/bindings";
 import { useI18n } from "@/platform/i18n";
-import { annotationsShown, blameSlot, toggleAnnotations } from "../blame";
+import { annotationsShown, blameSlot, readAnnotateColumns, toggleAnnotations, useAnnotateColumns } from "../blame";
 import { closeBlamePopup } from "../BlamePopup";
 import { useVcs } from "../store";
 
@@ -184,6 +184,107 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(edited);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
-    expect(items.map((i) => i.label)).toEqual(["Close Annotations"]);
+    expect(items.map((i) => i.label)).toEqual(["Options", "Close Annotations"]);
+  });
+});
+
+describe("annotate Options", () => {
+  type Item = { label?: string; checked?: boolean; disabled?: boolean; run?: () => void; submenu?: Item[] };
+
+  beforeEach(() => {
+    localStorage.clear();
+    useAnnotateColumns.setState(readAnnotateColumns());
+  });
+
+  async function annotated(doc = "first\nsecond\nthird") {
+    const v = new EditorView({ parent: document.body, state: EditorState.create({ doc, extensions: [blameSlot()] }) });
+    await toggleAnnotations(v, "/repo/src/main.py");
+    return v;
+  }
+
+  function options(v: EditorView): Item[] {
+    mocks.menu.mockClear();
+    fireEvent.contextMenu(v.dom.querySelector(".cm-vcs-blame .cm-gutterElement [data-commit]")!);
+    const items = mocks.menu.mock.calls[0]![1] as Item[];
+    return items.find((i) => i.label === "Options")!.submenu!;
+  }
+
+  const hidden = (v: EditorView) =>
+    ["date", "author", "revision"].filter((c) => v.dom.classList.contains(`cm-vcs-blame-hide-${c}`));
+
+  it("shows date and author by default and adds the revision from Options", async () => {
+    view = await annotated();
+    expect(options(view).map((i) => [i.label, i.checked])).toEqual([
+      ["Date", true],
+      ["Author", true],
+      ["Revision", false],
+    ]);
+    expect(hidden(view)).toEqual(["revision"]);
+    expect(view.dom.querySelector(`[data-commit="${sha}"] .cm-vcs-blame-revision`)?.textContent).toBe("f122f5af");
+
+    act(() => options(view!)[2]!.run!());
+    expect(hidden(view)).toEqual([]);
+    expect(options(view).map((i) => i.checked)).toEqual([true, true, true]);
+
+    act(() => options(view!)[1]!.run!());
+    expect(hidden(view)).toEqual(["author"]);
+  });
+
+  it("keeps the last shown column", async () => {
+    view = await annotated();
+    act(() => options(view!)[1]!.run!());
+    const last = options(view);
+    expect(last.map((i) => [i.checked, i.disabled])).toEqual([
+      [true, true],
+      [false, false],
+      [false, false],
+    ]);
+    act(() => last[0]!.run!());
+    expect(hidden(view)).toEqual(["author", "revision"]);
+  });
+
+  it("updates every annotated editor and remembers the choice", async () => {
+    view = await annotated();
+    const other = await annotated("a\nb\nc");
+    try {
+      act(() => options(view!)[0]!.run!());
+      expect(hidden(other)).toEqual(["date", "revision"]);
+      expect(JSON.parse(localStorage.getItem("openidea.vcs.annotateColumns")!)).toEqual({
+        date: false,
+        author: true,
+        revision: false,
+      });
+      expect(readAnnotateColumns()).toEqual({ date: false, author: true, revision: false });
+    } finally {
+      other.destroy();
+    }
+  });
+
+  it("follows a choice made in another window", async () => {
+    view = await annotated();
+    localStorage.setItem("openidea.vcs.annotateColumns", '{"date":true,"author":false,"revision":true}');
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateColumns" }));
+    });
+    expect(hidden(view)).toEqual(["author"]);
+    expect(options(view).map((i) => i.checked)).toEqual([true, false, true]);
+  });
+
+  it("falls back to the defaults for a stored value it cannot use", () => {
+    const defaults = { date: true, author: true, revision: false };
+    for (const raw of ["{", "[]", "null", '"x"', '{"date":false,"author":false,"revision":false}']) {
+      localStorage.setItem("openidea.vcs.annotateColumns", raw);
+      expect(readAnnotateColumns()).toEqual(defaults);
+    }
+    localStorage.setItem("openidea.vcs.annotateColumns", '{"date":"no","revision":true}');
+    expect(readAnnotateColumns()).toEqual({ date: true, author: true, revision: true });
+  });
+
+  it("leaves the editor's classes alone once annotations are closed", async () => {
+    view = await annotated();
+    await toggleAnnotations(view, "/repo/src/main.py");
+    expect(hidden(view)).toEqual([]);
+    act(() => useAnnotateColumns.setState({ date: false, author: true, revision: true }));
+    expect(hidden(view)).toEqual([]);
   });
 });

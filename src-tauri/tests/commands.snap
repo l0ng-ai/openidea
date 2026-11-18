@@ -298,6 +298,7 @@ index_file_extensions                        always             project_host bin
 index_status                                 always             project_host bindings sync
 inspect_code                                 trusted            project_host bindings async
 java_build_workspace                         trusted            project_host bindings async
+java_debug_adapter                           trusted            project_host bindings sync
 java_debug_server                            trusted            project_host bindings async
 java_resolve_launch                          trusted            project_host bindings async
 jdk_download                                 always             project_host bindings async

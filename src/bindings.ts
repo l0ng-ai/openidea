@@ -718,6 +718,11 @@ export const commands = {
 	inspectCode: (request: RequestId, scope: SearchScope, onEvent: Channel<InspectEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("inspect_code", { request, scope, onEvent })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
+	/**
+	 *  The debug adapter for the JVMs of `module`: `java-debug` inside jdtls, or `java-analyzer`
+	 *  (`java-analyzer dap`) when jdtls doesn't serve the module and java-analyzer does.
+	 */
+	javaDebugAdapter: (module: string) => typedError<string, IdeError>(__TAURI_INVOKE("java_debug_adapter", { module })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
