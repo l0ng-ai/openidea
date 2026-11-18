@@ -670,6 +670,7 @@ vcs_revision_children                        always             project_host bin
 vcs_revision_files                           always             project_host bindings async
 vcs_reword                                   trusted            project_host bindings async
 vcs_roots                                    always             project_host bindings sync
+vcs_set_user_identity                        trusted            project_host bindings async
 vcs_shelf_delete                             trusted            project_host bindings async
 vcs_shelf_diff                               trusted            project_host bindings async
 vcs_shelf_import                             trusted            project_host bindings async

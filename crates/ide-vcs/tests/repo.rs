@@ -2252,3 +2252,17 @@ fn status_paths_reads_only_the_named_paths() {
     // An empty list is the full status, so a caller that lost the paths stays correct.
     assert_eq!(repo.status_paths(&[]).unwrap().len(), 4);
 }
+
+#[test]
+fn sets_the_commit_identity_in_the_repository() {
+    let fx = Fixture::new();
+    fx.git(&["config", "--unset", "user.name"]);
+    fx.git(&["config", "--unset", "user.email"]);
+    let repo = fx.repo();
+    repo.set_user_identity(" Ada Lovelace ", "ada@example.com", false).unwrap();
+    assert_eq!(fx.git(&["config", "--local", "user.name"]), "Ada Lovelace");
+    assert_eq!(fx.git(&["config", "--local", "user.email"]), "ada@example.com");
+    assert_eq!(repo.config_get("user.email").unwrap().as_deref(), Some("ada@example.com"));
+    let blank = repo.set_user_identity("Ada", "  ", false).unwrap_err();
+    assert_eq!(blank.kind, ErrorKind::InvalidInput);
+}

@@ -35,6 +35,7 @@ async function stubRepository(page: Page) {
     h.vcs_status = () => (committed ? [] : changes);
     h.vcs_stage = () => null;
     h.vcs_unstage = () => null;
+    h.vcs_config_get = () => "configured";
     h.vcs_commit = () => {
       committed = true;
       return "2222222";
