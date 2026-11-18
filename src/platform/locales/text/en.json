@@ -1663,6 +1663,7 @@
   "Terminal": "Terminal",
   "Code": "Code",
   "Copy": "Copy",
+  "Only files of this window's projects can be referenced": "Only files of this window's projects can be referenced",
   "Nothing to add right now": "Nothing to add right now",
   "Pasted Text": "Pasted Text",
   "Files with uncommitted changes": "Files with uncommitted changes",
