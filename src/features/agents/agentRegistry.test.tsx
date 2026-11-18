@@ -366,6 +366,50 @@ describe("the ACP Registry in the agent list", () => {
     renderRegistry(backend);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
   });
+
+  it("prefers the live registry update version over a stale cached provider snapshot", async () => {
+    const backend = new FakeBackend();
+    backend.registry = {
+      agents: [
+        agent({ id: "copilot", name: "GitHub Copilot", version: "1.0.114", installed: "1.0.112", update: true }),
+        agent({ id: "cline", name: "Cline", version: "3.0.74", installed: "3.0.70", update: true }),
+      ],
+      warning: null,
+    };
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("/tools/copilot/1.0.112/copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "1.0.112", update: "1.0.113" },
+      },
+      {
+        ...claudeProvider("/tools/cline/3.0.70/cline"),
+        id: "cline",
+        name: "Cline",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "3.0.70", update: null },
+      },
+    ];
+    render(
+      <>
+        <AgentRegistryPage backend={backend} commandBackend={commands} />
+        <MessagesHost />
+      </>,
+    );
+
+    await waitFor(() => expect(within(row("GitHub Copilot")).getByText("1.0.114 is available")).toBeInTheDocument());
+    expect(within(row("GitHub Copilot")).queryByText("1.0.113 is available")).toBeNull();
+    expect(within(item("GitHub Copilot")).getByText("Update")).toBeInTheDocument();
+
+    await waitFor(() => expect(within(item("Cline")).getByText("Update")).toBeInTheDocument());
+    expect(within(row("Cline")).getByText("3.0.74 is available")).toBeInTheDocument();
+    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
+  });
 });
 
 class FakeCommands implements CommandsBackend {
