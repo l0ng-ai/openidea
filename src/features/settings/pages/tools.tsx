@@ -16,7 +16,7 @@ import {
   type ExternalToolValid,
 } from "@/platform/workflowSettings";
 import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from "@/ui";
-import { NumberInput, Row, SearchLabel, Section, Select } from "../components/Form";
+import { NumberInput, Row, SearchLabel, Section, Select, SettingSelect } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
 import { MCP_SERVER_PAGE } from "./mcpServer";
@@ -24,6 +24,7 @@ import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, PageLink, TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import { tx } from "@/platform/i18n";
+import { TERMINAL_MAX_FPS_OPTIONS } from "@/platform/workflowSettings";
 
 export const TOOLS_GROUP = "Tools";
 
@@ -244,6 +245,12 @@ function TerminalOptions() {
           <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
           <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
           {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
+          <SettingSelect
+            k="terminal.maxFps"
+            label="Maximum refresh rate"
+            hint="Caps how often fast terminal output is painted. Hidden windows always paint more slowly."
+            options={TERMINAL_MAX_FPS_OPTIONS}
+          />
         </>
       }
     />
@@ -607,6 +614,7 @@ export const TOOLS_PAGES: PageSpec[] = [
               "Use Option as Meta key",
               "Move focus to the Editor with Escape",
               "Configure terminal keybindings",
+              "Maximum refresh rate",
             ],
             component: TerminalOptions,
           },

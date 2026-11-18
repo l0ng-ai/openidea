@@ -138,6 +138,16 @@ export interface ExternalDiffValid {
   parameters: string;
 }
 
+export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10";
+
+export const TERMINAL_MAX_FPS_OPTIONS: readonly { value: TerminalMaxFps; label: string }[] = [
+  { value: "unlimited", label: "Unlimited" },
+  { value: "60", label: "60 FPS" },
+  { value: "30", label: "30 FPS" },
+  { value: "15", label: "15 FPS" },
+  { value: "10", label: "10 FPS" },
+];
+
 export interface TerminalSettingsValid {
   startDirectory: string;
   env: Record<string, string>;
@@ -156,6 +166,11 @@ export interface TerminalSettingsValid {
   escapeToEditor: boolean;
   cursorShape: CursorShape;
   cursorBlink: boolean;
+  /**
+   * Cap how often PTY output is painted. `unlimited` writes every chunk;
+   * while the document is hidden a slower floor always applies (#4216).
+   */
+  maxFps: TerminalMaxFps;
   useEditorFont: boolean;
   fontFamily: string;
   fontSize: number;
@@ -357,6 +372,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     escapeToEditor: false,
     cursorShape: "block",
     cursorBlink: true,
+    maxFps: "unlimited",
     useEditorFont: true,
     fontFamily: "JetBrains Mono",
     fontSize: 13,
@@ -564,6 +580,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),
     cursorBlink: bool(v.cursorBlink, d.cursorBlink),
+    maxFps: oneOf(v.maxFps, ["unlimited", "60", "30", "15", "10"] as const, d.maxFps),
     useEditorFont: bool(v.useEditorFont, d.useEditorFont),
     fontFamily: nonEmpty(v.fontFamily, d.fontFamily),
     fontSize: num(v.fontSize, d.fontSize, WORKFLOW_LIMITS.terminalFontSize),

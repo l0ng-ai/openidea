@@ -8898,5 +8898,12 @@
   "Remember size for each tool window": "记住每个工具窗口的大小",
   "Off, the tool windows of one side share its size": "关闭时，同一侧的工具窗口共用一个大小",
   "The scope {scope} has more than {SCOPE_FILES_LIMIT} files; the Project view shows the first ones": "作用域 {scope} 中的文件超过 {SCOPE_FILES_LIMIT} 个，项目视图只显示前面的部分",
-  "Cannot show the scope {scope}": "无法显示作用域 {scope}"
+  "Cannot show the scope {scope}": "无法显示作用域 {scope}",
+  "Maximum refresh rate": "最大刷新率",
+  "Caps how often fast terminal output is painted. Hidden windows always paint more slowly.": "限制快速终端输出的绘制频率。隐藏的窗口总会更慢地绘制。",
+  "Unlimited": "不限制",
+  "60 FPS": "60 FPS",
+  "30 FPS": "30 FPS",
+  "15 FPS": "15 FPS",
+  "10 FPS": "10 FPS"
 }
