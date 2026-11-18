@@ -250,6 +250,9 @@ pub struct DocumentTextChange {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentChanged {
     pub path: String,
+    /// The open project `path` is relative to, set when the event is handed to a plugin
+    /// (the editor posts the absolute path and `null`).
+    pub project: Option<String>,
     pub base_version: u64,
     pub version: u64,
     pub changes: Vec<DocumentTextChange>,
