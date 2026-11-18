@@ -469,7 +469,9 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
         )}
         <EmptyState title={conn?.name ?? "Docker"}>
           <div>
-            {txTemplate(`Engine ${a.serverVersion} · CLI ${a.clientVersion}`)}
+            {a.clientVersion
+              ? txTemplate(`Engine ${a.serverVersion} · CLI ${a.clientVersion}`)
+              : txTemplate(`Engine ${a.serverVersion}`)}
             {a.context ? txTemplate(` · context ${a.context}`) : ""}
           </div>
           {conn && <div className={styles.hint}>{endpointText(conn.endpoint)}</div>}

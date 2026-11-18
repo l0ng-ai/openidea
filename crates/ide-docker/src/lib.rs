@@ -5,6 +5,7 @@
 //! Every function blocks; callers run them off the UI / command threads.
 
 mod connection;
+mod engine;
 mod model;
 mod process;
 
@@ -114,6 +115,11 @@ fn failure(args: &[&str], stderr: &str, stdout: &str) -> IdeError {
 
 /// Whether docker can be used right now.
 pub fn availability(ep: &DockerEndpoint) -> DockerAvailability {
+    if docker_executable().is_none()
+        && let Some(available) = engine::availability(ep, Duration::from_secs(15))
+    {
+        return available;
+    }
     let Ok(cmd) = command(ep, &["version", "--format", "{{json .}}"]) else {
         return DockerAvailability::NotInstalled;
     };
@@ -125,6 +131,11 @@ pub fn availability(ep: &DockerEndpoint) -> DockerAvailability {
 
 /// Availability plus containers, images, volumes and networks (listed in parallel).
 pub fn snapshot(ep: &DockerEndpoint) -> DockerSnapshot {
+    if docker_executable().is_none()
+        && let Some(listed) = engine::snapshot(ep, QUICK)
+    {
+        return listed;
+    }
     let availability = availability(ep);
     let executable = docker_executable().map(|p| ide_core::ipc_path::to_ipc(&p));
     let mut snap = DockerSnapshot {
@@ -202,6 +213,11 @@ pub fn container_op(ep: &DockerEndpoint, ids: &[String], op: ContainerOp) -> Ide
     if ids.is_empty() {
         return Ok(());
     }
+    if docker_executable().is_none()
+        && let Some(ran) = engine::container_op(ep, ids, op, LIFECYCLE)
+    {
+        return ran;
+    }
     let mut args = vec!["container", op.verb()];
     args.extend(ids.iter().map(String::as_str));
     run(ep, &args, LIFECYCLE).map(drop)
@@ -232,6 +248,11 @@ pub fn remove(ep: &DockerEndpoint, object: DockerObject, ids: &[String], force: 
     if ids.is_empty() {
         return Ok(());
     }
+    if docker_executable().is_none()
+        && let Some(ran) = engine::remove(ep, object, ids, force, LIFECYCLE)
+    {
+        return ran;
+    }
     let mut args = vec![object.noun(), "rm"];
     if force && matches!(object, DockerObject::Container | DockerObject::Image | DockerObject::Volume) {
         args.push("--force");
@@ -242,6 +263,11 @@ pub fn remove(ep: &DockerEndpoint, object: DockerObject, ids: &[String], force: 
 
 /// `docker inspect` of one object, pretty-printed.
 pub fn inspect(ep: &DockerEndpoint, object: DockerObject, id: &str) -> IdeResult<String> {
+    if docker_executable().is_none()
+        && let Some(inspected) = engine::inspect(ep, object, id, QUICK)
+    {
+        return inspected;
+    }
     let out = run(ep, &["inspect", "--type", object.noun(), id], QUICK)?;
     match serde_json::from_str::<serde_json::Value>(&out) {
         // A one-element array for a single id: show the object itself.
