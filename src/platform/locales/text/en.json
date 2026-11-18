@@ -687,6 +687,7 @@
   "Remove Module Overrides": "Remove Module Overrides",
   "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}",
   "Cannot choose a directory": "Cannot choose a directory",
+  "Enter a directory to search": "Enter a directory to search",
   "Open in HTTP Client": "Open in HTTP Client",
   "Cannot generate the HTTP request": "Cannot generate the HTTP request",
   "Cannot start container debugging": "Cannot start container debugging",
@@ -2125,6 +2126,10 @@
   "Import into Global (settings.toml)": "Import into Global (settings.toml)",
   "Import into Project (.openidea/settings.toml)": "Import into Project (.openidea/settings.toml)",
   "Overwrite existing": "Overwrite existing",
+  "Replace Macro?": "Replace Macro?",
+  "A macro named '{name}' already exists. Replace its recorded steps?": "A macro named '{name}' already exists. Replace its recorded steps?",
+  "Choose Another Name": "Choose Another Name",
+  "Replace": "Replace",
   "Rescan": "Rescan",
   "Import Selected ({count})": "Import Selected ({count})",
   "Import Selected": "Import Selected",
@@ -2493,6 +2498,8 @@
   "Trust": "Trust",
   "{name} is hidden because {title} is off": "{name} is hidden because {title} is off",
   "{name} did not exist at label '{label}'": "{name} did not exist at label '{label}'",
+  "Cannot load Gradle configurations": "Cannot load Gradle configurations",
+  "No resolvable Gradle configurations": "No resolvable Gradle configurations",
   "Restore Tool Windows": "Restore Tool Windows",
   "Configure {name}…": "Configure {name}…"
 }

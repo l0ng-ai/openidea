@@ -373,7 +373,7 @@ export function markVisible(task: string): () => void {
 
 let generation = 0;
 let draftGeneration = 0;
-const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number }>();
+const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number | null }>();
 
 const selectedProvider = () => {
   const { providers, draft } = useAgents.getState();
@@ -397,7 +397,7 @@ function applyModelCatalog(catalog: AgentModelCatalog) {
   });
 }
 
-/** Refreshes only the New Task agent; discovery failures stay beside the cached choices. */
+/** Refresh the New Task agent, including settings for the draft's selected model. */
 export async function refreshModels(
   provider = selectedProvider()?.id,
   force = true,
@@ -406,25 +406,55 @@ export async function refreshModels(
   const selected = selectedProvider();
   if (!provider || !selected?.installed || selected.id !== provider || useProject.getState().project?.trusted === false)
     return;
+  model ??= draftConfig(selected, useAgents.getState().draft).find((o) => o.category === "model")?.current ?? null;
+  await refreshProviderModels(selected, force, model, draftGeneration);
+}
+
+/** Discover switch candidates without using or updating the session's settings. */
+export async function refreshTaskModels(id: string, force = true): Promise<void> {
+  const { tasks, providers } = useAgents.getState();
+  const task = tasks.get(id);
+  if (!task || task.status === "archived" || !task.config.some((o) => o.category === "model")) return;
+  const provider = providers.find((p) => p.id === task.provider);
+  if (!provider?.installed || useProject.getState().project?.trusted === false) return;
+  await refreshProviderModels(provider, force, null, null);
+}
+
+async function refreshProviderModels(
+  selected: AgentProvider,
+  force: boolean,
+  model: string | null,
+  draftGen: number | null,
+): Promise<void> {
+  const provider = selected.id;
   const state = useAgents.getState();
   const catalog = state.modelCatalogs.get(provider);
-  model ??= draftConfig(selected, state.draft).find((o) => o.category === "model")?.current ?? null;
   const missingModelSettings =
     model !== null && !Object.hasOwn(catalog?.thoughtLevels ?? selected.thoughtLevels ?? {}, model);
   const requestTarget = state.modelRequestTargets.get(provider);
   const launch = launchKey(selected);
   const pending = modelFlights.get(provider);
   if (
-    (pending?.launch === launch && pending.generation === generation && pending.draftGeneration === draftGeneration) ||
+    pending?.launch === launch &&
+    pending.generation === generation &&
+    (draftGen === null || pending.draftGeneration === null || pending.draftGeneration === draftGen)
+  ) {
+    // A chat joining a draft lookup still needs its result if the draft switches providers.
+    if (draftGen === null) pending.draftGeneration = null;
+    return;
+  }
+  if (
     catalog?.refreshing ||
     (force &&
-      (requestTarget === undefined || requestTarget === model || (!missingModelSettings && !catalog?.error)) &&
+      (draftGen === null ||
+        requestTarget === undefined ||
+        requestTarget === model ||
+        (!missingModelSettings && !catalog?.error)) &&
       catalog?.retryAtMs != null &&
       catalog.retryAtMs > Date.now())
   )
     return;
   const gen = generation;
-  const draftGen = draftGeneration;
   const root = useProject.getState().project?.root;
   const flight = { launch, generation: gen, draftGeneration: draftGen };
   modelFlights.set(provider, flight);
@@ -432,12 +462,17 @@ export async function refreshModels(
     modelRequests: new Set(s.modelRequests).add(provider),
     modelRequestTargets: new Map(s.modelRequestTargets).set(provider, model),
   }));
-  const current = () =>
-    gen === generation &&
-    root === useProject.getState().project?.root &&
-    draftGen === draftGeneration &&
-    selectedProvider()?.id === provider &&
-    launchKey(selectedProvider()!) === launch;
+  const current = () => {
+    const activeProvider = useAgents.getState().providers.find((p) => p.id === provider);
+    return (
+      gen === generation &&
+      root === useProject.getState().project?.root &&
+      (flight.draftGeneration === null ||
+        (flight.draftGeneration === draftGeneration && selectedProvider()?.id === provider)) &&
+      activeProvider !== undefined &&
+      launchKey(activeProvider) === launch
+    );
+  };
   try {
     const result = await call(commands.agentRefreshModels(provider, force, model));
     // A streamed status/completion is newer than the snapshot returned by the command.

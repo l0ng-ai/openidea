@@ -252,6 +252,26 @@ fn recent_files_skip_deleted_files_but_keep_virtual_documents() {
 }
 
 #[test]
+fn recent_files_keep_files_outside_the_project() {
+    let fx = sample();
+    let scratches = tempfile::tempdir().unwrap();
+    let scratch = dunce::canonicalize(scratches.path()).unwrap().join("generated-requests.http");
+    std::fs::write(&scratch, "GET http://localhost\n").unwrap();
+    let app = fx.root.join("web/app.py");
+    {
+        let idx = fx.open();
+        idx.mark_recent(&app);
+        idx.mark_recent(&scratch);
+        assert_eq!(idx.recent_files(), vec![scratch.clone(), app.clone()]);
+        assert!(idx.wait_idle(WAIT));
+    }
+    let idx = fx.open();
+    assert_eq!(idx.recent_files(), vec![scratch.clone(), app.clone()], "persisted by absolute path");
+    idx.remove_recent(&scratch);
+    assert_eq!(idx.recent_files(), vec![app]);
+}
+
+#[test]
 fn persistence_skips_unchanged_files_on_reopen() {
     let fx = sample();
     {

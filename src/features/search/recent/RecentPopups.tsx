@@ -25,6 +25,7 @@ import {
   maybeEditorService,
   toolWindowService,
   useContributions,
+  useProjectViewRoots,
   useFileDecoration,
   type OpenEditorTab,
   type ToolWindowContribution,
@@ -91,6 +92,14 @@ function RecentFilesDialog() {
   const step = useRecentPopup((s) => s.step);
   const edited = useTracking((s) => s.edited);
   const root = useProject((s) => s.project?.root ?? null);
+  const viewRoots = useProjectViewRoots((s) => s.roots);
+  const labelled = useMemo(
+    () =>
+      [...viewRoots.values()].flatMap((r) =>
+        r.scope === "scratches" && r.path ? [{ path: r.path, label: r.label }] : [],
+      ),
+    [viewRoots],
+  );
   const toolWindows = useContributions((s) => s.toolWindows);
   const [paths, setPaths] = useState<string[] | null>(null);
   // Switcher: the open editor tabs (files and others), when the editor service lists them.
@@ -135,13 +144,13 @@ function RecentFilesDialog() {
   const files = useMemo(
     () =>
       tabs
-        ? switcherItems(paths ?? [], tabs, query, root).filter((f) => !removed.has(f.path))
+        ? switcherItems(paths ?? [], tabs, query, root, labelled).filter((f) => !removed.has(f.path))
         : filterRecentFiles(
             (paths ?? []).filter((p) => !removed.has(p)),
             query,
-            { root, edited, editedOnly },
+            { root, labelled, edited, editedOnly },
           ),
-    [paths, tabs, removed, query, root, edited, editedOnly],
+    [paths, tabs, removed, query, root, labelled, edited, editedOnly],
   );
   const fileRows = useMemo(() => files.map((f) => ({ ...f, key: f.path })), [files]);
   const tools = useMemo(() => switcherToolWindows(toolWindows.values(), !!root, query), [toolWindows, root, query]);

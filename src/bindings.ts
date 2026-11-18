@@ -5181,6 +5181,11 @@ export type DockerVolume = {
 /**  Local changes accepted by the editor's shared document model. */
 export type DocumentChanged = {
 	path: string,
+	/**
+	 *  The open project `path` is relative to, set when the event is handed to a plugin
+	 *  (the editor posts the absolute path and `null`).
+	 */
+	project: string | null,
 	baseVersion: number,
 	version: number,
 	changes: DocumentTextChange[],
@@ -6321,6 +6326,8 @@ export type GradleProject = {
 	/**  Project-relative build script, if any. */
 	buildFile: string | null,
 	tasks: GradleTask[],
+	/**  Configurations Gradle can resolve, or null before Gradle reports the project. */
+	resolvableConfigurations?: string[] | null,
 	/**
 	 *  Identity path of the nested build holding the project (`:lib` for `includeBuild`,
 	 *  `:buildSrc`); null for the opened build.

@@ -1,11 +1,20 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import clsx from "clsx";
 import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { t, useTxTemplate, tx } from "@/platform/i18n";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
-import { call, commands, isTauri, onIdeEvent, type SearchScope } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
@@ -128,8 +137,10 @@ const NAMED_SCOPES: Array<{ value: BuiltinScope; label: string }> = [
 ];
 
 function displayDirectory(dir: string, root: string | null): string {
-  if (root && dir === root) return "";
-  return root && dir.startsWith(root + "/") ? dir.slice(root.length + 1) : dir;
+  if (!root) return dir;
+  const prefix = root.endsWith("/") ? root : root + "/";
+  if (dir === root) return ".";
+  return dir.startsWith(prefix) ? dir.slice(prefix.length) || "." : dir;
 }
 
 function FindInFilesDialog() {
@@ -169,6 +180,7 @@ function FindInFilesDialog() {
   const maskRef = useRef<HTMLDivElement>(null);
   const maskInputRef = useRef<HTMLInputElement>(null);
   const contextRef = useRef<HTMLButtonElement>(null);
+  const directoryPromptId = useId();
   const set = (patch: Partial<FindOptions>) => useFindPopup.setState(patch);
 
   useEffect(() => () => session.dispose(), [session]);
@@ -200,7 +212,7 @@ function FindInFilesDialog() {
     );
   }, [s.scopeTab, s.namedScope, recentPaths]);
 
-  const scope: SearchScope = useMemo(
+  const scope = useMemo(
     () =>
       resolveFindScope(s, {
         root,
@@ -229,13 +241,13 @@ function FindInFilesDialog() {
     context: s.context,
   };
   const query = useMemo(
-    () => buildQuery(options, scope, POPUP_MAX_MATCHES),
+    () => (scope ? buildQuery(options, scope, POPUP_MAX_MATCHES) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [s.pattern, s.caseSensitive, s.wholeWord, s.isRegex, s.maskEnabled, s.mask, s.context, scope],
   );
   const queryKey = JSON.stringify(query);
 
-  const stale = state.stale || (state.query ? JSON.stringify(state.query) !== queryKey : !!s.pattern);
+  const stale = !!query && (state.stale || (state.query ? JSON.stringify(state.query) !== queryKey : !!s.pattern));
   const currentQuery = useRef(queryKey);
   const [rerun, setRerun] = useState(0);
   useEffect(
@@ -247,6 +259,10 @@ function FindInFilesDialog() {
   );
   useLayoutEffect(() => {
     currentQuery.current = queryKey;
+    if (!query) {
+      void session.search(null);
+      return;
+    }
     session.invalidate();
     const t = setTimeout(() => {
       void session.search(query);
@@ -289,9 +305,9 @@ function FindInFilesDialog() {
     setTimeout(() => void openLocation(row.path, pos, { side }), 0);
   };
   const pin = () => {
-    if (!s.pattern) return;
+    if (!query?.pattern) return;
     if (s.maskEnabled) rememberMask(s.mask);
-    const pinned = buildQuery(options, scope, 0);
+    const pinned = { ...query, maxMatches: 0 };
     close();
     openInFindWindow(pinned, describeQuery(pinned, root), {
       replacement: s.replace ? s.replacement : null,
@@ -302,7 +318,11 @@ function FindInFilesDialog() {
 
   // Check again after a confirmation: its captured rows may have been superseded.
   const canReplace = () =>
-    !stale && !session.current.stale && currentQuery.current === queryKey && session.current.files === state.files;
+    !!query &&
+    !stale &&
+    !session.current.stale &&
+    currentQuery.current === queryKey &&
+    session.current.files === state.files;
 
   /**
    * IDEA asks before Replace All only when the results span more than one file, or when the
@@ -340,7 +360,7 @@ function FindInFilesDialog() {
 
   /** Replaces `usages` in the backend, then marks them done (IDEA's Replace / Replace All). */
   const replaceUsages = async (usages: Usage[], allInScope = false): Promise<ReplaceMarks | null> => {
-    if (!canReplace() || !usages.length || running) return null;
+    if (!query || !canReplace() || !usages.length || running) return null;
     const run = startReplace(
       {
         query,
@@ -415,7 +435,7 @@ function FindInFilesDialog() {
     previewVersion,
   ]);
   useEffect(() => {
-    if (stale || !previewMode || !s.replace || !selected) return;
+    if (!query || stale || !previewMode || !s.replace || !selected) return;
     let alive = true;
     const key = diffPreviewKey;
     const usages = pendingUsages([selected], marks);
@@ -461,7 +481,7 @@ function FindInFilesDialog() {
 
   const selectScope = (id: ScopeTab) => {
     // IDEA starts the Directory scope at the current file's folder.
-    if (id === "directory" && !s.directory.trim()) {
+    if (id === "directory" && s.scopeTab !== "directory" && !s.directory.trim()) {
       const active = maybeEditorService()?.activePath();
       const folders = project?.workspace?.projects ?? (root ? [root] : []);
       const dir = active && folders.some((r) => active.startsWith(r + "/")) ? dirname(active) : root;
@@ -580,7 +600,18 @@ function FindInFilesDialog() {
         rowHeight={ROW}
         aria-label="Matches"
         empty={
-          <EmptyResults state={state} options={options} onClear={clearOptions} onRegex={() => set({ isRegex: true })} />
+          query ? (
+            <EmptyResults
+              state={state}
+              options={options}
+              onClear={clearOptions}
+              onRegex={() => set({ isRegex: true })}
+            />
+          ) : (
+            <div id={directoryPromptId} className={styles.empty} role="status">
+              <T>Enter a directory to search</T>
+            </div>
+          )
         }
         renderItem={(r, st) => {
           const state = s.replace ? groupState(r, marks) : "pending";
@@ -769,8 +800,9 @@ function FindInFilesDialog() {
                 value={displayDirectory(s.directory, root)}
                 placeholder={tx("Directory (relative to project root)")}
                 aria-label={tx("Directory")}
+                aria-invalid={!query || undefined}
+                aria-describedby={!query ? directoryPromptId : undefined}
                 spellCheck={false}
-                // Keep the raw text (resolved only when searching), or a typed "/" would be stripped.
                 onChange={(e) => set({ directory: e.target.value })}
               />
             )}
@@ -894,7 +926,7 @@ function FindInFilesDialog() {
             </Button>
           )}
           <span className={styles.okHint}>{formatBinding(hostBinding("Meta+Enter"))}</span>
-          <Button disabled={!s.pattern} onClick={pin}>
+          <Button disabled={!query?.pattern} onClick={pin}>
             <T>Open in Find Window</T>
           </Button>
           {s.replace && (

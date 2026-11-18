@@ -1196,7 +1196,10 @@ The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
 (`events.subscribe-paths`). The host matches project-relative globs before
 queueing an event or waking an idle plugin. `file-saved`, `document-changed`
-and `files-changed` work the same way. For `files-changed`, each category is filtered and an empty batch
+and `files-changed` work the same way. A `document-changed` path is relative to
+its own project, which the event names in `project` (the root's absolute path):
+two open projects can hold the same relative path, so key per-document state by
+both. IDEs before this field omit it. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,

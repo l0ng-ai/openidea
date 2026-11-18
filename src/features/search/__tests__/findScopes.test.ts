@@ -31,6 +31,13 @@ describe("Find in Files module and custom scopes", () => {
   const inputs = { root: "/p", openPaths: () => ["/p/a.ts"], recentPaths: null };
   const base = useFindPopup.getState();
 
+  it.each(["/", "C:/"])("preserves the absolute root directory %s", (directory) => {
+    expect(resolveFindScope({ ...base, scopeTab: "directory", directory }, inputs)).toEqual({
+      kind: "directory",
+      path: directory,
+    });
+  });
+
   it("a module searches its folder, the root module the project", () => {
     expect(resolveFindScope({ ...base, scopeTab: "module", module: "/member" }, inputs)).toEqual({
       kind: "directory",
@@ -56,7 +63,7 @@ describe("Find in Files module and custom scopes", () => {
     expect(scope("openFiles")).toEqual({ kind: "files", paths: ["/p/a.ts"] });
     expect(scope(customScopeValue("No tests"))).toEqual({ kind: "pattern", pattern: "!file:*test*" });
     expect(scope(customScopeValue("gone"))).toEqual({ kind: "project" });
-    const q = buildQuery({ ...base, pattern: "x" }, scope(customScopeValue("No tests")), 0);
+    const q = buildQuery({ ...base, pattern: "x" }, scope(customScopeValue("No tests"))!, 0);
     expect(describeQuery(q, "/p")).toBe("'x' in Scope 'No tests'");
     useCustomScopes.setState({ root: null, scopes: [] });
   });
