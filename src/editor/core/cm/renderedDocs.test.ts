@@ -15,6 +15,11 @@ import {
 } from "./renderedDocs";
 
 const defaultMode = new Compartment();
+/** A language without a grammar, as `languages/zig.toml` defines it: comment tokens only. */
+const zig = EditorState.languageData.of(() => [{ commentTokens: { line: "//" } }]);
+const ungrammaredC = EditorState.languageData.of(() => [
+  { commentTokens: { line: "//", block: { open: "/*", close: "*/" } } },
+]);
 
 function state(
   doc: string,
@@ -94,7 +99,7 @@ describe("docComments", () => {
   it("finds Zig doc comments without a syntax tree", () => {
     const s = state(
       "//! Module docs.\n\n/// Adds two numbers.\n/// Uses `a` and `b`.\npub fn add(a: i32, b: i32) i32 {\n    return a + b;\n}",
-      { language: [] },
+      { language: zig },
     );
     const found = docComments(s);
     expect(found.map((c) => [s.doc.lineAt(c.from).number, s.doc.lineAt(c.to).number])).toEqual([
@@ -106,7 +111,7 @@ describe("docComments", () => {
   });
 
   it("finds a block doc comment without a syntax tree", () => {
-    const s = state("/**\n * Docs.\n */\npub fn f() void {}", { language: [] });
+    const s = state("/**\n * Docs.\n */\npub fn f() void {}", { language: ungrammaredC });
     const found = docComments(s);
     expect(found).toHaveLength(1);
     expect(found[0]!.style).toBe("block");
@@ -114,15 +119,20 @@ describe("docComments", () => {
   });
 
   it("does not treat ordinary // lines as docs without a syntax tree", () => {
-    expect(docComments(state("// just a note\npub fn f() void {}", { language: [] }))).toHaveLength(0);
+    expect(docComments(state("// just a note\npub fn f() void {}", { language: zig }))).toHaveLength(0);
+  });
+
+  it("finds no doc comments in a document without comment syntax (plain text, logs)", () => {
+    expect(docComments(state("/// not docs\n/** nor this */\ntext", { language: [] }))).toHaveLength(0);
+    expect(docComments(state("/** not a block doc in Zig */\npub fn f() void {}", { language: zig }))).toHaveLength(0);
   });
 });
 
 describe("the file's default", () => {
   it("renders Zig doc comments without a syntax tree", () => {
     const doc = "/// Adds `a` and `b`.\npub fn add(a: i32, b: i32) i32 { return a + b; }";
-    expect(replaced(state(doc, { language: [] }))).toEqual([[1, 1]]);
-    expect(replaced(state(doc, { language: [], reader: false }))).toEqual([]);
+    expect(replaced(state(doc, { language: zig }))).toEqual([[1, 1]]);
+    expect(replaced(state(doc, { language: zig, reader: false }))).toEqual([]);
   });
 
   it("renders every doc comment when on", () => {

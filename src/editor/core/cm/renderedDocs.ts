@@ -173,6 +173,11 @@ export function docComments(state: EditorState): DocComment[] {
  * the tree walk; `finish` applies the same "owns its line" rule.
  */
 function textDocComments(state: EditorState): DocComment[] {
+  // Only where the language's own comments use these markers: not plain text, logs or `#` languages.
+  const tokens = state.languageDataAt<{ line?: string; block?: { open: string } }>("commentTokens", 0)[0];
+  const lineDocs = tokens?.line === "//";
+  const blockDocs = tokens?.block?.open === "/*";
+  if (!lineDocs && !blockDocs) return [];
   const out: DocComment[] = [];
   const ws = (text: string) => /^[ \t]*/.exec(text)![0].length;
   const finish = (comment: DocComment) => {
@@ -193,13 +198,13 @@ function textDocComments(state: EditorState): DocComment[] {
       continue;
     }
     const from = line.from + indent;
-    if (blockDocAt(text)) {
+    if (blockDocs && blockDocAt(text)) {
       const comment: DocComment = { from, to: line.to, style: "block", text: "" };
       if (text.length > 3 && text.trimEnd().endsWith("*/")) finish(comment);
       else open = comment;
       continue;
     }
-    if (!lineDocAt(text)) continue;
+    if (!lineDocs || !lineDocAt(text)) continue;
     const previous = out.at(-1);
     if (
       previous?.style === "line" &&
