@@ -17,7 +17,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { nativeDropPoint } from "@/platform/nativeDrop";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
-import { basename } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { registerKeyClaim } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
@@ -49,6 +49,7 @@ import {
   isMentioned,
   isPathQuery,
   mergeMatches,
+  referenceOf,
   resolveTyped,
   completionAt,
   fenced,
@@ -89,7 +90,7 @@ type Item =
     }
   | { kind: "command"; command: AgentCommand }
   | { kind: "context"; source: AgentContextSource }
-  | { kind: "symbol"; symbol: SymbolMatch; path: string }
+  | { kind: "symbol"; symbol: SymbolMatch; path: string; rel: string }
   | { kind: "section"; source: Section };
 
 const isSection = (item: Item) => item.kind === "section";
@@ -106,24 +107,14 @@ const SECTION_TITLES: Record<Section, string> = {
 /** A change the store made (a quote, a reference sent from the editor): not written back. */
 const fromStore = Annotation.define<boolean>();
 
-/** `abs` relative to the first of `bases` it is under ("." for the base itself). */
-function relativeTo(bases: readonly string[], abs: string): string | null {
-  const source = resolveTyped("", abs.replace(/\\/g, "/"));
-  const base = bases
-    .filter(Boolean)
-    .map((path) => resolveTyped(path, "."))
-    .find((path) => source === path || source.startsWith(`${path}/`));
-  if (!base) return null;
-  return source === base ? "." : source.slice(base.length + 1);
-}
-
 export interface ComposerProps {
   /** Store key of the draft. */
   id: string;
   placeholder: string;
   /** Directory `@` references resolve in (the task's worktree, or the project root). */
   root: string;
-  /** The project root the file index covers. */
+  /** The project `root` is a worktree of (or `root` itself); the workspace's other projects are
+   * referenced too, by path. */
   projectRoot: string;
   commands: readonly AgentCommand[];
   /** Sent messages, newest first. */
@@ -210,6 +201,11 @@ function Matched({ text, indices, offset = 0 }: { text: string; indices?: readon
 export function Composer(props: ComposerProps) {
   const { id, root, projectRoot } = props;
   const tx = useTx();
+  const members = useProject((s) => s.project?.workspace?.projects);
+  const refOf = useCallback(
+    (abs: string) => referenceOf({ root, projectRoot, members }, abs),
+    [root, projectRoot, members],
+  );
   const draft = useAgents((s) => s.composers.get(id));
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
@@ -376,11 +372,10 @@ export function Composer(props: ComposerProps) {
           .then((found) => {
             if (!alive) return;
             setFiles(
-              found.map((symbol) => ({
-                kind: "symbol",
-                symbol,
-                path: root === projectRoot ? symbol.path : `${root}/${symbol.relPath}`,
-              })),
+              found.map((symbol) => {
+                const ref = refOf(symbol.path);
+                return { kind: "symbol", symbol, path: ref?.path ?? symbol.path, rel: ref?.rel ?? symbol.relPath };
+              }),
             );
           })
           .catch(() => alive && setFiles([]));
@@ -420,9 +415,9 @@ export function Composer(props: ComposerProps) {
           if (!query && found.length + dirs.length === 0) {
             const open: Item[] = [];
             for (const path of openEditorPaths()) {
-              const rel = isVirtualUri(path) ? null : relativeTo([projectRoot, root], path);
-              if (!rel || rel === "." || open.some((o) => o.kind === "file" && o.rel === rel)) continue;
-              open.push({ kind: "file", rel, path: resolveTyped(root, rel) });
+              const ref = isVirtualUri(path) ? null : refOf(path);
+              if (!ref || ref.rel === "." || open.some((o) => o.kind === "file" && o.rel === ref.rel)) continue;
+              open.push({ kind: "file", ...ref });
               if (open.length >= MAX_OPEN_EDITORS) break;
             }
             const top = await call(commands.pathCompletions(`${root}/_`, "")).catch(() => []);
@@ -441,13 +436,13 @@ export function Composer(props: ComposerProps) {
             return;
           }
           setFiles(
-            mergeMatches(found, dirs, MAX_ITEMS).map((f) => ({
-              kind: "file",
-              rel: f.rel,
-              dir: f.dir,
-              indices: f.indices,
-              path: root === projectRoot ? f.path : `${root}/${f.rel}`,
-            })),
+            mergeMatches(found, dirs, MAX_ITEMS).map((f) => {
+              const ref = refOf(f.path) ?? { path: f.path, rel: f.rel };
+              // The index names a file from the window's root; the highlight follows the shorter name.
+              const cut = f.rel.endsWith(ref.rel) ? f.rel.length - ref.rel.length : null;
+              const indices = cut === null ? [] : f.indices.filter((i) => i >= cut).map((i) => i - cut);
+              return { kind: "file", rel: ref.rel, dir: f.dir, indices, path: ref.path };
+            }),
           );
         })
         .catch(() => alive && setFiles([]));
@@ -456,7 +451,7 @@ export function Composer(props: ComposerProps) {
       alive = false;
       clearTimeout(timer);
     };
-  }, [completion?.kind, completion?.query, root, projectRoot]);
+  }, [completion?.kind, completion?.query, root, refOf]);
 
   const items: Item[] = useMemo(() => {
     if (!completion) return [];
@@ -536,8 +531,8 @@ export function Composer(props: ComposerProps) {
             insertBlock(view, at.from, at.to, context.info, context.text);
           } else {
             const refs = context.paths.flatMap((path) => {
-              const rel = relativeTo([root, projectRoot], path);
-              return rel && rel !== "." && !/\s/.test(rel) ? [{ path: resolveTyped(root, rel), rel }] : [];
+              const ref = refOf(path);
+              return ref && ref.rel !== "." && !/\s/.test(ref.rel) ? [ref] : [];
             });
             const known = new Set(composerDraft(id).files.map((f) => f.path));
             updateComposer(id, { files: [...composerDraft(id).files, ...refs.filter((r) => !known.has(r.path))] });
@@ -550,7 +545,7 @@ export function Composer(props: ComposerProps) {
       return;
     }
     if (item.kind === "symbol") {
-      const rel = item.symbol.relPath;
+      const rel = item.rel;
       const line = item.symbol.range.start.line + 1;
       updateComposer(id, { files: [...composerDraft(id).files, { path: item.path, rel } satisfies FileRef] });
       const next = applyCompletion(current, completion, mentionOf(rel, { from: line, to: line }));
@@ -585,8 +580,9 @@ export function Composer(props: ComposerProps) {
   const [fileOver, setFileOver] = useState(false);
 
   /**
-   * Adds paths as `@` references (a file or a folder), each once. A path outside the project is
-   * attached when `attachOutside` (an OS drop in a local window), else skipped.
+   * Adds paths as `@` references (a file or a folder), each once. A path outside the workspace's
+   * projects is attached when `attachOutside` (an OS drop in a local window), else skipped with a
+   * notice.
    */
   const addPaths = useCallback(
     (paths: readonly string[], attachOutside = false) => {
@@ -594,11 +590,16 @@ export function Composer(props: ComposerProps) {
       const known = new Set(toPrompt(current).files);
       const files = current.files.filter((f) => known.has(f.path));
       const refs: FileRef[] = [];
+      let skipped = 0;
       for (const raw of paths) {
         if (!/^(\/|[A-Za-z]:[\\/])/.test(raw)) continue;
-        const rel = relativeTo([root, projectRoot], raw);
-        if (rel === null) {
-          if (!attachOutside || isRemoteWindow() || known.has(raw)) continue;
+        const ref = refOf(raw);
+        if (ref === null) {
+          if (!attachOutside || isRemoteWindow()) {
+            skipped++;
+            continue;
+          }
+          if (known.has(raw)) continue;
           known.add(raw);
           refs.push({
             path: raw,
@@ -607,18 +608,20 @@ export function Composer(props: ComposerProps) {
           });
           continue;
         }
-        const path = resolveTyped(root, rel);
-        if (known.has(path)) continue;
-        known.add(path);
-        refs.push({ path, rel });
+        if (known.has(ref.path)) continue;
+        known.add(ref.path);
+        // The Project view marks a folder with a trailing slash; its reference keeps it.
+        refs.push(/[\\/]$/.test(raw) && ref.rel !== "." ? { ...ref, rel: `${ref.rel}/` } : ref);
       }
+      if (skipped)
+        notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
       if (!refs.length) return;
       const mentions = refs.flatMap((r) => (r.attached ? [] : [mentionOf(r.rel)])).join(" ");
       const glue = current.text && !/\s$/.test(current.text) ? " " : "";
       const text = mentions ? `${current.text}${glue}${mentions} ` : current.text;
       updateComposer(id, { text, files: [...files, ...refs] });
     },
-    [id, root, projectRoot],
+    [id, refOf, tx],
   );
 
   const addImages = useCallback(
@@ -662,16 +665,16 @@ export function Composer(props: ComposerProps) {
    */
   const pastePath = (pasted: string, view: EditorView): boolean => {
     const paths = pastedPaths(pasted);
-    const found = paths?.map((p) => ({ ...p, rel: relativeTo([root, projectRoot], p.path) }));
+    const found = paths?.map((p) => ({ lines: p.lines, ref: refOf(p.path) }));
     // A mention ends at whitespace: a path with a space stays text.
-    if (!found || found.some((p) => !p.rel || p.rel === "." || /\s/.test(p.rel))) return false;
+    if (!found || found.some(({ ref }) => !ref || ref.rel === "." || /\s/.test(ref.rel))) return false;
     const { from, to } = view.state.selection.main;
     void Promise.all(
-      found.map(async (p) => {
-        const path = resolveTyped(root, p.rel!);
+      found.map(async ({ lines, ref }) => {
+        const { path, rel } = ref!;
         const kind = await call(commands.fsEntryKind(path));
         const dir = kind === "dir";
-        return { path, rel: dir ? `${p.rel}/` : p.rel!, lines: dir ? undefined : p.lines };
+        return { path, rel: dir ? `${rel}/` : rel, lines: dir ? undefined : lines };
       }),
     ).then(
       (refs) => {
@@ -692,18 +695,18 @@ export function Composer(props: ComposerProps) {
     const found = await Promise.all(
       placesInText(text).map(async ({ path, line }) => {
         const absolute = /^(\/|[A-Za-z]:[\\/])/.test(path);
-        const rel = relativeTo([root, projectRoot], absolute ? path : resolveTyped(root, path.replace(/^\.\//, "")));
-        if (!rel || rel === "." || /\s/.test(rel)) return null;
-        const kind = await call(commands.fsEntryKind(resolveTyped(root, rel))).catch(() => null);
-        return kind === "file" ? { rel, line } : null;
+        const ref = refOf(absolute ? path : resolveTyped(root, path.replace(/^\.\//, "")));
+        if (!ref || ref.rel === "." || /\s/.test(ref.rel)) return null;
+        const kind = await call(commands.fsEntryKind(ref.path)).catch(() => null);
+        return kind === "file" ? { ...ref, line } : null;
       }),
     );
     const refs = found.filter((r) => r !== null);
     if (refs.length) {
       const known = new Set(composerDraft(id).files.map((f) => f.rel));
-      const added = [...new Set(refs.map((r) => r.rel))]
-        .filter((rel) => !known.has(rel))
-        .map((rel) => ({ path: resolveTyped(root, rel), rel }) satisfies FileRef);
+      const added = [...new Map(refs.map(({ path, rel }) => [rel, { path, rel }])).values()].filter(
+        (ref) => !known.has(ref.rel),
+      ) satisfies FileRef[];
       updateComposer(id, { files: [...composerDraft(id).files, ...added] });
     }
     return refs.map((r) => mentionOf(r.rel, { from: r.line, to: r.line }));
@@ -754,16 +757,16 @@ export function Composer(props: ComposerProps) {
       return true;
     }
     if (!pasted.replace(/\s+$/, "").includes("\n")) return false;
-    const rel = relativeTo([root, projectRoot], source.path);
-    if (!rel || rel === ".") {
+    const ref = refOf(source.path);
+    if (!ref || ref.rel === ".") {
       const ext = /\.([\w+-]+)$/.exec(source.path)?.[1] ?? "";
       block(ext);
       return true;
     }
-    updateComposer(id, { files: [...composerDraft(id).files, { path: resolveTyped(root, rel), rel }] });
+    updateComposer(id, { files: [...composerDraft(id).files, ref] });
     const before = view.state.sliceDoc(Math.max(0, from - 1), from);
     const glue = before && !/\s/.test(before) ? " " : "";
-    replace(from, to, `${glue}${mentionOf(rel, { from: source.from, to: source.to })} `);
+    replace(from, to, `${glue}${mentionOf(ref.rel, { from: source.from, to: source.to })} `);
     return true;
   };
 
@@ -957,10 +960,10 @@ export function Composer(props: ComposerProps) {
   const activePath = useEditorRegistry((s) => s.active?.ctx.path ?? null);
   const suggested = useMemo(() => {
     if (!activePath || isVirtualUri(activePath)) return null;
-    const rel = relativeTo([projectRoot, root], activePath);
+    const rel = refOf(activePath)?.rel;
     if (!rel || rel === "." || isMentioned(text, rel)) return null;
     return { path: activePath, rel };
-  }, [activePath, projectRoot, root, text]);
+  }, [activePath, refOf, text]);
 
   const ideContext = useAgents((s) => s.ideContext);
   useEffect(
@@ -969,7 +972,7 @@ export function Composer(props: ComposerProps) {
         const active = useEditorRegistry.getState().active;
         const path = active?.ctx.path;
         if (!active || !path || isVirtualUri(path)) return null;
-        const rel = relativeTo([projectRoot, root], path);
+        const rel = refOf(path)?.rel;
         if (!rel || rel === ".") return null;
         const { doc, selection } = active.view.state;
         const { from, to } = selection.main;
@@ -980,7 +983,7 @@ export function Composer(props: ComposerProps) {
         const last = end.from === to && end.number > first ? end.number - 1 : end.number;
         return { path, rel, lines: { from: first, to: last } };
       }),
-    [id, projectRoot, root],
+    [id, refOf],
   );
 
   const [addOpen, setAddOpen] = useState(false);
@@ -1065,7 +1068,7 @@ export function Composer(props: ComposerProps) {
                     </span>
                     <span className={styles.itemDetail}>
                       {item.symbol.container ? `${item.symbol.container} · ` : ""}
-                      {item.symbol.relPath}:{item.symbol.range.start.line + 1}
+                      {item.rel}:{item.symbol.range.start.line + 1}
                     </span>
                   </>
                 );

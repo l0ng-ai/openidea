@@ -8052,6 +8052,7 @@
   "Click to edit": "点击编辑",
   "Show less": "收起",
   "Show {more} more lines": "展开其余 {more} 行",
+  "Only files of this window's projects can be referenced": "只能引用此窗口中各项目的文件",
   "Nothing to add right now": "暂时没有可添加的内容",
   "Pasted Text": "粘贴的文本",
   "Files with uncommitted changes": "有未提交改动的文件",
