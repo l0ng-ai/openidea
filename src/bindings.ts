@@ -15,11 +15,24 @@ export const commands = {
 	/**  Answers a non-blocking question, without cancelling the current turn. */
 	agentAnswerQuestion: (task: string, question: string, answer: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_answer_question", { task, question, answer })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
-	/**  Content of `path` when the task started (left side of its diff). */
-	agentBaseText: (task: string, path: IpcPath) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path })),
+	/**  Content of `path` as `view` compares it (without: when the task started), the left side of its diff. */
+	agentBaseText: (task: string, path: IpcPath, view: 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("agent_base_text", { task, path, view })),
 	/**  Stops the task's current turn, or with `subagent` only that subagent's work. */
 	agentCancel: (task: string, subagent: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_cancel", { task, subagent })),
-	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
+	/**  The task's changed files as `view` compares them (without: since it started). */
+	agentChanges: (task: string, view: 
+/**  Everything since the commit the task started from. */
+"sinceStart" | 
+/**  The uncommitted files against `HEAD`; commits made since the start stay. */
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task, view })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
@@ -103,7 +116,9 @@ export const commands = {
 /**  Everything since the commit the task started from. */
 "sinceStart" | 
 /**  The uncommitted files against `HEAD`; commits made since the start stay. */
-"group" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
 	/**  Sends a queued message now, interrupting the current turn. */
 	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
 	/**
@@ -589,6 +604,8 @@ export const commands = {
 	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
+	/**  Moves an item to the Trash and returns the snapshot for Project View Undo. */
+	fsDeleteWithUndo: (path: string) => typedError<DeletionUndo, IdeError>(__TAURI_INVOKE("fs_delete_with_undo", { path })),
 	fsEntryKind: (path: string) => typedError<EntryKind, IdeError>(__TAURI_INVOKE("fs_entry_kind", { path })),
 	/**
 	 *  Opens a project file with its default application (Office, PDF readers). The checks run here,
@@ -616,6 +633,7 @@ export const commands = {
 	 *  state). Returns whether the file is read-only now.
 	 */
 	fsSetWritable: (path: string, writable: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("fs_set_writable", { path, writable })),
+	fsUndoDelete: (undo: DeletionUndo) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("fs_undo_delete", { undo })),
 	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
 	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
 	/**  A GitHub GraphQL / REST call through `gh api`; returns the response body. */
@@ -647,9 +665,9 @@ export const commands = {
 	/**  Shows a GTK file chooser attached to `window`. `None` when the user cancels. */
 	gtkPickPaths: (options: GtkPickOptions) => typedError<IpcPath[] | null, IdeError>(__TAURI_INVOKE("gtk_pick_paths", { options })),
 	historyContent: (id: string) => typedError<string, IdeError>(__TAURI_INVOKE("history_content", { id })),
-	historyList: (path: string) => typedError<HistoryEntry[], IdeError>(__TAURI_INVOKE("history_list", { path })),
+	historyList: (path: string) => typedError<HistoryEntry_Serialize[], IdeError>(__TAURI_INVOKE("history_list", { path })),
 	/**  Show History on a folder: snapshots of the files under it (deleted ones included) and labels. */
-	historyListDir: (path: string) => typedError<DirectoryHistory, IdeError>(__TAURI_INVOKE("history_list_dir", { path })),
+	historyListDir: (path: string) => typedError<DirectoryHistory_Serialize, IdeError>(__TAURI_INVOKE("history_list_dir", { path })),
 	/**  Local History › Put Label…: a named point in the history of every file. */
 	historyPutLabel: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("history_put_label", { label })),
 	/**
@@ -1297,8 +1315,8 @@ export const commands = {
 	 * 
 	 *  Edits go through the document layer as one patch per file, so open editors
 	 *  update live and undo the whole file's replacements in one step. Unsaved
-	 *  editor buffers are replaced in place and left unsaved; files that were not
-	 *  open are opened transiently, saved and closed.
+	 *  editor buffers are replaced in place and left unsaved; other open documents
+	 *  are saved, and files that were not open are opened transiently, saved and closed.
 	 * 
 	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
 	 *  scope is searched again without the limit and every match in it is replaced,
@@ -1382,6 +1400,7 @@ export const commands = {
 	scaffoldOptions: (generator: string, values: { [key in string]: string }, request: RequestId) => typedError<Field[], IdeError>(__TAURI_INVOKE("scaffold_options", { generator, values, request })),
 	/**  The programs a generator needs for `values`, and whether they are installed. */
 	scaffoldRequirements: (generator: string, values: { [key in string]: string }) => typedError<Requirement[], IdeError>(__TAURI_INVOKE("scaffold_requirements", { generator, values })),
+	scopeFiles: (pattern: string, limit: number) => typedError<ScopeFiles, IdeError>(__TAURI_INVOKE("scope_files", { pattern, limit })),
 	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
 	sdkContainerPython: () => typedError<{
 	/**  The run target's id. */
@@ -1694,6 +1713,8 @@ export const commands = {
 	vcsDeleteTag: (repo: string | null, name: string) => typedError<DeletedTag, IdeError>(__TAURI_INVOKE("vcs_delete_tag", { repo, name })),
 	/**  The auto-detected git executable (shown as the field's placeholder). */
 	vcsDetectedGit: () => __TAURI_INVOKE<string | null>("vcs_detected_git"),
+	/**  Directory Mappings: the repository roots detection finds, before any are excluded or added. */
+	vcsDetectedRoots: () => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_detected_roots")),
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
 	/**
@@ -1768,6 +1789,11 @@ export const commands = {
 	vcsReword: (repo: string | null, commit: string, message: string) => typedError<HeadChange, IdeError>(__TAURI_INVOKE("vcs_reword", { repo, commit, message })),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
+	/**
+	 *  Git User Name Is Not Defined: sets `user.name` / `user.email` for commits in the
+	 *  repository, or globally.
+	 */
+	vcsSetUserIdentity: (repo: string | null, name: string, email: string, global: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_set_user_identity", { repo, name, email, global })),
 	vcsShelfDelete: (id: string, path: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id, path })),
 	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
 	vcsShelfImport: (repo: string | null, name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { repo, name, patch })),
@@ -1898,6 +1924,8 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**  Appearance › Smooth scrolling for this window's web view (Linux only) */
+	windowSetSmoothScrolling: (enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_smooth_scrolling", { enabled })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
 	/**
@@ -2073,7 +2101,9 @@ export type AgentChangesView =
 /**  Everything since the commit the task started from. */
 "sinceStart" | 
 /**  The uncommitted files against `HEAD`; commits made since the start stay. */
-"group";
+"group" | 
+/**  What the last turn changed, against the checkout as that turn started. */
+"lastTurn";
 
 export type AgentCommand = {
 	/**  Without the leading `/`. */
@@ -2809,6 +2839,8 @@ export type AppearanceSettings_Deserialize = {
 	compactMode?: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
 	smallTreeIndents?: boolean,
+	/**  Linux: WebKit animates each mouse wheel step */
+	smoothScrolling?: boolean,
 	fullPathInTitle?: boolean,
 	projectColorsInToolbar?: boolean,
 	dndWithAltOnly?: boolean,
@@ -2829,6 +2861,8 @@ export type AppearanceSettings_Deserialize = {
 	showToolWindowNames?: boolean,
 	showToolWindowBadges?: boolean,
 	widescreenToolWindows?: boolean,
+	/**  Each tool window keeps its own size; off, the windows of a side share one. */
+	rememberToolWindowSizes?: boolean,
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar?: boolean,
 	showStatusBar?: boolean,
@@ -2880,6 +2914,8 @@ export type AppearanceSettings_Serialize = {
 	compactMode: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
 	smallTreeIndents: boolean,
+	/**  Linux: WebKit animates each mouse wheel step */
+	smoothScrolling: boolean,
 	fullPathInTitle: boolean,
 	projectColorsInToolbar: boolean,
 	dndWithAltOnly: boolean,
@@ -2900,6 +2936,8 @@ export type AppearanceSettings_Serialize = {
 	showToolWindowNames: boolean,
 	showToolWindowBadges: boolean,
 	widescreenToolWindows: boolean,
+	/**  Each tool window keeps its own size; off, the windows of a side share one. */
+	rememberToolWindowSizes: boolean,
 	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
 	showMainToolbar: boolean,
 	showStatusBar: boolean,
@@ -4736,11 +4774,26 @@ export type DeletedBranch = {
 	unmerged: boolean,
 };
 
+export type DeletedFile = {
+	path: IpcPath,
+	id: string,
+};
+
 /**  A deleted tag, enough to restore it (Restore in the tag-deleted notification). */
 export type DeletedTag = {
 	name: string,
 	/**  What the tag pointed at: its tag object (annotated tags) or commit. */
 	target: string,
+};
+
+/**
+ *  Paths and contents captured for one delete operation. Directory history is
+ *  intentionally broader and can contain paths deleted in an earlier operation.
+ */
+export type DeletionUndo = {
+	directories: IpcPath[],
+	files: DeletedFile[],
+	skipped: IpcPath[],
 };
 
 export type Dependency = {
@@ -4979,9 +5032,20 @@ export type DirectoryCompareProgress = {
 export type DirectoryCompareStatus = "leftOnly" | "rightOnly" | "different" | "equal";
 
 /**  Changes under a folder (Show History on a directory). */
-export type DirectoryHistory = {
+export type DirectoryHistory = DirectoryHistory_Serialize | DirectoryHistory_Deserialize;
+
+/**  Changes under a folder (Show History on a directory). */
+export type DirectoryHistory_Deserialize = {
 	/**  Snapshots of files under the folder and labels, newest first. */
-	entries: HistoryEntry[],
+	entries: HistoryEntry_Deserialize[],
+	/**  Files with history that no longer exist on disk. */
+	deleted: IpcPath[],
+};
+
+/**  Changes under a folder (Show History on a directory). */
+export type DirectoryHistory_Serialize = {
+	/**  Snapshots of files under the folder and labels, newest first. */
+	entries: HistoryEntry_Serialize[],
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
 };
@@ -5180,6 +5244,11 @@ export type DockerVolume = {
 /**  Local changes accepted by the editor's shared document model. */
 export type DocumentChanged = {
 	path: string,
+	/**
+	 *  The open project `path` is relative to, set when the event is handed to a plugin
+	 *  (the editor posts the absolute path and `null`).
+	 */
+	project: string | null,
 	baseVersion: number,
 	version: number,
 	changes: DocumentTextChange[],
@@ -6239,6 +6308,11 @@ export type GitSettings = {
 	 *  stage and unstage instead of inclusion checkboxes, and no change lists.
 	 */
 	stagingArea?: boolean,
+	/**
+	 *  Scan the working tree with `git status` (for file systems whose metadata only
+	 *  the system git reads correctly) instead of in process.
+	 */
+	cliStatus?: boolean,
 };
 
 export type GoBuildTags = {
@@ -6320,6 +6394,8 @@ export type GradleProject = {
 	/**  Project-relative build script, if any. */
 	buildFile: string | null,
 	tasks: GradleTask[],
+	/**  Configurations Gradle can resolve, or null before Gradle reports the project. */
+	resolvableConfigurations?: string[] | null,
 	/**
 	 *  Identity path of the nested build holding the project (`:lib` for `includeBuild`,
 	 *  `:buildSrc`); null for the opened build.
@@ -6586,7 +6662,9 @@ export type Highlight = {
 
 export type HighlightKind = "text" | "read" | "write";
 
-export type HistoryEntry = {
+export type HistoryEntry = HistoryEntry_Serialize | HistoryEntry_Deserialize;
+
+export type HistoryEntry_Deserialize = {
 	/**  Content hash (blake3 hex); identifies the stored blob. Empty for labels. */
 	id: string,
 	path: IpcPath,
@@ -6595,6 +6673,17 @@ export type HistoryEntry = {
 	label: string,
 	size: number,
 	kind?: HistoryKind,
+};
+
+export type HistoryEntry_Serialize = {
+	/**  Content hash (blake3 hex); identifies the stored blob. Empty for labels. */
+	id: string,
+	path: IpcPath,
+	timestampMs: number | null,
+	/**  e.g. "Saved", "External change", "Deleted", "Before refactoring: Move". */
+	label: string,
+	size: number,
+	kind: HistoryKind,
 };
 
 export type HistoryKind = 
@@ -7410,6 +7499,8 @@ export type JvmPresentation = {
 	kind: JvmTypeKind | null,
 	springBoot: boolean,
 	runnable: boolean,
+	/**  `@Deprecated`, or a Java `@deprecated` Javadoc tag. */
+	deprecated: boolean,
 };
 
 export type JvmReferrer = {
@@ -10414,6 +10505,13 @@ export type Scope = {
 	expensive: boolean,
 };
 
+/**  The files of a custom scope (`file:src//*.ts`), for the Project view's scope panes. */
+export type ScopeFiles = {
+	paths: IpcPath[],
+	/**  More files than `limit` matched; `paths` holds the first ones. */
+	truncated: boolean,
+};
+
 /**  One installed interpreter / toolchain. */
 export type Sdk = {
 	/**
@@ -10472,6 +10570,11 @@ export type SearchQuery = {
 	maxMatches: number,
 	/**  Where in the code a match may lie (IDEA's search context filter). */
 	context?: SearchContext,
+	/**
+	 *  Also search what `.gitignore` / `.ignore` / `info/exclude` leave out (the caller then
+	 *  adds none of the project's exclusions either).
+	 */
+	includeExcluded?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 
@@ -11724,6 +11827,17 @@ export type VcsConfirmationSettings = {
 	onPatchCreated?: string,
 };
 
+/**
+ *  Directory Mappings on top of repository detection. Paths are relative to the project
+ *  root (`.` for the root itself) or absolute outside it.
+ */
+export type VcsMappings = {
+	/**  Detected repositories the IDE leaves alone: no Git or Commit integration, files stay. */
+	excluded?: string[],
+	/**  Repository roots detection does not reach (outside the project, or deeper). */
+	added?: string[],
+};
+
 /**  A repository of the project (IDEA's VCS root). */
 export type VcsRoot = {
 	/**  Worktree root. */
@@ -11749,6 +11863,8 @@ export type VcsSettings = {
 	shelf?: ShelfSettings,
 	/**  Issue Navigation: commit-message patterns turned into links. */
 	issueNavigation?: IssueLink[],
+	/**  Directory Mappings: repository roots added to or excluded from the detected ones. */
+	mappings?: VcsMappings,
 };
 
 /**  The tool that creates a new Python environment in "Add Python Interpreter". */

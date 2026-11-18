@@ -137,6 +137,18 @@ describe("Welcome › Projects", () => {
     expect(selectedName()).toBe("py-demo");
   });
 
+  it("leaves Delete to the search text while the caret has text after it", async () => {
+    await renderWelcome();
+    const search = screen.getByLabelText("Search projects") as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "acme" } });
+    search.setSelectionRange(1, 1);
+    fireEvent.keyDown(search, { key: "Delete" });
+    expect(screen.queryByRole("dialog", { name: "Remove Recent Project" })).toBeNull();
+    search.setSelectionRange(4, 4);
+    fireEvent.keyDown(search, { key: "Delete" });
+    expect(screen.getByRole("dialog", { name: "Remove Recent Project" })).toBeTruthy();
+  });
+
   it("offers Open in New Window in the row menu when the action exists", async () => {
     const dispose = registerActions([{ id: "file.openInNewWindow", title: "Open in New Window", run: () => {} }]);
     await renderWelcome();

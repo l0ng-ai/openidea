@@ -3,7 +3,7 @@
   flex: none;
   align-items: center;
   position: relative;
-  padding: 0 var(--window-tabs-right, 40px) var(--space-0-5) var(--window-tabs-left, 40px);
+  padding: 0 var(--window-tabs-right, 40px) var(--island-gap) var(--window-tabs-left, 40px);
   min-width: 0;
 }
 .tabs {

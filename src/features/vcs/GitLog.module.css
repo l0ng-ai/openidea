@@ -234,7 +234,7 @@
      overflow:hidden, so any rule drawn into the 8px gap would be clipped away. */
   inset-inline-start: -4px;
   width: 8px;
-  cursor: ew-resize;
+  cursor: col-resize;
   touch-action: none;
   z-index: 1;
   display: flex;

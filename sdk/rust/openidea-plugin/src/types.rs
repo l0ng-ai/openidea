@@ -367,7 +367,13 @@ pub struct DocumentTextChange {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentChanged {
+    /// Relative to `project`.
     pub path: String,
+    /// Root of the open project `path` is relative to (absolute). Two open projects can
+    /// hold the same relative path; pass this project to `document-at`. `None` from
+    /// older IDEs.
+    #[serde(default)]
+    pub project: Option<String>,
     pub base_version: u64,
     pub version: u64,
     pub changes: Vec<DocumentTextChange>,
@@ -661,13 +667,19 @@ mod tests {
             "document-changed".into(),
             r#"{"path":"/p/a.rs","baseVersion":7,"version":8,"changes":[{"from":1,"to":2,"insert":"x"}]}"#.into(),
         );
-        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { base_version: 7, .. })));
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { base_version: 7, project: None, .. })));
+        let change = Event::from_other(
+            "document-changed".into(),
+            r#"{"path":"a.rs","project":"/p","baseVersion":7,"version":8,"changes":[]}"#.into(),
+        );
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { project: Some(ref p), .. }) if p == "/p"));
         let ready = Event::from_other("websocket-ready".into(), r#"{"pluginId":"collab","connection":42}"#.into());
         assert_eq!(ready, Event::WebSocketReady(WebSocketReady { plugin_id: "collab".into(), connection: 42 }));
 
         let document = Document { version: 7, text: "a😀b".into() };
         let change = DocumentChanged {
             path: "/p/a.rs".into(),
+            project: None,
             base_version: 7,
             version: 8,
             changes: vec![DocumentTextChange { from: 1, to: 3, insert: "x".into() }],

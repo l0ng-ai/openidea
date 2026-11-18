@@ -1,20 +1,36 @@
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, type MenuItem } from "@/ui";
-import { VIEW_MODES, setViewMode, setViewOption, useProjectTree, type ViewOptions } from "./store";
+import { useProject } from "@/platform/project";
+import { userScopes } from "@/platform/scopes";
+import { VIEW_MODES, setScopeView, setViewMode, setViewOption, useProjectTree, type ViewOptions } from "./store";
 import type { SortKey } from "./model";
 
 /** The title's "Project ▾" pane switcher (IDEA: Project / Project Files / Open Files / …). */
 export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
   const mode = useProjectTree((s) => s.mode);
+  const scope = useProjectTree((s) => s.scope);
   const unity = useProjectTree((s) => s.unity);
+  // User scopes (Settings › Scopes) follow the built-in panes, as in IDEA.
+  const scopes = userScopes(useProject((s) => (s.settings as { scopes?: unknown } | null)?.scopes));
+  const items: MenuItem[] = VIEW_MODES.filter(([id]) => id !== "unity" || unity).map(([id, label]) => ({
+    id,
+    label,
+    checked: id === mode,
+    run: () => setViewMode(id),
+  }));
+  if (scopes.length) {
+    items.push({ kind: "separator" });
+    for (const s of scopes)
+      items.push({
+        id: `scope:${s.name}`,
+        label: s.name,
+        checked: mode === "scope" && scope === s.name,
+        run: () => setScopeView(s.name),
+      });
+  }
   return {
-    label: VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "Project",
-    items: VIEW_MODES.filter(([id]) => id !== "unity" || unity).map(([id, label]) => ({
-      id,
-      label,
-      checked: id === mode,
-      run: () => setViewMode(id),
-    })),
+    label: mode === "scope" ? (scope ?? "Project") : (VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "Project"),
+    items,
   };
 }
 

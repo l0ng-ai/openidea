@@ -18,6 +18,7 @@ import {
   showServiceView,
 } from "@/workbench/contributions";
 import { registerFileNavigation } from "./fileNavigation";
+import { registerUrlNavigation } from "./urlNavigation";
 import { registerVariableNavigation } from "./variableNavigation";
 import { HTTP_LANGUAGE, httpEditorExtension, refreshRequests, requestAtCaret } from "./editor";
 import { HttpClientHeaderActions, HttpClientView } from "./HttpClientView";
@@ -143,6 +144,7 @@ export function activate(): () => void {
     registerSpringEndpointProvider(),
     registerFeignNavigation(),
     registerVariableNavigation(),
+    registerUrlNavigation(),
     registerFileNavigation(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetHttpClient();

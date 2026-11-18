@@ -121,6 +121,7 @@ impl PluginWorkspace for TestWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit,
             context: Default::default(),
+            include_excluded: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
@@ -879,16 +880,15 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
     // Room for activation (about 3_100 on macOS, more on Windows). A background task gets ten
     // times it (5 s / 500 ms): enough for each step of `patient` with its CPU work (32_000 to
     // 80_000), not for the whole run without the refill on each report.
-    let f = fixture(Limits {
+    let limits = Limits {
         fuel: 40_000,
         timeout: Duration::from_millis(500),
         background: Duration::from_millis(5_000),
         ..Limits::default()
-    });
+    };
+    let f = fixture(limits);
     f.install(&misbehave_pkg());
-    if f.host.set_capability("misbehave", "process:git", true).is_err() {
-        return;
-    }
+    f.host.set_capability("misbehave", "process:git", true).expect("grant Git capability");
     // Warm up activation in its own call so `patient` starts with a fresh budget.
     assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
 
@@ -897,6 +897,13 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
 
     let err = f.run("misbehave", "spin", None).unwrap_err();
     assert!(err.contains("exceeded its CPU budget (40000 fuel per call)"), "{err}");
+
+    // Beginning a task alone must not renew its scaled budget.
+    let quiet = fixture(limits);
+    quiet.install(&misbehave_pkg());
+    quiet.host.set_capability("misbehave", "process:git", true).expect("grant Git capability");
+    let err = quiet.run("misbehave", "patient", Some("quiet:4000")).unwrap_err();
+    assert!(err.contains("exceeded its CPU budget (400000 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -5335,6 +5342,7 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     let deliver = |path: &str| {
         let change = ide_plugin::DocumentChanged {
             path: to_ipc(&f.project.join(path)),
+            project: None,
             base_version: 1,
             version: 2,
             changes: Vec::new(),
@@ -5348,6 +5356,8 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     // Queued with the absolute path, filtered again at delivery, handed over project-relative.
     deliver("config/app.yaml");
     assert_eq!(f.run("test.path-events", "document", None).unwrap().as_deref(), Some("config/app.yaml"));
+    // With the project it is relative to: another open project may hold the same path.
+    assert_eq!(f.run("test.path-events", "document-project", None).unwrap(), Some(to_ipc(&f.project)));
 }
 
 #[test]

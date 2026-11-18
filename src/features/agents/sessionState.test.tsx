@@ -33,6 +33,7 @@ const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
   changes: [] as AgentChange[],
   changesCalls: 0,
+  turnChanges: [] as AgentChange[],
   grouped: { uncommitted: [] as AgentChange[], commits: [] as AgentCommit[] },
   groupedCalls: 0,
   rolledBack: [] as Array<[string, string[] | null, string | null]>,
@@ -84,7 +85,8 @@ vi.mock("@/platform/ipc", async (original) => ({
         };
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
-    agentChanges: async () => {
+    agentChanges: async (_task: string, view: string | null) => {
+      if (view === "lastTurn") return { status: "ok", data: backend.turnChanges };
       backend.changesCalls += 1;
       return { status: "ok", data: backend.changes };
     },
@@ -230,12 +232,13 @@ beforeEach(() => {
   localStorage.clear();
   backend.changes = [];
   backend.changesCalls = 0;
+  backend.turnChanges = [];
   backend.grouped = { uncommitted: [], commits: [] };
   backend.groupedCalls = 0;
   backend.rolledBack = [];
   backend.external = [];
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
-  useChangesOptions.setState({ groupByCommit: false });
+  useChangesOptions.setState({ groupByCommit: false, scope: "task" });
   backend.imported = [];
   backend.importError = null;
   backend.importErrors = new Map();
@@ -2967,6 +2970,43 @@ describe("accept changes", () => {
     await screen.findByRole("complementary", { name: "Changes" });
     expect(screen.queryByRole("button", { name: /Accept .* Changes…/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
+  });
+});
+
+describe("last turn changes", () => {
+  const change = (path: string): AgentChange => ({
+    path: `/project/${path}`,
+    relPath: path,
+    kind: "modified",
+    added: 1,
+    removed: 0,
+    oldPath: null,
+  });
+
+  it("lists and rolls back only what the last turn changed, the session still counting the whole task", async () => {
+    backend.changes = [change("a.ts"), change("b.ts")];
+    backend.turnChanges = [change("b.ts")];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    useAgents.setState({ tasks: new Map([["A", { ...task("A"), status: "ready" }]]) });
+    render(<SessionEditor input={input("A")} />);
+    const pane = await screen.findByRole("complementary", { name: "Changes" });
+    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
+
+    fireEvent.click(within(pane).getByRole("radio", { name: "Last Turn" }));
+    await waitFor(() => expect(within(pane).queryByText("a.ts")).toBeNull());
+    expect(within(pane).getByText("b.ts")).toBeInTheDocument();
+    expect(within(pane).getByText("Since the last turn started")).toBeInTheDocument();
+    expect(useChangesOptions.getState().scope).toBe("turn");
+    expect(screen.getByRole("button", { name: /2 changed files/ })).toBeInTheDocument();
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Rollback All Changes…" }));
+    await waitFor(() => expect(backend.rolledBack).toEqual([["A", null, "lastTurn"]]));
+
+    backend.turnChanges = [];
+    fireEvent.click(within(pane).getByRole("button", { name: "Refresh" }));
+    expect(await within(pane).findByText("The last turn changed no files")).toBeInTheDocument();
+    fireEvent.click(within(pane).getByRole("radio", { name: "Whole Task" }));
+    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
   });
 });
 

@@ -768,6 +768,8 @@ pub struct Repo {
     git_dir: PathBuf,
     inner: std::sync::Mutex<repo::Cache>,
     ignored: std::sync::RwLock<IgnoredNames>,
+    /// Working-tree status from `git status` instead of gitoxide.
+    cli_status: std::sync::atomic::AtomicBool,
     log_index: std::sync::Mutex<log_index::LogIndex>,
     log_signatures: std::sync::Mutex<std::collections::HashMap<String, LogDetails>>,
 }
@@ -793,6 +795,11 @@ impl Repo {
     pub fn set_ignored_names(&self, names: IgnoredNames) {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         *self.ignored.write().unwrap_or_else(|p| p.into_inner()) = names;
+    }
+    /// Read the working-tree status with `git status` rather than in process: for file systems
+    /// (encryption or protection layers) whose metadata only the system git reads correctly.
+    pub fn set_cli_status(&self, on: bool) {
+        self.cli_status.store(on, std::sync::atomic::Ordering::Release);
     }
     /// Staged (HEAD↔index) and unstaged (index↔worktree, incl. untracked) changes,
     /// sorted by path. Conflicted files report `unstaged: Conflicted` and no staged kind.
@@ -1162,6 +1169,20 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let out = cli::run_raw(&self.root, &["config", "--get", key], None)?;
         Ok((out.code == Some(0)).then(|| out.stdout_str().trim().to_string()))
+    }
+
+    /// Sets `user.name` and `user.email` for commits: in this repository's config, or in the
+    /// user's global one (`global`).
+    pub fn set_user_identity(&self, name: &str, email: &str, global: bool) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let scope = if global { "--global" } else { "--local" };
+        for (key, value) in [("user.name", name.trim()), ("user.email", email.trim())] {
+            if value.is_empty() {
+                return Err(IdeError::invalid(format!("{key} must not be empty")));
+            }
+            cli::run(&self.root, &["config", scope, key, value], None)?;
+        }
+        Ok(())
     }
 
     // ---- writes (git CLI) ----

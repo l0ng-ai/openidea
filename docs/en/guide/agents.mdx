@@ -78,6 +78,8 @@ The task tab shows the conversation: your messages, the agent's replies, its rea
 
 On your own messages you can **Edit** (the messages after it are replaced; files already changed stay as they are) or **Retract Message**. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
 
+In an existing chat, open **Model › Refresh models** to discover newly available models without sending a message or changing the selection. If the agent can't switch in place, the choice stays pending until your next message reopens the same session. If the session can't be reopened or doesn't accept the model, OpenIDEA restores the previous selection and reports the error without sending the message.
+
 **Focus Agent Input** defaults to `⌘L` on macOS and `Ctrl+L` on Windows / Linux in every built-in keymap. When focus is inside your writable task conversation, in either an editor tab or the tool window, it returns focus to the message input without changing your draft, caret position or selection—even when pressed repeatedly. It does not send a message or jump through message history.
 
 With focus anywhere else, the same shortcut jumps to the message input of the task shown in an editor tab or the tool window (the one you used last, if several are shown), unless a panel claims the shortcut there: in a code editor `⌘L` / `Ctrl+L` keeps its editor meaning (for example Go to Line), and in a terminal on Windows / Linux `Ctrl+L` still reaches the shell. It does not apply to archived tasks, subagent conversations or the New Task page, and does not take focus from open popups or dialogs. To change or remove the binding, open **Settings › Keymap › Agents › Focus Agent Input**.
@@ -96,7 +98,7 @@ Once an agent has run a task, new tasks start in its mode that approves everythi
 
 ### Review the changes
 
-Click **Show changes** in the task header to list the files the task changed. A task in the project's own checkout lists only the files that changed while the agent was working, not what you or another task changed while it was idle. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
+Click **Show changes** in the task header to list the files the task changed. A task in the project's own checkout lists only the files that changed while the agent was working, not what you or another task changed while it was idle. Click a file to open a diff between the task's starting point and now. Switch the list from **Whole Task** to **Last Turn** to see only what the last turn changed, against the files as that turn started; rolling back then undoes only that turn. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
 
 Drag the pane's left edge to resize it. The width applies to every task and is remembered across restarts.
 

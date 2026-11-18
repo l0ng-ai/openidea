@@ -110,6 +110,34 @@ export function flameLayout(profile: Profile, focus = 0, minWidth = 0.002): { re
   return { rects, depth: maxDepth + 1 };
 }
 
+/**
+ * Keyboard moves in the flame graph from the frame `node`: `deeper` to its widest callee,
+ * `shallower` to its caller, `previous` / `next` to the neighbouring frame on its row.
+ */
+export function flameStep(
+  rects: readonly FlameRect[],
+  node: number,
+  move: "deeper" | "shallower" | "previous" | "next",
+): number {
+  const at = rects.find((r) => r.node === node);
+  if (!at) return rects[0]?.node ?? node;
+  switch (move) {
+    case "deeper": {
+      const inside = rects.filter((r) => r.depth === at.depth + 1 && r.x >= at.x && r.x < at.x + at.width);
+      return inside.reduce<FlameRect | undefined>((a, r) => (!a || r.width > a.width ? r : a), undefined)?.node ?? node;
+    }
+    case "shallower":
+      // A callee starts inside its caller's span.
+      return rects.find((r) => r.depth === at.depth - 1 && r.x <= at.x && at.x < r.x + r.width)?.node ?? node;
+    case "previous":
+    case "next": {
+      const row = rects.filter((r) => r.depth === at.depth).sort((a, b) => a.x - b.x);
+      const i = row.indexOf(at) + (move === "next" ? 1 : -1);
+      return row[i]?.node ?? node;
+    }
+  }
+}
+
 const parentCache = new WeakMap<Profile, Int32Array>();
 
 /** Parent node of every node (-1 for the root). */

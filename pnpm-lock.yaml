@@ -80,6 +80,9 @@ importers:
       '@lezer/lr':
         specifier: ^1.4.11
         version: 1.4.11
+      '@plutojl/lang-julia':
+        specifier: ^1.2.0
+        version: 1.2.0
       '@replit/codemirror-vim':
         specifier: 6.4.0
         version: 6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.14)
@@ -119,6 +122,9 @@ importers:
       immer:
         specifier: ^11.1.21
         version: 11.1.21
+      katex:
+        specifier: ^0.19.1
+        version: 0.19.1
       marked:
         specifier: ^18.1.1
         version: 18.1.1
@@ -997,6 +1003,12 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
+  '@plutojl/lang-julia@1.2.0':
+    resolution: {integrity: sha512-xItjyoS4HFj4BrvehQHCa47fh7I3kvvWkNNK6TIEva1fxQ/aYP8FL+4M7axntH/p/ZGh2vKMWia/GZ+gcgdJ4w==}
+
+  '@plutojl/lezer-julia@1.2.0':
+    resolution: {integrity: sha512-7r14LZlBf7GGCDfS1ywbpiyJBSMlqQQJoa87s/WF4BnqaHklZsXPc0Ib/3tIp24BSTZryJvaSelGjO2VF3geRA==}
+
   '@replit/codemirror-vim-core@0.1.0':
     resolution: {integrity: sha512-1i6EBKpcNfDKvTmTh6N6g9lL6udD5t+uFNh4JCqozRnVlvUGOps7h/QzS2ne4zcvPUjvApKpmcP7Grc3fNbZiQ==}
 
@@ -1797,6 +1809,10 @@ packages:
 
   katex@0.18.10:
     resolution: {integrity: sha512-/B6p9eY9DX7aHBfpkHdpirDTZ5QH9xTwL9y837PWuzuv41O5jFdqNQwVQEQsimY0/iVNkwBY4+4hMfhQ7d4Dbw==}
+    hasBin: true
+
+  katex@0.19.1:
+    resolution: {integrity: sha512-jG8uKntjSEcm2EpQOh0XturpPuuC9r3Sq5HLHdsFdWZT27E672SF19QEi+of0/YeOy15lDgRhKvr5614uRrEfA==}
     hasBin: true
 
   khroma@2.1.0:
@@ -3074,6 +3090,19 @@ snapshots:
     dependencies:
       playwright: 1.64.1
 
+  '@plutojl/lang-julia@1.2.0':
+    dependencies:
+      '@codemirror/autocomplete': 6.20.3
+      '@codemirror/language': 6.13.1
+      '@lezer/common': 1.5.3
+      '@plutojl/lezer-julia': 1.2.0
+
+  '@plutojl/lezer-julia@1.2.0':
+    dependencies:
+      '@lezer/common': 1.5.3
+      '@lezer/highlight': 1.2.5
+      '@lezer/lr': 1.4.11
+
   '@replit/codemirror-vim-core@0.1.0': {}
 
   '@replit/codemirror-vim@6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.14)':
@@ -3789,6 +3818,10 @@ snapshots:
       - '@noble/hashes'
 
   katex@0.18.10:
+    dependencies:
+      commander: 15.1.0
+
+  katex@0.19.1:
     dependencies:
       commander: 15.1.0
 

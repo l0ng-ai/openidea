@@ -59,3 +59,12 @@ export async function openInBrowser(path: string, browser: string | null = null)
     });
   }
 }
+
+/** Files a page can load besides markup: styles, scripts, data, images, fonts, media. */
+const WEB_RESOURCE =
+  /\.(css|m?js|cjs|jsx|tsx?|json|map|svg|png|jpe?g|gif|webp|avif|ico|bmp|woff2?|ttf|otf|eot|wasm|mp3|mp4|webm|ogg|wav)$/i;
+
+/** A change to it can change what the built-in preview shows (it reloads for these only). */
+export function isWebResource(path: string): boolean {
+  return isHtmlPath(path) || WEB_RESOURCE.test(path);
+}

@@ -268,8 +268,20 @@ fn run(
     process::run(program, args, cwd, env, cancel, |_, line| on_line(line))
 }
 
+/// What a sync records when a *successful* child run's output was truncated: parsing a
+/// truncated listing would silently produce an incomplete model, so it is surfaced, not hidden.
+pub(crate) fn truncation_note(out: &Output) -> Option<String> {
+    out.truncated.then(|| {
+        format!(
+            "the build printed more than the retained {} MiB of output; the model may be incomplete",
+            crate::process::MAX_TEXT_BYTES / (1024 * 1024)
+        )
+    })
+}
+
 /// The first error lines of a failed build, for the tool window.
-pub(crate) fn error_summary(text: &str) -> String {
+pub(crate) fn error_summary(output: &Output) -> String {
+    let text = &output.text;
     // The JVM's "could not find or load main class" (localized) when `gradlew` has no jar.
     if text.contains("org.gradle.wrapper.GradleWrapperMain") {
         return "gradle/wrapper/gradle-wrapper.jar is missing (often excluded by a `*.jar` rule in .gitignore). \
@@ -289,11 +301,15 @@ pub(crate) fn error_summary(text: &str) -> String {
         .filter(|l| !l.is_empty() && !l.starts_with("Re-run Maven") && !l.starts_with("To see the full stack trace"))
         .take(4)
         .collect();
-    if lines.is_empty() {
+    let mut summary = if lines.is_empty() {
         text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("the build failed").trim().to_owned()
     } else {
         lines.join("\n")
+    };
+    if output.truncated {
+        summary.push_str("\n[the build printed more than the retained output; this summary may miss lines]");
     }
+    summary
 }
 
 /// `[INFO] Building core 1.0-SNAPSHOT   [2/3]` → ("core 1.0-SNAPSHOT", 2, 3).
@@ -397,7 +413,9 @@ pub fn sync_maven(
             }
         }
         if !out.success {
-            errors.push(error_summary(&out.text));
+            errors.push(error_summary(&out));
+        } else if let Some(note) = truncation_note(&out) {
+            errors.push(note);
         }
     }
     cache.at_ms = now_ms();
@@ -437,6 +455,8 @@ pub fn sync_gradle_model(
     let mut args: Vec<String> = vec![
         "--console=plain".into(),
         "-q".into(),
+        // The init script reports the evaluated projects, even when a build enables the configuration cache.
+        "-Dorg.gradle.configuration-cache=false".into(),
         "--init-script".into(),
         init_script.to_string_lossy().into_owned(),
         "tasks".into(),
@@ -457,7 +477,7 @@ pub fn sync_gradle_model(
         Ok(out) => out,
         Err(_) if cancel.is_cancelled() => return Err(IdeError::cancelled()),
         Err(error) if error.kind == ide_core::error::ErrorKind::Unavailable => {
-            Output { success: false, text: error.message }
+            Output { success: false, text: error.message, truncated: false }
         }
         Err(error) => return Err(error),
     };
@@ -470,7 +490,7 @@ pub fn sync_gradle_model(
     let cache = GradleCache {
         hash: hash_gradle_files(&gradle::build_files(root, &model)),
         at_ms: now_ms(),
-        error: (!out.success).then(|| error_summary(&out.text)),
+        error: if !out.success { Some(error_summary(&out)) } else { truncation_note(&out) },
         tasks: if out.success { gradle::parse_tasks(&out.text) } else { Vec::new() },
         projects,
         resources: true,
@@ -914,10 +934,22 @@ mod tests {
         );
         assert_eq!(maven_building("[INFO] Building jar: x.jar"), None);
         let text = "[INFO] x\n[ERROR] Failed to execute goal\n[ERROR] \n[ERROR] Re-run Maven using -X\n";
-        assert_eq!(error_summary(text), "Failed to execute goal");
-        assert_eq!(error_summary("one\nlast line\n\n"), "last line");
+        let out = |text: &str, truncated| crate::process::Output { success: false, text: text.to_owned(), truncated };
+        assert_eq!(error_summary(&out(text, false)), "Failed to execute goal");
+        assert_eq!(error_summary(&out("one\nlast line\n\n", false)), "last line");
         let missing_jar = "错误: 找不到或无法加载主类 org.gradle.wrapper.GradleWrapperMain\n";
-        assert!(error_summary(missing_jar).starts_with("gradle/wrapper/gradle-wrapper.jar is missing"));
+        assert!(error_summary(&out(missing_jar, false)).starts_with("gradle/wrapper/gradle-wrapper.jar is missing"));
+        // A truncated capture says so instead of hiding that lines are missing.
+        assert!(error_summary(&out(text, true)).ends_with("this summary may miss lines]"));
+    }
+
+    #[test]
+    fn a_truncated_successful_run_is_surfaced_not_silent() {
+        let out = |truncated| crate::process::Output { success: true, text: String::new(), truncated };
+        assert!(truncation_note(&out(false)).is_none());
+        let note = truncation_note(&out(true)).unwrap();
+        assert!(note.starts_with("the build printed more than the retained 32 MiB"), "{note}");
+        assert!(note.ends_with("the model may be incomplete"));
     }
 
     #[test]

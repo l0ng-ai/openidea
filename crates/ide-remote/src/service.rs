@@ -1,7 +1,7 @@
 //! Deployment over SFTP, FTP or local folders, and SSH run targets.
 //! Shared by IPC commands and project save/delete hooks.
 
-use crate::deploy::{Deployment, FileStamp, SyncEntry, SyncStatus, SyncStep, TransferReport, status};
+use crate::deploy::{Deployment, FileStamp, SyncEntry, SyncStatus, SyncStep, TransferError, TransferReport, status};
 use crate::mapping::{Excludes, Mappings, ResolvedMapping, posix};
 use crate::target::{RemoteRuns, RemoteStart, SyncFn, rewrite_external_classpath};
 use ide_core::remote_settings::{AutoUpload, DeploymentServer, DeploymentType, RunTarget};
@@ -63,6 +63,39 @@ pub fn server(settings: &Settings, id: Option<&str>) -> IdeResult<DeploymentServ
         .find(|s| s.id == id)
         .cloned()
         .ok_or_else(|| IdeError::not_found(format!("no deployment server {id}")))
+}
+
+/// The servers automatic upload goes to: the default server, or each server of the default group.
+pub fn default_targets(settings: &Settings) -> Vec<String> {
+    let d = &settings.deployment;
+    match d.groups.iter().find(|g| g.id == d.default_server) {
+        Some(group) => group.servers.iter().filter(|id| d.servers.iter().any(|s| &s.id == *id)).cloned().collect(),
+        None if d.default_server.is_empty() => Vec::new(),
+        None => vec![d.default_server.clone()],
+    }
+}
+
+/// One report for transfers to several servers, failures named after their server.
+fn merge_reports(reports: Vec<(String, IdeResult<TransferReport>)>) -> IdeResult<TransferReport> {
+    if let [(_, _)] = reports.as_slice() {
+        return reports.into_iter().next().map(|(_, r)| r).unwrap_or_else(|| Ok(TransferReport::default()));
+    }
+    let mut out = TransferReport::default();
+    for (server, report) in reports {
+        match report {
+            Ok(r) => {
+                out.files += r.files;
+                out.skipped += r.skipped;
+                out.errors.extend(
+                    r.errors.into_iter().map(|e| TransferError { message: format!("{server}: {}", e.message), ..e }),
+                );
+            }
+            Err(e) => {
+                out.errors.push(TransferError { path: String::new(), message: format!("{server}: {}", e.message) })
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn run_target(settings: &Settings, id: &str) -> IdeResult<RunTarget> {
@@ -391,15 +424,17 @@ impl RemoteService {
             .await;
             return Some(r);
         }
-        if settings.deployment.auto_upload == AutoUpload::Never
-            || settings.deployment.default_server.is_empty()
-            || !path.starts_with(root)
-        {
+        let targets = default_targets(settings);
+        if settings.deployment.auto_upload == AutoUpload::Never || targets.is_empty() || !path.starts_with(root) {
             return None;
         }
-        Some(
-            self.upload(settings, root, None, &[path.to_path_buf()], CancellationToken::new(), &mut |_, _, _| {}).await,
-        )
+        let mut reports = Vec::new();
+        for id in targets {
+            let paths = [path.to_path_buf()];
+            let r = self.upload(settings, root, Some(&id), &paths, CancellationToken::new(), &mut |_, _, _| {}).await;
+            reports.push((id, r));
+        }
+        Some(merge_reports(reports))
     }
 
     /// After files were deleted locally: their remote copies too (automatic upload + Delete remote files).
@@ -410,10 +445,16 @@ impl RemoteService {
         paths: &[PathBuf],
     ) -> Option<IdeResult<TransferReport>> {
         let d = &settings.deployment;
-        if d.auto_upload == AutoUpload::Never || !d.delete_remote || d.default_server.is_empty() {
+        let targets = default_targets(settings);
+        if d.auto_upload == AutoUpload::Never || !d.delete_remote || targets.is_empty() {
             return None;
         }
-        Some(self.delete_remote(settings, root, None, paths).await)
+        let mut reports = Vec::new();
+        for id in targets {
+            let r = self.delete_remote(settings, root, Some(&id), paths).await;
+            reports.push((id, r));
+        }
+        Some(merge_reports(reports))
     }
 
     // --- run targets ---------------------------------------------------------------

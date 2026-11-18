@@ -20,10 +20,14 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     // gitoxide stops at the first IO error (a directory it may not read), where git warns
     // and lists the rest: git answers then.
-    let (map, conflicts) = gix_status(r, &ignored).or_else(|e| {
-        tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
-        cli_status(r, &ignored)
-    })?;
+    let (map, conflicts) = if r.cli_status.load(std::sync::atomic::Ordering::Acquire) {
+        cli_status(r, &ignored)?
+    } else {
+        gix_status(r, &ignored).or_else(|e| {
+            tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
+            cli_status(r, &ignored)
+        })?
+    };
     Ok(collect(r, &ignored, map, conflicts))
 }
 

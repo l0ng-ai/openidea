@@ -1875,6 +1875,14 @@ pub fn goto_declaration(text: &str, path: &Path, pos: Pos, local_repo: Option<Pa
     goto_declaration_in(text, path, pos, local_repo, Vec::new)
 }
 
+/// The declaration of the property `name` in the pom at `path`, for files it configures
+/// outside the pom itself (a YAML resource's `@name@`): the first `<properties>` entry
+/// along the parent chain declaring it, `project.*` built-ins included.
+pub fn property_declaration(pom: &Path, name: &str, local_repo: Option<PathBuf>) -> Option<PomGoto> {
+    let text = xml::read_text(pom)?;
+    property_target(&text, pom, name, local_repo)
+}
+
 /// [`goto_declaration`], where a `<parent>` and a dependency or plugin whose version no
 /// management entry provides (or a management entry itself) go to the artifact's own
 /// POM: the project module among `modules` with its coordinates, else the local

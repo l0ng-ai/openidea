@@ -92,6 +92,11 @@
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
 }
+.filterStatus {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+}
 .popupList {
   display: flex;
   flex-direction: column;

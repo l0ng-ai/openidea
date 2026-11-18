@@ -349,7 +349,7 @@ function trackWorkbenchEvents(): () => void {
     if (e.type === "docChanged" && wanted.has("document-changed"))
       post({
         kind: "documentChanged",
-        value: { path: e.path, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+        value: { path: e.path, project: null, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
       });
   });
   const offActions = onActionExecuted((id, _arg, source) => {

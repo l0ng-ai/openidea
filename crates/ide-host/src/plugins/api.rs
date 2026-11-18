@@ -3294,6 +3294,7 @@ impl PluginWorkspace for HostWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit.min(10_000).saturating_add(1),
             context: Default::default(),
+            include_excluded: false,
         };
         query.exclude.extend(project.search_excludes());
         let files = Mutex::new(Vec::new());

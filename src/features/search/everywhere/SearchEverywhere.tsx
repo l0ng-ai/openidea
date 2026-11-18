@@ -441,6 +441,7 @@ function SearchEverywhereDialog() {
   // Nothing in the project: retry everywhere (IDEA), unless the user picked the scope.
   const nothingInProject =
     !!showEmpty &&
+    tab !== "actions" &&
     !emptyQuery &&
     !listing &&
     !includeNonProject &&
@@ -493,7 +494,13 @@ function SearchEverywhereDialog() {
       )}
       {showEmpty && (
         <div className={styles.empty}>
-          {tx(emptyQuery ? "Type to search" : includeNonProject ? "Nothing found" : "Nothing found in project files")}
+          {tx(
+            emptyQuery
+              ? "Type to search"
+              : includeNonProject || tab === "actions"
+                ? "Nothing found"
+                : "Nothing found in project files",
+          )}
         </div>
       )}
     </div>

@@ -744,17 +744,23 @@ function DeploymentServersEditor() {
   const [tab, setTab] = useState<ServerTab>("connection");
   const current = selected?.kind === "server" ? (list.find((s) => s.id === selected.id) ?? null) : null;
   const currentGroup = selected?.kind === "group" ? (groupList.find((g) => g.id === selected.id) ?? null) : null;
-  const effectiveDefault = fixDefaultServer(list, defaultServer ?? "");
+  const effectiveDefault = fixDefaultServer(list, defaultServer ?? "", groupList);
 
   const commit = (next: DeploymentServerValid[]) => {
     setServers(next);
-    const d = fixDefaultServer(next, defaultServer ?? "");
-    if (d !== (defaultServer ?? "")) setDefaultServer(d);
     const pruned = pruneGroups(groupList, next);
+    const d = fixDefaultServer(next, defaultServer ?? "", pruned);
+    if (d !== (defaultServer ?? "")) setDefaultServer(d);
     if (pruned.some((g, i) => g !== groupList[i])) setGroups(pruned);
   };
   const update = (patch: Partial<DeploymentServerValid>) => {
     if (current) commit(list.map((s) => (s.id === current.id ? { ...s, ...patch } : s)));
+  };
+  /** Removing the default group makes the first server the default again. */
+  const removeGroups = (rest: DeploymentGroupValid[]) => {
+    setGroups(rest);
+    const d = fixDefaultServer(list, defaultServer ?? "", rest);
+    if (d !== (defaultServer ?? "")) setDefaultServer(d);
   };
   const updateGroup = (patch: Partial<DeploymentGroupValid>) => {
     if (currentGroup) setGroups(groupList.map((g) => (g.id === currentGroup.id ? { ...g, ...patch } : g)));
@@ -777,7 +783,7 @@ function DeploymentServersEditor() {
       if (!group) return;
       const index = groupList.indexOf(group);
       const rest = groupList.filter((g) => g.id !== group.id);
-      setGroups(rest);
+      removeGroups(rest);
       const next = rest[Math.min(index, rest.length - 1)] ?? null;
       setSelected(next ? { kind: "group", id: next.id } : list[0] ? { kind: "server", id: list[0].id } : null);
       return;
@@ -794,7 +800,7 @@ function DeploymentServersEditor() {
     if (currentGroup) {
       const index = groupList.indexOf(currentGroup);
       const rest = groupList.filter((g) => g.id !== currentGroup.id);
-      setGroups(rest);
+      removeGroups(rest);
       const next = rest[Math.min(index, rest.length - 1)] ?? null;
       setSelected(next ? { kind: "group", id: next.id } : list[0] ? { kind: "server", id: list[0].id } : null);
       return;
@@ -817,19 +823,18 @@ function DeploymentServersEditor() {
     e.stopPropagation();
     setSelected(target);
     const server = target?.kind === "server" ? list.find((s) => s.id === target.id) : undefined;
+    const defaultItem = (id: string): MenuItem => ({
+      label: "Use as Default",
+      icon: "check",
+      disabled: id === effectiveDefault,
+      run: () => setDefaultServer(id),
+    });
     showContextMenu(e, [
       { label: "Add", icon: "plus", submenu: addItems },
       ...(server
-        ? [
-            { label: "Duplicate", icon: "copy", run: () => add(server) } as MenuItem,
-            {
-              label: "Use as Default",
-              icon: "check",
-              disabled: server.id === effectiveDefault,
-              run: () => setDefaultServer(server.id),
-            } as MenuItem,
-          ]
+        ? [{ label: "Duplicate", icon: "copy", run: () => add(server) } as MenuItem, defaultItem(server.id)]
         : []),
+      ...(target?.kind === "group" ? [defaultItem(target.id)] : []),
       { kind: "separator" },
       // `remove` acts on the selection, which the state update above has not applied yet.
       { label: "Remove", icon: "minus", run: () => removeTarget(target) },
@@ -861,8 +866,11 @@ function DeploymentServersEditor() {
             icon="check"
             title="Use as Default"
             size="small"
-            disabled={!current || current.id === effectiveDefault}
-            onClick={() => current && setDefaultServer(current.id)}
+            disabled={(current ?? currentGroup)?.id === effectiveDefault || (!current && !currentGroup)}
+            onClick={() => {
+              const id = (current ?? currentGroup)?.id;
+              if (id) setDefaultServer(id);
+            }}
           />
         </div>
         <div
@@ -889,8 +897,11 @@ function DeploymentServersEditor() {
               onContextMenu={(e) => rowMenu(e, { kind: "group", id: g.id })}
             >
               <Icon name="folder" />
-              <span className={styles.serverName}>{g.name || g.id}</span>
+              <span className={clsx(styles.serverName, g.id === effectiveDefault && styles.default)}>
+                {g.name || g.id}
+              </span>
               <Badge>{g.servers.length}</Badge>
+              {g.id === effectiveDefault && <Badge tone="accent">{tx("default")}</Badge>}
             </div>
           ))}
           {list.map((s) => (

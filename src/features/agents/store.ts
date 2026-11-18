@@ -98,6 +98,8 @@ interface AgentsState {
   changes: Map<string, AgentChange[]>;
   /** The task's uncommitted changes and commits, when the Changes pane groups by commit. */
   groupedChanges: Map<string, AgentChanges>;
+  /** What the task's last turn changed, when the Changes pane shows that. */
+  turnChanges: Map<string, AgentChange[]>;
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
@@ -186,6 +188,7 @@ export const useAgents = create<AgentsState>(() => ({
   entryLoads: new Map(),
   changes: new Map(),
   groupedChanges: new Map(),
+  turnChanges: new Map(),
   providers: [],
   limits: new Map(),
   modelCatalogs: new Map(),
@@ -370,7 +373,7 @@ export function markVisible(task: string): () => void {
 
 let generation = 0;
 let draftGeneration = 0;
-const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number }>();
+const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number | null }>();
 
 const selectedProvider = () => {
   const { providers, draft } = useAgents.getState();
@@ -394,7 +397,7 @@ function applyModelCatalog(catalog: AgentModelCatalog) {
   });
 }
 
-/** Refreshes only the New Task agent; discovery failures stay beside the cached choices. */
+/** Refresh the New Task agent, including settings for the draft's selected model. */
 export async function refreshModels(
   provider = selectedProvider()?.id,
   force = true,
@@ -403,25 +406,55 @@ export async function refreshModels(
   const selected = selectedProvider();
   if (!provider || !selected?.installed || selected.id !== provider || useProject.getState().project?.trusted === false)
     return;
+  model ??= draftConfig(selected, useAgents.getState().draft).find((o) => o.category === "model")?.current ?? null;
+  await refreshProviderModels(selected, force, model, draftGeneration);
+}
+
+/** Discover switch candidates without using or updating the session's settings. */
+export async function refreshTaskModels(id: string, force = true): Promise<void> {
+  const { tasks, providers } = useAgents.getState();
+  const task = tasks.get(id);
+  if (!task || task.status === "archived" || !task.config.some((o) => o.category === "model")) return;
+  const provider = providers.find((p) => p.id === task.provider);
+  if (!provider?.installed || useProject.getState().project?.trusted === false) return;
+  await refreshProviderModels(provider, force, null, null);
+}
+
+async function refreshProviderModels(
+  selected: AgentProvider,
+  force: boolean,
+  model: string | null,
+  draftGen: number | null,
+): Promise<void> {
+  const provider = selected.id;
   const state = useAgents.getState();
   const catalog = state.modelCatalogs.get(provider);
-  model ??= draftConfig(selected, state.draft).find((o) => o.category === "model")?.current ?? null;
   const missingModelSettings =
     model !== null && !Object.hasOwn(catalog?.thoughtLevels ?? selected.thoughtLevels ?? {}, model);
   const requestTarget = state.modelRequestTargets.get(provider);
   const launch = launchKey(selected);
   const pending = modelFlights.get(provider);
   if (
-    (pending?.launch === launch && pending.generation === generation && pending.draftGeneration === draftGeneration) ||
+    pending?.launch === launch &&
+    pending.generation === generation &&
+    (draftGen === null || pending.draftGeneration === null || pending.draftGeneration === draftGen)
+  ) {
+    // A chat joining a draft lookup still needs its result if the draft switches providers.
+    if (draftGen === null) pending.draftGeneration = null;
+    return;
+  }
+  if (
     catalog?.refreshing ||
     (force &&
-      (requestTarget === undefined || requestTarget === model || (!missingModelSettings && !catalog?.error)) &&
+      (draftGen === null ||
+        requestTarget === undefined ||
+        requestTarget === model ||
+        (!missingModelSettings && !catalog?.error)) &&
       catalog?.retryAtMs != null &&
       catalog.retryAtMs > Date.now())
   )
     return;
   const gen = generation;
-  const draftGen = draftGeneration;
   const root = useProject.getState().project?.root;
   const flight = { launch, generation: gen, draftGeneration: draftGen };
   modelFlights.set(provider, flight);
@@ -429,12 +462,17 @@ export async function refreshModels(
     modelRequests: new Set(s.modelRequests).add(provider),
     modelRequestTargets: new Map(s.modelRequestTargets).set(provider, model),
   }));
-  const current = () =>
-    gen === generation &&
-    root === useProject.getState().project?.root &&
-    draftGen === draftGeneration &&
-    selectedProvider()?.id === provider &&
-    launchKey(selectedProvider()!) === launch;
+  const current = () => {
+    const activeProvider = useAgents.getState().providers.find((p) => p.id === provider);
+    return (
+      gen === generation &&
+      root === useProject.getState().project?.root &&
+      (flight.draftGeneration === null ||
+        (flight.draftGeneration === draftGeneration && selectedProvider()?.id === provider)) &&
+      activeProvider !== undefined &&
+      launchKey(activeProvider) === launch
+    );
+  };
   try {
     const result = await call(commands.agentRefreshModels(provider, force, model));
     // A streamed status/completion is newer than the snapshot returned by the command.
@@ -496,6 +534,7 @@ export async function connect(): Promise<void> {
     entryLoads: new Map(),
     changes: new Map(),
     groupedChanges: new Map(),
+    turnChanges: new Map(),
     providers,
     organizeRoot,
     organize: pruneOrganize(loadOrganize(organizeRoot), tasks),
@@ -599,12 +638,18 @@ function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> 
     groupedChanges = new Map(s.groupedChanges);
     groupedChanges.delete(taskId);
   }
-  if (!entries && !entryLoads && !changes && !groupedChanges) return null;
+  let turnChanges: Map<string, AgentChange[]> | undefined;
+  if (s.turnChanges.has(taskId)) {
+    turnChanges = new Map(s.turnChanges);
+    turnChanges.delete(taskId);
+  }
+  if (!entries && !entryLoads && !changes && !groupedChanges && !turnChanges) return null;
   return {
     ...(entries ? { entries } : {}),
     ...(entryLoads ? { entryLoads } : {}),
     ...(changes ? { changes } : {}),
     ...(groupedChanges ? { groupedChanges } : {}),
+    ...(turnChanges ? { turnChanges } : {}),
   };
 }
 
@@ -625,7 +670,7 @@ function isTaskOpenInUi(taskId: string): boolean {
 /** Whether a background trigger should reload a task's changes: only while they are shown or still cached. */
 function wantsChanges(taskId: string): boolean {
   const s = useAgents.getState();
-  return s.changes.has(taskId) || s.groupedChanges.has(taskId) || isTaskOpenInUi(taskId);
+  return s.changes.has(taskId) || s.groupedChanges.has(taskId) || s.turnChanges.has(taskId) || isTaskOpenInUi(taskId);
 }
 
 /**
@@ -667,6 +712,7 @@ export function disconnect() {
     entryLoads: new Map(),
     changes: new Map(),
     groupedChanges: new Map(),
+    turnChanges: new Map(),
     modelCatalogs: new Map(),
     modelRequests: new Set(),
     modelRequestTargets: new Map(),
@@ -846,11 +892,25 @@ export async function loadEntries(task: string, subagent: string | null = null):
 }
 
 export async function refreshChanges(task: string): Promise<void> {
+  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
   const gen = generation;
   const drops = cacheDrops.get(task);
-  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
   const stillWanted = () =>
     gen === generation && useAgents.getState().tasks.has(task) && cacheDrops.get(task) === drops;
+  // The whole task's changes are read in either scope: the session's summary counts them.
+  await Promise.all([
+    refreshTaskChanges(task, stillWanted),
+    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
+  ]);
+}
+
+async function refreshTurnChanges(task: string, stillWanted: () => boolean): Promise<void> {
+  const changes = await call(commands.agentChanges(task, "lastTurn")).catch(() => []);
+  if (!stillWanted()) return;
+  useAgents.setState((s) => ({ turnChanges: new Map(s.turnChanges).set(task, changes) }));
+}
+
+async function refreshTaskChanges(task: string, stillWanted: () => boolean): Promise<void> {
   // Local tasks have no commits of their own to group: the flat list is their only view.
   const grouped =
     useChangesOptions.getState().groupByCommit && useAgents.getState().tasks.get(task)?.isolation === "worktree";
@@ -871,7 +931,7 @@ export async function refreshChanges(task: string): Promise<void> {
     return;
   }
   try {
-    const changes = await call(commands.agentChanges(task));
+    const changes = await call(commands.agentChanges(task, null));
     if (!stillWanted()) return;
     useAgents.setState((s) => ({
       changes: new Map(s.changes).set(task, changes),

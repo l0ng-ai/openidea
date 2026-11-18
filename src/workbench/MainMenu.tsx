@@ -8,12 +8,17 @@ import { usePlatform } from "@/platform/platformInfo";
 import { Icon, MenuList, Popup, type MenuItem } from "@/ui";
 import menuStyles from "@/ui/Menu.module.css";
 import { isDistractionFree } from "./distractionFree";
+import { toolWindowsRestorable } from "./toolwindows/store";
 import styles from "./TitleBar.module.css";
 
 function label(id: string, fallback: string): string {
   const key = `menu.${id}`;
   if (lookup(key) === undefined) return fallback;
-  return t(key, { os: usePlatform.getState().os, distractionFree: isDistractionFree() ? "on" : "off" });
+  return t(key, {
+    os: usePlatform.getState().os,
+    distractionFree: isDistractionFree() ? "on" : "off",
+    toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
+  });
 }
 
 type Submenu = Extract<MenuNode, { kind: "submenu" }>;
@@ -103,6 +108,17 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
   const persistent = (merged && fits) || row;
   const showTitles = persistent || (!merged && expanded);
 
+  const rememberFocus = (target: EventTarget | null) => {
+    if (
+      target instanceof HTMLElement &&
+      target !== document.body &&
+      target !== hamburger.current &&
+      !bar?.contains(target) &&
+      !target.closest('[role="menu"]')
+    )
+      previousFocus.current = target;
+  };
+
   useEffect(() => {
     let disposed = false;
     if (merged || row)
@@ -150,6 +166,13 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
     setOpen(null);
     setExpanded(false);
   };
+  // MenuList runs the action synchronously after onDone, before Popup unmounts.
+  const closeForAction = () => {
+    const target = previousFocus.current;
+    previousFocus.current = null;
+    close();
+    if (target?.isConnected) target.focus({ preventScroll: true });
+  };
   const expand = async () => {
     const top = await loadMenus();
     if (!top.length) return;
@@ -183,10 +206,13 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
       } else if (persistent) {
         if (bar?.contains(document.activeElement)) previousFocus.current?.focus();
         else {
-          previousFocus.current = document.activeElement as HTMLElement;
+          rememberFocus(document.activeElement);
           focusTitle(0);
         }
-      } else void expand();
+      } else {
+        rememberFocus(document.activeElement);
+        void expand();
+      }
     });
   });
   const onKeyDown = (e: KeyboardEvent) => {
@@ -214,9 +240,13 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
       title={t("menu.mainMenu")}
       aria-haspopup="menu"
       aria-expanded={expanded}
+      onFocus={(event) => rememberFocus(event.relatedTarget)}
       onClick={() => {
         if (expanded) close();
-        else void expand();
+        else {
+          rememberFocus(document.activeElement);
+          void expand();
+        }
       }}
     >
       <Icon name="main-menu" size={20} />
@@ -233,7 +263,10 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
           aria-haspopup="menu"
           aria-expanded={open === i}
           className={clsx(styles.menuTitle, open === i && styles.menuTitleOpen)}
-          onFocus={() => setFocused(i)}
+          onFocus={(event) => {
+            rememberFocus(event.relatedTarget);
+            setFocused(i);
+          }}
           onPointerDown={() => {
             pressedTitle.current = true;
             setTimeout(() => {
@@ -247,6 +280,7 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
             if (open !== null) setOpen(i);
           }}
           onClick={() => {
+            rememberFocus(document.activeElement);
             if (open === i) close();
             else setOpen(i);
           }}
@@ -269,7 +303,7 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
         >
           <MenuList
             items={menuItems(menus[open].children)}
-            onDone={close}
+            onDone={closeForAction}
             aria-label={label(menus[open].id, menus[open].label)}
           />
         </Popup>
@@ -297,7 +331,7 @@ function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged
           autoFocus={false}
           className={menuStyles.popup}
         >
-          <MenuList items={menuItems(menus)} onDone={close} aria-label={t("menu.mainMenu")} />
+          <MenuList items={menuItems(menus)} onDone={closeForAction} aria-label={t("menu.mainMenu")} />
         </Popup>
       )}
     </div>

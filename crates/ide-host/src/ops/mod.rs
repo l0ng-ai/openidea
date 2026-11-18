@@ -21,6 +21,7 @@ pub mod history;
 pub mod java;
 pub mod jvm_icons;
 pub mod lsp;
+pub mod maven_placeholder;
 pub mod nav;
 pub mod notebook;
 pub mod project;

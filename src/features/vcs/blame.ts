@@ -278,6 +278,11 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       run: () => void executeAction("vcs.showCommit", l.commit),
                     },
                     {
+                      label: "Show Diff",
+                      icon: "diff",
+                      run: () => void import("./annotateRevision").then((m) => m.showRevisionDiff(path, l.commit)),
+                    },
+                    {
                       label: "Copy Revision Number",
                       icon: "copy",
                       run: () => void writeClipboardText(l.commit),
