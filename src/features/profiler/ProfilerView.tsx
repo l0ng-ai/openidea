@@ -6,6 +6,7 @@
 import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { Profile } from "@/platform/ipc";
+import { registerKeyClaim } from "@/platform/keymap";
 import { EmptyState, Icon, IconButton, Input, Tabs, Tree, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
 import { colorSlot, flameLayout, formatWeight, frameLocation, matchingFrames, parentIndex, share } from "./model";
@@ -113,6 +114,10 @@ function FlameGraph({ profile, query }: { profile: Profile; query: string }) {
     }
   }, [activeId]);
   useLayoutEffect(scrollToActive, [scrollToActive, layout.depth]);
+  useLayoutEffect(() => {
+    if (zoom === 0) return;
+    return registerKeyClaim((event, stroke) => stroke === "Escape" && event.target === graphRef.current);
+  }, [zoom]);
 
   const zoomTo = (node: number) => {
     setZoom(node);

@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { registerAction } from "@/platform/actions";
 import type { Profile, ProfileMode } from "@/platform/ipc";
 import { useI18n } from "@/platform/i18n";
+import { installKeyboardDispatcher } from "@/platform/keymap";
 import { ProfilerTabs, ProfilerView } from "./ProfilerView";
 import { addSnapshot, resetProfiler, useProfiler } from "./store";
 
@@ -97,6 +99,37 @@ describe("ProfilerView", () => {
     expect(screen.queryByText("Zoomed into Main.work")).not.toBeInTheDocument();
     await user.click(within(graph).getByRole("treeitem", { name: "Main.run" }));
     expect(screen.getByText("Zoomed into Main.run")).toBeInTheDocument();
+  });
+
+  it("reserves Escape ahead of the workbench only when the zoomed graph has focus", async () => {
+    addSnapshot("App", profile("cpu", 120));
+    const focusEditor = vi.fn();
+    const unregister = registerAction({ id: "toolwindow.focusEditor", title: "Focus Editor", run: focusEditor });
+    const uninstall = installKeyboardDispatcher();
+    try {
+      render(<ProfilerView />);
+      const user = userEvent.setup();
+      const graph = screen.getByRole("tree", { name: "Flame graph" });
+      graph.focus();
+      await user.keyboard("{ArrowDown}{Enter}");
+      expect(screen.getByText("Zoomed into Main.run")).toBeInTheDocument();
+
+      screen.getByRole("textbox", { name: "Search frames" }).focus();
+      await user.keyboard("{Escape}");
+      expect(focusEditor).toHaveBeenCalledOnce();
+      expect(screen.getByText("Zoomed into Main.run")).toBeInTheDocument();
+
+      graph.focus();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByText("Zoomed into Main.run")).not.toBeInTheDocument();
+      expect(focusEditor).toHaveBeenCalledOnce();
+      expect(graph).toHaveFocus();
+      await user.keyboard("{Escape}");
+      expect(focusEditor).toHaveBeenCalledTimes(2);
+    } finally {
+      uninstall();
+      unregister();
+    }
   });
 
   it("allocation profile shows bytes and marks type frames", () => {
