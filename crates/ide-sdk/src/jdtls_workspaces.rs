@@ -25,7 +25,10 @@ fn root(data_dir: &Path) -> PathBuf {
 pub fn mark_used(cfg: &LanguageServerConfig) {
     let Some(dir) = cfg.args.iter().position(|a| a == "-data").and_then(|i| cfg.args.get(i + 1)) else { return };
     let dir = Path::new(dir);
-    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(dir.join(USED_MARKER), b"")) {
+    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| {
+        let marker = std::fs::File::create(dir.join(USED_MARKER))?;
+        marker.set_modified(SystemTime::now())
+    }) {
         tracing::debug!("jdtls: cannot mark {} as used: {e}", dir.display());
     }
 }

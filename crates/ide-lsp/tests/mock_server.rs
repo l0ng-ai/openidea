@@ -3005,13 +3005,13 @@ async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|arg| (arg["path"].as_str().unwrap().to_owned(), arg["test"].as_bool().unwrap()))
+        .map(|arg| (PathBuf::from(arg["path"].as_str().unwrap()), arg["test"].as_bool().unwrap()))
         .collect();
     assert_eq!(
         paths,
         vec![
-            (h.root.join("target/generated-sources/protobuf/grpc-java").to_string_lossy().into_owned(), false),
-            (h.root.join("target/generated-sources/protobuf/java").to_string_lossy().into_owned(), false),
+            (h.root.join("target/generated-sources/protobuf/grpc-java"), false),
+            (h.root.join("target/generated-sources/protobuf/java"), false),
         ]
     );
 }
@@ -3654,6 +3654,7 @@ async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
     let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
     framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
 
+    #[cfg(unix)]
     let links = tempfile::tempdir().unwrap();
     let mut spellings = Vec::new();
     #[cfg(unix)]
