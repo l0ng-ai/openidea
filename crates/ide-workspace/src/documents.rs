@@ -653,6 +653,8 @@ impl Documents {
         };
         let mut st = slot.lock();
         st.closed = true;
+        // A buffer closed with changes (Don't Save) has nothing left to save.
+        self.set_dirty(doc, &mut st, false);
         if st.observed {
             for o in self.observers() {
                 o.closed(doc, &st.path);
