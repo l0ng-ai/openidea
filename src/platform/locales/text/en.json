@@ -2454,5 +2454,6 @@
   "Load Maven Project": "Load Maven Project",
   "Skip": "Skip",
   "Resize Markdown preview": "Resize Markdown preview",
+  "Run a Python script or module": "Run a Python script or module",
   "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.": "Replace every occurrence of '{pattern}' with '{replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed."
 }
