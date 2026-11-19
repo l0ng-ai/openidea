@@ -537,18 +537,21 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
     merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
 }
 
-/// Settings › Build Tools › Maven › Automatically download sources → jdtls
-/// `java.maven.downloadSources`.
+/// Settings › Build Tools › Maven › Automatically download sources and Always update
+/// snapshots → jdtls `java.maven.downloadSources` / `java.maven.updateSnapshots`.
 pub fn configure_maven_sources(cfg: &mut LanguageServerConfig, s: &Settings) {
     if cfg.name != "jdtls" {
         return;
     }
-    let download = s.languages.java.maven.download_sources;
-    merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"maven": {"downloadSources": download}}}));
+    let m = &s.languages.java.maven;
+    merge(
+        cfg.settings.get_or_insert_with(|| json!({})),
+        json!({"java": {"maven": {"downloadSources": m.download_sources, "updateSnapshots": m.update_snapshots}}}),
+    );
 }
 
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
-/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
+/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>`, `-P <profiles>` and `-U`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     let m = &s.languages.java.maven;
     let mut out = Vec::new();
@@ -566,6 +569,9 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     }
     if let Some(profiles) = non_empty(&m.active_profiles) {
         out.extend(["-P".to_owned(), profiles.to_owned()]);
+    }
+    if m.update_snapshots {
+        out.push("-U".to_owned());
     }
     out
 }
@@ -1647,6 +1653,9 @@ fn maven_option_flag(arg: &str) -> Option<&'static str> {
             return Some(short);
         }
     }
+    if arg == "-U" || arg == "--update-snapshots" {
+        return Some("-U");
+    }
     arg.starts_with("-Dmaven.repo.local=").then_some("-Dmaven.repo.local")
 }
 
@@ -2466,8 +2475,9 @@ mod maven_linkage_tests {
             Some(json!({"java": {"maven": {"downloadSources": false, "updateSnapshots": false}}}))
         );
         settings.languages.java.maven.download_sources = true;
+        settings.languages.java.maven.update_snapshots = true;
         configure_maven_sources(&mut cfg, &settings);
-        assert_eq!(cfg.settings.unwrap()["java"]["maven"]["downloadSources"], json!(true));
+        assert_eq!(cfg.settings.unwrap()["java"]["maven"], json!({"downloadSources": true, "updateSnapshots": true}));
 
         let mut other = custom_server("kotlin", &LanguageServerSettings::default());
         configure_maven_sources(&mut other, &settings);

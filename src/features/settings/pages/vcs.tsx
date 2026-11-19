@@ -14,6 +14,7 @@ import { Button, Icon, IconButton, Input, Select, type SelectOption, T } from "@
 import { choosePath } from "@/platform/choosePath";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
+import type { AgentModelCatalog, AgentProvider } from "@/bindings";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -378,6 +379,117 @@ function MessageLimits() {
   );
 }
 
+const AUTOMATIC = "";
+
+/** The installed coding agents, as the agents feature reports them; empty where agents can't run. */
+function useInstalledAgents(): AgentProvider[] {
+  const [agents, setAgents] = useState<AgentProvider[]>([]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    call(commands.agentProviders())
+      .then((all) => live && setAgents(all.filter((p) => p.installed)))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return agents;
+}
+
+type ModelCatalog = Pick<AgentModelCatalog, "config" | "thoughtLevels">;
+
+/** The models `agent` offers, from its catalog; asks the agent for it once when it hasn't reported one. */
+function useModelCatalog(agent: AgentProvider | undefined): ModelCatalog | undefined {
+  const [catalog, setCatalog] = useState<{ provider: string } & ModelCatalog>();
+  const id = agent?.id;
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let polls = 0;
+    const load = () =>
+      call(commands.agentRefreshModels(id, false, null))
+        .then((c) => {
+          if (!live) return;
+          setCatalog(c);
+          if (c.refreshing && ++polls < CATALOG_POLLS) timer = setTimeout(load, CATALOG_POLL_MS);
+        })
+        .catch(() => {});
+    void load();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [id]);
+  if (!agent) return undefined;
+  const fresh = catalog?.provider === agent.id && catalog.config.some((o) => o.category === "model");
+  return fresh ? catalog : { config: agent.config, thoughtLevels: agent.thoughtLevels ?? {} };
+}
+
+const CATALOG_POLL_MS = 1_500;
+const CATALOG_POLLS = 40;
+
+/** `values` as options after `automatic`, keeping a saved value the agent no longer lists. */
+function choiceOptions(
+  automatic: string,
+  values: readonly { value: string; name: string }[],
+  saved: string,
+): SelectOption<string>[] {
+  const options = [{ value: AUTOMATIC, label: automatic }, ...values.map((v) => ({ value: v.value, label: v.name }))];
+  return saved && !values.some((v) => v.value === saved) ? [...options, { value: saved, label: saved }] : options;
+}
+
+function CommitAgentRows() {
+  const agents = useInstalledAgents();
+  const [agent, setAgent] = useSetting<string>("vcs.commit.agent");
+  const [model, setModel] = useSetting<string>("vcs.commit.agentModel");
+  const [effort, setEffort] = useSetting<string>("vcs.commit.agentEffort");
+  const catalog = useModelCatalog(agents.find((p) => p.id === agent));
+  const models = catalog?.config.find((o) => o.category === "model");
+  const shown = model || models?.current;
+  const levels = (shown ? catalog?.thoughtLevels[shown] : undefined)?.find((o) => o.category === "thought_level");
+  const agentOptions = choiceOptions(
+    tx("Automatic (the agent of the latest task)"),
+    agents.map((p) => ({ value: p.id, name: p.name })),
+    agent,
+  );
+  const pick = (next: string) => {
+    if (next === agent) return;
+    setAgent(next);
+    setModel(AUTOMATIC);
+    setEffort(AUTOMATIC);
+  };
+  return (
+    <>
+      <Row label="Agent" hint="Commit messages are short: a fast model with low effort is usually enough.">
+        <Select value={agent} options={agentOptions} onChange={pick} aria-label={tx("Agent")} />
+      </Row>
+      <Row label="Model" disabled={!agent}>
+        <Select
+          value={model}
+          options={choiceOptions(tx("The agent's current model"), models?.values ?? [], model)}
+          onChange={(next) => {
+            setModel(next);
+            setEffort(AUTOMATIC);
+          }}
+          disabled={!agent}
+          aria-label={tx("Model")}
+        />
+      </Row>
+      <Row label="Effort" disabled={!agent}>
+        <Select
+          value={effort}
+          options={choiceOptions(tx("The agent's default"), levels?.values ?? [], effort)}
+          onChange={setEffort}
+          disabled={!agent}
+          aria-label={tx("Effort")}
+        />
+      </Row>
+    </>
+  );
+}
+
 function AgentInstructionsRow() {
   const [value, set] = useSetting<string>("vcs.commit.agentInstructions");
   const id = useId();
@@ -531,6 +643,12 @@ export const VCS_PAGES: PageSpec[] = [
       {
         title: "Commit Message Generation",
         options: [
+          {
+            kind: "custom",
+            label: "Agent",
+            keywords: ["agent", "ai", "model", "effort", "thinking", "reasoning", "generate commit message"],
+            component: CommitAgentRows,
+          },
           {
             kind: "custom",
             label: "Instructions for Generate Commit Message with Agent",
