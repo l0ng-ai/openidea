@@ -559,7 +559,7 @@ test("indexed single-file rename previews all anchors and applies only after con
   }
   await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
   const [apply] = await ipcCalls(page, "apply_workspace_edit");
-  expect(apply.edit).toMatchObject({ preconditions: [{ path: FILE, hash: "indexed-snapshot" }] });
+  expect(apply?.edit).toMatchObject({ preconditions: [{ path: FILE, hash: "indexed-snapshot" }] });
 });
 
 test("rename keeps the typed name, uses the editor font and shows long preview names in a narrow dialog", async ({

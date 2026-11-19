@@ -1,5 +1,5 @@
 /** Linked Gradle builds use isolated native stubs; no real builds or files are touched. */
-import type { GradleModel, RunConfig } from "../src/platform/ipc";
+import type { GradleModel, RunConfig_Deserialize } from "../src/bindings";
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
 const build = (dir: string): GradleModel => ({
@@ -46,7 +46,7 @@ test("links independent Gradle roots, runs identical task paths in their own bui
       };
       h["plugin:dialog|open"] = () => ["/dev/acme-api/second/settings.gradle"];
       h.run_start = (args) => {
-        const config = args.config as RunConfig;
+        const config = args.config as RunConfig_Deserialize;
         const id = ++runId;
         setTimeout(() => window.__ipc.emit({ type: "runExited", run: id, code: 0 }), 50);
         return { id, configId: config.id, name: config.name, pid: 4242 + id, running: true, pty: false };
@@ -89,7 +89,7 @@ test("links independent Gradle roots, runs identical task paths in their own bui
   await expect.poll(async () => (await ipcCalls(page, "run_start")).length).toBe(1);
   await tasks.nth(1).dblclick();
   await expect.poll(async () => (await ipcCalls(page, "run_start")).length).toBe(2);
-  const runs = (await ipcCalls(page, "run_start")).map((args) => args.config as RunConfig);
+  const runs = (await ipcCalls(page, "run_start")).map((args) => args.config as RunConfig_Deserialize);
   expect(runs[0]!.id).not.toBe(runs[1]!.id);
   for (const [index, dir] of ["first", "second"].entries()) {
     expect(runs[index]).toMatchObject({
