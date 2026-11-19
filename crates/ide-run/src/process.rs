@@ -1431,6 +1431,12 @@ mod tests {
         let mut executable = inv();
         sh_for_unexecutable(&mut executable);
         assert_eq!(executable.program, script);
+        // Not a `#!` script (a binary that lost its mode): left to fail as it is.
+        std::fs::write(&script, b"\x7fELF").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut binary = inv();
+        sh_for_unexecutable(&mut binary);
+        assert_eq!(binary.program, script);
     }
 
     #[test]

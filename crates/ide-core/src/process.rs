@@ -807,15 +807,19 @@ pub fn find_executable_in(
         .find_map(|dir| names.iter().map(|n| dir.join(n)).find(|p| p.is_file()))
 }
 
-/// Whether `program` is a script to start as `/bin/sh <program>`: on Unix, a file without
-/// the execute bit — a `mvnw` / `gradlew` committed from Windows or unpacked from a zip —
-/// which `exec` refuses with `EACCES`. The file's mode is left alone, as other IDEs do.
+/// Whether `program` is a script to start as `/bin/sh <program>`: on Unix, a `#!` script
+/// without the execute bit — a `mvnw` / `gradlew` committed from Windows or unpacked from a
+/// zip — which `exec` refuses with `EACCES`. The file's mode is left alone, as other IDEs do.
 pub fn needs_sh(program: &std::path::Path) -> bool {
     #[cfg(unix)]
     {
+        use std::io::Read;
         use std::os::unix::fs::PermissionsExt;
+        let mut magic = [0u8; 2];
         program.is_absolute()
             && std::fs::metadata(program).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 == 0)
+            && std::fs::File::open(program).and_then(|mut f| f.read_exact(&mut magic)).is_ok()
+            && &magic == b"#!"
     }
     #[cfg(not(unix))]
     {
