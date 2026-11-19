@@ -202,6 +202,7 @@ impl Host {
                     };
                     let profiles = ide_build::maven_profiles(&cache);
                     ide_sdk::maven_profiles::configure_jdtls(cfg, root, &effective, &profiles, &cache);
+                    ide_sdk::maven_profiles::configure_offline(cfg, ide_build::maven_offline(&cache));
                 }
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {

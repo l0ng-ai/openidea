@@ -32,6 +32,19 @@ pub fn configure_jdtls(cfg: &mut LanguageServerConfig, root: &Path, s: &Settings
     }
 }
 
+/// The Maven tool window's offline mode of the last sync, for jdtls (m2e) too: without it the
+/// import keeps downloading from the repositories while `mvn` runs with `-o`.
+pub fn configure_offline(cfg: &mut LanguageServerConfig, offline: bool) {
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let layer = json!({ "java": { "import": { "maven": { "offline": { "enabled": offline } } } } });
+    match &mut cfg.settings {
+        Some(settings) => merge(settings, layer),
+        None => cfg.settings = Some(layer),
+    }
+}
+
 /// The user's settings (Settings › Maven, else `~/.m2/settings.xml`) with `active`
 /// added to `<activeProfiles>`. Named after its content: m2e reloads a settings file
 /// only when the configured path changes.
@@ -214,6 +227,24 @@ mod tests {
         let text = std::fs::read_to_string(user_settings(&cfg).unwrap()).unwrap();
         assert!(text.contains("<activeProfile>a</activeProfile>"));
         assert!(text.contains("<activeProfile>c</activeProfile>"));
+    }
+
+    #[test]
+    fn jdtls_imports_offline_when_the_last_sync_was_offline() {
+        let offline = |cfg: &LanguageServerConfig| {
+            cfg.settings.as_ref().and_then(|s| s.pointer("/java/import/maven/offline/enabled")).cloned()
+        };
+        for value in [true, false] {
+            let mut cfg = jdtls();
+            cfg.settings = Some(json!({ "java": { "import": { "maven": { "enabled": true } } } }));
+            configure_offline(&mut cfg, value);
+            assert_eq!(offline(&cfg), Some(json!(value)), "explicit, so turning it off reaches a running server");
+            assert_eq!(cfg.settings.as_ref().unwrap().pointer("/java/import/maven/enabled"), Some(&json!(true)));
+        }
+        let mut other: LanguageServerConfig =
+            serde_json::from_value(json!({ "name": "kotlin-lsp", "command": "kotlin-lsp" })).unwrap();
+        configure_offline(&mut other, true);
+        assert_eq!(other.settings, None);
     }
 
     #[test]

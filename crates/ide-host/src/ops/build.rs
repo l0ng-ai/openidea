@@ -245,6 +245,7 @@ pub async fn build_sync(
             return Err(IdeError::not_found("Build project is no longer linked"));
         }
         let mut profiles_changed = false;
+        let mut offline_changed = false;
         for scope in selected {
             if token.is_cancelled() {
                 return Err(IdeError::cancelled());
@@ -260,6 +261,10 @@ pub async fn build_sync(
                     p.sink.emit(IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
                 }
                 profiles_changed |= changed;
+                offline_changed |= ide_build::save_maven_offline(cache, offline).unwrap_or_else(|e| {
+                    tracing::warn!("Maven offline mode not saved: {e}");
+                    false
+                });
             }
             let env = current
                 .maven
@@ -306,12 +311,12 @@ pub async fn build_sync(
         let scopes = workspace::scopes(&p, &config)?;
         let model = workspace::load_scopes(&p.root, &scopes);
         let updates = workspace::update_files(&p.root, &scopes, &model, tool);
-        Ok::<_, IdeError>((model, profiles_changed, updates))
+        Ok::<_, IdeError>((model, profiles_changed, offline_changed, updates))
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    let (model, profiles_changed, updates) = result??;
+    let (model, profiles_changed, offline_changed, updates) = result??;
     if completion_token.is_cancelled() {
         return Err(IdeError::cancelled());
     }
@@ -336,8 +341,8 @@ pub async fn build_sync(
     let lsp = project.lsp.clone();
     let documents = project.documents.clone();
     tokio::spawn(async move {
-        if profiles_changed {
-            // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
+        if profiles_changed || offline_changed {
+            // jdtls takes the profiles and offline mode from its Maven settings (see `ide_sdk::maven_profiles`).
             lsp.reconfigure().await;
         }
         let first = updates.first().cloned();

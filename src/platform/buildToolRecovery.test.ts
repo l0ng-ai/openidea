@@ -55,3 +55,14 @@ it("links tsserver running out of memory to the language server settings", () =>
   result.actions[0]!.run();
   expect(executeAction).toHaveBeenCalledWith("file.settings", "languages.servers");
 });
+
+it("explains a plugin prefix Maven cannot resolve offline and links Maven settings", () => {
+  const message =
+    "No plugin found for prefix 'help' in the current project and in the plugin groups [org.apache.maven.plugins, org.codehaus.mojo] available from the repositories [local (C:\\Users\\dev\\.m2\\repository)]";
+  const result = buildToolRecovery(message);
+  expect(result.body).toContain("turn offline mode off and reload once");
+  expect(result.body).toContain(message);
+  expect(result.actions.map((a) => a.label)).toEqual(["Open Maven Settings"]);
+  result.actions[0]!.run();
+  expect(executeAction).toHaveBeenCalledWith("file.settings", "build.maven");
+});

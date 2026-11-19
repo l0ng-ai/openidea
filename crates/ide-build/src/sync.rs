@@ -118,6 +118,7 @@ fn sync_maven_options(options: &[String]) -> Vec<String> {
 }
 const GRADLE_CACHE: &str = "gradle.json";
 const MAVEN_PROFILES: &str = "maven-profiles.json";
+const MAVEN_OFFLINE: &str = "maven-offline.json";
 
 /// The Maven profiles (`-P` entries, `!id` deactivates) the project was last synced
 /// with: what the IDE resolves it with besides `mvn` (the Java language server, Build Project).
@@ -127,12 +128,31 @@ pub fn maven_profiles(cache_dir: &Path) -> Vec<String> {
 
 /// Records the profiles of a sync for [`maven_profiles`]; `true` when they changed.
 pub fn save_maven_profiles(cache_dir: &Path, profiles: &[String]) -> IdeResult<bool> {
-    if maven_profiles(cache_dir) == profiles {
+    save_if_changed(cache_dir, MAVEN_PROFILES, &profiles.to_vec())
+}
+
+/// Whether the project was last synced offline (`-o`): the Java language server then
+/// resolves it offline too.
+pub fn maven_offline(cache_dir: &Path) -> bool {
+    read_cache(cache_dir, MAVEN_OFFLINE).unwrap_or(false)
+}
+
+/// Records the offline mode of a sync for [`maven_offline`]; `true` when it changed.
+pub fn save_maven_offline(cache_dir: &Path, offline: bool) -> IdeResult<bool> {
+    save_if_changed(cache_dir, MAVEN_OFFLINE, &offline)
+}
+
+fn save_if_changed<T: Serialize + DeserializeOwned + PartialEq + Default>(
+    dir: &Path,
+    name: &str,
+    value: &T,
+) -> IdeResult<bool> {
+    if read_cache::<T>(dir, name).unwrap_or_default() == *value {
         return Ok(false);
     }
-    std::fs::create_dir_all(cache_dir)?;
-    let json = serde_json::to_vec(profiles).map_err(|e| IdeError::internal(e.to_string()))?;
-    std::fs::write(cache_dir.join(MAVEN_PROFILES), json)?;
+    std::fs::create_dir_all(dir)?;
+    let json = serde_json::to_vec(value).map_err(|e| IdeError::internal(e.to_string()))?;
+    std::fs::write(dir.join(name), json)?;
     Ok(true)
 }
 
@@ -905,6 +925,19 @@ mod tests {
         assert!(stale());
         std::fs::remove_file(&applied).unwrap();
         assert!(stale());
+    }
+
+    #[test]
+    fn the_offline_mode_of_the_last_sync_is_kept_for_the_language_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        assert!(!maven_offline(&cache), "never synced: online");
+        assert!(save_maven_offline(&cache, true).unwrap());
+        assert!(maven_offline(&cache));
+        assert!(!save_maven_offline(&cache, true).unwrap(), "unchanged");
+        assert!(save_maven_offline(&cache, false).unwrap());
+        assert!(!maven_offline(&cache));
+        assert!(!save_maven_offline(&tmp.path().join("other"), false).unwrap(), "online is the default");
     }
 
     #[test]
