@@ -2966,7 +2966,7 @@
   "Tags to push": "要推送的标签",
   "Target changelist": "目标更改列表",
   "Target directory": "目标目录",
-  "Teal": "青色",
+  "Teal": "蓝绿色",
   "Template body": "模板正文",
   "Template name": "模板名称",
   "Template text": "模板文本",
@@ -9026,10 +9026,13 @@
   "{path} is a directory": "{path} 是目录",
   "Cannot export test results": "无法导出测试结果",
   "Test results exported": "测试结果已导出",
+  "Olive": "橄榄色",
   "Always update snapshots": "始终更新快照",
   "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "每次同步、构建和运行时都检查远程仓库中是否有更新的 SNAPSHOT 依赖（-U）。",
   "Automatic (the agent of the latest task)": "自动（最近任务的智能体）",
   "The agent's current model": "智能体当前的模型",
   "The agent's default": "智能体的默认值",
-  "Commit messages are short: a fast model with low effort is usually enough.": "提交信息很短，通常用快速模型配低推理强度就够了。"
+  "Commit messages are short: a fast model with low effort is usually enough.": "提交信息很短，通常用快速模型配低推理强度就够了。",
+  "Change Project Color…": "更改项目颜色…",
+  "Project Color": "项目颜色"
 }
