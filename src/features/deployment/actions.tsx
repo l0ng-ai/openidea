@@ -22,7 +22,12 @@ import {
   type DeploymentServerValid,
 } from "@/platform/remoteSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { notifications, projectViewSelection, toolWindowService } from "@/workbench/contributions";
+import {
+  changesViewSelection,
+  notifications,
+  projectViewSelection,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { defaultGroup, initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
@@ -43,6 +48,7 @@ export function actionTargets(arg: unknown): string[] {
   return targetPaths(arg, {
     part: useDeployment.getState().part,
     selection: projectViewSelection(),
+    changes: changesViewSelection(),
     editorPath: typeof editorPath === "string" ? editorPath : null,
     projectRoot: projectRoot(),
   });

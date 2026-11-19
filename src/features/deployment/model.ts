@@ -4,7 +4,7 @@ import type { ResolvedMapping, SyncAction, SyncEntry, SyncStatus, TransferReport
 import type { DeploymentServerValid, DeploymentSettingsValid, SshAuthValid } from "@/platform/remoteSettings";
 
 /** Which part had focus last: the project view's selection or the editor's file is the target. */
-export type FocusedPart = "project" | "editor" | null;
+export type FocusedPart = "project" | "editor" | "changes" | null;
 
 /** Paths passed to an action: a path, a list of paths or `{ paths }`; null when none were passed. */
 export function pathsFromArg(arg: unknown): string[] | null {
@@ -22,18 +22,27 @@ export function pathsFromArg(arg: unknown): string[] | null {
  */
 export function targetPaths(
   arg: unknown,
-  ctx: { part: FocusedPart; selection: readonly string[]; editorPath: string | null; projectRoot: string | null },
+  ctx: {
+    part: FocusedPart;
+    selection: readonly string[];
+    /** The changes tree's selected files, used while it is the focused part. */
+    changes?: readonly string[];
+    editorPath: string | null;
+    projectRoot: string | null;
+  },
 ): string[] {
   const passed = pathsFromArg(arg);
   const picked = passed
     ? passed
-    : ctx.part === "project" && ctx.selection.length
-      ? [...ctx.selection]
-      : ctx.editorPath
-        ? [ctx.editorPath]
-        : ctx.selection.length && ctx.part !== "editor"
-          ? [...ctx.selection]
-          : [];
+    : ctx.part === "changes"
+      ? [...(ctx.changes ?? [])]
+      : ctx.part === "project" && ctx.selection.length
+        ? [...ctx.selection]
+        : ctx.editorPath
+          ? [ctx.editorPath]
+          : ctx.selection.length && ctx.part !== "editor"
+            ? [...ctx.selection]
+            : [];
   const root = ctx.projectRoot;
   if (!root) return [];
   const inside = picked.filter((p) => p === root || p.startsWith(`${root}/`));

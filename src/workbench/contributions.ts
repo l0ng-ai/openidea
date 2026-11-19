@@ -1464,6 +1464,21 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
 
+// The selected files of the changes tree that last had focus (Commit tool window, Git's
+// Local Changes), for actions run by shortcut or Find Action while it has focus
+// (context key `changesViewFocus`). Provided by features/vcs.
+let changesSelection: (() => string[]) | undefined;
+
+export function provideChangesViewSelection(get: () => string[]): () => void {
+  changesSelection = get;
+  return () => {
+    if (changesSelection === get) changesSelection = undefined;
+  };
+}
+
+/** Files selected in the focused changes tree (absolute, existing on disk); empty without one. */
+export const changesViewSelection = (): string[] => changesSelection?.() ?? [];
+
 /** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
 export interface ProjectViewLead {
   path: string;

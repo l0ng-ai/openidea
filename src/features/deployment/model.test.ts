@@ -45,6 +45,19 @@ describe("targetPaths", () => {
     expect(targetPaths(undefined, { ...ctx, part: "editor", selection: [`${ROOT}/src`] })).toEqual([]);
   });
 
+  it("uses the changes tree's selected files when it had focus last", () => {
+    const all = {
+      ...ctx,
+      selection: [`${ROOT}/src`],
+      changes: [`${ROOT}/a.php`, `${ROOT}/b.php`],
+      editorPath: `${ROOT}/index.php`,
+    };
+    expect(targetPaths(undefined, { ...all, part: "changes" })).toEqual([`${ROOT}/a.php`, `${ROOT}/b.php`]);
+    expect(targetPaths(undefined, { ...all, part: "project" })).toEqual([`${ROOT}/src`]);
+    // Nothing selected there: no fallback to another view's files.
+    expect(targetPaths(undefined, { ...all, part: "changes", changes: [] })).toEqual([]);
+  });
+
   it("drops paths outside the project and paths inside selected folders", () => {
     expect(targetPaths([`${ROOT}/src`, `${ROOT}/src/a.php`, "/elsewhere/b", `${ROOT}/srcx`], ctx)).toEqual([
       `${ROOT}/src`,

@@ -49,10 +49,11 @@ import {
   editorService,
   maybeEditorService,
   menuGroupItems,
+  provideChangesViewSelection,
   type EditorInput,
   useMenuSlotItems,
 } from "@/workbench/contributions";
-import { evaluateWhen, useContextKeys } from "@/platform/context";
+import { evaluateWhen, setContext, useContextKeys } from "@/platform/context";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   aggregateCheck,
@@ -762,6 +763,22 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   }, []);
 
   const selectedNodes = () => [...selected].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
+  // Actions on "the selected files" (Deployment's Upload) take this tree's selection while it has focus.
+  const selectedOnDisk = useRef(() => [] as string[]);
+  useEffect(() => {
+    selectedOnDisk.current = () =>
+      filesOf([...selected].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n))
+        .filter(onDisk)
+        .map((f) => stripSlash(f.path));
+  }, [selected, byKey]);
+  const releaseSelection = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      releaseSelection.current?.();
+      setContext("changesViewFocus", false);
+    },
+    [],
+  );
 
   return (
     <div className={styles.changes}>
@@ -843,6 +860,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       <div
         className={styles.treeWrap}
         data-changes-tree={mode}
+        onFocusCapture={() => {
+          releaseSelection.current?.();
+          releaseSelection.current = provideChangesViewSelection(() => selectedOnDisk.current());
+          setContext("changesViewFocus", true);
+        }}
+        onBlurCapture={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("changesViewFocus", false);
+        }}
         onKeyDownCapture={(e) => {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();

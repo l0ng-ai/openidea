@@ -57,9 +57,10 @@ function deploymentMenu(paths: string[]): MenuItem[] {
 }
 
 export function activate(): () => void {
-  // Actions run from Find Action target what had focus before: the project view or the editor.
+  // Actions run from Find Action target what had focus before: the project view, the changes tree or the editor.
   const unsubFocus = useContextKeys.subscribe((ctx, prev) => {
     if (ctx.projectViewFocus && !prev.projectViewFocus) useDeployment.setState({ part: "project" });
+    else if (ctx.changesViewFocus && !prev.changesViewFocus) useDeployment.setState({ part: "changes" });
     else if ((ctx.editorFocus && !prev.editorFocus) || (ctx.editorTextFocus && !prev.editorTextFocus))
       useDeployment.setState({ part: "editor" });
   });
