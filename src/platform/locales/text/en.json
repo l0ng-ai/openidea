@@ -2540,5 +2540,8 @@
   "Missing editor request": "Missing editor request",
   "The editor’s project is no longer open": "The editor’s project is no longer open",
   "Timed out opening the editor window": "Timed out opening the editor window",
-  "Could not open the editor window": "Could not open the editor window"
+  "Could not open the editor window": "Could not open the editor window",
+  "Formatting": "Formatting",
+  "Format with gofumpt": "Format with gofumpt",
+  "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "gopls applies gofumpt's stricter rules on top of gofmt when reformatting."
 }
