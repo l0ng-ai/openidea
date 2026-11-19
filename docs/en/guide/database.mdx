@@ -3,7 +3,7 @@ title: "Databases"
 description: "Connect to SQL databases, browse schemas, run queries in a console, and view, edit, import and export data."
 ---
 
-The **Database** tool window connects to SQLite, PostgreSQL, MySQL/MariaDB, Microsoft SQL Server, Oracle, ClickHouse and Snowflake, plus databases that speak one of their protocols. Drivers are built into the IDE; there are no JDBC drivers to download.
+The **Database** tool window connects to SQLite, PostgreSQL, MySQL/MariaDB, Microsoft SQL Server, Oracle, ClickHouse and Snowflake, plus databases that speak one of their protocols. These presets use built-in drivers. You can also connect with a vendor JDBC driver installed locally.
 
 Open it from **Tools › Database** or **View › Tool Windows › Database**. The **Tools** menu also has **New Data Source…** and **Open Query Console**.
 
@@ -22,6 +22,16 @@ Open it from **Tools › Database** or **View › Tool Windows › Database**. T
 | SQLite     | SQLite                                                                                       |
 
 Presets set the default port and, where needed, SSL (for example Redshift, Neon and Supabase require SSL).
+
+## Custom JDBC drivers
+
+Choose **New › Data Source › Custom JDBC**, then **Manage Drivers…**. Add a named profile with the vendor's driver JAR, any dependency JARs, the fully qualified driver class, and an optional JDBC URL template. OpenIDEA reads the driver classes declared in the selected JARs. You can choose a different class or enter its full name manually. Use `{host}`, `{port}`, `{database}` or `{file}` in a template to get matching connection fields, or edit the JDBC URL directly. Only import drivers you trust. OpenIDEA loads their code in a separate process using an installed Java 17 or newer runtime.
+
+Select the profile, enter the vendor's JDBC URL, and use the **User**, **Password**, and **Advanced** fields for credentials and driver properties. The URL and Advanced properties are stored in the data source configuration. Put credentials in the password field to use the existing OS credential store. On Linux, saving a password requires a running Secret Service. You can also enter the password for the current session. The **Read-only** option asks the JDBC driver for a read-only connection. Use a database account with read-only privileges to enforce it. Cancelling a query keeps the session and its temporary tables when the driver stops the statement. If the driver does not respond within three seconds, OpenIDEA closes the session. A submitted statement can still finish on the server. **Test Connection** reports the database product and version. Schema, table and column browsing use JDBC metadata; the SQL console supports auto-commit queries and updates. Vendor-specific DDL, execution plans and table-grid writes are unavailable for custom drivers.
+
+For a file-backed database, use an absolute path to choose its location. Relative paths start in the persistent `jdbc/files` folder inside OpenIDEA’s application data directory.
+
+Profiles are reused across projects. If a project file changes a connection's URL or properties outside the IDE, review the settings in the data source dialog and save them before reconnecting.
 
 ## Add a data source
 
@@ -205,7 +215,7 @@ Limits: `TIMESTAMP_LTZ` values are shown in UTC; SSH tunnels are not offered; re
 
 ## Not supported
 
-- MongoDB, Redis, BigQuery and other non-listed databases; JDBC drivers.
+- Native drivers for MongoDB, Redis and BigQuery.
 - SQL Server `GO` batch separators.
 - A "run the whole console" action (use a selection, or **Run SQL Script…**).
 - Exporting more than the loaded page.

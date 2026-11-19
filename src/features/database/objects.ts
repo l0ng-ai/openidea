@@ -82,10 +82,11 @@ const exists = (driver: DbDriver, o: DbObjectRef) =>
   driver !== "snowflake" || (o.kind !== "index" && o.kind !== "trigger");
 
 export const canRename = (driver: DbDriver, o: DbObjectRef) =>
-  o.kind === "table" ||
-  o.kind === "column" ||
-  (o.kind === "view" && driver !== "sqlite") ||
-  (o.kind === "index" && driver === "postgres");
+  driver !== "jdbc" &&
+  (o.kind === "table" ||
+    o.kind === "column" ||
+    (o.kind === "view" && driver !== "sqlite") ||
+    (o.kind === "index" && driver === "postgres"));
 
 /** The statement renaming `o` to `to`. */
 export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string {
@@ -116,11 +117,12 @@ export interface DropOptions {
 }
 
 export const canDrop = (driver: DbDriver, o: DbObjectRef) =>
-  driver === "clickhouse"
+  driver !== "jdbc" &&
+  (driver === "clickhouse"
     ? ["table", "view", "materializedView", "column", "schema"].includes(o.kind)
-    : !(o.kind === "schema" && driver === "sqlite") && exists(driver, o);
+    : !(o.kind === "schema" && driver === "sqlite") && exists(driver, o));
 
-export const canModifyTable = (driver: DbDriver) => driver !== "clickhouse";
+export const canModifyTable = (driver: DbDriver) => driver !== "clickhouse" && driver !== "jdbc";
 
 /** IDEA's Confirm Drop preview. */
 export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): string {

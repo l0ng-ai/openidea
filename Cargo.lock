@@ -4319,6 +4319,7 @@ dependencies = [
  "futures",
  "ide-core",
  "ide-http",
+ "ide-sdk",
  "ide-ssh",
  "notify",
  "open",
@@ -4340,6 +4341,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

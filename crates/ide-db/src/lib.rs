@@ -4,6 +4,8 @@
 
 pub mod catalog;
 mod clickhouse;
+mod jdbc;
+pub use jdbc::{DbJdbcDriver, jdbc_driver_classes};
 pub mod conn;
 pub mod history;
 mod oracle;
@@ -339,7 +341,7 @@ fn group_foreign_keys(rows: Vec<Vec<Option<String>>>, tables: &[CompletionTable]
 /// never contain `:`.
 /// Snowflake is HTTPS to a named host: a tunnel's local end cannot pass its certificate check.
 fn tunneled(driver: DbDriver) -> bool {
-    !matches!(driver, DbDriver::Sqlite | DbDriver::Snowflake)
+    !matches!(driver, DbDriver::Sqlite | DbDriver::Snowflake | DbDriver::Jdbc)
 }
 
 /// The database host and port the SSH host forwards to.
@@ -759,7 +761,7 @@ impl DbManager {
         };
         let (target, tunnel) = self.endpoint(source, ssh_secret, false).await?;
         self.restore_sso(source).await;
-        let connected = Pool::connect(&target, password.as_deref(), Some(&self.root)).await;
+        let connected = self.open_pool(&target, password.as_deref(), true).await;
         self.keep_sso(source).await;
         let pool = connected.map_err(|e| {
             through_tunnel(
@@ -768,7 +770,13 @@ impl DbManager {
                 tunnel.is_some().then(|| self.ssh_label(source.ssh.as_ref().expect("tunneled"))).as_deref(),
             )
         })?;
+        if let Pool::Jdbc(p) = &pool {
+            let version = p.version.clone();
+            pool.close().await;
+            return Ok(version);
+        }
         let version = match source.driver {
+            DbDriver::Jdbc => unreachable!("JDBC uses driver metadata"),
             DbDriver::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
             DbDriver::Postgres | DbDriver::Clickhouse => "SELECT version()",
             DbDriver::Mysql => "SELECT CONCAT(@@version_comment, ' ', VERSION())",
@@ -861,7 +869,7 @@ impl DbManager {
         let password = self.password(&source).await;
         let (target, tunnel) = self.endpoint(&source, None, true).await?;
         self.restore_sso(&source).await;
-        let connected = Pool::connect(&target, password.as_deref(), Some(&self.root)).await;
+        let connected = self.open_pool(&target, password.as_deref(), false).await;
         self.keep_sso(&source).await;
         let pool = match connected {
             Ok(p) => Arc::new(p),
@@ -1071,7 +1079,10 @@ impl DbManager {
         if let Pool::Snowflake(p) = &*pool {
             return snowflake::meta::schemas(p, system).await;
         }
-        let rows = pool.rows(sql::schemas(pool.driver(), system), MAX_META_ROWS).await?;
+        let rows = match &*pool {
+            Pool::Jdbc(p) => p.metadata(&["schemas"]).await?,
+            _ => pool.rows(sql::schemas(pool.driver(), system), MAX_META_ROWS).await?,
+        };
         Ok(rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())
     }
 
@@ -1080,7 +1091,10 @@ impl DbManager {
         if let Pool::Snowflake(p) = &*pool {
             return snowflake::meta::tables(p, schema).await;
         }
-        let rows = pool.rows(&sql::tables(pool.driver(), schema), MAX_META_ROWS).await?;
+        let rows = match &*pool {
+            Pool::Jdbc(p) => p.metadata(&["tables", schema]).await?,
+            _ => pool.rows(&sql::tables(pool.driver(), schema), MAX_META_ROWS).await?,
+        };
         Ok(rows
             .into_iter()
             .filter_map(|r| {
@@ -1097,9 +1111,11 @@ impl DbManager {
             return snowflake::meta::table_details(p, schema, table).await;
         }
         let driver = pool.driver();
-        let columns = pool
-            .rows(&sql::columns(driver, schema, table), MAX_META_ROWS)
-            .await?
+        let rows = match &*pool {
+            Pool::Jdbc(p) => p.metadata(&["columns", schema, table]).await?,
+            _ => pool.rows(&sql::columns(driver, schema, table), MAX_META_ROWS).await?,
+        };
+        let columns = rows
             .into_iter()
             .filter_map(|r| {
                 let mut it = r.into_iter();
@@ -1111,6 +1127,9 @@ impl DbManager {
                 Some(ColumnInfo { name, data_type, nullable, default, primary_key })
             })
             .collect();
+        if driver == DbDriver::Jdbc {
+            return Ok(TableDetails { columns, indexes: vec![], foreign_keys: vec![], triggers: vec![] });
+        }
         let mut indexes: Vec<IndexInfo> = Vec::new();
         for r in pool.rows(&sql::indexes(driver, schema, table), MAX_META_ROWS).await? {
             let mut it = r.into_iter();
@@ -1271,6 +1290,7 @@ impl DbManager {
             rows.into_iter().filter_map(|r| r.into_iter().nth(i).flatten()).collect()
         };
         match driver {
+            DbDriver::Jdbc => Err(IdeError::invalid("Custom JDBC sources do not provide vendor-specific DDL")),
             DbDriver::Sqlite => {
                 let stmts = cells(pool.rows(&sql::sqlite_ddl(schema, name), MAX_META_ROWS).await?, 0);
                 if stmts.is_empty() {
@@ -1395,6 +1415,7 @@ impl DbManager {
         let driver = pool.driver();
         let mut tables: Vec<CompletionTable> = Vec::new();
         let rows = match &*pool {
+            Pool::Jdbc(p) => return self.jdbc_completion(id, p).await,
             Pool::Snowflake(p) => {
                 tables = snowflake::meta::completion(p).await?;
                 Vec::new()
@@ -1515,6 +1536,9 @@ impl DbManager {
         schema: Option<&str>,
     ) -> IdeResult<Vec<PlanNode>> {
         let driver = self.pool(id).await?.driver();
+        if driver == DbDriver::Jdbc {
+            return Err(IdeError::invalid("Custom JDBC execution plans are unsupported"));
+        }
         if driver == DbDriver::Oracle {
             // EXPLAIN PLAN writes PLAN_TABLE; the plan is read (and cleaned up) separately.
             let plan_id = format!(
@@ -1554,6 +1578,9 @@ impl DbManager {
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
+        if let Pool::Jdbc(p) = &*pool {
+            return p.query_in_schema(statement, skip, max_rows, cancel, schema).await;
+        }
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else {
             if schema.is_none() {
@@ -1595,6 +1622,9 @@ impl DbManager {
     /// Switches `id` between auto-commit and manual commit. Leaving manual
     /// mode rolls back what was not committed.
     pub async fn set_manual_commit(&self, id: &str, manual: bool) -> IdeResult<()> {
+        if manual && self.source(id)?.driver == DbDriver::Jdbc {
+            return Err(IdeError::invalid("Custom JDBC manual transactions are unsupported"));
+        }
         if manual {
             if self.source(id)?.driver == DbDriver::Clickhouse {
                 return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
@@ -1613,6 +1643,9 @@ impl DbManager {
     pub async fn finish_transaction(&self, id: &str, commit: bool) -> IdeResult<()> {
         if self.source(id).is_ok_and(|s| s.driver == DbDriver::Clickhouse) {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
+        }
+        if self.source(id).is_ok_and(|s| s.driver == DbDriver::Jdbc) {
+            return Err(IdeError::invalid("Custom JDBC manual transactions are unsupported"));
         }
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else { return Ok(()) };
@@ -1649,8 +1682,22 @@ impl DbManager {
     ) -> IdeResult<TablePage> {
         let details = self.table_details(id, schema, table).await?;
         let pool = self.pool(id).await?;
-        let sql = sql::table_page(pool.driver(), schema, table, filter, sort, offset, limit);
-        let mut result = pool.execute(&sql, limit as usize, cancel).await?;
+        let mut result = if let Pool::Jdbc(p) = &*pool {
+            let q = &p.identifier_quote;
+            let names = [schema, table].into_iter().chain(sort.iter().map(|k| k.column.as_str()));
+            if q.is_empty()
+                && names.into_iter().any(|name| !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            {
+                return Err(IdeError::invalid("This JDBC driver cannot quote the selected identifier"));
+            }
+            let quote = |s: &str| format!("{q}{}{q}", s.replace(q, &format!("{q}{q}")));
+            let name = if schema.is_empty() { quote(table) } else { format!("{}.{}", quote(schema), quote(table)) };
+            let sql = sql::table_select(&name, filter, sort, quote);
+            p.page(&sql, offset, limit, cancel).await?
+        } else {
+            let sql = sql::table_page(pool.driver(), schema, table, filter, sort, offset, limit);
+            pool.execute(&sql, limit as usize, cancel).await?
+        };
         if result.columns.is_empty() {
             result.columns = details
                 .columns
@@ -1663,7 +1710,11 @@ impl DbManager {
 
     /// Applies the table editor's pending changes in one transaction.
     pub async fn apply_edits(&self, id: &str, schema: &str, table: &str, edits: &[DbRowEdit]) -> IdeResult<u64> {
-        if self.source(id)?.driver == DbDriver::Clickhouse {
+        let source = self.source(id)?;
+        if source.read_only {
+            return Err(IdeError::new(ErrorKind::PermissionDenied, "the data source is read-only"));
+        }
+        if source.driver == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse table editing is unsupported"));
         }
         let pool = self.pool(id).await?;

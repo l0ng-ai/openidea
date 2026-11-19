@@ -89,6 +89,7 @@ coverage_import                              always             project_host bin
 coverage_prepare                             trusted            project_host bindings async
 cucumber_sources                             trusted            desktop      bindings async
 db_apply_edits                               trusted            project_host bindings async
+db_approve_jdbc_source                       trusted            project_host bindings sync
 db_completion                                trusted            project_host bindings async
 db_connect                                   trusted            project_host bindings async
 db_connected                                 trusted            project_host bindings sync
@@ -106,10 +107,14 @@ db_explain                                   trusted            project_host bin
 db_export_file                               always             desktop      bindings async
 db_finish_transaction                        trusted            project_host bindings async
 db_history                                   trusted            project_host bindings async
+db_jdbc_driver_classes                       trusted            project_host bindings async
+db_jdbc_drivers                              trusted            project_host bindings sync
 db_object_ddl                                trusted            project_host bindings async
 db_remove_history                            trusted            project_host bindings async
+db_remove_jdbc_driver                        trusted            project_host bindings sync
 db_retain_catalog                            trusted            project_host bindings async
 db_run_tool                                  trusted            desktop      bindings async
+db_save_jdbc_driver                          trusted            project_host bindings sync
 db_save_sources                              trusted            project_host bindings async
 db_saved_catalog                             trusted            project_host bindings async
 db_schema_objects                            trusted            project_host bindings async
