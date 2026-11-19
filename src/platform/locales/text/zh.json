@@ -2282,7 +2282,6 @@
   "Packaging Artifacts": "打包构件",
   "Configure JAR, WAR, or exploded WAR artifacts for packaging and application server deployment.": "配置用于打包和应用服务器部署的 JAR、WAR 或展开式 WAR 构件。",
   "Detected Build Web Artifacts": "检测到的构建 Web 构件",
-  "Home Path": "主目录路径",
   "No SDK installations detected yet.": "尚未检测到已安装的 SDK。",
   "SDK Details": "SDK 详情",
   "Use as Project SDK": "设为项目 SDK",
