@@ -10834,6 +10834,8 @@ export type Settings_Deserialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers?: { [key in string]: LanguageServerSettings_Deserialize },
+	/**  Tools › Download sources: a mirror prefix for the release archives the installer fetches. */
+	toolDownloads?: ToolDownloadSettings,
 	/**  Editor › Inspections profiles. */
 	inspections?: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -10906,6 +10908,8 @@ export type Settings_Serialize = {
 	 *  options on top of the language definition, or a server defined here.
 	 */
 	languageServers: { [key in string]: LanguageServerSettings_Serialize },
+	/**  Tools › Download sources: a mirror prefix for the release archives the installer fetches. */
+	toolDownloads: ToolDownloadSettings,
 	/**  Editor › Inspections profiles. */
 	inspections: InspectionSettings,
 	/**  Editor › Natural Languages › Spelling. */
@@ -11686,6 +11690,24 @@ export type ToolCallDisplay =
 "grouped" | 
 /**  Each call on its own line. */
 "each";
+
+/**
+ *  Tools › Download sources: a mirror the installer tries when `github.com` is slow or
+ *  unreachable.
+ * 
+ *  The mirror is a proxy prefix: the official URL is appended to it unchanged
+ *  (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
+ *  public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
+ *  hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
+ *  default, so every download stays on its official host until the user opts in.
+ */
+export type ToolDownloadSettings = {
+	/**
+	 *  Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
+	 *  every download on its official host.
+	 */
+	githubMirror?: string,
+};
 
 /**  UI-facing state of one tool. */
 export type ToolInfo = {

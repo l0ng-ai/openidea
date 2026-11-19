@@ -50,6 +50,8 @@ pub struct Settings {
     /// Per language server, by name (`rust-analyzer`): launch and protocol
     /// options on top of the language definition, or a server defined here.
     pub language_servers: BTreeMap<String, LanguageServerSettings>,
+    /// Tools › Download sources: a mirror prefix for the release archives the installer fetches.
+    pub tool_downloads: ToolDownloadSettings,
     /// Editor › Inspections profiles.
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
@@ -361,6 +363,22 @@ impl Default for McpServerSettings {
     }
 }
 
+/// Tools › Download sources: a mirror the installer tries when `github.com` is slow or
+/// unreachable.
+///
+/// The mirror is a proxy prefix: the official URL is appended to it unchanged
+/// (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
+/// public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
+/// hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
+/// default, so every download stays on its official host until the user opts in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ToolDownloadSettings {
+    /// Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
+    /// every download on its official host.
+    pub github_mirror: String,
+}
+
 /// Absent profiles retain automatic discovery for existing projects.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -499,6 +517,7 @@ impl Default for Settings {
             external_tools: Vec::new(),
             tools: BTreeMap::new(),
             language_servers: BTreeMap::new(),
+            tool_downloads: ToolDownloadSettings::default(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),

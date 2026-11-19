@@ -27,6 +27,7 @@ fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
     let runtime = ide_sdk::apply::tool_install_environment(&root, &settings);
     let work_dir = (!root.as_os_str().is_empty()).then_some(root);
     Ok(Tools::new(&data)
+        .with_downloads(settings.tool_downloads.clone())
         .with_runtime(runtime.commands, runtime.env)
         .with_custom_paths(custom)
         .with_found_paths(found.into_iter().collect())
