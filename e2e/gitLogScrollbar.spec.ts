@@ -117,6 +117,40 @@ test("fits a wide graph and saved columns without horizontal scrolling", async (
   expect(await list.evaluate((element) => element.scrollLeft)).toBe(0);
 });
 
+test("keeps ref names visible when a long commit subject competes for space", async ({ workbench: page }) => {
+  const branch = "origin/feature/workspace-settings";
+  const tag = "v2.1";
+  const summary = "Keep workspace settings and commit references visible ".repeat(4).trim();
+  await page.evaluate(
+    async ({ summary, branch, tag }) => {
+      const log = "/src/features/vcs/logStore.ts";
+      const options = "/src/features/vcs/logOptions.ts";
+      const { useGitLog } = await import(/* @vite-ignore */ log);
+      const { useLogOptions } = await import(/* @vite-ignore */ options);
+      useLogOptions.setState({ tagNames: true });
+      const [first, ...rest] = useGitLog.getState().commits;
+      useGitLog.setState({ commits: [{ ...first, summary, refs: [branch, `tag: ${tag}`] }, ...rest] });
+    },
+    { summary, branch, tag },
+  );
+
+  const list = page.getByRole("listbox", { name: "Commits" });
+  const row = list.getByRole("option").first();
+  const branchLabel = row.getByText(branch, { exact: true });
+  const tagLabel = row.getByText(tag, { exact: true });
+  await expect(branchLabel).toBeVisible();
+  for (const label of [branchLabel, tagLabel]) {
+    await expect.poll(() => label.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  }
+  const subject = row.getByText(summary, { exact: true });
+  expect(await subject.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+
+  await page.setViewportSize({ width: 620, height: 900 });
+  await expect(branchLabel).toHaveCSS("text-overflow", "ellipsis");
+  await expect.poll(() => branchLabel.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  expect(await list.evaluate((el) => el.scrollWidth)).toBe(await list.evaluate((el) => el.clientWidth));
+});
+
 test("keeps a wide Git graph filled during scrollbar drags and its edges interactive afterwards", async ({
   workbench: page,
 }) => {

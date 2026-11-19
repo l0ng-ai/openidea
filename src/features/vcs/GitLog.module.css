@@ -386,9 +386,17 @@
 .muted {
   color: var(--fg-subtle);
 }
+.commitText {
+  --log-subject-min: min(10ch, 30%);
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
 .subject {
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: var(--log-subject-min);
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg);
@@ -412,11 +420,14 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  /* May use the whole subject cell when space allows (#2447); shrinks with
-     per-label ellipsis before crowding out the commit message. */
   max-width: 100%;
   overflow: hidden;
   margin-left: auto;
+}
+.commitText > .refs {
+  /* Keep ref names at their full width while leaving space for a short subject. */
+  flex: none;
+  max-width: calc(100% - var(--log-subject-min) - var(--space-1-5));
 }
 .refsLeft {
   margin-left: 0;
@@ -430,10 +441,11 @@
   color: var(--fg-secondary);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
-  /* Sizes to content (#2447): truncates with ellipsis only when .refs runs
-     out of room; the full name stays available via the title tooltip. */
+}
+.refText {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Outlined tag glyph in the ref's colour. */
 .ref::before {
