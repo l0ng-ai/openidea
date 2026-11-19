@@ -86,15 +86,20 @@ const MAVEN_CACHE_VERSION: u32 = 1;
 
 /// `dependency:tree` of a plugin version whose `-Dverbose` lists the occurrences Maven
 /// omitted (conflicts, duplicates): verbose output was dropped in 3.0 and is back since 3.2.
-/// Offline, the project's own plugin version is used instead, since this one may not be cached.
+/// Offline, it is used only when an earlier sync downloaded it; otherwise the project's own
+/// plugin version is, which may be cached instead.
 const DEPENDENCY_TREE: &str = "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:tree";
+const DEPENDENCY_TREE_JAR: &str =
+    "org/apache/maven/plugins/maven-dependency-plugin/3.8.1/maven-dependency-plugin-3.8.1.jar";
 
-/// The goals that read the effective POM into `effective` and the verbose dependency trees.
-fn maven_sync_goals(effective: &Path, offline: bool) -> Vec<String> {
+/// The goals that read the effective POM into `effective` and the verbose dependency trees;
+/// `repo` is the local repository the build resolves from.
+fn maven_sync_goals(effective: &Path, offline: bool, repo: Option<&Path>) -> Vec<String> {
+    let pinned = !offline || repo.is_some_and(|repo| repo.join(DEPENDENCY_TREE_JAR).is_file());
     vec![
         "help:effective-pom".into(),
         format!("-Doutput={}", effective.to_string_lossy()),
-        if offline { "dependency:tree".into() } else { DEPENDENCY_TREE.into() },
+        if pinned { DEPENDENCY_TREE.into() } else { "dependency:tree".into() },
         "-Dverbose".into(),
     ]
 }
@@ -118,6 +123,7 @@ fn sync_maven_options(options: &[String]) -> Vec<String> {
 }
 const GRADLE_CACHE: &str = "gradle.json";
 const MAVEN_PROFILES: &str = "maven-profiles.json";
+const MAVEN_OFFLINE: &str = "maven-offline.json";
 
 /// The Maven profiles (`-P` entries, `!id` deactivates) the project was last synced
 /// with: what the IDE resolves it with besides `mvn` (the Java language server, Build Project).
@@ -127,12 +133,31 @@ pub fn maven_profiles(cache_dir: &Path) -> Vec<String> {
 
 /// Records the profiles of a sync for [`maven_profiles`]; `true` when they changed.
 pub fn save_maven_profiles(cache_dir: &Path, profiles: &[String]) -> IdeResult<bool> {
-    if maven_profiles(cache_dir) == profiles {
+    save_if_changed(cache_dir, MAVEN_PROFILES, &profiles.to_vec())
+}
+
+/// Whether the project was last synced offline (`-o`): the Java language server then
+/// resolves it offline too.
+pub fn maven_offline(cache_dir: &Path) -> bool {
+    read_cache(cache_dir, MAVEN_OFFLINE).unwrap_or(false)
+}
+
+/// Records the offline mode of a sync for [`maven_offline`]; `true` when it changed.
+pub fn save_maven_offline(cache_dir: &Path, offline: bool) -> IdeResult<bool> {
+    save_if_changed(cache_dir, MAVEN_OFFLINE, &offline)
+}
+
+fn save_if_changed<T: Serialize + DeserializeOwned + PartialEq + Default>(
+    dir: &Path,
+    name: &str,
+    value: &T,
+) -> IdeResult<bool> {
+    if read_cache::<T>(dir, name).unwrap_or_default() == *value {
         return Ok(false);
     }
-    std::fs::create_dir_all(cache_dir)?;
-    let json = serde_json::to_vec(profiles).map_err(|e| IdeError::internal(e.to_string()))?;
-    std::fs::write(cache_dir.join(MAVEN_PROFILES), json)?;
+    std::fs::create_dir_all(dir)?;
+    let json = serde_json::to_vec(value).map_err(|e| IdeError::internal(e.to_string()))?;
+    std::fs::write(dir.join(name), json)?;
     Ok(true)
 }
 
@@ -382,7 +407,8 @@ pub fn sync_maven(
         if !options.profiles.is_empty() {
             args.push(format!("-P{}", options.profiles.join(",")));
         }
-        args.extend(maven_sync_goals(&effective, options.offline));
+        let repo = local_repo.clone().or_else(maven::default_local_repo);
+        args.extend(maven_sync_goals(&effective, options.offline, repo.as_deref()));
         progress(SyncProgress { message: format!("Reading {}", top.display_name), fraction: None });
         let command = options.maven_command.as_deref().unwrap_or(&top.command);
         let out = run(command, &args, &root.join(&top.dir), &options.env, cancel, |line| {
@@ -912,12 +938,31 @@ mod tests {
     }
 
     #[test]
-    fn sync_reads_verbose_trees_with_a_pinned_plugin_unless_offline() {
-        let online = maven_sync_goals(Path::new("e.xml"), false);
+    fn the_offline_mode_of_the_last_sync_is_kept_for_the_language_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        assert!(!maven_offline(&cache), "never synced: online");
+        assert!(save_maven_offline(&cache, true).unwrap());
+        assert!(maven_offline(&cache));
+        assert!(!save_maven_offline(&cache, true).unwrap(), "unchanged");
+        assert!(save_maven_offline(&cache, false).unwrap());
+        assert!(!maven_offline(&cache));
+        assert!(!save_maven_offline(&tmp.path().join("other"), false).unwrap(), "online is the default");
+    }
+
+    #[test]
+    fn sync_reads_verbose_trees_with_a_pinned_plugin_unless_offline_without_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let online = maven_sync_goals(Path::new("e.xml"), false, None);
         assert_eq!(online, ["help:effective-pom", "-Doutput=e.xml", DEPENDENCY_TREE, "-Dverbose"]);
-        let offline = maven_sync_goals(Path::new("e.xml"), true);
+        let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
         assert_eq!(offline[2], "dependency:tree");
         assert!(offline.contains(&"-Dverbose".to_owned()));
+        // Downloaded by an online sync: offline keeps using it, the project's version may be missing.
+        let jar = tmp.path().join(DEPENDENCY_TREE_JAR);
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(&jar, "").unwrap();
+        assert_eq!(maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()))[2], DEPENDENCY_TREE);
     }
 
     #[test]
