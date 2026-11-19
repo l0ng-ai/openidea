@@ -135,7 +135,7 @@
 .redirects {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 8px;
   border-bottom: 1px solid var(--border);
   font-family: var(--font-mono);

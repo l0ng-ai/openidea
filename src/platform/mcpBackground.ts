@@ -23,6 +23,11 @@ export function backgroundProjectState(project: McpBackgroundProject): string {
   return tx`Idle ${n} min, unloads in ${m} min`;
 }
 
+/** Unloads one background project at once; one that is not loaded is already unloaded. */
+export function unloadBackgroundProject(root: string): void {
+  void call(commands.mcpUnloadBackgroundProject(root)).catch(() => undefined);
+}
+
 /**
  * The background projects, current: fetched on mount and when the backend reports a change, and every 30 s
  * while any is loaded, every 3 s while one answers a request (the end of a request and an idle project's

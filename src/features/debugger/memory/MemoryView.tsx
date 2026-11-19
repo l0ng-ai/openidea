@@ -24,6 +24,7 @@ import { keepKeysOnButton } from "./rowButtonKeys";
 import { columnsOf, formatBytes, formatCount, formatDelta, queryFor, visibleRows, type SortKey } from "./rows";
 import { unavailableText } from "./unavailableText";
 import styles from "./MemoryView.module.css";
+import { useRowHeight } from "@/ui/density";
 
 const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> = [
   { key: "name", label: "Class", numeric: false },
@@ -105,6 +106,7 @@ function ClassRow({
 }
 
 export function MemoryView({ session }: { session: DebugSession }) {
+  const rowHeight = useRowHeight(22);
   // Also re-renders the reason text, which reads the catalog when called.
   const tx = useTx();
   const id = session.id;
@@ -248,7 +250,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
               onActivate={(r, _i, e) => {
                 if (e.type === "keydown" && listsInstances && paused) showInstancesOf(r.name);
               }}
-              rowHeight={22}
+              rowHeight={rowHeight}
               tableBody={{ headerRows: 1 }}
               empty={<span className={styles.note}>{tx("No matches")}</span>}
             />

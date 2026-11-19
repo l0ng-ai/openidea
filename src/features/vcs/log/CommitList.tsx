@@ -3,6 +3,7 @@ import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Scrollbar, Spinner, T, hideNativeScrollbar } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { useGitLogChecks } from "@/workbench/contributions";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
@@ -219,6 +220,8 @@ export function CommitList() {
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Commit rows shrink in compact mode; the column header (the scroll margin) keeps ROW.
+  const row = useRowHeight(ROW);
   const selectedIndex = useMemo(
     () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
     [commits, selected],
@@ -232,23 +235,24 @@ export function CommitList() {
     const previous = previousRows.current;
     previousRows.current = commits;
     if (!element || previous === commits || (revealTick !== lastRevealed.current && selectedIndex >= 0)) return;
-    const top = Math.max(0, Math.floor((element.scrollTop - ROW) / ROW));
+    const top = Math.max(0, Math.floor((element.scrollTop - ROW) / row));
     // Preserve the first surviving visible commit and its pixel offset.
     for (let i = top; i < previous.length; i++) {
       const next = commits.findIndex((c) => commitKey(c) === commitKey(previous[i]!));
       if (next < 0) continue;
-      element.scrollTop += (next - i) * ROW;
+      element.scrollTop += (next - i) * row;
       break;
     }
-  }, [commits, revealTick, selectedIndex]);
+  }, [commits, revealTick, selectedIndex, row]);
   const finished = done;
   const virtualizer = useVirtualizer({
     count: commits.length + (finished ? 0 : 1),
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW,
+    estimateSize: () => row,
     overscan: 8,
     scrollMargin: ROW,
   });
+  useEffect(() => virtualizer.measure(), [virtualizer, row]);
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
 
@@ -581,7 +585,7 @@ export function CommitList() {
             const c = commits[v.index];
             if (!c)
               return (
-                <div key="loading" className={styles.row} style={{ top: v.start - ROW }}>
+                <div key="loading" className={styles.row} style={{ top: v.start - ROW, height: row }}>
                   <Spinner size={12} />{" "}
                   <span className={styles.muted}>
                     <T>Loading…</T>
@@ -598,6 +602,7 @@ export function CommitList() {
                 fileHistoryTarget={fileHistoryTarget}
                 graph={rows[v.index]}
                 top={v.start - ROW}
+                height={row}
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}
                 mine={opts.highlightMine && isMine(c, user)}

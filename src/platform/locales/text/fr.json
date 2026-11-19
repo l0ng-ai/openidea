@@ -2815,8 +2815,6 @@
   "Run a command, configuration or goal": "Exécuter une commande, une configuration ou un goal",
   "Run Anything entries": "Entrées d'Exécuter n'importe quoi",
   "Press Enter to run the command in the project directory": "Appuyez sur Entrée pour exécuter la commande dans le répertoire du projet",
-  "Type a command": "Saisissez une commande",
-  "Enter to run, Tab to complete. Other commands run in the project directory.": "Entrée pour exécuter, Tab pour compléter. Les autres commandes s'exécutent dans le répertoire du projet.",
   "Recent": "Récents",
   "Search types": "Rechercher des types",
   "Search configuration types": "Rechercher des types de configuration",
@@ -4219,7 +4217,6 @@
   "Edit the deployment servers and options": "Modifier les serveurs et les options de déploiement",
   "Configuration…": "Configuration…",
   "No deployment server configured": "Aucun serveur de déploiement configuré",
-  "Select files in the Project view or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet ou ouvrez un fichier dans l'éditeur",
   "Upload to": "Envoyer vers",
   "Download from": "Télécharger depuis",
   "Sync with Deployed to": "Synchroniser avec la version déployée sur",
@@ -5765,5 +5762,6 @@
   "Keep abstract": "Garder abstrait",
   "Methods pulled up to an interface are declared abstract there.": "Les méthodes remontées dans une interface y sont déclarées abstraites.",
   "The file changed; open the dialog again": "Le fichier a changé ; rouvrez la boîte de dialogue",
-  "Replace preview": "Aperçu du remplacement"
+  "Replace preview": "Aperçu du remplacement",
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur"
 }
