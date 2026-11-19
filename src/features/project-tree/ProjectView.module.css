@@ -21,7 +21,7 @@
   height: 100%;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   border-radius: var(--radius-row);
 }
 
@@ -41,9 +41,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.rootName {
+.labelGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow: hidden;
+}
+.labelGroup .label {
   flex: none;
-  max-width: 60%;
+  max-inline-size: 100%;
 }
 .rootLabel {
   color: var(--fg-strong);
@@ -60,6 +67,7 @@
   text-decoration-line: line-through;
 }
 .error {
+  padding-block: var(--space-0-5);
   text-decoration-line: underline;
   text-decoration-style: wavy;
   text-decoration-color: var(--danger);
@@ -88,7 +96,7 @@
 }
 .detail {
   min-width: 0;
-  margin-left: 4px;
+  margin-inline-start: var(--space-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
