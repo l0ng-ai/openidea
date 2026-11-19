@@ -24,7 +24,9 @@ use std::process::Command;
 use std::time::Duration;
 
 pub const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
+const COPILOT_RELEASE_BASE: &str = "https://github.com/github/copilot-cli/releases/download";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
+const MAX_CHECKSUM_BYTES: u64 = 64 * 1024;
 /// [`maintain`] refreshes a saved index older than this, so updates show without opening
 /// the registry.
 const REFRESH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
@@ -142,6 +144,9 @@ struct Binary {
     env: BTreeMap<String, String>,
     #[serde(default)]
     sha256: Option<String>,
+    /// Checksum manifest (`SHA256SUMS.txt`) naming `archive`'s filename when `sha256` is not inline.
+    #[serde(skip)]
+    sha256_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -172,9 +177,46 @@ fn parse(text: &str) -> IdeResult<Vec<Entry>> {
             if let Some(name) = provider::builtin_name(&e.id) {
                 e.name = name.to_owned();
             }
+            if e.id == "copilot" {
+                add_copilot_release_binaries(&mut e, COPILOT_RELEASE_BASE);
+            }
             e
         })
         .collect())
+}
+
+/// Upstream `github-copilot-cli` lists only an `npx` wrapper in the ACP Registry, while
+/// `github/copilot-cli` publishes standalone archives and `SHA256SUMS.txt` on every GitHub
+/// release. Supplying them installs Copilot without Node.js, npm, `~/.npmrc`, or mirror lag.
+fn add_copilot_release_binaries(entry: &mut Entry, release_base: &str) {
+    let tag = format!("v{}", entry.version.trim_start_matches('v'));
+    let base = format!("{}/{}", release_base.trim_end_matches('/'), tag);
+    let sha256_url = format!("{base}/SHA256SUMS.txt");
+    let (args, env) = match &entry.distribution.npx {
+        Some(p) => (p.args.clone(), p.env.clone()),
+        None => (vec!["--acp".into()], BTreeMap::new()),
+    };
+    let linux = if cfg!(target_env = "musl") { "linuxmusl" } else { "linux" };
+    let linux_arm = format!("copilot-{linux}-arm64.tar.gz");
+    let linux_x64 = format!("copilot-{linux}-x64.tar.gz");
+    let targets = [
+        ("darwin-aarch64", "copilot-darwin-arm64.tar.gz", "./copilot"),
+        ("darwin-x86_64", "copilot-darwin-x64.tar.gz", "./copilot"),
+        ("linux-aarch64", linux_arm.as_str(), "./copilot"),
+        ("linux-x86_64", linux_x64.as_str(), "./copilot"),
+        ("windows-aarch64", "copilot-win32-arm64.zip", "copilot.exe"),
+        ("windows-x86_64", "copilot-win32-x64.zip", "copilot.exe"),
+    ];
+    for (key, asset, cmd) in targets {
+        entry.distribution.binary.entry(key.to_owned()).or_insert_with(|| Binary {
+            archive: format!("{base}/{asset}"),
+            cmd: cmd.to_owned(),
+            args: args.clone(),
+            env: env.clone(),
+            sha256: None,
+            sha256_url: Some(sha256_url.clone()),
+        });
+    }
 }
 
 fn safe_segment(s: &str) -> bool {
@@ -316,7 +358,7 @@ fn visible(
                 None
             };
             let choice = choose(e, platform, on_path);
-            let no_checksum = matches!(choice, Some(Choice::Binary(b)) if b.sha256.is_none());
+            let no_checksum = matches!(choice, Some(Choice::Binary(b)) if b.sha256.is_none() && b.sha256_url.is_none());
             let distribution = choice.map(|c| c.kind());
             if distribution.is_none() && installed.is_none() {
                 return None;
@@ -424,6 +466,20 @@ fn install_entry(
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<()> {
+    install_entry_with(paths, entry, platform, on_path, &install_npm, cancel, emit)
+}
+
+type NpmInstaller = dyn Fn(&Package, &Entry, &Path, Platform, &CancellationToken, Emit) -> IdeResult<PathBuf>;
+
+fn install_entry_with(
+    paths: &RegistryPaths,
+    entry: &Entry,
+    platform: Platform,
+    on_path: &dyn Fn(&str) -> bool,
+    npm_installer: &NpmInstaller,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<()> {
     if is_builtin(&entry.id) {
         return Err(IdeError::invalid(format!("{} is built in", entry.name)));
     }
@@ -443,9 +499,32 @@ fn install_entry(
     }
     fs::create_dir_all(&dir)?;
     let installed = match &choice {
-        Choice::Binary(b) => install_binary(b, &dir, cancel, emit).map(|exe| (exe, b.args.clone(), b.env.clone())),
+        Choice::Binary(b) => match install_binary(b, &dir, cancel, emit) {
+            Ok(exe) => Ok((exe, b.args.clone(), b.env.clone())),
+            Err(e)
+                if !cancel.is_cancelled()
+                    && e.kind != ErrorKind::Cancelled
+                    && !e.message.starts_with("checksum mismatch:")
+                    && entry.distribution.npx.is_some()
+                    && on_path("npm")
+                    && on_path("node") =>
+            {
+                let p = entry.distribution.npx.as_ref().expect("checked");
+                emit(InstallEvent::Line {
+                    text: format!("Binary download failed ({}); falling back to npm…", e.message),
+                });
+                fs::remove_dir_all(&dir)?;
+                fs::create_dir_all(&dir)?;
+                npm_installer(p, entry, &dir, platform, cancel, emit)
+                    .map(|exe| (exe, p.args.clone(), p.env.clone()))
+                    .map_err(|npm_err| {
+                        IdeError::new(npm_err.kind, format!("{}; npm fallback failed: {}", e.message, npm_err.message))
+                    })
+            }
+            Err(e) => Err(e),
+        },
         Choice::Npx(p) => {
-            install_npm(p, entry, &dir, platform, cancel, emit).map(|exe| (exe, p.args.clone(), p.env.clone()))
+            npm_installer(p, entry, &dir, platform, cancel, emit).map(|exe| (exe, p.args.clone(), p.env.clone()))
         }
         Choice::Uvx(p) => {
             install_uv(p, entry, &dir, platform, cancel, emit).map(|exe| (exe, p.args.clone(), p.env.clone()))
@@ -508,13 +587,23 @@ fn install_binary(b: &Binary, dir: &Path, cancel: &CancellationToken, emit: Emit
     fs::create_dir_all(&downloads)?;
     let file = downloads.join(name);
     emit(InstallEvent::Line { text: format!("Downloading {}", b.archive) });
-    http()?.download(&b.archive, &file, None, cancel, emit)?;
-    match &b.sha256 {
-        Some(expected) => {
+    let http = http()?;
+    http.download(&b.archive, &file, None, cancel, emit)?;
+    match (&b.sha256, &b.sha256_url) {
+        (Some(expected), _) => {
             verify_sha256(&file, expected)?;
             emit(InstallEvent::Line { text: "SHA-256 checksum verified".into() });
         }
-        None => emit(InstallEvent::Line { text: "The registry gives no checksum for this download".into() }),
+        (None, Some(checksum_url)) => {
+            check_url(checksum_url)?;
+            let text = http.get_text_limited(checksum_url, Some(MAX_CHECKSUM_BYTES), cancel)?;
+            let expected = ide_tools::sources::parse_checksum(&text, name).ok_or_else(|| {
+                IdeError::new(ErrorKind::Protocol, format!("no SHA-256 checksum for {name} in {checksum_url}"))
+            })?;
+            verify_sha256(&file, &expected)?;
+            emit(InstallEvent::Line { text: "SHA-256 checksum verified".into() });
+        }
+        (None, None) => emit(InstallEvent::Line { text: "The registry gives no checksum for this download".into() }),
     }
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
@@ -568,16 +657,47 @@ fn install_npm(
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<PathBuf> {
+    let (name, _) = split_npm_spec(&p.package);
+    let npm = which::which("npm").map_err(|_| IdeError::unavailable(format!("npm is required to install {name}")))?;
+    install_npm_with(&npm, p, entry, dir, platform, cancel, emit)
+}
+
+fn install_npm_with(
+    npm: &Path,
+    p: &Package,
+    entry: &Entry,
+    dir: &Path,
+    platform: Platform,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<PathBuf> {
     let (name, version) = split_npm_spec(&p.package);
     let spec = match version {
         Some(v) if !v.is_empty() => p.package.clone(),
         _ => format!("{name}@{}", entry.version),
     };
     check_spec(&spec)?;
-    let npm = which::which("npm").map_err(|_| IdeError::unavailable(format!("npm is required to install {name}")))?;
-    let mut cmd = Command::new(npm);
-    cmd.arg("install").arg("--prefix").arg(dir).args(["--no-audit", "--no-fund"]).arg(&spec).current_dir(dir);
-    ide_tools::run_streamed(cmd, cancel, emit)?;
+    let specs = [spec.clone()];
+    ide_tools::run_npm_with_public_fallback(
+        |extra| {
+            if !extra.is_empty() {
+                let _ = fs::remove_dir_all(dir.join("node_modules"));
+            }
+            let mut cmd = Command::new(npm);
+            cmd.arg("install")
+                .arg("--prefix")
+                .arg(dir)
+                .args(["--no-audit", "--no-fund"])
+                .args(extra)
+                .arg(&spec)
+                .current_dir(dir);
+            cmd
+        },
+        &specs,
+        false,
+        cancel,
+        emit,
+    )?;
     let modules = dir.join("node_modules");
     let manifest: serde_json::Value = fs::read_to_string(modules.join(name).join("package.json"))
         .ok()
@@ -872,6 +992,58 @@ mod tests {
         assert!(check_url("ftp://x/a").is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn npm_registry_agent_retries_against_public_npmjs_on_mirror_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let install_dir = dir.path().join("acme/1.2.0");
+        fs::create_dir_all(&install_dir).unwrap();
+        let log = dir.path().join("npm-calls.log");
+        let npm = dir.path().join("npm");
+        fs::write(
+            &npm,
+            format!(
+                r#"#!/bin/sh
+echo "$@" >> '{}'
+case " $* " in
+  *" --registry=https://registry.npmjs.org/ --@acme:registry=https://registry.npmjs.org/ "*)
+    prefix=""; while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && prefix="$2"; shift; done
+    mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/@acme/agent-acp"
+    printf '#!/bin/sh\necho 1.2.0\n' > "$prefix/node_modules/.bin/agent-acp"
+    chmod +x "$prefix/node_modules/.bin/agent-acp"
+    printf '{{"bin":"cli.js"}}\n' > "$prefix/node_modules/@acme/agent-acp/package.json"
+    exit 0
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for @acme/agent-acp@1.2.0." >&2
+    exit 1
+    ;;
+esac
+"#,
+                log.display()
+            ),
+        )
+        .unwrap();
+        archive::make_executable(&npm).unwrap();
+
+        let index = r#"{"agents":[
+            {"id":"acme","name":"Acme","version":"1.2.0",
+             "distribution":{"npx":{"package":"@acme/agent-acp@1.2.0","args":["--acp"]}}}
+        ]}"#;
+        let entry = parse(index).unwrap().remove(0);
+        let pkg = entry.distribution.npx.as_ref().unwrap();
+        let exe =
+            install_npm_with(&npm, pkg, &entry, &install_dir, MAC_ARM, &CancellationToken::new(), &|_| {}).unwrap();
+        let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(!calls[0].contains("--registry="), "{calls:?}");
+        assert!(calls[1].contains("--registry=https://registry.npmjs.org/"), "{calls:?}");
+        assert!(calls[1].contains("--@acme:registry=https://registry.npmjs.org/"), "{calls:?}");
+        assert_eq!(exe, install_dir.join("node_modules/.bin/agent-acp"));
+        assert!(exe.is_file());
+    }
+
     #[test]
     fn checksums_are_verified() {
         let dir = tempfile::tempdir().unwrap();
@@ -969,11 +1141,18 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!((entries[0].id.as_str(), entries[0].name.as_str()), ("copilot", "GitHub Copilot"));
 
-        let shown = visible(&p, &entries, MAC_ARM, &|c| c == "npm" || c == "node");
+        // Copilot installs as a verified GitHub Release binary even without Node.js or npm.
+        let shown = visible(&p, &entries, MAC_ARM, &|_| false);
         assert_eq!(shown.len(), 1);
         assert_eq!(
-            (shown[0].id.as_str(), shown[0].name.as_str(), shown[0].installed.as_deref()),
-            ("copilot", "GitHub Copilot", None)
+            (
+                shown[0].id.as_str(),
+                shown[0].name.as_str(),
+                shown[0].installed.as_deref(),
+                shown[0].distribution,
+                shown[0].no_checksum,
+            ),
+            ("copilot", "GitHub Copilot", None, Some(RegistryDistribution::Binary), false)
         );
 
         CustomAgent {
@@ -987,7 +1166,7 @@ mod tests {
         .write(&p.agent_file("copilot"))
         .unwrap();
 
-        let shown = visible(&p, &entries, MAC_ARM, &|c| c == "npm" || c == "node");
+        let shown = visible(&p, &entries, MAC_ARM, &|_| false);
         assert_eq!((shown[0].installed.as_deref(), shown[0].update), (Some("1.0.104"), true));
 
         write_atomic(&p.cache_file, index.as_bytes()).unwrap();
@@ -1006,5 +1185,83 @@ mod tests {
         remove(&p, "github-copilot-cli").unwrap();
         let fallback = provider::load(Some(&p.agents_dir), None).into_iter().find(|s| s.id == "copilot").unwrap();
         assert_eq!(fallback.source, AgentSource::Builtin);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_copilot_from_verified_release_archive_and_falls_back_to_npm_when_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path());
+        let served = dir.path().join("releases/v1.0.114");
+        fs::create_dir_all(&served).unwrap();
+        let archive = served.join("copilot-darwin-arm64.tar.gz");
+        let stage = dir.path().join("archive-stage");
+        fs::create_dir_all(&stage).unwrap();
+        let staged_exe = stage.join("copilot");
+        fs::write(&staged_exe, "#!/bin/sh\necho 1.0.114\n").unwrap();
+        archive::make_executable(&staged_exe).unwrap();
+        assert!(
+            Command::new("tar")
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&stage)
+                .arg("copilot")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sha = ide_tools::sources::sha256_file(&archive).unwrap();
+        let sums = served.join("SHA256SUMS.txt");
+        fs::write(&sums, format!("{sha}  copilot-darwin-arm64.tar.gz\n")).unwrap();
+
+        let index = r#"{"agents":[
+            {"id":"github-copilot-cli","name":"Copilot","version":"1.0.114",
+             "distribution":{"npx":{"package":"@github/copilot@1.0.114","args":["--acp"]}}}
+        ]}"#;
+        let mut entry = parse(index).unwrap().remove(0);
+        entry.distribution.binary.clear();
+        add_copilot_release_binaries(&mut entry, &format!("file://{}", dir.path().join("releases").display()));
+
+        let fake_npm = |_: &Package, _: &Entry, dest: &Path, _: Platform, _: &CancellationToken, _: Emit| {
+            let exe = dest.join("node_modules/.bin/copilot");
+            fs::create_dir_all(exe.parent().unwrap())?;
+            fs::write(&exe, "#!/bin/sh\necho npm-1.0.114\n")?;
+            archive::make_executable(&exe)?;
+            Ok(exe)
+        };
+        let node_on_path = |cmd: &str| matches!(cmd, "npm" | "node");
+
+        let cancel = CancellationToken::new();
+        let lines = std::sync::Mutex::new(Vec::new());
+        let emit = |e: InstallEvent| {
+            if let InstallEvent::Line { text } = e {
+                lines.lock().unwrap().push(text);
+            }
+        };
+
+        // 1. Verified GitHub Release archive installs directly without invoking npm.
+        install_entry_with(&p, &entry, MAC_ARM, &|_| false, &fake_npm, &cancel, &emit).unwrap();
+        assert!(lines.lock().unwrap().iter().any(|l| l == "SHA-256 checksum verified"));
+        let installed_bin = p.tools_dir.join("copilot/1.0.114/copilot");
+        assert!(installed_bin.is_file());
+        let saved = CustomAgent::read(&p.agent_file("copilot")).unwrap();
+        assert_eq!(saved.command, installed_bin.to_string_lossy());
+        assert_eq!(saved.args, ["--acp"]);
+
+        // 2. A tampered binary fails checksum verification and never falls back to npm.
+        fs::write(&sums, format!("{}  copilot-darwin-arm64.tar.gz\n", "0".repeat(64))).unwrap();
+        let err = install_entry_with(&p, &entry, MAC_ARM, &node_on_path, &fake_npm, &cancel, &emit).unwrap_err();
+        assert!(err.message.contains("checksum mismatch"), "{err:?}");
+        assert!(!p.tools_dir.join("copilot/1.0.114").exists());
+
+        // 3. When the release download itself is unreachable, npm fallback installs it.
+        fs::remove_file(&archive).unwrap();
+        lines.lock().unwrap().clear();
+        install_entry_with(&p, &entry, MAC_ARM, &node_on_path, &fake_npm, &cancel, &emit).unwrap();
+        assert!(lines.lock().unwrap().iter().any(|l| l.contains("falling back to npm")));
+        let npm_bin = p.tools_dir.join("copilot/1.0.114/node_modules/.bin/copilot");
+        assert!(npm_bin.is_file());
+        assert_eq!(CustomAgent::read(&p.agent_file("copilot")).unwrap().command, npm_bin.to_string_lossy());
     }
 }

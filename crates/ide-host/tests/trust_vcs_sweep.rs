@@ -174,6 +174,7 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         call!("vcs_status", "", ops::vcs::vcs_status(host, w)),
         call!("vcs_status_paths", "", ops::vcs::vcs_status_paths(host, w, vec![file.clone()])),
         sync!("vcs_roots", "", vcs::vcs_roots(host, w)),
+        call!("vcs_detected_roots", "", vcs::vcs_detected_roots(host, w)),
         call!("vcs_branch_info", "", vcs::vcs_branch_info(host, w, root())),
         call!("vcs_line_hunks", "", vcs::vcs_line_hunks(host, w, file.clone())),
         call!("vcs_file_at", "", vcs::vcs_file_at(host, w, file.clone(), None)),

@@ -2160,3 +2160,41 @@ export function addContributedSnippets(snippets: ContributedSnippet[]): () => vo
   useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
   return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
 }
+
+// ---------------------------------------------------------------------------
+// Search Everywhere categories. Custom categories are opt-in tabs, never All sources.
+export type SearchCategoryId = `plugin:${string}:${string}`;
+export interface SearchCategory {
+  id: SearchCategoryId;
+  title: string;
+  search(
+    request: import("@/bindings").RequestId,
+    query: string,
+    limit: number,
+  ): Promise<import("@/bindings").PluginSearchPage>;
+  /** Resolve within this provider, rather than looking up an ambiguous global action id. */
+  command(id: string): import("@/platform/actions").Action | undefined;
+}
+const searchCategoryProviders = new Map<SearchCategoryId, SearchCategory>();
+const searchCategoryListeners = new Set<() => void>();
+export function searchCategories(): readonly SearchCategory[] {
+  return [...searchCategoryProviders.values()];
+}
+export function onSearchCategoriesChanged(listener: () => void): () => void {
+  searchCategoryListeners.add(listener);
+  return () => {
+    searchCategoryListeners.delete(listener);
+  };
+}
+function searchCategoriesChanged() {
+  notifyEach(searchCategoryListeners, (listener) => listener(), "search categories changed");
+}
+export function registerSearchCategory(category: SearchCategory): () => void {
+  searchCategoryProviders.set(category.id, category);
+  searchCategoriesChanged();
+  return () => {
+    if (searchCategoryProviders.get(category.id) !== category) return;
+    searchCategoryProviders.delete(category.id);
+    searchCategoriesChanged();
+  };
+}

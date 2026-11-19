@@ -20,6 +20,7 @@ mod go_scope;
 mod handler;
 mod injections;
 mod inspect;
+pub mod java_project;
 pub mod jdtls;
 mod kotlin_lsp;
 mod launch;

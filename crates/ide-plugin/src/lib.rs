@@ -12,6 +12,7 @@ mod actor;
 pub mod indexing;
 mod runtime;
 mod sandbox;
+pub mod search;
 mod types;
 mod wit_host;
 

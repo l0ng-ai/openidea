@@ -718,6 +718,11 @@ export const commands = {
 	inspectCode: (request: RequestId, scope: SearchScope, onEvent: Channel<InspectEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("inspect_code", { request, scope, onEvent })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
 	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
+	/**
+	 *  The debug adapter for the JVMs of `module`: `java-debug` inside jdtls, or `java-analyzer`
+	 *  (`java-analyzer dap`) when jdtls doesn't serve the module and java-analyzer does.
+	 */
+	javaDebugAdapter: (module: string) => typedError<string, IdeError>(__TAURI_INVOKE("java_debug_adapter", { module })),
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
@@ -1125,6 +1130,11 @@ export const commands = {
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
+	/**
+	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
+	 *  `cancel_request(request)`.
+	 */
+	pluginSearch: (pluginId: string, category: string, query: string, limit: number, request: RequestId) => typedError<PluginSearchPage, IdeError>(__TAURI_INVOKE("plugin_search", { pluginId, category, query, limit, request })),
 	pluginSecrets: (pluginId: string) => typedError<PluginSecretState[], IdeError>(__TAURI_INVOKE("plugin_secrets", { pluginId })),
 	/**  Selects test-tree paths in an owned plugin test configuration. */
 	pluginSelectTests: (config: string, tests: string[][]) => typedError<string[] | null, IdeError>(__TAURI_INVOKE("plugin_select_tests", { config, tests })),
@@ -9255,6 +9265,23 @@ export type PluginRunTarget = {
 	containerRoot: string | null,
 	commands: PluginCommandOverride[],
 };
+
+export type PluginSearchItem = {
+	id: string,
+	title: string,
+	description: string | null,
+	target: PluginSearchTarget,
+};
+
+export type PluginSearchPage = {
+	items: PluginSearchItem[],
+	hasMore: boolean,
+};
+
+export type PluginSearchTarget = { kind: "location"; value: Location } | { kind: "command"; value: {
+	id: string,
+	arg: string | null,
+} };
 
 /**  A secret a plugin declares, and whether the user stored it. */
 export type PluginSecretState = {

@@ -4177,6 +4177,7 @@
   "networks": "网络",
   "Compose project '{name}'": "Compose 项目 '{name}'",
   "Engine {server} · CLI {client}": "引擎 {server} · CLI {client}",
+  "Engine {server}": "引擎 {server}",
   " · context {name}": " · 上下文 {name}",
   "Failed (exit {code})": "失败（退出代码 {code}）",
   "No configurations of this type": "没有此类型的配置",
