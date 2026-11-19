@@ -56,7 +56,11 @@ const FALLBACK: Record<number, [string, string]> = {
 };
 
 export function projectColorVars(name: string): Record<string, string> {
-  const n = projectColorIndex(name);
+  return projectColorSlotVars(projectColorIndex(name));
+}
+
+/** CSS vars for an explicit slot, e.g. a user-chosen tab colour. */
+export function projectColorSlotVars(n: number): Record<string, string> {
   const [start, end] = FALLBACK[n]!;
   return {
     "--project-color": `var(--project-color-${n}, ${start})`,

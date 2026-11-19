@@ -1258,6 +1258,8 @@
   "Plan {done}/{length}": "Plan {done}/{length}",
   "1 changed file": "1 changed file",
   "{count} changed files": "{count} changed files",
+  "{count} more notification": "{count} more notification",
+  "{count} more notifications": "{count} more notifications",
   "Send into the agent's turn": "Send into the agent's turn",
   "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "Queue a message for when the agent is done (⌘⇧↵ sends it now)",
   "Queue a message for when the agent is done": "Queue a message for when the agent is done",
@@ -2647,6 +2649,16 @@
   "{path} is a directory": "{path} is a directory",
   "Cannot export test results": "Cannot export test results",
   "Test results exported": "Test results exported",
+  "Olive": "Olive",
+  "Teal": "Teal",
+  "Custom colour hex": "Custom colour hex",
+  "Reset to Default": "Reset to Default",
   "Always update snapshots": "Always update snapshots",
-  "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U)."
+  "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).",
+  "Automatic (the agent of the latest task)": "Automatic (the agent of the latest task)",
+  "The agent's current model": "The agent's current model",
+  "The agent's default": "The agent's default",
+  "Commit messages are short: a fast model with low effort is usually enough.": "Commit messages are short: a fast model with low effort is usually enough.",
+  "Change Project Color…": "Change Project Color…",
+  "Project Color": "Project Color"
 }
