@@ -1649,8 +1649,16 @@ describe("marketplace", () => {
               granted: true,
             },
           ],
-          contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
-          javaAgent: { fileName: "spring-agent.jar", args: "port=0", approved: true },
+          contributions: [
+            { point: "javaAgents", label: "spring-agent.jar=port=0 -XX:+AllowEnhancedClassRedefinition" },
+          ],
+          javaAgent: {
+            fileName: "spring-agent.jar",
+            args: "port=0",
+            vmOptions: ["-XX:+AllowEnhancedClassRedefinition"],
+            jdk: "jetbrains",
+            approved: true,
+          },
         }),
       ]),
     );
@@ -1658,6 +1666,9 @@ describe("marketplace", () => {
     const permissions = await screen.findByRole("list", { name: "Permissions" });
     expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
     expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+    expect(within(permissions).getByLabelText("JVM options")).toHaveTextContent(
+      "-XX:+AllowEnhancedClassRedefinition (jetbrains)",
+    );
   });
 
   it("warns when a granted Java agent jar changed and can approve it again", async () => {
@@ -1668,7 +1679,7 @@ describe("marketplace", () => {
         name: "Spring",
         hasCode: false,
         status: "static",
-        javaAgent: { fileName: "spring-agent.jar", args: null, approved: false },
+        javaAgent: { fileName: "spring-agent.jar", args: null, vmOptions: [], jdk: null, approved: false },
         capabilities: [
           {
             id: "java.agent",

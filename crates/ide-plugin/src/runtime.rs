@@ -57,7 +57,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.13";
+pub const API_VERSION: &str = "1.14";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
