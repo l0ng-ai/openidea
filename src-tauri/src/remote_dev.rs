@@ -767,6 +767,9 @@ pub async fn remote_connect(
         sync_plugin_languages(&plugins, &connection, &label).await;
         sync_plugin_packages(&plugins, &connection, &label).await;
     });
+    if let Err(error) = crate::window_groups::persist(window.app_handle()).await {
+        tracing::warn!(%error, "cannot save window session after opening remote project");
+    }
     Ok(RemoteProject { target, root, host, server_version: info.version, os: info.os, commands, project })
 }
 
