@@ -32,7 +32,7 @@ struct Session {
 /// The response format: a names line, a types line, then one JSON array per row, so rows past
 /// the grid's limit are skipped without being parsed.
 const FORMAT: &str = "JSONCompactEachRowWithNamesAndTypes";
-const SESSION_LOST: &str = "ClickHouse HTTP session not found on this node (code 372). Use one node or session affinity, or set use_http_session=false in Advanced for independent queries.";
+const SESSION_LOST: &str = "ClickHouse HTTP session expired or is missing on this node (code 372). Reconnect to start a new session. Behind a load balancer, use one node or session affinity, or set use_http_session=false in Advanced for independent queries.";
 
 pub(crate) fn transaction_error() -> IdeError {
     IdeError::invalid("ClickHouse HTTP does not support SQL transactions; use auto-commit and run writes directly")
@@ -133,7 +133,7 @@ impl ClickhousePool {
             endpoint,
             user: if source.user.is_empty() { "default".into() } else { source.user.clone() },
             password: password.unwrap_or_default().to_owned(),
-            database: if database.is_empty() { "default".into() } else { database.into() },
+            database: database.into(),
             settings,
             read_only: source.read_only,
             session: Mutex::new(Session {
@@ -233,7 +233,7 @@ impl ClickhousePool {
                 request = request.query(&[("session_check", "1")]);
             }
         }
-        if session.id.is_none() || !session.initialized {
+        if !self.0.database.is_empty() && (session.id.is_none() || !session.initialized) {
             request = request.query(&[("database", &self.0.database)]);
         }
         if self.0.read_only && !session.strict_read_only {
@@ -809,6 +809,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unset_database_uses_the_accounts_default_in_both_modes() {
+        for mode in ["true", "false"] {
+            let (port, requests) = server(vec![("200 OK", "", ONE); 2]).await;
+            let source = DataSource { properties: vec![property("use_http_session", mode)], ..source(port) };
+            let pool = Pool::connect(&source, None, None).await.unwrap();
+            pool.execute("SELECT 1", 1, &CancellationToken::new()).await.unwrap();
+            for request in requests.await.unwrap() {
+                assert_eq!(query_value(&request_url(&request), "database"), None);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn stateless_requests_keep_database_settings_readonly_and_limits() {
         let (port, requests) = server(vec![("200 OK", "", ONE); 3]).await;
         let source = DataSource {
@@ -855,6 +868,7 @@ mod tests {
             let error = pool.execute(sql, 0, &CancellationToken::new()).await.unwrap_err();
             assert!(error.message.contains("372"));
             assert!(error.message.contains("one node or session affinity"));
+            assert!(error.message.contains("Reconnect"));
             assert!(error.message.contains("use_http_session=false"));
             pool.execute("SELECT 1", 1, &CancellationToken::new()).await.unwrap();
 

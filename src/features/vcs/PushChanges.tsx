@@ -1,10 +1,12 @@
 /**
  * Push dialog: the files changed by the outgoing commits (the selected commit's, or all of
- * them), with the selected file's diff beside the tree. The diff stays inside the dialog,
- * which is modal. A single commit also shows its message, author and time.
+ * them), with the selected file's diff beside the tree. Double-click or Enter opens the diff in
+ * its own window, as IDEA does, since the dialog is modal and small. A single commit also shows
+ * its message, author and time.
  */
 import { useEffect, useMemo, useState } from "react";
 import type { ChangedFile, Commit, RevisionChange } from "@/bindings";
+import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Button, IconButton, Spinner, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
@@ -94,6 +96,8 @@ export function PushChanges({
       }}
       diffFor={(c) => c.diff}
       inlineDiff={!onSelectFile}
+      openOnActivate
+      openDiff={(diff) => void executeAction("vcs.showDiffInNewWindow", diff)}
       getColor={(c) => KIND_COLOR[c.kind === "untracked" ? "added" : c.kind]}
       ariaLabel="Changed files"
       renderDetails={(n) =>

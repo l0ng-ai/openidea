@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   actions: [] as { id: string; run: (context: { arg: string[] }) => unknown }[],
   servers: [] as DeploymentServerValid[],
   groups: [] as { id: string; name: string; servers: string[] }[],
+  defaultServer: "one",
   coverage: [] as { server: string; paths: string[]; skipped: { path: string; message: string }[] }[],
   choose: vi.fn(),
   notify: vi.fn(),
@@ -38,7 +39,9 @@ vi.mock("@/platform/project", () => ({
   useProject: { getState: () => ({ project: { root: "/project" } }) },
 }));
 vi.mock("@/platform/workflowSettings", () => ({
-  workflowSettings: () => ({ deployment: { servers: mocks.servers, groups: mocks.groups, defaultServer: "one" } }),
+  workflowSettings: () => ({
+    deployment: { servers: mocks.servers, groups: mocks.groups, defaultServer: mocks.defaultServer },
+  }),
 }));
 vi.mock("@/workbench/contributions", () => ({
   notifications: () => ({ notify: mocks.notify }),
@@ -74,6 +77,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.servers = ["one", "two"].map((id) => ({ id, name: id, kind: "local" }) as DeploymentServerValid);
   mocks.groups = [];
+  mocks.defaultServer = "one";
   mocks.coverage = [
     {
       server: "one",
@@ -111,6 +115,15 @@ describe("server groups", () => {
     );
     expect(mocks.upload).toHaveBeenCalledTimes(1);
     expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Cannot upload to one" }));
+  });
+  it("uploads to each server of the default group without asking", async () => {
+    mocks.groups = [{ id: "g", name: "Production", servers: ["two", "one"] }];
+    mocks.defaultServer = "g";
+    mocks.coverage[1]!.paths = ["/project/a"];
+    mocks.actions.find((action) => action.id === "deployment.uploadToDefault")!.run({ arg: ["/project/a"] });
+    await vi.waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+    expect(mocks.upload.mock.calls.map((c) => c[1])).toEqual(["two", "one"]);
+    expect(mocks.choose).not.toHaveBeenCalled();
   });
   it("uploads to every covered server of the group in order", async () => {
     mocks.groups = [{ id: "g", name: "Production", servers: ["two", "one"] }];

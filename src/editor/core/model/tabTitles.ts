@@ -15,10 +15,10 @@ function parents(path: string): string[] {
  * For every path whose file name occurs more than once in `paths`, the
  * distinguishing directory hint. Paths with a unique name are absent.
  */
-export function disambiguateTitles(paths: readonly string[]): Map<string, string> {
+export function disambiguateTitles(paths: readonly string[], titleOf = baseName): Map<string, string> {
   const groups = new Map<string, string[]>();
   for (const p of new Set(paths)) {
-    const name = baseName(p);
+    const name = titleOf(p);
     const list = groups.get(name);
     if (list) list.push(p);
     else groups.set(name, [p]);

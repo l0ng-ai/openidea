@@ -193,8 +193,8 @@ fn interchangeable_servers_list_their_alternatives() {
         assert_eq!(find(&list, name).alternatives, python);
     }
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
-    for name in ["jdtls", "kmp-lsp"] {
-        assert_eq!(find(&list, name).alternatives, ["jdtls", "kmp-lsp"]);
+    for name in ["jdtls", "java-analyzer", "kmp-lsp"] {
+        assert_eq!(find(&list, name).alternatives, ["jdtls", "java-analyzer", "kmp-lsp"]);
         assert_eq!(find(&list, name).languages, if name == "kmp-lsp" { &["Java", "Kotlin"][..] } else { &["Java"] });
     }
     for name in ["kotlin-lsp", "kotlin-language-server"] {
@@ -543,6 +543,64 @@ echo "added 1 package""#,
     assert!(args.contains("install") && args.contains("bash-language-server@latest"), "{args}");
     assert!(args.contains(&env.root.display().to_string()), "{args}");
     assert!(env.root.join("package.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn npm_install_retries_against_public_registry_on_mirror_miss_and_preserves_primary_error_when_unreachable() {
+    let env = Env::new();
+    let log = env.root.parent().unwrap().join("npm-fallback.txt");
+    env.script(&env.sys, "node", "exit 0");
+    env.script(
+        &env.sys,
+        "npm",
+        &format!(
+            r#"echo "$@" >> '{log}'
+case " $* " in
+  *" --registry=https://registry.npmjs.org/ --@vtsls:registry=https://registry.npmjs.org/ "*)
+    prefix=""; while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && prefix="$2"; shift; done
+    /bin/mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/@vtsls/language-server"
+    printf '#!/bin/sh\necho 0.2.9\n' > "$prefix/node_modules/.bin/vtsls"
+    /bin/chmod +x "$prefix/node_modules/.bin/vtsls"
+    echo '{{"version":"0.2.9"}}' > "$prefix/node_modules/@vtsls/language-server/package.json"
+    exit 0
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for @vtsls/language-server@latest." >&2
+    exit 1
+    ;;
+esac"#,
+            log = log.display()
+        ),
+    );
+    let info = env.tools().install("vtsls", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(!calls[0].contains("--registry="), "{calls:?}");
+    assert!(calls[1].contains("--registry=https://registry.npmjs.org/"), "{calls:?}");
+    assert!(calls[1].contains("--@vtsls:registry=https://registry.npmjs.org/"), "{calls:?}");
+
+    // When public npmjs.org is blocked (e.g. corporate firewall), surface the primary mirror error.
+    env.script(
+        &env.sys,
+        "npm",
+        r#"case " $* " in
+  *" --registry=https://registry.npmjs.org/ "*)
+    echo "npm error code ECONNRESET" >&2
+    exit 1
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for pyright@latest." >&2
+    exit 1
+    ;;
+esac"#,
+    );
+    let err = env.tools().install("pyright", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert!(err.message.contains("No matching version found for pyright@latest"), "{}", err.message);
+    assert!(!err.message.contains("ECONNRESET"), "{}", err.message);
 }
 
 /// Servers that load TypeScript as a library get one with its JS API: `@latest`
@@ -1072,4 +1130,104 @@ fn npm_tools_report_a_newer_registry_version() {
         vec![ToolUpdate { name: "bash-language-server".into(), current: "5.4.0".into(), latest: "5.6.1".into() }]
     );
     assert_eq!(tools("5.4.0").updates(&cancel).unwrap(), vec![]);
+}
+
+/// Tools › Download sources: a configured mirror serves a GitHub release the official host
+/// cannot, and the official host is kept as the fallback.
+#[cfg(unix)]
+#[test]
+fn a_mirror_serves_what_the_official_host_cannot() {
+    let env = Env::new();
+    let fixtures = env.root.parent().unwrap().join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let archive = fixtures.join("lls.tar.gz");
+    {
+        let gz = flate2::write::GzEncoder::new(fs::File::create(&archive).unwrap(), flate2::Compression::fast());
+        let mut b = tar::Builder::new(gz);
+        let body = b"#!/bin/sh\necho 3.13.5\n";
+        let mut h = tar::Header::new_gnu();
+        h.set_size(body.len() as u64);
+        h.set_mode(0o755);
+        h.set_cksum();
+        b.append_data(&mut h, "bin/lua-language-server", &body[..]).unwrap();
+        b.into_inner().unwrap().finish().unwrap();
+    }
+    let digest = sources::sha256_file(&archive).unwrap();
+    // Release assets live on github.com: only those addresses are mirrored.
+    let assets: Vec<String> = ["darwin-arm64.tar.gz", "darwin-x64.tar.gz", "linux-x64.tar.gz", "linux-arm64.tar.gz"]
+        .iter()
+        .map(|s| {
+            format!(
+                r#"{{"name":"lua-language-server-3.13.5-{s}","browser_download_url":"https://github.com/LuaLS/lua-language-server/releases/download/3.13.5/{s}","size":{},"digest":"sha256:{digest}"}}"#,
+                fs::metadata(&archive).unwrap().len()
+            )
+        })
+        .collect();
+    let json = fixtures.join("release.json");
+    fs::write(&json, format!(r#"{{"tag_name":"3.13.5","assets":[{}]}}"#, assets.join(","))).unwrap();
+    // The mirror serves the asset; the official host is unreachable.
+    let log = fixtures.join("asked.log");
+    env.script(
+        &env.sys,
+        "curl",
+        &format!(
+            r#"out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+/bin/echo "$url" >> '{log}'
+case "$url" in
+  https://api.github.com/*) /bin/cat '{json}';;
+  https://mirror.test/https://github.com/*) /bin/cp '{archive}' "$out";;
+  *) exit 22;;
+esac"#,
+            log = log.display(),
+            json = json.display(),
+            archive = archive.display()
+        ),
+    );
+    let downloads = ToolDownloadSettings { github_mirror: "https://mirror.test/".into() };
+    let emit = |_: InstallEvent| {};
+    env.tools()
+        .with_downloads(downloads)
+        .install("lua-language-server", &langs(), &CancellationToken::new(), &emit)
+        .unwrap();
+    let asked = fs::read_to_string(&log).unwrap();
+    // A configured mirror is tried first — waiting for a slow official host would defeat it.
+    let mirror_at = asked.find("https://mirror.test/https://github.com/").expect("the mirror is tried");
+    assert!(!asked[..mirror_at].contains("releases/download"), "the mirror goes first: {asked}");
+}
+
+/// A mirror may only deliver bytes something can vouch for; the official host may not.
+#[test]
+fn a_mirror_never_installs_what_it_alone_vouches_for() {
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = tmp.path().join("tool.tar.gz");
+    fs::write(&archive, b"bytes").unwrap();
+    let digest = sources::sha256_file(&archive).unwrap();
+    let dl = |sha256: Option<&str>| sources::Download {
+        version: "1.0.0".into(),
+        name: "tool.tar.gz".into(),
+        url: "https://github.com/o/r/releases/download/v1/tool.tar.gz".into(),
+        size: None,
+        sha256: sha256.map(str::to_owned),
+        checksum_url: None,
+    };
+    let lines = Mutex::new(Vec::new());
+    let emit = |e: InstallEvent| {
+        if let InstallEvent::Line { text } = e {
+            lines.lock().push(text);
+        }
+    };
+
+    // Nothing published: the official host is trusted, a mirror is not.
+    check_sha256(&archive, &dl(None), None, false, &emit).unwrap();
+    let err = check_sha256(&archive, &dl(None), None, true, &emit).unwrap_err();
+    assert!(err.message.contains("no published checksum"), "{}", err.message);
+
+    // A matching hash passes from either source.
+    check_sha256(&archive, &dl(Some(&digest)), Some(&digest), true, &emit).unwrap();
+    assert!(lines.lock().iter().any(|l| l.contains("Checksum verified")));
+
+    // A mismatch is refused whoever served it.
+    let err = check_sha256(&archive, &dl(Some(&digest)), Some(&"0".repeat(64)), true, &emit).unwrap_err();
+    assert!(err.message.contains("checksum mismatch"), "{}", err.message);
 }

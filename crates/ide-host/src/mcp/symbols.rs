@@ -214,7 +214,7 @@ pub fn find_references() -> Tool {
     Tool::new("find_references", "Find references using the language service and the IDE's project index. Positions are 1-based UTF-16. Reports incomplete results when analysis is still running.", |call| async move {
         let path = call.resolve_readable(&call.str("filePath")?).await?;
         let page = super::page::Page::of(&call, REFERENCES_LIMIT)?;
-        let dir = super::scope::Scope::of(&call)?;
+        let paths = super::search::PathScope::of(&call)?;
         let opened = open_at(&call, path).await?;
         let request = super::tool::request_id();
         let work = crate::ops::lsp::lsp_references(&call.host, &call.window, request, opened.doc, opened.pos, call.flag("includeDeclaration", true)?, true, false, crate::ops::Channel::new(|_| {}));
@@ -237,8 +237,8 @@ pub fn find_references() -> Tool {
         if let serde_json::Value::Object(map) = &mut value {
             let mut list = |key: &str| match map.remove(key) { Some(serde_json::Value::Array(items)) => items, _ => Vec::new() };
             let (mut locations, mut classified) = (list("locations"), list("classified"));
-            if dir.dir().is_some() {
-                let inside = |l: &serde_json::Value| l["path"].as_str().is_some_and(|p| dir.contains(std::path::Path::new(p)));
+            if !paths.is_all() {
+                let inside = |l: &serde_json::Value| l["path"].as_str().is_some_and(|p| paths.matches_path(std::path::Path::new(p)));
                 locations.retain(inside);
                 classified.retain(|c| inside(&c["location"]));
             }
@@ -253,7 +253,7 @@ pub fn find_references() -> Tool {
     .param(Param::required("line", ParamType::Integer, "1-based line"))
     .param(Param::required("column", ParamType::Integer, "1-based UTF-16 column"))
     .param(Param::optional("includeDeclaration", ParamType::Boolean, "Include declarations (default true)"))
-    .param(super::scope::param())
+    .param(super::search::paths_param())
     .param(Param::optional("limit", ParamType::Integer, "References to return at most (default 100)"))
     .param(Param::optional("offset", ParamType::Integer, super::page::OFFSET))
 }
@@ -336,7 +336,7 @@ pub fn get_call_hierarchy() -> Tool {
     .param(Param::required("line", ParamType::Integer, "1-based line"))
     .param(Param::required("column", ParamType::Integer, "1-based UTF-16 column"))
     .param(Param::optional("direction", ParamType::String, "incoming (callers, default) or outgoing (callees)"))
-    .param(super::scope::param())
+    .param(super::search::paths_param())
     .param(Param::optional("limit", ParamType::Integer, "Items to return at most (default 100)"))
     .param(Param::optional("offset", ParamType::Integer, super::page::OFFSET))
 }
@@ -354,7 +354,7 @@ async fn call_hierarchy(call: Call) -> IdeResult<Output> {
         Some(_) => return Err(IdeError::invalid("direction must be incoming or outgoing")),
     };
     let page = super::page::Page::of(&call, CALLS_LIMIT)?;
-    let scope = super::scope::Scope::of(&call)?;
+    let paths = super::search::PathScope::of(&call)?;
     let path = call.resolve_readable(&call.str("filePath")?).await?;
     let opened = open_at(&call, path).await?;
     let hierarchy_at = |pos| {
@@ -378,8 +378,8 @@ async fn call_hierarchy(call: Call) -> IdeResult<Output> {
         }
         result => result?,
     };
-    if scope.dir().is_some() {
-        found.items.retain(|i| i.uri.is_none() && scope.contains(&i.path.0));
+    if !paths.is_all() {
+        found.items.retain(|i| i.uri.is_none() && paths.matches_path(&i.path.0));
     }
     let incomplete = found.incomplete;
     let (mut root, items) = call_items(found, |p| call.display(p));

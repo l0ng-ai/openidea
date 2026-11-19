@@ -109,7 +109,7 @@ export function splitPageTarget(target: string): { pageId: string; focus: string
   return i < 0 ? { pageId: target, focus: null } : { pageId: target.slice(0, i), focus: target.slice(i + 1) || null };
 }
 
-export function openSettings(pageId?: string, opts: { newProjects?: boolean } = {}) {
+export function openSettings(pageId?: string, opts: { newProjects?: boolean; globalBase?: ValidSettings } = {}) {
   const s = useSettingsDialog.getState();
   const base = validateSettings(useProject.getState().settings);
   const target = pageId ? splitPageTarget(pageId) : { pageId: s.pageId, focus: null };
@@ -120,7 +120,7 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
     focus: target.focus,
     query: "",
     base,
-    globalBase: base,
+    globalBase: opts.globalBase ?? base,
     newProjects: opts.newProjects ?? false,
     staged: {},
     stagedSecrets: {},
@@ -129,7 +129,7 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
     saving: false,
     error: null,
   });
-  void loadGlobalBase();
+  if (!opts.globalBase) void loadGlobalBase();
 }
 
 export function openProjectStructure(section?: string) {
@@ -182,10 +182,10 @@ async function loadGlobalBase() {
   }
 }
 
-export function rebaseSettings() {
+export function rebaseSettings(globalBase?: ValidSettings) {
   const base = validateSettings(useProject.getState().settings);
-  useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { base, globalBase: base } : {}));
-  void loadGlobalBase();
+  useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { base, globalBase: globalBase ?? base } : {}));
+  if (!globalBase) void loadGlobalBase();
 }
 
 /** IDEA's File › New Projects Setup › Settings for New Projects. */

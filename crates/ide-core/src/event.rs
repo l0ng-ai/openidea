@@ -53,6 +53,10 @@ pub enum IdeEvent {
         root: crate::IpcPath,
         status: DirenvStatus,
     },
+    /// The project's `flutter daemon` changed state, or a device came or went.
+    FlutterDevices {
+        list: FlutterDeviceList,
+    },
     /// Files or directories changed on disk (after debouncing, ignore rules applied).
     FsChanged {
         created: Vec<crate::IpcPath>,
@@ -234,6 +238,46 @@ pub enum AskpassKind {
     Confirm,
 }
 
+/// A target `flutter run -d <id>` can name, or an Android device adb sees but Flutter can't use yet.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FlutterDevice {
+    pub id: String,
+    pub name: String,
+    /// `android`, `ios`, `macos`, `web`, …
+    pub platform_type: Option<String>,
+    /// `mobile`, `desktop` or `web`.
+    pub category: Option<String>,
+    pub emulator: bool,
+    /// The adb state keeping it from being used (`unauthorized`, `offline`, …).
+    pub unavailable: Option<String>,
+}
+
+/// See [`FlutterDeviceList`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum FlutterDaemonStatus {
+    #[default]
+    Stopped,
+    /// Started; the first device discovery has not finished.
+    Starting,
+    Ready,
+    /// No `flutter` executable on the search path.
+    NotInstalled,
+    /// The daemon could not start or exited: what it printed last. It is not restarted on its own.
+    Failed {
+        message: String,
+    },
+}
+
+/// The project's Flutter devices, best default first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FlutterDeviceList {
+    pub status: FlutterDaemonStatus,
+    pub devices: Vec<FlutterDevice>,
+}
+
 /// See [`IdeEvent::Direnv`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -268,6 +312,8 @@ pub enum LspRefreshKind {
     InlayHints,
     SemanticTokens,
     CodeLens,
+    /// The Dart server published a document's Flutter outline.
+    FlutterOutline,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -322,6 +368,21 @@ pub enum DebugEvent {
     HotCodeReplace {
         change_type: String,
         message: String,
+    },
+    /// `flutter debug_adapter`'s `flutter.appStarted` event (launch and attach): the session is
+    /// a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
+    FlutterAppStarted,
+    /// The VM Service of a Flutter session's app, which DevTools connects to.
+    FlutterVmService {
+        uri: String,
+        /// The Flutter device the app runs on.
+        device: Option<String>,
+    },
+    /// Flutter's inspector selected a widget: its source, 0-based.
+    FlutterNavigate {
+        path: crate::IpcPath,
+        line: u32,
+        column: u32,
     },
     /// The session's capabilities changed after it started: fetch them again.
     Capabilities,

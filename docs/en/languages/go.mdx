@@ -15,10 +15,11 @@ If gopls is missing, OpenIDEA shows a **gopls is not installed** notification wi
 
 ### Go SDK
 
-**Settings › Languages & Frameworks › Go** has two settings:
+**Settings › Languages & Frameworks › Go** has three settings:
 
 - **GOROOT**: the Go SDK used by gopls and the go run and test configurations. **Default** uses `go` on `PATH`; if the project pins a Go version for mise or asdf, that install is used instead.
 - **Project GOPATH**: empty uses `go env GOPATH`.
+- **Format with gofumpt**: gopls formats with [gofumpt](https://github.com/mvdan/gofumpt), a stricter gofmt, when you reformat code (gopls `gofumpt` setting). Off by default.
 
 The GOROOT list shows the SDKs the IDE finds: the `go` on `PATH`, `/usr/local/go`, Homebrew and `/usr/lib/go` installs, SDKs in `~/sdk` (installed with `golang.org/dl`), toolchains Go downloaded itself (`~/go/pkg/mod/golang.org/toolchain@…`), and mise and asdf installs.
 

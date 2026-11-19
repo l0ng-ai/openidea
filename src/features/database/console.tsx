@@ -45,9 +45,9 @@ import type { EditorDocContext } from "@/editor/api";
 import { iconNode } from "@/ui/iconNode";
 import { call, commands, type DbDriver, type DbSessionContext, type DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
-import { IconButton, Select, lazyComponent } from "@/ui";
+import { Icon, IconButton, Select, Toolbar, lazyComponent } from "@/ui";
 import { useProject } from "@/platform/project";
-import { activeSchema, schemaSwitchable, sourceLabel, splitTarget, targetOf } from "./model";
+import { activeSchema, schemaSwitchable, sourceIcon, sourceLabel, splitTarget, targetOf } from "./model";
 import { loadSavedCatalog, offerIntrospection } from "./introspection";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
 import {
@@ -477,9 +477,11 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   // SQL resolution scopes in the settings can move the console to another data source.
   useProject((s) => s.settings);
   const boundId = bound ? splitTarget(bound).id : null;
-  const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
-  const sqlServer = sourceById(boundId)?.driver === "sqlServer";
-  const switchable = schemaSwitchable(sourceById(boundId)?.driver);
+  const driver = sources.find((s) => s.id === boundId)?.driver;
+  const jdbc = driver === "jdbc";
+  const supportsTransactions = driver !== "clickhouse" && !jdbc;
+  const sqlServer = driver === "sqlServer";
+  const switchable = schemaSwitchable(driver);
   // The console's active schema: its pick, else the connection's default (`completion.defaultSchema`).
   const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
   const defaultSchema = useDatabase((s) => (bound ? s.completion[bound]?.defaultSchema : undefined));
@@ -502,9 +504,10 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       : schemaList?.status === "ok"
         ? schemaList.value
         : [];
-    const out = names.map((n) => ({ value: n, label: n }));
+    const out = names.map((n) => ({ value: n, label: n, icon: "db-schema" }));
     // The connection's default is offered even before its schema list loads.
-    if (defaultSchema && !names.includes(defaultSchema)) out.unshift({ value: defaultSchema, label: defaultSchema });
+    if (defaultSchema && !names.includes(defaultSchema))
+      out.unshift({ value: defaultSchema, label: defaultSchema, icon: "db-schema" });
     return out;
   }, [switchable, schemaList, defaultSchema, sqlServer, boundId, databases]);
   const targets = useMemo(() => {
@@ -519,9 +522,9 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
             value: targetOf(id, name, dbs.value.current),
             label: `${s.name ?? ""}: ${name}`,
             detail: host,
-            icon: "database",
+            icon: sourceIcon(s),
           });
-      } else out.push({ value: id, label: s.name ?? "", detail: host, icon: "db-schema" });
+      } else out.push({ value: id, label: s.name ?? "", detail: host, icon: sourceIcon(s) });
     }
     // A console bound to a database whose list is not loaded yet still shows it.
     if (bound && !out.some((o) => o.value === bound))
@@ -535,7 +538,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
     if (bound) void loadCompletion(bound);
   }, [bound]);
   return (
-    <div className={styles.consoleBar}>
+    <Toolbar className={styles.consoleBar} aria-label="Query Console">
       <IconButton
         icon="run"
         title="Execute"
@@ -549,20 +552,16 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         disabled={!bound || running}
         onClick={() => void executeScriptInView(view, path)}
       />
-      <IconButton
-        icon="db-plan"
-        title="Explain Plan"
-        disabled={!bound || running}
-        onClick={() => void explainInView(view, path)}
-      />
-      <IconButton
-        icon="stop"
-        title="Cancel Running Statement"
-        disabled={!running}
-        onClick={() => cancelConsole(path)}
-      />
       <span className={styles.toolbarSeparator} />
       <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
+      {!jdbc && (
+        <IconButton
+          icon="db-plan"
+          title="Explain Plan"
+          disabled={!bound || running}
+          onClick={() => void explainInView(view, path)}
+        />
+      )}
       <IconButton
         icon="db-in-editor-results"
         title="In-Editor Results"
@@ -570,28 +569,18 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         onClick={() => void setInEditorResults(!inEditor)}
       />
       <span className={styles.toolbarSeparator} />
-      <Select
-        variant="ghost"
-        aria-label="Row limit"
-        value={String(maxRows)}
-        options={ROW_LIMITS.map((v) => ({ value: v, label: tx`${Number(v).toLocaleString("en")} rows` }))}
-        onChange={(v) => useDatabase.setState({ maxRows: Number(v) })}
-      />
       {supportsTransactions && (
-        <>
-          <span className={styles.toolbarSeparator} />
-          <Select
-            variant="ghost"
-            aria-label="Transaction mode"
-            value={manual ? "manual" : "auto"}
-            options={[
-              { value: "auto", label: "Tx: Auto" },
-              { value: "manual", label: "Tx: Manual" },
-            ]}
-            onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
-            disabled={!bound}
-          />
-        </>
+        <Select
+          variant="ghost"
+          aria-label="Transaction mode"
+          value={manual ? "manual" : "auto"}
+          options={[
+            { value: "auto", label: "Tx: Auto" },
+            { value: "manual", label: "Tx: Manual" },
+          ]}
+          onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
+          disabled={!bound}
+        />
       )}
       {supportsTransactions && manual && (
         <>
@@ -609,8 +598,31 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
           />
         </>
       )}
+      <IconButton
+        icon="stop"
+        title="Cancel Running Statement"
+        disabled={!running}
+        onClick={() => cancelConsole(path)}
+      />
+      <span className={styles.toolbarSeparator} />
+      <Select
+        variant="ghost"
+        aria-label="Row limit"
+        value={String(maxRows)}
+        options={ROW_LIMITS.map((v) => ({ value: v, label: tx`${Number(v).toLocaleString("en")} rows` }))}
+        onChange={(v) => useDatabase.setState({ maxRows: Number(v) })}
+      />
       <span className={styles.spacer} />
-      {bound && sourceById(boundId)?.driver === "snowflake" && <SnowflakeSession target={bound} idle={!running} />}
+      {bound && driver === "snowflake" && <SnowflakeSession target={bound} idle={!running} />}
+      <Select
+        variant="ghost"
+        aria-label="Data source"
+        value={bound ?? null}
+        placeholder={sources.length ? "<data source>" : "None configured"}
+        options={targets}
+        onChange={(id) => bindConsole(path, id)}
+        disabled={!sources.length}
+      />
       {switchable && (
         <Select
           variant="ghost"
@@ -623,16 +635,13 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
           disabled={!bound}
         />
       )}
-      <Select
-        variant="ghost"
-        aria-label="Data source"
-        value={bound ?? null}
-        placeholder={sources.length ? "<data source>" : "None configured"}
-        options={targets}
-        onChange={(id) => bindConsole(path, id)}
-        disabled={!sources.length}
-      />
-    </div>
+      {driver === "sqlite" && (
+        <span className={styles.consoleSchema} title={tx("Schema")}>
+          <Icon name="db-schema" size={14} />
+          {schema || "main"}
+        </span>
+      )}
+    </Toolbar>
   );
 }
 

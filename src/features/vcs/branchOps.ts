@@ -1,6 +1,7 @@
 /** Branch operations (checkout, create, merge, rebase, update, delete) with recents and favorites. */
+import { createElement, Fragment } from "react";
 import { create } from "zustand";
-import type { Branch, BranchInfo, CheckoutOptions, Worktree } from "@/bindings";
+import type { Branch, BranchInfo, BranchUpdateStatus, CheckoutOptions, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -9,7 +10,7 @@ import { branchNamePrefixes, isFavoriteBranch, pushRecent, shortRemoteName } fro
 import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
-import { errorMessage, runOp, runRemote, saveAll } from "./ops";
+import { errorMessage, runBranchUpdates, runOp, runRemote, saveAll, type RepoBranchUpdate } from "./ops";
 import { conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -535,15 +536,58 @@ export async function checkoutAndRebase(name: string) {
   await rebaseOnto(current, branchRef(current, false));
 }
 
-/** Update for a branch: the current one updates its repository, another fast-forwards to its upstream. */
-export async function updateBranch(name: string) {
-  const b = useVcs.getState().branches.find((x) => !x.remote && x.name === name);
-  if (b?.current) return void executeAction("vcs.update", { repo: currentRepo() });
-  if (!b?.upstream) {
-    notifications().notify({ group: "vcs", level: "warning", title: `Branch '${name}' has no tracked branch` });
-    return;
+/**
+ * Update Selected (IDEA's Git.Update.Selected): the current branch alone updates its
+ * repository like Update Project; otherwise every selected local branch is
+ * fast-forwarded to its tracked branch, with one balloon for the whole selection.
+ */
+type UpdateTarget = { repo?: string; branch?: Pick<Branch, "name" | "remote" | "current"> };
+
+export async function updateBranches(targets: readonly UpdateTarget[]) {
+  const local = targets.flatMap((t) => (t.branch && !t.branch.remote ? [{ repo: t.repo, branch: t.branch }] : []));
+  const fallback = currentRepo();
+  if (local.length === 1 && local[0]!.branch.current)
+    return void executeAction("vcs.update", { repo: local[0]!.repo ?? fallback });
+  const byRepo = new Map<string | null, string[]>();
+  for (const t of local) {
+    const repo = t.repo ?? fallback;
+    byRepo.set(repo, [...(byRepo.get(repo) ?? []), t.branch.name]);
   }
-  await runRemote({ op: "updateBranch", branch: name }, `${name} ← ${b.upstream}`);
+  if (!byRepo.size) return;
+  const results = await runBranchUpdates(byRepo);
+  if (!results) return;
+  const { lines, ...summary } = branchUpdateSummary(results);
+  const body = createElement(Fragment, null, ...lines.map((line) => createElement("div", { key: line }, line)));
+  notifications().notify({ group: "vcs", key: "vcs.remote", ...summary, body });
+}
+
+/** IDEA's "Selected branches updated" balloon: which branches were updated, and why the others were not. */
+export function branchUpdateSummary(results: readonly RepoBranchUpdate[]) {
+  const repos = new Set(results.map((r) => r.repo)).size > 1;
+  const label = (r: RepoBranchUpdate) => (repos && r.repo ? `${repoName(r.repo)}: ${r.branch}` : r.branch);
+  const names = (status: BranchUpdateStatus) =>
+    results
+      .filter((r) => r.status === status)
+      .map(label)
+      .join(", ");
+  const count = (status: BranchUpdateStatus) => results.filter((r) => r.status === status).length;
+  const updated = count("updated");
+  const problems = count("notFastForward") + count("noUpstream") + count("failed");
+  const lines = [
+    updated ? tx`Updated: ${names("updated")}` : null,
+    count("upToDate") ? tx`Already up-to-date: ${names("upToDate")}` : null,
+    count("notFastForward") ? tx`Not updated, cannot be fast-forwarded: ${names("notFastForward")}` : null,
+    count("noUpstream") ? tx`Not updated, no tracked branch: ${names("noUpstream")}` : null,
+    ...results.filter((r) => r.status === "failed").map((r) => tx`Failed to update ${label(r)}: ${r.message ?? ""}`),
+  ].filter((l): l is string => !!l);
+  const title = updated
+    ? updated === 1
+      ? tx`Updated ${updated} branch`
+      : tx`Updated ${updated} branches`
+    : problems
+      ? tx("No branches were updated")
+      : tx("Selected branches are up-to-date");
+  return { level: problems ? ("warning" as const) : ("info" as const), title, lines };
 }
 
 // --- several repositories ----------------------------------------------------

@@ -76,6 +76,7 @@ pub fn register_builtin_points(
     registry.register(Arc::new(super::navigation::IndexersPoint))?;
     registry.register(Arc::new(super::providers::ProvidersPoint::new(providers.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::providers::SECRETS_POINT, ui.clone(), super::providers::secret)))?;
+    registry.register(Arc::new(UiPoint::new(super::search::POINT, ui.clone(), super::search::declaration)))?;
     registry.register(Arc::new(UiPoint::new(super::endpoints::POINT, ui.clone(), super::endpoints::declaration)))?;
     registry.register(Arc::new(UiPoint::new(
         "runConfigurations",

@@ -42,7 +42,7 @@ import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { renderMath } from "@/editor/lsp/markdownMath";
-import { modeOf, useMarkdownModes } from "./modes";
+import { modeOf, pinMarkdownMode, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
   ANCHOR_PREFIX,
@@ -90,7 +90,8 @@ export function MarkdownEditor({
   children: ReactNode;
   actionsInTabs?: boolean;
 }) {
-  const mode = useMarkdownModes((s) => modeOf(s, path));
+  const mode = useMarkdownModes((s) => modeOf(s, tabId));
+  useEffect(() => pinMarkdownMode(tabId), [tabId]);
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
 

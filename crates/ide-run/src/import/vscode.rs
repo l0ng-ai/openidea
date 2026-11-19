@@ -8,8 +8,8 @@
 //! `${input:…}`, `${command:…}`) is skipped.
 
 use super::{
-    Entry, Found, SkipReason, command_name, config, env_var, normalize, path_from, project_python, split_args,
-    working_dir,
+    Entry, Found, SkipReason, command_name, config, dart_package, env_var, flutter_run, normalize, path_from,
+    project_python, split_args, working_dir,
 };
 use crate::RunConfig;
 use ide_core::{IdeError, IdeResult};
@@ -48,6 +48,7 @@ const NODE_LAUNCH: &[&str] = &["program", "args", "runtimeExecutable", "runtimeA
 const NODE_ATTACH: &[&str] = &["address", "port", "localRoot", "remoteRoot"];
 const NODE_TERMINAL: &[&str] = &["command"];
 const BROWSER_LAUNCH: &[&str] = &["url", "webRoot"];
+const DART_LAUNCH: &[&str] = &["program", "args", "toolArgs", "deviceId", "flutterMode"];
 const COMPOUND: &[&str] = &["configurations"];
 
 const PACKAGE_MANAGERS: &[&str] = &["npm", "pnpm", "yarn", "bun"];
@@ -226,9 +227,10 @@ impl Cx<'_> {
             ("chrome" | "pwa-chrome" | "msedge" | "pwa-msedge", "launch") => {
                 (self.browser_launch(name, obj, ty)?, BROWSER_LAUNCH)
             }
+            ("dart", "launch") => (self.dart_launch(name, obj)?, DART_LAUNCH),
             (
                 "debugpy" | "python" | "node" | "pwa-node" | "node-terminal" | "chrome" | "pwa-chrome" | "msedge"
-                | "pwa-msedge",
+                | "pwa-msedge" | "dart",
                 other,
             ) => {
                 return Err(SkipReason::UnsupportedRequest { request: other.to_owned() });
@@ -236,7 +238,9 @@ impl Cx<'_> {
             (other, _) => return Err(SkipReason::UnsupportedType { type_: other.to_owned() }),
         };
         if request == "launch" {
-            config.cwd = self.cwd(obj)?.1.map(Into::into);
+            if config.cwd.is_none() {
+                config.cwd = self.cwd(obj)?.1.map(Into::into);
+            }
             self.environment(obj, &mut config)?;
         }
         let mut ignored: Vec<String> = obj
@@ -364,6 +368,43 @@ impl Cx<'_> {
             }
         }
         Ok(c)
+    }
+
+    /// Dart Code's launch: `flutter run` in a Flutter app's package, as the Flutter debug adapter
+    /// starts it (`args` go to the app), else `dart run`.
+    fn dart_launch(&self, name: &str, obj: &Map<String, Value>) -> Res<RunConfig> {
+        let (dir, _) = self.cwd(obj)?;
+        let program = self.string(obj, "program")?;
+        // Relative to `cwd`, or to the workspace folder as Dart Code resolves it.
+        let file = |p: &str| {
+            let base = [&dir, self.root].into_iter().find(|b| b.join(p).is_file()).unwrap_or(&dir);
+            normalize(&base.join(p))
+        };
+        let entry = file(program.as_deref().unwrap_or("lib/main.dart"));
+        let tool_args = self.words(obj, "toolArgs")?;
+        let args = self.words(obj, "args")?;
+        match dart_package(self.root, &entry) {
+            Some((package, true)) => {
+                let mut extra = Vec::new();
+                if let Some(device) = self.string(obj, "deviceId")? {
+                    extra.extend(["-d".to_owned(), device]);
+                }
+                if let Some(mode @ ("profile" | "release")) = self.string(obj, "flutterMode")?.as_deref() {
+                    extra.push(format!("--{mode}"));
+                }
+                extra.extend(tool_args);
+                extra.extend(args.into_iter().flat_map(|a| ["--dart-entrypoint-args".to_owned(), a]));
+                Ok(flutter_run(name, self.root, &package, &entry, extra))
+            }
+            _ if program.is_none() => Err(SkipReason::NothingToRun),
+            _ => {
+                let mut words = vec!["run".to_owned()];
+                words.extend(tool_args);
+                words.push(self.path_from(entry.to_string_lossy().into_owned(), &dir));
+                words.extend(args.into_iter().map(|a| self.path_from(a, &dir)));
+                Ok(config(name, "dart", "dart".into(), words, Some("dart")))
+            }
+        }
     }
 
     /// `localRoot` (relative to the project root, empty for the root itself) and `remoteRoot`.

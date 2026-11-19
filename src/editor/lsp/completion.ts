@@ -899,12 +899,18 @@ const lookupTracker = ViewPlugin.fromClass(
         if (options.length === 1 && editorPrefs().completion.autoInsertSingle) {
           const doc = u.state.doc;
           setTimeout(() => {
-            const now = currentCompletions(view.state);
+            const state = view.state;
+            const now = currentCompletions(state);
+            const { head } = state.selection.main;
+            const line = state.doc.lineAt(head);
+            const column = head - line.from;
+            // Keep the lookup open so Tab can replace the remaining identifier.
             if (
-              view.state.doc === doc &&
-              completionStatus(view.state) === "active" &&
+              state.doc === doc &&
+              completionStatus(state) === "active" &&
               now.length === 1 &&
-              now[0] === options[0]
+              now[0] === options[0] &&
+              identifierEnd(line.text, column) === column
             )
               acceptCompletion(view);
           }, AUTO_INSERT_DELAY);
@@ -914,7 +920,7 @@ const lookupTracker = ViewPlugin.fromClass(
   },
 );
 
-/** ⌃Space: explicit completion (a focused lookup; a sole candidate is inserted at once). */
+/** ⌃Space: explicit completion with a focused lookup. */
 export function explicitCompletion(view: EditorView): boolean {
   explicitPending.add(view);
   const started = startCompletion(view);

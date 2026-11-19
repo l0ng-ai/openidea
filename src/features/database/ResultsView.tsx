@@ -3,6 +3,7 @@
  * executed statement with its outcome, and a `Result N` tab per result set —
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
+import { canModifyTable } from "./objects";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import {
   useCallback,
@@ -325,7 +326,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
     !!target &&
     !!pk &&
     !readOnlySource &&
-    driver !== "clickhouse" &&
+    canModifyTable(driver) &&
     sources.some((s) => s !== null);
 
   // The pending edits belong to the result they were made on: fresh rows (a re-run,
@@ -493,7 +494,8 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const tablePkCount = detailsValue?.columns.filter((c) => c.primaryKey).length ?? 0;
   let notice: string | null = null;
   if (!editable) {
-    if (driver === "clickhouse") notice = tx("Use the query console to change ClickHouse data.");
+    if (driver === "jdbc") notice = tx("Use the query console to change JDBC data.");
+    else if (driver === "clickhouse") notice = tx("Use the query console to change ClickHouse data.");
     else if (readOnlySource) notice = tx("Read-only data source.");
     else if (editability.kind === "readonly") notice = readonlyNotice(editability.reason);
     else if (!target) notice = tx("Read-only: the table schema could not be identified in the result database.");
@@ -575,7 +577,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               {notice}
             </div>
           )}
-          <div className={clsx(styles.fill, styles.gridHost)}>
+          <div className={styles.fill}>
             <DataView
               columns={gridColumns}
               rowCount={rowCount}
@@ -588,6 +590,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
               firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
+              pager={<Pager tab={busy ? { ...tab, busy: true } : tab} />}
               aria-label={tab.title}
               rowState={(row) => (row >= loaded ? "inserted" : edits.deletes.has(row) ? "deleted" : null)}
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
@@ -609,7 +612,6 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
                   : []
               }
             />
-            <Pager tab={busy ? { ...tab, busy: true } : tab} />
           </div>
         </>
       )}
@@ -815,7 +817,7 @@ export function ResultsView() {
             ...results.map((r) => ({
               id: String(r.id),
               label: r.title,
-              icon: r.plan ? "db-plan" : "database",
+              icon: r.plan ? "db-plan" : "db-table",
               closable: true,
               pinned: r.pinned,
               tooltip: r.outcome.statement.text,

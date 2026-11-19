@@ -88,6 +88,7 @@ pub(crate) fn detect_with_profiles(
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
     detect_godot(root, &mut out);
+    detect_projects(root, &["pubspec.yaml"], detect_flutter, &mut out);
     crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
@@ -1542,6 +1543,17 @@ fn detect_godot(root: &Path, out: &mut Vec<RunConfig>) {
             (format!("godot:project:{r}"), format!("Godot Project ({r})"), Some(rel.clone()))
         };
         out.push(config(id, name, "godot", "godot", &["--path", "."]).debug("godot").in_dir(cwd));
+    }
+}
+
+/// A Flutter app: depends on the SDK and has the conventional entry point (packages have none).
+fn detect_flutter(root: &Path, out: &mut Vec<RunConfig>) {
+    if root.join("lib/main.dart").is_file()
+        && read(&root.join("pubspec.yaml")).is_some_and(|pubspec| pubspec.contains("sdk: flutter"))
+    {
+        out.push(
+            config("flutter:run", "flutter run", "flutter", "flutter", &["run", "-t", "lib/main.dart"]).debug("dart"),
+        );
     }
 }
 

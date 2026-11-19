@@ -255,6 +255,7 @@ describe("catalogs", () => {
   const OWN_SCRIPT = new Set(["zh", "ko"]);
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
+    "Flutter DevTools",
     "4096 MB",
     "6144 MB",
     "8192 MB",
@@ -290,6 +291,7 @@ describe("catalogs", () => {
     "YAML",
     "XML",
     "Maven",
+    "Flutter",
     "Thymeleaf",
     "sbt",
     "Gradle",

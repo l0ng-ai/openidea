@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import clsx from "clsx";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
@@ -45,12 +46,13 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { nodeOutput } from "./testing";
-import { TestTreeView, formatDuration } from "./TestTreeView";
+import { formatDuration, nodeOutput } from "./testing";
+import { TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
+import { hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
 import { configIcon } from "./configs";
 import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
@@ -180,10 +182,15 @@ export function SessionPanel({
   );
 
   return (
-    <div className={styles.session}>
-      <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
+    <div className={clsx(styles.session, showLifecycle && styles.topToolbarSession)}>
+      <div
+        className={styles.toolbar}
+        role="toolbar"
+        aria-orientation={showLifecycle ? "horizontal" : "vertical"}
+        aria-label={tx("Run actions")}
+      >
         {showLifecycle && (
-          <>
+          <div className={styles.toolbarGroup}>
             <IconButton
               icon="rerun"
               title="Rerun"
@@ -223,34 +230,54 @@ export function SessionPanel({
                 onClick={() => showApplicationUpdate(session.id)}
               />
             )}
-            <div className={styles.toolbarSep} />
-          </>
+            {supportsHotReload(session.config) && (
+              <>
+                <IconButton
+                  icon="hot-reload"
+                  title="Hot Reload"
+                  shortcut={shortcutLabel("run.flutterHotReload")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotReload(session.id)}
+                />
+                <IconButton
+                  icon="refresh"
+                  title="Hot Restart"
+                  shortcut={shortcutLabel("run.flutterHotRestart")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotRestart(session.id)}
+                />
+              </>
+            )}
+          </div>
         )}
-        {!rt.terminal && (
-          <>
-            <IconButton
-              icon="search"
-              title="Find…"
-              shortcut={formatBinding(hostBinding("Meta+F"))}
-              pressed={findOpen}
-              onClick={() => setFindOpen((v) => !v)}
-            />
-            <IconButton
-              icon="scroll-to-end"
-              title="Scroll to End"
-              pressed={follow}
-              onClick={() => setFollow((v) => !v)}
-            />
-            <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
-          </>
-        )}
-        <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
-        <div className={styles.toolbarSep} />
-        <IconButton
-          icon="settings"
-          title="Edit Configurations…"
-          onClick={() => void executeAction("run.editConfigs", session.config.id)}
-        />
+        <div className={styles.toolbarGroup}>
+          {!rt.terminal && (
+            <>
+              <IconButton
+                icon="search"
+                title="Find…"
+                shortcut={formatBinding(hostBinding("Meta+F"))}
+                pressed={findOpen}
+                onClick={() => setFindOpen((v) => !v)}
+              />
+              <IconButton
+                icon="scroll-to-end"
+                title="Scroll to End"
+                pressed={follow}
+                onClick={() => setFollow((v) => !v)}
+              />
+              <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
+            </>
+          )}
+          <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
+        </div>
+        <div className={styles.toolbarGroup}>
+          <IconButton
+            icon="settings"
+            title="Edit Configurations…"
+            onClick={() => void executeAction("run.editConfigs", session.config.id)}
+          />
+        </div>
       </div>
       <div className={styles.sessionBody}>
         {rt.tests ? (
@@ -261,6 +288,7 @@ export function SessionPanel({
                 version={version}
                 cwd={cwd}
                 running={running}
+                name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}

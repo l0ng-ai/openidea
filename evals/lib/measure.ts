@@ -3,6 +3,7 @@
  * what the user would see. A condition true at the start of a frame is painted by it.
  */
 import type { Page } from "@playwright/test";
+import { withDeadline } from "../../perf/lib/lifecycle.ts";
 
 /**
  * A check of the page, run in it every frame: self-contained (it is re-created from its
@@ -55,7 +56,7 @@ export class TimeoutError extends Error {
 }
 
 export async function track<A>(page: Page, spec: TrackSpec<A>): Promise<Tracked> {
-  const r = await page.evaluate(
+  const operation = page.evaluate(
     ({ action, actionArg, openFile, run, arg, first, done, feedback, signature, settleMs, timeoutMs }) => {
       const w = window as unknown as {
         __openideaPerf: {
@@ -75,26 +76,57 @@ export async function track<A>(page: Page, spec: TrackSpec<A>): Promise<Tracked>
       let lastSig: string | null = null;
       let lastChange = 0;
       const before = w.__openideaPerf.editorState();
-      const visible = (sel: string) =>
-        [...document.querySelectorAll(sel)].some((el) => (el as HTMLElement).getClientRects().length > 0);
+      const feedbackSelector = '.cm-lsp-hint, [data-testid="usages-popup"], [role="dialog"], [role="listbox"]';
+      const beforeFeedback = new Map<Element, { text: string | null; loading: string | null; busy: string | null }>();
+      for (const el of document.querySelectorAll(feedbackSelector)) {
+        if (el.getClientRects().length) {
+          beforeFeedback.set(el, {
+            text: el.textContent,
+            loading: el.getAttribute("data-loading"),
+            busy: el.getAttribute("aria-busy"),
+          });
+        }
+      }
       const anyFeedback = () => {
-        if (visible('.cm-lsp-hint, [data-testid="usages-popup"], [role="dialog"], [role="listbox"]')) return true;
+        for (const el of document.querySelectorAll(feedbackSelector)) {
+          if (!el.getClientRects().length) continue;
+          const previous = beforeFeedback.get(el);
+          if (
+            !previous ||
+            previous.text !== el.textContent ||
+            previous.loading !== el.getAttribute("data-loading") ||
+            previous.busy !== el.getAttribute("aria-busy")
+          )
+            return true;
+        }
         const now = w.__openideaPerf.editorState();
         if ((now?.path ?? null) !== (before?.path ?? null) || (now && before && now.head !== before.head)) return true;
         return checks.feedback?.(arg, before) ?? false;
       };
       const times: { feedbackMs?: number; firstResultMs?: number; completeMs?: number } = {};
       const t0 = performance.now();
-      let failed: unknown = null;
-      const started = run
-        ? new Promise((resolve) => resolve(make(run)!(arg, before)))
-        : openFile
-          ? w.__openideaPerf.openFile(openFile)
-          : w.__openideaPerf.runAction(action!, actionArg);
-      void started.catch((e: unknown) => (failed = e));
+      let completed = false;
+      let failed: string | null = null;
+      const started = Promise.resolve().then<unknown>(() =>
+        run
+          ? make(run)!(arg, before)
+          : openFile
+            ? w.__openideaPerf.openFile(openFile)
+            : w.__openideaPerf.runAction(action!, actionArg),
+      );
+      void started.then(
+        (value) => {
+          if (!run && !openFile && value !== true) failed = "action did not run";
+          else completed = true;
+        },
+        (error: unknown) => {
+          failed = error instanceof Error ? error.message : String(error);
+        },
+      );
       return new Promise<{ times: typeof times; timedOut: boolean; error: string | null }>((resolve) => {
         const tick = () => {
           const t = performance.now() - t0;
+          if (failed !== null) return resolve({ times, timedOut: false, error: failed });
           try {
             if (times.feedbackMs === undefined && anyFeedback()) times.feedbackMs = t;
             if (times.firstResultMs === undefined && checks.first(arg, before)) times.firstResultMs = t;
@@ -106,7 +138,7 @@ export async function track<A>(page: Page, spec: TrackSpec<A>): Promise<Tracked>
               }
             }
             const settled = !sign || t - lastChange >= (settleMs ?? 0);
-            if (times.firstResultMs !== undefined && settled && checks.done(arg, before)) {
+            if (completed && times.firstResultMs !== undefined && settled && checks.done(arg, before)) {
               // Session.reset waits out the time in which invoking it again widens it.
               if (action === "find.showUsages")
                 (window as unknown as { __openideaEvalShowUsagesAt?: number }).__openideaEvalShowUsagesAt =
@@ -118,7 +150,6 @@ export async function track<A>(page: Page, spec: TrackSpec<A>): Promise<Tracked>
           } catch (e) {
             return resolve({ times, timedOut: false, error: String(e) });
           }
-          if (failed) return resolve({ times, timedOut: false, error: String((failed as Error).message ?? failed) });
           if (t > timeoutMs) return resolve({ times, timedOut: true, error: null });
           requestAnimationFrame(tick);
         };
@@ -139,8 +170,9 @@ export async function track<A>(page: Page, spec: TrackSpec<A>): Promise<Tracked>
       timeoutMs: spec.timeoutMs,
     },
   );
+  const r = await withDeadline(operation, spec.timeoutMs + 1000, "page measurement");
   const what = spec.action ?? (spec.openFile ? `open ${spec.openFile}` : "step");
-  if (r.error) throw new Error(`${what}: ${r.error}`);
+  if (r.error !== null) throw new Error(`${what}: ${r.error}`);
   if (r.timedOut) {
     const seen =
       r.times.firstResultMs !== undefined

@@ -1,5 +1,5 @@
 import { ContributedToolbar } from "@/workbench/ContributedToolbar";
-import { useFilePresentationIcons } from "@/ui/filePresentation";
+import { useFilePresentations } from "@/ui/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
  * tab in italics, pinned tabs, modified dot, file icons coloured by file
@@ -161,7 +161,11 @@ function useTitleHints(): Map<string, string> {
       return out.sort();
     }),
   );
-  return useMemo(() => disambiguateTitles(paths), [paths]);
+  const labels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle ?? basename(p))));
+  return useMemo(() => {
+    const byPath = new Map(paths.map((p, i) => [p, labels[i]!]));
+    return disambiguateTitles(paths, (p) => byPath.get(p) ?? basename(p));
+  }, [paths, labels]);
 }
 
 const virtualData = (input: EditorInput) => input.data as VirtualInputData | undefined;
@@ -180,6 +184,8 @@ function PaneView({ paneId }: { paneId: string }) {
   const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
+  const tabLabels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle)));
+  const tabIcons = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabIcon)));
   const errors = useFileDecorations(useShallow(() => paths.map((p) => !!p && !!getFileDecoration(p)?.error)));
   const fileColors = useFileColors("editorTabs");
 
@@ -190,8 +196,8 @@ function PaneView({ paneId }: { paneId: string }) {
   const { showExtension, markModified, showCloseButton, showFileIcon, showDirectoryForNonUnique, showFullPathOnHover } =
     tabPrefs;
 
-  const fileIcons = useFilePresentationIcons(
-    showFileIcon ? tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])) : [],
+  const files = useFilePresentations(
+    tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])),
   );
   const items: TabItem[] = useMemo(() => {
     // A kind's title may change without the tab state (a renamed agent task).
@@ -200,7 +206,7 @@ function PaneView({ paneId }: { paneId: string }) {
     return tabs.map((t, i) => {
       const full = names[i]!;
       const dot = full.lastIndexOf(".");
-      const name = t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full;
+      const name = tabLabels[i] ?? (t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full);
       const dupe = !showDirectoryForNonUnique
         ? null
         : t.input.kind === "file" && t.input.path
@@ -210,18 +216,20 @@ function PaneView({ paneId }: { paneId: string }) {
             : null;
       const kindMark = tabTrailing(t.input, kinds);
       const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;
+      const file = t.input.kind === "file" && t.input.path ? files.get(t.input.path) : undefined;
+      const title = markModified && dirty[i] ? `*${name}` : name;
       return {
         id: t.id,
         label: (
           <>
-            {markModified && dirty[i] ? `*${name}` : name}
+            {file?.deprecated ? <span className={styles.deprecated}>{title}</span> : title}
             {dupe && <span className={styles.dupe}>{dupe}</span>}
           </>
         ),
         text: dupe ? `${name} — ${dupe}` : name,
         icon: showFileIcon
           ? t.input.kind === "file" && t.input.path
-            ? fileIcons.get(t.input.path)
+            ? (tabIcons[i] ?? file?.icon)
             : tabIcon(t.input, kinds)
           : undefined,
         italic: t.preview,
@@ -245,7 +253,7 @@ function PaneView({ paneId }: { paneId: string }) {
       };
     });
   }, [
-    fileIcons,
+    files,
     tabs,
     kinds,
     titleRevision,
@@ -253,6 +261,8 @@ function PaneView({ paneId }: { paneId: string }) {
     colors,
     errors,
     tints,
+    tabLabels,
+    tabIcons,
     fileColors,
     hints,
     showExtension,

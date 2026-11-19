@@ -166,8 +166,8 @@ Maven 模块在 **自动** 和 **构建（Make）** 时由 jdtls（ECJ）构建�
 
 “查找操作”里有两个导入操作（对话框里也有入口）：
 
-- **从 .vscode/launch.json 导入运行配置**：导入 Python 和 Node.js 的 launch / attach 配置以及 compounds。`${workspaceFolder}`、`${env:NAME}` 这类含义固定的变量会被替换；用到 `${file}`、`${input:…}`、`${command:…}` 的条目会被跳过。
-- **从 JetBrains 导入运行配置（.run、.idea）**：读取 `.run/*.run.xml`、`.idea/runConfigurations/*.xml` 和 `.idea/workspace.xml`。Python、Django、pytest、npm、Jest、Vitest、Node.js、Shell Script、Application、JAR Application、Spring Boot、Go 和复合配置会被转换，其他类型跳过。
+- **从 .vscode/launch.json 导入运行配置**：导入 Python 和 Node.js 的 launch / attach 配置、Dart 的 launch 配置（Flutter 应用导入为 Flutter 配置）以及 compounds。`${workspaceFolder}`、`${env:NAME}` 这类含义固定的变量会被替换；用到 `${file}`、`${input:…}`、`${command:…}` 的条目会被跳过。
+- **从 JetBrains 导入运行配置（.run、.idea）**：读取 `.run/*.run.xml`、`.idea/runConfigurations/*.xml` 和 `.idea/workspace.xml`。Python、Django、pytest、npm、Jest、Vitest、Node.js、Shell Script、Application、JAR Application、Spring Boot、Go、Flutter 和复合配置会被转换，其他类型跳过。和已有配置（例如自动检测出的 `flutter run`）命令相同的条目会被跳过。
 
 导入完成后会有通知告诉你导入了多少、哪些被跳过以及原因。
 

@@ -59,6 +59,8 @@ struct FakeAgent {
     session_steering: bool,
     /// Records the `mcpServers` array passed to `session/new`, `session/load`, and `session/fork`.
     mcp_calls: Mutex<Vec<(String, Vec<String>)>>,
+    /// The content blocks of each `session/prompt`.
+    prompts: Mutex<Vec<Value>>,
 }
 
 impl FakeAgent {
@@ -247,7 +249,17 @@ impl Handler for FakeAgent {
                 Ok(json!({}))
             }
             "session/prompt" => {
-                let text = params.pointer("/prompt/0/text").and_then(Value::as_str).unwrap_or_default().to_owned();
+                self.prompts.lock().push(params.get("prompt").cloned().unwrap_or(Value::Null));
+                // `!` commands run since the last message come first; the message follows.
+                let first = match params.pointer("/prompt/0/text").and_then(Value::as_str) {
+                    Some(t) if t.starts_with("<bash-input>") => 1,
+                    _ => 0,
+                };
+                let text = params
+                    .pointer(&format!("/prompt/{first}/text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
                 if text.starts_with("<send_user_message_question_reply>") {
                     self.say(&session, "answer received");
                     return Ok(json!({"stopReason": "end_turn"}));
@@ -1361,6 +1373,79 @@ async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
 }
 
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_commands_show_in_the_conversation_and_go_with_the_next_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let turns = agent.prompts.lock().len();
+
+    mgr.run_shell(&task.id, " echo shell-out ", ide_core::CancellationToken::new()).await.unwrap();
+    assert_eq!(agent.prompts.lock().len(), turns, "a `!` command starts no turn");
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let Some(AgentEntry::Tool { title, kind, status, output, .. }) = entries.last() else {
+        panic!("no entry for the command: {entries:?}")
+    };
+    assert_eq!((title.as_str(), kind.as_str(), *status), ("! echo shell-out", "execute", AgentToolStatus::Completed));
+    assert_eq!(output.as_deref(), Some("shell-out"));
+
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert_eq!(
+        sent.pointer("/0/text").and_then(Value::as_str),
+        Some(
+            "<bash-input>echo shell-out</bash-input>\n<bash-stdout>shell-out</bash-stdout><bash-stderr></bash-stderr>"
+        )
+    );
+    assert_eq!(sent.pointer("/1/text").and_then(Value::as_str), Some("again"));
+    // Only once.
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert_eq!(sent.pointer("/0/text").and_then(Value::as_str), Some("again"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_task_starts_no_turn_until_its_first_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("! echo first"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            idle: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!((task.status, task.title.as_str()), (AgentStatus::Ready, "! echo first"));
+
+    mgr.run_shell(&task.id, "echo first", ide_core::CancellationToken::new()).await.unwrap();
+    assert!(agent.prompts.lock().is_empty(), "an idle task starts no turn");
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert!(sent.pointer("/0/text").and_then(Value::as_str).is_some_and(|t| t.contains("echo first")));
+    assert_eq!(sent.pointer("/1/text").and_then(Value::as_str), Some("again"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn send_now_interrupts_the_turn_when_steering_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1850,7 +1935,7 @@ async fn startup_warnings_survive_replay_and_restart_without_failing_the_task() 
     let handle = mgr.task(&task.id).unwrap();
     handle.replaying.store(true, Ordering::Release);
     handle.turn_started.store(false, Ordering::Release);
-    let client = Client { task: Arc::downgrade(&handle) };
+    let client = Client::new(&handle, None);
     client.on_notification(WARNING_NOTIFICATION, json!({"message": "Project MCP config is disabled until trusted."}));
     client.on_notification(WARNING_NOTIFICATION, json!({"message": "  "}));
     client.on_notification(WARNING_NOTIFICATION, json!({}));
@@ -4318,6 +4403,7 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
             isolation: Isolation::Local,
             base: None,
             mcp_overrides: BTreeMap::from([("slack".into(), false)]),
+            idle: false,
         })
         .await
         .unwrap();
@@ -4445,6 +4531,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             isolation: Isolation::Local,
             base: None,
             mcp_overrides: BTreeMap::new(),
+            idle: false,
         })
         .await
         .unwrap();
@@ -4469,6 +4556,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             isolation: Isolation::Local,
             base: None,
             mcp_overrides: BTreeMap::new(),
+            idle: false,
         })
         .await
         .unwrap();

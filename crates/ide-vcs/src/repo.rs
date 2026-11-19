@@ -76,6 +76,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
         git_dir,
         inner: std::sync::Mutex::new(cache),
         ignored: Default::default(),
+        cli_status: Default::default(),
         log_index: Default::default(),
         log_signatures: Default::default(),
     }))

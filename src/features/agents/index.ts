@@ -165,9 +165,15 @@ export function activate(): () => void {
       id: "agents.send",
       menus: ["editor", "projectView"],
       order: 80,
-      items: (menu, { paths }) =>
+      items: (menu, { paths, dirs }) =>
         paths.length && !paths.some(isVirtualUri)
-          ? [{ kind: "action", action: "agents.sendToAgent", arg: menu === "projectView" ? paths : undefined }]
+          ? [
+              {
+                kind: "action",
+                action: "agents.sendToAgent",
+                arg: menu === "projectView" ? paths.map((p, i) => (dirs?.[i] ? `${p}/` : p)) : undefined,
+              },
+            ]
           : [],
     }),
     registerActions([

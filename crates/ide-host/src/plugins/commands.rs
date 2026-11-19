@@ -184,6 +184,12 @@ pub fn plugin_decoration_sets(plugins: &Arc<PluginHost>) -> BTreeMap<String, Vec
     plugins.decoration_sets()
 }
 
+/// Every plugin's console highlight rules (later changes arrive as `consoleRulesChanged`).
+#[command(trust = trusted)]
+pub fn plugin_console_rules(plugins: &Arc<PluginHost>) -> BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+    plugins.console_rules()
+}
+
 /// Reports exactly one completion from the operation's launching window.
 #[command(trust = trusted)]
 pub fn plugin_finish_operation(
@@ -296,6 +302,7 @@ ide_command::domain!(
     plugin_answer_prompt,
     plugin_cancel_task,
     plugin_choose_program,
+    plugin_console_rules,
     plugin_content_tab_action,
     plugin_context_keys,
     plugin_debug_attach_target,

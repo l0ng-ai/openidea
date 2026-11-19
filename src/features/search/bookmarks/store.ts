@@ -148,31 +148,6 @@ export function removeBookmarks(list: readonly Bookmark[], pred: (b: Bookmark) =
   return list.filter((b) => !pred(b));
 }
 
-/**
- * Replaces the lines of `path`'s bookmarks after an edit moved them
- * (`lines` in the same order as the file's current bookmarks; duplicates collapse).
- */
-export function setFileLines(
-  list: readonly Bookmark[],
-  path: string,
-  lines: ReadonlyArray<{ line: number; text: string }>,
-): Bookmark[] {
-  const old = list.filter((b) => b.path === path);
-  const seen = new Set<number>();
-  const moved: Bookmark[] = [];
-  lines.forEach((l, i) => {
-    if (seen.has(l.line)) return;
-    seen.add(l.line);
-    const prev = old[i];
-    const b: Bookmark = { path, line: l.line, text: clip(l.text), created: prev?.created ?? Date.now() };
-    if (prev?.list) b.list = prev.list;
-    if (prev?.mnemonic) b.mnemonic = prev.mnemonic;
-    if (prev?.description) b.description = prev.description;
-    moved.push(b);
-  });
-  return sortBookmarks([...list.filter((b) => b.path !== path), ...moved]);
-}
-
 export function renameBookmarks(list: readonly Bookmark[], from: string, to: string | null): Bookmark[] {
   const out: Bookmark[] = [];
   for (const b of list) {

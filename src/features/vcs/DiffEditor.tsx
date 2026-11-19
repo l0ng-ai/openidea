@@ -53,7 +53,7 @@ import {
   languageFor,
   viewerBase,
 } from "./cm";
-import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
+import { applyChunk, arrowControls, chunkAt, hoverRevert, onHunkButtonClick, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
   IGNORE_OPTIONS,
@@ -681,16 +681,14 @@ export function DiffEditor({
             mergeControls: editableB
               ? (type) => {
                   const btn = document.createElement("button");
+                  btn.type = "button";
                   if (type === "accept") {
                     btn.hidden = true;
                     return btn;
                   }
                   btn.textContent = "Revert";
                   btn.title = "Revert this change";
-                  btn.onmousedown = (event) => {
-                    event.preventDefault();
-                    revertUnifiedChunk(view, view.posAtDOM(btn));
-                  };
+                  onHunkButtonClick(btn, () => revertUnifiedChunk(view, view.posAtDOM(btn)));
                   return btn;
                 }
               : false,
@@ -1449,6 +1447,7 @@ export function DiffEditor({
         {canSwap && <IconButton icon="swap-panels" title="Swap Sides" size="small" onClick={() => void swapSides()} />}
         <IconButton
           icon="diff-side-by-side"
+          className={styles.inlineOption}
           title="Side-by-side Viewer"
           size="small"
           pressed={viewMode === "split"}
@@ -1457,6 +1456,7 @@ export function DiffEditor({
         />
         <IconButton
           icon="diff-unified"
+          className={styles.inlineOption}
           title="Unified Viewer"
           size="small"
           pressed={viewMode === "unified"}
@@ -1480,6 +1480,7 @@ export function DiffEditor({
         />
         <IconButton
           icon="collapse-all"
+          className={styles.inlineOption}
           title="Collapse Unchanged Fragments"
           size="small"
           pressed={opts.collapse}
@@ -1488,6 +1489,7 @@ export function DiffEditor({
         {viewMode === "split" && (
           <IconButton
             icon="lock"
+            className={styles.inlineOption}
             title="Synchronize Scrolling"
             size="small"
             pressed={opts.syncScroll}

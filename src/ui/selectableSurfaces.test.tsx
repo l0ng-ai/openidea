@@ -33,7 +33,7 @@ describe("selectable read-only surfaces", () => {
         },
       }),
     );
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, "/p/README.md": "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
     render(
       <MarkdownEditor path="/p/README.md" tabId="t">
         <div />

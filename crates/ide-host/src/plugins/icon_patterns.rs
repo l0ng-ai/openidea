@@ -30,7 +30,7 @@ pub(crate) fn validate_pattern(pattern: &str) -> Result<(), String> {
     }
 }
 
-fn unsupported_construct(pattern: &str) -> Option<&'static str> {
+pub(crate) fn unsupported_construct(pattern: &str) -> Option<&'static str> {
     if pattern.match_indices("(?").any(|(at, _)| !pattern[at + 2..].starts_with(':')) {
         return Some("an inline flag, lookaround or named group");
     }

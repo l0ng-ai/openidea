@@ -101,7 +101,9 @@ stdio 配置大致如下（路径以你机器上的为准）：
 - `search_symbol` 和 `find_references` 使用 IDE 的索引和语言服务器；`get_symbol_info` 返回的内容与快速文档相同。
 - `get_call_hierarchy` 列出某个位置上函数或方法的调用方，`direction` 为 `outgoing` 时列出它调用的函数，每次一层。位置在函数体内时，指的就是这个函数。要再深入一层，用某一项的 `filePath`、`startLine` 和 `startColumn` 再调用一次。库中的项以 URI 作为 `filePath`，不能继续展开。
 - 列表类工具每次返回一页：从 `offset` 开始的 `limit` 项（默认 100；`search_symbol` 为 50，`list_runs` 为 10）。`total`（计数代价低的工具才有）、`more` 和 `nextOffset` 说明后面还有多少。`list_runs` 可按 `state` 过滤（`running`、`idle`、`error` 或某个具体状态），`get_run_configurations` 可按 `query` 过滤，`get_project_problems` 默认只列错误，`errorsOnly` 传 false 时也列警告。
-- 查询类工具（各搜索工具、`find_references`、`get_call_hierarchy`、`get_project_problems`、`git_status`、`get_all_open_file_paths`、`get_run_configurations`、`list_runs`）接受 `scope`：一个目录（相对项目根目录或绝对路径），只返回其中文件的结果，比如某个附加项目或某个模块。
+- 查询类工具（各搜索工具、`find_references`、`get_call_hierarchy`、`get_project_problems`、`git_status`、`get_all_open_file_paths`、`get_run_configurations`、`list_runs`）接受 `paths`：相对项目根目录的通配符（`src/**`、`!**/test/**`、`*.rs`），项目外的附加项目用绝对路径，只返回匹配的结果。搜索工具只遍历这些通配符所在的目录。
+- `search_text`、`search_regex` 和 `search_file` 会跳过 `.gitignore` 忽略的和项目排除的内容，`paths` 指定的目录里也一样，`includeExcluded` 传 true 时才包括。
+- `list_directory_tree` 列出全部内容，`.gitignore` 忽略的标为 `[git-ignored]`，项目排除的标为 `[ide-excluded]`。
 - `get_file_problems` 和 `get_project_problems` 返回的是问题工具窗口当前显示的内容（已应用你的检查配置文件），而不是重新分析的结果。
 - `check_files` 才是重新分析，适合在任何工具修改文件之后调用：它从磁盘同步每个文件，通知语言服务器文件已保存（这样 `cargo check` 等保存时检查也会运行），并等到服务器答复且分析完成。每个文件都有一个 `status`，说明问题列表是否完整，或者为什么无法检查：没有对应的语言服务器，或者服务器未安装、配置错误、已崩溃。
 - `rename_refactoring` 通过语言服务器重命名，文本搜索找不到的引用也会一并更新；也可以只预览不写入。
@@ -129,8 +131,11 @@ stdio 配置大致如下（路径以你机器上的为准）：
 - **运行和构建会先询问。** `execute_run_configuration`、`build_project`、`run_command` 和 `http_run_request` 会在 OpenIDEA 中弹出对话框，说明是哪个客户端、哪个项目、哪个工具以及要运行什么，选择 **允许** 或 **拒绝**；多个请求会排队。
 - 会写入的工具拒绝项目之外的路径。
 
+## 远程开发
+
+在远程窗口（[SSH](/zh/guide/remote/ssh)、WSL 或[容器](/zh/guide/remote/containers)）中，`openidea-server` 会在远程主机上运行自己的 MCP 服务器，可在该远程窗口的 **Settings › Agents › IDE MCP Server** 中独立配置。远程窗口内启动的编程智能体会立即可用内置工具；在远程主机终端运行的外部客户端可使用 **Copy Stdio Config**（`~/.openidea/bin/openidea-server --mcp-stdio`）或 **Copy HTTP Config**，桌面端客户端则可在 **Ports** 工具窗口转发该端口后连接。
+
 ## 限制
 
-- 远程项目（通过 SSH、服务器或容器打开的项目）暂不支持 MCP 服务器。
 - 服务器只为 OpenIDEA 中已打开的项目提供服务，关闭项目窗口后该项目的工具就不可用了。
 - 响应是普通 JSON，服务器不通过 SSE 推送流式结果。

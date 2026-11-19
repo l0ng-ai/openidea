@@ -21,6 +21,7 @@ import { CLI_KIND, CliDoneMark, cliData, moveTerminalToEditor } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
+import { notifyTerminalVisibility } from "./outputGate";
 import type { SessionOptions } from "./session";
 
 const WINDOW = "terminal";
@@ -199,6 +200,25 @@ export function activate(): () => void {
         },
       },
       {
+        id: "terminal.runLines",
+        title: "Run Lines in Terminal",
+        description: "Opens a shell tab and types `{ lines, name?, cwd? }` into it.",
+        category: "Terminal",
+        icon: "terminal",
+        when: "projectOpen",
+        hidden: true,
+        run: async ({ arg }) => {
+          const a = arg as { lines?: unknown; name?: unknown; cwd?: unknown } | undefined;
+          const lines = Array.isArray(a?.lines) ? a.lines.filter((x): x is string => typeof x === "string") : [];
+          const cwd = (typeof a?.cwd === "string" && a.cwd) || projectRoot();
+          if (!lines.length || !cwd) return;
+          const rt = await loadTerminalRuntime();
+          rt.newTabRunning(cwd, typeof a?.name === "string" && a.name ? a.name : undefined, lines);
+          toolWindowService().show(WINDOW, true);
+          focusActiveSoon();
+        },
+      },
+      {
         id: "terminal.runCommand",
         title: "Run Command in Terminal",
         description: "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.",
@@ -333,6 +353,12 @@ export function activate(): () => void {
       const rt = terminalRuntime();
       (rt?.sessionForTerminalId(e.terminal) ?? rt?.cliSessionForTerminalId(e.terminal))?.exited(e.code);
     }),
+    (() => {
+      if (typeof document === "undefined") return () => {};
+      const onVisibility = () => notifyTerminalVisibility();
+      document.addEventListener("visibilitychange", onVisibility);
+      return () => document.removeEventListener("visibilitychange", onVisibility);
+    })(),
     // Sessions belong to the project. Remember this project's tabs, then open the next one's.
     useProject.subscribe((s, prev) => {
       const rt = terminalRuntime();

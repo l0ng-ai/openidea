@@ -354,6 +354,8 @@ fn nested_builds_of_every_kind_and_depth() {
         ide_build::compile::BuildKind::Build,
         Some(&dir.path().join("services/api/app/src/main/kotlin/com/acme/Api.kt")),
         None,
+        None,
+        &ide_core::CancellationToken::new(),
     )
     .unwrap();
     assert_eq!(plan.steps[0].cwd, dir.path().join("services/api"));
@@ -623,6 +625,20 @@ fn godot_projects_run_their_main_scene() {
     assert_eq!(demo.name, "Godot Project (demo)");
     assert_eq!(demo.cwd, Some(std::path::PathBuf::from("demo").into()));
     assert!(detect(project(&[("main.gd", "extends Node\n")]).path()).is_empty());
+}
+
+#[test]
+fn flutter_apps_run_their_entry_point() {
+    let pubspec = "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n";
+    let dir = project(&[("pubspec.yaml", pubspec), ("lib/main.dart", "void main() {}\n")]);
+    let c = detect(dir.path());
+    let app = find(&c, "flutter:run");
+    assert_eq!(app.kind, "flutter");
+    assert_eq!(cmdline(app), "flutter run -t lib/main.dart");
+    assert_eq!(app.debug_adapter.as_deref(), Some("dart"));
+    // A Flutter package has no app to start, and a Dart package no Flutter.
+    assert!(detect(project(&[("pubspec.yaml", pubspec), ("lib/widgets.dart", "")]).path()).is_empty());
+    assert!(detect(project(&[("pubspec.yaml", "name: tool\n"), ("lib/main.dart", "")]).path()).is_empty());
 }
 
 #[test]
