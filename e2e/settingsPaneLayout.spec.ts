@@ -6,7 +6,7 @@ for (const [id, selector] of [
   ["languages.servers", "[class*='body'] > [class*='language'][aria-label]"],
   ["plugins", "[class*='body'] > [class*='details']"],
   ["agents.list", "section[aria-label='Codex']"],
-]) {
+] as const) {
   test(`${id} keeps its details usable beside the list`, async ({ workbench: page }) => {
     await page.keyboard.press("Meta+,");
     const dialog = page.getByRole("dialog", { name: "Settings", exact: true });

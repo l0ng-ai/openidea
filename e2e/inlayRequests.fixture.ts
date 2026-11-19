@@ -1,5 +1,6 @@
 import { EditorView } from "@codemirror/view";
-import { commands, type InlayHint, type Range } from "../src/platform/ipc";
+import type { InlayHint, Range } from "../src/bindings";
+import { commands } from "../src/platform/ipc";
 import { setInvokeRoute } from "../src/platform/tauriCore";
 import { lspDoc } from "../src/editor/lsp/lsp";
 import { inlayExtension } from "../src/editor/lsp/inlay";

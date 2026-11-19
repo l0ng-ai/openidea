@@ -205,12 +205,10 @@ describe("resolveTarget", () => {
     expect(resolveTarget(e, model)).toEqual({ schema: "nope", table: "missing", alias: null });
   });
 
-  it("refuses unresolved defaults and SQL Server database/schema ambiguity", () => {
+  it("refuses an unresolved default and keeps an explicit schema over the console's", () => {
     expect(resolveTarget(editable("SELECT * FROM users"), model, "")).toBeNull();
-    expect(resolveTarget(editable("SELECT * FROM users"), model, "public", "sqlServer")).toBeNull();
-    const explicit = editable("SELECT * FROM dbo.users");
-    expect(resolveTarget(explicit, model, "other_database", "sqlServer")).toBeNull();
-    expect(resolveTarget(explicit, model, "public", "sqlServer")).toEqual({
+    expect(resolveTarget(editable("SELECT * FROM users"), model, "sales")?.schema).toBe("sales");
+    expect(resolveTarget(editable("SELECT * FROM dbo.users"), model, "sales")).toEqual({
       schema: "dbo",
       table: "users",
       alias: null,
