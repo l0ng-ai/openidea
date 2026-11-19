@@ -5,7 +5,7 @@
 use ide_host::catalogue::TrustClass;
 use ide_host::plugins::remote::{RemotePluginLanguages, SYNC_COMMAND};
 use ide_host::plugins::remote_host::RemotePlugins;
-use ide_host::rpc::{self, Dispatcher, PeerSlot};
+use ide_host::rpc::{self, Dispatcher};
 use ide_host::{Host, HostConfig};
 use ide_language::LanguageRegistry;
 use std::path::PathBuf;
@@ -63,6 +63,8 @@ fn main() {
     let mode = match args.as_slice() {
         #[cfg(unix)]
         [flag, sock] if flag == "--daemon" => Mode::Daemon(PathBuf::from(sock)),
+        #[cfg(not(unix))]
+        [flag, _] if flag == "--attach" => Mode::Stdio,
         _ if args.iter().any(|a| a == "--stdio") => Mode::Stdio,
         _ => {
             eprintln!(
@@ -138,7 +140,7 @@ async fn run(base: PathBuf, mode: Mode) -> i32 {
         }
         #[cfg(unix)]
         Mode::Daemon(socket) => {
-            let peer = Arc::new(PeerSlot::default());
+            let peer = Arc::new(rpc::PeerSlot::default());
             let sink_peer = peer.clone();
             let plugins_data = data_dir.clone();
             let host = Arc::new(Host::new(HostConfig {
