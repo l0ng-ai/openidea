@@ -209,6 +209,7 @@ impl InlayHints for MyPlugin {
 | `implementation`      | `implementation(doc, at)`                        | 与服务器的实现结果合并。                                                                                                                                                              |
 | `type-definition`     | `type_definition(doc, at)`                       | 与服务器的类型声明结果合并。                                                                                                                                                          |
 | `gutter-actions`      | `gutter_actions(doc)`                            | 行号槽按钮，执行插件声明的命令，可带参数。                                                                                                                                            |
+| `hover-actions`       | `hover_actions(doc)`                             | 行左侧边缘的操作，在 `start-line..=end-line` 内任意一行的编辑区前四列悬浮时显示；按钮锚定到 `line`，不覆盖文本（API 1.14）。                                                          |
 
 下面是 [Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)
 示例中提供命令入口的代码透镜：

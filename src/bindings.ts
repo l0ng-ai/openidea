@@ -6878,6 +6878,21 @@ export type Hover = {
 	range: Range | null,
 };
 
+/**  An action rendered at the left edge of a line and revealed by hover. */
+export type HoverAction = {
+	/**  The line the button is drawn on; normally the declaration line. */
+	line: number,
+	/**  First line whose leftmost strip reveals this action, inclusive. */
+	startLine: number,
+	/**  Last line whose leftmost strip reveals this action, inclusive. */
+	endLine: number,
+	icon: string | null,
+	label: string,
+	tooltip: string | null,
+	command: string,
+	argument: string | null,
+};
+
 /**  One request with its outcome. */
 export type HttpExchange = {
 	entry: HttpHistoryEntry,
@@ -9392,6 +9407,7 @@ export type PluginLanguageVisuals = {
 	injections: Injection[],
 	colors: ([string, ColorInfo])[],
 	gutterActions: ([string, GutterAction])[],
+	hoverActions: ([string, HoverAction])[],
 };
 
 export type PluginLocation = {

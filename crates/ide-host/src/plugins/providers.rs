@@ -54,6 +54,7 @@ pub enum ProviderKind {
     Implementation,
     TypeDefinition,
     GutterActions,
+    HoverActions,
     Injections,
 }
 
@@ -204,10 +205,14 @@ impl ExtensionPoint for ProvidersPoint {
                     | ProviderKind::Implementation
                     | ProviderKind::TypeDefinition
                     | ProviderKind::GutterActions
+                    | ProviderKind::HoverActions
                     | ProviderKind::Injections
             )
         }) {
             pkg.manifest.needs_api("contributes.providers: language features and injections", 4)?;
+        }
+        if d.kinds.contains(&ProviderKind::HoverActions) {
+            pkg.manifest.needs_api("contributes.providers: hover-actions", 14)?;
         }
         for l in &d.languages {
             if l != "*"
