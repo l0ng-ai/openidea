@@ -6387,6 +6387,32 @@ fn api14_window_status_overrides_fall_back_and_are_withdrawn() {
 }
 
 #[test]
+fn a_status_item_menu_reaches_the_ui_and_names_only_declared_commands() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    f.run("api14", "menu-status", Some("App: running")).unwrap();
+    let item = f.host.status_snapshot("main").into_iter().find(|i| i.id == "menu").unwrap().item;
+    assert_eq!(item.text, "App: running");
+    assert_eq!(
+        item.menu,
+        [
+            ide_plugin::StatusMenuEntry::Header { label: "App".into() },
+            ide_plugin::StatusMenuEntry::Action {
+                label: "Open".into(),
+                description: Some("https://app.test".into()),
+                command: "events".into(),
+                argument: Some("web".into()),
+            },
+            ide_plugin::StatusMenuEntry::Separator,
+        ]
+    );
+    let err = f.run("api14", "bad-menu-status", Some("changed")).unwrap_err();
+    assert!(err.contains("undeclared"), "{err}");
+    let item = f.host.status_snapshot("main").into_iter().find(|i| i.id == "menu").unwrap().item;
+    assert_eq!(item.text, "App: running", "a refused menu changes nothing");
+}
+
+#[test]
 fn api14_command_requests_preserve_window_result_and_reject_cycles() {
     let f = Arc::new(fixture(Limits::default()));
     f.install(&sample("api14"));

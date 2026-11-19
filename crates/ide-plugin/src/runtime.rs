@@ -388,6 +388,11 @@ pub trait HostApi: Send + Sync {
     }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Checks a status item menu before it is set: its actions name commands the plugin declares.
+    fn check_status_menu(&self, menu: &[crate::StatusMenuEntry]) -> Result<(), HostError> {
+        let _ = menu;
+        Ok(())
+    }
     /// Sets or removes the status override in the invoking window.
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
         let _ = (client, id, item);
