@@ -1,6 +1,7 @@
 /** Import Sessions from Other Apps: pick sessions a scan found now, and import them as tasks. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { Button, Dialog, Icon, List, SearchField, Spinner, T, listNavigate, rowSelectionMode, selectRow } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { relativePath, useProject } from "@/platform/project";
 import { useTx } from "@/platform/i18n";
@@ -41,6 +42,7 @@ function folderOf(cwd: string | null, root: string | undefined): string {
 
 function ImportSessionsDialog() {
   const tx = useTx();
+  const rowHeight = useRowHeight(ROW);
   const listId = useId();
   const root = useProject((s) => s.project?.root);
   const external = useAgents((s) => s.external);
@@ -216,7 +218,7 @@ function ImportSessionsDialog() {
               activeIndex={lead}
               onSelect={select}
               isSelected={(r) => !!sel.keys?.has(r.key)}
-              rowHeight={ROW}
+              rowHeight={rowHeight}
               aria-label={tx("Sessions from other apps")}
               empty={
                 <div className={styles.empty}>

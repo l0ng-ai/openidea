@@ -338,17 +338,17 @@
   align-items: center;
   gap: var(--space-1);
   max-width: 260px;
-  height: 30px;
-  border-radius: 6px;
+  height: var(--h-toolbar-widget);
+  border-radius: var(--radius-toolbar-dropdown);
 }
 .widgetDevice {
   composes: widgetChooser;
   max-width: 180px;
 }
 .widgetButton {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
+  width: var(--titlebar-tool-button);
+  height: var(--titlebar-tool-button);
+  border-radius: var(--radius-toolbar-button);
 }
 .widgetLoading {
   display: inline-flex;

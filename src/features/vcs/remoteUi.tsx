@@ -30,6 +30,7 @@ import { pushOperation, splitTracked, type PushChoice } from "./pushTarget";
 import { currentRepo, currentRepoRoot, loadBranches, refreshNow, repoName, useVcs } from "./store";
 import { stripRemotePrefix, TargetBranchInput } from "./TargetBranchInput";
 import styles from "./common.module.css";
+import { useRowHeight } from "@/ui/density";
 
 /** Update Project… scope: one repository (`null`: the selected one), else every repository. */
 export interface UpdateTarget {
@@ -256,6 +257,7 @@ interface MultiPushDialogProps {
 }
 
 function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
+  const rowHeight = useRowHeight(22);
   const allRoots = useVcs((s) => s.roots);
   const roots = useMemo(() => (only === undefined ? allRoots : allRoots.filter((r) => r === only)), [allRoots, only]);
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
@@ -474,7 +476,7 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
                   selected={new Set(shown ? [shown.key] : [])}
                   multiSelect={false}
                   onSelectionChange={(_sel, lead) => setShown(lead)}
-                  rowHeight={22}
+                  rowHeight={rowHeight}
                   aria-label="Outgoing commits"
                   className={styles.boxList}
                   empty={
@@ -604,6 +606,7 @@ function PushRowTarget(props: {
 }
 
 function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClose: () => void }) {
+  const rowHeight = useRowHeight(22);
   const [repo] = useState(currentRepo);
   const [branch] = useState(() => useVcs.getState().branch);
   const [branches] = useState(() => useVcs.getState().branches);
@@ -737,7 +740,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           getKey={(c) => c.id}
           activeIndex={shownCommit}
           onActiveChange={setShownCommit}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label="Outgoing commits"
           className={styles.boxList}
           empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}

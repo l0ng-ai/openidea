@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
+import { useCompactMode } from "@/ui/density";
 import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
 import { validateGeneralExtras, validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
@@ -104,6 +105,16 @@ describe("appearance & behavior settings", () => {
     );
     // Anything that is neither a position nor a boolean falls back to the default.
     expect(validateAppearanceExtras({ navigationBar: "everywhere" }).navigationBar).toBe("statusBar");
+  });
+
+  it("applies Compact mode to the root attribute and the JS density store", () => {
+    const root = document.createElement("div");
+    applyAppearanceOptions(validateSettings({ appearance: { compactMode: true } }), root);
+    expect(root.dataset.compact).toBe("");
+    expect(useCompactMode.getState()).toBe(true);
+    applyAppearanceOptions(validateSettings({}), root);
+    expect(root.dataset.compact).toBeUndefined();
+    expect(useCompactMode.getState()).toBe(false);
   });
 
   it("defaults Use smaller indents in trees to off and applies the indent variable", () => {

@@ -7,11 +7,15 @@
   gap: var(--space-1);
   padding: 0 10px 0 12px;
   font-family: var(--font-ui);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-chrome);
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   position: relative;
+}
+/* IDEA's compact status bar is just its widgets' height (StatusBar.Widget.widgetInsets 4,8,3,8). */
+:global(:root[data-compact]) .bar {
+  height: var(--h-statusbar);
 }
 /* Widgets read as plain UI text like IDEA's, whatever their own font. */
 .item {
