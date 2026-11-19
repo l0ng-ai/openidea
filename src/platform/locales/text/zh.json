@@ -9025,5 +9025,7 @@
   "File '{name}' already exists. Do you want to overwrite it?": "文件 '{name}' 已存在。是否覆盖？",
   "{path} is a directory": "{path} 是目录",
   "Cannot export test results": "无法导出测试结果",
-  "Test results exported": "测试结果已导出"
+  "Test results exported": "测试结果已导出",
+  "Always update snapshots": "始终更新快照",
+  "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "每次同步、构建和运行时都检查远程仓库中是否有更新的 SNAPSHOT 依赖（-U）。"
 }

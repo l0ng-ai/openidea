@@ -65,6 +65,7 @@ describe("languages settings", () => {
       activeProfiles: "",
       delegateBuild: false,
       downloadSources: false,
+      updateSnapshots: false,
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -77,6 +78,7 @@ describe("languages settings", () => {
     expect(validateLanguages({ java: { maven: { delegateBuild: true } } }).java.maven.delegateBuild).toBe(true);
     expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
     expect(validateLanguages({ java: { maven: { downloadSources: true } } }).java.maven.downloadSources).toBe(true);
+    expect(validateLanguages({ java: { maven: { updateSnapshots: true } } }).java.maven.updateSnapshots).toBe(true);
     const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
     expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
   });

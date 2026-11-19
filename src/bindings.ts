@@ -8378,6 +8378,11 @@ export type MavenSettings = {
 	 *  from a library class's Download Sources banner.
 	 */
 	downloadSources?: boolean,
+	/**
+	 *  Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
+	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
+	 */
+	updateSnapshots?: boolean,
 };
 
 /**  Summary of one server discovered inside an external MCP configuration file. */
