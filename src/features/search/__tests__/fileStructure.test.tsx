@@ -66,9 +66,9 @@ describe("File Structure popup", () => {
   it("shows the outline as an expanded tree; ←/→ collapse and expand", () => {
     const input = open();
     expect(rows()).toEqual(["OrderController", "list", "create", "helper"]);
-    // The first symbol is preselected; ← collapses it, → expands it again.
+    // Left and right arrows stay in the filter field and do not collapse or expand the tree.
     fireEvent.keyDown(input, { key: "ArrowLeft" });
-    expect(rows()).toEqual(["OrderController", "helper"]);
+    expect(rows()).toEqual(["OrderController", "list", "create", "helper"]);
     fireEvent.keyDown(input, { key: "ArrowRight" });
     expect(rows()).toEqual(["OrderController", "list", "create", "helper"]);
   });

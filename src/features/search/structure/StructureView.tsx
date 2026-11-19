@@ -413,20 +413,6 @@ function FileStructureDialog() {
         } else tree.current?.moveSelection(dir);
         break;
       }
-      case "ArrowRight":
-        if (!node || !node.children.length) return;
-        if (!expanded.has(node.key)) setExpanded(node.key, true);
-        else tree.current?.reveal(node.children[0]!.key);
-        break;
-      case "ArrowLeft": {
-        if (!node) return;
-        if (node.children.length && expanded.has(node.key)) setExpanded(node.key, false);
-        else {
-          const parent = parents.get(node.key);
-          if (parent) tree.current?.reveal(parent);
-        }
-        break;
-      }
       default:
         return;
     }
