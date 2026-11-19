@@ -97,7 +97,9 @@ export function MergeToolbar({ summary, step, run }: ToolbarProps) {
         onClick={direct(() => run("compare"))}
         data-merge-menu="compare"
       />
-      <span className={clsx(styles.status, !summary.pending && styles.statusDone)}>{statusText(summary)}</span>
+      <span className={clsx(styles.status, !summary.pending && styles.statusDone)} role="status">
+        {statusText(summary)}
+      </span>
       <IconButton
         icon="refresh"
         title="Reload from Disk"

@@ -122,7 +122,10 @@ export function MarkdownEditor({
         className={styles.group}
         storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
       >
-        <SplitPanel id="editor" style={{ overflow: "hidden" }} {...splitBounds}>
+        {/* Hidden but mounted in Preview only (its caret drives the preview). Disabled, it leaves the group a
+            single resizable panel: two enabled panels without a separator get an implicit resize region between
+            them, which for a hidden panel spans everything left of the preview. */}
+        <SplitPanel id="editor" style={{ overflow: "hidden" }} disabled={mode === "preview"} {...splitBounds}>
           <div ref={editorRef} className={styles.editor}>
             {children}
           </div>

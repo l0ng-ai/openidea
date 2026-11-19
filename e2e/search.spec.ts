@@ -1,3 +1,4 @@
+import type { SearchQuery } from "../src/bindings";
 import { doubleShift, expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 test("double Shift opens Search Everywhere with its tabs; Escape closes it", async ({ workbench: page }) => {
@@ -100,11 +101,14 @@ test("Find in Files streams matches by file and opens the chosen one at its line
   await expect
     .poll(
       async () =>
-        (await ipcCalls(page, "search_start")).filter((c) => !/\bTODO\b/.test(c.query?.pattern ?? "")).at(-1)?.query,
+        (await ipcCalls(page, "search_start"))
+          .filter(({ query }) => {
+            const pattern = query && typeof query === "object" && "pattern" in query ? query.pattern : undefined;
+            return typeof pattern !== "string" || !/\bTODO\b/.test(pattern);
+          })
+          .at(-1)?.query,
     )
-    .toMatchObject({
-      pattern: "OrderService",
-    });
+    .toMatchObject({ pattern: "OrderService" } satisfies Pick<SearchQuery, "pattern">);
   const preview = dialog.getByRole("region", { name: "Preview", exact: true }).locator(".cm-content");
   await expect(preview).toHaveAttribute("contenteditable", "true");
   // Matches take the editor scheme's search result background (IDEA's SEARCH_RESULT_ATTRIBUTES) and keep the syntax colours.

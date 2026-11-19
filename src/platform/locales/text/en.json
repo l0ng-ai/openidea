@@ -166,6 +166,10 @@
   "Select Next Tab": "Select Next Tab",
   "Select Previous Tab": "Select Previous Tab",
   "Result {n}-{index}": "Result {n}-{index}",
+  "Executing": "Executing",
+  "Executing {count} statements in {name}…": "Executing {count} statements in {name}…",
+  "Executing in {name}…": "Executing in {name}…",
+  "Executing… {elapsed}": "Executing… {elapsed}",
   "Absolute": "Absolute",
   "Relative": "Relative",
   "Hybrid": "Hybrid",
@@ -2734,5 +2738,10 @@
   "{count} hover actions": "{count} hover actions",
   "{description}; JVM options: {flags}": "{description}; JVM options: {flags}",
   "Sorting Options": "Sorting Options",
-  "Sort by Duration": "Sort by Duration"
+  "Sort by Duration": "Sort by Duration",
+  "Resize left merge pane": "Resize left merge pane",
+  "Resize right merge pane": "Resize right merge pane",
+  "Database and schema": "Database and schema",
+  "Loading…": "Loading…",
+  "<schema>": "<schema>"
 }

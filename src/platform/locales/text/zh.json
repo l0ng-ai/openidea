@@ -4861,6 +4861,10 @@
   "Remove data source '{name}'? Its query console file stays on disk.": "是否移除数据源 '{name}'？其查询控制台文件将保留在磁盘上。",
   "Result {n}": "结果 {n}",
   "Result {n}-{index}": "结果 {n}-{index}",
+  "Executing": "正在执行",
+  "Executing {count} statements in {name}…": "正在 {name} 中执行 {count} 条语句…",
+  "Executing in {name}…": "正在 {name} 中执行…",
+  "Executing… {elapsed}": "正在执行… {elapsed}",
   "{name} has uncommitted changes. Commit or roll them back before switching to auto-commit?": "{name} 有未提交的更改。是否在切换到自动提交前提交或回滚这些更改？",
   "Cannot copy the name": "无法复制名称",
   "Cannot copy the reference": "无法复制引用",
@@ -9104,5 +9108,8 @@
   "{count} hover actions": "{count} 个悬停操作",
   "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}",
   "Sorting Options": "排序选项",
-  "Sort by Duration": "按持续时间排序"
+  "Sort by Duration": "按持续时间排序",
+  "Resize left merge pane": "调整左侧合并窗格宽度",
+  "Resize right merge pane": "调整右侧合并窗格宽度",
+  "Database and schema": "数据库和 schema"
 }

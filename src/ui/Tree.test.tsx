@@ -5,6 +5,7 @@ import { Tree, type TreeHandle } from "./Tree";
 import { getContext } from "@/platform/context";
 import { registerAction } from "@/platform/actions";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
 
 interface N {
   id: string;
@@ -307,6 +308,29 @@ describe("Tree speed search", () => {
     expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
     fireEvent.click(toggle);
     expect(labels(tree)).toHaveLength(6);
+  });
+
+  it("⌘F / Ctrl+F opens the field before anything is typed, and Escape closes it", () => {
+    const os = usePlatform.getState().os;
+    try {
+      for (const [platform, init] of [
+        ["macos", { metaKey: true }],
+        ["windows", { ctrlKey: true }],
+      ] as const) {
+        usePlatform.setState({ os: platform });
+        const { key, unmount } = setup({ speedSearchField: true });
+        expect(screen.queryByRole("status")).toBeNull();
+        key("f", init);
+        expect(screen.getByRole("status")).toHaveTextContent("");
+        key("u");
+        expect(screen.getByRole("status")).toHaveTextContent("u");
+        key("Escape");
+        expect(screen.queryByRole("status")).toBeNull();
+        unmount();
+      }
+    } finally {
+      usePlatform.setState({ os });
+    }
   });
 });
 
