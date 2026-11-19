@@ -1,6 +1,7 @@
 /** The Hermes profile a task runs in, next to the model picker. */
 import { useEffect, useState } from "react";
 import type { HermesProfile } from "@/bindings";
+import { useTx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Icon, Select } from "@/ui";
 import { hermesAgentId, providerIcon } from "./model";
@@ -41,6 +42,7 @@ export function HermesProfilePicker({
   /** Without it the picker only shows the profile: a session stays in the one it started in. */
   onChange?: (provider: string) => void;
 }) {
+  const tx = useTx();
   const profiles = useHermesProfiles(provider);
   const providers = useAgents((s) => s.providers);
   if (!provider || profiles.length < 2) return null;
@@ -58,7 +60,7 @@ export function HermesProfilePicker({
   return (
     <Select
       variant="ghost"
-      aria-label="Hermes profile"
+      aria-label={tx("Hermes profile")}
       disabled={!onChange}
       value={hermesProfileOf(profiles, provider)?.name ?? null}
       options={profiles.map((p) => ({ value: p.name, label: p.label, verbatim: true }))}

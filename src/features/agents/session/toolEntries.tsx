@@ -104,27 +104,32 @@ export const ToolEntry = memo(function ToolEntry({
   const live = liveTool(entry);
   const took = toolDuration(entry);
   const run = entry.kind === "execute" ? toolRun(entry) : null;
+  const title = shortTitle(task, entry.title || entry.kind);
+  // A title that already names the file ("Read pom.xml") needs no second link to it.
+  const links =
+    entry.kind === "execute" ? [] : entry.locations.slice(0, 3).filter((path) => !title.includes(basename(path)));
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} className={styles.toolKindIcon} />
       <span className={clsx(styles.toolTitle, live && styles.shimmer)} title={entry.title || entry.kind}>
-        {shortTitle(task, entry.title || entry.kind)}
+        {title}
       </span>
-      {entry.kind !== "execute" &&
-        entry.locations.slice(0, 3).map((path) => (
-          <button
-            key={path}
-            type="button"
-            className={styles.toolPath}
-            title={path}
-            onClick={(e) => {
-              e.preventDefault();
-              openPathLink({ path: isAbsolute(path) ? path : `${task.cwd}/${path}` });
-            }}
-          >
-            {basename(path)}
-          </button>
-        ))}
+      {links.map((path) => (
+        <button
+          key={path}
+          type="button"
+          className={styles.toolPath}
+          title={path}
+          onClick={(e) => {
+            e.preventDefault();
+            openPathLink({
+              path: isAbsolute(path) ? path : `${task.cwd}/${path}`,
+            });
+          }}
+        >
+          {basename(path)}
+        </button>
+      ))}
       {entry.diffs.map((d) => (
         <button
           key={d.path}
@@ -147,7 +152,7 @@ export const ToolEntry = memo(function ToolEntry({
       <span className={styles.toolEnd}>
         {took != null && <span className={styles.muted}>{formatDuration(took)}</span>}
         {live ? (
-          <Spinner size={10} className={styles.toolSpinner} label="Running" />
+          <Spinner size={10} className={styles.toolSpinner} label={tx("Running")} />
         ) : entry.status === "failed" ? (
           <Icon name="error" size={12} />
         ) : (
