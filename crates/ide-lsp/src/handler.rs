@@ -329,10 +329,11 @@ impl ClientHandler {
                 params.diagnostics.retain(|d| !crate::maven_placeholder::false_positive(&text, d));
             }
         }
-        if self.server.name == "jdtls"
-            && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
-        {
-            self.build_plan_failure(mgr, failure);
+        if self.server.name == "jdtls" {
+            params.diagnostics.retain(|d| !crate::jdtls::dotted_dirs::false_positive(&path, d));
+            if let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics) {
+                self.build_plan_failure(mgr, failure);
+            }
         }
         if !mgr.accepts_injected_diagnostics(&path, params.version) {
             return;

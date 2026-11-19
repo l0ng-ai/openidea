@@ -20,6 +20,7 @@ pub(crate) const SERVER: &str = "jdtls";
 const GENERATED_SOURCES: &str = "openidea.java.generatedSources";
 
 pub(crate) mod configuration;
+pub(crate) mod dotted_dirs;
 mod extract_interface;
 mod formatter;
 mod generated;
@@ -465,7 +466,13 @@ fn launch_compile_errors(
     scope: &LaunchScope,
     diagnostics: Vec<(PathBuf, lsp_types::Diagnostic)>,
 ) -> (Vec<JavaCompileError>, u32) {
-    compile_errors(diagnostics.into_iter().filter(|(path, _)| scope.includes(path)).collect(), MAX_LAUNCH_ERRORS)
+    compile_errors(
+        diagnostics
+            .into_iter()
+            .filter(|(path, d)| scope.includes(path) && !dotted_dirs::false_positive(path, d))
+            .collect(),
+        MAX_LAUNCH_ERRORS,
+    )
 }
 
 /// `java.project.getClasspaths` result.
