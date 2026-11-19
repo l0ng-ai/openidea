@@ -1,7 +1,8 @@
 .dialog {
   --se-bg-header: var(--bg-frame, var(--bg-app));
+  --se-max-height: 600px;
   container-type: inline-size;
-  max-height: 80vh;
+  max-height: min(var(--se-max-height), 80vh);
   margin-top: 9vh;
   background: var(--bg-popup, var(--bg-elev));
   font-family: var(--font-ui);
@@ -136,7 +137,7 @@
   flex-direction: column;
 }
 .withPreview {
-  height: 532px;
+  height: var(--se-max-height);
 }
 .results {
   /* `auto`, not `1`: without the preview `.content` has no definite height, and a 0% basis there
