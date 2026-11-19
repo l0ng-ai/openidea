@@ -352,6 +352,16 @@ fn autosave_leaves_a_file_changed_on_disk_after_an_edit() {
     f.docs.edit(info.id, 1, change(0, 0, "x")).unwrap();
     assert!(f.docs.autosave(info.id).unwrap());
     assert_eq!(fs::read_to_string(&path).unwrap(), "xedited\nbeta\n");
+    let transitions: Vec<_> = f
+        .events
+        .lock()
+        .iter()
+        .filter_map(|event| match event {
+            IdeEvent::DocDirty { doc, dirty, version } if *doc == info.id => Some((*version, *dirty)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(transitions, [(1, true), (1, false), (2, true), (2, false)]);
 }
 
 #[test]

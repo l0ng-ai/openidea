@@ -16,6 +16,7 @@ import {
   type DocumentInfo,
   type DocumentLanguage,
   type FoldRange,
+  type IdeEvent,
   type LanguageInfo_Serialize,
   type LineEnding,
   type OutlineItem,
@@ -37,6 +38,8 @@ export interface DocPatchedEvent {
   version: number;
   changes: TextChange[];
 }
+
+export type DocDirtyEvent = Extract<IdeEvent, { type: "docDirty" }>;
 
 export interface DocBackend {
   open(path: string): Promise<DocumentInfo>;
@@ -71,7 +74,7 @@ export interface DocBackend {
    */
   languageOf?(path: string, firstLine?: string): Promise<DocumentLanguage>;
   onPatched(handler: (e: DocPatchedEvent) => void): () => void;
-  onDirty(handler: (e: { doc: DocId; dirty: boolean }) => void): () => void;
+  onDirty(handler: (e: DocDirtyEvent) => void): () => void;
   /** Files changed on disk (used to refresh nothing but closed-file state). */
   onFsChanged?(handler: (e: { removed: string[] }) => void): () => void;
   /**
@@ -393,7 +396,7 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
   const docs = new Map<DocId, MemDoc>();
   const byPath = new Map<string, DocId>();
   const patched = new Set<(e: DocPatchedEvent) => void>();
-  const dirtyHandlers = new Set<(e: { doc: DocId; dirty: boolean }) => void>();
+  const dirtyHandlers = new Set<(e: DocDirtyEvent) => void>();
   let nextId = 1;
   const store = new Map(Object.entries(files));
   const savedBoms = new Map<string, boolean>();
@@ -442,7 +445,8 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
   };
   const setDirty = (d: MemDoc, before: boolean) => {
     const now = d.text !== d.saved || d.hasBom !== d.savedBom;
-    if (now !== before) dirtyHandlers.forEach((h) => h({ doc: d.id, dirty: now }));
+    if (now !== before)
+      dirtyHandlers.forEach((h) => h({ type: "docDirty", doc: d.id, dirty: now, version: d.version }));
   };
   const delay = <T>(v: () => T): Promise<T> =>
     backend.latency > 0
