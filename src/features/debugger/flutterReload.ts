@@ -13,7 +13,7 @@ import { appendConsole, isLive, useDebug, type DebugSession } from "./state";
 
 /**
  * Merges a Save All and lets the analyzer publish the saved text's diagnostics (tens of ms).
- * ponytail: a fixed wait; on a slower analysis the reload goes out and Flutter's compiler
+ * A fixed wait: on a slower analysis the reload goes out and Flutter's compiler
  * rejects it, leaving the app running and the error in the Debug console.
  */
 const SETTLE_MS = 300;
