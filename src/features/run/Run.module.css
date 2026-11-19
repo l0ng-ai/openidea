@@ -362,8 +362,10 @@
   padding: 0;
   border: none;
   line-height: 0;
-  background: var(--warning);
-  color: var(--fg-on-accent);
+}
+/* Stays the red Stop button, like IDEA. White is too faint on the dark theme's --danger. */
+.widgetStopping svg {
+  color: var(--bg-elev);
 }
 .widgetFilled:hover:not(:disabled) {
   filter: brightness(0.94);
