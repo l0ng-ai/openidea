@@ -356,6 +356,19 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   const focusSeq = useLspPopup((s) => s.focusSeq);
   const scope = useRef<HTMLDivElement>(null);
   const opened = useRef(focusSeq);
+  // The captured caret can end up outside the viewport while the popup is open.
+  const anchor = useMemo(
+    () => ({
+      getBoundingClientRect: () =>
+        new DOMRect(
+          Math.max(0, Math.min(popup.anchor.x, window.innerWidth)),
+          Math.max(0, Math.min(popup.anchor.y, window.innerHeight)),
+          0,
+          0,
+        ),
+    }),
+    [popup.anchor],
+  );
   useEffect(() => {
     if (focusSeq !== opened.current)
       scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
@@ -364,7 +377,7 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   return (
     <Popup
       open
-      anchor={popup.anchor}
+      anchor={anchor}
       onClose={closePopup}
       aria-label="Documentation"
       className={styles.docPopup}

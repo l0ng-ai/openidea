@@ -8,6 +8,7 @@ import type {
   AgentLimit,
   AgentPrompt,
   AgentRetry,
+  AgentTokens,
   AgentUsage,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
@@ -597,6 +598,14 @@ export function costLabel(c: AgentCost): string {
     // Not an ISO 4217 code.
     return `${(c.amount ?? 0).toFixed(2)} ${c.currency}`;
   }
+}
+
+/** The last turn's tokens: "in 77.3k · cached 51.3k · out 509". */
+export function turnTokensLabel(t: AgentTokens): string {
+  const parts = [tx`in ${tokens(t.input)}`];
+  if (t.cached) parts.push(tx`cached ${tokens(t.cached)}`);
+  parts.push(tx`out ${tokens(t.output)}`);
+  return parts.join(" · ");
 }
 
 /** `850`, `83.1k`, `1M`. */

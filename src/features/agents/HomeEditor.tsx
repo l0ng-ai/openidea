@@ -13,6 +13,7 @@ import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { HermesProfilePicker } from "./HermesProfilePicker";
 import { McpPicker } from "./McpPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
@@ -221,6 +222,10 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                   }
                 />
               </span>
+              <HermesProfilePicker
+                provider={provider?.id}
+                onChange={(id) => updateDraft({ provider: id, config: {} })}
+              />
               <ConfigPickers
                 key={provider?.id}
                 config={config}

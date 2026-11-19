@@ -65,8 +65,23 @@ pub fn build_with_redirect(proxy: &ProxySettings, redirect: reqwest::redirect::P
 /// The client for the current proxy settings, rebuilt when they change.
 pub fn shared() -> IdeResult<reqwest::Client> {
     static CLIENT: Mutex<Option<(Arc<ProxySettings>, reqwest::Client)>> = Mutex::new(None);
+    cached_client(&CLIENT, build)
+}
+
+/// The client the HTTP Client executes requests with: redirects off, `exec`
+/// follows them by hand — that is what lets a `POST` stay a `POST` on a
+/// 301/302 and puts the redirect chain into the response.
+pub fn shared_without_redirects() -> IdeResult<reqwest::Client> {
+    static CLIENT: Mutex<Option<(Arc<ProxySettings>, reqwest::Client)>> = Mutex::new(None);
+    cached_client(&CLIENT, |proxy| build_with_redirect(proxy, reqwest::redirect::Policy::none()))
+}
+
+fn cached_client(
+    slot: &Mutex<Option<(Arc<ProxySettings>, reqwest::Client)>>,
+    build: fn(&ProxySettings) -> IdeResult<reqwest::Client>,
+) -> IdeResult<reqwest::Client> {
     let proxy = ide_core::proxy_settings::proxy();
-    let mut cached = CLIENT.lock();
+    let mut cached = slot.lock();
     if let Some((settings, client)) = cached.as_ref()
         && **settings == *proxy
     {
