@@ -1,9 +1,9 @@
 /** ⌘F in the terminal: search the scrollback (xterm addon-search) with Match Case / Words / Regex. */
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { IconButton, SearchField } from "@/ui";
-import type { TerminalSearchOptions, TerminalSearchResult } from "./session";
+import { ACTIVE_SEARCH_DECORATION_CLASS, type TerminalSearchOptions, type TerminalSearchResult } from "./session";
 import { activeSession } from "./store";
 import styles from "./Terminal.module.css";
 import { formatBinding, hasPrimaryModifier } from "@/platform/keymap";
@@ -52,6 +52,7 @@ let focusedSeq = 0;
 
 export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
   const { open, seq, query, options } = useTerminalFind();
+  const bar = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [result, setResult] = useState<TerminalSearchResult | null>(null);
 
@@ -78,6 +79,46 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
       session.clearSearch();
     };
   }, [open, query, options, sessionKey]);
+
+  // Measure against the bar's default upper-right position, even when it has moved.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const element = bar.current;
+    const output = element?.parentElement;
+    const session = activeSession();
+    if (!element || !output || !session) return;
+    let frame = 0;
+    const update = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const match = session.isSearchSelection
+          ? session.host.querySelector(`.${ACTIVE_SEARCH_DECORATION_CLASS}`)?.getBoundingClientRect()
+          : undefined;
+        if (!match?.width) {
+          element.removeAttribute("data-match-covered");
+          return;
+        }
+        const top = output.getBoundingClientRect().top;
+        const { left, right, height } = element.getBoundingClientRect();
+        element.toggleAttribute(
+          "data-match-covered",
+          match.bottom > top && match.top < top + height && match.right > left && match.left < right,
+        );
+      });
+    };
+    const render = session.term.onRender(update);
+    const observer = new ResizeObserver(update);
+    observer.observe(output);
+    observer.observe(element);
+    update();
+    return () => {
+      render.dispose();
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      element.removeAttribute("data-match-covered");
+    };
+  }, [open, sessionKey]);
 
   if (!open) return null;
 
@@ -110,6 +151,7 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
 
   return (
     <div
+      ref={bar}
       className={styles.find}
       role="search"
       aria-label={tx("Find in terminal")}
@@ -170,7 +212,6 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
         disabled={!query || !result?.count}
         onClick={() => find("next")}
       />
-      <span className={styles.findSpacer} />
       <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={closeTerminalFind} />
     </div>
   );
