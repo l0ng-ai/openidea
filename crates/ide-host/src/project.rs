@@ -63,6 +63,8 @@ pub struct Project {
     pub notebooks: Arc<crate::notebook::NotebookService>,
     /// Flutter's devices; its daemon starts when the UI first asks for them.
     pub(crate) flutter: ide_flutter::FlutterDaemon,
+    /// Flutter DevTools; its server starts when the UI first asks for it.
+    pub(crate) devtools: ide_flutter::DevToolsServer,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
     pub(crate) watcher: Arc<Watcher>,
@@ -605,6 +607,7 @@ impl Host {
             plugin_diagnostics,
             trusted,
             flutter: ide_flutter::FlutterDaemon::new(root.clone(), sink.clone()),
+            devtools: ide_flutter::DevToolsServer::new(root.clone()),
             root,
             sink,
             languages,
@@ -818,6 +821,7 @@ impl Host {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
             flutter: ide_flutter::FlutterDaemon::new(dir.clone(), sink.clone()),
+            devtools: ide_flutter::DevToolsServer::new(dir.clone()),
             sink,
             languages,
             settings,

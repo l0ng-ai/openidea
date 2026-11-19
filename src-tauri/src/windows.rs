@@ -749,7 +749,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
+        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -2078,6 +2078,20 @@ fn fit_bounds(
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// A link in an embedded page that asks for a new window (Flutter DevTools' documentation links)
+/// opens in the system browser; the IDE itself never needs such a window.
+fn open_popup_in_browser<R: tauri::Runtime>(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<R> {
+    if matches!(url.scheme(), "http" | "https")
+        && let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+    {
+        tracing::warn!("cannot open {url}: {e}");
+    }
+    tauri::webview::NewWindowResponse::Deny
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
