@@ -253,25 +253,43 @@
   flex-direction: column;
   height: 100%;
   min-width: 0;
-  border-right: 1px solid var(--border);
 }
-.testHeader {
+.testToolbar,
+.testStatusBar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  height: 28px;
-  padding: 0 4px 0 10px;
+  min-height: 28px;
   border-bottom: 1px solid var(--border);
+}
+.testToolbar {
+  gap: var(--space-0-5);
+  padding: var(--space-0-5) var(--space-1);
+}
+.testStatusBar {
+  gap: var(--space-0-5) var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
 }
 .testCounts {
+  flex: 1 1 auto;
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
+}
+.testStatus,
+.testTotalDuration {
+  flex: none;
+}
+.testTotalDuration {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
 }
 .testTree {
   flex: 1;
@@ -299,8 +317,11 @@
   flex: none;
   padding-right: 8px;
   color: var(--fg-subtle);
-  font-family: var(--font-mono);
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.testTree [aria-selected="true"] .testDuration {
+  color: var(--fg);
 }
 .testEmpty {
   padding: 12px;
