@@ -3747,6 +3747,7 @@
   "Left out of '{name}': {keys}": "'{name}' 中未导入的设置：{keys}",
   "Click OK or Apply to save them.": "点击“确定”或“应用”以保存。",
   "A configuration with this name already exists": "已存在同名配置",
+  "Same as the existing configuration '{existing}'": "与已有配置 '{existing}' 相同",
   "Type '{type}' has no equivalent here": "此处没有与类型 '{type}' 对应的配置",
   "Request '{request}' isn't supported": "不支持请求 '{request}'",
   "Only attaching to a host and port is supported": "仅支持附加到主机和端口",
