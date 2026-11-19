@@ -145,6 +145,9 @@ export async function focusRepo(root: string): Promise<void> {
   if (!useVcs.getState().branchesLoaded) await loadBranches();
 }
 
+/** Whether the changed file still exists in the working tree (not deleted there). */
+export const existsOnDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
+
 export function conflictedFiles(status: readonly FileStatus[] = useVcs.getState().status): FileStatus[] {
   return status.filter((f) => effectiveKind(f) === "conflicted");
 }
