@@ -1,4 +1,6 @@
 {
+  "Table actions": "表数据操作",
+  "Table pages": "表数据分页",
   "Problems actions": "问题操作",
   "Windows file and folder names cannot end with a period or space": "Windows 文件和文件夹名称不能以句点或空格结尾",
   "Use URL template": "使用 URL 模板",
@@ -9047,5 +9049,10 @@
   "Run from Parent Directory of Current File ({shown})": "从当前文件的父目录运行（{shown}）",
   "Detect commands that can be run right from Markdown files": "检测可以直接从 Markdown 文件运行的命令",
   "Run commands from": "运行命令的目录",
-  "Markdown file parent directory": "Markdown 文件的父目录"
+  "Markdown file parent directory": "Markdown 文件的父目录",
+  "Open Build tool window": "打开构建工具窗口",
+  "Focus Build tool window": "聚焦构建工具窗口",
+  "Only on errors": "仅在出错时",
+  "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.": "自动构建与手动构建均适用。运行/调试的启动前构建在失败前保持隐藏。",
+  "When Build opens, whether it takes keyboard focus from the editor.": "构建窗口打开时，是否从编辑器夺取键盘焦点。"
 }

@@ -3299,6 +3299,14 @@ export type BuildResult = {
 	messages: BuildMessage[],
 };
 
+/**  Build, Execution, Deployment › Compiler (Build tool window behaviour). */
+export type BuildSettings = {
+	/**  When to open the Build tool window: `always` | `onError` | `never`. */
+	openToolWindow?: string,
+	/**  When to focus the Build tool window: `always` | `onError` | `never`. */
+	focusToolWindow?: string,
+};
+
 export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet" | 
 /**  A Java project without a build tool, compiled from its Project Structure. */
 "javac";
@@ -10970,6 +10978,8 @@ export type Settings_Deserialize = {
 	projectStructure?: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs?: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build?: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console?: ConsoleSettings,
 	debugger?: DebuggerSettings,
@@ -11044,6 +11054,8 @@ export type Settings_Serialize = {
 	projectStructure: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console: ConsoleSettings,
 	debugger: DebuggerSettings,

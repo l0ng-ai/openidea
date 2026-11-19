@@ -176,7 +176,9 @@ impl Call {
                     let r = ide_vfs::split_archive_path(&r).map_or(r.clone(), |(archive, _)| archive);
                     dunce::canonicalize(r).is_ok_and(|r| real.starts_with(r))
                 }) {
-                    return Err(IdeError::invalid("path is outside the project's content roots"));
+                    return Err(IdeError::invalid(
+                        "path is outside the project's content roots: ask the user before reading anything else outside the project",
+                    ));
                 }
                 Ok(entry.map_or_else(|| real.clone(), |entry| PathBuf::from(format!("{}!/{entry}", real.display()))))
             })
@@ -307,7 +309,9 @@ pub fn resolve_inside(root: &Path, raw: &str) -> IdeResult<PathBuf> {
     }
     let root = dunce::canonicalize(root)?;
     if !real.starts_with(&root) {
-        return Err(IdeError::invalid("path is outside the project"));
+        return Err(IdeError::invalid(
+            "path is outside the project: these tools change files inside it only; ask the user before touching anything outside it",
+        ));
     }
     if real
         .strip_prefix(&root)

@@ -2,8 +2,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  height: 560px;
-  padding: 14px;
+  height: clamp(350px, 68vh, 620px);
+  padding: var(--space-4);
 }
 .pickers {
   display: flex;
@@ -35,7 +35,8 @@
   color: var(--fg-muted);
 }
 .panes {
-  display: flex;
+  display: grid;
+  grid-template-rows: minmax(0, 5fr) minmax(0, 4fr);
   gap: var(--space-2);
   flex: 1;
   min-height: 0;
@@ -43,7 +44,6 @@
 .tree {
   display: flex;
   flex-direction: column;
-  flex: 1.2;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
@@ -54,8 +54,19 @@
   min-height: 0;
 }
 .preview {
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
+  min-height: 0;
+}
+.previewLabel {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.preview > :last-child {
+  flex: 1;
+  min-height: 0;
 }
 .row {
   display: inline-flex;

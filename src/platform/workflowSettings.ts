@@ -8,6 +8,7 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
+export type BuildToolWindowWhen = "always" | "onError" | "never";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -97,6 +98,11 @@ export interface LogLevelColorsValid {
   info: string;
   debug: string;
   trace: string;
+}
+
+export interface BuildSettingsValid {
+  openToolWindow: BuildToolWindowWhen;
+  focusToolWindow: BuildToolWindowWhen;
 }
 
 export interface ConsoleSettingsValid {
@@ -222,6 +228,7 @@ export interface AgentRunSettingsValid {
 
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
+  build: BuildSettingsValid;
   console: ConsoleSettingsValid;
   debugger: DebuggerSettingsValid;
   run: RunSettingsValid;
@@ -320,6 +327,10 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     shelf: { removeApplied: false },
     issueNavigation: [],
     mappings: { excluded: [], added: [] },
+  },
+  build: {
+    openToolWindow: "always",
+    focusToolWindow: "never",
   },
   console: {
     softWrap: false,
@@ -499,6 +510,16 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
   };
 }
 
+export function validateBuild(raw: unknown): BuildSettingsValid {
+  const d = DEFAULT_WORKFLOW.build;
+  const v = obj(raw);
+  const when = ["always", "onError", "never"] as const;
+  return {
+    openToolWindow: oneOf(v.openToolWindow, when, d.openToolWindow),
+    focusToolWindow: oneOf(v.focusToolWindow, when, d.focusToolWindow),
+  };
+}
+
 export function validateConsole(raw: unknown): ConsoleSettingsValid {
   const d = DEFAULT_WORKFLOW.console;
   const v = obj(raw);
@@ -669,6 +690,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
     vcs: validateVcs(root.vcs),
+    build: validateBuild(root.build),
     console: validateConsole(root.console),
     debugger: validateDebugger(root.debugger),
     run: validateRun(root.run),
