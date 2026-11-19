@@ -13,6 +13,7 @@
 }
 /* Islands tabs: the selected tab is a rounded pill (tab-selected-bg / -border); no underline, no separators. */
 .editor {
+  --tab-inline-padding: var(--space-2);
   height: var(--h-header);
   padding: 0 4px;
 }
@@ -76,7 +77,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  padding: 0 10px;
+  padding: 0 var(--tab-inline-padding, 10px);
   border-radius: inherit;
   white-space: nowrap;
   color: inherit;
@@ -207,6 +208,12 @@
 .wrap .tab {
   height: calc(var(--h-header) - 6px);
 }
+.editor.wrap .tab {
+  max-inline-size: 100%;
+}
+.editor.wrap .tabButton {
+  min-inline-size: 0;
+}
 
 /* Vertical strip (editor tabs placed left / right): a scrolling column of full-width tabs. */
 .vertical {
@@ -266,7 +273,7 @@
   margin: 0 0 0 4px;
 }
 .closeLeft .closable .tabButton {
-  padding: 0 10px 0 2px;
+  padding: 0 var(--tab-inline-padding, 10px) 0 2px;
 }
 
 /* drag & drop: the dragged tab is an empty slot the other tabs make room for (IDEA) */

@@ -1,6 +1,7 @@
 {
   "Table actions": "表数据操作",
   "Table pages": "表数据分页",
+  "Problems actions": "问题操作",
   "Windows file and folder names cannot end with a period or space": "Windows 文件和文件夹名称不能以句点或空格结尾",
   "Use URL template": "使用 URL 模板",
   "Use Driver": "使用驱动程序",
@@ -2946,6 +2947,7 @@
   "System-Dependent": "取决于系统",
   "Tests failed: {detail}": "测试失败：{detail}",
   "TODO comment": "TODO 注释",
+  "TODO actions": "TODO 操作",
   "TODO filters": "TODO 筛选器",
   "TODO items": "TODO 项",
   "TODO items unavailable": "TODO 项不可用",
@@ -9004,6 +9006,7 @@
   "Hot reload on save": "保存时热重载",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "保存正在运行的 Flutter 调试会话里的 Dart 文件时重新加载应用，文件有错误时跳过。",
   "Hot reload on save failed: {0}": "保存时热重载失败：{0}",
+  "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?": "项目可以在新窗口中打开、替换当前项目、附加到已打开的项目，或以新标签页在当前窗口中打开。\n要如何打开“{name}”？",
   "Show Only Widgets": "仅显示 Widget",
   "Update failed": "更新失败",
   "Updating branches": "正在更新分支",
@@ -9038,5 +9041,13 @@
   "The agent's default": "智能体的默认值",
   "Commit messages are short: a fast model with low effort is usually enough.": "提交信息很短，通常用快速模型配低推理强度就够了。",
   "Change Project Color…": "更改项目颜色…",
-  "Project Color": "项目颜色"
+  "Project Color": "项目颜色",
+  "Run Lines in Terminal": "在终端中运行多行命令",
+  "Opens a shell tab and types `{ lines, name?, cwd? }` into it.": "打开一个 Shell 终端标签页并输入 `{ lines, name?, cwd? }`。",
+  "Run in Terminal": "在终端中运行",
+  "Run from Project Root Directory": "从项目根目录运行",
+  "Run from Parent Directory of Current File ({shown})": "从当前文件的父目录运行（{shown}）",
+  "Detect commands that can be run right from Markdown files": "检测可以直接从 Markdown 文件运行的命令",
+  "Run commands from": "运行命令的目录",
+  "Markdown file parent directory": "Markdown 文件的父目录"
 }

@@ -1918,6 +1918,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
+	/**
+	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
+	 *  [`window_group_merge`], unrelated windows keep their own group.
+	 */
+	windowGroupJoin: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_join", { label })),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
@@ -8232,10 +8237,23 @@ export type ManifestDependency = {
 	to: number,
 };
 
+export type MarkdownCommandDirectory = 
+/**  The project's root folder. */
+"project" | 
+/**  The Markdown file's parent folder. */
+"file";
+
 /**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
 export type MarkdownSettings = {
 	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
 	previewFontSize?: number | null,
+	/**
+	 *  "Detect commands that can be run right from Markdown files": gutter run icons on
+	 *  shell code blocks and on command lines in code blocks.
+	 */
+	runCommands?: boolean,
+	/**  Where those commands run; unset asks when the project and the file's folder differ. */
+	commandDirectory?: MarkdownCommandDirectory | null,
 };
 
 /**  A marketplace entry with what is installed. */

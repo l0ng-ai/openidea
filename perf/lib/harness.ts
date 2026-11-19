@@ -2,6 +2,7 @@
 import type { CDPSession, Page } from "@playwright/test";
 import type { InPage } from "./inpage.ts";
 import { median } from "./stats.ts";
+import { assertTypedKey, openFileMeasured, readEditable, type EditableRange, type EditorProbe } from "./editing.ts";
 
 export type Metrics = Record<string, number>;
 
@@ -69,43 +70,180 @@ export class Harness {
     for (const k of await this.keysFor(actionId)) await this.page.keyboard.press(k);
   }
 
-  /** Arms latency capture: the next input starts the clock, the paint showing `selector` stops it. */
-  async measure(trigger: () => Promise<unknown>, selector: string, text: string | null = null, timeoutMs = 10_000) {
-    await this.inPage((p) => p.arm());
-    const done = this.inPage((p, a) => p.waitShown(a.selector, a.text, a.timeoutMs), { selector, text, timeoutMs });
-    await trigger();
-    return done;
+  /** Measures a current input and a changed, matching target at frame start. */
+  async measure<A = undefined>(
+    trigger: () => Promise<unknown>,
+    selector: string,
+    text: string | null = null,
+    timeoutMs = 10_000,
+    check?: (arg: A) => boolean,
+    arg?: A,
+  ) {
+    const token = await this.inPage((p) => p.arm());
+    // Attach both handlers immediately: a failed trigger must not strand a rejecting page evaluation.
+    const done = this.inPage(
+      (p, a) => {
+        const condition = a.check ? new Function("arg", `return (${a.check})(arg)`) : null;
+        return p.waitShown(a.selector, a.text, a.timeoutMs, a.token, condition ? () => condition(a.arg) : undefined);
+      },
+      { selector, text, timeoutMs, token, check: check?.toString(), arg },
+    ).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    try {
+      if ((await trigger()) === false) throw new Error("measurement trigger returned false");
+      const result = await done;
+      if (!result.ok) throw result.error;
+      return result.value;
+    } finally {
+      await this.inPage((p, token) => p.cancel(token), token);
+    }
   }
 
   /**
    * Types `text` one key at a time, `intervalMs` apart, recording keydown → next
    * frame for each key. `\n` presses Enter, `\b` Backspace.
    */
-  async typeMeasured(text: string, intervalMs: number): Promise<number[]> {
-    return this.pressMeasured(
-      [...text].map((ch) => (ch === "\n" ? "Enter" : ch === "\b" ? "Backspace" : ch)),
+  async typeMeasured(text: string, intervalMs: number, target: "editor" | "input" = "editor"): Promise<number[]> {
+    const initial = await this.page.evaluate(readEditable, undefined);
+    if (initial.kind !== target) throw new Error(`typing focus is not in the expected ${target}`);
+    const characters = [...text];
+    let range: EditableRange | undefined;
+    let before = initial;
+    if (initial.kind === "editor") {
+      let from = initial.text.lastIndexOf("\n", initial.head - 1) + 1;
+      // A Backspace can cross at most one existing line; indentation deletion stays within it.
+      for (const character of characters) {
+        if (character === "\b" && from > 0) from = initial.text.lastIndexOf("\n", from - 2) + 1;
+      }
+      const nextLine = initial.text.indexOf("\n", Math.min(initial.text.length, initial.head + characters.length + 1));
+      const to = nextLine < 0 ? initial.text.length : nextLine + 1;
+      range = { from, to, length: initial.text.length };
+      const head = initial.head - from;
+      before = { ...initial, text: initial.text.slice(from, to), head, from: head, to: head };
+    }
+    const latencies = await this.pressMeasured(
+      characters.map((ch) => (ch === "\n" ? "Enter" : ch === "\b" ? "Backspace" : ch)),
       intervalMs,
+      async (_, index) => {
+        const after = await this.page.evaluate(readEditable, range);
+        assertTypedKey(before, after, characters[index]!);
+        before = after;
+      },
     );
+    const after = await this.page.evaluate(readEditable, range);
+    if (
+      after.kind !== before.kind ||
+      after.target !== before.target ||
+      after.text !== before.text ||
+      after.head !== before.head
+    ) {
+      throw new Error("typing text or caret changed after the measured keys");
+    }
+    if (range) {
+      const final = await this.page.evaluate(readEditable, undefined);
+      const to = range.to + final.text.length - initial.text.length;
+      if (
+        final.kind !== initial.kind ||
+        final.target !== initial.target ||
+        final.head !== before.head + range.from ||
+        final.text.slice(0, range.from) !== initial.text.slice(0, range.from) ||
+        final.text.slice(range.from, to) !== before.text ||
+        final.text.slice(to) !== initial.text.slice(range.to)
+      ) {
+        throw new Error("typing changed text outside the intended insertion or left an incorrect caret");
+      }
+    }
+    return latencies;
   }
 
   /** Presses `keys` `intervalMs` apart and returns keydown → next frame for each. */
-  async pressMeasured(keys: string[], intervalMs: number): Promise<number[]> {
+  async pressMeasured(
+    keys: string[],
+    intervalMs: number,
+    afterKey?: (key: string, index: number) => Promise<void>,
+  ): Promise<number[]> {
     await this.inPage((p) => {
       p.keyLatencies = [];
       p.recordKeys = true;
     });
-    for (const key of keys) {
-      const started = Date.now();
-      await this.page.keyboard.press(key);
-      const wait = intervalMs - (Date.now() - started);
-      if (wait > 0) await this.page.waitForTimeout(wait);
+    try {
+      for (const [index, key] of keys.entries()) {
+        const started = Date.now();
+        await this.page.keyboard.press(key);
+        await afterKey?.(key, index);
+        const wait = intervalMs - (Date.now() - started);
+        if (wait > 0) await this.page.waitForTimeout(wait);
+      }
+      await this.inPage((p) => p.afterNextPaint().then(() => p.afterNextPaint()));
+      const latencies = await this.inPage((p) => p.keyLatencies);
+      if (latencies.length !== keys.length || latencies.some((latency) => !Number.isFinite(latency) || latency < 0)) {
+        throw new Error(`key sample count mismatch: expected ${keys.length}, received ${latencies.length}`);
+      }
+      return latencies;
+    } finally {
+      await this.inPage((p) => {
+        p.recordKeys = false;
+      });
     }
-    // Let the last frames land.
-    await this.inPage((p) => p.afterNextPaint().then(() => p.afterNextPaint()));
-    return this.inPage((p) => {
-      p.recordKeys = false;
-      return p.keyLatencies;
+  }
+
+  /** Checks the actual selected option after every ArrowDown, including virtualized lists. */
+  async completionArrowsMeasured(count: number, intervalMs: number) {
+    const selection = () =>
+      this.page.evaluate(() => {
+        const selected = document.querySelector('.cm-tooltip-autocomplete li[aria-selected="true"]');
+        const index = selected?.id.match(/-(\d+)$/)?.[1];
+        if (!selected || index === undefined) throw new Error("completion selection is unavailable");
+        return { id: selected.id, index: Number(index) };
+      });
+    let before = await selection();
+    return this.pressMeasured(Array(count).fill("ArrowDown"), intervalMs, async () => {
+      const after = await selection();
+      if (after.id === before.id || after.index !== before.index + 1) {
+        throw new Error(`completion selection did not advance from ${before.index} to ${before.index + 1}`);
+      }
+      before = after;
     });
+  }
+
+  /** A far jump must move both the active caret and its viewport to the document end. */
+  async jumpToEnd(timeoutMs = 5_000) {
+    await this.inPage((p) => p.afterNextPaint());
+    const start = await this.page.evaluate(() => {
+      const w = window as unknown as { __openideaPerf: EditorProbe };
+      const state = w.__openideaPerf.editorState();
+      const scroller = document.activeElement?.closest(".cm-editor")?.querySelector(".cm-scroller");
+      if (!state || !scroller || state.head === state.length || scroller.scrollHeight <= scroller.clientHeight) {
+        throw new Error("jump start must be outside the destination in a scrollable editor");
+      }
+      return { path: state.path, head: state.head, scrollTop: scroller.scrollTop };
+    });
+    return this.measure(
+      () => this.page.keyboard.press("ControlOrMeta+End"),
+      ".cm-content",
+      null,
+      timeoutMs,
+      (start) => {
+        const w = window as unknown as { __openideaPerf: EditorProbe };
+        const state = w.__openideaPerf.editorState();
+        const editor = document.activeElement?.closest(".cm-editor");
+        const scroller = editor?.querySelector(".cm-scroller");
+        const bottom = scroller?.getBoundingClientRect().bottom;
+        return (
+          !!state &&
+          state.path === start.path &&
+          state.head === state.length &&
+          state.head !== start.head &&
+          !!scroller &&
+          scroller.scrollTop > start.scrollTop + scroller.clientHeight &&
+          bottom !== undefined &&
+          w.__openideaPerf.lineAtY(bottom - 4) === state.lines - 1
+        );
+      },
+      start,
+    );
   }
 
   /** Display refresh interval measured over idle frames. */
@@ -162,20 +300,9 @@ export class Harness {
   }
 
   /** Seeds a file into the in-memory backend and opens it, returning open → painted ms. */
-  async openFile(path: string, text?: string): Promise<number> {
+  async openFile(path: string, text?: string, timeoutMs = 15_000): Promise<number> {
     if (text !== undefined) await this.seed(path, text);
-    const name = path.slice(path.lastIndexOf("/") + 1);
-    return this.page.evaluate(
-      async ({ path, name }) => {
-        const w = window as never as { __perf: InPage; __openideaPerf: { openFile(p: string): Promise<void> } };
-        const t0 = performance.now();
-        void w.__openideaPerf.openFile(path);
-        await w.__perf.waitShown('[role="tab"][aria-selected="true"]', name, 15_000);
-        await w.__perf.waitShown(".cm-content .cm-line", null, 15_000);
-        return performance.now() - t0;
-      },
-      { path, name },
-    );
+    return this.page.evaluate(openFileMeasured, { path, text, timeoutMs });
   }
 
   /** Waits until the active editor's background parse has caught up (steady-state editing). */
@@ -195,10 +322,9 @@ export class Harness {
   }
 
   async editorState() {
-    return this.page.evaluate(() =>
-      (
-        window as never as { __openideaPerf: { editorState(): { length: number; lines: number; head: number } | null } }
-      ).__openideaPerf.editorState(),
-    );
+    return this.page.evaluate(() => {
+      const w = window as unknown as { __openideaPerf: EditorProbe };
+      return w.__openideaPerf.editorState();
+    });
   }
 }

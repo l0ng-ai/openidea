@@ -1,5 +1,5 @@
 /** Where a project opens when this window already has one: System Settings › Project › "Open project in". */
-import { t } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 import { call, commands, type RemoteTarget } from "@/platform/ipc";
 import { confirmLeaveProject, useProject } from "@/platform/project";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
@@ -17,26 +17,38 @@ export function openPolicy(): "ask" | "new" | "same" {
  * per "Open project in", asking when set to (and remembering "Don't ask again").
  * `null`: cancelled.
  */
-export async function chooseProjectWindow(name: string, allowAttach = true): Promise<"new" | "same" | "attach" | null> {
+export async function chooseProjectWindow(
+  name: string,
+  allowAttach = true,
+): Promise<"new" | "same" | "attach" | "tab" | null> {
   const { project, lightEdit } = useProject.getState();
   if (!project && !lightEdit) return "same";
-  const canAttach = allowAttach && !!project && !isRemoteWindow();
+  // Both ways of keeping this window's project: a workspace folder, or a project tab of this window.
+  const canAdd = allowAttach && !!project && !isRemoteWindow();
   const mode = openPolicy();
   if (mode !== "ask") return mode;
   const r = await ask({
     title: t("app.window.askTitle"),
-    width: canAttach ? 640 : undefined,
-    body: t("app.window.askBody", { name }),
+    width: canAdd ? 640 : undefined,
+    body: canAdd
+      ? tx`Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open "${name}"?`
+      : t("app.window.askBody", { name }),
     buttons: [
       { id: "cancel", label: t("common.cancel") },
-      ...(canAttach ? [{ id: "attach", label: t("app.window.askAttach") }] : []),
+      ...(canAdd
+        ? [
+            { id: "attach", label: t("app.window.askAttach") },
+            { id: "tab", label: tx`New Tab` },
+          ]
+        : []),
       { id: "new", label: t("app.window.askNew") },
       { id: "same", label: t("app.window.askThis"), primary: true },
     ],
     checkbox: t("app.window.askRemember"),
   });
-  if (r.button !== "same" && r.button !== "new" && r.button !== "attach") return null;
-  if (r.checked && r.button !== "attach") {
+  // "Attach" and "New Tab" are one-off: "Open project in" has no value for them, so Don't ask again ignores both.
+  if (r.button !== "same" && r.button !== "new" && r.button !== "attach" && r.button !== "tab") return null;
+  if (r.checked && (r.button === "same" || r.button === "new")) {
     try {
       useProject.setState({
         settings: await call(commands.settingsSet("global", "general.openProjectIn", JSON.stringify(r.button))),
