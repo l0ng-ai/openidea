@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RUST_BENCHMARKS } from "./rust.ts";
 import { runRust } from "./rustRun.ts";
 
+const TEXT_BENCHMARKS = RUST_BENCHMARKS["ide-text"]!.length;
+
 const roots: string[] = [];
 const ownedPids: number[] = [];
 beforeEach(() => {
@@ -121,7 +123,7 @@ describe("Rust trial lifecycle", () => {
     expect(current.errors.map((entry: { error: string }) => entry.error).join(" ")).toMatch(
       failure === "timeout" ? /timed out/ : /exit 7/,
     );
-    expect(Object.keys(current.results[0].metrics)).toHaveLength(8);
+    expect(Object.keys(current.results[0].metrics)).toHaveLength(TEXT_BENCHMARKS);
     expect(current.meta.mode).toBe("execution");
     const runRoot = resolve(current.meta.artifactRoot, "..");
     expect(readFileSync(join(runRoot, "cargo.stderr.log"), "utf8")).toContain("partial cargo evidence");
@@ -156,7 +158,7 @@ describe("Rust trial lifecycle", () => {
     expect(await runRust({ root, packages: ["ide-text"], command, timeoutMs: 3000 })).toBe(1);
     expect(report(root).errors.length).toBeGreaterThan(0);
     expect(readFileSync(join(root, "target/perf/report-rust.md"), "utf8")).not.toContain("old passing report");
-    if (kind === "malformed") expect(Object.keys(report(root).results[0].metrics)).toHaveLength(7);
+    if (kind === "malformed") expect(Object.keys(report(root).results[0].metrics)).toHaveLength(TEXT_BENCHMARKS - 1);
   });
 
   it("never reuses old or concurrent roots as current execution", async () => {
@@ -182,11 +184,11 @@ describe("Rust trial lifecycle", () => {
     expect(current.meta.mode).toBe("inspection");
     expect(current.meta.artifactRoot).toBe(join(runRoot, "criterion"));
     expect(current.meta.artifactStartedAt).toBe(JSON.parse(readFileSync(join(runRoot, "run.json"), "utf8")).startedAt);
-    expect(current.artifacts).toHaveLength(16);
+    expect(current.artifacts).toHaveLength(2 * TEXT_BENCHMARKS);
     expect(
       current.artifacts.every((file: { modifiedAt: string }) => Date.parse(file.modifiedAt) < Date.now() - 10_000),
     ).toBe(true);
-    expect(Object.keys(current.results[0].metrics)).toHaveLength(8);
+    expect(Object.keys(current.results[0].metrics)).toHaveLength(TEXT_BENCHMARKS);
   });
 
   it("keeps legacy inspection useful and reports artifact dates", async () => {

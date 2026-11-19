@@ -12,6 +12,8 @@ import {
 } from "./rust.ts";
 import { runRust } from "./rustRun.ts";
 
+const TEXT_BENCHMARKS = RUST_BENCHMARKS["ide-text"]!.length;
+
 const roots: string[] = [];
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "rust-validity-"));
@@ -126,7 +128,7 @@ describe("Rust workload contract", () => {
     artifact(root, "heap/index_1m_objects", "bad");
     const unrelated = artifact(root, "heap/dominators_1m_random");
     writeFileSync(join(unrelated, "benchmark.json"), "{");
-    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(RUST_BENCHMARKS["ide-text"].length);
+    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(TEXT_BENCHMARKS);
   });
 
   it("rejects duplicate IDs and unknown selected IDs even with complete expected results", () => {
@@ -168,7 +170,7 @@ describe("Rust workload contract", () => {
     const dir = artifact(root, "text/open_1mb");
     utimesSync(join(dir, file), new Date(0), new Date(0));
     expect(() => collectRustMetrics(root, ["ide-text"], 1)).toThrow(/stale/);
-    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(RUST_BENCHMARKS["ide-text"].length);
+    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(TEXT_BENCHMARKS);
   });
   it("rejects overflowing JSON numeric estimates, including observe-only metrics", () => {
     const root = fixture();
@@ -191,7 +193,7 @@ describe("Rust workload contract", () => {
     complete(root, ["ide-text"]);
     writeFileSync(join(root, "text/open_1mb/new/estimates.json"), "{");
     const result = inspectRustArtifacts(root, ["ide-text"]);
-    expect(Object.keys(result.metrics)).toHaveLength(7);
+    expect(Object.keys(result.metrics)).toHaveLength(TEXT_BENCHMARKS - 1);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.artifacts).toContainEqual(expect.objectContaining({ path: "text/open_1mb/new/benchmark.json" }));
   });
