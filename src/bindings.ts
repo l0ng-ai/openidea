@@ -1206,7 +1206,7 @@ export const commands = {
 	/**  Writes a package the UI generated (an imported theme); returns the folder for the install page. */
 	pluginStagePackage: (name: string, files: PackageFile[]) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_stage_package", { name, files })),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
-	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem_Serialize[]>("plugin_status_items"),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent_Deserialize>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**  Marks a keyed tab closed before ending its process. */
@@ -9284,9 +9284,9 @@ export type PluginEvent_Deserialize =
 /**  Buttons running the plugin's own commands (`ui.notify`). */
 actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
-({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem_Deserialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  An override in the receiving window; removal exposes the global item. */
-({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem_Deserialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
@@ -9394,9 +9394,9 @@ export type PluginEvent_Serialize =
 /**  Buttons running the plugin's own commands (`ui.notify`). */
 actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
-({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem_Serialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  An override in the receiving window; removal exposes the global item. */
-({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem_Serialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
@@ -9629,12 +9629,24 @@ export type PluginStatus =
 "blocked";
 
 /**  A plugin's status bar item. */
-export type PluginStatusItem = {
+export type PluginStatusItem = PluginStatusItem_Serialize | PluginStatusItem_Deserialize;
+
+/**  A plugin's status bar item. */
+export type PluginStatusItem_Deserialize = {
 	/**  Whether this item overrides the global item in the requesting window. */
 	window: boolean,
 	pluginId: string,
 	id: string,
-	item: StatusItem,
+	item: StatusItem_Deserialize,
+};
+
+/**  A plugin's status bar item. */
+export type PluginStatusItem_Serialize = {
+	/**  Whether this item overrides the global item in the requesting window. */
+	window: boolean,
+	pluginId: string,
+	id: string,
+	item: StatusItem_Serialize,
 };
 
 /**  A test update, carried by the optional test-results export. */
@@ -11480,12 +11492,32 @@ export type Stash = {
 };
 
 /**  A plugin's status bar item. */
-export type StatusItem = {
+export type StatusItem = StatusItem_Serialize | StatusItem_Deserialize;
+
+/**  A plugin's status bar item. */
+export type StatusItem_Deserialize = {
 	text: string,
 	tooltip: string | null,
 	/**  One of the plugin's commands, run on click. */
 	command: string | null,
+	/**  Opened on click instead of running `command` when not empty (API 1.14). */
+	menu?: StatusMenuEntry[],
 };
+
+/**  A plugin's status bar item. */
+export type StatusItem_Serialize = {
+	text: string,
+	tooltip: string | null,
+	/**  One of the plugin's commands, run on click. */
+	command: string | null,
+	/**  Opened on click instead of running `command` when not empty (API 1.14). */
+	menu?: StatusMenuEntry[],
+};
+
+/**  An entry of a plugin status bar item's menu (API 1.14, `ui.set-status-item-menu`). */
+export type StatusMenuEntry = 
+/**  Runs one of the plugin's commands with `argument`. */
+{ kind: "action"; label: string; description: string | null; command: string; argument: string | null } | { kind: "separator" } | { kind: "header"; label: string };
 
 /**  A call on the current line that Smart Step Into can enter (`stepInTargets`). */
 export type StepInTarget = {

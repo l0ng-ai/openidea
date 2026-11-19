@@ -33,7 +33,7 @@ import {
 import { iconResolver, selectedIconTheme, useIconThemes } from "../iconThemes";
 import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
-import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
+import { handleRuntimeEvent, startRuntimeUi, statusMenuItems, usePluginStatusItems } from "../runtimeUi";
 import { evaluateWhen, getContext } from "@/platform/context";
 import { SettingsPageFocusContext } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
@@ -607,6 +607,26 @@ describe("bridge events", () => {
     expect([task.title, task.fraction, task.message, !!task.cancel]).toEqual(["Fetching", 0.25, "origin", true]);
     handlePluginEvent({ type: "taskEnded", pluginId: "git", taskId: "7" });
     expect(useTasks.getState().tasks.find((t) => t.id === "plugin:7")?.done).toBe(true);
+  });
+
+  it("turns a status item's menu into menu items that run the plugin's commands", async () => {
+    const runCommand = vi.fn().mockResolvedValue(null);
+    setPluginsBackend({ ...backend, runCommand });
+    const items = statusMenuItems(
+      "ddev",
+      [
+        { kind: "header", label: "App" },
+        { kind: "action", label: "Open website", description: "https://app.test", command: "open", argument: "web" },
+        { kind: "separator" },
+      ],
+      (text) => `t:${text}`,
+    );
+    expect(items[0]).toEqual({ kind: "header", label: "t:App" });
+    expect(items[1]).toMatchObject({ label: "t:Open website", shortcut: "https://app.test", verbatim: true });
+    expect(items[2]).toEqual({ kind: "separator" });
+    (items[1] as { run: () => void }).run();
+    await vi.waitFor(() => expect(runCommand).toHaveBeenCalled());
+    expect(runCommand.mock.calls[0]!.slice(0, 3)).toEqual(["ddev", "open", "web"]);
   });
 
   it("keeps a window status override above global updates and falls back on removal", () => {

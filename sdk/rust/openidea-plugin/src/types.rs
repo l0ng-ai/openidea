@@ -153,6 +153,38 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// An entry of a status bar item's menu ([`crate::host::set_status_item_menu`], API 1.14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StatusMenuEntry {
+    /// Runs one of the plugin's commands, with `argument`, when chosen.
+    Action { label: String, description: Option<String>, command: String, argument: Option<String> },
+    /// A line between groups of actions.
+    Separator,
+    /// A caption above a group.
+    Header(String),
+}
+
+impl StatusMenuEntry {
+    /// An action labelled `label` that runs the plugin command `command`.
+    pub fn action(label: impl Into<String>, command: impl Into<String>) -> Self {
+        Self::Action { label: label.into(), description: None, command: command.into(), argument: None }
+    }
+    /// Sets an action's secondary text (a URL, a path); other entries are returned unchanged.
+    pub fn with_description(mut self, text: impl Into<String>) -> Self {
+        if let Self::Action { description, .. } = &mut self {
+            *description = Some(text.into());
+        }
+        self
+    }
+    /// Sets the text an action passes to its command; other entries are returned unchanged.
+    pub fn with_argument(mut self, text: impl Into<String>) -> Self {
+        if let Self::Action { argument, .. } = &mut self {
+            *argument = Some(text.into());
+        }
+        self
+    }
+}
+
 /// What [`crate::host::read_clipboard`] found (API 1.11): `None` for a kind the clipboard
 /// doesn't hold.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
