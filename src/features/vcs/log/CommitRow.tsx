@@ -119,21 +119,23 @@ function CommitRowView({
         />
       )}
       {bookmarked && <Icon name="bookmark" size={12} />}
-      {opts.refsOnLeft && refs}
-      <span
-        ref={subjectRef}
-        className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
-        onPointerEnter={enterTooltip}
-        onPointerMove={enterTooltip}
-        onPointerLeave={leaveTooltip}
-        onPointerDown={() => {
-          clearTimeout(tooltipTimer.current);
-          setTooltip(false);
-        }}
-      >
-        <IssueText text={c.summary} />
+      <span className={styles.commitText}>
+        {opts.refsOnLeft && refs}
+        <span
+          ref={subjectRef}
+          className={clsx(styles.subject, head && styles.headSubject, merge && styles.mergeSubject)}
+          onPointerEnter={enterTooltip}
+          onPointerMove={enterTooltip}
+          onPointerLeave={leaveTooltip}
+          onPointerDown={() => {
+            clearTimeout(tooltipTimer.current);
+            setTooltip(false);
+          }}
+        >
+          <IssueText text={c.summary} />
+        </span>
+        {!opts.refsOnLeft && refs}
       </span>
-      {!opts.refsOnLeft && refs}
       <Popup
         open={tooltip}
         anchor={subjectRef}
