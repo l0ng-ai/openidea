@@ -924,7 +924,11 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
     match command {
         "runInTerminal" => {
             let result = run_in_terminal(s, &args);
-            let _ = s.conn.respond(seq, command, result);
+            let conn = s.conn.clone();
+            let command = command.to_owned();
+            tokio::spawn(async move {
+                let _ = conn.respond(seq, &command, result).await;
+            });
         }
         "startDebugging" => {
             let mgr = mgr.clone();
@@ -933,11 +937,15 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
                 let request = args.get("request").and_then(Value::as_str).unwrap_or("launch").to_owned();
                 let configuration = args.get("configuration").cloned().unwrap_or_else(|| json!({}));
                 let result = mgr.start_child(&s, request, configuration).await;
-                let _ = s.conn.respond(seq, "startDebugging", result.map(|_| Value::Null).map_err(|e| e.message));
+                let _ = s.conn.respond(seq, "startDebugging", result.map(|_| Value::Null).map_err(|e| e.message)).await;
             });
         }
         _ => {
-            let _ = s.conn.respond(seq, command, Err(format!("unsupported reverse request {command}")));
+            let conn = s.conn.clone();
+            let command = command.to_owned();
+            tokio::spawn(async move {
+                let _ = conn.respond(seq, &command, Err(format!("unsupported reverse request {command}"))).await;
+            });
         }
     }
 }

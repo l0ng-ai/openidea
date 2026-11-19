@@ -30,6 +30,7 @@ export const runConfigsRunAnything: RunAnythingProvider = {
   group: "Run Configurations",
   order: 10,
   items: (query) => matchingConfigs(useRun.getState().configs, query).map(item),
+  accepts: (line) => useRun.getState().configs.some((c) => c.name === line.trim()),
   execute(line) {
     const config = useRun.getState().configs.find((c) => c.name === line.trim());
     if (!config) return false;

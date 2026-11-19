@@ -39,11 +39,15 @@ function inside(project: ProjectInfo, path: string): boolean {
 async function read(path: string): Promise<string> {
   return editorsFor(path)[0]?.view.state.doc.toString() ?? (await call(commands.fsReadText(path)));
 }
-function invalidate() {
+/** Forgets resolved targets and service names; the disk route index stays. */
+function refresh() {
   epoch++;
   serviceNames.clear();
-  clearRouteIndex();
   invalidateNavigationProviders();
+}
+function invalidate() {
+  refresh();
+  clearRouteIndex();
 }
 
 function named(module: string): Promise<string | null> {
@@ -155,9 +159,13 @@ export function registerFeignNavigation(): () => void {
       (!isRouteSource(event.path) && !isServiceConfiguration(event.path))
     )
       return;
-    if (event.type === "docChanged" && isRouteSource(event.path)) {
-      if (changedSources.size < 256) changedSources.add(event.path);
-    } else if (event.type === "docClosed" || event.type === "docSaved") changedSources.delete(event.path);
+    if (event.type === "docChanged") {
+      if (isRouteSource(event.path) && changedSources.size < 256) changedSources.add(event.path);
+      // Unsaved text is overlaid on the disk index: typing must not rescan the project.
+      refresh();
+      return;
+    }
+    changedSources.delete(event.path);
     invalidate();
   });
   const projects = useProject.subscribe((state, previous) => {

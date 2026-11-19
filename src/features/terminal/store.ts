@@ -247,6 +247,14 @@ export function newTab(cwd: string, name?: string, command?: SessionOptions["com
   return tab;
 }
 
+/** Opens a shell tab at `cwd` and types `lines` into it, each followed by Return. */
+export function newTabRunning(cwd: string, name: string | undefined, lines: readonly string[]): TerminalTab {
+  const tab = newTab(cwd, name);
+  // Sent once the shell's PTY exists (the session buffers input until then).
+  getSession(tab.session)?.input(lines.map((line) => `${line}\r`).join(""));
+  return tab;
+}
+
 export function newTabAt(dir: string): TerminalTab {
   return newTab(dir, basename(dir) || "Local");
 }

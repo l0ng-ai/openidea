@@ -76,8 +76,6 @@
   overflow: auto;
   position: relative;
   padding: 4px 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
   color: var(--fg);
   background: var(--bg-app);
   -webkit-user-select: text;
@@ -99,7 +97,6 @@
   left: 0;
   min-width: 100%;
   padding: 0 12px;
-  line-height: 20px;
   white-space: pre;
   tab-size: 4;
 }
@@ -141,9 +138,6 @@
 .detail {
   overflow: auto;
   padding: 4px 12px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: 20px;
   color: var(--fg);
   background: var(--bg-app);
   -webkit-user-select: text;

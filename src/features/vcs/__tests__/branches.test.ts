@@ -7,6 +7,7 @@ import {
   buildBranchTree,
   filterBranchTree,
   isFavoriteBranch,
+  preferredBranchRow,
   pushRecent,
   type BranchRow,
   type BranchTreeNode,
@@ -181,6 +182,44 @@ describe("buildBranchRows", () => {
     ]);
     expect(summary(buildBranchRows(branches, [], "v1.1", [], null, tags))).toEqual(["v Tags", "  tag:v1.10"]);
     expect(summary(buildBranchRows([], [], "", [], null, tags, { showTags: false }))).toEqual([]);
+  });
+});
+
+describe("preferredBranchRow", () => {
+  const ticket = [
+    b("feature/lwp/KXSC-3599"),
+    b("feature/lwp/KXSC-5994"),
+    b("feature/lwp/KXSC-5997"),
+    b("KXSC-5990"),
+    b("origin/feature/lwp/KXSC-5994", { remote: true }),
+  ];
+  const picked = (list: Branch[], query: string, acts = actions) => {
+    const rows = buildBranchRows(list, [], query, acts);
+    const i = preferredBranchRow(rows, query);
+    return i < 0 ? null : summary(rows)[i]!.trim();
+  };
+
+  it("selects the best-matching local branch, not the group above it", () => {
+    expect(picked(ticket, "599")).toBe("local:KXSC-5994");
+  });
+
+  it("prefers a match at the start of the name's last segment", () => {
+    expect(picked([b("fix-main-build"), b("release/main")], "main")).toBe("local:main");
+    expect(picked([b("feature/ordering"), b("hotfix/order")], "order")).toBe("local:order");
+  });
+
+  it("falls back to remote branches, then tags", () => {
+    expect(picked([b("main"), b("origin/feature/x", { remote: true })], "feature")).toBe("remote:x");
+    expect(
+      summary(buildBranchRows([b("main")], [], "v1", [], null, ["v1.0"]))[
+        preferredBranchRow(buildBranchRows([b("main")], [], "v1", [], null, ["v1.0"]), "v1")
+      ],
+    ).toBe("  tag:v1.0");
+  });
+
+  it("selects a matching action first, and nothing without a query", () => {
+    expect(picked(branches, "push")).toBe("> Push…");
+    expect(preferredBranchRow(buildBranchRows(branches, [], "", actions), "")).toBe(-1);
   });
 });
 

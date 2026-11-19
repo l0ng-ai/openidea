@@ -27,6 +27,17 @@ describe("validateWorkflow", () => {
     expect(commit("yes")).toBeNull();
   });
 
+  it("defaults Build tool window open/focus and rejects unknown values", () => {
+    expect(DEFAULT_WORKFLOW.build).toEqual({ openToolWindow: "always", focusToolWindow: "never" });
+    expect(validateWorkflow({ build: { openToolWindow: "onError", focusToolWindow: "always" } }).build).toEqual({
+      openToolWindow: "onError",
+      focusToolWindow: "always",
+    });
+    expect(validateWorkflow({ build: { openToolWindow: "sometimes", focusToolWindow: 1 } }).build).toEqual(
+      DEFAULT_WORKFLOW.build,
+    );
+  });
+
   it("falls back to defaults for missing or malformed values", () => {
     expect(validateWorkflow(undefined)).toEqual(DEFAULT_WORKFLOW);
     const v = validateWorkflow({

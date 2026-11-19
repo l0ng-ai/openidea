@@ -1918,6 +1918,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
+	/**
+	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
+	 *  [`window_group_merge`], unrelated windows keep their own group.
+	 */
+	windowGroupJoin: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_join", { label })),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
@@ -3294,6 +3299,14 @@ export type BuildResult = {
 	messages: BuildMessage[],
 };
 
+/**  Build, Execution, Deployment › Compiler (Build tool window behaviour). */
+export type BuildSettings = {
+	/**  When to open the Build tool window: `always` | `onError` | `never`. */
+	openToolWindow?: string,
+	/**  When to focus the Build tool window: `always` | `onError` | `never`. */
+	focusToolWindow?: string,
+};
+
 export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet" | 
 /**  A Java project without a build tool, compiled from its Project Structure. */
 "javac";
@@ -3745,6 +3758,12 @@ export type CommitSettings = {
 	doubleClickOpensDiff?: boolean | null,
 	/**  Team conventions for Generate Commit Message with Agent, added to its prompt. */
 	agentInstructions?: string,
+	/**  The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+	agent?: string,
+	/**  That agent's model for commit messages; empty keeps the model the agent would use. */
+	agentModel?: string,
+	/**  That model's thinking level for commit messages; empty keeps the agent's. */
+	agentEffort?: string,
 };
 
 export type Commit_Deserialize = {
@@ -6859,6 +6878,21 @@ export type Hover = {
 	range: Range | null,
 };
 
+/**  An action rendered at the left edge of a line and revealed by hover. */
+export type HoverAction = {
+	/**  The line the button is drawn on; normally the declaration line. */
+	line: number,
+	/**  First line whose leftmost strip reveals this action, inclusive. */
+	startLine: number,
+	/**  Last line whose leftmost strip reveals this action, inclusive. */
+	endLine: number,
+	icon: string | null,
+	label: string,
+	tooltip: string | null,
+	command: string,
+	argument: string | null,
+};
+
 /**  One request with its outcome. */
 export type HttpExchange = {
 	entry: HttpHistoryEntry,
@@ -8226,10 +8260,23 @@ export type ManifestDependency = {
 	to: number,
 };
 
+export type MarkdownCommandDirectory = 
+/**  The project's root folder. */
+"project" | 
+/**  The Markdown file's parent folder. */
+"file";
+
 /**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
 export type MarkdownSettings = {
 	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
 	previewFontSize?: number | null,
+	/**
+	 *  "Detect commands that can be run right from Markdown files": gutter run icons on
+	 *  shell code blocks and on command lines in code blocks.
+	 */
+	runCommands?: boolean,
+	/**  Where those commands run; unset asks when the project and the file's folder differ. */
+	commandDirectory?: MarkdownCommandDirectory | null,
 };
 
 /**  A marketplace entry with what is installed. */
@@ -9360,6 +9407,7 @@ export type PluginLanguageVisuals = {
 	injections: Injection[],
 	colors: ([string, ColorInfo])[],
 	gutterActions: ([string, GutterAction])[],
+	hoverActions: ([string, HoverAction])[],
 };
 
 export type PluginLocation = {
@@ -10930,6 +10978,8 @@ export type Settings_Deserialize = {
 	projectStructure?: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs?: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build?: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console?: ConsoleSettings,
 	debugger?: DebuggerSettings,
@@ -11004,6 +11054,8 @@ export type Settings_Serialize = {
 	projectStructure: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console: ConsoleSettings,
 	debugger: DebuggerSettings,

@@ -34,6 +34,8 @@ pub struct Settings {
     pub project_structure: ProjectStructureSettings,
     /// Version Control (Git, Commit, Confirmation, Issue Navigation).
     pub vcs: VcsSettings,
+    /// Build, Execution, Deployment › Compiler (Build tool window).
+    pub build: BuildSettings,
     /// Build, Execution, Deployment › Console.
     pub console: ConsoleSettings,
     pub debugger: DebuggerSettings,
@@ -508,6 +510,7 @@ impl Default for Settings {
             languages: LanguagesSettings::default(),
             project_structure: ProjectStructureSettings::default(),
             vcs: VcsSettings::default(),
+            build: BuildSettings::default(),
             console: ConsoleSettings::default(),
             debugger: DebuggerSettings::default(),
             run: RunSettings::default(),
@@ -1194,11 +1197,31 @@ pub struct ArduinoSettings {
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MarkdownSettings {
     /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
     pub preview_font_size: Option<u32>,
+    /// "Detect commands that can be run right from Markdown files": gutter run icons on
+    /// shell code blocks and on command lines in code blocks.
+    pub run_commands: bool,
+    /// Where those commands run; unset asks when the project and the file's folder differ.
+    pub command_directory: Option<MarkdownCommandDirectory>,
+}
+
+impl Default for MarkdownSettings {
+    fn default() -> Self {
+        Self { preview_font_size: None, run_commands: true, command_directory: None }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownCommandDirectory {
+    /// The project's root folder.
+    Project,
+    /// The Markdown file's parent folder.
+    File,
 }
 
 impl LanguagesSettings {

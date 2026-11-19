@@ -8,6 +8,7 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
+export type BuildToolWindowWhen = "always" | "onError" | "never";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -62,6 +63,12 @@ export interface CommitSettingsValid {
   doubleClickOpensDiff: boolean | null;
   /** Team conventions for Generate Commit Message with Agent, added to its prompt. */
   agentInstructions: string;
+  /** The agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+  agent: string;
+  /** That agent's model for commit messages; empty keeps the model the agent would use. */
+  agentModel: string;
+  /** That model's thinking level for commit messages; empty keeps the agent's. */
+  agentEffort: string;
 }
 
 export interface VcsSettingsValid {
@@ -91,6 +98,11 @@ export interface LogLevelColorsValid {
   info: string;
   debug: string;
   trace: string;
+}
+
+export interface BuildSettingsValid {
+  openToolWindow: BuildToolWindowWhen;
+  focusToolWindow: BuildToolWindowWhen;
 }
 
 export interface ConsoleSettingsValid {
@@ -216,6 +228,7 @@ export interface AgentRunSettingsValid {
 
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
+  build: BuildSettingsValid;
   console: ConsoleSettingsValid;
   debugger: DebuggerSettingsValid;
   run: RunSettingsValid;
@@ -300,6 +313,9 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       disabledPluginChecks: [],
       doubleClickOpensDiff: null,
       agentInstructions: "",
+      agent: "",
+      agentModel: "",
+      agentEffort: "",
     },
     confirmation: {
       onCreate: "ask",
@@ -311,6 +327,10 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     shelf: { removeApplied: false },
     issueNavigation: [],
     mappings: { excluded: [], added: [] },
+  },
+  build: {
+    openToolWindow: "always",
+    focusToolWindow: "never",
   },
   console: {
     softWrap: false,
@@ -465,6 +485,9 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
       doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
       agentInstructions: text(c.agentInstructions, d.commit.agentInstructions),
+      agent: text(c.agent, d.commit.agent),
+      agentModel: text(c.agentModel, d.commit.agentModel),
+      agentEffort: text(c.agentEffort, d.commit.agentEffort),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -484,6 +507,16 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
       added: strings(obj(v.mappings).added, d.mappings.added),
     },
+  };
+}
+
+export function validateBuild(raw: unknown): BuildSettingsValid {
+  const d = DEFAULT_WORKFLOW.build;
+  const v = obj(raw);
+  const when = ["always", "onError", "never"] as const;
+  return {
+    openToolWindow: oneOf(v.openToolWindow, when, d.openToolWindow),
+    focusToolWindow: oneOf(v.focusToolWindow, when, d.focusToolWindow),
   };
 }
 
@@ -657,6 +690,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
     vcs: validateVcs(root.vcs),
+    build: validateBuild(root.build),
     console: validateConsole(root.console),
     debugger: validateDebugger(root.debugger),
     run: validateRun(root.run),

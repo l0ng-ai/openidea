@@ -25,7 +25,7 @@ import {
   T,
 } from "@/ui";
 import type { PopupAnchor } from "@/ui/Popup";
-import { buildBranchRows, withExpanded, type BranchRow, type PopupAction } from "./branches";
+import { buildBranchRows, preferredBranchRow, withExpanded, type BranchRow, type PopupAction } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
 import { loadFavoriteBranches, recentBranches, toggleFavoriteBranch, useFavoriteBranches } from "./branchOps";
@@ -33,6 +33,7 @@ import { inProgress, operationTitle, type InProgress } from "./operations";
 import {
   buildMultiRepoRows,
   currentRepoFor,
+  preferredRepoRow,
   repoHeadLabel,
   widgetShowsRepo,
   type RepoEntry,
@@ -44,6 +45,22 @@ import { showSyncCommits } from "./SyncCommitsPopup";
 import type { SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
+
+/** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
+const PREFERRED = -1;
+
+function pickActive<R>(
+  rows: readonly R[],
+  active: number,
+  isSection: (r: R) => boolean,
+  preferred: () => number,
+): number {
+  if (active === PREFERRED) {
+    const i = preferred();
+    if (i >= 0) return i;
+  } else if (rows[active] && !isSection(rows[active]!)) return active;
+  return firstSelectable(rows, isSection);
+}
 
 export const useBranchesPopup = create<{ open: boolean }>(() => ({ open: false }));
 export const showBranchesPopup = () => useBranchesPopup.setState({ open: true });
@@ -446,7 +463,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
     [branches, recent, query, actions, favorites, tags, options, expanded],
   );
   const isSection = (r: BranchRow) => r.type === "section";
-  const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
+  const activeIndex = pickActive(rows, active, isSection, () => preferredBranchRow(rows, query));
   const scoped = (items: MenuItem[]) => (root ? inRepo(root, items) : items);
 
   const closeAll = () => {
@@ -528,7 +545,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
           value={query}
           onChange={(v) => {
             setQuery(v);
-            setActive(0);
+            setActive(PREFERRED);
           }}
           placeholder={label}
           aria-label={label}
@@ -683,7 +700,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     [repos, all, query, actions, expanded, favorites, current, recent, tags, options],
   );
   const isSection = (r: RepoRow) => r.type === "section";
-  const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
+  const activeIndex = pickActive(rows, active, isSection, () => preferredRepoRow(rows, query));
 
   const closeAll = () => {
     setMenuFor(null);
@@ -778,7 +795,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
           value={query}
           onChange={(v) => {
             setQuery(v);
-            setActive(0);
+            setActive(PREFERRED);
           }}
           placeholder="Search for branches, actions, repositories"
           aria-label="Search for branches, actions, repositories"
