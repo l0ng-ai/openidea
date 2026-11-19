@@ -909,6 +909,27 @@ async fn authenticates_and_retries_session_setup_once_on_auth_error() {
     mgr3.shutdown();
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn hermes_profiles_complete_their_own_skills() {
+    let tmp = tempfile::tempdir().unwrap();
+    let skill = |dir: &str, name: &str| {
+        let dir = tmp.path().join(dir).join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\n")).unwrap();
+    };
+    skill(".hermes/skills", "plan");
+    skill(".hermes/profiles/dom/skills/home", "lights");
+    std::fs::write(tmp.path().join(".hermes/profiles/dom/config.yaml"), "").unwrap();
+    let mgr = manager_at(tmp.path(), &tmp.path().join("models.json"), Arc::new(FakeAgent::default()));
+    let names = |c: Vec<AgentCommand>| c.into_iter().map(|c| c.name).collect::<Vec<_>>();
+    assert!(names(mgr.commands("hermes", None).await.unwrap()).contains(&"plan".to_owned()));
+    let dom = names(mgr.commands("hermes-dom", None).await.unwrap());
+    assert!(dom.contains(&"lights".to_owned()) && !dom.contains(&"plan".to_owned()));
+    assert!(!names(mgr.commands("claude", None).await.unwrap()).contains(&"plan".to_owned()));
+    mgr.shutdown();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     let tmp = tempfile::tempdir().unwrap();
