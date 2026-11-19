@@ -14,6 +14,7 @@
   min-height: 0;
 }
 .log {
+  container: git-log / inline-size;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -75,14 +76,32 @@
 
 /* filters */
 .filters {
-  gap: var(--space-1);
-  padding: 0 8px 0 6px;
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-0-5) var(--space-1);
+  padding: var(--space-0-5) 8px var(--space-0-5) 6px;
   min-width: 0;
-  overflow: hidden;
+}
+.filterControls,
+.filterActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.filterControls {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.filterActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
 }
 .textFilter {
   flex: 0 1 260px;
-  min-width: 100px;
+  min-width: min(100px, 60%);
 }
 .filterGroup {
   position: relative;
@@ -95,6 +114,20 @@
 }
 .filterHidden {
   visibility: hidden;
+}
+@container git-log (max-width: 320px) {
+  .filterControls,
+  .filterActions {
+    display: contents;
+  }
+  .textFilter {
+    flex: 1 0 100%;
+  }
+  /* Keep the filters measurable for the overflow menu. */
+  .filterGroup {
+    position: absolute;
+    width: 0;
+  }
 }
 .filterButton {
   flex: none;
