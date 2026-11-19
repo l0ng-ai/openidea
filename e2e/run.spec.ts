@@ -81,6 +81,39 @@ test("⌘F2 stops a running process", async ({ workbench: page }) => {
   await expect(run.getByRole("tab", { name: "dev" })).toHaveAttribute("data-tooltip", /exit code 143$/);
 });
 
+test("a short Run pane has room for the full toolbar above the output", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 400, height: 500 });
+  const output = "Watching for changes…";
+  await stubRun(page, [{ kind: "stdout", text: `${output}\n` }], null);
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  await expect(run.getByText(output)).toBeVisible();
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const { setToolWindowSize } = await import(/* @vite-ignore */ path);
+    setToolWindowSize("bottom", 160);
+  });
+  const toolbar = run.getByRole("toolbar", { name: "Run actions" });
+  const clipped = await toolbar.evaluate((el) => {
+    const bar = el.getBoundingClientRect();
+    return Array.from(el.querySelectorAll("button")).flatMap((button) => {
+      const box = button.getBoundingClientRect();
+      return box.left < bar.left - 1 || box.right > bar.right + 1 || box.bottom > bar.bottom + 1
+        ? [button.getAttribute("aria-label")]
+        : [];
+    });
+  });
+  expect(clipped).toEqual([]);
+  await expect(toolbar).toHaveAttribute("aria-orientation", "horizontal");
+  const toolbarBox = (await toolbar.boundingBox())!;
+  const consoleBox = (await run.getByRole("log").boundingBox())!;
+  expect(consoleBox.y).toBeGreaterThanOrEqual(toolbarBox.y + toolbarBox.height - 1);
+  await toolbar.getByRole("button", { name: "Clear All" }).click();
+  await expect(run.getByText(output)).toBeHidden();
+  await toolbar.getByRole("button", { name: "Stop" }).click();
+  await expect.poll(() => ipcCalls(page, "run_stop")).toEqual([{ id: RUN_ID }]);
+});
+
 test("Go reruns keep each package's exact failures and the original configuration", async ({ workbench: page }) => {
   await stubDesktop(page);
   await page.evaluate(async () => {

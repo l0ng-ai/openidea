@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import clsx from "clsx";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
@@ -181,10 +182,15 @@ export function SessionPanel({
   );
 
   return (
-    <div className={styles.session}>
-      <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
+    <div className={clsx(styles.session, showLifecycle && styles.topToolbarSession)}>
+      <div
+        className={styles.toolbar}
+        role="toolbar"
+        aria-orientation={showLifecycle ? "horizontal" : "vertical"}
+        aria-label={tx("Run actions")}
+      >
         {showLifecycle && (
-          <>
+          <div className={styles.toolbarGroup}>
             <IconButton
               icon="rerun"
               title="Rerun"
@@ -242,34 +248,36 @@ export function SessionPanel({
                 />
               </>
             )}
-            <div className={styles.toolbarSep} />
-          </>
+          </div>
         )}
-        {!rt.terminal && (
-          <>
-            <IconButton
-              icon="search"
-              title="Find…"
-              shortcut={formatBinding(hostBinding("Meta+F"))}
-              pressed={findOpen}
-              onClick={() => setFindOpen((v) => !v)}
-            />
-            <IconButton
-              icon="scroll-to-end"
-              title="Scroll to End"
-              pressed={follow}
-              onClick={() => setFollow((v) => !v)}
-            />
-            <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
-          </>
-        )}
-        <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
-        <div className={styles.toolbarSep} />
-        <IconButton
-          icon="settings"
-          title="Edit Configurations…"
-          onClick={() => void executeAction("run.editConfigs", session.config.id)}
-        />
+        <div className={styles.toolbarGroup}>
+          {!rt.terminal && (
+            <>
+              <IconButton
+                icon="search"
+                title="Find…"
+                shortcut={formatBinding(hostBinding("Meta+F"))}
+                pressed={findOpen}
+                onClick={() => setFindOpen((v) => !v)}
+              />
+              <IconButton
+                icon="scroll-to-end"
+                title="Scroll to End"
+                pressed={follow}
+                onClick={() => setFollow((v) => !v)}
+              />
+              <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
+            </>
+          )}
+          <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
+        </div>
+        <div className={styles.toolbarGroup}>
+          <IconButton
+            icon="settings"
+            title="Edit Configurations…"
+            onClick={() => void executeAction("run.editConfigs", session.config.id)}
+          />
+        </div>
       </div>
       <div className={styles.sessionBody}>
         {rt.tests ? (
