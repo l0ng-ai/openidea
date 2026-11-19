@@ -27,9 +27,9 @@ import { executeAction } from "@/platform/actions";
 import { whenAllSynced, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { docOf, incompleteNote, isUnavailable, lspRequest, reportLspError } from "./lsp";
-import { comparePos, offsetToPos, rangeToOffsets } from "./positions";
+import { offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
-import { caretAnchor, openPopup, type PreviewOccurrence } from "./popupStore";
+import { openPopup, type PreviewOccurrence } from "./popupStore";
 import { needsPreview, summarizeWorkspaceEdit } from "./workspaceEdit";
 import { endInplaceRename, inplaceSession, startInplaceRename, type Span } from "./inplaceRename";
 import { shortcutLabel } from "@/platform/keymap";
@@ -127,10 +127,10 @@ export async function startRename(view: EditorView) {
   const oldName = view.state.sliceDoc(from, to);
   const dialog = (initial: string) =>
     openPopup({
-      kind: "rename",
-      anchor: caretAnchor(view, from),
+      kind: "symbolRename",
       title: tx`Rename '${oldName}'`,
       initial,
+      themeClasses: view.themeClasses,
       onSubmit: (newName) => void finishRename(view, doc, pos, oldName, newName),
     });
   if (from === to) {
@@ -304,6 +304,7 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
     kind: "preview",
     title: tx`Rename '${oldName}' to '${newName}'`,
     summary,
+    renameThemeClasses: view.themeClasses,
     ...(note ? { warnings: [note] } : {}),
     confirmLabel: note ? "Rename Anyway" : "Do Refactor",
     onConfirm: () => void applyEdit(view, edit),
@@ -350,13 +351,12 @@ async function startSyntaxRename(
     return true;
   }
   const { plan } = result;
-  const at = plan.occurrences.find((o) => comparePos(o.range.start, pos) <= 0 && comparePos(pos, o.range.end) <= 0);
   openPopup({
-    kind: "rename",
-    anchor: caretAnchor(view, rangeToOffsets(view.state.doc, (at ?? plan.occurrences[0]!).range).from),
+    kind: "symbolRename",
     title: tx`Rename '${plan.symbol.name}'`,
     initial: plan.symbol.name,
     note: `${SYNTAX_NOTE}: local occurrences only`,
+    themeClasses: view.themeClasses,
     onSubmit: (newName) => void commitSyntaxRename(view, doc, plan, newName),
   });
   return true;
@@ -418,6 +418,7 @@ export async function commitSyntaxRename(
     },
     warnings: [...risks, `${SYNTAX_NOTE}. Only the occurrences below will be renamed.`],
     occurrences,
+    renameThemeClasses: view.themeClasses,
     confirmLabel: "Rename Anyway",
     onConfirm: apply,
   });

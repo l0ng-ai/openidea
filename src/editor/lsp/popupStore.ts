@@ -130,6 +130,14 @@ export type LspPopup =
       onSubmit: (name: string) => void;
     }
   | {
+      kind: "symbolRename";
+      title: string;
+      initial: string;
+      note?: string;
+      themeClasses: string;
+      onSubmit: (name: string) => void;
+    }
+  | {
       kind: "preview";
       title: string;
       summary: WorkspaceEditSummary;
@@ -139,6 +147,8 @@ export type LspPopup =
       warnings?: string[];
       /** Individual occurrences with line previews (single-file syntax-based renames). */
       occurrences?: PreviewOccurrence[];
+      /** The editor theme for a symbol rename and its occurrence snippets. */
+      renameThemeClasses?: string;
     };
 
 export interface PreviewOccurrence {
