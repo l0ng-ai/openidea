@@ -9047,5 +9047,6 @@
   "Run from Parent Directory of Current File ({shown})": "从当前文件的父目录运行（{shown}）",
   "Detect commands that can be run right from Markdown files": "检测可以直接从 Markdown 文件运行的命令",
   "Run commands from": "运行命令的目录",
-  "Markdown file parent directory": "Markdown 文件的父目录"
+  "Markdown file parent directory": "Markdown 文件的父目录",
+  "Hermes profile": "Hermes 配置文件"
 }

@@ -16,6 +16,7 @@ agent_entries                                always             project_host bin
 agent_external_sessions                      trusted            project_host bindings async
 agent_fork                                   trusted            project_host bindings async
 agent_grouped_changes                        trusted            project_host bindings async
+agent_hermes_profiles                        trusted            project_host bindings async
 agent_import_session                         trusted            project_host bindings async
 agent_mcp_discover_sources                   always             project_host bindings async
 agent_mcp_import                             always             project_host bindings sync

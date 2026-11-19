@@ -2672,5 +2672,6 @@
   "Run from Parent Directory of Current File ({shown})": "Run from Parent Directory of Current File ({shown})",
   "Detect commands that can be run right from Markdown files": "Detect commands that can be run right from Markdown files",
   "Run commands from": "Run commands from",
-  "Markdown file parent directory": "Markdown file parent directory"
+  "Markdown file parent directory": "Markdown file parent directory",
+  "Hermes profile": "Hermes profile"
 }

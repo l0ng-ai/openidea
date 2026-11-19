@@ -57,6 +57,8 @@ export const commands = {
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
+	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
+	agentHermesProfiles: () => typedError<HermesProfile[], IdeError>(__TAURI_INVOKE("agent_hermes_profiles")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
@@ -6743,6 +6745,14 @@ export type HeapSummary = {
 	weakEdgesSkipped: number,
 	sizeSource: SizeSource,
 	analysisMs: number,
+};
+
+/**  A profile and the name Hermes shows for it (`hermes profile list`). */
+export type HermesProfile = {
+	/**  What `hermes -p` takes; `default` is the Hermes home itself. */
+	name: string,
+	/**  `display_name` from the profile's `profile.yaml`, else the name. */
+	label: string,
 };
 
 export type HierarchyChoice = {

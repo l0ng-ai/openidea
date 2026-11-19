@@ -14,6 +14,7 @@ mod config;
 mod conversation;
 mod elicitation;
 mod external;
+pub mod hermes;
 pub mod mcp;
 mod model;
 mod native;

@@ -504,7 +504,7 @@ fn validated_custom_id(id: &str) -> IdeResult<String> {
 }
 
 /// Turns an `acp.json` server name into a file-stem id (`"My Agent!"` → `"my-agent"`).
-fn slugify_id(name: &str) -> String {
+pub(crate) fn slugify_id(name: &str) -> String {
     let mut id = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {

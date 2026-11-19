@@ -8,6 +8,7 @@ import clsx from "clsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Composer } from "../Composer";
 import { ConfigPickers } from "../ConfigPickers";
+import { HermesProfilePicker } from "../HermesProfilePicker";
 import { McpPicker } from "../McpPicker";
 import styles from "../Session.module.css";
 import { SessionAssets } from "../SessionAssets";
@@ -280,6 +281,7 @@ export function SessionComposer({
         ]}
         toolbar={
           <>
+            <HermesProfilePicker provider={task.provider} />
             <ConfigPickers
               config={pickerConfig}
               onChange={setOption}
