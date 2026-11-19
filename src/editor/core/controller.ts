@@ -47,7 +47,7 @@ import { useDistractionFree } from "@/workbench/distractionFree";
 import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
 import { ask, confirm } from "@/workbench/messages";
 import { t, tx } from "@/platform/i18n";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isErrorKind, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { hoverActionsAt } from "@/platform/hoverActions";
@@ -736,7 +736,7 @@ export class EditorController implements SlotHost {
         return this.slots.get(tabId) ?? this.createSlot(tabId, m, init);
       })
       .catch((e: unknown) => {
-        if (this.restoredTabs.has(tabId) && (e as { kind?: string } | null)?.kind === "notFound") {
+        if (this.restoredTabs.has(tabId) && isErrorKind(e, "notFound")) {
           // A file from the saved session no longer exists: drop its tab quietly.
           this.restoredTabs.delete(tabId);
           this.restoredViews.delete(path);
