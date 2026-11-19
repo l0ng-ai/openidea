@@ -448,6 +448,9 @@ pub struct TerminalSettings {
     /// Shell command line; empty = the login shell.
     pub shell_path: String,
     pub tab_name: String,
+    /// Title a program sets (OSC 0/2) as the tab's name: `running` (while a command runs),
+    /// `always`, or `off`.
+    pub app_title_as_tab_name: String,
     pub audible_bell: bool,
     pub close_on_exit: bool,
     pub mouse_reporting: bool,
@@ -483,6 +486,7 @@ impl Default for TerminalSettings {
             env: BTreeMap::new(),
             shell_path: String::new(),
             tab_name: "Local".into(),
+            app_title_as_tab_name: "running".into(),
             audible_bell: true,
             close_on_exit: true,
             mouse_reporting: true,

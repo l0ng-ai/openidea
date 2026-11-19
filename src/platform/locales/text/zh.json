@@ -9012,5 +9012,7 @@
   "Updated {n} branches": "已更新 {n} 个分支",
   "No branches were updated": "没有分支被更新",
   "Selected branches are up-to-date": "所选分支都是最新的",
+  "Use application title as tab name": "使用应用标题作为标签页名称",
+  "When command is running": "命令运行时",
   "Horizontal Scrolling": "横向滚动"
 }

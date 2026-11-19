@@ -2633,5 +2633,7 @@
   "Updated {n} branches": "Updated {n} branches",
   "No branches were updated": "No branches were updated",
   "Selected branches are up-to-date": "Selected branches are up-to-date",
+  "Use application title as tab name": "Use application title as tab name",
+  "When command is running": "When command is running",
   "Horizontal Scrolling": "Horizontal Scrolling"
 }
