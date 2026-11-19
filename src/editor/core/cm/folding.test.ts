@@ -284,6 +284,27 @@ describe("fold placeholder chip", () => {
     expect(folded(view)).toEqual([]);
     view.destroy();
   });
+
+  it("the chip swallows mousedown so a caret move cannot replace it before the click", () => {
+    const view = foldedView();
+    fold(view);
+    const chip = view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder")!;
+    // A mousedown must not reach the editor: CM turns it into a mouse selection
+    // that moves the caret, and the caret change re-runs the inline blame refresh,
+    // which rebuilds this line's DOM and detaches the chip between mousedown and
+    // click, so the browser drops the click. jsdom cannot reproduce the DOM
+    // replacement; this locks the handler contract.
+    let reachedEditor = false;
+    view.contentDOM.addEventListener("mousedown", () => (reachedEditor = true));
+    const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    chip.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(reachedEditor).toBe(false);
+    // The click still expands.
+    chip.click();
+    expect(folded(view)).toEqual([]);
+    view.destroy();
+  });
 });
 
 describe("comment placeholders", () => {
