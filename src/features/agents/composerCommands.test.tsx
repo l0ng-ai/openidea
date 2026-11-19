@@ -299,6 +299,24 @@ describe("New Task composer commands", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(useAgents.getState().composers.get(HOME)?.text).toBe("fix the failing build /triage ");
   });
+
+  it("completes a `!` command from earlier ones with Tab and runs it with Enter", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    useAgents.setState({ history: ["!git status", "fix it"] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    typeIn(box, "!gi");
+    expect(await screen.findByRole("option")).toHaveTextContent("git status");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(textOf(box)).toBe("!git status");
+
+    typeIn(box, "!gi");
+    await screen.findByRole("option");
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(agentCreate).toHaveBeenCalled());
+    expect(agentCreate.mock.calls[0]![0]).toMatchObject({ idle: true, prompt: { text: "!gi" } });
+  });
 });
 
 describe("New Task composer paste", () => {

@@ -15,6 +15,7 @@ import {
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
+import { openExternalUrl } from "@/platform/openUrl";
 import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
@@ -48,6 +49,8 @@ import { isTracing, useStreamTrace } from "./streams/streamStore";
 import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
+import { warnPinnedFlutterDevice } from "@/workbench/flutterDevices";
+import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools } from "./flutter/devTools";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import { attachConfig } from "./attach";
 import {
@@ -283,6 +286,20 @@ function browserUnavailable(name: string): boolean {
   return true;
 }
 
+/** The browser opens on this desktop, which can't reach a server on a remote project's machine. */
+async function openDevTools(vmServiceUri: string) {
+  if (isRemoteWindow()) {
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      title: "Flutter DevTools isn't available in a remote project yet",
+    });
+    return;
+  }
+  const server = await call(commands.flutterDevtoolsUrl());
+  await openExternalUrl(devToolsUrl(server, { page: "inspector" }, { uri: vmServiceUri }));
+}
+
 async function startBrowser(config: RunConfig, root: string, show?: boolean) {
   if (browserUnavailable(config.name)) return;
   const launch = browserLaunchConfig(config, root);
@@ -387,6 +404,7 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
+  if (config.debugAdapter === "dart") warnPinnedFlutterDevice(config);
   const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()
@@ -769,6 +787,31 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s) void report("Hot Restart failed", call(commands.debugHotRestart(s.id)));
+      },
+    },
+    {
+      id: "debug.openDevTools",
+      title: "Open Flutter DevTools in Browser",
+      category: "Debug",
+      icon: "external-link",
+      description: "Flutter: inspect the running app in the browser",
+      when: "debugHasVmService",
+      run: () => {
+        const s = activeSession();
+        const uri = s && rootOf(s).vmServiceUri;
+        if (uri) void report("Couldn't open Flutter DevTools", openDevTools(uri));
+      },
+    },
+    {
+      id: "debug.refreshDevTools",
+      title: "Refresh Flutter DevTools",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: load the DevTools page again",
+      when: "flutterDevTools",
+      run: (c) => {
+        const id = c.arg;
+        for (const w of DEVTOOLS_WINDOWS) if (!id || id === w.id) refreshDevTools(w.id);
       },
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),

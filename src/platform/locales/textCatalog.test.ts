@@ -158,6 +158,7 @@ const UNTRANSLATED = new Set<string>([
   "Eclipse Temurin",
   "EditorConfig",
   "Epytext",
+  "Flutter",
   "Git",
   "GitHub",
   "Go",

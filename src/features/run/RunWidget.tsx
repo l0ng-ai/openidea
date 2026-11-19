@@ -6,6 +6,7 @@ import { useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { runExecutors, useRunExecutors, useDebugRunSessions } from "@/workbench/contributions";
 import { configIcon } from "./configs";
+import { FlutterDeviceChooser } from "./FlutterDeviceChooser";
 import { useRemoteLabel } from "./remote";
 import { CURRENT_FILE, useRun, isLive } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
@@ -59,6 +60,7 @@ export function RunWidget() {
 
   return (
     <div className={styles.widget}>
+      <FlutterDeviceChooser />
       <BarButton
         variant="title"
         className={styles.widgetChooser}

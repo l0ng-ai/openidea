@@ -226,6 +226,7 @@ docker_compose_op                            trusted            desktop      bin
 docker_container_op                          trusted            desktop      bindings async
 docker_container_stats                       trusted            desktop      bindings async
 docker_container_top                         trusted            desktop      bindings async
+docker_disconnect                            always             desktop      bindings async
 docker_events                                trusted            desktop      bindings async
 docker_image_history                         trusted            desktop      bindings async
 docker_inspect                               trusted            desktop      bindings async
@@ -247,6 +248,10 @@ find_files                                   always             project_host bin
 find_files_named                             always             project_host bindings async
 find_symbols                                 always             project_host bindings async
 find_symbols_named                           always             project_host bindings async
+flutter_daemon_restart                       trusted            project_host bindings sync
+flutter_devices                              trusted            project_host bindings sync
+flutter_devices_refresh                      trusted            project_host bindings sync
+flutter_devtools_url                         trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async
@@ -702,6 +707,7 @@ vcs_tags                                     always             project_host bin
 vcs_undo_commit                              trusted            project_host bindings async
 vcs_unshelve                                 trusted            project_host bindings async
 vcs_unstage                                  trusted            project_host bindings async
+vcs_update_branches                          trusted            project_host bindings async
 vcs_worktrees                                always             project_host bindings async
 vcs_write_patch                              always             project_host bindings async
 web_browsers                                 always             desktop      bindings async

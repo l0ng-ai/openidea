@@ -47,6 +47,10 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   );
   const members = project?.workspace?.projects ?? [];
   const root = members.includes(selected ?? "") ? selected! : (members[0] ?? project?.root ?? "");
+  // Send to Agent resolves references against the project picked here.
+  useEffect(() => {
+    if (members.length && draft.projectRoot !== root) updateDraft({ projectRoot: root });
+  }, [members.length, root, draft.projectRoot]);
   // A window without a project yet has no fact to show: the where row stays empty until it does.
   const projectLabel = members.length ? basename(root) : project?.name;
   const [repoState, setRepoState] = useState<{

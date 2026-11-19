@@ -361,12 +361,20 @@ const vimTheme = EditorView.theme({
     padding: "2px 10px",
     minHeight: "1.6em",
     alignItems: "center",
-    fontFamily: "var(--font-mono)",
-    fontSize: "var(--fs-code)",
+    // The command line is text like the code above it: same configured font and zoom.
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    fontVariantLigatures: "none",
     background: "var(--bg-elev)",
     color: "var(--fg)",
     borderTop: "1px solid var(--border)",
   },
+  // The package writes `font-family: monospace` inline on the span that holds the prefix
+  // and the input; only an important rule beats an inline declaration, and `inherit` then
+  // picks up the panel's font.
+  ".cm-vim-panel span": { fontFamily: "inherit !important" },
+  // Ligatures follow the editor's toggle, as the scroller's pair does.
+  "&.cm-openidea-ligatures .cm-vim-panel": { fontVariantLigatures: "normal" },
   ".cm-vim-panel input": { color: "var(--fg)", fontFamily: "inherit", fontSize: "inherit" },
 });
 

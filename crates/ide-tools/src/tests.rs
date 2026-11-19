@@ -193,8 +193,8 @@ fn interchangeable_servers_list_their_alternatives() {
         assert_eq!(find(&list, name).alternatives, python);
     }
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
-    for name in ["jdtls", "kmp-lsp"] {
-        assert_eq!(find(&list, name).alternatives, ["jdtls", "kmp-lsp"]);
+    for name in ["jdtls", "java-analyzer", "kmp-lsp"] {
+        assert_eq!(find(&list, name).alternatives, ["jdtls", "java-analyzer", "kmp-lsp"]);
         assert_eq!(find(&list, name).languages, if name == "kmp-lsp" { &["Java", "Kotlin"][..] } else { &["Java"] });
     }
     for name in ["kotlin-lsp", "kotlin-language-server"] {

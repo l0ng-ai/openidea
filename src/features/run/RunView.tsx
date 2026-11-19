@@ -51,6 +51,7 @@ import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrac
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
+import { hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
 import { configIcon } from "./configs";
 import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
@@ -222,6 +223,24 @@ export function SessionPanel({
                 disabled={session.status !== "running" || updating}
                 onClick={() => showApplicationUpdate(session.id)}
               />
+            )}
+            {supportsHotReload(session.config) && (
+              <>
+                <IconButton
+                  icon="hot-reload"
+                  title="Hot Reload"
+                  shortcut={shortcutLabel("run.flutterHotReload")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotReload(session.id)}
+                />
+                <IconButton
+                  icon="refresh"
+                  title="Hot Restart"
+                  shortcut={shortcutLabel("run.flutterHotRestart")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotRestart(session.id)}
+                />
+              </>
             )}
             <div className={styles.toolbarSep} />
           </>

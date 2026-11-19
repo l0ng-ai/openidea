@@ -17,11 +17,17 @@ fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
         Ok(project) => (project.settings.effective(), project.root.clone()),
         Err(_) => (host.global_settings.effective(), Default::default()),
     };
-    let custom = settings
+    let mut custom: std::collections::BTreeMap<_, _> = settings
         .tools
         .iter()
         .filter_map(|(command, t)| Some((command.clone(), ide_sdk::apply::setting_path(&root, &t.path)?)))
         .collect();
+    let langs = host.languages.all();
+    custom.extend(ide_sdk::apply::server_command_paths(
+        langs.iter().flat_map(|l| &l.language_servers),
+        &root,
+        &settings,
+    ));
     // Godot is usually an app bundle / Flatpak outside the search path.
     let found = ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p));
     let runtime = ide_sdk::apply::tool_install_environment(&root, &settings);

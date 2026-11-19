@@ -343,6 +343,8 @@ impl Host {
         }
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
+        project.flutter.stop();
+        project.devtools.stop();
         project.notebooks.stop_admission();
         // What the closing window started goes with it — the builds and searches it
         // asked for, its runs, its shells and its debug sessions — and its language
@@ -461,6 +463,10 @@ impl Host {
     pub fn stop_processes_on_exit(&self) {
         self.processes.kill_all();
         self.terminals.kill_all();
+        for project in self.projects() {
+            project.flutter.kill();
+            project.devtools.kill();
+        }
     }
 
     /// Called before desktop exit, which may bypass document destructors.
@@ -482,6 +488,8 @@ impl Host {
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+            project.flutter.kill();
+            project.devtools.kill();
         }
         for project in &projects {
             project.plugin_diagnostics.close();

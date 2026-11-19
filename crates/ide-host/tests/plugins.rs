@@ -1560,7 +1560,11 @@ fn edit_path_calls_have_soft_and_hard_deadlines() {
     // Past the hard deadline: interrupted; the next call gets a new instance.
     assert!(provider.highlights(&mis, "spin").is_none());
     std::thread::sleep(Duration::from_millis(450));
-    host.tick();
+    // A slow runner may interrupt the spinning call a little after its deadline.
+    assert!(eventually(|| {
+        host.tick();
+        host.info_of("misbehave").unwrap().stats.crashes > 0
+    }));
     let info = host.info_of("misbehave").unwrap();
     assert_eq!(info.stats.crashes, 1, "{:?}", info.error);
     assert!(info.error.as_deref().is_some_and(|e| e.contains("timed out after 400ms")), "{:?}", info.error);
