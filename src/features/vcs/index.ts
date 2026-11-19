@@ -54,6 +54,7 @@ import { existsOnDisk, installVcsStore, onConflictsAppeared, onConflictsCleared,
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
+import { copyRepositoryPathActions, registerCopyRepositoryPath } from "./copyRepositoryPath";
 import { activateSettingsPages } from "./settingsPages";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
@@ -230,6 +231,8 @@ export function activate(): () => void {
     registerVcsActions(),
     registerActions(openOnRemoteActions),
     registerOpenOnRemote(),
+    registerActions(copyRepositoryPathActions),
+    registerCopyRepositoryPath(),
     registerHistoryActions(),
     registerLogPaneActions(),
     activateSettingsPages(),
