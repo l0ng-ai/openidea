@@ -317,6 +317,23 @@ pub struct SqlResolutionScope {
     pub schema: String,
 }
 
+/// Build, Execution, Deployment › Compiler (Build tool window behaviour).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BuildSettings {
+    /// When to open the Build tool window: `always` | `onError` | `never`.
+    pub open_tool_window: String,
+    /// When to focus the Build tool window: `always` | `onError` | `never`.
+    pub focus_tool_window: String,
+}
+
+impl Default for BuildSettings {
+    fn default() -> Self {
+        // Matches PR #487: open on start without focus; open again on failure without focus.
+        Self { open_tool_window: "always".into(), focus_tool_window: "never".into() }
+    }
+}
+
 /// Build, Execution, Deployment › Console.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
