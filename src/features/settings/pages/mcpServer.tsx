@@ -1,10 +1,11 @@
 /** Built-in MCP server status and client configurations. */
 import { useEffect, useState } from "react";
 import { commands, call, isTauri, onIdeEvent, type McpServerStatus } from "@/platform/ipc";
-import { backgroundProjectState, useBackgroundProjects } from "@/platform/mcpBackground";
+import { backgroundProjectState, unloadBackgroundProject, useBackgroundProjects } from "@/platform/mcpBackground";
 import { basename, useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
 import { useTx } from "@/platform/i18n";
+import { ProjectBadge } from "@/workbench/ProjectBadge";
 import { useRemote } from "@/platform/remote";
 import { Button, Input, T, copyText } from "@/ui";
 import { GlobListEditor, Row, SettingNumber, SettingSelect } from "../components/Form";
@@ -233,7 +234,6 @@ function BackgroundOpenNow() {
   const projects = remote ? [] : loaded;
   const [mode] = useSetting<string>("mcpServer.backgroundProjects");
   const [enabled] = useSetting<boolean>("mcpServer.enabled");
-  const unload = (root: string) => void call(commands.mcpUnloadBackgroundProject(root)).catch(() => undefined);
   return (
     <Row
       label="Open now"
@@ -255,23 +255,24 @@ function BackgroundOpenNow() {
       ) : (
         <ul className={styles.projects}>
           {projects.map((project) => {
-            const name = basename(project.root);
+            const name = basename(project.root) || project.root;
             return (
               <li key={project.root} className={styles.project}>
+                <ProjectBadge name={name} path={project.root} />
                 <div className={styles.projectText}>
                   <span className={styles.projectName} title={name}>
                     {name}
                   </span>
-                  <span className={styles.path} title={project.root}>
+                  <span className={styles.projectPath} title={project.root}>
                     {project.root}
                   </span>
-                  <span className={styles.status}>{backgroundProjectState(project)}</span>
+                  <span className={styles.projectState}>{backgroundProjectState(project)}</span>
                 </div>
                 <Button
                   size="small"
                   className={styles.unload}
                   aria-label={tx`Unload ${project.root}`}
-                  onClick={() => unload(project.root)}
+                  onClick={() => unloadBackgroundProject(project.root)}
                 >
                   <T>Unload</T>
                 </Button>

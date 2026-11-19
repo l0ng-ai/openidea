@@ -1,0 +1,4 @@
+<!-- OpenIDEA: Layers (stacked planes) -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M8 2L13.5 4.75L8 7.5L2.5 4.75L8 2Z" stroke="#6C707E" stroke-linejoin="round"/><path d="M2.5 7.5L8 10.25L13.5 7.5M2.5 10.25L8 13L13.5 10.25" stroke="#6C707E" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

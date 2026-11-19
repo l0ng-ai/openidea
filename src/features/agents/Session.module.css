@@ -1897,3 +1897,129 @@
     color: var(--fg-muted);
   }
 }
+
+/* Tool calls: an accent by what the call does, a pulse while it runs, its end and time on the right. */
+.toolEntry {
+  --tool-accent: var(--fg-subtle);
+  animation: entryIn 180ms ease-out;
+}
+.kind-read,
+.kind-search {
+  --tool-accent: var(--info);
+}
+.kind-edit,
+.kind-delete,
+.kind-move {
+  --tool-accent: var(--warning);
+}
+.kind-execute {
+  --tool-accent: var(--success);
+}
+.kind-fetch {
+  --tool-accent: var(--accent);
+}
+.toolKindIcon {
+  flex: none;
+  color: var(--tool-accent);
+}
+.toolLive .toolKindIcon {
+  animation: toolPulse 1.2s ease-in-out infinite;
+}
+.toolPath {
+  flex: none;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--link);
+  font: inherit;
+  font-size: var(--agent-fs-small, var(--fs-small));
+  cursor: pointer;
+}
+.toolPath:hover {
+  text-decoration: underline;
+}
+.toolEnd {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1-5);
+  margin-left: auto;
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.toolDone {
+  color: var(--success);
+}
+.toolSpinner {
+  color: var(--tool-accent);
+}
+.exitCode {
+  flex: none;
+  padding: 0 5px;
+  border-radius: var(--radius-small);
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-small, var(--fs-small));
+}
+.exitFailed {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+.terminalBlock {
+  margin: 4px 0 4px 22px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--tool-accent);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.terminalCommand,
+.terminalOutput {
+  margin: 0;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--agent-fs-small, var(--fs-small));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.terminalOutput {
+  max-height: 240px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.prompt {
+  color: var(--tool-accent);
+  user-select: none;
+}
+.thoughtEntry {
+  animation: entryIn 180ms ease-out;
+}
+.thoughtTook {
+  flex: none;
+  margin-left: 6px;
+  color: var(--fg-subtle);
+}
+@keyframes entryIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes toolPulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toolEntry,
+  .thoughtEntry,
+  .toolLive .toolKindIcon {
+    animation: none;
+  }
+}

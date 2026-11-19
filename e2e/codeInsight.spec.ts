@@ -65,6 +65,7 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const popup = page.locator(".cm-tooltip-autocomplete");
   await expect(popup.getByText("total", { exact: true })).toBeVisible();
   await expect(popup.getByText("toDto", { exact: true })).toBeVisible();
+  expect((await popup.boundingBox())!.width).toBeLessThan(360);
   const field = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^total$/ }) });
   await expect(field.locator(".cm-completionDetail")).toHaveCount(0);
   await expect(field.locator(".cm-lsp-type")).toHaveText("BigDecimal");
@@ -83,6 +84,17 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const label = await method.locator(".cm-completionLabel").boundingBox();
   // Subpixel rounding differs per platform/font; a mis-set inset is a whole icon column off.
   expect(Math.abs(label!.x - wordStart)).toBeLessThanOrEqual(2);
+  const zoomedSize = await editor.locator(".cm-content").evaluate(async (content) => {
+    const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+    const prefsModule = "/src/editor/core/cm/prefs.ts";
+    const { EditorView } = await import(/* @vite-ignore */ viewModule);
+    const { stepFontZoom } = await import(/* @vite-ignore */ prefsModule);
+    const fontSize = Number.parseFloat(getComputedStyle(content).fontSize);
+    stepFontZoom(EditorView.findFromDOM(content as HTMLElement)!, 6);
+    return `${fontSize + 6}px`;
+  });
+  await expect(editor.locator(".cm-content")).toHaveCSS("font-size", zoomedSize);
+  await expect(method.locator(".cm-completionLabel")).toHaveCSS("font-size", zoomedSize);
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
   // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
@@ -96,6 +108,76 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
+});
+
+test("long completion signatures fit the editor when the workbench is narrowed", async ({ workbench: page }) => {
+  const editor = await openSample(page);
+  const label = "transformOrder" + "AcrossParticipatingRegions".repeat(5);
+  await page.evaluate((label) => {
+    const item: CompletionItem = {
+      label,
+      labelDetail: "(order: Order, options: TransformationOptions)",
+      labelDescription: "Promise<TransformationResult>",
+      detail: `${label}(order: Order, options: TransformationOptions): Promise<TransformationResult>`,
+      kind: "method",
+      documentation: { kind: "markdown", value: "Transforms the order." },
+      sortText: null,
+      filterText: null,
+      preselect: true,
+      deprecated: false,
+      insertText: `${label}()`,
+      isSnippet: false,
+      replaceRange: null,
+      replaceRangeTab: null,
+      additionalEdits: [],
+      commitCharacters: [],
+      command: null,
+      data: null,
+      server: 1,
+    };
+    window.__ipc.handlers.lsp_completion = () => ({ isIncomplete: false, items: [item] });
+  }, label);
+  await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("order.");
+  await page.keyboard.press("Control+Space");
+
+  const popup = page.locator(".cm-tooltip-autocomplete");
+  const option = popup.getByRole("option").filter({
+    has: page.locator(".cm-completionLabel", { hasText: label }),
+  });
+  await expect(option.locator(".cm-completionLabel")).toHaveText(label);
+  await page.setViewportSize({ width: 580, height: 900 });
+  const bounds = (await editor.boundingBox())!;
+  await expect
+    .poll(async () => {
+      const box = (await popup.boundingBox())!;
+      return Math.max(bounds.x - box.x, box.x + box.width - (bounds.x + bounds.width));
+    })
+    .toBeLessThanOrEqual(2);
+  const geometry = await option.evaluate((row) => {
+    const label = row.querySelector<HTMLElement>(".cm-completionLabel")!;
+    const type = row.querySelector<HTMLElement>(".cm-lsp-type")!;
+    return {
+      nameTruncated: label.scrollWidth > label.clientWidth,
+      nameWidth: label.clientWidth,
+      typeWidth: type.clientWidth,
+      typeOverflow: type.getBoundingClientRect().right - row.getBoundingClientRect().right,
+    };
+  });
+  expect(geometry.nameTruncated).toBe(true);
+  expect(geometry.nameWidth).toBeGreaterThan(40);
+  expect(geometry.typeWidth).toBeGreaterThan(16);
+  expect(geometry.typeOverflow).toBeLessThanOrEqual(1);
+
+  await page.keyboard.press("F1");
+  await expect(popup.locator(".cm-completionInfo")).toContainText(
+    `${label}(order: Order, options: TransformationOptions)`,
+  );
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect(editor.locator(".cm-activeLine")).toContainText(`order.${label}()`);
 });
 
 test("documentation shows beside the lookup instead of being clipped by it", async ({ workbench: page }, info) => {

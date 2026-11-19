@@ -66,11 +66,25 @@ const PROVIDER_ICONS = new Set([
   "vibe",
   "omp",
   "deepseek-harness",
+  "hermes",
 ]);
 
-/** The agent's logo; custom agents get the generic agents icon. */
-export const providerIcon = (provider: string) =>
-  PROVIDER_ICONS.has(provider) ? `agent-${provider}` : "toolwindow-agents";
+/** Suggests an agent-file id for a display name (`"My Agent!"` → `"my-agent"`). */
+export function slugifyId(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** The agent a Hermes profile runs as: `hermes` for `default`, else `hermes-<slug>` (`hermes -p <name> acp`). */
+export const hermesAgentId = (profile: string) => (profile === "default" ? "hermes" : `hermes-${slugifyId(profile)}`);
+
+/** The agent's logo; custom agents get the generic agents icon, Hermes profiles Hermes'. */
+export function providerIcon(provider: string): string {
+  if (PROVIDER_ICONS.has(provider)) return `agent-${provider}`;
+  return provider.startsWith("hermes-") ? "agent-hermes" : "toolwindow-agents";
+}
 
 export interface TaskGroup {
   status: "needsInput" | "failed" | "limited" | "running" | "ready" | "archived";
