@@ -24,6 +24,16 @@ export class IpcError extends Error {
   }
 }
 
+/** Matches both wrapped IPC errors and raw invoke rejections by kind. */
+export function isErrorKind(e: unknown, kind: IdeError["kind"]): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  try {
+    return "kind" in e && e.kind === kind;
+  } catch {
+    return false;
+  }
+}
+
 type Result<T> = { status: "ok"; data: T } | { status: "error"; error: IdeError };
 
 /** Unwraps a fallible command result: `await call(commands.docOpen(path))`. */

@@ -1,7 +1,4 @@
 .section {
-  flex: none;
-  max-height: 40%;
-  overflow: auto;
   border-top: 1px solid var(--border-popup);
   padding: 6px 12px 8px;
   display: flex;

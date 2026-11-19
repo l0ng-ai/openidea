@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   initialTabsState,
   moveTabToNewSplit,
@@ -9,7 +9,15 @@ import {
   togglePin,
   type TabsState,
 } from "./tabs";
-import { loadSession, parseSession, restoreTabsState, serializeSession, slashPath } from "./session";
+import {
+  loadSession,
+  parseSession,
+  restoreTabsState,
+  serializeSession,
+  slashPath,
+  storeSession,
+  type EditorSession,
+} from "./session";
 
 const file = (path: string) => ({ kind: "file", key: `file:${path}`, path });
 const fileKey = (p: string) => `file:${p}`;
@@ -100,6 +108,44 @@ describe("editor session", () => {
     expect(ok.layout).toEqual({ kind: "pane", tabs: [{ path: "/x" }], active: 0 });
     expect(ok.files).toEqual({});
     expect(paneIds(restoreTabsState(ok, fileKey))).toHaveLength(1);
+  });
+});
+
+describe("loading a session with malformed JSON", () => {
+  const root = "/malformed-session";
+  const key = `openidea.editorSession.v1:${root}`;
+  const malformed = '{"version":1,"layout":{"kind":"pane","tabs":[';
+
+  beforeEach(() => localStorage.setItem(key, malformed));
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem(key);
+  });
+
+  it("returns null without writing to storage or changing the saved bytes", () => {
+    const before = localStorage.getItem(key);
+    expect(before).toBe(malformed);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    expect(loadSession(root)).toBeNull();
+    expect(localStorage.getItem(key)).toBe(before);
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it("loads a valid session after an explicit save replaces malformed JSON", () => {
+    expect(loadSession(root)).toBeNull();
+    const path = `${root}/recovered.ts`;
+    const recovered: EditorSession = {
+      version: 1,
+      layout: { kind: "pane", tabs: [{ path }], active: 0 },
+      activePane: 0,
+      files: { [path]: { anchor: 1, head: 2 } },
+    };
+
+    storeSession(root, recovered);
+
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual(recovered);
+    expect(loadSession(root)).toEqual(recovered);
   });
 });
 

@@ -227,10 +227,7 @@ export function resolveTarget(
   e: Extract<ResultEditability, { kind: "editable" }>,
   model: DbCompletion | null,
   schema?: string,
-  driver: DbDriver = "postgres",
 ): { schema: string | null; table: string; alias: string | null } | null {
-  // SQL Server switches databases, but table details and edits take a table schema.
-  if (driver === "sqlServer" && (e.schema === null || (schema && schema !== model?.defaultSchema))) return null;
   if (e.schema === null && schema === "") return null;
   return { schema: e.schema ?? (schema || model?.defaultSchema || null), table: e.table, alias: e.alias };
 }
