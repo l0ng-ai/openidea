@@ -266,6 +266,15 @@ export async function disconnectRemote() {
   useProject.setState({ project: null });
 }
 
+/** Shuts down the remote `openidea-server` daemon and its processes, then closes the window's project. */
+export async function stopRemoteBackend() {
+  if (!isRemoteWindow()) return;
+  await call(commands.remoteStopBackend());
+  await commands.closeProject();
+  disableRemote();
+  useProject.setState({ project: null });
+}
+
 // ---------------------------------------------------------------------------
 // Remote project locations: `ssh://<configuration id>/<absolute path>`,
 // `wsl://<distribution>/<absolute path>` or `devcontainer://<local folder>[:<config>]/<container path>`,

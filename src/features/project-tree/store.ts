@@ -14,6 +14,7 @@ import { isIgnoredName } from "@/platform/ignoredNames";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 import { ipcPath } from "@/platform/paths";
+import { projectLocation } from "@/platform/remote";
 import {
   DEFAULT_TREE_OPTIONS,
   GROUP_PREFIX,
@@ -390,7 +391,11 @@ function initialExpanded(root: string | null, mode: ViewMode, members = get().me
   // The tree as the user left it, like IDEA: a collapsed project root stays collapsed, and
   // nodes outside it (content roots, contributed roots) stay open.
   // Keys of nodes that no longer exist are inert. Only a first open expands the roots.
-  const persisted = mode === "project" || mode === "unity" ? readJson<string[]>(expandedKey(root)) : null;
+  const scope = projectLocation(root) ?? root;
+  const persisted =
+    mode === "project" || mode === "unity"
+      ? (readJson<string[]>(expandedKey(scope)) ?? (scope !== root ? readJson<string[]>(expandedKey(root)) : null))
+      : null;
   if (persisted) return new Set(persisted);
   return new Set(members ?? [root]);
 }
@@ -401,7 +406,7 @@ function persistExpanded() {
   persistTimer = setTimeout(() => {
     const { root, expanded, mode } = get();
     if (root && (mode === "project" || mode === "unity"))
-      writeJson(expandedKey(root), [...expanded].slice(0, MAX_PERSISTED));
+      writeJson(expandedKey(projectLocation(root) ?? root), [...expanded].slice(0, MAX_PERSISTED));
   }, 300);
 }
 

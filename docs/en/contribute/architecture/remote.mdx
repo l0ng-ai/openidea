@@ -28,6 +28,7 @@ flowchart LR
 | Piece                             | Where                                                                         |
 | --------------------------------- | ----------------------------------------------------------------------------- |
 | Server binary                     | `crates/ide-host/src/bin/server.rs` (`openidea-server`)                       |
+| Persistent daemon and attach      | `crates/ide-host/src/daemon.rs` (`openidea-server --attach` / `--daemon`)     |
 | Protocol and dispatcher           | `crates/ide-host/src/rpc.rs`                                                  |
 | Client: connect, install, forward | `src-tauri/src/remote_dev.rs`                                                 |
 | WSL and dev container transports  | `src-tauri/src/remote_wsl.rs`, `src-tauri/src/remote_container.rs`            |
@@ -38,10 +39,11 @@ flowchart LR
 ## The server
 
 ```text
-openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
+openidea-server --stdio | --attach <project-path> | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
 ```
 
-- `--stdio` serves one desktop client over stdin/stdout. stdout carries the protocol, so logs go to stderr (filter with `OPENIDEA_LOG`).
+- `--attach <project-path>` starts (if needed) a detached per-project daemon (`--daemon <socket>`) listening on a private `0700` Unix socket and bridges stdin/stdout to it, so closing a remote window leaves the `Host`, terminals, runs, language servers and agent sessions alive until a `shutdown` RPC stops it.
+- `--stdio` serves a single desktop client directly over stdin/stdout and exits on EOF. stdout carries the protocol, so logs go to stderr (filter with `OPENIDEA_LOG`).
 - Its state lives under `OPENIDEA_SERVER_HOME` (default `~/.openidea`), in `config/` and `data/`. Language definitions can be added in `config/languages/`.
 - An SSH exec channel gets a minimal environment, so on every start the server takes the login shell's environment and adds the IDE-managed tools directory to `PATH`.
 - `--version` prints the app version and the protocol version.

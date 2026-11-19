@@ -28,6 +28,7 @@ import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraf
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
 import { basename, useProject } from "@/platform/project";
+import { projectLocation } from "@/platform/remote";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
@@ -551,7 +552,7 @@ export async function connect(): Promise<void> {
     return;
   }
   if (gen !== generation) return;
-  const organizeRoot = useProject.getState().project?.root ?? null;
+  const organizeRoot = projectLocation(useProject.getState().project?.root);
   useAgents.setState({
     loaded: true,
     error: null,

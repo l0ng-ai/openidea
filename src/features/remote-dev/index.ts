@@ -4,9 +4,11 @@
  * to it (platform/remote.ts).
  */
 import { registerActions } from "@/platform/actions";
-import { disconnectRemote, useRemote } from "@/platform/remote";
+import { disconnectRemote, stopRemoteBackend, useRemote } from "@/platform/remote";
 import { lazyComponent } from "@/ui";
 import { maybeEditorService, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
+import { tx } from "@/platform/i18n";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
 import { reopenInContainer } from "./container";
@@ -94,6 +96,35 @@ export function activate(): () => void {
           if (!(await confirmLeaveProject(false))) return;
           try {
             await disconnectRemote();
+          } catch (e) {
+            maybeEditorService()?.cancelClose?.();
+            throw e;
+          }
+        },
+      },
+      {
+        id: "remote.stopBackend",
+        title: "Stop Remote Backend",
+        description:
+          "Stops the remote IDE backend and its terminals, runs and agent sessions, then closes the project.",
+        category: "File",
+        keywords: ["ssh", "remote", "stop", "shutdown", "backend", "server"],
+        when: "projectRemote",
+        run: async () => {
+          const host = useRemote.getState().session?.host;
+          if (!host) return;
+          if (
+            !(await confirm({
+              title: tx("Stop Remote Backend"),
+              message: tx`Stop the IDE backend on ${host} and terminate its running terminals, runs and agent sessions?`,
+              ok: tx("Stop Backend"),
+              icon: "warning",
+            }))
+          )
+            return;
+          if (!(await confirmLeaveProject(false))) return;
+          try {
+            await stopRemoteBackend();
           } catch (e) {
             maybeEditorService()?.cancelClose?.();
             throw e;

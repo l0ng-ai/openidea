@@ -2,6 +2,7 @@
 //! such as an SSH shell. Rendering is xterm.js.
 
 mod integration;
+mod scrollback;
 mod utf8;
 
 pub use utf8::Utf8Decoder;
@@ -132,6 +133,26 @@ pub struct TerminalInfo {
     pub pid: Option<u32>,
 }
 
+/// Live terminal session state for reattaching across window reconnects.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSessionInfo {
+    pub id: TerminalId,
+    pub title: String,
+    pub pid: Option<u32>,
+    pub cwd: String,
+    pub app_title: Option<String>,
+    pub command_running: bool,
+}
+
+/// Snapshot and live binding returned when reattaching to an existing session.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalAttach {
+    pub session: TerminalSessionInfo,
+    pub buffered: String,
+}
+
 /// A terminal whose shell runs elsewhere (an SSH channel). Its output and exit
 /// arrive through the [`TerminalFeed`] paired with it by [`feed`].
 pub trait TerminalChannel: Send + Sync {
@@ -209,11 +230,18 @@ enum Io {
     },
 }
 
+struct OutputState {
+    scrollback: scrollback::Scrollback,
+    on_output: Box<dyn Fn(String) + Send>,
+}
+
 struct Session {
     /// The window that opened it: closing that window's project closes its terminals.
     key: String,
     info: TerminalInfo,
     io: Io,
+    output: Arc<Mutex<OutputState>>,
+    sink: Arc<Mutex<SharedSink>>,
     exited: Arc<AtomicBool>,
     started: Instant,
     /// The first input was logged (startup diagnostics, see `spawn`).
@@ -353,10 +381,17 @@ impl TerminalManager {
             let _ = child.kill();
             let _ = child.wait();
         })?;
+        let output = Arc::new(Mutex::new(OutputState {
+            scrollback: scrollback::Scrollback::new(cwd.to_string_lossy().into_owned()),
+            on_output,
+        }));
+        let sink = Arc::new(Mutex::new(sink));
         let session = Arc::new(Session {
             key,
             info: info.clone(),
             io: Io::Pty { writer, master: Mutex::new(pair.master), killer: Mutex::new(child.clone_killer()) },
+            output: output.clone(),
+            sink: sink.clone(),
             exited: exited.clone(),
             started: Instant::now(),
             input_logged: AtomicBool::new(false),
@@ -365,7 +400,7 @@ impl TerminalManager {
 
         let (tx, rx) = mpsc::channel::<Msg>();
         let budget = ByteBudget::default();
-        let out = OutputSender { tx: tx.clone(), budget: budget.clone() };
+        let out = OutputSender { tx, budget: budget.clone() };
         let spawned = spawn_reader(
             id,
             reader,
@@ -377,8 +412,8 @@ impl TerminalManager {
         .and_then(|_| {
             spawn_pump(
                 id,
-                OutputReceiver { rx, budget },
-                on_output,
+                OutputReceiver { rx, budget: budget.clone() },
+                output,
                 exited,
                 self.sessions.clone(),
                 sink,
@@ -386,6 +421,7 @@ impl TerminalManager {
             )
         });
         if let Err(e) = spawned {
+            budget.close();
             if let Some(s) = self.sessions.lock().remove(&id) {
                 terminate(&s);
             }
@@ -413,18 +449,23 @@ impl TerminalManager {
         let id = TerminalId::next();
         let info = TerminalInfo { id, title, pid: None };
         let exited = Arc::new(AtomicBool::new(false));
+        let output =
+            Arc::new(Mutex::new(OutputState { scrollback: scrollback::Scrollback::new(String::new()), on_output }));
+        let sink = Arc::new(Mutex::new(sink));
         let session = Arc::new(Session {
             key,
             info: info.clone(),
             io: Io::Channel { channel, size: Mutex::new(size) },
+            output: output.clone(),
+            sink: sink.clone(),
             exited: exited.clone(),
             started: Instant::now(),
             input_logged: AtomicBool::new(false),
         });
         self.sessions.lock().insert(id, session);
-        let output = feed.into_parts();
-        let budget = output.budget.clone();
-        if let Err(e) = spawn_pump(id, output, on_output, exited, self.sessions.clone(), sink, Instant::now()) {
+        let receiver = feed.into_parts();
+        let budget = receiver.budget.clone();
+        if let Err(e) = spawn_pump(id, receiver, output, exited, self.sessions.clone(), sink, Instant::now()) {
             budget.close();
             if let Some(s) = self.sessions.lock().remove(&id) {
                 terminate(&s);
@@ -500,6 +541,85 @@ impl TerminalManager {
         let mut out: Vec<TerminalInfo> = self.sessions.lock().values().map(|s| s.info.clone()).collect();
         out.sort_by_key(|i| i.id);
         out
+    }
+
+    /// Live sessions belonging to `key`, with their current working directory,
+    /// running-program title and busy state.
+    pub fn list_key(&self, key: &str) -> Vec<TerminalSessionInfo> {
+        let sessions: Vec<Arc<Session>> = self
+            .sessions
+            .lock()
+            .values()
+            .filter(|s| s.key == key && !s.exited.load(Ordering::Acquire))
+            .cloned()
+            .collect();
+        let mut out: Vec<TerminalSessionInfo> = sessions.iter().map(|s| session_info(s)).collect();
+        out.sort_by_key(|i| i.id);
+        out
+    }
+
+    /// Rebinds `id`'s output stream to `on_output`, returning its buffered scrollback
+    /// and current state without dropping or duplicating bytes between them.
+    pub fn reattach(
+        &self,
+        id: TerminalId,
+        key: &str,
+        cols: u16,
+        rows: u16,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+    ) -> IdeResult<TerminalAttach> {
+        let session = self.session(id)?;
+        if session.key != key || session.exited.load(Ordering::Acquire) {
+            return Err(not_found(id));
+        }
+        *session.sink.lock() = sink;
+        let (buffered, cwd, app_title, osc_running, alt_screen) = {
+            let mut out = session.output.lock();
+            let buffered = out.scrollback.snapshot();
+            let cwd = out.scrollback.cwd.clone();
+            let app_title = out.scrollback.app_title.clone();
+            let osc_running = out.scrollback.command_running;
+            let alt_screen = out.scrollback.is_alt_screen();
+            out.on_output = on_output;
+            (buffered, cwd, app_title, osc_running, alt_screen)
+        };
+        if cols > 0 && rows > 0 {
+            let _ = self.resize(id, cols, rows);
+        }
+        #[cfg(unix)]
+        if alt_screen
+            && let Io::Pty { master, .. } = &session.io
+            && let Some(fg) = master.lock().process_group_leader().filter(|&fg| fg > 0)
+        {
+            // Full-screen TUIs (`watch`, `vim`, `htop`) repaint on SIGWINCH even when cols×rows matched.
+            unsafe {
+                libc::kill(-fg, libc::SIGWINCH);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = alt_screen;
+        let busy = session.info.pid.is_some_and(|pid| foreground_busy(&session, pid));
+        Ok(TerminalAttach {
+            session: TerminalSessionInfo {
+                id: session.info.id,
+                title: session.info.title.clone(),
+                pid: session.info.pid,
+                cwd,
+                app_title,
+                command_running: osc_running || busy,
+            },
+            buffered,
+        })
+    }
+
+    /// Drops live client output callbacks when a remote window disconnects, while
+    /// keeping the PTYs and their scrollback buffers running.
+    pub fn detach_output(&self) {
+        let sessions: Vec<Arc<Session>> = self.sessions.lock().values().cloned().collect();
+        for s in sessions {
+            s.output.lock().on_output = Box::new(|_| {});
+        }
     }
 
     /// Current PTY size of a session (for diagnostics and tests).
@@ -713,25 +833,43 @@ fn spawn_waiter(
     Ok(())
 }
 
+fn session_info(session: &Session) -> TerminalSessionInfo {
+    let (cwd, app_title, osc_running) = {
+        let out = session.output.lock();
+        (out.scrollback.cwd.clone(), out.scrollback.app_title.clone(), out.scrollback.command_running)
+    };
+    let busy = session.info.pid.is_some_and(|pid| foreground_busy(session, pid));
+    TerminalSessionInfo {
+        id: session.info.id,
+        title: session.info.title.clone(),
+        pid: session.info.pid,
+        cwd,
+        app_title,
+        command_running: osc_running || busy,
+    }
+}
+
 fn spawn_pump(
     id: TerminalId,
-    output: OutputReceiver,
-    on_output: Box<dyn Fn(String) + Send>,
+    receiver: OutputReceiver,
+    output: Arc<Mutex<OutputState>>,
     exited: Arc<AtomicBool>,
     sessions: Sessions,
-    sink: SharedSink,
+    sink: Arc<Mutex<SharedSink>>,
     started: Instant,
 ) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-term-pump-{}", id.0)).spawn(move || {
         let first_output = std::cell::Cell::new(true);
-        let on_output = move |text: String| {
+        let emit_output = |text: String| {
             if first_output.replace(false) {
                 // ConPTY asks for the cursor position (`ESC[6n`) and waits for the answer.
                 let cursor_query = text.contains("\x1b[6n");
                 let ms = started.elapsed().as_millis();
                 tracing::info!(%id, ms, bytes = text.len(), cursor_query, "terminal first output");
             }
-            on_output(text)
+            let mut out = output.lock();
+            out.scrollback.push(&text);
+            (out.on_output)(text);
         };
         let mut decoder = Utf8Decoder::new();
         let mut pending = String::new();
@@ -741,7 +879,7 @@ fn spawn_pump(
 
         let flush = |pending: &mut String, batch_started: &mut Option<Instant>| {
             if !pending.is_empty() {
-                on_output(std::mem::take(pending));
+                emit_output(std::mem::take(pending));
             }
             *batch_started = None;
         };
@@ -755,10 +893,10 @@ fn spawn_pump(
                 (Some(a), None) | (None, Some(a)) => a,
                 (None, None) => Duration::from_secs(3600),
             };
-            match output.rx.recv_timeout(wait) {
+            match receiver.rx.recv_timeout(wait) {
                 Ok(Msg::Data(bytes)) => {
                     // The pump owns these bytes now; wake any producer waiting on the cap.
-                    output.budget.release(bytes.len());
+                    receiver.budget.release(bytes.len());
                     decoder.decode_into(&bytes, &mut pending);
                     if !pending.is_empty() && batch_started.is_none() {
                         batch_started = Some(Instant::now());
@@ -785,11 +923,12 @@ fn spawn_pump(
         pending.push_str(&decoder.finish());
         flush(&mut pending, &mut batch_started);
         exited.store(true, Ordering::Release);
-        output.budget.close();
+        receiver.budget.close();
         sessions.lock().remove(&id);
         let code = exit.flatten();
         tracing::debug!(%id, ?code, "terminal exited");
-        sink.emit(IdeEvent::TerminalExited { terminal: id, code });
+        let target_sink = sink.lock().clone();
+        target_sink.emit(IdeEvent::TerminalExited { terminal: id, code });
     })?;
     Ok(())
 }

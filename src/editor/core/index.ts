@@ -65,6 +65,7 @@ export function activate(): void | (() => void) {
     cancelClose: () => ctrl.cancelClose(),
     forgetSavedTabs: () => ctrl.forgetSavedTabs(),
     keepSavedTabs: () => ctrl.keepSavedTabs(),
+    flushSession: () => ctrl.saveSession(),
     documentHistory: (command) => ctrl.documentHistory(command),
     chooseDeclaration: async (targets, name, anchor) =>
       openPopup({

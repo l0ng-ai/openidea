@@ -9,9 +9,11 @@ language servers, terminals, runs, debugging, build tools and Git. The desktop w
 commands to it.
 
 You don't start it yourself. When you open a remote project ([SSH](/en/guide/remote/ssh),
-[Containers](/en/guide/remote/containers)), the desktop app installs the server on the host if needed, starts it as
-`openidea-server --stdio` over the SSH connection (or `wsl.exe` / `docker exec`) and talks to it over stdin and
-stdout. The server serves one desktop window and exits when that window disconnects.
+[Containers](/en/guide/remote/containers)), the desktop app installs the server on the host if needed, runs
+`openidea-server --attach <project>` over the SSH connection (or `wsl.exe` / `docker exec`) to attach to a persistent
+per-project daemon over a private Unix socket, and talks to it over stdin and stdout. Closing the window or losing the
+network leaves the daemon and its terminals, runs, indexing and agent sessions running; **File › Stop Remote Backend**
+stops it.
 
 ## Supported hosts
 
@@ -95,8 +97,9 @@ The flags are meant for the desktop app, but `--version` is handy for checking a
 | Flag                            | Meaning                                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | `--version`                     | Print the server version and protocol version, then exit.                                                      |
-| `--stdio`                       | Serve one desktop client over stdin / stdout. Logs go to stderr.                                               |
-| `--mcp-stdio [--project <dir>]` | Relay stdio MCP traffic to the running `openidea-server` MCP server on this host.                              |
+| `--attach <project>`            | Start or attach to the persistent per-project daemon and bridge stdin / stdout to its Unix socket.             |
+| `--stdio`                       | Serve a single desktop client directly over stdin / stdout and exit on EOF. Logs go to stderr.                 |
+| `--mcp-stdio [--project <dir>]`  | Relay stdio MCP traffic to the running `openidea-server` MCP server on this host.                              |
 | `--connect <host> <port>`       | Relay one TCP connection to `<host>:<port>` over stdin / stdout. Used for port forwarding into dev containers. |
 
 ```bash

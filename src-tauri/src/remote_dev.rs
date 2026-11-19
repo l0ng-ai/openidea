@@ -55,6 +55,11 @@ pub(crate) const SERVER_DIR: &str = ".openidea/server";
 /// File name of the server binary on every host.
 pub(crate) const SERVER_BIN: &str = "openidea-server";
 
+/// Canonical window key sent to the per-project `openidea-server` daemon, so
+/// reopening the project in another desktop window (`main` vs `project-1`)
+/// rebinds to the same open project and live terminal sessions on the server.
+const SERVER_WINDOW: &str = "main";
+
 /// Printed before a probe's answer: shell start-up files and `wsl.exe` may print first.
 pub(crate) const PROBE_MARK: &str = "__OPENIDEA_PROBE__";
 
@@ -650,8 +655,13 @@ pub async fn remote_connect(
             let session = state.ssh.session(id).await?;
             let bin = ensure_server(&state, &session, progress.clone()).await?;
             progress(RemoteStage::Starting, None);
+            let attach_arg = if path.trim().is_empty() { "~" } else { path.trim() };
             let stream = session
-                .exec_stream(&format!("{} --stdio", ide_ssh::shell::tilde_quote(&bin)))
+                .exec_stream(&format!(
+                    "{} --attach {}",
+                    ide_ssh::shell::tilde_quote(&bin),
+                    ide_ssh::shell::quote(attach_arg),
+                ))
                 .await
                 .map_err(|e| IdeError::unavailable(format!("cannot start openidea-server: {e}")))?;
             let (reader, writer) = tokio::io::split(stream);
@@ -660,7 +670,8 @@ pub async fn remote_connect(
         RemoteTarget::Wsl { distro } => {
             let bin = crate::remote_wsl::ensure_server(&state, distro, progress.clone()).await?;
             progress(RemoteStage::Starting, None);
-            let peer = crate::remote_wsl::spawn(distro, &bin, handler, &tail)?;
+            let attach_arg = if path.trim().is_empty() { "~" } else { path.trim() };
+            let peer = crate::remote_wsl::spawn(distro, &bin, attach_arg, handler, &tail)?;
             (peer, None, distro.clone(), format!("WSL: {distro}"))
         }
         RemoteTarget::DevContainer { folder, config } => {
@@ -707,7 +718,8 @@ pub async fn remote_connect(
         path.trim().to_owned()
     };
     progress(RemoteStage::Opening, None);
-    let call = Invoke { window: label.clone(), cmd: "open_project".into(), args: serde_json::json!({ "path": root }) };
+    let call =
+        Invoke { window: SERVER_WINDOW.into(), cmd: "open_project".into(), args: serde_json::json!({ "path": root }) };
     let project: ide_host::ops::project::ProjectInfo =
         peer.request("invoke", call, None).await.map_err(ide_host::rpc::error_from_reply)?;
     // As the server resolved it (symlinks, a trailing `/`): the frontend compares it with the project's.
@@ -776,10 +788,10 @@ pub async fn remote_connect(
 /// Sends the desktop's plugin languages, with the programs granted to them, to
 /// the window's server: `Workspace` contributions take effect where the project
 /// is. A server without the command answers an error, which is logged.
-pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, window: &str) {
+pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &Connection, _window: &str) {
     use ide_host::plugins::remote::{SYNC_COMMAND, SyncReport};
     let call = Invoke {
-        window: window.to_owned(),
+        window: SERVER_WINDOW.to_owned(),
         cmd: SYNC_COMMAND.into(),
         args: serde_json::json!({ "languages": plugins.remote_languages() }),
     };
@@ -799,12 +811,12 @@ pub async fn sync_plugin_languages(plugins: &ide_host::plugins::PluginHost, c: &
 /// Sends the desktop's live code plugins to the window's server, which runs
 /// them next to the project: digests and grants first,
 /// then the files of the packages the server lacks, one per request.
-pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, window: &str) {
+pub async fn sync_plugin_packages(plugins: &Arc<ide_host::plugins::PluginHost>, c: &Connection, _window: &str) {
     use ide_host::plugins::remote_host::{PackageSyncReport, SYNC_PACKAGES};
     let host = plugins.clone();
     let Ok(packages) = tauri::async_runtime::spawn_blocking(move || host.remote_packages()).await else { return };
     let sync = |files: serde_json::Value| Invoke {
-        window: window.to_owned(),
+        window: SERVER_WINDOW.to_owned(),
         cmd: SYNC_PACKAGES.into(),
         args: serde_json::json!({ "packages": packages, "files": files }),
     };
@@ -887,7 +899,16 @@ pub fn remote_trust_status(window: Window, state: State<'_, AppState>) -> IdeRes
 #[specta::specta]
 pub fn remote_trust_set(window: Window, state: State<'_, AppState>, trusted: bool) -> IdeResult<()> {
     let c = connection(&window, &state)?;
-    state.host.trust.decide_remote(&c.location(), trusted)
+    state.host.trust.decide_remote(&c.location(), trusted)?;
+    if trusted {
+        let plugins = state.plugins.clone();
+        let label = AppState::owner_window(window.label()).to_owned();
+        tauri::async_runtime::spawn(async move {
+            sync_plugin_languages(&plugins, &c, &label).await;
+            sync_plugin_packages(&plugins, &c, &label).await;
+        });
+    }
+    Ok(())
 }
 
 /// A port of the remote host reachable on this machine at `localhost:local_port`.
@@ -1065,6 +1086,27 @@ pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
     state.remote_dev.disconnect(AppState::owner_window(window.label()));
 }
 
+/// Stops the persistent `openidea-server` daemon for this window's remote project,
+/// terminating its terminals, runs, language servers and agent sessions, then disconnects.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_stop_backend(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
+    let label = AppState::owner_window(window.label()).to_owned();
+    state.host.mcp_reports.remove_remote(&label);
+    let removed = state.remote_dev.0.lock().remove(&label);
+    if let Some(c) = removed {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            c.peer.request::<_, Value>("shutdown", Value::Null, None),
+        )
+        .await;
+        c.peer.kill();
+        c.forwards.lock().clear();
+    }
+    Ok(())
+}
+
 /// Runs a command on the window's remote server; `args` and the result are JSON
 /// text. Streaming arguments are `{ "$channel": id }`; their values arrive on
 /// `on_channel` tagged with the id.
@@ -1111,7 +1153,7 @@ pub async fn remote_invoke(
         None
     };
     let web_url = cmd == "web_url";
-    let call = Invoke { window: label, cmd, args };
+    let call = Invoke { window: SERVER_WINDOW.into(), cmd, args };
     let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30))
         .await
         .map_err(|e| lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c))?;
@@ -1440,6 +1482,7 @@ ide_command::desktop_domain!(
     remote_forwarded_ports,
     remote_import_local,
     remote_invoke,
+    remote_stop_backend,
     remote_stop_forwarding,
     remote_trust_set,
     remote_trust_status,
