@@ -142,6 +142,22 @@ jobs:
         if: runner.os == 'Linux'
         run: git diff --exit-code src/bindings.ts src-tauri/tests/commands.snap
 
+  # One check that always reports, for the ruleset to require: a skipped matrix job reports
+  # under its unexpanded name, so the per-OS checks never appear on frontend-only PRs.
+  rust-checks:
+    name: Rust checks
+    needs: [changes, rust]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.rust.result }}
+        run: |
+          echo "changes: $CHANGES, rust: $RUST"
+          [ "$CHANGES" = success ] && { [ "$RUST" = success ] || [ "$RUST" = skipped ]; }
+
   # The remote development server ships as a static Linux binary (release-build.yml):
   # keep that build working.
   server:
