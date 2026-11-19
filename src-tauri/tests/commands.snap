@@ -723,6 +723,7 @@ window_new                                   always             desktop      bin
 window_open_comparison                       always             desktop      bindings async
 window_open_deployment                       always             desktop      bindings async
 window_open_diff                             always             desktop      bindings async
+window_open_editor                           always             desktop      bindings async
 window_open_file_in_new_window               always             desktop      bindings async
 window_open_files                            always             desktop      bindings async
 window_open_project                          always             desktop      bindings async

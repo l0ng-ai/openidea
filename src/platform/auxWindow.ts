@@ -8,14 +8,24 @@ import { getAllWindows, getCurrentWindow } from "@tauri-apps/api/window";
 import { TauriEvent } from "@tauri-apps/api/event";
 import { isTauri } from "./ipc";
 
-export type AuxKind = "settings" | "comparison" | "diff" | "deployment";
+export type AuxKind = "settings" | "comparison" | "diff" | "editor" | "deployment";
 
 /** Kinds with several windows per parent (`<kind>-<parent>-<n>`); the others have one (`<kind>-<parent>`). */
-const MULTIPLE: ReadonlySet<AuxKind> = new Set(["comparison", "diff"]);
-const KINDS: readonly AuxKind[] = ["settings", "comparison", "diff", "deployment"];
+const MULTIPLE: ReadonlySet<AuxKind> = new Set(["comparison", "diff", "editor"]);
+const KINDS: readonly AuxKind[] = ["settings", "comparison", "diff", "editor", "deployment"];
 
 /** An auxiliary window reports to its parent whether it closed, and which documents it released. */
 export const AUX_CLOSED = "openidea://auxiliary/closed";
+
+/** Lightweight editor window reports that it opened (or failed to open) the moved file. */
+export const EDITOR_READY = "openidea://editor/ready";
+
+export interface EditorReadyResult {
+  label: string;
+  path: string;
+  ok: boolean;
+  error?: string;
+}
 
 export interface AuxCloseResult {
   label: string;

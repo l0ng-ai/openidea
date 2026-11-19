@@ -123,6 +123,20 @@ pub async fn window_open_diff(
     windows::open_diff_window(&app, &window, diff, background)
 }
 
+/// Opens a lightweight editor window for `editor` next to this project window ("Open in New Window").
+/// `background` (`#rrggbb`) paints it until its page has loaded.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_editor(
+    app: AppHandle,
+    window: WebviewWindow,
+    editor: windows::EditorLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_editor_window(&app, &window, editor, background)
+}
+
 /// Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 /// to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
 #[desktop_command(trust = always)]
@@ -928,6 +942,7 @@ ide_command::desktop_domain!(
     window_open_comparison,
     window_open_deployment,
     window_open_diff,
+    window_open_editor,
     window_open_file_in_new_window,
     window_open_files,
     window_open_project,

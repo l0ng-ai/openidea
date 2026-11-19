@@ -49,7 +49,7 @@ describe("Markdown preview search & selection highlights", () => {
 
   beforeEach(() => {
     disposers.push(registerMarkdownLiveSource());
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
   });
 
   afterEach(() => {
@@ -184,7 +184,7 @@ describe("Markdown preview search & selection highlights", () => {
 
   it("auto-highlights all other occurrences when a word is selected in the preview", async () => {
     openEditor("alpha beta alpha gamma alpha\n");
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
     render(
       <MarkdownEditor path={path} tabId="t">
         <div />
@@ -228,7 +228,7 @@ describe("Markdown preview search & selection highlights", () => {
 
   it("auto-highlights occurrences in the preview when a word is selected in the editor", () => {
     openEditor("beta alpha beta\n");
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
     render(
       <MarkdownEditor path={path} tabId="t">
         <div />

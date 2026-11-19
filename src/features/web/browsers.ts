@@ -33,11 +33,11 @@ export async function loadBrowsers(): Promise<void> {
 
 export const browserIcon = (id: string) => (hasIcon(`browser-${id}`) ? `browser-${id}` : "web");
 
-/** Paths shown with the built-in preview beside the editor. */
+/** Editor tabs showing the built-in preview beside the editor (each split pane has its own). */
 export const useWebPreview = create<Record<string, boolean>>(() => ({}));
 
-export function togglePreview(path: string, on = !useWebPreview.getState()[path]) {
-  useWebPreview.setState({ [path]: on });
+export function togglePreview(tabId: string, on = !useWebPreview.getState()[tabId]) {
+  useWebPreview.setState({ [tabId]: on });
 }
 
 /** The built-in server's URL for `path`. */
