@@ -9014,5 +9014,16 @@
   "Selected branches are up-to-date": "所选分支都是最新的",
   "Use application title as tab name": "使用应用标题作为标签页名称",
   "When command is running": "命令运行时",
-  "Horizontal Scrolling": "横向滚动"
+  "Horizontal Scrolling": "横向滚动",
+  "Export Test Results…": "导出测试结果…",
+  "Save the test results as an HTML report or IDEA's XML": "将测试结果保存为 HTML 报告或 IDEA 的 XML",
+  "Export Test Results": "导出测试结果",
+  "Export format:": "导出格式：",
+  "HTML": "HTML",
+  "XML": "XML",
+  "Open exported file in browser": "在浏览器中打开导出的文件",
+  "File '{name}' already exists. Do you want to overwrite it?": "文件 '{name}' 已存在。是否覆盖？",
+  "{path} is a directory": "{path} 是目录",
+  "Cannot export test results": "无法导出测试结果",
+  "Test results exported": "测试结果已导出"
 }

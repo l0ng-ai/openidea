@@ -2635,5 +2635,16 @@
   "Selected branches are up-to-date": "Selected branches are up-to-date",
   "Use application title as tab name": "Use application title as tab name",
   "When command is running": "When command is running",
-  "Horizontal Scrolling": "Horizontal Scrolling"
+  "Horizontal Scrolling": "Horizontal Scrolling",
+  "Export Test Results…": "Export Test Results…",
+  "Save the test results as an HTML report or IDEA's XML": "Save the test results as an HTML report or IDEA's XML",
+  "Export Test Results": "Export Test Results",
+  "Export format:": "Export format:",
+  "HTML": "HTML",
+  "XML": "XML",
+  "Open exported file in browser": "Open exported file in browser",
+  "File '{name}' already exists. Do you want to overwrite it?": "File '{name}' already exists. Do you want to overwrite it?",
+  "{path} is a directory": "{path} is a directory",
+  "Cannot export test results": "Cannot export test results",
+  "Test results exported": "Test results exported"
 }

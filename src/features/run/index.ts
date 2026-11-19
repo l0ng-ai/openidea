@@ -749,6 +749,17 @@ export function activate(): () => void {
         run: () => testTree.collapseAll?.(),
       },
       {
+        id: "run.exportTestResults",
+        title: "Export Test Results…",
+        description: "Save the test results as an HTML report or IDEA's XML",
+        category: "Run",
+        icon: "export",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keywords: ["test", "results", "report", "html", "xml", "save"],
+        enabled: () => testTree.exportResults !== null,
+        run: () => testTree.exportResults?.(),
+      },
+      {
         id: "run.reloadConfigs",
         title: "Reload Run Configurations",
         category: "Run",
