@@ -1918,6 +1918,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
+	/**
+	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
+	 *  [`window_group_merge`], unrelated windows keep their own group.
+	 */
+	windowGroupJoin: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_join", { label })),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
@@ -3745,6 +3750,12 @@ export type CommitSettings = {
 	doubleClickOpensDiff?: boolean | null,
 	/**  Team conventions for Generate Commit Message with Agent, added to its prompt. */
 	agentInstructions?: string,
+	/**  The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+	agent?: string,
+	/**  That agent's model for commit messages; empty keeps the model the agent would use. */
+	agentModel?: string,
+	/**  That model's thinking level for commit messages; empty keeps the agent's. */
+	agentEffort?: string,
 };
 
 export type Commit_Deserialize = {
