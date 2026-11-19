@@ -17,7 +17,7 @@ import {
   registerTextEditorWrapper,
   useTextEditorWrappers,
 } from "@/workbench/contributions";
-import { registerEditorContribution } from "@/editor/api";
+import { activeEditor, registerEditorContribution } from "@/editor/api";
 import { djangoContentWatcher, djangoTemplateBanner } from "./djangoTemplates";
 import {
   browserIcon,
@@ -44,7 +44,15 @@ function targetPath(arg: unknown): string | null {
 
 async function showPreview(path: string) {
   await maybeEditorService()?.openFile(path, { focus: true });
-  togglePreview(path, true);
+  const editor = activeEditor();
+  if (editor?.tabId && editor.ctx.path === path) togglePreview(editor.tabId, true);
+}
+
+/** The tab a preview button passes, or the focused HTML editor's. */
+function previewTab(arg: unknown): string | undefined {
+  if (typeof arg === "string") return arg;
+  const editor = activeEditor();
+  return editor && isHtmlPath(editor.ctx.path) ? editor.tabId : undefined;
 }
 
 function browserMenu(path: string): MenuItem {
@@ -102,12 +110,12 @@ export function activate(): () => void {
         when: "textEditorActive && editorLangId == html",
         keywords: ["browser", "html", "preview", "live"],
         toggled: () => {
-          const path = getContext().editorPath;
-          return typeof path === "string" && !!useWebPreview.getState()[path];
+          const tabId = previewTab(undefined);
+          return !!tabId && !!useWebPreview.getState()[tabId];
         },
         run: ({ arg }) => {
-          const path = targetPath(arg);
-          if (path && isHtmlPath(path)) togglePreview(path);
+          const tabId = previewTab(arg);
+          if (tabId) togglePreview(tabId);
         },
       },
     ]),

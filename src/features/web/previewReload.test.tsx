@@ -33,7 +33,7 @@ describe("the built-in HTML preview", () => {
     vi.useFakeTimers();
     try {
       useProject.setState({ project: { root: "/p" } as never });
-      useWebPreview.setState({ "/p/page.html": true });
+      useWebPreview.setState({ t: true });
       const { container } = render(
         <WebEditor path="/p/page.html" tabId="t">
           <div />

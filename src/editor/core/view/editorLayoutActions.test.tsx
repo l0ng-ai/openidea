@@ -33,7 +33,7 @@ const originalTabs = useTabs.getState();
 const originalProject = useProject.getState();
 
 beforeEach(() => {
-  useMarkdownModes.setState({ byPath: {}, fallback: "editor" });
+  useMarkdownModes.setState({ byTab: {}, fallback: "editor" });
   useTabs.setState({
     layout: { kind: "pane", paneId: "p1" },
     panes: { p1: { id: "p1", tabs: [first], active: first.id, mru: [first.id] } },
@@ -87,7 +87,33 @@ describe("Markdown layout controls", () => {
     expect(screen.getByRole("toolbar", { name: "Markdown editor layout" }).closest('[role="tabpanel"]')).not.toBeNull();
   });
 
-  it("routes each pane's layout buttons to that pane's file", () => {
+  it("keeps a separate layout in each split pane of the same file", () => {
+    useProject.setState({ settings: null });
+    const copy = md("t3", first.input.path!);
+    useTabs.setState({
+      layout: {
+        kind: "split",
+        id: "split",
+        dir: "row",
+        children: [
+          { kind: "pane", paneId: "p1" },
+          { kind: "pane", paneId: "p2" },
+        ],
+      },
+      panes: {
+        p1: { id: "p1", tabs: [first], active: first.id, mru: [first.id] },
+        p2: { id: "p2", tabs: [copy], active: copy.id, mru: [copy.id] },
+      },
+    });
+    render(<EditorAreaView />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Preview Only" })[1]!);
+    const [left, right] = screen.getAllByRole("button", { name: "Preview Only" });
+    expect(left).toHaveAttribute("aria-pressed", "false");
+    expect(right).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("document", { name: "Markdown preview" })).toHaveLength(1);
+  });
+
+  it("routes each pane's layout buttons to that pane's tab", () => {
     useProject.setState({ settings: null });
     useTabs.setState({
       layout: {
@@ -106,8 +132,8 @@ describe("Markdown layout controls", () => {
     });
     render(<EditorAreaView />);
     fireEvent.click(screen.getAllByRole("button", { name: "Preview Only" })[1]!);
-    expect(useMarkdownModes.getState().byPath[first.input.path!]).toBeUndefined();
-    expect(useMarkdownModes.getState().byPath[second.input.path!]).toBe("preview");
+    expect(useMarkdownModes.getState().byTab[first.id]).toBe("editor");
+    expect(useMarkdownModes.getState().byTab[second.id]).toBe("preview");
     act(() => useDistractionFree.setState({ active: true }));
     expect(screen.getAllByRole("toolbar", { name: "Markdown editor layout" })).toHaveLength(2);
   });
