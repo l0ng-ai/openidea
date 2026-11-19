@@ -93,6 +93,7 @@ function UsagesPopupInner() {
   const [active, setActive] = useState(0);
   const current = Math.min(active, items.length - 1);
   const total = usageCount(groups);
+  const rowCount = Math.max(1, Math.min(14, items.length));
   const pick = (u: Usage | undefined) => {
     if (!u) return;
     close();
@@ -158,46 +159,48 @@ function UsagesPopupInner() {
       >
         <div className={styles.header}>
           <span className={styles.title}>
-            {symbol ? tx`Usages of ${symbol}` : tx("Usages")}{" "}
+            <span className={styles.titleLabel}>{symbol ? tx`Usages of ${symbol}` : tx("Usages")}</span>{" "}
             <span className={styles.count}>
               {filter || items.length !== total ? tx`${items.length} of ${total} found` : tx`${total} found`}
             </span>
           </span>
-          {scope && (
-            <Select<UsageScope>
-              variant="ghost"
-              aria-label={tx("Scope")}
-              className={styles.scope}
-              value={scope}
-              options={[
-                { value: "project", label: tx("Project Files") },
-                { value: "libraries", label: tx("Project and Libraries") },
-              ]}
-              onChange={setUsagesPopupScope}
+          <div className={styles.actions}>
+            {scope && (
+              <Select<UsageScope>
+                variant="ghost"
+                aria-label={tx("Scope")}
+                className={styles.scope}
+                value={scope}
+                options={[
+                  { value: "project", label: tx("Project Files") },
+                  { value: "libraries", label: tx("Project and Libraries") },
+                ]}
+                onChange={setUsagesPopupScope}
+              />
+            )}
+            {loading && (
+              <span className={styles.searching} role="status" aria-label={tx("Searching for more usages")}>
+                <Spinner size={16} variant="spokes" />
+              </span>
+            )}
+            {filter && (
+              <span className={clsx(styles.filter, !items.length && styles.noMatch)} role="status">
+                {filter}
+              </span>
+            )}
+            <IconButton
+              icon="preview-details"
+              size="small"
+              title="Show Preview"
+              pressed={preview}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setUsagesPopupPreview(!preview)}
             />
-          )}
-          {loading && (
-            <span className={styles.searching} role="status" aria-label={tx("Searching for more usages")}>
-              <Spinner size={16} variant="spokes" />
-            </span>
-          )}
-          {filter && (
-            <span className={clsx(styles.filter, !items.length && styles.noMatch)} role="status">
-              {filter}
-            </span>
-          )}
-          <IconButton
-            icon="preview-details"
-            size="small"
-            title="Show Preview"
-            pressed={preview}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => setUsagesPopupPreview(!preview)}
-          />
-          <button type="button" className={styles.link} onClick={openInFindWindow}>
-            {tx("Open in Find Window")}
-            {keys ? ` ${keys}` : ""}
-          </button>
+            <button type="button" className={styles.link} onClick={openInFindWindow}>
+              {tx("Open in Find Window")}
+              {keys ? ` ${keys}` : ""}
+            </button>
+          </div>
         </div>
         <UsageAccessFilter items={all} />
         {note && (
@@ -205,7 +208,10 @@ function UsagesPopupInner() {
             {note}
           </div>
         )}
-        <div className={styles.body} style={{ height: Math.max(1, Math.min(14, items.length)) * ROW }}>
+        <div
+          className={styles.body}
+          style={{ height: rowCount * ROW, minHeight: `min(${Math.min(rowCount, 3) * ROW}px, 18vh)` }}
+        >
           <List
             items={items}
             getKey={(u) =>
@@ -225,12 +231,14 @@ function UsagesPopupInner() {
             }
             renderItem={(u) => (
               <div className={styles.row} data-testid="usage-row" data-path={u.path} data-line={u.line}>
-                <Icon name={fileIconName(basename(u.path), u.path)} size={16} className={styles.icon} />
-                <UsagePreview usage={u} />
-                <span className={styles.spacer} />
-                <span className={styles.where}>
-                  {basename(u.path)}:{u.line + 1}
+                <span className={styles.file}>
+                  <Icon name={fileIconName(basename(u.path), u.path)} size={16} className={styles.icon} />
+                  <span className={styles.fileName} title={u.path}>
+                    {basename(u.path)}
+                  </span>
                 </span>
+                <span className={styles.line}>{u.line + 1}</span>
+                <UsagePreview usage={u} />
               </div>
             )}
           />
