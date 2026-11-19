@@ -172,6 +172,9 @@ struct DocState {
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
+    /// The file changed on disk while this buffer had unsaved changes; autosave leaves it
+    /// alone until the user saves explicitly or the buffer is reloaded.
+    disk_conflict: bool,
     closed: bool,
     /// URI of a virtual document (no file behind it).
     uri: Option<String>,
@@ -264,6 +267,7 @@ impl Documents {
                 st.native_to_ascii = enabled;
                 st.disk_mtime = loaded.mtime_ms;
                 st.disk_len = disk_len(&st.path);
+                st.disk_conflict = false;
                 Ok(())
             });
             if let Err(e) = result {
@@ -457,6 +461,7 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
+            disk_conflict: false,
             closed: false,
             uri: None,
         };
@@ -529,6 +534,7 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
+            disk_conflict: false,
             closed: false,
             uri: Some(uri.to_owned()),
         };
@@ -587,6 +593,7 @@ impl Documents {
             encoding_chosen: false,
             disk_mtime: 0.0,
             disk_len: 0,
+            disk_conflict: false,
             closed: false,
             uri: Some(key.to_string_lossy().into_owned()),
         };
@@ -653,6 +660,8 @@ impl Documents {
         };
         let mut st = slot.lock();
         st.closed = true;
+        // A buffer closed with changes (Don't Save) has nothing left to save.
+        self.set_dirty(doc, &mut st, false);
         if st.observed {
             for o in self.observers() {
                 o.closed(doc, &st.path);
@@ -810,7 +819,22 @@ impl Documents {
     /// Writes the document with its original encoding, BOM and line ending.
     /// A clean document is not rewritten.
     pub fn save(&self, doc: DocId) -> IdeResult<()> {
+        self.with_doc(doc, |st| self.write(doc, st))
+    }
+
+    /// An automatic save (switching tabs, the window losing focus): `false` when the file changed
+    /// on disk after this buffer was edited, which only an explicit save may overwrite.
+    pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
+            if st.dirty && st.disk_conflict {
+                return Ok(false);
+            }
+            self.write(doc, st).map(|()| true)
+        })
+    }
+
+    fn write(&self, doc: DocId, st: &mut DocState) -> IdeResult<()> {
+        {
             if !st.dirty || st.uri.is_some() {
                 return Ok(());
             }
@@ -822,6 +846,7 @@ impl Documents {
             };
             st.disk_mtime = mtime;
             st.disk_len = disk_len(&st.path);
+            st.disk_conflict = false;
             self.set_dirty(doc, st, false);
             if st.observed {
                 let text = st.doc.text();
@@ -830,7 +855,7 @@ impl Documents {
                 }
             }
             Ok(())
-        })
+        }
     }
 
     /// Save As for an untitled buffer: writes it to `target` (creating missing
@@ -1090,6 +1115,7 @@ impl Documents {
                 st.has_bom = loaded.has_bom;
                 st.disk_mtime = loaded.mtime_ms;
                 st.disk_len = disk_len(&st.path);
+                st.disk_conflict = false;
                 self.replace_locked(doc, st, &loaded.text)?;
                 // Reloading is not an edit: the buffer matches the file again.
                 self.set_dirty(doc, st, false);
@@ -1262,13 +1288,14 @@ impl Documents {
                 if st.dirty {
                     st.disk_mtime = mtime;
                     st.disk_len = meta.len();
+                    st.disk_conflict = true;
                     let name = st.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.sink.emit(IdeEvent::Notify {
                         level: NotifyLevel::Warning,
                         title: format!("{name} changed on disk"),
                         body: Some(format!(
                             "{} was modified externally but has unsaved changes in the editor. \
-                             Saving will overwrite the external changes.",
+                             Saving explicitly will overwrite the external changes; autosave leaves the file alone.",
                             st.path.display()
                         )),
                     });
@@ -1289,6 +1316,7 @@ impl Documents {
                 };
                 st.disk_mtime = loaded.mtime_ms;
                 st.disk_len = disk_len(&st.path);
+                st.disk_conflict = false;
                 if loaded.binary || st.binary {
                     return Ok(());
                 }

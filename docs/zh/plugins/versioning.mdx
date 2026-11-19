@@ -1,9 +1,9 @@
 ---
 title: "API 版本与兼容"
-description: "engines.openidea、插件 API 从 1.0 到 1.6 的各个版本，以及让已发布插件在新 IDE 中继续加载的规则。"
+description: "engines.openidea、插件 API 从 1.0 到 1.13 的各个版本，以及让已发布插件在新 IDE 中继续加载的规则。"
 ---
 
-插件 API 只有一个版本号：[`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中 WIT 包的版本（`main` 上是 `openidea:plugin@1.10.0`）。宿主的引擎版本和 SDK 的 `API_VERSION` 始终与它一致，SDK 里也带着一份完全相同的 WIT 文件。
+插件 API 只有一个版本号：[`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中 WIT 包的版本（`main` 上是 `openidea:plugin@1.13.0`）。宿主的引擎版本和 SDK 的 `API_VERSION` 始终与它一致，SDK 里也带着一份完全相同的 WIT 文件。
 
 <Note>插件系统目前是预览版。下面的兼容规则适用于已发布的 1.x 版本；`main` 上尚未发布的内容在发布前仍可能变化。</Note>
 
@@ -21,7 +21,10 @@ description: "engines.openidea、插件 API 从 1.0 到 1.6 的各个版本，�
 | 1.7.0  | OpenIDEA 0.1.44 | `views.open-diff`：在差异查看器中对比两段文本，例如评审中某个文件的修改前后                                                                                                                                                                                                                                                            |
 | 1.8.0  | OpenIDEA 0.1.45 | `problems-changed` 工作台事件：宿主按文件保存每个生产者的诊断，注解跟着文件走，而不是跟着调用它的窗口                                                                                                                                                                                                                                  |
 | 1.9.0  | OpenIDEA 0.1.46 | 带环境变量和调试器的运行配置、向正在运行的语言服务器发送请求（`lsp:<server>`）、交给插件处理的服务器命令、编辑器面板                                                                                                                                                                                                                   |
-| 1.10.0 | `main` 上开发中 | `build.dependencies`：IDE 已解析的 Maven / Gradle 依赖图（`build.read`）                                                                                                                                                                                                                                                               |
+| 1.10.0 | OpenIDEA 0.1.47 | `build.dependencies`：IDE 已解析的 Maven / Gradle 依赖图（`build.read`）                                                                                                                                                                                                                                                               |
+| 1.11.0 | `main` 上开发中 | `ui.read-clipboard`：在用户运行的命令中读取剪贴板的文本和图片（`clipboard.read`）                                                                                                                                                                                                                                                      |
+| 1.12.0 | `main` 上开发中 | `ui.set-console-rules`：Run/Debug 控制台输出的高亮规则（正则、调色板颜色、文本样式）                                                                                                                                                                                                                                                   |
+| 1.13.0 | `main` 上开发中 | 新增 `search-provider` 导出和 `searchCategories` 贡献点：可取消查询的全局搜索自定义分类                                                                                                                                                                                                                                                |
 
 每个版本新增内容的完整列表见 [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md)。
 

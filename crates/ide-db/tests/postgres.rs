@@ -230,6 +230,44 @@ async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
 }
 
 /// Runs `job` with the newest installed copy of its tool, the way the dialogs do.
+#[tokio::test]
+async fn drops_a_database_the_ide_holds_connections_to() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_drop_me", 0, &c).await?;
+    db.execute("p", "CREATE DATABASE oi_drop_me TEMPLATE template0", 0, &c).await?;
+
+    // What the tree and a manual-commit console leave open on the database.
+    db.schemas("p:oi_drop_me").await?;
+    db.set_manual_commit("p:oi_drop_me", true).await?;
+    db.execute("p:oi_drop_me", "SELECT 1", 1, &c).await?;
+
+    db.drop_database("p", "oi_drop_me", "drop database oi_drop_me").await?;
+    assert!(!db.is_connected("p:oi_drop_me"));
+    assert!(!db.databases("p").await?.names.iter().any(|n| n == "oi_drop_me"));
+
+    let current = db.databases("p").await?.current;
+    let refused = db.drop_database("p", &current, &format!("drop database \"{current}\"")).await;
+    assert!(refused.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn creates_a_database_from_a_template_the_ide_holds_connections_to() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_from_template", 0, &c).await?;
+    db.schemas("p:template1").await?;
+
+    db.create_database("p", "template1", "create database oi_from_template").await?;
+    assert!(!db.is_connected("p:template1"));
+    assert!(db.databases("p").await?.names.iter().any(|n| n == "oi_from_template"));
+    db.execute("p", "DROP DATABASE oi_from_template", 0, &c).await?;
+    Ok(())
+}
+
 async fn run_tool(db: &DbManager, target: &str, job: ide_db::tools::DbToolJob) -> IdeResult<()> {
     let install = ide_db::tools::find_installs(job.tool()).into_iter().next().expect("installed");
     let mut lines = Vec::new();
@@ -282,6 +320,7 @@ async fn dumps_and_restores_with_the_client_tools() -> IdeResult<()> {
     let restore = DbPgRestoreOptions {
         content: DbDumpContent::All,
         schemas: vec![],
+        create: false,
         clean: false,
         if_exists: false,
         no_owner: false,

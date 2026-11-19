@@ -454,7 +454,7 @@ export function DatabaseView() {
       case "source":
         return sourceIcon(n.source);
       case "database":
-        return "database";
+        return "db-database";
       case "schema":
         return "db-schema";
       case "folder":

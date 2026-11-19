@@ -10,6 +10,7 @@ mod inheritance;
 pub(crate) mod lines;
 mod literals;
 mod outline;
+mod php_align;
 mod python_facts;
 mod rst;
 mod selection;
@@ -28,6 +29,7 @@ pub use inheritance::ClassBases;
 pub use lines::{shift_pos, shift_range};
 pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
 pub use outline::merge_visibility;
+pub use php_align::PhpAlignment;
 pub use python_facts::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -190,9 +192,36 @@ impl Syntax {
     }
 
     pub fn folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {
-        let tokens = self.comment_tokens(lang);
-        self.analyze(lang, text, |g, tree, text| Some(folding::folding(g.spec, g.kinds(), tree, text, tokens)))
+        self.web_folding(lang, text)
+            .or_else(|| self.analyze(lang, text, |g, tree, text| Some(self.folding_with_scripts(g, tree, text, lang))))
             .unwrap_or_else(|| self.custom_folding(lang, text))
+    }
+
+    pub(crate) fn web_folding(&self, lang: &LanguageId, text: &str) -> Option<Vec<FoldRange>> {
+        let g = self.web_grammar(lang)?;
+        if g.spec.name != "html" || text.len() > MAX_PARSE_BYTES {
+            return None;
+        }
+        let tree = parse(&g.language, text, None)?;
+        Some(self.folding_with_scripts(g, &tree, text, lang))
+    }
+
+    fn folding_with_scripts(&self, g: &Grammar, tree: &Tree, text: &str, lang: &LanguageId) -> Vec<FoldRange> {
+        let mut folds = folding::folding(g.spec, g.kinds(), tree, text, self.comment_tokens(lang));
+        if g.spec.name == "html" {
+            let lines = lines::LineIndex::new(text);
+            for region in sfc::script_regions(tree, text) {
+                let base_line = lines.line_of(region.base) as u32;
+                folds.extend(self.folding(&region.language, &region.text).into_iter().map(|mut fold| {
+                    fold.start_line += base_line;
+                    fold.end_line += base_line;
+                    fold
+                }));
+            }
+            folds.sort_by(|a, b| a.start_line.cmp(&b.start_line).then(b.end_line.cmp(&a.end_line)));
+            folds.dedup_by_key(|f| f.start_line);
+        }
+        folds
     }
 
     fn comment_tokens(&self, lang: &LanguageId) -> &folding::CommentTokens {

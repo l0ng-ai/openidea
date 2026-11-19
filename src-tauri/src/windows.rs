@@ -41,6 +41,8 @@ const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
 const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const EDITOR_SIZE: (f64, f64) = (1100.0, 720.0);
+const EDITOR_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -77,6 +79,24 @@ pub struct Launch {
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
+    /// Editor windows: the file to show (Open in New Window → lightweight aux editor).
+    #[serde(default)]
+    pub editor: Option<Box<EditorLaunch>>,
+}
+
+/// A file opened in a lightweight editor window, with optional caret / selection (0-based).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorLaunch {
+    pub path: ide_core::IpcPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
 
 /// Local files to compare with a deployment server (Sync with Deployed).
@@ -352,11 +372,13 @@ pub enum AuxKind {
     Settings,
     Comparison,
     Diff,
+    Editor,
     Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
+    const ALL: [AuxKind; 5] =
+        [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Editor, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
@@ -364,13 +386,14 @@ impl AuxKind {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
             AuxKind::Diff => "diff",
+            AuxKind::Editor => "editor",
             AuxKind::Deployment => "deployment",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        matches!(self, AuxKind::Comparison | AuxKind::Diff)
+        matches!(self, AuxKind::Comparison | AuxKind::Diff | AuxKind::Editor)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -394,6 +417,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_MIN_SIZE,
             AuxKind::Comparison => COMPARISON_MIN_SIZE,
             AuxKind::Diff => DIFF_MIN_SIZE,
+            AuxKind::Editor => EDITOR_MIN_SIZE,
             AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
         }
     }
@@ -403,6 +427,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_SIZE,
             AuxKind::Comparison => COMPARISON_SIZE,
             AuxKind::Diff => DIFF_SIZE,
+            AuxKind::Editor => EDITOR_SIZE,
             AuxKind::Deployment => DEPLOYMENT_SIZE,
         }
     }
@@ -724,7 +749,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
+        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1545,7 +1570,9 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     config.fullscreen = false;
     config.drag_drop_enabled = false;
     // Paint the theme's frame colour before the page loads.
-    if let Some(color) = aux.background.as_deref().and_then(hex_color) {
+    if let Some(color) =
+        aux.background.as_deref().and_then(hex_color).or_else(|| default_aux_frame_color(app, &parent, &parent_label))
+    {
         config.background_color = Some(color);
     }
     windows.set_launch(&label, aux.launch);
@@ -1587,6 +1614,76 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     }
     focus(&window);
     Ok(())
+}
+
+/// Effective appearance settings of project window `parent_label` (client layer on remote windows).
+fn effective_appearance(app: &AppHandle, parent_label: &str) -> Option<AppearanceSettings> {
+    let state = app.try_state::<AppState>()?;
+    if state.remote_dev.get(parent_label).is_some() {
+        return Some(state.global_settings.effective().appearance);
+    }
+    Some(match state.host.project(parent_label) {
+        Ok(p) => p.settings.effective().appearance,
+        Err(_) => state.global_settings.effective().appearance,
+    })
+}
+
+fn default_aux_frame_color(app: &AppHandle, parent: &WebviewWindow, parent_label: &str) -> Option<Color> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(color) = state.plugins.startup_frame().and_then(|c| hex_color(&c)) {
+        return Some(color);
+    }
+    let appearance = effective_appearance(app, parent_label)?;
+    let os_dark =
+        (appearance.sync_with_os || appearance.theme == "system") && parent.theme().is_ok_and(|t| t == Theme::Dark);
+    Some(frame_color(&appearance, os_dark))
+}
+
+/// Whether `parent_label` opens Settings in its own native window.
+pub fn settings_in_separate_window(app: &AppHandle, parent_label: &str) -> bool {
+    effective_appearance(app, parent_label).is_none_or(|a| a.settings_in_separate_window)
+}
+
+fn menu_settings_launch<'a>(
+    target_label: &'a str,
+    has_pending_launch: bool,
+    separate_window: bool,
+    action: &str,
+    arg: Option<String>,
+) -> Option<(&'a str, Option<String>, bool)> {
+    let parent_label = auxiliary_parent(target_label).unwrap_or(target_label);
+    if has_pending_launch || !separate_window {
+        return None;
+    }
+    let (page, new_projects) = match action {
+        "file.settings" => (arg, false),
+        "file.newProjectsSettings" => (Some(arg.unwrap_or_else(|| "languages.java".into())), true),
+        _ => return None,
+    };
+    Some((parent_label, page, new_projects))
+}
+
+/// Opens Settings directly from a native menu click when separate-window mode is enabled,
+/// avoiding a round-trip through the parent window's JS thread.
+pub fn open_settings_from_menu(app: &AppHandle, target: &WebviewWindow, action: &str, arg: Option<String>) -> bool {
+    let parent_label = auxiliary_parent(target.label()).unwrap_or(target.label());
+    let has_pending = app.state::<WindowsState>().pending(parent_label).is_some();
+    let separate = settings_in_separate_window(app, parent_label);
+    let Some((parent_label, page, new_projects)) =
+        menu_settings_launch(target.label(), has_pending, separate, action, arg)
+    else {
+        return false;
+    };
+    let Some(parent) = app.get_webview_window(parent_label) else {
+        return false;
+    };
+    match open_settings_window(app, &parent, page, new_projects, None) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("settings window unavailable from menu, falling back to frontend: {e}");
+            false
+        }
+    }
 }
 
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
@@ -1658,6 +1755,28 @@ pub fn open_diff_window(
             size: AuxKind::Diff.default_size(),
             min_size: AuxKind::Diff.min_size(),
             launch: Launch { diff_window: Some(Box::new(diff)), ..Default::default() },
+            background,
+        },
+    )
+}
+
+/// Opens a lightweight editor window for `editor.path` ("Open in New Window"), sharing the
+/// parent's project documents and language servers.
+pub fn open_editor_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    editor: EditorLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Editor,
+            title: "Editor",
+            size: AuxKind::Editor.default_size(),
+            min_size: AuxKind::Editor.min_size(),
+            launch: Launch { editor: Some(Box::new(editor)), ..Default::default() },
             background,
         },
     )
@@ -1959,6 +2078,20 @@ fn fit_bounds(
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// A link in an embedded page that asks for a new window (Flutter DevTools' documentation links)
+/// opens in the system browser; the IDE itself never needs such a window.
+fn open_popup_in_browser<R: tauri::Runtime>(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<R> {
+    if matches!(url.scheme(), "http" | "https")
+        && let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+    {
+        tracing::warn!("cannot open {url}: {e}");
+    }
+    tauri::webview::NewWindowResponse::Deny
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
@@ -2579,14 +2712,24 @@ mod tests {
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
         assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
+        assert_eq!(auxiliary("editor-project-2-3"), Some((AuxKind::Editor, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
         assert_eq!(state_key("diff-main-3"), "diff");
+        assert_eq!(state_key("editor-main-3"), "editor");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = [
+            "comparison-main-0",
+            "diff-main-1",
+            "editor-main-2",
+            "project-2",
+            "main",
+            "settings-main",
+            "deployment-project-2",
+        ];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 
@@ -2721,5 +2864,22 @@ mod tests {
         assert_eq!(centered(100.0, 50.0, 1440.0, 900.0, 980.0, 720.0), (330.0, 140.0));
         // Taller than the parent: aligned with its top edge.
         assert_eq!(centered(0.0, 50.0, 800.0, 500.0, 600.0, 720.0), (100.0, 50.0));
+    }
+
+    #[test]
+    fn menu_settings_launch_routes_to_parent_and_respects_separate_window_and_pending_launch() {
+        assert_eq!(menu_settings_launch("main", false, true, "file.settings", None), Some(("main", None, false)),);
+        assert_eq!(
+            menu_settings_launch("diff-project-2-42", false, true, "file.settings", Some("keymap".into())),
+            Some(("project-2", Some("keymap".into()), false)),
+        );
+        assert_eq!(
+            menu_settings_launch("settings-main", false, true, "file.newProjectsSettings", None),
+            Some(("main", Some("languages.java".into()), true)),
+        );
+        // Separate-window off, pending cold launch, or unrelated menu actions fall back to frontend dispatch.
+        assert_eq!(menu_settings_launch("main", false, false, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", true, true, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", false, true, "file.openProject", None), None);
     }
 }

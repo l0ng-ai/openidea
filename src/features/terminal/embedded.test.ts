@@ -78,16 +78,17 @@ afterEach(() => {
 });
 
 it.each([
-  ["windows", 19045, { backend: "conpty", buildNumber: 19045 }],
-  ["windows", 22631, { backend: "conpty", buildNumber: 22631 }],
-  ["windows", null, { backend: "conpty", buildNumber: undefined }],
-  ["macos", null, undefined],
-  ["linux", null, undefined],
-] as const)("configures embedded terminals for %s build %s", (os, windowsBuildNumber, expected) => {
+  ["windows", 19045, { backend: "conpty", buildNumber: 19045 }, false],
+  ["windows", 22631, { backend: "conpty", buildNumber: 22631 }, true],
+  ["windows", null, { backend: "conpty", buildNumber: undefined }, false],
+  ["macos", null, undefined, false],
+  ["linux", null, undefined, false],
+] as const)("configures embedded terminals for %s build %s", (os, windowsBuildNumber, expected, reflowCursorLine) => {
   usePlatform.setState({ os, windowsBuildNumber });
   const term = createEmbeddedTerminal(document.createElement("div"), { onData() {}, onResize() {} });
   try {
     expect(terminal.options.windowsPty).toEqual(expected);
+    expect(terminal.options.reflowCursorLine).toBe(reflowCursorLine);
   } finally {
     term.dispose();
   }

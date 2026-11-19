@@ -1,9 +1,23 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { Diagnostic, InspectEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { installInspectionProfileSync, resetInspection, runInspection, useInspection } from "./inspect";
+import {
+  installInspectionProfileSync,
+  rerunInspection,
+  resetInspection,
+  runInspection,
+  useInspection,
+} from "./inspect";
 
-const mock = vi.hoisted(() => ({ channel: null as null | { onmessage: (event: InspectEvent) => void } }));
+const mock = vi.hoisted(() => ({
+  channel: null as null | { onmessage: (event: InspectEvent) => void },
+  scopes: [] as unknown[],
+  active: "/p/a.ts",
+}));
+vi.mock("@/editor/api", async (original) => ({
+  ...(await original<object>()),
+  activeEditor: () => ({ ctx: { path: mock.active, virtual: false } }),
+}));
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
     onmessage = () => {};
@@ -14,7 +28,8 @@ vi.mock("@/platform/ipc", async (original) => ({
   isTauri: () => true,
   call: (value: unknown) => value,
   commands: {
-    inspectCode: (_id: unknown, _scope: unknown, channel: typeof mock.channel) => {
+    inspectCode: (_id: unknown, scope: unknown, channel: typeof mock.channel) => {
+      mock.scopes.push(scope);
       mock.channel = channel;
       return Promise.resolve();
     },
@@ -96,4 +111,18 @@ it("retains initially disabled diagnostics and uses edits made during streaming"
   } finally {
     dispose();
   }
+});
+
+it("reruns the file the results are for, not the file now active", async () => {
+  mock.scopes = [];
+  mock.active = "/p/a.ts";
+  await runInspection({ kind: "file", directory: "" }, "default");
+  mock.active = "/p/b.ts";
+  rerunInspection();
+  await vi.waitFor(() => expect(mock.scopes).toHaveLength(2));
+  expect(mock.scopes).toEqual([
+    { kind: "files", paths: ["/p/a.ts"] },
+    { kind: "files", paths: ["/p/a.ts"] },
+  ]);
+  expect(useInspection.getState().scopeLabel).toBe("File /p/a.ts");
 });

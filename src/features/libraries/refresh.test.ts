@@ -4,6 +4,8 @@ import type { LibraryGroup } from "@/bindings";
 const results: LibraryGroup[][] = [];
 /** Batches the next request streams before it answers. */
 const streamed: LibraryGroup[][] = [];
+/** The next request never answers (discovery still running). */
+let hang = false;
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
@@ -19,6 +21,7 @@ vi.mock("@/bindings", () => ({
 vi.mock("@/platform/ipc", () => ({
   call: (request: [string, { onmessage: (v: unknown) => void }]) => {
     for (const batch of streamed.splice(0)) request[1].onmessage(batch);
+    if (hang) return new Promise(() => {});
     return Promise.resolve(results.shift() ?? []);
   },
   isCancelled: () => false,
@@ -66,5 +69,21 @@ describe("External Libraries refresh", () => {
     stop();
     dispose();
     expect(useProjectViewRoots.getState().roots.has("externalLibraries")).toBe(false);
+  });
+
+  it("drops the previous project's libraries while the next project's are discovered", async () => {
+    const project = (root: string) => ({ root, trusted: true }) as ReturnType<typeof useProject.getState>["project"];
+    useProject.setState({ project: project("/p") });
+    results.push([rust("1.0.19")]);
+    const dispose = activate();
+    await vi.waitFor(() => expect(useProjectViewRoots.getState().roots.has("externalLibraries")).toBe(true));
+    hang = true;
+    try {
+      useProject.setState({ project: project("/q") });
+      expect(useProjectViewRoots.getState().roots.has("externalLibraries")).toBe(false);
+    } finally {
+      hang = false;
+      dispose();
+    }
   });
 });

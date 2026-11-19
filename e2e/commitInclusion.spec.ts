@@ -34,6 +34,7 @@ async function stubTwentyChanges(page: Page) {
       h.vcs_status = () => all.filter((f) => !committed.has(f.path));
       h.vcs_stage = () => null;
       h.vcs_unstage = () => null;
+      h.vcs_config_get = () => "configured";
       h.vcs_commit = (args) => {
         for (const path of (args.options as { stage: string[] }).stage) committed.add(path);
         return "2222222";

@@ -29,6 +29,24 @@ export function onFileOperation(listener: Listener): () => void {
 }
 
 const moveListeners = new Set<(moves: readonly FileMove[]) => void | Promise<void>>();
+const pendingMoves = new Map<Promise<unknown>, string | null>();
+
+/** Tracks the move from before disk changes until the successful mappings have been published. */
+export async function trackFileMove<T>(root: string | null, run: () => Promise<T>): Promise<T> {
+  const move = Promise.resolve().then(run);
+  pendingMoves.set(move, root);
+  try {
+    return await move;
+  } finally {
+    pendingMoves.delete(move);
+  }
+}
+
+/** Watcher notifications can precede the result of an explicit move in the same project. */
+export function pendingFileMoves(root: string | null) {
+  const moves = [...pendingMoves].filter(([, project]) => project === root).map(([move]) => move);
+  return moves.length ? Promise.allSettled(moves) : null;
+}
 
 /** Explicit moves (including Undo), before editors reopen at their new paths. */
 export async function notifyFilesMoved(moves: readonly FileMove[]): Promise<void> {

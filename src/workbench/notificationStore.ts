@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { create } from "zustand";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
-import { txTemplate } from "@/platform/i18n";
+import { tx, txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import type { NotificationService } from "./contributions";
 
@@ -127,6 +127,52 @@ export function balloonTimeout(n: Pick<IdeNotification, "level" | "sticky" | "lo
 const MAX_HISTORY = 200;
 let seq = 0;
 
+/**
+ * OS toasts for a burst of balloons (an external agent editing files while OpenIDEA
+ * is in the background, a build) are coalesced: the first shows at once, the ones
+ * that follow within a quiet period become one toast naming the last and how many
+ * more arrived. Balloons and the Notifications tool window keep every notification.
+ */
+const SYSTEM_TOAST_QUIET_MS = 3000;
+/** A steady stream still raises a summary this often. */
+const SYSTEM_TOAST_MAX_WAIT_MS = 30_000;
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+let toastBatch: Array<{ title: string; body: string }> = [];
+let toastBatchStart = 0;
+
+function showToast(title: string, body: string) {
+  void call(commands.showSystemNotification(title, body)).catch(() => {});
+}
+
+/** Ends a quiet period: the toasts held back during it, as one. */
+function flushToasts() {
+  const batch = toastBatch;
+  toastBatch = [];
+  if (!batch.length) {
+    toastTimer = undefined;
+    return;
+  }
+  const last = batch[batch.length - 1]!;
+  const more = batch.length - 1;
+  const count = more === 1 ? tx`${more} more notification` : tx`${more} more notifications`;
+  showToast(last.title, more === 0 ? last.body : [last.body, count].filter(Boolean).join("\n"));
+  // What arrives right after the summary joins the next one.
+  toastTimer = setTimeout(flushToasts, SYSTEM_TOAST_QUIET_MS);
+}
+
+function systemToast(title: string, body: string) {
+  if (toastTimer === undefined) {
+    showToast(title, body);
+    toastTimer = setTimeout(flushToasts, SYSTEM_TOAST_QUIET_MS);
+    return;
+  }
+  if (!toastBatch.length) toastBatchStart = Date.now();
+  toastBatch.push({ title, body });
+  clearTimeout(toastTimer);
+  const waited = Date.now() - toastBatchStart;
+  toastTimer = setTimeout(flushToasts, Math.max(0, Math.min(SYSTEM_TOAST_QUIET_MS, SYSTEM_TOAST_MAX_WAIT_MS - waited)));
+}
+
 export function notify(n: Parameters<NotificationService["notify"]>[0]): number {
   const id = ++seq;
   const group = groupOf(n);
@@ -163,7 +209,7 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     // In the UI language, as the balloon shows it; a plugin's own text stays as written.
     const shown = (text: string) => (n.verbatim ? text : txTemplate(text));
     const plain = typeof n.body === "string" ? shown(n.body) : "";
-    void call(commands.showSystemNotification(shown(n.title), plain)).catch(() => {});
+    systemToast(shown(n.title), plain);
   }
   return id;
 }
@@ -177,6 +223,8 @@ export function dismissBalloon(id: number) {
 
 /** Hides the balloon for `key`: the condition it reported no longer holds. */
 export function expireNotification(key: string) {
+  // Called on every success (a server turning ready): nothing shown, no new state.
+  if (!useNotifications.getState().items.some((x) => x.key === key && x.balloon)) return;
   useNotifications.setState((s) => ({
     items: s.items.flatMap((x) => (x.key !== key || !x.balloon ? [x] : x.logged ? [{ ...x, balloon: false }] : [])),
   }));

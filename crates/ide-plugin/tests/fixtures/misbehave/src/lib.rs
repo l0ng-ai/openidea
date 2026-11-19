@@ -5,9 +5,9 @@ wit_bindgen::generate!({
     inline: "
         package fixture:misbehave;
         world misbehave {
-            include openidea:plugin/plugin-syntax@1.10.0;
-            export openidea:plugin/providers@1.10.0;
-            export openidea:plugin/file-actions@1.10.0;
+            include openidea:plugin/plugin-syntax@1.13.0;
+            export openidea:plugin/providers@1.13.0;
+            export openidea:plugin/file-actions@1.13.0;
         }
     ",
     path: "../../../../../wit",
@@ -181,9 +181,13 @@ impl commands::Guest for Misbehave {
                 };
                 let child = process::start(&cmd, None)?;
                 // CPU work per step (loop iterations), for fuel budget tests.
-                let work: u64 = arg.as_deref().and_then(|a| a.parse().ok()).unwrap_or(0);
+                let arg = arg.as_deref().unwrap_or("");
+                let report = !arg.starts_with("quiet:");
+                let work: u64 = arg.strip_prefix("quiet:").unwrap_or(arg).parse().unwrap_or(0);
                 for step in 0..25 {
-                    task.report(step, Some(25), Some("waiting"));
+                    if report {
+                        task.report(step, Some(25), Some("waiting"));
+                    }
                     let mut x: u64 = 0;
                     for _ in 0..work {
                         x = std::hint::black_box(x.wrapping_add(1));
@@ -195,7 +199,9 @@ impl commands::Guest for Misbehave {
                 // Let it finish on its own: no kill, no slow teardown.
                 child.close_stdin()?;
                 let _ = child.wait(5_000);
-                task.report(25, Some(25), Some("done"));
+                if report {
+                    task.report(25, Some(25), Some("done"));
+                }
                 Ok(Some("still here".into()))
             }
             // `editor.write` is not granted: an error, not a trap.

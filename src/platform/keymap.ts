@@ -454,6 +454,66 @@ function modifierHeld(e: Pick<KeyboardEvent, "ctrlKey" | "altKey" | "shiftKey" |
 const otherModifiers = (e: Pick<KeyboardEvent, "ctrlKey" | "altKey" | "shiftKey" | "metaKey">, m: Modifier) =>
   MODIFIERS.some((x) => x !== m && modifierHeld(e, x));
 
+/** Recognizes the same modifier sequences for dispatch and shortcut capture. */
+export function createDoubleModifierRecognizer(now: () => number = () => performance.now()) {
+  // Step 1 pressed, 2 released, 3 pressed again. A bare gesture completes on the second release.
+  let tap: { modifier: Modifier; step: 1 | 2 | 3; at: number; typed: boolean; keyUsed: boolean } | null = null;
+  let otherKeyAt = -Infinity;
+  const reset = () => {
+    tap = null;
+  };
+
+  const pressModifier = (e: KeyboardEvent, modifier: Modifier) => {
+    const t = now();
+    if (e.repeat && tap?.step === 3 && tap.modifier === modifier) return;
+    if (e.repeat || otherModifiers(e, modifier)) return reset();
+    const typed = t - otherKeyAt < DOUBLE_TAP_TYPING_GUARD_MS;
+    if (tap && (tap.modifier !== modifier || t - tap.at > DOUBLE_TAP_STEP_MS)) reset();
+    if (!tap) tap = { modifier, step: 1, at: t, typed, keyUsed: false };
+    else if (tap.step === 2) tap = { ...tap, step: 3, at: t, typed: tap.typed || typed };
+    else reset();
+  };
+
+  return {
+    keyDown(e: KeyboardEvent, heldAction?: (event: KeyboardEvent, binding: string) => (() => void) | undefined) {
+      const modifier = KEY_MODIFIER[e.key];
+      if (modifier) {
+        pressModifier(e, modifier);
+        return true;
+      }
+      if (heldAction && tap?.step === 3 && modifierHeld(e, tap.modifier) && !otherModifiers(e, tap.modifier)) {
+        const key = strokeOf(e)?.split("+").pop();
+        const action = key ? heldAction(e, normalizeBinding(`${tap.modifier} ${tap.modifier}+${key}`)) : undefined;
+        if (action) {
+          tap.keyUsed = true;
+          action();
+          return true;
+        }
+      }
+      reset();
+      otherKeyAt = e.key === "Escape" || e.key === "Tab" ? -Infinity : now();
+      return false;
+    },
+    keyUp(e: KeyboardEvent) {
+      const modifier = KEY_MODIFIER[e.key];
+      if (!modifier || !tap || tap.modifier !== modifier) return null;
+      const t = now();
+      if (otherModifiers(e, modifier) || t - tap.at > DOUBLE_TAP_STEP_MS) {
+        reset();
+        return null;
+      }
+      if (tap.step === 1) {
+        tap = { ...tap, step: 2, at: t };
+        return null;
+      }
+      const completed = tap.step === 3 && !tap.keyUsed && !tap.typed;
+      reset();
+      return completed ? `${modifier} ${modifier}` : null;
+    },
+    reset,
+  };
+}
+
 function isPlainTextField(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || !el.tagName) return false;
@@ -609,67 +669,42 @@ export function installKeyboardDispatcher(
 ): () => void {
   let pending: string[] = [];
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
-  /**
-   * Double modifier: step 1 pressed, 2 released, 3 pressed again. A bare
-   * gesture (`Shift Shift`) fires on the second release; while the second
-   * press is held, keys fire their `Alt Alt+Up` gestures.
-   */
-  let tap: { modifier: Modifier; step: 1 | 2 | 3; at: number; typed: boolean; keyUsed: boolean } | null = null;
-  let otherKeyAt = -Infinity;
+  const doubleModifier = createDoubleModifierRecognizer(now);
 
   const reset = () => {
     pending = [];
     clearTimeout(pendingTimer);
   };
-  const resetTap = () => {
-    tap = null;
-  };
-
-  const onModifierDown = (e: KeyboardEvent, modifier: Modifier) => {
-    const t = now();
-    if (e.repeat && tap?.step === 3 && tap.modifier === modifier) return;
-    if (e.repeat || otherModifiers(e, modifier)) return resetTap();
-    const typed = t - otherKeyAt < DOUBLE_TAP_TYPING_GUARD_MS;
-    if (tap && (tap.modifier !== modifier || t - tap.at > DOUBLE_TAP_STEP_MS)) resetTap();
-    if (!tap) tap = { modifier, step: 1, at: t, typed, keyUsed: false };
-    else if (tap.step === 2) tap = { ...tap, step: 3, at: t, typed: tap.typed || typed };
-    else resetTap();
-  };
 
   /** A key pressed while the second press of a modifier is held: its `Alt Alt+Up` gesture. */
-  const runHeldGesture = (e: KeyboardEvent): boolean => {
-    if (tap?.step !== 3 || !modifierHeld(e, tap.modifier) || otherModifiers(e, tap.modifier)) return false;
-    const key = strokeOf(e)?.split("+").pop();
-    if (!key) return false;
-    const binding = normalizeBinding(`${tap.modifier} ${tap.modifier}+${key}`);
+  const heldAction = (e: KeyboardEvent, binding: string) => {
     const ids = effectiveBindings()
       .filter(([b]) => b === binding)
       .map(([, id]) => id);
     for (const id of ids.reverse()) {
       const action = getAction(id);
       if (!action || !isActionKeyEnabled(action)) continue;
-      e.preventDefault();
-      e.stopPropagation();
-      tap.keyUsed = true;
-      void executeActionFrom("keyboard", id);
-      return true;
+      return () => {
+        e.preventDefault();
+        e.stopPropagation();
+        void executeActionFrom("keyboard", id);
+        reset();
+      };
     }
-    return false;
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (suspended > 0) {
       reset();
-      resetTap();
+      doubleModifier.reset();
       return;
     }
     const restricted = restrictedKeys.has(e);
-    if (restricted) reset();
-    const modifier = KEY_MODIFIER[e.key];
-    if (modifier) return restricted ? undefined : onModifierDown(e, modifier);
-    if (!restricted && runHeldGesture(e)) return reset();
-    resetTap();
-    otherKeyAt = e.key === "Escape" || e.key === "Tab" ? -Infinity : now();
+    if (restricted) {
+      reset();
+      if (KEY_MODIFIER[e.key]) return;
+    }
+    if (doubleModifier.keyDown(e, restricted ? undefined : heldAction)) return;
     if (isImeKey(e)) return;
     const stroke = strokeOf(e);
     if (!stroke) return;
@@ -745,26 +780,18 @@ export function installKeyboardDispatcher(
   };
 
   const onKeyUp = (e: KeyboardEvent) => {
-    const modifier = KEY_MODIFIER[e.key];
-    if (suspended > 0 || !modifier || !tap || tap.modifier !== modifier) return;
-    const t = now();
-    if (otherModifiers(e, modifier) || t - tap.at > DOUBLE_TAP_STEP_MS) return resetTap();
-    if (tap.step === 1) {
-      tap = { ...tap, step: 2, at: t };
-      return;
-    }
-    const fire = tap.step === 3 && !tap.keyUsed && !tap.typed;
-    resetTap();
-    if (!fire) return;
+    if (suspended > 0) return;
+    const binding = doubleModifier.keyUp(e);
+    if (!binding) return;
     const ids = effectiveBindings()
-      .filter(([b]) => b === `${modifier} ${modifier}`)
+      .filter(([b]) => b === binding)
       .map(([, id]) => id);
     for (const id of ids.reverse()) if (runIfEnabled(id)) return;
   };
 
   const onMouseDown = (e: MouseEvent) => {
     // Shift+click (extend a selection) is not half of a double Shift.
-    resetTap();
+    doubleModifier.reset();
     if (suspended > 0) {
       reset();
       return;
@@ -804,14 +831,14 @@ export function installKeyboardDispatcher(
 
   const onBlur = () => {
     reset();
-    resetTap();
+    doubleModifier.reset();
   };
 
   const onSwipe = (event: Event) => {
     const stroke = (event as CustomEvent).detail;
     if (suspended > 0 || !isPageSwipe(stroke)) return;
     reset();
-    resetTap();
+    doubleModifier.reset();
     const ids = effectiveBindings()
       .filter(([binding]) => binding === stroke)
       .map(([, id]) => id);

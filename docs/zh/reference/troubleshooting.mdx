@@ -45,13 +45,21 @@ Java 语言服务器（jdtls）会分析它导入的每个模块，所以大型 
 
 Windows 安装包目前还没有代码签名，Microsoft Defender SmartScreen 可能提示“未知发布者”。点击 **更多信息**，再点击 **仍要运行**。参见[安装](/zh/guide/install)。
 
-## Linux 上窗口一片空白
+## Linux 上窗口空白或无响应
 
-在使用 NVIDIA 驱动的 Wayland 会话中，WebKitGTK 的 DMA-BUF 渲染器会出错。OpenIDEA 检测到这种组合时会自动设置 `WEBKIT_DISABLE_DMABUF_RENDERER=1`。如果在其他环境下也出现空白或显示异常的窗口，先退出 OpenIDEA，再在终端中带上这个变量启动，例如：
+在部分 Wayland 环境中，WebKitGTK 的 DMA-BUF 渲染器会出错。在使用 NVIDIA 驱动的 Wayland 会话中，OpenIDEA 会为自身关闭驱动的显式同步（`__NV_DISABLE_EXPLICIT_SYNC=1`），这样既能避开问题，又能保留该渲染器。如果在其他环境下窗口一片空白、显示异常，或启动几秒后键盘和鼠标都没有反应，先退出 OpenIDEA，再在终端中通过 XWayland 启动：
+
+```sh
+GDK_BACKEND=x11 ./OpenIDEA_<version>_amd64.AppImage
+```
+
+这样页面仍由 GPU 绘制；在非整数缩放比例下，窗口可能不够清晰。如果仍有问题，改为关闭 DMA-BUF 渲染器启动：
 
 ```sh
 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./OpenIDEA_<version>_amd64.AppImage
 ```
+
+这样页面不再用 GPU 绘制，拖动较大的面板可能变慢。使用 deb 或 rpm 包时，如果希望从应用菜单启动也带上其中一个设置，把 `/usr/share/applications/OpenIDEA.desktop` 复制到 `~/.local/share/applications/`，并修改其中的 `Exec=` 一行，例如改成 `Exec=env GDK_BACKEND=x11 openidea`。
 
 ## 启动时提示数据目录错误并退出
 

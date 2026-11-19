@@ -1,7 +1,8 @@
 use crate::apply::{
-    apply_to_run_configs, apply_to_run_configs_in, configure_server, configure_vue_module_resolution, jdtls_jdk,
-    maven_command, maven_options, project_jdk, python_interpreter, ruff_configuration, terminal_activation,
-    tool_install_environment, tsdk, without_derived, without_derived_in,
+    apply_to_run_configs, apply_to_run_configs_in, configure_python_extra_paths, configure_server,
+    configure_vue_module_resolution, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
+    ruff_configuration, server_command_paths, server_protocol_overrides, terminal_activation, tool_install_environment,
+    tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -178,6 +179,72 @@ fn picked_interpreters_must_run_python_code_even_with_valid_venv_metadata() {
     assert!(crate::python_interpreter_sdk(tmp.path(), None).is_none());
 }
 
+fn extra_paths(cfg: &LanguageServerConfig, section: &str) -> Vec<String> {
+    serde_json::to_value(cfg.initialization_options.as_ref().unwrap())
+        .unwrap()
+        .pointer(&format!("/settings/{section}/analysis/extraPaths"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn basedpyright_gets_dependency_roots_as_extra_paths() {
+    let mut cfg = server("basedpyright");
+    let roots = [Path::new("B:/proj/dep").to_path_buf(), Path::new("/home/me/lib").to_path_buf()];
+    configure_python_extra_paths(&mut cfg, &roots);
+    assert_eq!(
+        extra_paths(&cfg, "basedpyright"),
+        roots.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pyright_gets_dependency_roots_in_the_python_section() {
+    let mut cfg = server("pyright");
+    configure_python_extra_paths(&mut cfg, &[Path::new("/deps/lib").to_path_buf()]);
+    assert_eq!(extra_paths(&cfg, "python"), vec!["/deps/lib"]);
+    assert!(extra_paths(&cfg, "basedpyright").is_empty(), "pyright does not use the basedpyright section");
+}
+
+#[test]
+fn dependency_extra_paths_keep_existing_paths_and_deduplicate() {
+    let mut cfg = server("basedpyright");
+    cfg.initialization_options = Some(
+        toml::Value::try_from(serde_json::json!({
+            "settings": { "basedpyright": { "analysis": { "extraPaths": ["/user/stubs", "/deps/lib", 7] } } }
+        }))
+        .unwrap(),
+    );
+    // `7` is a non-string: it is dropped, the two string paths are kept first, and the
+    // duplicate dependency is not appended again.
+    configure_python_extra_paths(
+        &mut cfg,
+        &[Path::new("/deps/lib").to_path_buf(), Path::new("/new/dep").to_path_buf()],
+    );
+    assert_eq!(extra_paths(&cfg, "basedpyright"), vec!["/user/stubs", "/deps/lib", "/new/dep"]);
+}
+
+#[test]
+fn dependency_extra_paths_replace_a_malformed_settings_section() {
+    let mut cfg = server("basedpyright");
+    cfg.initialization_options =
+        Some(toml::Value::try_from(serde_json::json!({ "settings": { "basedpyright": "strict" } })).unwrap());
+    configure_python_extra_paths(&mut cfg, &[Path::new("/deps/lib").to_path_buf()]);
+    assert_eq!(extra_paths(&cfg, "basedpyright"), vec!["/deps/lib"]);
+}
+
+#[test]
+fn non_python_servers_and_empty_roots_are_untouched() {
+    let mut ruff = server("ruff");
+    configure_python_extra_paths(&mut ruff, &[Path::new("/deps/lib").to_path_buf()]);
+    assert!(ruff.initialization_options.is_none());
+
+    let mut pyright = server("pyright");
+    configure_python_extra_paths(&mut pyright, &[]);
+    assert!(pyright.initialization_options.is_none());
+}
+
 #[test]
 fn pyright_gets_python_path_and_venv_env() {
     let tmp = tempfile::tempdir().unwrap();
@@ -275,6 +342,39 @@ fn jdtls_honors_the_configured_maven_local_repository() {
 }
 
 #[test]
+fn java_analyzer_gets_the_project_jdk_and_maven_local_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let configured = |s: &Settings| {
+        let mut cfg = server("java-analyzer");
+        configure_server(&mut cfg, tmp.path(), tmp.path(), s);
+        server_protocol_overrides(&mut cfg, s);
+        cfg.initialization_options.map(|v| serde_json::to_value(v).unwrap())
+    };
+    // Unset: the server discovers both itself.
+    assert_eq!(configured(&Settings::default()), None);
+    let jdk = tmp.path().join("jdk17");
+    fake_jdk(&jdk);
+    let repo = tmp.path().join("m2-repo");
+    let mut s = Settings::default();
+    s.languages.java.jdk = jdk.to_string_lossy().into_owned();
+    s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let options = configured(&s).unwrap();
+    assert_eq!(options["jdkHome"], dunce::canonicalize(&jdk).unwrap().to_string_lossy().as_ref());
+    assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
+    // A `jdkHome` in the server's own settings wins.
+    s.language_servers.insert(
+        "java-analyzer".into(),
+        ide_core::settings::LanguageServerSettings {
+            initialization_options: Some(serde_json::json!({ "jdkHome": "/opt/jdk21" })),
+            ..Default::default()
+        },
+    );
+    let options = configured(&s).unwrap();
+    assert_eq!(options["jdkHome"], "/opt/jdk21");
+    assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
+}
+
+#[test]
 fn jdtls_m2e_gets_effective_settings_with_local_repository() {
     fn user_settings(cfg: &LanguageServerConfig) -> Option<std::path::PathBuf> {
         let opts = serde_json::to_value(cfg.initialization_options.clone()?).ok()?;
@@ -309,16 +409,94 @@ fn jdtls_m2e_gets_effective_settings_with_local_repository() {
     assert!(text.contains("<mirror><id>m</id></mirror>"));
     assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
 
-    // User settings already declaring `<localRepository>`: passed through untouched.
-    std::fs::write(&settings, "<settings><localRepository>/user/repo</localRepository></settings>").unwrap();
+    // User settings already naming the configured repository: passed through untouched.
+    let own = format!("<settings><localRepository>{}</localRepository></settings>", repo.to_string_lossy());
+    std::fs::write(&settings, &own).unwrap();
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
     assert_eq!(user_settings(&cfg), Some(settings.clone()));
+
+    // Another repository: the configured one wins, as `-Dmaven.repo.local` does for `mvn`.
+    std::fs::write(&settings, "<settings>\n  <localRepository>/user/repo</localRepository><mirrors/></settings>")
+        .unwrap();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+    let text = std::fs::read_to_string(&derived).unwrap();
+    assert!(text.contains("<mirrors/>") && !text.contains("/user/repo"), "{text}");
+    assert_eq!(text.matches("<localRepository>").count(), 1, "{text}");
+
+    // Settings user settings unset: the configured repository has no settings file
+    // replacing `~/.m2/settings.xml` without its mirrors.
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(home.join(".m2")).unwrap();
+    std::fs::write(
+        home.join(".m2/settings.xml"),
+        "<settings><mirrors><mirror><id>corp</id></mirror></mirrors></settings>",
+    )
+    .unwrap();
+    let mut only_repo = Settings::default();
+    only_repo.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let file = crate::apply::maven_user_settings_for_m2e_in(tmp.path(), &only_repo, &home).unwrap();
+    let text = std::fs::read_to_string(file).unwrap();
+    assert!(text.contains("<mirror><id>corp</id></mirror>"), "{text}");
+    assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
+    // Neither a local repository nor user settings: `~/.m2/settings.xml` is m2e's own default.
+    assert_eq!(crate::apply::maven_user_settings_for_m2e_in(tmp.path(), &Settings::default(), &home), None);
 
     // Neither configured: no userSettings at all.
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
     assert_eq!(user_settings(&cfg), None);
+}
+
+#[test]
+fn local_repository_goes_into_every_shape_of_settings_xml() {
+    use crate::apply::with_local_repository;
+    let element = "<localRepository>/r&amp;d</localRepository>";
+    for (text, expected) in [
+        ("<settings>\n</settings>", format!("<settings>{element}\n</settings>")),
+        ("<settings><localRepository>/old</localRepository></settings>", format!("<settings>{element}</settings>")),
+        ("<settings><localRepository /></settings>", format!("<settings>{element}</settings>")),
+        (
+            "<settings xmlns=\"x\"><!-- <localRepository>/c</localRepository> --></settings>",
+            format!("<settings xmlns=\"x\">{element}<!-- <localRepository>/c</localRepository> --></settings>"),
+        ),
+        (
+            "<?xml version=\"1.0\"?>\n<!-- <settings> --><settings>\n  <localRepository>\n    /old\n  </localRepository>\n</settings>",
+            format!("<?xml version=\"1.0\"?>\n<!-- <settings> --><settings>\n  {element}\n</settings>"),
+        ),
+    ] {
+        assert_eq!(with_local_repository(text, "/r&d").as_deref(), Some(expected.as_str()), "{text}");
+    }
+    assert_eq!(with_local_repository("<settings/>", "/r"), None);
+}
+
+#[test]
+fn jdtls_m2e_reads_the_global_settings_of_the_maven_home() {
+    fn global_settings(cfg: &LanguageServerConfig) -> Option<String> {
+        let opts = serde_json::to_value(cfg.initialization_options.clone()?).ok()?;
+        opts.pointer("/settings/java/configuration/maven/globalSettings")?.as_str().map(Into::into)
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("apache-maven-3.9.9");
+    let mvn = home.join("bin").join(if cfg!(windows) { "mvn.cmd" } else { "mvn" });
+    std::fs::create_dir_all(mvn.parent().unwrap()).unwrap();
+    std::fs::write(&mvn, "").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.home = home.to_string_lossy().into_owned();
+    let configured = |s: &Settings| {
+        let mut cfg = server("jdtls");
+        configure_server(&mut cfg, tmp.path(), tmp.path(), s);
+        global_settings(&cfg)
+    };
+    // No `conf/settings.xml`: nothing to pass.
+    assert_eq!(configured(&s), None);
+    let conf = home.join("conf").join("settings.xml");
+    std::fs::create_dir_all(conf.parent().unwrap()).unwrap();
+    std::fs::write(&conf, "<settings><mirrors/></settings>").unwrap();
+    let expected = dunce::canonicalize(&conf).unwrap();
+    assert_eq!(configured(&s).map(std::path::PathBuf::from), Some(expected));
 }
 
 #[test]
@@ -710,6 +888,28 @@ fn maven_options_carry_active_profiles_into_the_command_line() {
 }
 
 #[test]
+fn always_update_snapshots_adds_dash_u_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.update_snapshots = true;
+    assert_eq!(maven_options(tmp.path(), &s), ["-U"]);
+    let mut configs = vec![run("maven", "./mvnw", &["package"])];
+    for _ in 0..2 {
+        apply_to_run_configs(&mut configs, tmp.path(), &s);
+        assert_eq!(configs[0].args, ["-U", "package"]);
+    }
+    let mut own = vec![run("maven", "./mvnw", &["--update-snapshots", "package"])];
+    apply_to_run_configs(&mut own, tmp.path(), &s);
+    assert_eq!(own[0].args, ["--update-snapshots", "package"]);
+
+    // Settings apply to the stored configuration at each launch, so turning it off drops -U.
+    s.languages.java.maven.update_snapshots = false;
+    let mut stored = vec![run("maven", "./mvnw", &["package"])];
+    apply_to_run_configs(&mut stored, tmp.path(), &s);
+    assert_eq!(stored[0].args, ["package"]);
+}
+
+#[test]
 fn maven_profile_and_toolchain_overrides_accept_every_option_form() {
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
@@ -1092,6 +1292,34 @@ fn language_server_settings_disable_add_and_override() {
     let parsed: LanguageServerSettings =
         serde_json::from_value(json!({ "features": ["code-action"], "codeActionKinds": ["refactor"] })).unwrap();
     assert_eq!(parsed.code_action_kinds, Some(vec!["refactor".to_string()]));
+}
+
+#[test]
+fn a_server_path_to_a_jar_runs_with_java_jar() {
+    use crate::apply::server_launch_overrides;
+    use ide_core::settings::LanguageServerSettings;
+    let mut s = Settings::default();
+    let jar = "/opt/groovy/build/libs/groovy-language-server-all.JAR";
+    s.language_servers.insert(
+        "groovy-language-server".into(),
+        LanguageServerSettings { command: jar.into(), args: Some(vec!["--verbose".into()]), ..Default::default() },
+    );
+    let mut groovy = server("groovy-language-server");
+    server_launch_overrides(&mut groovy, &s);
+    assert_eq!(groovy.command, "java");
+    assert_eq!(groovy.args, ["-jar", jar, "--verbose"]);
+
+    // A project JDK is the one that runs it.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("jdk");
+    let java = crate::java::java_executable(&home);
+    std::fs::create_dir_all(java.parent().unwrap()).unwrap();
+    std::fs::write(&java, "").unwrap();
+    std::fs::write(home.join("release"), "JAVA_VERSION=\"21.0.2\"\n").unwrap();
+    s.languages.java.jdk = home.to_string_lossy().into_owned();
+    configure_server(&mut groovy, tmp.path(), tmp.path(), &s);
+    assert!(groovy.command.ends_with(&*Path::new("jdk").join(java.strip_prefix(&home).unwrap()).to_string_lossy()));
+    assert!(Path::new(&groovy.command).is_file(), "{}", groovy.command);
 }
 
 #[test]
@@ -2386,7 +2614,10 @@ fn go_constraints_change_only_protocol_settings() {
     original.settings = Some(json!({"analyses":{"unusedparams":true}}));
     let mut defaults = original.clone();
     configure_server(&mut defaults, tmp.path(), tmp.path(), &settings);
-    assert_eq!(defaults.settings, Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}})));
+    assert_eq!(
+        defaults.settings,
+        Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}, "gofumpt":false}))
+    );
     defaults.settings = original.settings.clone();
     assert_eq!(defaults, original);
     settings.languages.go.build_tags.custom = "integration".into();
@@ -2396,7 +2627,8 @@ fn go_constraints_change_only_protocol_settings() {
     assert_eq!(
         configured.settings.take(),
         Some(json!({
-            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"}
+            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"},
+            "gofumpt":false
         }))
     );
     configured.settings = original.settings.clone();
@@ -2411,10 +2643,50 @@ fn go_empty_constraints_preserve_explicit_server_defaults() {
     use serde_json::json;
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = server("gopls");
-    cfg.initialization_options =
-        Some(toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})).unwrap());
+    cfg.initialization_options = Some(
+        toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}, "gofumpt":true}))
+            .unwrap(),
+    );
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
-    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})));
+    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}, "gofumpt":true})));
+}
+
+#[test]
+fn go_gofumpt_setting_reaches_gopls_and_turns_off_in_place() {
+    use crate::apply::server_protocol_overrides;
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.languages.go.gofumpt = true;
+    let mut on = server("gopls");
+    configure_server(&mut on, tmp.path(), tmp.path(), &settings);
+    assert_eq!(on.settings.as_ref().unwrap()["gofumpt"], json!(true));
+    assert_eq!(on.initialization_options, server("gopls").initialization_options);
+    // The setting wins over the language definition's value.
+    let mut explicit = server("gopls");
+    explicit.settings = Some(json!({"gofumpt": false}));
+    configure_server(&mut explicit, tmp.path(), tmp.path(), &settings);
+    assert_eq!(explicit.settings.unwrap()["gofumpt"], json!(true));
+    // Turned off: an explicit false, because gopls keeps omitted keys on reconfiguration.
+    let mut off = server("gopls");
+    configure_server(&mut off, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(off.settings.unwrap()["gofumpt"], json!(false));
+    // Off leaves a server-level value alone.
+    let mut own = server("gopls");
+    own.settings = Some(json!({"gofumpt": true}));
+    configure_server(&mut own, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(own.settings.unwrap()["gofumpt"], json!(true));
+    // Off doesn't shadow gofumpt in Settings › Language Servers initializationOptions.
+    let mut user = Settings::default();
+    user.language_servers
+        .insert("gopls".into(), serde_json::from_value(json!({"initializationOptions": {"gofumpt": true}})).unwrap());
+    let mut from_user = server("gopls");
+    configure_server(&mut from_user, tmp.path(), tmp.path(), &user);
+    server_protocol_overrides(&mut from_user, &user);
+    assert_eq!(from_user.settings.unwrap()["gofumpt"], json!(true));
+    let mut other = server("rust-analyzer");
+    configure_server(&mut other, tmp.path(), tmp.path(), &settings);
+    assert_eq!(other.settings, None);
 }
 
 #[test]
@@ -2514,7 +2786,10 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
     // Another bare name for the interpreter comes back as the interpreter's own.
     let mut loaded = saved("python", "python3", &["app.py"], &[]);
     apply_to_run_configs(std::slice::from_mut(&mut loaded), root, &s);
-    assert_eq!(without_derived(&loaded, root, &s).command, exe("python"));
+    let mut normalized = without_derived(&loaded, root, &s);
+    assert_eq!(normalized.command, exe("python"));
+    apply_to_run_configs(std::slice::from_mut(&mut normalized), root, &s);
+    assert_eq!(normalized, loaded, "normalizing the name must preserve the resolved configuration");
 
     // A saved configuration follows a later interpreter change instead of a frozen PATH.
     let mut loaded = saved("ruby", "ruby", &["app.rb"], &[]);
@@ -2640,6 +2915,20 @@ fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
     let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
     assert_eq!(stored.command, "python", "the bare program, also on Windows");
     assert!(!stored.env.contains_key("VIRTUAL_ENV"));
+    let mut reloaded = stored.clone();
+    apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &settings);
+    assert_eq!(reloaded, config, "saving must preserve the complete resolved configuration");
+
+    // A saved bare member must also follow a different primary project's auto-detected venv.
+    let other_primary = root.join("other-primary");
+    let other_python = fake_venv(&other_primary, ".venv");
+    let mut moved = stored;
+    apply_to_run_configs_in(std::slice::from_mut(&mut moved), &bare, Some(&other_primary), &settings);
+    let mut expected = run("python", "python3", &["main.py"]);
+    expected.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut expected), &bare, Some(&other_primary), &settings);
+    assert_eq!(moved.command, other_python.to_string_lossy());
+    assert_eq!(moved, expected, "the saved configuration must not freeze the original venv or PATH");
 
     // The member's explicit interpreter wins over the primary project's venv —
     // when it exists (bare names stay bare; a missing path falls back).
@@ -2834,4 +3123,27 @@ fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
     let mut cfg = server("vtsls");
     assert!(!configure_vue_module_resolution(&mut cfg, tmp.path()));
     assert!(cfg.initialization_options.is_none());
+}
+
+#[test]
+fn server_command_paths_report_executables_set_for_built_in_servers() {
+    let servers = [server("java-analyzer"), server("jdtls"), server("kmp-lsp")];
+    let mut s = Settings::default();
+    let entry = |command: &str| ide_core::settings::LanguageServerSettings {
+        command: command.into(),
+        languages: vec!["java".into()],
+        ..Default::default()
+    };
+    s.language_servers.insert("java-analyzer".into(), entry("/opt/java-analyzer/bin/java-analyzer"));
+    s.language_servers.insert("jdtls".into(), entry("bin/jdtls"));
+    // A bare name is looked up like the definition's command.
+    s.language_servers.insert("kmp-lsp".into(), entry("kmp-lsp-nightly"));
+    let root = Path::new("/work");
+    assert_eq!(
+        server_command_paths(&servers, root, &s),
+        [
+            ("java-analyzer".to_owned(), "/opt/java-analyzer/bin/java-analyzer".into()),
+            ("jdtls".to_owned(), root.join("bin/jdtls")),
+        ]
+    );
 }

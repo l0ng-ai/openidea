@@ -88,6 +88,7 @@ impl LspManager {
     /// for `path` (by file name). Missing servers are not started, so a batch
     /// run doesn't prompt to install every language it meets.
     pub fn serves_path(&self, path: &Path) -> bool {
+        let path = &*self.in_project_spelling(path);
         let lang = self.languages.detect(path, None);
         let arduino = if lang.as_str() == "arduino" {
             Some(self.servers_for(&lang, path))

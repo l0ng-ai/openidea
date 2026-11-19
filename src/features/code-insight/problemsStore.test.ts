@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Diagnostic } from "@/bindings";
+import { useProject } from "@/platform/project";
 import {
   applyDiagnosticsEvent,
   clearProblems,
@@ -7,6 +8,7 @@ import {
   currentProblemsPath,
   fileDiagnostics,
   filePaths,
+  installProblemsEvents,
   mergeDiagnostics,
   problemsReport,
   profiledProblems,
@@ -149,5 +151,55 @@ describe("problemsReport", () => {
     );
     expect(problemsReport(map, "/p", 1)).toBe("src/b.ts:2:1: error: line 1 (tsc)\n… 2 more");
     expect(problemsReport(mergeDiagnostics(new Map(), "/p/a", "x", [d(0, "info")]), "/p")).toBeNull();
+  });
+});
+
+describe("incremental bookkeeping", () => {
+  let seed = 7;
+  const random = (n: number) => (seed = (seed * 48271) % 2147483647) % n;
+  const SEVERITIES = ["error", "warning", "info", "hint"] as const;
+  const items = (): Diagnostic[] =>
+    Array.from({ length: random(5) }, () => ({
+      ...d(random(3), SEVERITIES[random(4)]),
+      range: { start: { line: random(3), col: random(2) }, end: { line: 3, col: 0 } },
+      code: String(random(1000)),
+    }));
+  // The merge as it was before it was cached.
+  const fullMerge = (map: ReturnType<typeof useProblems.getState>["map"], path: string) =>
+    [...(map.get(path)?.values() ?? [])]
+      .flat()
+      .sort(
+        (a, b) =>
+          a.range.start.line - b.range.start.line ||
+          a.range.start.col - b.range.start.col ||
+          SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity),
+      );
+
+  it("keeps the project counts and each file's merged list equal to a full rescan", () => {
+    clearProblems();
+    useProject.setState({ settings: {} as never });
+    const off = installProblemsEvents();
+    try {
+      for (let step = 0; step < 400; step++) {
+        if (step === 150)
+          useProject.setState({
+            settings: { inspections: { default: { "lsp:eslint": { enabled: false } } } } as never,
+          });
+        if (step === 250)
+          useProject.setState({
+            settings: { inspections: { default: { "lsp:ra": { severity: "weakWarning" } } } } as never,
+          });
+        if (step === 300) clearProblems();
+        const path = `/p/${random(12)}.rs`;
+        applyDiagnosticsEvent(path, ["ra", "eslint"][random(2)]!, items());
+        const { map, counts } = useProblems.getState();
+        expect(counts).toEqual(projectCounts(map));
+        for (const p of map.keys()) expect(fileDiagnostics(map, p)).toEqual(fullMerge(map, p));
+      }
+    } finally {
+      off();
+      useProject.setState({ settings: {} as never });
+      clearProblems();
+    }
   });
 });

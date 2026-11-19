@@ -222,18 +222,25 @@ struct ClientHandler {
     app: AppHandle,
     window: String,
     channels: Channels,
+    connection: Arc<std::sync::OnceLock<std::sync::Weak<Connection>>>,
 }
 
 impl Handler for ClientHandler {
     fn on_notification(&self, method: &str, params: Value) {
         match method {
             "event" => match serde_json::from_value::<EventMessage>(params) {
-                Ok(m) if ide_host::rpc::client_accepts(&m.event) => {
-                    // The server's windows are this window.
-                    let _ = m.window;
-                    TauriSink { app: self.app.clone(), window: Some(self.window.clone()) }.emit(m.event);
+                Ok(m) => {
+                    let trusted = self
+                        .connection
+                        .get()
+                        .and_then(std::sync::Weak::upgrade)
+                        .is_some_and(|c| c.trusted_here(&self.app.state::<AppState>().host.trust) == Some(true));
+                    if ide_host::rpc::client_accepts(&m.event, trusted) {
+                        // The server's windows are this window.
+                        let _ = m.window;
+                        TauriSink { app: self.app.clone(), window: Some(self.window.clone()) }.emit(m.event);
+                    }
                 }
-                Ok(_) => {}
                 Err(e) => tracing::warn!("remote event: {e}"),
             },
             // Plugin code of this window's project runs on the server.
@@ -506,8 +513,13 @@ pub async fn remote_connect(
     progress(RemoteStage::Connecting, None);
     let label = AppState::owner_window(window.label()).to_owned();
     let channels: Channels = Arc::default();
-    let handler =
-        Arc::new(ClientHandler { app: window.app_handle().clone(), window: label.clone(), channels: channels.clone() });
+    let connection_slot: Arc<std::sync::OnceLock<std::sync::Weak<Connection>>> = Arc::default();
+    let handler = Arc::new(ClientHandler {
+        app: window.app_handle().clone(),
+        window: label.clone(),
+        channels: channels.clone(),
+        connection: connection_slot.clone(),
+    });
     let tail = crate::remote_wsl::Tail::default();
     let mut exec = None;
     let (peer, session, host, title_tag) = match &target {
@@ -597,6 +609,7 @@ pub async fn remote_connect(
         web_forwards: Mutex::new(Vec::new()),
         exec,
     });
+    let _ = connection_slot.set(Arc::downgrade(&connection));
     if let RemoteTarget::DevContainer { folder, config } = &target {
         forward_configured_ports(&connection, folder, config).await;
     }

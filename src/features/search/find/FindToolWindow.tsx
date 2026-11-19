@@ -29,12 +29,14 @@ import { countFileMatches } from "./session";
 import { CodePreview, MatchText, type PreviewHighlight } from "./parts";
 import {
   NO_MARKS,
+  confirmAllText,
   confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
   pendingUsages,
   replaceTargets,
+  skipTargets,
   startReplace,
   summaryText,
   toggleExcluded,
@@ -281,14 +283,15 @@ function FindTabView({ tab }: { tab: FindTab }) {
     }));
   }, [preview?.path, st.files]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const replace = async (usages: Usage[]) => {
+  const replace = async (usages: Usage[], allInScope = false) => {
     if (tab.replacement === null || !usages.length || running) return;
     const run = startReplace(
       {
         query: tab.query,
         replacement: tab.replacement,
         preserveCase: !!tab.preserveCase,
-        targets: replaceTargets(usages),
+        targets: allInScope ? skipTargets(allGroups, marks) : replaceTargets(usages),
+        allInScope,
       },
       setProgress,
     );
@@ -353,13 +356,17 @@ function FindTabView({ tab }: { tab: FindTab }) {
 
   const replaceMode = tab.replacement !== null;
   const allPending = pendingUsages(allGroups, marks);
+  // Past the search's limit, every match in the scope is replaced, listed or not (as in IDEA).
+  const allInScope = !!st.summary?.limitHit;
   const confirmReplaceAll = async () => {
     const ok = await confirm({
       title: "Replace All",
       ok: "Replace",
       message: (
         <>
-          {confirmText(countUsages(allPending), tab.query.pattern, tab.replacement ?? "")}
+          {allInScope
+            ? confirmAllText(tab.query.pattern, tab.replacement ?? "")
+            : confirmText(countUsages(allPending), tab.query.pattern, tab.replacement ?? "")}
           {marks.excluded.size > 0 && (
             <>
               {" "}
@@ -369,7 +376,7 @@ function FindTabView({ tab }: { tab: FindTab }) {
         </>
       ),
     });
-    if (ok) void replace(allPending);
+    if (ok) void replace(allPending, allInScope);
   };
   const selectedPending = pendingUsages(selectedGroups(), marks);
 

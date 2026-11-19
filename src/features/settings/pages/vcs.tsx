@@ -4,14 +4,17 @@
  * Behaviour lives in the vcs feature, which reads `vcs.*` through
  * `platform/workflowSettings`.
  */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS, type IssueLinkValid } from "@/platform/workflowSettings";
 import { showInFileManagerLabel } from "@/platform/fileManager";
-import { Button, Icon, Input, type SelectOption, T } from "@/ui";
+import { Button, Icon, IconButton, Input, Select, type SelectOption, T } from "@/ui";
+import { choosePath } from "@/platform/choosePath";
 import { Row, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
+import type { AgentModelCatalog, AgentProvider } from "@/bindings";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
@@ -34,10 +37,91 @@ function HistoryLimitRow() {
   );
 }
 
+type VcsChoice = "git" | "none";
+const VCS_OPTIONS: SelectOption<VcsChoice>[] = [
+  { value: "git", label: "Git" },
+  { value: "none", label: "<none>" },
+];
+
+/** A mapping's directory as stored: relative to the project root (`.` for the root), absolute outside it. */
+export function mappingKey(root: string, path: string): string {
+  const p = path.replace(/[\\/]+$/, "");
+  if (p === root) return ".";
+  return p.startsWith(root + "/") || p.startsWith(root + "\\") ? p.slice(root.length + 1).replace(/\\/g, "/") : p;
+}
+
+function mappingPath(root: string, key: string): string {
+  if (key === "." || key === "") return root;
+  return /^([A-Za-z]:)?[\\/]/.test(key) ? key : `${root}/${key}`;
+}
+
+/**
+ * IDEA's Directory Mappings: the detected repositories plus those added by hand. Choosing
+ * `<none>` leaves a repository out of the Git and Commit tool windows; its files stay in the project.
+ */
 function MappingsTable() {
   const project = useProject((s) => s.project);
+  const root = project?.root ?? null;
+  const [excluded, setExcluded] = useSetting<string[]>("vcs.mappings.excluded", "project");
+  const [added, setAdded] = useSetting<string[]>("vcs.mappings.added", "project");
+  const [detected, setDetected] = useState<string[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  useEffect(() => {
+    if (!root || !isTauri()) return;
+    let live = true;
+    call(commands.vcsDetectedRoots()).then(
+      (roots) => live && setDetected(roots),
+      () => live && setDetected([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [root]);
+
+  const rows = useMemo(() => {
+    if (!root) return [];
+    const keys = new Set([...(detected ?? []).map((p) => mappingKey(root, p)), ...added]);
+    if (!keys.size) keys.add(".");
+    return [...keys]
+      .sort((a, b) => (a === "." ? -1 : b === "." ? 1 : a.localeCompare(b)))
+      .map((key) => ({
+        key,
+        path: mappingPath(root, key),
+        manual: added.includes(key),
+        vcs: (excluded.includes(key) || (!project?.isGit && key === "." && !detected?.length && !added.length)
+          ? "none"
+          : "git") as VcsChoice,
+      }));
+  }, [root, detected, added, excluded, project?.isGit]);
+
+  const setVcs = (key: string, vcs: VcsChoice) =>
+    setExcluded(vcs === "none" ? [...excluded.filter((k) => k !== key), key] : excluded.filter((k) => k !== key));
+
+  const add = async () => {
+    if (!root) return;
+    const picked = await choosePath({ directory: true, title: "Select Repository Root", defaultPath: root });
+    if (!picked) return;
+    const key = mappingKey(root, picked);
+    if (excluded.includes(key)) setExcluded(excluded.filter((k) => k !== key));
+    if (!rows.some((r) => r.key === key)) setAdded([...added, key]);
+    setSelected(key);
+  };
+  const removable = rows.find((r) => r.key === selected && r.manual);
+  const remove = () => {
+    if (!removable) return;
+    setAdded(added.filter((k) => k !== removable.key));
+    setExcluded(excluded.filter((k) => k !== removable.key));
+    setSelected(null);
+  };
+
   return (
     <div className={styles.tableBox}>
+      {root && (
+        <div className={styles.toolbar} role="toolbar" aria-label={tx("Directory mappings actions")}>
+          <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
+          <IconButton icon="minus" title="Remove" size="small" disabled={!removable} onClick={remove} />
+        </div>
+      )}
       <table className={styles.table} aria-label={tx("Directory mappings")}>
         <thead>
           <tr>
@@ -50,20 +134,38 @@ function MappingsTable() {
           </tr>
         </thead>
         <tbody>
-          {!project ? (
+          {!root ? (
             <tr>
               <td colSpan={2} className={styles.empty}>
                 <T>No project is open</T>
               </td>
             </tr>
           ) : (
-            <tr>
-              <td title={project.root}>
-                <Icon name="folder" size={16} className={styles.mappingIcon} />
-                {tx("<Project>")} {project.root}
-              </td>
-              <td>{project.isGit ? "Git" : tx("<none>")}</td>
-            </tr>
+            rows.map((row) => {
+              const name = row.key === "." ? tx("<Project>") : row.key;
+              return (
+                <tr
+                  key={row.key}
+                  aria-selected={selected === row.key}
+                  className={clsx(selected === row.key && styles.selectedRow)}
+                  onMouseDown={() => setSelected(row.key)}
+                >
+                  <td title={row.path}>
+                    <Icon name="folder" size={16} className={styles.mappingIcon} />
+                    {name}
+                  </td>
+                  <td>
+                    <Select
+                      value={row.vcs}
+                      options={VCS_OPTIONS}
+                      variant="ghost"
+                      aria-label={tx`VCS of ${name}`}
+                      onChange={(v) => setVcs(row.key, v)}
+                    />
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
@@ -277,6 +379,117 @@ function MessageLimits() {
   );
 }
 
+const AUTOMATIC = "";
+
+/** The installed coding agents, as the agents feature reports them; empty where agents can't run. */
+function useInstalledAgents(): AgentProvider[] {
+  const [agents, setAgents] = useState<AgentProvider[]>([]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    call(commands.agentProviders())
+      .then((all) => live && setAgents(all.filter((p) => p.installed)))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return agents;
+}
+
+type ModelCatalog = Pick<AgentModelCatalog, "config" | "thoughtLevels">;
+
+/** The models `agent` offers, from its catalog; asks the agent for it once when it hasn't reported one. */
+function useModelCatalog(agent: AgentProvider | undefined): ModelCatalog | undefined {
+  const [catalog, setCatalog] = useState<{ provider: string } & ModelCatalog>();
+  const id = agent?.id;
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let polls = 0;
+    const load = () =>
+      call(commands.agentRefreshModels(id, false, null))
+        .then((c) => {
+          if (!live) return;
+          setCatalog(c);
+          if (c.refreshing && ++polls < CATALOG_POLLS) timer = setTimeout(load, CATALOG_POLL_MS);
+        })
+        .catch(() => {});
+    void load();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [id]);
+  if (!agent) return undefined;
+  const fresh = catalog?.provider === agent.id && catalog.config.some((o) => o.category === "model");
+  return fresh ? catalog : { config: agent.config, thoughtLevels: agent.thoughtLevels ?? {} };
+}
+
+const CATALOG_POLL_MS = 1_500;
+const CATALOG_POLLS = 40;
+
+/** `values` as options after `automatic`, keeping a saved value the agent no longer lists. */
+function choiceOptions(
+  automatic: string,
+  values: readonly { value: string; name: string }[],
+  saved: string,
+): SelectOption<string>[] {
+  const options = [{ value: AUTOMATIC, label: automatic }, ...values.map((v) => ({ value: v.value, label: v.name }))];
+  return saved && !values.some((v) => v.value === saved) ? [...options, { value: saved, label: saved }] : options;
+}
+
+function CommitAgentRows() {
+  const agents = useInstalledAgents();
+  const [agent, setAgent] = useSetting<string>("vcs.commit.agent");
+  const [model, setModel] = useSetting<string>("vcs.commit.agentModel");
+  const [effort, setEffort] = useSetting<string>("vcs.commit.agentEffort");
+  const catalog = useModelCatalog(agents.find((p) => p.id === agent));
+  const models = catalog?.config.find((o) => o.category === "model");
+  const shown = model || models?.current;
+  const levels = (shown ? catalog?.thoughtLevels[shown] : undefined)?.find((o) => o.category === "thought_level");
+  const agentOptions = choiceOptions(
+    tx("Automatic (the agent of the latest task)"),
+    agents.map((p) => ({ value: p.id, name: p.name })),
+    agent,
+  );
+  const pick = (next: string) => {
+    if (next === agent) return;
+    setAgent(next);
+    setModel(AUTOMATIC);
+    setEffort(AUTOMATIC);
+  };
+  return (
+    <>
+      <Row label="Agent" hint="Commit messages are short: a fast model with low effort is usually enough.">
+        <Select value={agent} options={agentOptions} onChange={pick} aria-label={tx("Agent")} />
+      </Row>
+      <Row label="Model" disabled={!agent}>
+        <Select
+          value={model}
+          options={choiceOptions(tx("The agent's current model"), models?.values ?? [], model)}
+          onChange={(next) => {
+            setModel(next);
+            setEffort(AUTOMATIC);
+          }}
+          disabled={!agent}
+          aria-label={tx("Model")}
+        />
+      </Row>
+      <Row label="Effort" disabled={!agent}>
+        <Select
+          value={effort}
+          options={choiceOptions(tx("The agent's default"), levels?.values ?? [], effort)}
+          onChange={setEffort}
+          disabled={!agent}
+          aria-label={tx("Effort")}
+        />
+      </Row>
+    </>
+  );
+}
+
 function AgentInstructionsRow() {
   const [value, set] = useSetting<string>("vcs.commit.agentInstructions");
   const id = useId();
@@ -432,6 +645,12 @@ export const VCS_PAGES: PageSpec[] = [
         options: [
           {
             kind: "custom",
+            label: "Agent",
+            keywords: ["agent", "ai", "model", "effort", "thinking", "reasoning", "generate commit message"],
+            component: CommitAgentRows,
+          },
+          {
+            kind: "custom",
             label: "Instructions for Generate Commit Message with Agent",
             keywords: ["agent", "ai", "prompt", "conventional commits"],
             component: AgentInstructionsRow,
@@ -555,6 +774,12 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "vcs.git.showBranchInProjectView",
             label: "Show branch and incoming/outgoing commits in the Project view",
+          },
+          {
+            kind: "toggle",
+            key: "vcs.git.cliStatus",
+            label: "Detect changes with the Git command line",
+            hint: "Slower, but matches git status where encryption or file protection software makes files look modified.",
           },
         ],
       },

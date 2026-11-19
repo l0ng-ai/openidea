@@ -11,6 +11,7 @@ const PROVIDER: &str = "catalog-test";
 
 #[derive(Debug)]
 struct Pending {
+    launch: usize,
     method: String,
     params: Value,
     reply: oneshot::Sender<Result<Value, String>>,
@@ -44,7 +45,7 @@ impl Harness {
             let launches = launches.clone();
             let live = live.clone();
             move |_, _, client, _| {
-                launches.fetch_add(1, Ordering::SeqCst);
+                let launch = launches.fetch_add(1, Ordering::SeqCst);
                 live.fetch_add(1, Ordering::SeqCst);
                 let guard = Live(live.clone());
                 let pending = pending_tx.clone();
@@ -75,10 +76,17 @@ impl Harness {
                         }
                         let response = match request["method"].as_str().unwrap() {
                             "initialize" => json!({ "id": id, "jsonrpc": "2.0", "result": initialize }),
-                            "session/new" | "session/set_config_option" | "session/set_model" => {
+                            "session/new"
+                            | "session/set_config_option"
+                            | "session/set_model"
+                            | "session/load"
+                            | "session/resume"
+                            | "session/prompt"
+                            | "session/set_mode" => {
                                 let (reply, mut result) = oneshot::channel();
                                 pending
                                     .send(Pending {
+                                        launch,
                                         method: request["method"].as_str().unwrap().to_owned(),
                                         params: request["params"].clone(),
                                         reply,
@@ -288,6 +296,391 @@ async fn a_session_adds_the_efforts_of_a_model_discovery_did_not_read() {
     let fresh = completed(&mut events).await;
     assert_eq!(efforts(&fresh, "first"), ["medium"]);
     assert_eq!(efforts(&fresh, "second"), ["off", "auto"]);
+}
+
+#[tokio::test]
+async fn discovered_model_is_confirmed_by_the_live_session() {
+    switch_chat_model(ChatSwitch::Live).await;
+}
+
+#[tokio::test]
+async fn discovered_model_reloads_the_same_session_on_the_next_message() {
+    switch_chat_model(ChatSwitch::Resume).await;
+}
+
+#[tokio::test]
+async fn discovered_model_leaves_the_original_session_intact_after_resume_failure() {
+    switch_chat_model(ChatSwitch::ResumeFails).await;
+}
+
+#[tokio::test]
+async fn discovered_model_is_reverted_when_the_reloaded_session_does_not_offer_it() {
+    switch_chat_model(ChatSwitch::Unavailable).await;
+}
+
+#[tokio::test]
+async fn discovered_model_can_be_selected_while_the_session_is_not_running() {
+    switch_chat_model(ChatSwitch::Idle).await;
+}
+
+#[tokio::test]
+async fn discovered_model_effort_is_discovered_persisted_and_applied_before_the_first_reply() {
+    switch_chat_model(ChatSwitch::Uncached).await;
+}
+
+#[tokio::test]
+async fn discovered_model_with_no_effort_can_be_selected() {
+    switch_chat_model(ChatSwitch::NoEffort).await;
+}
+
+#[tokio::test]
+async fn discovered_model_settings_failure_leaves_the_chat_unchanged() {
+    switch_chat_model(ChatSwitch::DiscoveryFails).await;
+}
+
+#[tokio::test]
+async fn discovered_model_withdrawn_effort_prevents_sending() {
+    switch_chat_model(ChatSwitch::EffortUnavailable).await;
+}
+
+#[tokio::test]
+async fn discovered_model_rejected_effort_prevents_sending() {
+    switch_chat_model(ChatSwitch::EffortRejected).await;
+}
+
+#[tokio::test]
+async fn discovered_model_lookup_does_not_overwrite_a_newer_selection() {
+    switch_chat_model(ChatSwitch::Superseded).await;
+}
+
+#[derive(Clone, Copy)]
+enum ChatSwitch {
+    Live,
+    Resume,
+    ResumeFails,
+    Unavailable,
+    Idle,
+    Uncached,
+    NoEffort,
+    DiscoveryFails,
+    EffortUnavailable,
+    EffortRejected,
+    Superseded,
+}
+
+async fn switch_chat_model(scenario: ChatSwitch) {
+    use crate::{AgentPrompt, AgentStatus, Isolation, NewAgentTask};
+
+    let tmp = tempfile::tempdir().unwrap();
+    configure(tmp.path(), "one");
+    let mut harness = Harness::with_initialize(json!({
+        "protocolVersion": 1, "agentCapabilities": { "loadSession": true }
+    }));
+    let mut manager = make_manager(tmp.path(), Arc::default(), &harness);
+    let task = manager
+        .create(NewAgentTask {
+            prompt: AgentPrompt { text: "first".into(), ..Default::default() },
+            provider: PROVIDER.into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let next = harness.next().await;
+    assert_eq!((next.launch, next.method.as_str()), (0, "session/new"));
+    let mut initial = response(&["old"], &["low", "high"]);
+    initial["sessionId"] = json!("saved-chat");
+    initial["modes"] = json!({
+        "currentModeId": "code", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]
+    });
+    next.reply.send(Ok(initial.clone())).unwrap();
+    let next = harness.next().await;
+    assert_eq!(
+        (next.launch, next.method.as_str(), &next.params["sessionId"]),
+        (0, "session/prompt", &json!("saved-chat"))
+    );
+    next.reply.send(Ok(json!({"stopReason": "end_turn"}))).unwrap();
+    wait_for_chat(&manager, &task.id, AgentStatus::Ready).await;
+    {
+        let mode = manager.set_config(&task.id, "mode", "ask".into());
+        tokio::pin!(mode);
+        let set = next_chat_request(&mut harness, mode.as_mut()).await;
+        assert_eq!((set.launch, set.method.as_str()), (0, "session/set_mode"));
+        assert_eq!(set.params, json!({"sessionId": "saved-chat", "modeId": "ask"}));
+        set.reply.send(Ok(json!({}))).unwrap();
+        mode.await.unwrap();
+    }
+    let before_entries = serde_json::to_value(manager.entries(&task.id, None).unwrap()).unwrap();
+    let before_config = manager.task(&task.id).unwrap().state.lock().task.config.clone();
+    let offline = matches!(scenario, ChatSwitch::Idle | ChatSwitch::Uncached | ChatSwitch::Superseded);
+    let missing_settings = matches!(
+        scenario,
+        ChatSwitch::Uncached | ChatSwitch::NoEffort | ChatSwitch::DiscoveryFails | ChatSwitch::Superseded
+    );
+    let no_effort = matches!(scenario, ChatSwitch::NoEffort);
+    let effort_error = match scenario {
+        ChatSwitch::EffortUnavailable => Some("no longer offers effort value thorough"),
+        ChatSwitch::EffortRejected => Some("effort rejected by the agent"),
+        _ => None,
+    };
+    let choose_effort = matches!(scenario, ChatSwitch::Uncached) || effort_error.is_some();
+    let (catalog_models, catalog_effort): (&[&str], &[&str]) =
+        if missing_settings { (&["old", "new"], &["low", "high"]) } else { (&["new", "old"], &["quick", "thorough"]) };
+    if offline {
+        manager.shutdown();
+        manager = make_manager(tmp.path(), Arc::default(), &harness);
+    }
+
+    let mut events = events(&manager);
+    assert!(manager.refresh_models(PROVIDER, false, None).unwrap().refreshing);
+    let next = harness.next().await;
+    assert_eq!((next.launch, next.method.as_str()), (1, "session/new"));
+    next.reply.send(Ok(response(catalog_models, catalog_effort))).unwrap();
+    let catalog = completed(&mut events).await;
+    assert_eq!(model_values(&catalog), catalog_models);
+    if missing_settings {
+        assert!(!catalog.thought_levels.contains_key("new"));
+    }
+    assert_eq!(manager.task(&task.id).unwrap().state.lock().task.config, before_config);
+
+    let live = matches!(scenario, ChatSwitch::Live);
+    let resumed_launch = if missing_settings { 3 } else { 2 };
+    let load_fails = matches!(scenario, ChatSwitch::ResumeFails);
+    let unavailable = matches!(scenario, ChatSwitch::Unavailable);
+    {
+        let switching = manager.set_config(&task.id, "model", "new".into());
+        tokio::pin!(switching);
+        if !offline {
+            let next = next_chat_request(&mut harness, switching.as_mut()).await;
+            assert_eq!((next.launch, next.method.as_str()), (0, "session/set_config_option"));
+            assert_eq!(next.params, json!({"sessionId": "saved-chat", "configId": "model", "value": "new"}));
+            if live {
+                next.reply.send(Ok(response(&["new", "old"], &["session-only"]))).unwrap();
+            } else {
+                next.reply.send(Err("not in this process's model list".into())).unwrap();
+            }
+        }
+        if missing_settings {
+            let discovery = next_chat_request(&mut harness, switching.as_mut()).await;
+            assert_eq!((discovery.launch, discovery.method.as_str()), (2, "session/new"));
+            discovery.reply.send(Ok(response(catalog_models, catalog_effort))).unwrap();
+            let set = next_chat_request(&mut harness, switching.as_mut()).await;
+            assert_eq!(set.params, json!({"sessionId": "discovery-only", "configId": "model", "value": "new"}));
+            assert_eq!(set.method, "session/set_config_option");
+            assert!(
+                manager
+                    .prompt(&task.id, AgentPrompt { text: "too early".into(), ..Default::default() }, false)
+                    .await
+                    .is_err()
+            );
+            if matches!(scenario, ChatSwitch::DiscoveryFails) {
+                set.reply.send(Err("Sign in required".into())).unwrap();
+                let error = switching.await.unwrap_err().to_string();
+                assert!(error.contains("Sign in required"), "{error}");
+                assert_eq!(manager.subscribe(Arc::new(|_| {})).remove(0).config, before_config);
+                assert!(harness.pending.try_recv().is_err());
+                manager.shutdown();
+                return;
+            }
+            if matches!(scenario, ChatSwitch::Superseded) {
+                manager.set_config(&task.id, "model", "old".into()).await.unwrap();
+                set.reply.send(Ok(response(&["new", "old"], &["quick", "thorough"]))).unwrap();
+                switching.await.unwrap();
+                let task = manager.subscribe(Arc::new(|_| {})).remove(0);
+                assert_eq!(task.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("old"));
+                assert_eq!(task.config.iter().find(|o| o.id == "effort").unwrap().current.as_deref(), Some("low"));
+                assert!(harness.pending.try_recv().is_err());
+                manager.shutdown();
+                return;
+            }
+            let levels: &[&str] = if no_effort { &[] } else { &["quick", "thorough"] };
+            set.reply.send(Ok(response(&["new", "old"], levels))).unwrap();
+        }
+        tokio::select! {
+            result = &mut switching => result.unwrap(),
+            request = harness.next() => panic!("selection must not reopen the chat or send: {request:?}"),
+        }
+    }
+    assert_eq!(serde_json::to_value(manager.entries(&task.id, None).unwrap()).unwrap(), before_entries);
+    if matches!(scenario, ChatSwitch::Uncached) {
+        let update = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let AgentEvent::Task { task: update } = events.recv().await.unwrap()
+                    && update.id == task.id
+                {
+                    break update;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let effort = update.config.iter().find(|o| o.id == "effort").unwrap();
+        assert_eq!(effort.values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["quick", "thorough"]);
+    }
+    let snapshot = |manager: &AgentManager| manager.subscribe(Arc::new(|_| {})).remove(0);
+    let current = snapshot(&manager);
+    assert_eq!(current.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("new"));
+    assert_eq!(current.model.as_deref(), Some(if live { "new" } else { "old" }));
+    let effort =
+        |task: &crate::AgentTask| task.config.iter().find(|o| o.id == "effort").and_then(|o| o.current.clone());
+    assert_eq!(
+        effort(&current).as_deref(),
+        if live {
+            Some("session-only")
+        } else if no_effort {
+            None
+        } else {
+            Some("quick")
+        },
+        "the new model's effort must be available before sending"
+    );
+    if choose_effort {
+        assert!(manager.set_config(&task.id, "effort", "high".into()).await.is_err());
+        manager.set_config(&task.id, "effort", "thorough".into()).await.unwrap();
+        assert_eq!(effort(&snapshot(&manager)).as_deref(), Some("thorough"));
+        if matches!(scenario, ChatSwitch::Uncached) {
+            manager.shutdown();
+            manager = make_manager(tmp.path(), Arc::default(), &harness);
+            let restored = snapshot(&manager);
+            assert_eq!(restored.id, task.id);
+            assert_eq!(effort(&restored).as_deref(), Some("thorough"));
+        }
+    }
+
+    manager.prompt(&task.id, AgentPrompt { text: "next".into(), ..Default::default() }, false).await.unwrap();
+    if !live {
+        let load = harness.next().await;
+        assert_eq!((load.launch, load.method.as_str()), (resumed_launch, "session/load"));
+        assert_eq!(load.params["sessionId"], "saved-chat");
+        load.notifications
+            .send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "saved-chat",
+                "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "replay"}}
+            }}))
+            .unwrap();
+        if load_fails {
+            load.notifications
+                .send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {
+                    "sessionId": "saved-chat",
+                    "update": {"sessionUpdate": "config_option_update",
+                        "configOptions": response(&["other", "old"], &["low"])["configOptions"]}
+                }}))
+                .unwrap();
+            load.reply.send(Err("cannot resume saved-chat".into())).unwrap();
+        } else {
+            let models: &[&str] = if unavailable { &["old"] } else { &["old", "new"] };
+            let mut resumed = response(models, &["low", "high"]);
+            resumed["modes"] = initial["modes"].clone();
+            load.reply.send(Ok(resumed)).unwrap();
+        }
+        if load_fails || unavailable {
+            wait_for_chat(&manager, &task.id, AgentStatus::Failed).await;
+            let task = snapshot(&manager);
+            assert_eq!(task.model.as_deref(), Some("old"));
+            assert_eq!(task.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("old"));
+            assert_eq!(effort(&task).as_deref(), Some("low"));
+            let expected = if load_fails { "cannot resume saved-chat" } else { "does not offer model new" };
+            assert!(task.error.as_deref().unwrap().contains(expected), "{:?}", task.error);
+            assert!(harness.pending.try_recv().is_err(), "must not send on the previous model or create a session");
+            if load_fails {
+                manager
+                    .prompt(&task.id, AgentPrompt { text: "retry".into(), ..Default::default() }, false)
+                    .await
+                    .unwrap();
+                let retry = harness.next().await;
+                assert_eq!((retry.launch, retry.method.as_str()), (3, "session/load"));
+                assert_eq!(retry.params["sessionId"], "saved-chat");
+                retry.reply.send(Ok(initial.clone())).unwrap();
+                let set = harness.next().await;
+                assert_eq!(set.method, "session/set_mode");
+                set.reply.send(Ok(json!({}))).unwrap();
+                let prompt = harness.next().await;
+                assert_eq!(prompt.method, "session/prompt");
+                assert_eq!(prompt.params["sessionId"], "saved-chat");
+                prompt.reply.send(Ok(json!({"stopReason": "end_turn"}))).unwrap();
+                wait_for_chat(&manager, &task.id, AgentStatus::Ready).await;
+            }
+            manager.shutdown();
+            return;
+        }
+        let set = harness.next().await;
+        assert_eq!((set.launch, set.method.as_str()), (resumed_launch, "session/set_config_option"));
+        assert_eq!(set.params, json!({"sessionId": "saved-chat", "configId": "model", "value": "new"}));
+        let levels: &[&str] = match scenario {
+            ChatSwitch::NoEffort => &[],
+            ChatSwitch::EffortUnavailable => &["session-only", "quick"],
+            _ if choose_effort => &["session-only", "thorough"],
+            _ => &["session-only"],
+        };
+        set.reply.send(Ok(response(&["new", "old"], levels))).unwrap();
+        let set = harness.next().await;
+        assert_eq!((set.launch, set.method.as_str()), (resumed_launch, "session/set_mode"));
+        assert_eq!(set.params, json!({"sessionId": "saved-chat", "modeId": "ask"}));
+        set.reply.send(Ok(json!({}))).unwrap();
+        if choose_effort && !matches!(scenario, ChatSwitch::EffortUnavailable) {
+            let set = harness.next().await;
+            assert_eq!((set.launch, set.method.as_str()), (resumed_launch, "session/set_config_option"));
+            assert_eq!(set.params, json!({"sessionId": "saved-chat", "configId": "effort", "value": "thorough"}));
+            let reply = if effort_error.is_some() {
+                Err("effort rejected by the agent".into())
+            } else {
+                Ok(response(&["new", "old"], &["thorough", "session-only"]))
+            };
+            set.reply.send(reply).unwrap();
+        }
+        if let Some(expected) = effort_error {
+            wait_for_chat(&manager, &task.id, AgentStatus::Failed).await;
+            let current = snapshot(&manager);
+            assert_eq!(current.model.as_deref(), Some("old"));
+            assert_eq!(effort(&current).as_deref(), Some("low"));
+            assert!(current.error.as_deref().unwrap().contains(expected), "{:?}", current.error);
+            assert!(harness.pending.try_recv().is_err(), "must not send using a fallback effort");
+            manager.shutdown();
+            return;
+        }
+    }
+    let next = harness.next().await;
+    assert_eq!(
+        (next.launch, next.method.as_str(), &next.params["sessionId"]),
+        (if live { 0 } else { resumed_launch }, "session/prompt", &json!("saved-chat"))
+    );
+    next.reply.send(Ok(json!({"stopReason": "end_turn"}))).unwrap();
+    wait_for_chat(&manager, &task.id, AgentStatus::Ready).await;
+    let current = snapshot(&manager);
+    assert_eq!(current.model.as_deref(), Some("new"));
+    assert_eq!(
+        effort(&current).as_deref(),
+        if choose_effort {
+            Some("thorough")
+        } else if no_effort {
+            None
+        } else {
+            Some("session-only")
+        }
+    );
+    assert_eq!(current.config.iter().find(|o| o.id == "mode").unwrap().current.as_deref(), Some("ask"));
+    manager.shutdown();
+}
+
+async fn wait_for_chat(manager: &AgentManager, id: &str, status: crate::AgentStatus) {
+    let task = manager.task(id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while task.state.lock().task.status != status || task.state.lock().busy {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn next_chat_request(
+    harness: &mut Harness,
+    switching: std::pin::Pin<&mut impl Future<Output = crate::IdeResult<()>>>,
+) -> Pending {
+    tokio::select! {
+        result = switching => panic!("model switching ended before contacting the session: {result:?}"),
+        request = harness.next() => request,
+    }
 }
 
 #[tokio::test]

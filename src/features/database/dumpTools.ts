@@ -3,6 +3,7 @@ import type {
   DataSource,
   DbDumpFormat,
   DbDumpKind,
+  DbMysqldumpOptions,
   DbPgDumpOptions,
   DbPgRestoreOptions,
   DbPsqlOptions,
@@ -24,6 +25,10 @@ type Typed<T, K extends keyof T> = Omit<T, K> & { [P in K]: string };
 
 export type DumpForm = Typed<DbPgDumpOptions, "schemas" | "tables" | "excludeTables">;
 export type RestoreForm = Typed<DbPgRestoreOptions, "schemas">;
+/** `maskingPolicies` is the checkbox; whether the client knows the option is decided at run time. */
+export type MysqldumpForm = Typed<Omit<DbMysqldumpOptions, "maskingPolicies">, "databases" | "tables"> & {
+  maskingPolicies: boolean;
+};
 
 export const DEFAULT_DUMP: DumpForm = {
   format: "plain",
@@ -43,6 +48,7 @@ export const DEFAULT_DUMP: DumpForm = {
 export const DEFAULT_RESTORE: RestoreForm = {
   content: "all",
   schemas: "",
+  create: false,
   clean: false,
   ifExists: false,
   noOwner: false,
@@ -53,6 +59,27 @@ export const DEFAULT_RESTORE: RestoreForm = {
 };
 
 export const DEFAULT_PSQL: DbPsqlOptions = { singleTransaction: true, stopOnError: true };
+
+/**
+ * `mysqldump`'s own defaults, except `--single-transaction` instead of DataGrip's
+ * `--lock-all-tables`, which needs the RELOAD privilege.
+ */
+export const DEFAULT_MYSQLDUMP: MysqldumpForm = {
+  databases: "",
+  tables: "",
+  addDropTable: true,
+  disableKeys: true,
+  addLocks: true,
+  addDropTrigger: false,
+  noData: false,
+  completeInsert: false,
+  createOptions: true,
+  routines: false,
+  events: false,
+  singleTransaction: true,
+  lockAllTables: false,
+  maskingPolicies: false,
+};
 
 /** `a, b c` → `["a", "b", "c"]`; a double-quoted part keeps its spaces and commas: `public."Order Items"`. */
 export function nameList(text: string): string[] {
@@ -67,6 +94,23 @@ export function restoreOptions(f: RestoreForm): DbPgRestoreOptions {
   return { ...f, schemas: nameList(f.schemas) };
 }
 
+/** The typed list with `name` added, or taken out when it is there: `a, b` + `c` → `a, b, c`. */
+export function toggleName(text: string, name: string): string {
+  const names = nameList(text);
+  return (names.includes(name) ? names.filter((n) => n !== name) : [...names, name]).join(", ");
+}
+
+/** `knowsMasking`: the chosen `mysqldump` lists `--masking-policies` in its `--help`. */
+export function mysqldumpOptions(f: MysqldumpForm, knowsMasking: boolean): DbMysqldumpOptions {
+  const databases = nameList(f.databases);
+  return {
+    ...f,
+    databases,
+    tables: databases.length === 1 ? nameList(f.tables) : [],
+    maskingPolicies: knowsMasking ? f.maskingPolicies : null,
+  };
+}
+
 /**
  * The PostgreSQL tool for a dump: from its header when known, else `psql` for a `.sql` file and
  * `pg_restore` for anything else (archives, directories).
@@ -77,15 +121,35 @@ export function restoreToolFor(path: string, kind: DbDumpKind | null = null): Ex
   return /\.sql$/i.test(path.trim()) ? "psql" : "pgRestore";
 }
 
-export type DumpMismatch = "mysqlIntoPostgres" | "archiveIntoPsql" | "sqlIntoPgRestore";
+export type DumpMismatch = "postgresIntoMysql" | "mysqlIntoPostgres" | "archiveIntoPsql" | "sqlIntoPgRestore";
 
 /** Why `tool` cannot restore a dump of `kind`; `null` when it can, or the kind is unknown. */
 export function dumpMismatch(tool: DbTool, kind: DbDumpKind | null): DumpMismatch | null {
   if (!kind || kind === "unknown") return null;
+  if (tool === "mysql") return kind === "mysqlSql" ? null : "postgresIntoMysql";
   if (kind === "mysqlSql") return "mysqlIntoPostgres";
   if (tool === "psql" && kind === "postgresArchive") return "archiveIntoPsql";
   if (tool === "pgRestore" && kind === "postgresSql") return "sqlIntoPgRestore";
   return null;
+}
+
+export type TargetProblem = "missing" | "noDatabase";
+
+/**
+ * Why a restore cannot run in or connect to `database`; `null` when it can, or while the
+ * databases are unknown. An empty name is the data source's own for PostgreSQL; MySQL then runs
+ * without a database, which only works for a dump that creates its databases.
+ */
+export function restoreTargetProblem(
+  database: string,
+  existing: readonly string[] | null,
+  mysql: boolean,
+  createsDatabase: boolean,
+): TargetProblem | null {
+  const name = database.trim();
+  if (!name) return mysql && !createsDatabase ? "noDatabase" : null;
+  if (!existing) return null;
+  return existing.includes(name) ? null : "missing";
 }
 
 /** `2026-03-07_09-05-02` (local time). */
@@ -111,8 +175,13 @@ export function withExtension(pattern: string, format: DbDumpFormat): string {
 }
 
 /** A name as a `pg_dump` pattern: quoted unless it is a lower-case identifier. */
-function patternName(name: string): string {
+export function patternName(name: string): string {
   return /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replaceAll('"', '""')}"`;
+}
+
+/** A typed `pg_dump` name back to the name itself: `"My Schema"` → `My Schema`, `Public` → `public`. */
+export function unquoteName(pattern: string): string {
+  return /^".*"$/.test(pattern) ? pattern.slice(1, -1).replaceAll('""', '"') : pattern.toLowerCase();
 }
 
 export interface DumpScope {
@@ -131,6 +200,19 @@ export function dumpScope(n: DbNode, source: DataSource | undefined): DumpScope 
   if (n.kind === "schema") return { target, database, schemas: patternName(n.schema) };
   if (n.kind === "table" && n.table.kind === "table")
     return { target, database, tables: `${patternName(n.schema)}.${patternName(n.table.name)}` };
+  return null;
+}
+
+/**
+ * What Export with 'mysqldump' / Restore with 'mysql' act on for tree node `n`: a MySQL schema
+ * is a database. `null` when they don't apply.
+ */
+export function mysqlDumpScope(n: DbNode, source: DataSource | undefined): DumpScope | null {
+  const target = nodeTarget(n);
+  if (!target || source?.driver !== "mysql") return null;
+  if (n.kind === "source") return { target, database: source.database ?? "" };
+  if (n.kind === "schema") return { target, database: n.schema };
+  if (n.kind === "table" && n.table.kind === "table") return { target, database: n.schema, tables: n.table.name };
   return null;
 }
 

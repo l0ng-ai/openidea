@@ -228,6 +228,7 @@
   color: var(--fg-subtle);
 }
 .mappingIcon {
+  display: inline-block;
   vertical-align: -3px;
   margin-right: 6px;
 }

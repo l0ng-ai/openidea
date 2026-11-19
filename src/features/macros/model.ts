@@ -116,15 +116,17 @@ export function stopRecording(): MacroStep[] {
   return rec;
 }
 
-/** Saves `steps` as `name`, replacing a macro of that name. */
-export function saveMacro(name: string, macroSteps: MacroStep[]) {
+/** Saves a macro, replacing an existing entry only if it is the one confirmed. */
+export function saveMacro(name: string, macroSteps: MacroStep[], replace?: Macro): boolean {
   const n = name.trim();
-  if (!n) return;
+  if (!n) return false;
   const saved = useMacros.getState().saved;
   const i = saved.findIndex((m) => m.name === n);
+  if (i >= 0 && saved[i] !== replace) return false;
   const entry = { name: n, steps: macroSteps };
   useMacros.setState({ saved: i >= 0 ? saved.map((m, j) => (j === i ? entry : m)) : [...saved, entry] });
   persist();
+  return true;
 }
 
 export function renameMacro(from: string, to: string): boolean {

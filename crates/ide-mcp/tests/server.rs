@@ -424,3 +424,52 @@ async fn another_listen_address_is_used_and_one_not_on_this_computer_fails() {
     let error = McpServer::start_with(registry, None, &runtime, elsewhere).err().expect("no such address here");
     assert!(error.to_string().contains("192.0.2.1"), "{error}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multiple_servers_sharing_app_data_route_by_project_and_survive_one_closing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let (proj_a, proj_b) = (base.join("proj-a"), base.join("proj-b"));
+    std::fs::create_dir_all(&proj_a).unwrap();
+    std::fs::create_dir_all(&proj_b).unwrap();
+    let discovery = discovery_path(&base.join("app-data"));
+    let runtime = tokio::runtime::Handle::current();
+
+    let server_a =
+        McpServer::start(Arc::new(Registry { project: proj_a.clone() }), Some(discovery.clone()), &runtime).unwrap();
+    let server_b =
+        McpServer::start(Arc::new(Registry { project: proj_b.clone() }), Some(discovery.clone()), &runtime).unwrap();
+
+    let session = |text: &str| {
+        [
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "clientInfo": { "name": "agent", "version": "1" } } }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "echo", "arguments": { "text": text } } }),
+        ]
+        .iter()
+        .map(|m| format!("{m}\n"))
+        .collect::<String>()
+    };
+
+    for (proj, tag) in [(&proj_a, "alpha"), (&proj_b, "beta")] {
+        let mut out = Vec::new();
+        stdio::bridge(&discovery, proj, session(tag).as_bytes(), &mut out).await.unwrap();
+        let mut replies: Vec<Value> =
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        replies.sort_by_key(|r| r["id"].as_i64());
+        assert!(replies[0]["result"]["instructions"].as_str().unwrap().contains(&proj.display().to_string()));
+        assert_eq!(replies[1]["result"]["content"][0]["text"], format!("{tag} in {}", proj.display()));
+    }
+
+    // Closing the newer server promotes the remaining server back to server.json.
+    server_b.stop();
+    assert_eq!(Discovery::read(&discovery).unwrap().port, server_a.port());
+    let mut out = Vec::new();
+    stdio::bridge(&discovery, &proj_a, session("still-here").as_bytes(), &mut out).await.unwrap();
+    let mut replies: Vec<Value> =
+        String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    replies.sort_by_key(|r| r["id"].as_i64());
+    assert_eq!(replies[1]["result"]["content"][0]["text"], format!("still-here in {}", proj_a.display()));
+
+    server_a.stop();
+    assert!(!discovery.exists());
+}

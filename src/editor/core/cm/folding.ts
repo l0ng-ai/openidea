@@ -12,7 +12,7 @@ import {
   type Extension,
   type Line,
 } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import type { EditorView, ViewUpdate } from "@codemirror/view";
 import {
   codeFolding,
   foldEffect,
@@ -50,6 +50,57 @@ function allmanHeader(state: EditorState, line: Line): Line {
   return code && !/[;{},]$/.test(code) && !/^(\/\/|#|\*|\/\*|--)/.test(code) ? prev : line;
 }
 
+function commentPlaceholderFold(
+  state: EditorState,
+  first: Line,
+  end: Line,
+): { from: number; to: number; text: string } | null {
+  const from = first.from + first.text.length - first.text.trimStart().length;
+  const source = state.doc.sliceString(from, end.to);
+  let prefix: string;
+  let suffix: string;
+  let body: string;
+  let lines: string[];
+  let inlineBlockText = false;
+  if (source.startsWith("/*") && !source.startsWith("/**/")) {
+    prefix = source.startsWith("/**") ? "/**" : "/*";
+    const close = source.indexOf("*/", prefix.length);
+    if (close < 0) return null;
+    suffix = "*/";
+    body = source.slice(prefix.length, close);
+    inlineBlockText = !!body.split("\n", 1)[0]?.trim();
+    lines = body.split("\n").map((line, index) => (index ? line.replace(/^\s*\*/, "") : line).trimEnd());
+  } else if (/^\/\/[/!](?!\/)/.test(source)) {
+    prefix = source.slice(0, 3);
+    suffix = "";
+    lines = source.split("\n");
+    if (lines.some((line) => !line.trimStart().startsWith(prefix))) return null;
+    lines = lines.map((line) => line.trimStart().slice(prefix.length).trimEnd());
+    body = lines.join("\n");
+  } else {
+    const quote = /^(?:(?:@(?:doc|moduledoc|typedoc)\s+)?(?:~[A-Za-z])?|[rRuU]?)("""|''')/.exec(source);
+    if (!quote) return null;
+    prefix = quote[0];
+    suffix = quote[1]!;
+    const close = source.indexOf(suffix, prefix.length);
+    if (close < 0) return null;
+    body = source.slice(prefix.length, close);
+    lines = body.split("\n").map((line) => line.trim());
+  }
+  // IDEA takes a block comment's summary from the line after its opener.
+  const header = inlineBlockText ? "" : (lines.slice(0, 2).find((line) => line.trim()) ?? "");
+  const more = prefix.startsWith("//") || lines.join("").replace(/\s/g, "") !== header.replace(/\s/g, "");
+  const separator =
+    prefix.startsWith("/*") || (!prefix.startsWith("//") && !source.slice(prefix.length).startsWith(header)) ? " " : "";
+  const text =
+    prefix +
+    (header ? `${separator}${prefix.startsWith("/*") ? header.trim() : header} ` : "") +
+    (more ? "..." : "") +
+    suffix;
+  const closeOffset = suffix ? source.indexOf(suffix, prefix.length) + suffix.length : source.length;
+  return { from, to: from + closeOffset, text };
+}
+
 /** Converts backend line ranges to offsets in `state`. */
 export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]): BackendFold[] {
   const out: BackendFold[] = [];
@@ -63,13 +114,22 @@ export function foldsFromRanges(state: EditorState, ranges: readonly FoldRange[]
       if (end.to > from) out.push({ from, to: end.to, kind: r.kind, custom: true });
       continue;
     }
+    if (r.kind === "comment") {
+      const doc = commentPlaceholderFold(state, first, end);
+      if (doc) {
+        out.push({ from: doc.from, to: doc.to, kind: r.kind });
+        continue;
+      }
+    }
     const start = allmanHeader(state, first);
+    const importHead = r.kind === "imports" && /^\s*import\s+/.exec(first.text);
+    const from = importHead && /(?:\{|,)\s*$/.test(first.text) ? first.from + importHead[0].length : start.to;
     const trimmed = end.text.trimStart();
     // `}` / `)` / `]` on the last line stays visible after the placeholder, like IDEA. An import
     // run ending in `} from '…'` hides that whole statement; a bare `)` / `};` still shows.
     const delimiter = r.kind === "imports" ? /^[}\])]+[;,]?$/.test(trimmed.trimEnd()) : /^[}\])]/.test(trimmed);
     const to = delimiter ? end.from + (end.text.length - trimmed.length) : end.to;
-    if (to > start.to) out.push({ from: start.to, to, kind: r.kind });
+    if (to > from) out.push({ from, to, kind: r.kind });
   }
   return out.sort((a, b) => a.from - b.from || b.to - a.to);
 }
@@ -101,8 +161,9 @@ function foldAtLine(folds: readonly BackendFold[], lineStart: number, lineEnd: n
   let best: BackendFold | null = null;
   for (let i = lo; i < folds.length && folds[i]!.from <= lineEnd; i++) {
     const f = folds[i]!;
-    // Only folds whose header ends on this line (custom regions: on this line); keep the widest.
-    if ((f.from === lineEnd || f.custom) && (!best || f.to > best.to)) best = f;
+    // Multiline import groups and custom regions can start within their header line.
+    if ((f.from === lineEnd || f.custom || f.kind === "imports" || f.kind === "comment") && (!best || f.to > best.to))
+      best = f;
   }
   return best;
 }
@@ -392,22 +453,60 @@ function chevron(open: boolean): HTMLElement {
   return span;
 }
 
+/**
+ * Backend folds arrive asynchronously (`setBackendFolds`) and are not a document,
+ * viewport or language change, so CodeMirror's fold gutter keeps the chevrons it
+ * built before they arrived. A click then hits a gutter element at a stale line
+ * and silently does nothing. Rebuild the markers whenever the backend field changes.
+ */
+export function backendFoldingChanged(update: ViewUpdate): boolean {
+  return update.startState.field(backendFolds, false) !== update.state.field(backendFolds, false);
+}
+
 export function foldingExtension(showOutline = true): Extension {
   return [
     // The chevron column sits right of contributed icon gutters (IDEA new UI).
-    showOutline ? Prec.lowest(foldGutter({ markerDOM: chevron })) : [],
+    showOutline ? Prec.lowest(foldGutter({ markerDOM: chevron, foldingChanged: backendFoldingChanged })) : [],
     backendFolds,
     backendFoldService,
     codeFolding({
       // A folded custom region shows its name, as in IDEA.
-      preparePlaceholder: (state, range) => regionNameAt(state, range.from),
-      placeholderDOM: (_view, onclick, name: string | null) => {
+      preparePlaceholder: (state, range) => {
+        const name = regionNameAt(state, range.from);
+        if (name) return name;
+        const doc = commentPlaceholderFold(state, state.doc.lineAt(range.from), state.doc.lineAt(range.to));
+        if (!doc || range.from < doc.from || range.to > doc.to) return null;
+        const before = state.doc.sliceString(doc.from, range.from);
+        const after = state.doc.sliceString(range.to, doc.to);
+        return doc.text.startsWith(before) && doc.text.endsWith(after)
+          ? doc.text.slice(before.length, doc.text.length - after.length)
+          : null;
+      },
+      placeholderDOM: (view, onclick, name: string | null) => {
         const el = document.createElement("span");
         el.className = "cm-foldPlaceholder";
         el.textContent = name ?? "…";
         el.title = "Expand";
         el.setAttribute("aria-label", "folded code");
-        el.onclick = onclick;
+        // The chip is a button, not a text anchor. Letting the mousedown through
+        // starts a mouse selection that moves the caret to the chip's line; a caret
+        // change re-runs the inline blame refresh, which replaces this line's DOM
+        // before the click fires, so the browser never dispatches the click
+        // (its down-target is no longer connected). Swallowing the mousedown
+        // keeps the caret where it is and the click reliably reaches `onclick`.
+        el.onmousedown = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        el.onclick = (event) => {
+          // CodeMirror's own handler resolves the fold through the clicked line
+          // block, which can miss a fold starting at a line boundary (docstring,
+          // Allman header). Resolving at the chip's own position cannot miss.
+          const folded = foldToExpand(view.state, view.posAtDOM(el));
+          if (folded) view.dispatch({ effects: unfoldEffect.of(folded) });
+          else onclick(event);
+          event.preventDefault();
+        };
         return el;
       },
     }),

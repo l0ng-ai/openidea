@@ -7,6 +7,7 @@ import {
   actionRows,
   defaultFolderOpen,
   isFavoriteBranch,
+  preferredMatch,
   prefixTreeRows,
   recentLocal,
   sortLocal,
@@ -345,4 +346,24 @@ export function buildMultiRepoRows({
     rows.push(...block);
   }
   return rows;
+}
+
+/** `preferredMatch` for the branches popup of several repositories: actions, repositories, common branches, then one repository's. */
+export function preferredRepoRow(rows: readonly RepoRow[], query: string): number {
+  return preferredMatch(rows, query, (r) => {
+    switch (r.type) {
+      case "action":
+        return { rank: 0, name: tx(r.action.label) };
+      case "repo":
+        return { rank: 1, name: r.repo.name };
+      case "common":
+        return { rank: r.branch.remote ? 3 : 2, name: r.branch.name };
+      case "branch":
+        return { rank: r.group === "remote" ? 5 : 4, name: r.branch.name };
+      case "tag":
+        return { rank: 6, name: r.tag };
+      default:
+        return null;
+    }
+  });
 }

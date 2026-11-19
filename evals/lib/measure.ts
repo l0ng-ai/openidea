@@ -3,6 +3,7 @@
  * what the user would see. A condition true at the start of a frame is painted by it.
  */
 import type { Page } from "@playwright/test";
+import { withDeadline } from "../../perf/lib/lifecycle.ts";
 
 /**
  * A check of the page, run in it every frame: self-contained (it is re-created from its
@@ -55,7 +56,7 @@ export class TimeoutError extends Error {
 }
 
 export async function track<A>(page: Page, spec: TrackSpec<A>): Promise<Tracked> {
-  const r = await page.evaluate(
+  const operation = page.evaluate(
     ({ action, actionArg, openFile, run, arg, first, done, feedback, signature, settleMs, timeoutMs }) => {
       const w = window as unknown as {
         __openideaPerf: {
@@ -169,6 +170,7 @@ export async function track<A>(page: Page, spec: TrackSpec<A>): Promise<Tracked>
       timeoutMs: spec.timeoutMs,
     },
   );
+  const r = await withDeadline(operation, spec.timeoutMs + 1000, "page measurement");
   const what = spec.action ?? (spec.openFile ? `open ${spec.openFile}` : "step");
   if (r.error !== null) throw new Error(`${what}: ${r.error}`);
   if (r.timedOut) {

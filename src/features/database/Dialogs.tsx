@@ -4,7 +4,7 @@ import { call, commands, type DataSource } from "@/platform/ipc";
 import { Checkbox, Dialog, Input, lazyComponent, T } from "@/ui";
 import { sshLabel } from "./model";
 import { SourceDialog, snowflakeSecretLabel } from "./SourceDialog";
-import { closeDialog, useDatabase } from "./store";
+import { closeDialog, saveSource, sourceById, useDatabase } from "./store";
 import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
 import { tx } from "@/platform/i18n";
@@ -16,6 +16,8 @@ const ImportDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.I
 const SchemaCompareDialog = lazyComponent(() => import("./SchemaCompareDialog").then((m) => m.SchemaCompareDialog));
 const DumpDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.DumpDialog));
 const RestoreDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.RestoreDialog));
+const MysqlDumpDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlDumpDialog));
+const MysqlRestoreDialog = lazyComponent(() => import("./MysqlDumpDialogs").then((m) => m.MysqlRestoreDialog));
 
 function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok: boolean) => void }) {
   const [password, setPassword] = useState("");
@@ -25,7 +27,9 @@ function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok:
     resolve(ok);
   };
   const submit = async () => {
-    await call(commands.dbSetPassword(source.id ?? "", password, save));
+    // The checkbox is the data source's Save password setting: saved passwords are read only when it is on.
+    if (save !== !!source.savePassword) await saveSource({ ...source, savePassword: save }, password);
+    else await call(commands.dbSetPassword(source.id ?? "", password, save));
     done(true);
   };
   return (
@@ -79,7 +83,12 @@ function SshSecretDialog({
     resolve(ok);
   };
   const submit = async () => {
-    await call(commands.dbSetSshSecret(source.id ?? "", secret, save));
+    // As for the password: the data source's own SSH settings read a saved secret only when Save is on.
+    // An SSH configuration keeps its own setting.
+    const stored = sourceById(source.id);
+    if (stored?.ssh && !stored.ssh.config?.trim() && save !== !!stored.ssh.saveSecret)
+      await saveSource({ ...stored, ssh: { ...stored.ssh, saveSecret: save } }, undefined, secret);
+    else await call(commands.dbSetSshSecret(source.id ?? "", secret, save));
     done(true);
   };
   return (
@@ -214,6 +223,12 @@ export function DatabaseDialogs() {
         serverVersion={dialog.serverVersion}
       />
     );
+  if (dialog.kind === "mysqlDump")
+    return (
+      <MysqlDumpDialog key={dialog.target} target={dialog.target} database={dialog.database} tables={dialog.tables} />
+    );
+  if (dialog.kind === "mysqlRestore")
+    return <MysqlRestoreDialog key={dialog.target} target={dialog.target} database={dialog.database} />;
   if (dialog.kind === "sshSecret")
     return (
       <SshSecretDialog key={dialog.source.id} source={dialog.source} prompt={dialog.prompt} resolve={dialog.resolve} />

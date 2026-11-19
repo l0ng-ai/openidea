@@ -25,6 +25,34 @@ pub struct StatementOutcome {
 }
 
 #[command(trust = trusted)]
+pub fn db_approve_jdbc_source(host: &Host, window: &str, source: DataSource) -> IdeResult<()> {
+    host.project(window)?.db.approve_jdbc_source(&source)
+}
+
+#[command(trust = trusted)]
+pub async fn db_jdbc_driver_classes(host: &Host, window: &str, jars: Vec<String>) -> IdeResult<Vec<String>> {
+    host.project(window)?;
+    tokio::task::spawn_blocking(move || ide_db::jdbc_driver_classes(&jars))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+#[command(trust = trusted)]
+pub fn db_jdbc_drivers(host: &Host, window: &str) -> IdeResult<Vec<ide_db::DbJdbcDriver>> {
+    host.project(window)?.db.jdbc_drivers()
+}
+
+#[command(trust = trusted)]
+pub fn db_save_jdbc_driver(host: &Host, window: &str, driver: ide_db::DbJdbcDriver) -> IdeResult<()> {
+    host.project(window)?.db.save_jdbc_driver(driver)
+}
+
+#[command(trust = trusted)]
+pub fn db_remove_jdbc_driver(host: &Host, window: &str, id: String) -> IdeResult<()> {
+    host.project(window)?.db.remove_jdbc_driver(&id)
+}
+
+#[command(trust = trusted)]
 pub fn db_sources(host: &Host, window: &str) -> IdeResult<Vec<DataSource>> {
     // The data sources configured for the project (the tree's roots).
     host.project(window)?.db.sources()
@@ -137,6 +165,32 @@ pub async fn db_disconnect(host: &Host, window: &str, id: String) -> IdeResult<(
     let db = host.project(window)?.db.clone();
     db.disconnect(&id).await;
     Ok(())
+}
+
+#[command(trust = trusted)]
+pub async fn db_create_database(
+    host: &Host,
+    window: &str,
+    id: String,
+    template: String,
+    statement: String,
+) -> IdeResult<()> {
+    // Creates a database on the server of data source `id` with `statement`, copied from `template` (New › Database).
+    let db = host.project(window)?.db.clone();
+    db.create_database(&id, &template, &statement).await
+}
+
+#[command(trust = trusted)]
+pub async fn db_drop_database(
+    host: &Host,
+    window: &str,
+    id: String,
+    database: String,
+    statement: String,
+) -> IdeResult<()> {
+    // Drops `database` of the server of data source `id` with `statement` (Drop… on a database node).
+    let db = host.project(window)?.db.clone();
+    db.drop_database(&id, &database, &statement).await
 }
 
 #[command(trust = trusted)]
@@ -478,14 +532,21 @@ ide_command::domain!(
     db_connected,
     db_console_path,
     db_consoles,
+    db_create_database,
     db_database_catalog,
     db_databases,
     db_ddl,
     db_disconnect,
+    db_drop_database,
     db_execute,
     db_explain,
     db_finish_transaction,
     db_history,
+    db_jdbc_driver_classes,
+    db_jdbc_drivers,
+    db_approve_jdbc_source,
+    db_save_jdbc_driver,
+    db_remove_jdbc_driver,
     db_object_ddl,
     db_remove_history,
     db_retain_catalog,
