@@ -498,6 +498,85 @@ test("indexed single-file rename previews all anchors and applies only after con
   expect(apply.edit).toMatchObject({ preconditions: [{ path: FILE, hash: "indexed-snapshot" }] });
 });
 
+test("intention previews fit narrow windows and wrap long code lines", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  const editor = await openSample(page);
+  await page.evaluate(async () => {
+    const path = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ path);
+    const { settings } = useProject.getState();
+    useProject.setState({ settings: { ...settings, editor: { ...settings?.editor, fontSize: 16 } } });
+  });
+  await expect(editor.locator(".cm-content")).toHaveCSS("font-size", "16px");
+  const replacement = "com.acme.orders." + "SharedDevelopmentOrderModel".repeat(6);
+  await page.evaluate(
+    ({ file, replacement, edit }) => {
+      window.__ipc.handlers.lsp_code_actions = () => [
+        {
+          title: "Replace Order with the fully qualified shared development order model",
+          kind: "quickfix",
+          isPreferred: true,
+          disabledReason: null,
+          edit: { files: [{ kind: "edit", path: file, edits: [{ range: edit, new_text: replacement }] }] },
+          command: null,
+          data: null,
+          server: 1,
+        },
+        ...Array.from({ length: 11 }, (_, i) => ({
+          title: `Create alternative Order model ${i + 1}`,
+          kind: "quickfix",
+          isPreferred: false,
+          disabledReason: null,
+          edit: null,
+          command: null,
+          data: null,
+          server: 1,
+        })),
+      ];
+      window.__ipc.handlers.lsp_execute_code_action = () => [];
+    },
+    { file: FILE, replacement, edit: range(20, 19, 24) },
+  );
+  await caretAt(editor, page, "val order: Order", "Order ");
+  await page.keyboard.press("Alt+Enter");
+  const popup = page.getByRole("dialog", { name: "Intentions", exact: true });
+  const options = popup.getByRole("listbox", { name: "Intentions" });
+  const preview = popup.locator('[aria-label="Preview"]');
+  await expect(preview.locator("pre")).toContainText(replacement);
+  const wide = (await options.boundingBox())!;
+  const widePreview = (await preview.boundingBox())!;
+  expect(widePreview.x).toBeGreaterThanOrEqual(wide.x + wide.width - 1);
+
+  await page.setViewportSize({ width: 1050, height: 900 });
+  await expect
+    .poll(async () => {
+      const list = (await options.boundingBox())!;
+      const code = (await preview.boundingBox())!;
+      return code.x + code.width - list.x;
+    })
+    .toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ width: 520, height: 540 });
+  await expect
+    .poll(async () => {
+      const menu = (await popup.boundingBox())!;
+      const list = (await options.boundingBox())!;
+      const code = (await preview.boundingBox())!;
+      return {
+        popupFits: menu.x >= 0 && menu.y >= 0 && menu.x + menu.width <= 521 && menu.y + menu.height <= 541,
+        previewBelow: code.y >= list.y + list.height - 1,
+        previewFits: code.x >= menu.x && code.x + code.width <= menu.x + menu.width + 1,
+      };
+    })
+    .toEqual({ popupFits: true, previewBelow: true, previewFits: true });
+  expect(await preview.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await expect(preview.locator("pre")).toHaveCSS("font-size", "16px");
+  await expect(options).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
+});
+
 test("diagnostics underline the range and ⌥⏎ applies the preferred quick fix", async ({ workbench: page }) => {
   const editor = await openSample(page);
   await page.evaluate(
