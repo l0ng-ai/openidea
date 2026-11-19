@@ -329,7 +329,7 @@ pub struct BuildSettings {
 
 impl Default for BuildSettings {
     fn default() -> Self {
-        // Matches PR #487: open on start without focus; open again on failure without focus.
+        // Builds open the tool window without taking focus.
         Self { open_tool_window: "always".into(), focus_tool_window: "never".into() }
     }
 }
