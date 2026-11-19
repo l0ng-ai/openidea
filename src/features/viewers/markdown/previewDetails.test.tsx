@@ -25,7 +25,7 @@ describe("preview <details>", () => {
     const handle = { view, ctx };
     _addEditor(handle);
     disposers.push(() => _removeEditor(handle));
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [ctx.path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
   });
   afterEach(() => {
     cleanup();
