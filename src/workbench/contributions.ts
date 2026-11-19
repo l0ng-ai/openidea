@@ -1817,6 +1817,11 @@ export interface RunAnythingProvider {
   items(query: string): RunAnythingItem[];
   /** Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one. */
   execute?(line: string): boolean | Promise<boolean>;
+  /**
+   * Whether `execute` runs `line` as a command this provider recognizes (cheap,
+   * synchronous): Markdown offers run icons for such lines in code blocks.
+   */
+  accepts?(line: string): boolean;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();
