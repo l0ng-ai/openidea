@@ -17,8 +17,11 @@ export function isHtmlPath(path: string): boolean {
   return hasFileType(path, HTML_LANGUAGES, HTML_EXTENSIONS, settings?.files, project?.root ?? null);
 }
 
+/** Pages a browser can show, also when File Types give their extension to another language. */
+export const isWebPagePath = (path: string) => isHtmlPath(path) || /\.(html?|xhtml|shtml)$/i.test(path);
+
 /** Files a browser can show (Open In › Browser). */
-export const isWebPath = (path: string) => isHtmlPath(path) || /\.svg$/i.test(path);
+export const isWebPath = (path: string) => isWebPagePath(path) || /\.svg$/i.test(path);
 
 export const useBrowsers = create<{ list: Browser[] }>(() => ({ list: [] }));
 
