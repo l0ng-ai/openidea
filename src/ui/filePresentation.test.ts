@@ -9,7 +9,12 @@ const roots: RootFolder[] = [
   { path: "src/main/resources", kind: "resources", detectedFrom: "pom.xml" },
   { path: "src/test/resources", kind: "testResources", detectedFrom: "pom.xml" },
 ];
-const type = (kind: JvmPresentation["kind"]): JvmPresentation => ({ kind, springBoot: false, runnable: false });
+const type = (kind: JvmPresentation["kind"]): JvmPresentation => ({
+  kind,
+  springBoot: false,
+  runnable: false,
+  deprecated: false,
+});
 const icon = (path: string, info: JvmPresentation | null = null, spring = false) =>
   presentationIcon(`/p/${path}`, info, roots, "/p", spring);
 

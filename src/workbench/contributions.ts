@@ -17,7 +17,16 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, Location, SearchQuery, RunConfig, RunId, SymbolKind } from "@/bindings";
+import type {
+  CommitSelection,
+  ConsoleRule,
+  FileMatches,
+  Location,
+  SearchQuery,
+  RunConfig,
+  RunId,
+  SymbolKind,
+} from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -1009,6 +1018,24 @@ export function provideFindResults(opener: (source: FindResultsSource) => void):
 
 export function showFindResults(source: FindResultsSource) {
   findResultsOpener?.(source);
+}
+
+// ---------------------------------------------------------------------------
+// Console highlight rules: plugins supply them, the Run and Debug consoles apply
+// them to process output (`ui/consoleRules`).
+
+export const useConsoleRules = create<{ providers: ReadonlyMap<string, readonly ConsoleRule[]> }>(() => ({
+  providers: new Map(),
+}));
+
+/** Replaces the rules of one provider (a plugin id); an empty list removes them. */
+export function setConsoleRules(provider: string, rules: readonly ConsoleRule[]) {
+  useConsoleRules.setState((s) => {
+    const providers = new Map(s.providers);
+    if (rules.length) providers.set(provider, rules);
+    else if (!providers.delete(provider)) return s;
+    return { providers };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2132,4 +2159,42 @@ export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>
 export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
   useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
   return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
+}
+
+// ---------------------------------------------------------------------------
+// Search Everywhere categories. Custom categories are opt-in tabs, never All sources.
+export type SearchCategoryId = `plugin:${string}:${string}`;
+export interface SearchCategory {
+  id: SearchCategoryId;
+  title: string;
+  search(
+    request: import("@/bindings").RequestId,
+    query: string,
+    limit: number,
+  ): Promise<import("@/bindings").PluginSearchPage>;
+  /** Resolve within this provider, rather than looking up an ambiguous global action id. */
+  command(id: string): import("@/platform/actions").Action | undefined;
+}
+const searchCategoryProviders = new Map<SearchCategoryId, SearchCategory>();
+const searchCategoryListeners = new Set<() => void>();
+export function searchCategories(): readonly SearchCategory[] {
+  return [...searchCategoryProviders.values()];
+}
+export function onSearchCategoriesChanged(listener: () => void): () => void {
+  searchCategoryListeners.add(listener);
+  return () => {
+    searchCategoryListeners.delete(listener);
+  };
+}
+function searchCategoriesChanged() {
+  notifyEach(searchCategoryListeners, (listener) => listener(), "search categories changed");
+}
+export function registerSearchCategory(category: SearchCategory): () => void {
+  searchCategoryProviders.set(category.id, category);
+  searchCategoriesChanged();
+  return () => {
+    if (searchCategoryProviders.get(category.id) !== category) return;
+    searchCategoryProviders.delete(category.id);
+    searchCategoriesChanged();
+  };
 }

@@ -47,12 +47,14 @@ import { useDistractionFree } from "@/workbench/distractionFree";
 import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
 import { ask, confirm } from "@/workbench/messages";
 import { t, tx } from "@/platform/i18n";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, isTauri } from "@/platform/ipc";
+import { openLightweightEditor } from "./openLightweightEditor";
+import { windowBackgroundHex } from "@/workbench/theme";
 import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
+import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
   changeSplitOrientation,
@@ -1856,7 +1858,7 @@ export class EditorController implements SlotHost {
   changeSplitOrientation(paneId: string) {
     this.apply((s) => changeSplitOrientation(s, paneId));
   }
-  /** Save or resolve the dirty guard, open the window, then remove the original tab. */
+  /** Open a lightweight aux editor (or a full window outside the project), then remove the original tab. */
   async detachTab(paneId: string, tabId: string): Promise<boolean> {
     const tab = useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId);
     const path = tab?.input.path;
@@ -1873,9 +1875,40 @@ export class EditorController implements SlotHost {
     const project = useProject.getState().project;
     const inProject =
       !!project && (project.workspace?.projects ?? [project.root]).some((root) => isSameOrInside(path, root));
+    const light = inProject && isTextTab(tab) && isTauri();
     return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s), {
       beforeRemove: async () => {
         if (!useTabs.getState().panes[paneId]?.tabs.some((t) => t.id === tabId)) return false;
+        if (light) {
+          const slot = await this.ensureSlot(tabId);
+          if (!slot) return false;
+          const state = slot.currentState();
+          const main = state.selection.main;
+          const from = state.doc.lineAt(main.from);
+          const to = state.doc.lineAt(main.to);
+          try {
+            await openLightweightEditor(
+              {
+                path,
+                line: from.number - 1,
+                column: main.from - from.from,
+                endLine: to.number - 1,
+                endColumn: main.to - to.from,
+              },
+              windowBackgroundHex(),
+            );
+            slot.model.handoffRelease = true;
+            return true;
+          } catch (e) {
+            notifications().notify({
+              level: "error",
+              title: t("app.window.openFailed", { name: basename(path) }),
+              body: e instanceof Error ? e.message : String(e),
+              key: `app.open:${path}`,
+            });
+            return false;
+          }
+        }
         if (isTextTab(tab)) {
           const slot = await this.ensureSlot(tabId);
           if (!slot) return false;
@@ -2255,7 +2288,7 @@ export class EditorController implements SlotHost {
   }
 }
 
-/** Open In › for a file: Project View, Finder / Explorer / Files, Terminal. */
+/** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */
 function openInMenu(path: string, line?: number): MenuItem {
   return {
     label: "Open In",
@@ -2263,6 +2296,16 @@ function openInMenu(path: string, line?: number): MenuItem {
       { kind: "action", action: "navigate.selectIn", arg: { path }, label: "Project View" },
       ...(canRevealInFileManager()
         ? [{ kind: "action" as const, action: "project.revealInFinder", arg: path, label: fileManagerName() }]
+        : []),
+      ...(canOpenWithSystemApp()
+        ? [
+            {
+              kind: "action" as const,
+              action: "project.openWithAssociatedApp",
+              arg: path,
+              label: "Associated Application",
+            },
+          ]
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },

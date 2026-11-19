@@ -31,6 +31,7 @@ import type {
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setPluginDecorations } from "./decorations";
+import { setPluginConsoleRules } from "./consoleRules";
 import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
@@ -348,7 +349,7 @@ function trackWorkbenchEvents(): () => void {
     if (e.type === "docChanged" && wanted.has("document-changed"))
       post({
         kind: "documentChanged",
-        value: { path: e.path, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+        value: { path: e.path, project: null, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
       });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
@@ -540,6 +541,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "decorationsChanged":
       setPluginDecorations(e.pluginId, e.sets);
+      return true;
+    case "consoleRulesChanged":
+      setPluginConsoleRules(e.pluginId, e.rules);
       return true;
     case "editorOpen": {
       const r = e.selection;

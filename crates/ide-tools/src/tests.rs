@@ -545,6 +545,64 @@ echo "added 1 package""#,
     assert!(env.root.join("package.json").exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn npm_install_retries_against_public_registry_on_mirror_miss_and_preserves_primary_error_when_unreachable() {
+    let env = Env::new();
+    let log = env.root.parent().unwrap().join("npm-fallback.txt");
+    env.script(&env.sys, "node", "exit 0");
+    env.script(
+        &env.sys,
+        "npm",
+        &format!(
+            r#"echo "$@" >> '{log}'
+case " $* " in
+  *" --registry=https://registry.npmjs.org/ --@vtsls:registry=https://registry.npmjs.org/ "*)
+    prefix=""; while [ $# -gt 0 ]; do [ "$1" = "--prefix" ] && prefix="$2"; shift; done
+    /bin/mkdir -p "$prefix/node_modules/.bin" "$prefix/node_modules/@vtsls/language-server"
+    printf '#!/bin/sh\necho 0.2.9\n' > "$prefix/node_modules/.bin/vtsls"
+    /bin/chmod +x "$prefix/node_modules/.bin/vtsls"
+    echo '{{"version":"0.2.9"}}' > "$prefix/node_modules/@vtsls/language-server/package.json"
+    exit 0
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for @vtsls/language-server@latest." >&2
+    exit 1
+    ;;
+esac"#,
+            log = log.display()
+        ),
+    );
+    let info = env.tools().install("vtsls", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    let calls: Vec<String> = fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(!calls[0].contains("--registry="), "{calls:?}");
+    assert!(calls[1].contains("--registry=https://registry.npmjs.org/"), "{calls:?}");
+    assert!(calls[1].contains("--@vtsls:registry=https://registry.npmjs.org/"), "{calls:?}");
+
+    // When public npmjs.org is blocked (e.g. corporate firewall), surface the primary mirror error.
+    env.script(
+        &env.sys,
+        "npm",
+        r#"case " $* " in
+  *" --registry=https://registry.npmjs.org/ "*)
+    echo "npm error code ECONNRESET" >&2
+    exit 1
+    ;;
+  *)
+    echo "npm error code ETARGET" >&2
+    echo "npm error notarget No matching version found for pyright@latest." >&2
+    exit 1
+    ;;
+esac"#,
+    );
+    let err = env.tools().install("pyright", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert!(err.message.contains("No matching version found for pyright@latest"), "{}", err.message);
+    assert!(!err.message.contains("ECONNRESET"), "{}", err.message);
+}
+
 /// Servers that load TypeScript as a library get one with its JS API: `@latest`
 /// is TypeScript 7 (native, no `ts.server`), which crashed vue-language-server (#25).
 /// Uninstalling one keeps the TypeScript another installed server still uses.

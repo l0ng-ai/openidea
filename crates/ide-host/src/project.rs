@@ -2,6 +2,7 @@
 //! watchers and the per-project services, opened by [`crate::Host::open_project`].
 
 use crate::Host;
+use ide_core::workflow_settings::VcsMappings;
 use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink};
 use ide_index::ProjectIndex;
 use ide_language::{FileTypes, LanguageRegistry, SyntaxCache};
@@ -324,7 +325,7 @@ impl Host {
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
         documents.add_observer(Arc::new(LspObserver(lsp.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         documents.add_observer(Arc::new(DeployObserver {
             remote: self.remote.clone(),
             settings: settings.clone(),
@@ -785,7 +786,7 @@ impl Host {
         lsp.set_servers_hook(Box::new(|_, _| Vec::new()));
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
-        documents.add_observer(Arc::new(HistoryObserver(history.clone())));
+        documents.add_observer(Arc::new(HistoryObserver::new(history.clone())));
         let watcher = match watch_dir {
             Some(dir) => light_watcher(dir, &sink, &documents, &history)?,
             // A quiet private folder stands in until the first save brings a
@@ -955,10 +956,27 @@ fn scan_repositories(
     }
 }
 
-/// The repository containing `root` and those nested below it or below a content root.
+/// The repository containing `root` and those nested below it or below a content root,
+/// with the project's Directory Mappings applied.
 /// The project-open scan and the watcher's rescan share these skip rules.
 fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path, trusted: bool) -> IdeResult<Repos> {
-    let ignored = settings.effective().ignored_names();
+    let settings = settings.effective();
+    let found = detect_repositories(root, &settings, build_cache, trusted)?;
+    let mappings = &settings.vcs.mappings;
+    if mappings.is_empty() {
+        return Ok(found);
+    }
+    let resolve = |list: &[String]| -> Vec<PathBuf> { list.iter().map(|p| VcsMappings::resolve(root, p)).collect() };
+    Ok(found.mapped(&resolve(&mappings.excluded), &resolve(&mappings.added), root))
+}
+
+fn detect_repositories(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+    build_cache: &Path,
+    trusted: bool,
+) -> IdeResult<Repos> {
+    let ignored = settings.ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
             let name = n.to_string_lossy();
@@ -968,11 +986,17 @@ fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Pa
         })
     };
     let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root, build_cache, trusted));
+    roots.extend(content_roots(settings, root, build_cache, trusted));
     Repos::discover_roots(&roots, &skip)
 }
 
 impl Project {
+    /// The repository roots detection finds, before Directory Mappings exclude or add any.
+    pub fn detected_repository_roots(&self) -> IdeResult<Vec<PathBuf>> {
+        let settings = self.settings.effective();
+        Ok(detect_repositories(&self.root, &settings, &self.build_cache_dir(), self.is_trusted())?.roots())
+    }
+
     pub fn refresh_repositories(&self) {
         scan_repositories(
             &self.root,
@@ -1076,6 +1100,7 @@ impl Project {
             apply_git_executable(&settings);
         }
         repo.set_ignored_names(settings.ignored_names());
+        repo.set_cli_status(settings.vcs.git.cli_status);
         f(repo)
     }
 
@@ -1890,13 +1915,41 @@ impl DocumentObserver for SyntaxObserver {
     }
 }
 
-struct HistoryObserver(Arc<LocalHistory>);
+struct HistoryObserver {
+    history: Arc<LocalHistory>,
+    /// Documents edited since they were opened: only the first edit looks for a missing original.
+    edited: Mutex<HashSet<ide_core::DocId>>,
+}
+
+impl HistoryObserver {
+    fn new(history: Arc<LocalHistory>) -> Self {
+        Self { history, edited: Mutex::default() }
+    }
+}
 
 impl DocumentObserver for HistoryObserver {
-    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
-        if let Err(e) = self.0.record(path, text, "Saved") {
+    fn changed(
+        &self,
+        doc: ide_core::DocId,
+        path: &Path,
+        _version: u32,
+        _changes: &[AppliedChange],
+        _full_text: &dyn Fn() -> String,
+    ) {
+        // The file on disk still has its content from before the edit.
+        if self.edited.lock().insert(doc)
+            && let Err(e) = self.history.record_original(path)
+        {
             tracing::warn!("local history: {e}");
         }
+    }
+    fn saved(&self, _doc: ide_core::DocId, path: &Path, text: &str) {
+        if let Err(e) = self.history.record(path, text, "Saved") {
+            tracing::warn!("local history: {e}");
+        }
+    }
+    fn closed(&self, doc: ide_core::DocId, _path: &Path) {
+        self.edited.lock().remove(&doc);
     }
 }
 

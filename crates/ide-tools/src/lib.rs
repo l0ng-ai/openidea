@@ -37,7 +37,10 @@ use parking_lot::Mutex;
 use platform::{Os, Platform};
 pub use process::progress_event;
 use process::run_collect;
-pub use process::{Emit, Http, run_quiet, run_streamed};
+pub use process::{
+    Emit, Http, PUBLIC_NPM_REGISTRY, is_npm_registry_miss, npm_public_registry_args, run_npm_with_public_fallback,
+    run_quiet, run_streamed,
+};
 pub use registry::{Method, ReleaseSource, TOOLS, ToolKind, ToolSpec};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -1056,15 +1059,28 @@ impl Tools {
     fn install_npm(&self, packages: &[&str], cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
         let (manager, pnpm) = self.npm_manager()?;
         self.ensure_package_json()?;
-        let mut c = self.command(manager);
-        let specs = packages.iter().map(|p| if npm_name(p) == *p { format!("{p}@latest") } else { p.to_string() });
-        if pnpm {
-            c.arg("add").arg("--dir").arg(&self.root).args(specs);
-        } else {
-            c.args(["install", "--no-fund", "--no-audit", "--loglevel=http", "--prefix"]).arg(&self.root).args(specs);
-        }
-        c.current_dir(&self.root);
-        run_streamed(c, cancel, emit).map(drop)
+        let specs: Vec<String> =
+            packages.iter().map(|p| if npm_name(p) == *p { format!("{p}@latest") } else { (*p).to_string() }).collect();
+        run_npm_with_public_fallback(
+            |extra| {
+                let mut c = self.command(&manager);
+                if pnpm {
+                    c.arg("add").arg("--dir").arg(&self.root).args(extra).args(&specs);
+                } else {
+                    c.args(["install", "--no-fund", "--no-audit", "--loglevel=http", "--prefix"])
+                        .arg(&self.root)
+                        .args(extra)
+                        .args(&specs);
+                }
+                c.current_dir(&self.root);
+                c
+            },
+            &specs,
+            pnpm,
+            cancel,
+            emit,
+        )
+        .map(drop)
     }
 
     fn install_go(&self, spec: &ToolSpec, module: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
@@ -1583,14 +1599,25 @@ impl Tools {
                 Ok(Some(self.resolve_release(&http, source, assets, cancel)?.version))
             }
             Method::Npm { packages } => {
-                let (manager, _) = self.npm_manager()?;
-                let mut c = self.command(manager);
+                let (manager, pnpm) = self.npm_manager()?;
+                let view = |extra: &[String]| {
+                    let mut c = self.command(&manager);
+                    c.args(["view", packages[0], "version"]).args(extra).current_dir(&self.root);
+                    run_quiet(c, Duration::from_secs(60))
+                };
                 // The registry the user's npm configuration names (a mirror, a proxy). A cold npm
                 // on a slow registry takes several seconds per package, more when run side by side.
-                c.args(["view", packages[0], "version"]).current_dir(&self.root);
-                match run_quiet(c, Duration::from_secs(60)) {
-                    Some((true, out)) => Ok(out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(String::from)),
-                    _ => Err(IdeError::unavailable(format!("cannot look up the latest {}", packages[0]))),
+                let out = match view(&[]) {
+                    Some((true, out)) => Some(out),
+                    Some((false, out)) if is_npm_registry_miss(&out) => {
+                        let extra = npm_public_registry_args([packages[0]], pnpm);
+                        view(&extra).and_then(|(ok, retry)| ok.then_some(retry))
+                    }
+                    _ => None,
+                };
+                match out {
+                    Some(out) => Ok(out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(String::from)),
+                    None => Err(IdeError::unavailable(format!("cannot look up the latest {}", packages[0]))),
                 }
             }
             _ => Ok(None),

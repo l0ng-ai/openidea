@@ -66,6 +66,7 @@ export interface TreeHandle {
   focus(): void;
   /** Selects `key` (must be visible, i.e. ancestors expanded) and scrolls to it; false when no row has `key`. */
   reveal(key: string): boolean;
+  clearSelection(): void;
   leadKey(): string | null;
   /** Selects the next (1) / previous (-1) row, for a filter field that keeps the focus (Settings search). */
   moveSelection(dir: 1 | -1): void;
@@ -456,6 +457,10 @@ export function Tree<T>(props: TreeProps<T>) {
       commitSelection(new Set([key]), key);
       virtualizer.scrollToIndex(i, { align: "center" });
       return true;
+    },
+    clearSelection: () => {
+      setAnchor(null);
+      commitSelection(new Set(), null);
     },
     leadKey: () => lead,
     moveSelection: (dir: 1 | -1) => {

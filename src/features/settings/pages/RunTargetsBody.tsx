@@ -19,19 +19,9 @@ import { Button, Checkbox, Dialog, Icon, IconButton, Input, T, type SelectOption
 import { Row, Section, Select } from "../components/Form";
 import { useSetting } from "../components/context";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
-import { BUILD_GROUP } from "./execution";
-import type { PageSpec } from "./spec";
+import { parentPath, splitList } from "./runTargetsPaths";
 import styles from "./Workflow.module.css";
 import own from "./RunTargets.module.css";
-
-/** Parent of a remote path (`~/a` → `~`, `/a` → `/`); null at the top. */
-export function parentPath(path: string): string | null {
-  const p = path.length > 1 ? path.replace(/\/+$/, "") : path;
-  if (p === "/" || p === "~" || p === "") return null;
-  const i = p.lastIndexOf("/");
-  if (i < 0) return null;
-  return i === 0 ? "/" : p.slice(0, i);
-}
 
 const UNKNOWN_HOST = /^Unknown SSH host key/;
 const NEEDS_SECRET = /^SSH (password|key passphrase) required|passphrase required|^cannot decrypt SSH key/;
@@ -259,13 +249,6 @@ function ProjectFolderField({ target, onChange }: { target: RunTargetValid; onCh
   );
 }
 
-/** Settings typed as lists of words (`8000:8000 5678:5678`, `a.yaml; b.yaml`). */
-export const splitList = (text: string): string[] =>
-  text
-    .split(/[\s,;]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
 function ListField({
   label,
   value,
@@ -414,7 +397,7 @@ function ContainerFields({ target, update }: { target: RunTargetValid; update: (
   );
 }
 
-function RunTargetsEditor() {
+export function RunTargetsEditor() {
   const plugins = usePluginRunTargets((s) => s.targets);
   const [defaultTarget, setDefaultTarget] = useSetting<string>("run.defaultTarget");
   const [raw, setTargets] = useSetting<RunTargetValid[] | undefined>("runTargets");
@@ -593,40 +576,3 @@ function RunTargetsEditor() {
     </div>
   );
 }
-
-export const RUN_TARGET_PAGES: PageSpec[] = [
-  {
-    id: "build.runTargets",
-    title: "Run Targets",
-    group: BUILD_GROUP,
-    order: 364,
-    projectScope: true,
-    keywords: ["ssh", "remote", "target", "run on", "interpreter", "upload", "sync", "docker", "compose", "container"],
-    sections: [
-      {
-        options: [
-          {
-            kind: "custom",
-            label: "Run Targets",
-            keywords: [
-              "SSH configuration",
-              "Project folder on target",
-              "Upload changed project files before each run",
-              "Python interpreter",
-              "Node.js interpreter",
-              "Java executable",
-              "Docker connection",
-              "Image",
-              "Compose files",
-              "Service",
-              "Container folder",
-              "Published ports",
-              "Run options",
-            ],
-            component: RunTargetsEditor,
-          },
-        ],
-      },
-    ],
-  },
-];

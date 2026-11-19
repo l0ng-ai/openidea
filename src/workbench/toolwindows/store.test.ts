@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
 import { actionToggled, executeAction, getAction } from "@/platform/actions";
 import { registerToolWindow } from "../contributions";
 import { installToolWindowActions } from "./actions";
@@ -675,5 +676,40 @@ describe("narrow window", () => {
     collapseSidesForNarrowWindow();
     expect(useToolWindowLayout.getState().maximized).toBe("bottom");
     expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+});
+
+describe("remember size for each tool window", () => {
+  const remember = (on: boolean) =>
+    useProject.setState({ settings: { appearance: { rememberToolWindowSizes: on } } } as never);
+  afterEach(() => remember(false));
+
+  it("restores each window's own size when switching on a side", () => {
+    remember(true);
+    showToolWindow("terminal");
+    setToolWindowSize("bottom", 200);
+    showToolWindow("problems");
+    setToolWindowSize("bottom", 400);
+    showToolWindow("terminal");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(200);
+    showToolWindow("problems");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(400);
+    // Kept after a hide, across a reload, and in a saved layout.
+    hideToolWindow("problems");
+    showToolWindow("terminal");
+    loadToolWindowLayout("/work/a");
+    showToolWindow("problems");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(400);
+    expect(toolWindowLayoutSnapshot().windowSizes).toEqual({ terminal: 200, problems: 400 });
+  });
+
+  it("keeps one shared size per side when off", () => {
+    showToolWindow("terminal");
+    setToolWindowSize("bottom", 200);
+    showToolWindow("problems");
+    setToolWindowSize("bottom", 400);
+    showToolWindow("terminal");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(400);
+    expect(useToolWindowLayout.getState().windowSizes).toEqual({});
   });
 });

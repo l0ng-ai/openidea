@@ -16,10 +16,10 @@ vi.mock("@/platform/ipc", async (original) => ({
 vi.mock("@/platform/projectPresentation", () => ({
   useProjectPresentation: () => ({ spring: false, modules: new Map() }),
 }));
-import { useFilePresentation, useFilePresentationIcons } from "./filePresentation";
+import { useFilePresentation, useFilePresentations } from "./filePresentation";
 const answer = (path: string, kind = "interface") => ({
   path,
-  presentation: { kind, springBoot: false, runnable: false },
+  presentation: { kind, springBoot: false, runnable: false, deprecated: path.includes("Old") },
 });
 const tick = async () => {
   await act(async () => {
@@ -39,25 +39,32 @@ describe("visible file resolver", () => {
     vi.useRealTimers();
   });
   it("shows a plain icon immediately and batches mounted paths only", async () => {
-    const { result } = renderHook(() => useFilePresentationIcons(["/p/Foo.java", "/p/Bar.kt", "/p/config.yml"]));
-    expect(result.current.get("/p/Foo.java")).toBe("file-java");
+    const { result } = renderHook(() => useFilePresentations(["/p/Foo.java", "/p/Bar.kt", "/p/config.yml"]));
+    expect(result.current.get("/p/Foo.java")?.icon).toBe("file-java");
     expect(backend.resolve).not.toHaveBeenCalled();
     await tick();
     expect(backend.resolve).toHaveBeenCalledOnce();
     expect(backend.resolve.mock.calls[0]?.[0]).toEqual(["/p/Foo.java", "/p/Bar.kt"]);
-    expect(result.current.get("/p/Foo.java")).toBe("interface");
+    expect(result.current.get("/p/Foo.java")?.icon).toBe("interface");
+    expect(result.current.get("/p/Foo.java")?.deprecated).toBe(false);
+  });
+  it("marks deprecated types", async () => {
+    const { result } = renderHook(() => useFilePresentations(["/p/OldApi.java"]));
+    expect(result.current.get("/p/OldApi.java")?.deprecated).toBe(false);
+    await tick();
+    expect(result.current.get("/p/OldApi.java")?.deprecated).toBe(true);
+    const single = renderHook(() => useFilePresentation("/p/OldApi.java"));
+    expect(single.result.current.deprecated).toBe(true);
   });
   it("drops unmounted requests and splits large sets into bounded batches", async () => {
     const dropped = renderHook(() => useFilePresentation("/p/Invisible.java"));
     dropped.unmount();
-    const { result } = renderHook(() =>
-      useFilePresentationIcons(Array.from({ length: 130 }, (_, i) => `/p/F${i}.java`)),
-    );
+    const { result } = renderHook(() => useFilePresentations(Array.from({ length: 130 }, (_, i) => `/p/F${i}.java`)));
     await tick();
     await tick();
     await tick();
     expect(backend.resolve.mock.calls.map(([paths]) => paths.length)).toEqual([64, 64, 2]);
-    expect(result.current.get("/p/F129.java")).toBe("interface");
+    expect(result.current.get("/p/F129.java")?.icon).toBe("interface");
     expect(backend.resolve.mock.calls.flatMap(([paths]) => paths)).not.toContain("/p/Invisible.java");
   });
   it("invalidates on watcher changes and rejects an in-flight stale result", async () => {
@@ -94,7 +101,7 @@ describe("visible file resolver", () => {
   });
   it("caches failures instead of continuously retrying visible batches", async () => {
     backend.resolve.mockRejectedValue(new Error("offline"));
-    renderHook(() => useFilePresentationIcons(Array.from({ length: 65 }, (_, i) => `/p/F${i}.java`)));
+    renderHook(() => useFilePresentations(Array.from({ length: 65 }, (_, i) => `/p/F${i}.java`)));
     await tick();
     await tick();
     await tick();

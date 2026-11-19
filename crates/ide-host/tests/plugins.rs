@@ -121,6 +121,7 @@ impl PluginWorkspace for TestWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit,
             context: Default::default(),
+            include_excluded: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
@@ -4860,6 +4861,49 @@ fn plugins_set_their_own_context_keys() {
     assert!(f.host.context_keys(Some("main")).is_empty(), "cleared when the plugin stops");
 }
 
+/// `ui.set-console-rules` (API 1.12) replaces the plugin's rules for every window without a
+/// capability; unknown colours are dropped, an invalid rule keeps the previous list.
+#[test]
+fn plugins_replace_their_console_rules_and_lose_them_when_they_stop() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.run("jobs", "console-rules", None).unwrap();
+    let changed: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, e)| match e {
+            PluginEvent::ConsoleRulesChanged { plugin_id, rules } => Some((client, plugin_id, rules)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed.len(), 1);
+    let (client, plugin_id, rules) = &changed[0];
+    assert_eq!((client.as_deref(), plugin_id.as_str()), (None, "jobs"));
+    assert_eq!(rules.iter().map(|r| r.pattern.as_str()).collect::<Vec<_>>(), [r"\[AUDIT\]", r"job-\d+"]);
+    assert!(
+        rules[0].whole_line && rules[0].styles == ["bold"] && rules[0].foreground.as_deref() == Some("bright-yellow")
+    );
+    assert!(rules[1].ignore_case && rules[1].foreground.as_deref() == Some("cyan") && rules[1].background.is_none());
+    assert_eq!(f.host.console_rules()["jobs"], *rules);
+
+    let err = f.run("jobs", "console-rules", Some("(a+)+b")).unwrap_err();
+    assert!(err.contains("invalid") && err.contains("repeated group"), "{err}");
+    assert!(f.run("jobs", "console-rules", Some(".*a.*b")).unwrap_err().contains("too long"));
+    assert_eq!(f.host.console_rules()["jobs"].len(), 2, "an invalid list keeps the previous one");
+
+    f.run("jobs", "console-rules", Some("")).unwrap();
+    assert!(f.host.console_rules().is_empty());
+
+    f.run("jobs", "console-rules", None).unwrap();
+    f.take_events();
+    f.host.set_enabled("jobs", false).unwrap();
+    assert!(f.host.console_rules().is_empty(), "cleared when the plugin stops");
+    assert!(f.take_events().iter().any(
+        |(_, e)| matches!(e, PluginEvent::ConsoleRulesChanged { plugin_id, rules } if plugin_id == "jobs" && rules.is_empty())
+    ));
+}
+
 #[test]
 fn context_keys_are_capped_and_windows_overlay_global_ones() {
     let f = fixture(Limits::default());
@@ -5298,6 +5342,7 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     let deliver = |path: &str| {
         let change = ide_plugin::DocumentChanged {
             path: to_ipc(&f.project.join(path)),
+            project: None,
             base_version: 1,
             version: 2,
             changes: Vec::new(),
@@ -5311,6 +5356,8 @@ fn document_changes_reach_plugins_relative_to_the_project() {
     // Queued with the absolute path, filtered again at delivery, handed over project-relative.
     deliver("config/app.yaml");
     assert_eq!(f.run("test.path-events", "document", None).unwrap().as_deref(), Some("config/app.yaml"));
+    // With the project it is relative to: another open project may hold the same path.
+    assert_eq!(f.run("test.path-events", "document-project", None).unwrap(), Some(to_ipc(&f.project)));
 }
 
 #[test]

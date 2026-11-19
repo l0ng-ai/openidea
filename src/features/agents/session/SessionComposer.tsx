@@ -18,8 +18,9 @@ import { useEffortFocus } from "../effortFocus";
 import { isBusy } from "../model";
 import { asksInCard, type PermissionEntry } from "../permission";
 import {
-  cancelTask,
+  stopTask,
   editQueued,
+  refreshTaskModels,
   removeQueued,
   sendMessage,
   sendQueuedNow,
@@ -155,11 +156,28 @@ export function SessionComposer({
   const { sendWith, whileRunning } = useAgentSettings();
   const project = useProject((s) => s.project);
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
+  const provider = useAgents((s) => s.providers.find((p) => p.id === task.provider));
+  const catalog = useAgents((s) => s.modelCatalogs.get(task.provider));
+  const requestingModels = useAgents((s) => s.modelRequests.has(task.provider));
+  const model = task.config.find((o) => o.category === "model");
+  const canRefreshModels = task.status !== "archived" && !!model && !!provider?.installed && project?.trusted !== false;
+  const candidateModels = canRefreshModels
+    ? (catalog?.config ?? provider?.config)?.find((o) => o.category === "model")?.values
+    : undefined;
+  const pickerConfig = useMemo(() => {
+    if (!model || !candidateModels?.length) return task.config;
+    const sessionModels = new Set(model.values.map((v) => v.value));
+    const extra = candidateModels.filter((v) => !sessionModels.has(v.value));
+    if (!extra.length) return task.config;
+    const pickerModel = { ...model, values: [...model.values, ...extra] };
+    return task.config.map((o) => (o === model ? pickerModel : o));
+  }, [task.config, model, candidateModels]);
   const [sending, setSending] = useState(false);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
   const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
+  const shellRunning = useAgents((s) => s.shellRunning.has(task.id));
   // ↑ recalls this conversation's messages, newest first.
   const history = useMemo(
     () => (entries ?? []).flatMap((e) => (e.type === "user" && e.text ? [e.text] : [])).reverse(),
@@ -244,7 +262,21 @@ export function SessionComposer({
         ]}
         toolbar={
           <>
-            <ConfigPickers config={task.config} onChange={setOption} />
+            <ConfigPickers
+              config={pickerConfig}
+              onChange={setOption}
+              modelRefresh={
+                canRefreshModels
+                  ? {
+                      refreshing: requestingModels || (catalog?.refreshing ?? false),
+                      retryAtMs: catalog?.retryAtMs ?? null,
+                      error: requestingModels ? null : (catalog?.error ?? null),
+                      onOpen: () => void refreshTaskModels(task.id, false),
+                      onRefresh: () => void executeAction("agents.refreshModels", task.id),
+                    }
+                  : undefined
+              }
+            />
             <McpPicker
               provider={task.provider}
               overrides={task.mcpOverrides}
@@ -266,7 +298,7 @@ export function SessionComposer({
         }
         actions={
           <>
-            {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
+            {(busy || shellRunning) && <IconButton icon="stop" title="Stop" onClick={() => void stopTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}

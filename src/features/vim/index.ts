@@ -26,10 +26,12 @@ export function activate(): () => void {
   const loadEngine = () => (engine ??= import("./engine"));
 
   const reloadRc = async (quiet: boolean) => {
-    const [e, rc] = await Promise.all([loadEngine(), loadRcFile()]);
-    const problems = e.applyRcCommands(rc.commands);
-    rcApplied = true;
-    for (const p of problems) console.warn(`vimrc: ${p}`);
+    const [e, rc] = await Promise.all([useVimSettings.getState().enabled ? loadEngine() : engine, loadRcFile()]);
+    if (e) {
+      const problems = e.applyRcCommands(rc.commands);
+      rcApplied = true;
+      for (const p of problems) console.warn(`vimrc: ${p}`);
+    }
     if (!quiet)
       showStatusInfo(rc.commands.length ? "Vim: rc file reloaded" : "Vim: no ~/.openideavimrc or ~/.ideavimrc");
   };
@@ -87,8 +89,8 @@ export function activate(): () => void {
         title: "Reload .ideavimrc",
         category: "Tools",
         keywords: ["vim", "vimrc", "openideavimrc"],
-        when: "vimMode",
-        run: () => reloadRc(false),
+        enabled: ({ ctx, arg }) => ctx.vimMode === true || arg === "settings",
+        run: ({ arg }) => reloadRc(arg === "settings"),
       },
       {
         id: "vim.settings",

@@ -8,9 +8,10 @@ use crate::mcp::util::{
     self, RELATIVE_PATH_IN_PROJECT_DESCRIPTION, TIMED_OUT_DESCRIPTION, TIMEOUT_MILLISECONDS_DESCRIPTION,
 };
 use ide_core::{CancellationToken, IdeError, IdeResult};
+use ide_search::FileMask;
 use serde::Serialize;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEFAULT_READ_LIMIT: i64 = 2000;
@@ -166,7 +167,9 @@ fn list_directory_tree() -> Tool {
         "Provides a tree representation of the specified directory in the pseudo graphic format like `tree` utility does.
 Use this tool to explore the contents of a directory or the whole project.
 You MUST prefer this tool over listing directories via command line utilities like `ls` or `dir`.
-A page that starts inside a directory repeats the lines of the directories above it.",
+A page that starts inside a directory repeats the lines of the directories above it.
+What `.gitignore` ignores is marked [git-ignored] and what the project excludes [ide-excluded]; entries inside a
+marked directory are not marked again.",
         |call| async move {
             let directory = call.str("directoryPath")?;
             let max_depth = call.opt_i64("maxDepth")?.unwrap_or(DEFAULT_TREE_DEPTH);
@@ -181,6 +184,12 @@ A page that starts inside a directory repeats the lines of the directories above
             }
             let deadline = Instant::now() + Duration::from_millis(timeout.max(0) as u64);
             let cancel = call.cancel.clone();
+            let marks = Marks {
+                root: call.root().to_path_buf(),
+                excludes: FileMask::new(&[], &call.project().search_excludes()).ok(),
+            };
+            // The directory itself, when it or one above it is left out.
+            let root_mark = marker(ide_index::walk_skips(call.root(), &dir), marks.ide_excluded(&dir, true));
             let mut tree = TreeRender {
                 out: String::new(),
                 errors: Vec::new(),
@@ -190,11 +199,12 @@ A page that starts inside a directory repeats the lines of the directories above
                 page,
                 seen: 0,
                 above: Vec::new(),
+                marks,
             };
             let tree = call
                 .host()
                 .blocking(move || {
-                    tree.render(&dir, "", true, max_depth, true);
+                    tree.render(&dir, "", true, max_depth, true, root_mark, !root_mark.is_empty());
                     Ok(tree)
                 })
                 .await?;
@@ -234,7 +244,8 @@ A page that starts inside a directory repeats the lines of the directories above
 
 /// The `tree`-like listing: the directory's absolute path, then every entry (hidden and
 /// ignored ones too) by lower-cased name, directories marked with `/`; entries outside the
-/// page are counted, not listed.
+/// page are counted, not listed. An entry left out of the project is marked, the entries
+/// inside it are not.
 struct TreeRender {
     out: String,
     errors: Vec<String>,
@@ -246,10 +257,48 @@ struct TreeRender {
     seen: usize,
     /// The lines of the directories above the entry, and whether this page shows them yet.
     above: Vec<(String, bool)>,
+    marks: Marks,
+}
+
+/// What the project leaves out, to mark in the listing.
+struct Marks {
+    root: PathBuf,
+    /// The project's exclusions (excluded folders, "Exclude files" names), as Find in Files applies them.
+    excludes: Option<FileMask>,
+}
+
+impl Marks {
+    fn ide_excluded(&self, path: &Path, is_dir: bool) -> bool {
+        let (Some(mask), Ok(rel)) = (&self.excludes, path.strip_prefix(&self.root)) else { return false };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        // A directory is excluded with the files in it.
+        !rel.is_empty() && !mask.matches(&if is_dir { format!("{rel}/x") } else { rel })
+    }
+}
+
+/// Spelled out, so that the listing says what it means.
+fn marker(git_ignored: bool, ide_excluded: bool) -> &'static str {
+    match (git_ignored, ide_excluded) {
+        (true, true) => " [git-ignored] [ide-excluded]",
+        (true, false) => " [git-ignored]",
+        (false, true) => " [ide-excluded]",
+        (false, false) => "",
+    }
 }
 
 impl TreeRender {
-    fn render(&mut self, path: &Path, indent: &str, is_last: bool, max_depth: i64, is_root: bool) {
+    /// `mark`: the entry's marker; `marked`: it or a directory above it is marked.
+    #[allow(clippy::too_many_arguments)]
+    fn render(
+        &mut self,
+        path: &Path,
+        indent: &str,
+        is_last: bool,
+        max_depth: i64,
+        is_root: bool,
+        mark: &str,
+        marked: bool,
+    ) {
         if max_depth <= 0 || self.timed_out || self.cancel.is_cancelled() {
             return;
         }
@@ -268,7 +317,7 @@ impl TreeRender {
             path.file_name().unwrap_or_default().to_string_lossy().into_owned()
         };
         let is_dir = path.is_dir() && !path.is_symlink();
-        let line = format!("{indent}{prefix}{name}{}\n", if is_dir { "/" } else { "" });
+        let line = format!("{indent}{prefix}{name}{}{mark}\n", if is_dir { "/" } else { "" });
         let shown = if is_root {
             self.out.push_str(&line);
             true
@@ -278,22 +327,38 @@ impl TreeRender {
         if !is_dir {
             return;
         }
-        let mut children: Vec<_> = match std::fs::read_dir(path) {
-            Ok(entries) => entries.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        // Without exclusions, `ignored` is what `.gitignore` says.
+        let mut children: Vec<(PathBuf, bool)> = match ide_vfs::read_dir(path, &[]) {
+            Ok(entries) => entries.into_iter().map(|e| (e.path.0, e.ignored)).collect(),
             Err(e) => {
-                self.errors.push(format!("Failed to read {}: {e}", path.display()));
+                self.errors.push(format!("Failed to read {}: {}", path.display(), e.message));
                 return;
             }
         };
-        let key = |p: &std::path::PathBuf| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        children.sort_by_cached_key(|p| (key(p).to_lowercase(), key(p)));
+        let key = |p: &PathBuf| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        children.sort_by_cached_key(|(p, _)| (key(p).to_lowercase(), key(p)));
         let child_indent = format!("{indent}{}", if is_last { "    " } else { "│   " });
         let n = children.len();
         if !is_root {
             self.above.push((line, shown));
         }
-        for (i, child) in children.iter().enumerate() {
-            self.render(child, &child_indent, i + 1 == n, max_depth - 1, false);
+        // Inside a marked directory nothing is marked again.
+        for (i, (child, git_ignored)) in children.iter().enumerate() {
+            let child_mark = if marked {
+                ""
+            } else {
+                let child_dir = child.is_dir() && !child.is_symlink();
+                marker(*git_ignored, self.marks.ide_excluded(child, child_dir))
+            };
+            self.render(
+                child,
+                &child_indent,
+                i + 1 == n,
+                max_depth - 1,
+                false,
+                child_mark,
+                marked || !child_mark.is_empty(),
+            );
         }
         if !is_root {
             self.above.pop();
@@ -383,8 +448,9 @@ mod tests {
                 page: Page { offset, limit },
                 seen: 0,
                 above: Vec::new(),
+                marks: Marks { root: tmp.path().to_path_buf(), excludes: None },
             };
-            tree.render(tmp.path(), "", true, 5, true);
+            tree.render(tmp.path(), "", true, 5, true, "", false);
             let root = format!("{}/\n", tmp.path().display());
             (tree.out.strip_prefix(&root).unwrap().to_owned(), tree.seen)
         };
@@ -395,5 +461,49 @@ mod tests {
             "the page in `a/` repeats its line"
         );
         assert_eq!(render(0, 100).0, "    ├── a/\n    │   ├── x.txt\n    │   └── y.txt\n    └── b.txt\n");
+    }
+
+    #[test]
+    fn what_the_project_leaves_out_is_marked_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        for file in ["ign/deep/a.txt", "out/b.txt", "both/c.txt", "src/d.txt", "src/e.log"] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        std::fs::write(root.join(".gitignore"), "ign/\nboth/\n*.log\n").unwrap();
+        let excludes = ["out/**".to_owned(), "both/**".to_owned()];
+        let mut tree = TreeRender {
+            out: String::new(),
+            errors: Vec::new(),
+            timed_out: false,
+            deadline: Instant::now() + Duration::from_secs(10),
+            cancel: CancellationToken::new(),
+            page: Page { offset: 0, limit: 100 },
+            seen: 0,
+            above: Vec::new(),
+            marks: Marks { root: root.clone(), excludes: FileMask::new(&[], &excludes).ok() },
+        };
+        tree.render(&root, "", true, 5, true, "", false);
+        let listing = tree.out.strip_prefix(&format!("{}/\n", root.display())).unwrap().to_owned();
+        assert_eq!(
+            listing,
+            [
+                "    ├── .gitignore",
+                "    ├── both/ [git-ignored] [ide-excluded]",
+                "    │   └── c.txt",
+                "    ├── ign/ [git-ignored]",
+                "    │   └── deep/",
+                "    │       └── a.txt",
+                "    ├── out/ [ide-excluded]",
+                "    │   └── b.txt",
+                "    └── src/",
+                "        ├── d.txt",
+                "        └── e.log [git-ignored]",
+                "",
+            ]
+            .join("\n")
+        );
     }
 }

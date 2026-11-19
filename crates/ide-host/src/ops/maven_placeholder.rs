@@ -63,7 +63,7 @@ fn pom_defining(root: &Path, from: &Path, name: &str) -> Option<Location> {
         if pom.is_file()
             && let Some(found) = maven::property_declaration(&pom, name, maven::default_local_repo())
         {
-            return Some(Location::file(found.path.into(), found.range));
+            return Some(Location::file(found.path, found.range));
         }
         if dir == root || !dir.starts_with(root) {
             return None;

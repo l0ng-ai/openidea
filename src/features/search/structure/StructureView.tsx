@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
@@ -366,11 +366,12 @@ function FileStructureDialog() {
       caret && caret.path === path ? (symbolPathAt(nodes, { line: caret.line, col: caret.col }).pop() ?? null) : null,
     [caret, path, nodes],
   );
-  const preselect = query.trim() ? filter.best : caretKey;
-  useEffect(() => {
-    const key = preselect ?? filter.nodes[0]?.key;
+  const hasQuery = !!query.trim();
+  useLayoutEffect(() => {
+    const key = query.trim() ? filter.best : (caretKey ?? filter.nodes[0]?.key);
     if (key) tree.current?.reveal(key);
-  }, [preselect, filter.nodes]);
+    else tree.current?.clearSelection();
+  }, [query, caretKey, filter.best, filter.nodes]);
 
   const close = () => useFileStructurePopup.setState({ open: false });
   const choose = (node: OutlineNode | undefined) => {
@@ -402,7 +403,7 @@ function FileStructureDialog() {
       case "ArrowDown":
       case "ArrowUp": {
         const dir = e.key === "ArrowDown" ? 1 : -1;
-        if (query.trim() && !narrowDown && filter.order.length) {
+        if (hasQuery && !narrowDown && filter.order.length) {
           // Highlight mode: ↑/↓ jump between matches.
           const at = lead ? filter.order.indexOf(lead) : -1;
           const n = filter.order.length;
@@ -463,6 +464,11 @@ function FileStructureDialog() {
           }}
           onKeyDown={onKeyDown}
         />
+        {hasQuery && !narrowDown && !filter.best && filter.nodes.length > 0 && (
+          <span className={styles.filterStatus} role="status">
+            {tx("No matches")}
+          </span>
+        )}
         <IconButton
           icon="sort"
           title="Sort Alphabetically"
@@ -523,7 +529,7 @@ function FileStructureDialog() {
           }
           renderNode={(n, s) => {
             const matched = filter.matches.get(n.key);
-            return <SymbolRow node={n} indices={matched} selected={s.selected} dim={!!query.trim() && !matched} />;
+            return <SymbolRow node={n} indices={matched} selected={s.selected} dim={hasQuery && !matched} />;
           }}
         />
       </div>

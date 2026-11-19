@@ -8,12 +8,13 @@ import { registerActions } from "@/platform/actions";
 import { logError } from "@/platform/errorLog";
 import { isImeKey } from "@/platform/ime";
 import { commands } from "@/platform/ipc";
-import { loadSettings, useProject } from "@/platform/project";
-import { restoreRemote } from "@/platform/remote";
+import { useProject } from "@/platform/project";
+import { enableRemote } from "@/platform/remote";
 import { isPopupOpen } from "@/ui";
-import { settingsActions } from "./actions";
-import { loadBuiltinPages, unloadBuiltinPages } from "./dialog/LazySettingsDialog";
+import { NEW_PROJECTS_PAGE, settingsActions } from "./actions";
+import { loadBuiltinPages, preloadBuiltinRegistry, unloadBuiltinPages } from "./dialog/LazySettingsDialog";
 import { trackIconThemePages } from "./iconThemePages";
+import { validateSettings } from "./model/schema";
 import {
   closeSettings,
   openSettings,
@@ -53,16 +54,18 @@ export function relaunchSettings(launch: SettingsLaunch | null) {
   navigate(launch.page);
 }
 
-function listenLaunch(): () => void {
+function listenLaunch(afterInit: Promise<unknown>): () => void {
   let disposed = false;
   let off: (() => void) | undefined;
   void getCurrentWebviewWindow()
     .listen(LAUNCH_EVENT, () => void takeLaunch().then(relaunchSettings))
-    .then((u) => {
+    .then(async (u) => {
       if (disposed) return u();
       off = u;
-      // A page requested before we listened: its event is gone, the launch is not.
-      void takeLaunch().then(relaunchSettings);
+      // A page requested after `window_take_settings_init` read the slot but before `listen`
+      // attached: its event is gone, the launch is not. Apply it after the initial launch settles.
+      await afterInit.catch(() => {});
+      if (!disposed) void takeLaunch().then(relaunchSettings);
     });
   return () => {
     disposed = true;
@@ -91,13 +94,53 @@ function installWindowKeys(): () => void {
  * the parent's project; Cancel / OK / Esc close the window.
  */
 export function activateSettingsWindow(parent: string): () => void {
+  const bootstrap = (async () => {
+    useSettingsDialog.setState({ pagesLoading: true });
+    openSettings(undefined, { globalBase: useSettingsDialog.getState().globalBase });
+    try {
+      const [init] = await Promise.all([commands.windowTakeSettingsInit(), preloadBuiltinRegistry().catch(() => null)]);
+      if (init.remote) enableRemote(init.remote);
+      const globalBase = validateSettings(init.globalSettings);
+      if (init.project) {
+        useProject.setState({ project: init.project, settings: init.project.settings });
+      } else {
+        useProject.setState({ project: null, settings: init.globalSettings });
+      }
+      const launch = init.launch && {
+        page: init.launch.settingsPage ?? undefined,
+        newProjects: init.launch.newProjects,
+      };
+      const targetPage =
+        launch?.page ?? (launch?.newProjects ? NEW_PROJECTS_PAGE : useSettingsDialog.getState().pageId);
+      await loadBuiltinPages({ pageId: targetPage, updates: init.updates }).catch((e) =>
+        logError("cannot register settings pages", e),
+      );
+      relaunchSettings(launch);
+      rebaseSettings(globalBase);
+      if (init.remote) {
+        // Reconcile remote-host settings asynchronously without blocking first paint on SSH.
+        // `rebaseSettings` updates only `base` / `globalBase` and leaves any staged edits intact.
+        void commands
+          .projectCurrent()
+          .then((fresh) => {
+            if (!fresh || !useSettingsDialog.getState().open) return;
+            useProject.setState({ project: fresh, settings: fresh.settings });
+            rebaseSettings(globalBase);
+          })
+          .catch(() => {});
+      }
+    } finally {
+      useSettingsDialog.setState({ pagesLoading: false });
+    }
+  })();
+  bootstrap.catch((e) => logError("settings window startup failed", e));
   const disposers = [
     trackRuntimeSettings(),
     trackIconThemePages(),
     unloadBuiltinPages,
     registerActions(settingsActions((page, newProjects) => relaunchSettings({ page, newProjects: !!newProjects }))),
     installActionProxies(parent),
-    listenLaunch(),
+    listenLaunch(bootstrap),
     installWindowKeys(),
     useSettingsDialog.subscribe((s, prev) => {
       if (prev.open && !s.open) void getCurrentWebviewWindow().close();
@@ -108,25 +151,5 @@ export function activateSettingsWindow(parent: string): () => void {
       }
     }),
   ];
-  void (async () => {
-    useSettingsDialog.setState({ pagesLoading: true });
-    openSettings();
-    try {
-      const launch = await takeLaunch();
-      relaunchSettings(launch);
-      await Promise.all([
-        loadBuiltinPages().catch((e) => logError("cannot register settings pages", e)),
-        (async () => {
-          await restoreRemote();
-          const project = await commands.projectCurrent().catch(() => null);
-          if (project) useProject.setState({ project, settings: project.settings });
-          else await loadSettings().catch((e) => console.warn("cannot load settings", e));
-          rebaseSettings();
-        })(),
-      ]);
-    } finally {
-      useSettingsDialog.setState({ pagesLoading: false });
-    }
-  })().catch((e) => logError("settings window startup failed", e));
   return () => disposers.reverse().forEach((d) => d());
 }

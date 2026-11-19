@@ -8,8 +8,8 @@
  */
 import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { useActions, allActions, type Action } from "@/platform/actions";
-import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS, useKeymap } from "@/platform/keymap";
+import { allActions, useActions, type Action } from "@/platform/actions";
+import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS } from "@/platform/keymap";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { ask, confirm, showError } from "@/workbench/messages";
@@ -40,6 +40,7 @@ import {
   isModified,
   isKeymapAction,
   keymapName,
+  keymapSearchLabels,
   removeBinding,
   removeConflicts,
   renameKeymap,
@@ -65,12 +66,7 @@ type KNode =
 
 type GroupNode = Extract<KNode, { kind: "group" }>;
 
-export function keymapSearchLabels(): string[] {
-  const draft = useKeymap.getState();
-  return allActions()
-    .filter((a) => isKeymapAction(a, draft))
-    .map((a) => a.title);
-}
+export { keymapSearchLabels };
 
 const groupKey = (path: readonly string[]) => `grp:${path.join("/")}`;
 
