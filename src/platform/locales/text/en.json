@@ -2709,5 +2709,7 @@
   "Hover actions": "Hover actions",
   "Hover action": "Hover action",
   "{count} hover actions": "{count} hover actions",
-  "{description}; JVM options: {flags}": "{description}; JVM options: {flags}"
+  "{description}; JVM options: {flags}": "{description}; JVM options: {flags}",
+  "Sorting Options": "Sorting Options",
+  "Sort by Duration": "Sort by Duration"
 }
