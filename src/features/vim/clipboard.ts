@@ -16,7 +16,7 @@ const CLIPBOARD_DEFAULT = "ideaput,autoselect";
 const MIRROR_OPTIONS = new Set(["unnamed", "unnamedplus"]);
 
 // The rc file's `set clipboard=…` lines need the option to exist before they are applied.
-Vim.defineOption("clipboard", CLIPBOARD_DEFAULT, "string");
+Vim.defineOption("clipboard", CLIPBOARD_DEFAULT, "string", ["cb"]);
 
 /** Whether the user asked for unnamed register writes to reach the system clipboard. */
 function unnamedMirrors(): boolean {

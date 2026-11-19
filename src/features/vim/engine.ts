@@ -14,7 +14,7 @@ import { showStatusInfo } from "@/workbench/contributions";
 import { installClipboardHooks } from "./clipboard";
 import { modeAction, modeMovedToIde, movedToIde, VIM_EDITOR_ATTR, VIM_MODE_ATTR, vimModeOf } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
-import { resolveActionId, type RcCommand } from "./rc";
+import { resolveActionId, type RcCommand, type SetOp } from "./rc";
 import { useVimSettings } from "./settings";
 import { mapFunctionTextObjects } from "./textObjects";
 
@@ -497,14 +497,26 @@ function firstKey(lhs: string): string {
   return /^<[^<>]+>|^./.exec(lhs)?.[0] ?? lhs;
 }
 
-/** `set clipboard+=unnamed`: the comma list option with `add` appended once. */
-function appendedOption(name: string, add: string): string {
+/**
+ * The value `set name{op}value` gives an option, as in Vim: numbers add, subtract or multiply;
+ * comma lists append an item once (`+=`), remove it (`-=`) or put it first (`^=`).
+ */
+function adjustedOption(name: string, op: SetOp, value: string): string | number {
   const current = Vim.getOption(name);
+  // A number option (rc values arrive as text, so `set x=100` stores "100").
+  if (typeof current === "number" || (typeof current === "string" && /^-?\d+$/.test(current))) {
+    if (!/^-?\d+$/.test(value)) throw new Error(`number required: ${value}`);
+    const [a, b] = [Number(current), Number(value)];
+    return op === "+=" ? a + b : op === "-=" ? a - b : a * b;
+  }
   const items = (typeof current === "string" ? current : "")
     .split(",")
     .map((v) => v.trim())
     .filter(Boolean);
-  return items.includes(add) ? items.join(",") : [...items, add].join(",");
+  const rest = items.filter((v) => v !== value);
+  if (op === "-=") return rest.join(",");
+  if (op === "^=") return (items.includes(value) ? items : [value, ...items]).join(",");
+  return (items.includes(value) ? items : [...items, value]).join(",");
 }
 
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
@@ -518,7 +530,7 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   for (const c of commands) {
     try {
       if (c.kind === "set") {
-        const err = Vim.setOption(c.name, c.append ? appendedOption(c.name, String(c.value)) : c.value);
+        const err = Vim.setOption(c.name, c.op ? adjustedOption(c.name, c.op, String(c.value)) : c.value);
         if (err) problems.push(`set ${c.name}: ${err.message}`);
       } else if (c.kind === "map") {
         if (c.noremap) Vim.noremap(c.lhs, c.rhs, c.mode as string);
