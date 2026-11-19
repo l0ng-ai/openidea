@@ -1,5 +1,6 @@
 {
   "Problems actions": "Problems actions",
+  "TODO actions": "TODO actions",
   "Same as the existing configuration '{existing}'": "Same as the existing configuration '{existing}'",
   "Windows file and folder names cannot end with a period or space": "Windows file and folder names cannot end with a period or space",
   "Use URL template": "Use URL template",
@@ -1259,6 +1260,8 @@
   "Plan {done}/{length}": "Plan {done}/{length}",
   "1 changed file": "1 changed file",
   "{count} changed files": "{count} changed files",
+  "{count} more notification": "{count} more notification",
+  "{count} more notifications": "{count} more notifications",
   "Send into the agent's turn": "Send into the agent's turn",
   "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "Queue a message for when the agent is done (⌘⇧↵ sends it now)",
   "Queue a message for when the agent is done": "Queue a message for when the agent is done",
@@ -2622,6 +2625,8 @@
   "Hot reload on save": "Hot reload on save",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
   "Hot reload on save failed: {0}": "Hot reload on save failed: {0}",
+  "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?": "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?",
+  "New Tab": "New Tab",
   "Show Only Widgets": "Show Only Widgets",
   "Update failed": "Update failed",
   "Updating branches": "Updating branches",
@@ -2648,6 +2653,16 @@
   "{path} is a directory": "{path} is a directory",
   "Cannot export test results": "Cannot export test results",
   "Test results exported": "Test results exported",
+  "Olive": "Olive",
+  "Teal": "Teal",
+  "Custom colour hex": "Custom colour hex",
+  "Reset to Default": "Reset to Default",
   "Always update snapshots": "Always update snapshots",
-  "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U)."
+  "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).",
+  "Automatic (the agent of the latest task)": "Automatic (the agent of the latest task)",
+  "The agent's current model": "The agent's current model",
+  "The agent's default": "The agent's default",
+  "Commit messages are short: a fast model with low effort is usually enough.": "Commit messages are short: a fast model with low effort is usually enough.",
+  "Change Project Color…": "Change Project Color…",
+  "Project Color": "Project Color"
 }

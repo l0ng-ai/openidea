@@ -170,6 +170,12 @@ pub struct CommitSettings {
     pub double_click_opens_diff: Option<bool>,
     /// Team conventions for Generate Commit Message with Agent, added to its prompt.
     pub agent_instructions: String,
+    /// The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent.
+    pub agent: String,
+    /// That agent's model for commit messages; empty keeps the model the agent would use.
+    pub agent_model: String,
+    /// That model's thinking level for commit messages; empty keeps the agent's.
+    pub agent_effort: String,
 }
 
 impl Default for CommitSettings {
@@ -192,6 +198,9 @@ impl Default for CommitSettings {
             disabled_plugin_checks: Vec::new(),
             double_click_opens_diff: None,
             agent_instructions: String::new(),
+            agent: String::new(),
+            agent_model: String::new(),
+            agent_effort: String::new(),
         }
     }
 }

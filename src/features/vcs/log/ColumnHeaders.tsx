@@ -26,15 +26,7 @@ const HIDDEN_COLUMN_OPTION: Record<string, keyof LogOptions> = {
   repository: "showRepository",
 };
 
-export function ColumnHeaders({
-  columns,
-  options,
-  minWidth,
-}: {
-  columns: LogColumn[];
-  options: LogOptions;
-  minWidth: number;
-}) {
+export function ColumnHeaders({ columns, options }: { columns: LogColumn[]; options: LogOptions }) {
   const [drag, setDrag] = useState<ColumnDrag | null>(null);
   const ids = columnSequence(options.columnOrder, columns);
   const cancel = useCallback(() => setDrag(null), []);
@@ -47,10 +39,7 @@ export function ColumnHeaders({
   };
   const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
   return (
-    <div
-      className={clsx(styles.row, styles.columnHeader, options.showColumnDividers && styles.showDividers)}
-      style={{ minWidth }}
-    >
+    <div className={clsx(styles.row, styles.columnHeader, options.showColumnDividers && styles.showDividers)}>
       {options.showRepository && useVcs.getState().roots.length > 1 && (
         <span className={styles.colRepository}>{tx("Repository")}</span>
       )}
