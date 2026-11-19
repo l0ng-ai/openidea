@@ -149,7 +149,7 @@ test("opens slash-prefixed Windows Markdown links with preview content and hover
   for (const [label, path, heading] of [
     ["Specification", spec, "Windows specification"],
     ["Work skill", skill, "Work specification skill"],
-  ]) {
+  ] as const) {
     const link = reply.getByRole("link", { name: label, exact: true });
     await link.hover();
     await expect(link).toHaveAttribute("title", path);

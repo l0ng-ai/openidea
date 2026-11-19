@@ -36,7 +36,7 @@ export const parameterRow = (p: SignatureParameter): ParameterRow => ({ ...p, ke
 export const newParameter = (): ParameterRow =>
   parameterRow({ type: "", name: "", defaultValue: "", originalIndex: -1 });
 
-/** `public int sum(int a, int b) throws IOException`, as the dialog's preview shows it. */
+/** Formats the declaration for the dialog's preview. */
 export function signatureText(sig: {
   modifier: string;
   returnType: string;
@@ -44,8 +44,9 @@ export function signatureText(sig: {
   parameters: readonly SignatureParameter[];
   exceptions?: readonly { type: string }[];
 }): string {
-  const params = sig.parameters.map((p) => `${p.type} ${p.name}`.trim()).join(", ");
-  const head = [sig.modifier, sig.returnType, `${sig.methodName}(${params})`].filter(Boolean).join(" ");
+  const params = sig.parameters.map((p) => `${p.type} ${p.name}`.trim());
+  const args = params.length > 1 ? `\n    ${params.join(",\n    ")}\n` : (params[0] ?? "");
+  const head = [sig.modifier, sig.returnType, `${sig.methodName}(${args})`].filter(Boolean).join(" ");
   const throws = sig.exceptions?.length ? ` throws ${sig.exceptions.map((e) => e.type).join(", ")}` : "";
   return head + throws;
 }

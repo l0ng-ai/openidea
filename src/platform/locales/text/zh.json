@@ -9115,5 +9115,10 @@
   "Browse for target directory": "浏览目标目录",
   "Select Target Directory": "选择目标目录",
   "Cannot move a folder into itself": "不能将文件夹移动到自身目录中",
-  "Already in this directory": "已在此目录中"
+  "Already in this directory": "已在此目录中",
+  "Resize left merge pane": "调整左侧合并窗格宽度",
+  "Resize right merge pane": "调整右侧合并窗格宽度",
+  "Database and schema": "数据库和 schema",
+  "Shelve Silently": "静默搁置",
+  "Unshelve Silently": "静默取消搁置"
 }

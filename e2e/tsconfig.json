@@ -1,12 +1,8 @@
 {
+  "extends": "../tsconfig.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "types": ["node"]
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"]
   },
-  "include": ["./**/*.ts", "../playwright.config.ts"]
+  "include": [".", "../playwright.config.ts", "../src/**/*.d.ts"]
 }

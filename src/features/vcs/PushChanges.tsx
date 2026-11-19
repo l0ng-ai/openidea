@@ -134,12 +134,12 @@ export function PushChanges({
       </div>
       {count === 1 ? (
         <SplitGroup orientation="vertical" storageKey={DETAILS_SPLIT_KEY} className={styles.pushDetailsSplit}>
-          <SplitPanel id="details" minSize="40px" defaultSize="25%" className={styles.pushDetailsPanel}>
-            <PushCommitDetails commit={commits[0]!} />
+          <SplitPanel id="files" minSize="40%" defaultSize="67%" className={styles.pushDetailsPanel}>
+            {files}
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel id="files" minSize="80px" className={styles.pushDetailsPanel}>
-            {files}
+          <SplitPanel id="details" minSize="24%" className={styles.pushDetailsPanel}>
+            <PushCommitDetails commit={commits[0]!} />
           </SplitPanel>
         </SplitGroup>
       ) : (

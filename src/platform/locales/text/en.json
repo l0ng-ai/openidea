@@ -2745,5 +2745,12 @@
   "Browse for target directory": "Browse for target directory",
   "Select Target Directory": "Select Target Directory",
   "Cannot move a folder into itself": "Cannot move a folder into itself",
-  "Already in this directory": "Already in this directory"
+  "Already in this directory": "Already in this directory",
+  "Resize left merge pane": "Resize left merge pane",
+  "Resize right merge pane": "Resize right merge pane",
+  "Database and schema": "Database and schema",
+  "Loading…": "Loading…",
+  "<schema>": "<schema>",
+  "Shelve Silently": "Shelve Silently",
+  "Unshelve Silently": "Unshelve Silently"
 }
