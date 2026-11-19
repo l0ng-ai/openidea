@@ -776,6 +776,26 @@ describe("project producers", () => {
     expect(produceContext({ path: `${ROOT}/a.tscn`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
   });
 
+  it("Dart files of a Flutter app run as the app (flutter run -t) in the app's folder", () => {
+    const flutter = [
+      cfg({ id: "flutter:run", kind: "flutter", command: "flutter", args: ["run", "-t", "lib/main.dart"], cwd: "app" }),
+    ];
+    const p = produceContext({ path: `${ROOT}/app/lib/demo.dart`, root: ROOT, configs: flutter }, ALL)!;
+    expect(p).toMatchObject({ name: "demo.dart", scope: "file" });
+    expect(p.config).toMatchObject({
+      kind: "flutter",
+      command: "flutter",
+      args: ["run", "-t", "lib/demo.dart"],
+      cwd: "app",
+      debugAdapter: "dart",
+    });
+    // Outside the app (a Dart package next to it): `dart run`.
+    expect(run({ path: `${ROOT}/tool/gen.dart`, root: ROOT, configs: flutter })).toMatchObject({
+      command: "/bin/dart",
+      args: ["run", "tool/gen.dart"],
+    });
+  });
+
   it("keeps package.json test files on the project's runner", () => {
     const p = produceContext(
       { path: `${ROOT}/src/a.test.ts`, root: ROOT, configs, content: "test('x', () => {})" },
