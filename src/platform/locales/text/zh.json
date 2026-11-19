@@ -850,7 +850,6 @@
   "Bottom Left": "底部左侧",
   "Bottom Right": "底部右侧",
   "Branch": "分支",
-  "Branch '{name}' has no tracked branch": "分支 '{name}' 没有跟踪分支",
   "Branch, %": "分支，%",
   "Branch, tag or commit hash": "分支、标签或提交哈希",
   "Branches": "分支",
@@ -5590,7 +5589,6 @@
   "Pulling": "正在拉取",
   "Pushing": "正在推送",
   "Deleting remote branch": "正在删除远程分支",
-  "Updating branch": "正在更新分支",
   "Delete remote branch": "删除远程分支",
   "binary": "二进制",
   "Common Local Branches": "公共本地分支",
@@ -8984,5 +8982,16 @@
   "e.g. --flavor dev --dart-define=KEY=value": "例如 --flavor dev --dart-define=KEY=value",
   "Hot reload on save": "保存时热重载",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "保存正在运行的 Flutter 调试会话里的 Dart 文件时重新加载应用，文件有错误时跳过。",
-  "Hot reload on save failed: {0}": "保存时热重载失败：{0}"
+  "Hot reload on save failed: {0}": "保存时热重载失败：{0}",
+  "Update failed": "更新失败",
+  "Updating branches": "正在更新分支",
+  "Updated: {names}": "已更新：{names}",
+  "Already up-to-date: {names}": "已是最新：{names}",
+  "Not updated, cannot be fast-forwarded: {names}": "未更新，无法快进：{names}",
+  "Not updated, no tracked branch: {names}": "未更新，没有跟踪分支：{names}",
+  "Failed to update {branch}: {message}": "更新 {branch} 失败：{message}",
+  "Updated {n} branch": "已更新 {n} 个分支",
+  "Updated {n} branches": "已更新 {n} 个分支",
+  "No branches were updated": "没有分支被更新",
+  "Selected branches are up-to-date": "所选分支都是最新的"
 }

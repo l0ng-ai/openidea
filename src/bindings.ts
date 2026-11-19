@@ -1858,6 +1858,11 @@ export const commands = {
 	 */
 	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
+	/**
+	 *  Branches › Update Selected: fast-forwards local `branches` to their upstreams, one
+	 *  fetch per remote; the result says what happened to each. Cancellable.
+	 */
+	vcsUpdateBranches: (repo: string | null, request: RequestId, branches: string[], onOutput: Channel<string>) => typedError<BranchUpdate[], IdeError>(__TAURI_INVOKE("vcs_update_branches", { repo, request, branches, onOutput })),
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
 	vcsWritePatch: (path: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch })),
@@ -3156,6 +3161,18 @@ export type BranchInfo = {
 	/**  Merge / rebase / cherry-pick in progress. */
 	operation: string | null,
 };
+
+export type BranchUpdate = {
+	branch: string,
+	status: BranchUpdateStatus,
+	/**  Why it failed. */
+	message: string | null,
+};
+
+/**  What Update Selected did to one local branch. */
+export type BranchUpdateStatus = "updated" | "upToDate" | 
+/**  Diverged from its upstream: left as it is. */
+"notFastForward" | "noUpstream" | "failed";
 
 /**  Editor › General › Breadcrumbs. */
 export type BreadcrumbsSettings = {
@@ -10175,8 +10192,6 @@ set_upstream?: boolean; no_verify?: boolean } |
 { op: "pushTag"; tag: string; remote: string } | 
 /**  Deletes tag `tag` on `remote` (Delete on Remote). */
 { op: "deleteRemoteTag"; tag: string; remote: string } | 
-/**  Fast-forwards local `branch` (not checked out) to its upstream. */
-{ op: "updateBranch"; branch: string } | 
 /**  Pull dialog: `branches` of `remote` (none = the configured merge branch). */
 { op: "pullFrom"; remote: string; branches: string[]; rebase: boolean; options: MergeOptions };
 
