@@ -228,6 +228,109 @@ fn dirty_events(events: &[IdeEvent]) -> Vec<bool> {
     events.iter().filter_map(|e| if let IdeEvent::DocDirty { dirty, .. } = e { Some(*dirty) } else { None }).collect()
 }
 
+fn assert_failed_save_preserves_edit(f: &Fixture, doc: DocId, text: &str, before: usize) {
+    let snapshot = f.docs.snapshot(doc).unwrap();
+    assert!(snapshot.dirty, "failed save marked the document clean");
+    assert_eq!(snapshot.text, text, "failed save changed the unsaved buffer");
+    assert!(!dirty_events(&f.events.lock()[before..]).contains(&false), "failed save emitted a clean-state event");
+}
+
+#[test]
+fn unencodable_save_preserves_the_dirty_buffer_and_disk_bytes() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, b"caf\xe9").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    assert_eq!(f.docs.set_encoding(doc, "windows-1252", true).unwrap().encoding, "windows-1252");
+    let reloaded = f.docs.snapshot(doc).unwrap();
+    assert_eq!(reloaded.text, "café");
+    f.docs.edit(doc, reloaded.version, change(4, 4, "漢")).unwrap();
+    let original = fs::read(&path).unwrap();
+
+    let before = f.events.lock().len();
+    let err = f.docs.save(doc).expect_err("Windows-1252 cannot encode the edit");
+
+    assert_eq!(err.kind, ErrorKind::InvalidInput, "{err}");
+    assert_failed_save_preserves_edit(&f, doc, "café漢", before);
+    assert_eq!(fs::read(&path).unwrap(), original, "failed encoding changed disk bytes");
+}
+
+#[cfg(unix)]
+#[test]
+fn permission_denied_save_preserves_the_edit_and_can_be_retried() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestorePermissions<'a>(&'a Path, fs::Permissions);
+
+    impl Drop for RestorePermissions<'_> {
+        fn drop(&mut self) {
+            let result = fs::set_permissions(self.0, self.1.clone());
+            if !std::thread::panicking() {
+                result.expect("restore fixture permissions");
+            }
+        }
+    }
+
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, b"original").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    f.docs.edit(doc, 0, change(0, 8, "edited")).unwrap();
+
+    {
+        let _dir_permissions = RestorePermissions(&f.root, fs::metadata(&f.root).unwrap().permissions());
+        let _file_permissions = RestorePermissions(&path, fs::metadata(&path).unwrap().permissions());
+        // Deny both sibling temp-file creation and the fallback write to the existing file.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::set_permissions(&f.root, fs::Permissions::from_mode(0o555)).unwrap();
+        let sibling = fs::OpenOptions::new().write(true).create_new(true).open(f.root.join("probe"));
+        let in_place = fs::OpenOptions::new().write(true).open(&path);
+        for (probe, access) in [(sibling, "create a sibling file"), (in_place, "open the target for writing")] {
+            match probe {
+                Ok(_) => {
+                    eprintln!("skipping permission-denied save: test process can {access} despite permission bits");
+                    return;
+                }
+                Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{access}: {err}"),
+            }
+        }
+
+        let before = f.events.lock().len();
+        let err = f.docs.save(doc).expect_err("neither atomic nor in-place save should be writable");
+
+        assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err}");
+        assert_failed_save_preserves_edit(&f, doc, "edited", before);
+        assert_eq!(fs::read(&path).unwrap(), b"original", "failed write changed disk bytes");
+    }
+
+    let before = f.events.lock().len();
+    f.docs.save(doc).expect("retry after restoring file and directory permissions");
+
+    assert_eq!(fs::read(&path).unwrap(), b"edited");
+    assert!(!f.docs.snapshot(doc).unwrap().dirty, "successful retry left the document dirty");
+    assert_eq!(dirty_events(&f.events.lock()[before..]), vec![false]);
+}
+
+#[test]
+fn save_to_a_path_replaced_by_a_directory_preserves_the_dirty_buffer() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, b"original").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    f.docs.edit(doc, 0, change(0, 8, "edited")).unwrap();
+    assert!(f.docs.snapshot(doc).unwrap().dirty);
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+
+    let before = f.events.lock().len();
+    f.docs.save(doc).expect_err("save must not replace a directory with a file");
+
+    assert_failed_save_preserves_edit(&f, doc, "edited", before);
+    assert!(fs::symlink_metadata(&path).unwrap().is_dir(), "save removed the replacement directory");
+    assert_eq!(fs::read_dir(&path).unwrap().count(), 0, "save left artifacts inside the replacement directory");
+    assert_eq!(fs::read_dir(&f.root).unwrap().count(), 1, "save left artifacts beside the replacement directory");
+}
+
 #[test]
 fn autosave_leaves_a_file_changed_on_disk_after_an_edit() {
     let f = fixture();
