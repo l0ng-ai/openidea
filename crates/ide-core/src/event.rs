@@ -312,6 +312,8 @@ pub enum LspRefreshKind {
     InlayHints,
     SemanticTokens,
     CodeLens,
+    /// The Dart server published a document's Flutter outline.
+    FlutterOutline,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

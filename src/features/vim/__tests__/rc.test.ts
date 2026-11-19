@@ -36,20 +36,16 @@ describe("ideavimrc parsing", () => {
     );
   });
 
-  it("parses the clipboard list option, including the += append form", () => {
+  it("parses set with Vim's =, +=, -= and ^= forms", () => {
     expect(parseVimrc("set clipboard=unnamedplus").commands).toEqual([
       { kind: "set", name: "clipboard", value: "unnamedplus" },
     ]);
-    expect(parseVimrc("set clipboard+=unnamed").commands).toEqual([
-      { kind: "set", name: "clipboard", value: "unnamed", append: true },
+    expect(parseVimrc("set clipboard+=unnamed cb^=unnamedplus tw-=10").commands).toEqual([
+      { kind: "set", name: "clipboard", value: "unnamed", op: "+=" },
+      { kind: "set", name: "cb", value: "unnamedplus", op: "^=" },
+      { kind: "set", name: "tw", value: "10", op: "-=" },
     ]);
-    // Only list options append; other forms stay unsupported syntax.
-    expect(parseVimrc("set textwidth+=4").ignored.map((i) => i.reason)).toEqual([
-      "unsupported option syntax: textwidth+=4",
-    ]);
-    expect(parseVimrc("set clipboard-=unnamed").ignored.map((i) => i.reason)).toEqual([
-      "unsupported option syntax: clipboard-=unnamed",
-    ]);
+    expect(parseVimrc("set ideajoin+=x").ignored.map((i) => i.reason)).toEqual(["option not supported: ideajoin"]);
   });
 
   it("parses map variants with modes, noremap and the leader in effect at that line", () => {

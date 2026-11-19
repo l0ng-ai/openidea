@@ -140,6 +140,8 @@ export interface ExternalDiffValid {
 }
 
 export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10";
+/** When a title the program sets (OSC 0/2) names the terminal tab, as IDEA's option. */
+export type TerminalAppTitle = "running" | "always" | "off";
 
 export const TERMINAL_MAX_FPS_OPTIONS: readonly { value: TerminalMaxFps; label: string }[] = [
   { value: "unlimited", label: "Unlimited" },
@@ -154,6 +156,7 @@ export interface TerminalSettingsValid {
   env: Record<string, string>;
   shellPath: string;
   tabName: string;
+  appTitleAsTabName: TerminalAppTitle;
   audibleBell: boolean;
   closeOnExit: boolean;
   mouseReporting: boolean;
@@ -361,6 +364,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     env: {},
     shellPath: "",
     tabName: "Local",
+    appTitleAsTabName: "running",
     audibleBell: true,
     closeOnExit: true,
     mouseReporting: true,
@@ -570,6 +574,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     env,
     shellPath: text(v.shellPath, d.shellPath).trim(),
     tabName: nonEmpty(v.tabName, d.tabName),
+    appTitleAsTabName: oneOf(v.appTitleAsTabName, ["running", "always", "off"] as const, d.appTitleAsTabName),
     audibleBell: bool(v.audibleBell, d.audibleBell),
     closeOnExit: bool(v.closeOnExit, d.closeOnExit),
     mouseReporting: bool(v.mouseReporting, d.mouseReporting),

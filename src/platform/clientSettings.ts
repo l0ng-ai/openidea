@@ -56,6 +56,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.general.richTextCopy",
   "editor.codeStyle.visualGuides",
   "terminal.tabName",
+  "terminal.appTitleAsTabName",
   "terminal.audibleBell",
   "terminal.closeOnExit",
   "terminal.mouseReporting",
