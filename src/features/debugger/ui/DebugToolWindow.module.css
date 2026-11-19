@@ -19,20 +19,28 @@
 }
 
 .toolbar {
-  height: 32px;
+  min-height: 32px;
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-0-5);
-  padding: 0 8px 0 4px;
+  gap: var(--space-0-5) var(--space-2);
+  padding: var(--space-0-5) var(--space-2) var(--space-0-5) var(--space-1);
   border-bottom: 1px solid var(--border);
   min-width: 0;
-  overflow: hidden;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0-5);
+  min-width: 0;
 }
 
 .tool {
-  width: 26px;
-  height: 26px;
+  width: var(--h-control);
+  height: var(--h-control);
   flex: none;
 }
 
@@ -46,17 +54,21 @@
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-0-5);
-  flex: none;
+  min-width: 0;
 }
 
 .tab {
   height: 24px;
+  max-inline-size: 100%;
   padding: 0 8px;
   border-radius: var(--radius-small);
   color: var(--fg);
   font-size: var(--fs-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .tab:hover {
