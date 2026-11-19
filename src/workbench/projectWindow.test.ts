@@ -23,15 +23,15 @@ beforeEach(() => {
     lightEdit: false,
   });
 });
-it("offers Attach for this open without remembering it", async () => {
-  vi.mocked(ask).mockResolvedValue({ button: "attach", checked: true });
-  expect(await chooseProjectWindow("B")).toBe("attach");
+it.each(["attach", "tab"] as const)("offers %s for this open without remembering it", async (button) => {
+  vi.mocked(ask).mockResolvedValue({ button, checked: true });
+  expect(await chooseProjectWindow("B")).toBe(button);
   const prompt = vi.mocked(ask).mock.calls[0]![0];
-  expect(prompt.buttons.map((b) => b.id)).toEqual(["cancel", "attach", "new", "same"]);
+  expect(prompt.buttons.map((b) => b.id)).toEqual(["cancel", "attach", "tab", "new", "same"]);
   expect(prompt.buttons.filter((b) => b.primary).map((b) => b.id)).toEqual(["same"]);
   expect(commands.settingsSet).not.toHaveBeenCalled();
   expect(openPolicy()).toBe("ask");
-  expect(await chooseProjectWindow("C")).toBe("attach");
+  expect(await chooseProjectWindow("C")).toBe(button);
   expect(ask).toHaveBeenCalledTimes(2);
 });
 it("does not attach without a project or when opening a remote project", async () => {
@@ -40,7 +40,7 @@ it("does not attach without a project or when opening a remote project", async (
   });
   vi.mocked(ask).mockResolvedValue({ button: "cancel", checked: false });
   expect(await chooseProjectWindow("remote", false)).toBeNull();
-  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).not.toContain("attach");
+  expect(vi.mocked(ask).mock.calls[0]![0].buttons.map((b) => b.id)).toEqual(["cancel", "new", "same"]);
   useProject.setState({ project: null });
   expect(await chooseProjectWindow("B")).toBe("same");
 });
