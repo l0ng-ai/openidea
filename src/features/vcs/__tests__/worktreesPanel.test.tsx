@@ -39,6 +39,7 @@ const worktrees = [
   { path: "/work/app-feature", branch: "feature", head: "12345678", main: false, locked: false, prunable: false },
 ];
 const ssh = { kind: "ssh", config: "test-linux" } as const;
+const wsl = { kind: "wsl", distro: "Ubuntu" } as const;
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
 const fail = (message: string) => ({ status: "error", error: { kind: "invalidInput", message, detail: null } });
 
@@ -143,9 +144,13 @@ it("keeps the error and selected worktree after force removal fails", async () =
 
 afterEach(() => useRemote.setState({ session: null }));
 
-it.each(["toolbar", "double click"])("opens an SSH worktree via %s with the current SSH target", async (entry) => {
+it.each([
+  ["toolbar", ssh],
+  ["double click", ssh],
+  ["toolbar", wsl],
+] as const)("opens a remote worktree via %s with the current target", async (entry, target) => {
   useRemote.setState({
-    session: { target: ssh, root: "/work/app-feature", host: "demo-linux", os: "linux", commands: [] },
+    session: { target, root: "/work/app-feature", host: "demo-linux", os: "linux", commands: [] },
   });
   windowOpenRemote.mockReset().mockResolvedValue(ok({ kind: "opened", label: "git-main" }));
   render(<WorktreesPanel />);
@@ -153,7 +158,7 @@ it.each(["toolbar", "double click"])("opens an SSH worktree via %s with the curr
   fireEvent.mouseDown(row);
   if (entry === "toolbar") fireEvent.click(screen.getByRole("button", { name: "Open in New Window" }));
   else fireEvent.doubleClick(row);
-  await waitFor(() => expect(windowOpenRemote).toHaveBeenCalledExactlyOnceWith(ssh, "/work/app", true));
+  await waitFor(() => expect(windowOpenRemote).toHaveBeenCalledExactlyOnceWith(target, "/work/app", true));
   expect(useProject.getState().project?.root).toBe("/work/app-feature");
 });
 
