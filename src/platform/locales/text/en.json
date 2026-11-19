@@ -2738,5 +2738,12 @@
   "{count} hover actions": "{count} hover actions",
   "{description}; JVM options: {flags}": "{description}; JVM options: {flags}",
   "Sorting Options": "Sorting Options",
-  "Sort by Duration": "Sort by Duration"
+  "Sort by Duration": "Sort by Duration",
+  "Move file '{name}'": "Move file '{name}'",
+  "Move directory '{name}'": "Move directory '{name}'",
+  "Move {count} items": "Move {count} items",
+  "Browse for target directory": "Browse for target directory",
+  "Select Target Directory": "Select Target Directory",
+  "Cannot move a folder into itself": "Cannot move a folder into itself",
+  "Already in this directory": "Already in this directory"
 }

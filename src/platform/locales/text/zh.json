@@ -9108,5 +9108,12 @@
   "{count} hover actions": "{count} 个悬停操作",
   "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}",
   "Sorting Options": "排序选项",
-  "Sort by Duration": "按持续时间排序"
+  "Sort by Duration": "按持续时间排序",
+  "Move file '{name}'": "移动文件「{name}」",
+  "Move directory '{name}'": "移动目录「{name}」",
+  "Move {count} items": "移动 {count} 个项目",
+  "Browse for target directory": "浏览目标目录",
+  "Select Target Directory": "选择目标目录",
+  "Cannot move a folder into itself": "不能将文件夹移动到自身目录中",
+  "Already in this directory": "已在此目录中"
 }
