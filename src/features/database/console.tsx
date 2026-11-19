@@ -595,7 +595,6 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const maxRows = useDatabase((s) => s.maxRows);
   const manual = useDatabase((s) => !!bound && s.manualCommit.has(bound));
   const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
-  const databases = useDatabase((s) => s.databases);
   const inEditor = useProject((s) => inEditorResults(s.settings));
   // SQL resolution scopes in the settings can move the console to another data source.
   useProject((s) => s.settings);
@@ -603,7 +602,6 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const driver = sources.find((s) => s.id === boundId)?.driver;
   const jdbc = driver === "jdbc";
   const supportsTransactions = driver !== "clickhouse" && !jdbc;
-  const sqlServer = driver === "sqlServer";
   const switchable = schemaSwitchable(driver);
   // The console's active schema: its pick, else the connection's default (`completion.defaultSchema`).
   const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
@@ -611,30 +609,23 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const schemaList = useDatabase((s) => (bound ? s.schemas[bound] : undefined));
   const schema = activeSchema(pickedSchema, defaultSchema);
   useEffect(() => {
-    if (boundId && (sqlServer || listsDatabases(sourceById(boundId))) && !useDatabase.getState().databases[boundId])
+    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
       void loadDatabases(boundId);
-  }, [boundId, sqlServer]);
+  }, [boundId]);
   // Loads the list again after a refresh drops it.
   const schemasMissing = !schemaList;
   useEffect(() => {
-    if (bound && switchable && !sqlServer && schemasMissing) void loadSchemas(bound);
-  }, [bound, switchable, sqlServer, schemasMissing]);
+    if (bound && switchable && schemasMissing) void loadSchemas(bound);
+  }, [bound, switchable, schemasMissing]);
   const schemaOptions = useMemo(() => {
     if (!switchable) return [];
-    const databaseList = boundId ? databases[boundId] : undefined;
-    const names = sqlServer
-      ? databaseList?.status === "ok"
-        ? databaseList.value.names
-        : []
-      : schemaList?.status === "ok"
-        ? schemaList.value
-        : [];
+    const names = schemaList?.status === "ok" ? schemaList.value : [];
     const out = names.map((n) => ({ value: n, label: n, icon: "db-schema" }));
     // The connection's default is offered even before its schema list loads.
     if (defaultSchema && !names.includes(defaultSchema))
       out.unshift({ value: defaultSchema, label: defaultSchema, icon: "db-schema" });
     return out;
-  }, [switchable, schemaList, defaultSchema, sqlServer, boundId, databases]);
+  }, [switchable, schemaList, defaultSchema]);
   // IDEA's order: pick the data source, then a database and a schema in it.
   const sourceOptions = useMemo(
     () =>
@@ -740,13 +731,13 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         onChange={(id) => id !== boundId && bindConsole(path, id)}
         disabled={!sources.length}
       />
-      {bound && boundId && switchable && !sqlServer && listsDatabases(sourceById(boundId)) ? (
+      {bound && boundId && switchable && listsDatabases(sourceById(boundId)) ? (
         <DatabaseSchemaSwitcher path={path} bound={bound} sourceId={boundId} schema={schema} />
       ) : (
         switchable && (
           <Select
             variant="ghost"
-            aria-label={sqlServer ? "Database" : "Schema"}
+            aria-label="Schema"
             value={schema || null}
             placeholder="<schema>"
             options={schemaOptions}
