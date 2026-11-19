@@ -3,9 +3,10 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
-import { consoleExtension } from "./console";
+import { consoleExtension, executeScriptInView } from "./console";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { executeConsole, rerunResult, useDatabase } from "./store";
+import { provideToolWindowService } from "@/workbench/contributions";
 
 const backend = vi.hoisted(() => ({ execute: vi.fn(), statements: vi.fn() }));
 
@@ -30,6 +31,7 @@ const initial = useDatabase.getState();
 let runs = 0;
 
 beforeEach(() => {
+  provideToolWindowService({ show: () => {} } as never);
   runs = 0;
   useProject.setState({
     project: { name: "p", root: "/p", trusted: true } as never,
@@ -131,6 +133,62 @@ describe("In-Editor Results", () => {
     await act(async () => {});
     expect(ids()).not.toContain(second);
     expect(widgets()).toHaveLength(1);
+    view.destroy();
+  });
+});
+
+describe("statements in flight", () => {
+  it("marks what was submitted with its running time, then the outcome", async () => {
+    const parent = document.createElement("div");
+    document.body.append(parent);
+    const doc = "SELECT 1;\nSELECT 2;\n";
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc,
+        extensions: consoleExtension({ language: SQL_LANGUAGE, path: PATH } as never),
+      }),
+    });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const execute = backend.execute.getMockImplementation()!;
+    backend.execute.mockImplementationOnce(async (...args: unknown[]) => {
+      await gate;
+      return execute(...(args as Parameters<typeof execute>));
+    });
+    const executing = () => [...view.dom.querySelectorAll(".cm-openidea-db-executing")].map((e) => e.textContent);
+    const elapsed = () => view.dom.querySelector(".cm-openidea-db-elapsed")?.textContent;
+
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = executeScriptInView(view, PATH);
+      await vi.waitFor(() => expect(backend.execute).toHaveBeenCalled());
+    });
+    expect(executing()).toEqual(["SELECT 1", "SELECT 2"]);
+    expect(elapsed()).toMatch(/^Executing… \d+ ms$/);
+    expect(view.dom.querySelector(".cm-openidea-db-run-executing")).not.toBeNull();
+
+    // Typing above moves the marks with their text.
+    act(() => view.dispatch({ changes: { from: 0, insert: "-- a longer note above\n" } }));
+    expect(executing()).toEqual(["SELECT 1", "SELECT 2"]);
+
+    await act(async () => {
+      finish();
+      await pending;
+    });
+    expect(executing()).toEqual([]);
+    expect(elapsed()).toBeUndefined();
+    // The outcomes land on the statements, not on where they were when sent.
+    const lines = [...view.dom.querySelectorAll(".cm-openidea-db-gutter .cm-gutterElement")]
+      .filter((e) => e.querySelector(".cm-openidea-db-run-ok"))
+      .map((e) => e.getBoundingClientRect().top);
+    expect(lines).toHaveLength(2);
+    expect(view.dom.querySelectorAll(".cm-openidea-db-timing")).toHaveLength(2);
+    expect(view.state.doc.lineAt(view.posAtDOM(view.dom.querySelector(".cm-openidea-db-timing")!)).text).toBe(
+      "SELECT 1;",
+    );
     view.destroy();
   });
 });
