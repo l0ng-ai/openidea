@@ -2646,5 +2646,7 @@
   "File '{name}' already exists. Do you want to overwrite it?": "File '{name}' already exists. Do you want to overwrite it?",
   "{path} is a directory": "{path} is a directory",
   "Cannot export test results": "Cannot export test results",
-  "Test results exported": "Test results exported"
+  "Test results exported": "Test results exported",
+  "Always update snapshots": "Always update snapshots",
+  "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U)."
 }

@@ -888,6 +888,26 @@ fn maven_options_carry_active_profiles_into_the_command_line() {
 }
 
 #[test]
+fn always_update_snapshots_adds_dash_u_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.update_snapshots = true;
+    assert_eq!(maven_options(tmp.path(), &s), ["-U"]);
+    let mut configs = vec![run("maven", "./mvnw", &["package"])];
+    for _ in 0..2 {
+        apply_to_run_configs(&mut configs, tmp.path(), &s);
+        assert_eq!(configs[0].args, ["-U", "package"]);
+    }
+    let mut own = vec![run("maven", "./mvnw", &["--update-snapshots", "package"])];
+    apply_to_run_configs(&mut own, tmp.path(), &s);
+    assert_eq!(own[0].args, ["--update-snapshots", "package"]);
+
+    s.languages.java.maven.update_snapshots = false;
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].args, ["package"]);
+}
+
+#[test]
 fn maven_profile_and_toolchain_overrides_accept_every_option_form() {
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
