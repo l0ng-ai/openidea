@@ -488,6 +488,16 @@ export function foldingExtension(showOutline = true): Extension {
         el.textContent = name ?? "…";
         el.title = "Expand";
         el.setAttribute("aria-label", "folded code");
+        // The chip is a button, not a text anchor. Letting the mousedown through
+        // starts a mouse selection that moves the caret to the chip's line; a caret
+        // change re-runs the inline blame refresh, which replaces this line's DOM
+        // before the click fires, so the browser never dispatches the click
+        // (its down-target is no longer connected). Swallowing the mousedown
+        // keeps the caret where it is and the click reliably reaches `onclick`.
+        el.onmousedown = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        };
         el.onclick = (event) => {
           // CodeMirror's own handler resolves the fold through the clicked line
           // block, which can miss a fold starting at a line boundary (docstring,
