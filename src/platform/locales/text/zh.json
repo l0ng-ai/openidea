@@ -8909,5 +8909,10 @@
   "60 FPS": "60 帧/秒",
   "30 FPS": "30 帧/秒",
   "15 FPS": "15 帧/秒",
-  "10 FPS": "10 帧/秒"
+  "10 FPS": "10 帧/秒",
+  "Could not close editor": "无法关闭编辑器",
+  "Missing editor request": "缺少编辑器请求",
+  "The editor’s project is no longer open": "编辑器所属的项目已关闭",
+  "Timed out opening the editor window": "打开编辑器窗口超时",
+  "Could not open the editor window": "无法打开编辑器窗口"
 }

@@ -254,6 +254,11 @@ export class DocModel {
   /** Bumped by every change (local or remote). */
   changeCounter = 0;
   closed = false;
+  /**
+   * Tab moved to an auxiliary editor window that already holds this document:
+   * release must drop the local model and backend ref without autosave / keep-dirty.
+   */
+  handoffRelease = false;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private saving: Promise<void> = Promise.resolve();
   private meta: DocMeta;
@@ -895,8 +900,10 @@ export class DocumentManager {
     // Defer so that "close tab + reopen in split" in one tick keeps the model.
     queueMicrotask(async () => {
       if (model.inUse() || model.closed) return;
+      const handoff = model.handoffRelease;
+      model.handoffRelease = false;
       const files = this.settings()?.files;
-      if (files?.autoSave !== false && model.getMeta().dirty) {
+      if (!handoff && files?.autoSave !== false && model.getMeta().dirty) {
         try {
           await model.save("auto");
         } catch (e) {
@@ -906,7 +913,8 @@ export class DocumentManager {
       // As in IDEA, a file whose changes are not saved (autosave off, or a failed save) stays
       // open without a tab: reopening shows the changes, and Save All and the exit check still
       // cover them. An untitled buffer was asked about when its tab closed.
-      if (model.getMeta().dirty && !isUntitledUri(model.path)) return;
+      // Handoff to an aux editor: the sibling window already references the same document.
+      if (!handoff && model.getMeta().dirty && !isUntitledUri(model.path)) return;
       if (model.inUse()) return;
       await model.sync.whenIdle();
       if (model.inUse()) return;
