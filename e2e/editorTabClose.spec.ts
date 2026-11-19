@@ -58,30 +58,28 @@ for (const closeButtonPosition of ["right", "left"]) {
   });
 }
 
-test("a close button on the left takes the file icon's place", async ({ workbench: page }) => {
+test("a close button on the left keeps a narrow slot before the icon", async ({ workbench: page }) => {
   await openFromTree(page, "README.md");
   await openFromTree(page, "build.gradle.kts");
   await setTabs(page, { closeButtonPosition: "left" });
   const strip = page.getByRole("tablist", { name: "Editor tabs" });
 
-  // The selected tab shows its close button where its icon is.
+  // The selected and the hovered tab show their button in an 18px slot before the icon, which stays visible.
   const selected = strip.getByRole("tab", { name: "build.gradle.kts" });
-  await expect(selected.locator(":scope > :first-child")).toHaveCSS("opacity", "0");
-  const icon = await box(selected.locator(":scope > :first-child"));
-  const close = await box(closeOf(selected));
-  expect(close.x).toBeLessThanOrEqual(icon.x + 0.5);
-  expect(close.x + close.width).toBeGreaterThanOrEqual(icon.x + icon.width - 0.5);
-
-  // Another tab's icon turns into its close button under the pointer.
   const other = strip.getByRole("tab", { name: "README.md" });
-  const otherIcon = await box(other.locator(":scope > :first-child"));
-  // Hidden, it takes no clicks, so a tap on the icon without a hover selects the tab.
-  await page.mouse.move(0, 0);
-  await expect(closeOf(other)).toHaveCSS("pointer-events", "none");
   await other.hover();
-  await page.mouse.click(otherIcon.x + otherIcon.width / 2, otherIcon.y + otherIcon.height / 2);
-  await expect(other).toBeHidden();
-  await expect(selected).toHaveAttribute("aria-selected", "true");
+  for (const tab of [selected, other]) {
+    const icon = tab.locator(":scope > :first-child");
+    await expect(icon).toHaveCSS("opacity", "1");
+    await expect(closeOf(tab)).toHaveCSS("opacity", "1");
+    const slot = await box(tab.locator(".."));
+    const close = await box(closeOf(tab));
+    const glyph = await box(icon);
+    const label = await box(tab.locator(":scope > span"));
+    expect(close.x + close.width).toBeLessThanOrEqual(glyph.x + 0.5);
+    expect(glyph.x - slot.x).toBeCloseTo(18, 0);
+    expect(slot.x + slot.width - (label.x + label.width)).toBeCloseTo(8, 0);
+  }
 
   // Without file icons the close button keeps its own place before the label.
   await setTabs(page, { showFileIcon: false });

@@ -295,13 +295,12 @@ export function Tabs({
       // into view instead of leaving its close button clipped until a tab switch.
       revealTab(latest.current.activeId, true);
     };
-    // Also when the close button changes side: that resizes every tab but not the strip.
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [items.length, revealTab, vertical, closePosition]);
+  }, [items.length, revealTab, vertical]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.

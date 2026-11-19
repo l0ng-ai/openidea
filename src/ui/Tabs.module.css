@@ -281,12 +281,9 @@
 .editor:not(.vertical) .scroller {
   column-gap: var(--space-1);
 }
-/* Close button on the right: every closable tab keeps its slot (IDEA), cut to what the close glyph needs, so an
-   unselected tab ends 18px after its label instead of 26px. */
-.editor:not(.vertical, .closeLeft) .closable .tabButton {
-  padding-right: 18px;
-}
-.editor:not(.vertical, .closeLeft) .closeSlot {
+/* Every closable tab keeps a close slot at one edge (IDEA), cut to what the close glyph needs: 18px, a 2px
+   inset and the 16px button. The label side keeps the 8px inset, so the side doesn't change a tab's width. */
+.editor:not(.vertical) .closeSlot {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -294,39 +291,21 @@
   width: auto;
   margin: 0;
 }
-.editor:not(.vertical, .closeLeft) .close {
+.editor:not(.vertical) .close {
   width: 16px;
 }
-.editor:not(.vertical, .closeLeft) .closeSlot .modified {
+.editor:not(.vertical) .closeSlot .modified {
   left: 5px;
 }
-/* Close button on the left: no tab reserves a slot. The close button takes the file icon's place on the
-   selected and the hovered tab, and the modified dot becomes a badge on the icon. A tab without an icon keeps
-   the slot above. */
-.editor.closeLeft:not(.vertical) .closable:has(.tabIcon) .tabButton {
-  padding: 0 var(--tab-inline-padding);
+.editor:not(.vertical, .closeLeft) .closable .tabButton {
+  padding-right: 18px;
 }
-.editor.closeLeft:not(.vertical) .closable:has(.tabIcon) .closeSlot {
-  position: static;
-  width: auto;
-  margin: 0;
+.editor.closeLeft:not(.vertical) .closeSlot {
+  right: auto;
+  left: 2px;
 }
-.editor.closeLeft:not(.vertical) .closable:has(.tabIcon) .close {
-  position: absolute;
-  top: 50%;
-  left: calc(var(--tab-inline-padding) - 3px);
-  translate: 0 -50%;
-}
-/* Hidden, it takes no clicks: a tap on an unselected tab's icon selects the tab. */
-.editor.closeLeft:not(.vertical) .closable:has(.tabIcon):not(.selected, :hover, [data-context-menu-open]) .close {
-  pointer-events: none;
-}
-.editor.closeLeft:not(.vertical) .closable:has(.tabIcon) .closeSlot .modified {
-  top: calc(50% - 9px);
-  left: calc(var(--tab-inline-padding) + 10px);
-}
-.editor.closeLeft:not(.vertical) .closable:is(.selected, :hover, [data-context-menu-open]) .tabIcon {
-  opacity: 0;
+.editor.closeLeft:not(.vertical) .closable .tabButton {
+  padding-left: 18px;
 }
 
 /* drag & drop: the dragged tab is an empty slot the other tabs make room for (IDEA) */
