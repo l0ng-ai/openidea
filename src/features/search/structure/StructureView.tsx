@@ -471,7 +471,7 @@ function FileStructureDialog() {
     <Dialog
       open
       onClose={close}
-      width={460}
+      width={540}
       position="top"
       transparentBackdrop
       aria-label="File Structure"

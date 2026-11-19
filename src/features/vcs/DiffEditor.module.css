@@ -47,8 +47,21 @@
   }
 }
 @container diff-editor (max-width: 380px) {
-  .toolbar > .sep {
+  .toolbar {
+    height: auto;
+    min-height: var(--h-header);
+    flex-wrap: wrap;
+    align-content: center;
+    padding-block: var(--space-0-5);
+  }
+  .toolbar > .sep,
+  .toolbar > .inlineOption {
     display: none;
+  }
+  .toolbar > .count {
+    flex: 1 1 auto;
+    order: 1;
+    text-align: end;
   }
 }
 .labels {
