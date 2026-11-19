@@ -149,7 +149,6 @@ function RunAnythingPopup({ root }: { root: string }) {
           onActivate={(r) => run(r)}
           focusable={false}
           hoverSelects={false}
-          rowHeight={24}
           className={styles.rows}
           aria-label="Run Anything entries"
           empty={

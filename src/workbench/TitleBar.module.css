@@ -9,6 +9,7 @@
   -webkit-user-select: none;
   user-select: none;
   color: var(--fg-strong);
+  font-size: var(--fs-chrome);
 }
 /* Room for the native macOS traffic lights (Overlay title bar). */
 .overlay {
@@ -68,12 +69,12 @@
 /* Main toolbar dropdown widgets. */
 .widget {
   min-width: 0;
-  height: 30px;
+  height: var(--h-toolbar-widget);
   margin: 0;
   padding: 0 8px;
-  border-radius: var(--radius-popup);
+  border-radius: var(--radius-toolbar-dropdown);
   color: var(--fg-strong);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-chrome);
 }
 .widget {
   gap: var(--space-1-5);
@@ -106,6 +107,12 @@
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+/* IDEA compact: the avatar follows MainToolbar.Button.iconSize (20 → 16). */
+:global(:root[data-compact]) .avatar {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+}
 .drag {
   flex: 1;
   align-self: stretch;
@@ -120,7 +127,7 @@
 .tool {
   width: var(--titlebar-tool-button);
   height: var(--titlebar-tool-button);
-  border-radius: var(--radius-popup);
+  border-radius: var(--radius-toolbar-button);
   color: var(--fg-secondary);
 }
 

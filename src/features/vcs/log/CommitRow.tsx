@@ -22,6 +22,7 @@ function CommitRowView({
   fileHistoryTarget,
   graph,
   top,
+  height,
   selected,
   head,
   mine,
@@ -45,6 +46,7 @@ function CommitRowView({
   fileHistoryTarget: string | null;
   graph: GraphRow | undefined;
   top: number;
+  height: number;
   selected: boolean;
   head: boolean;
   mine: boolean;
@@ -162,7 +164,7 @@ function CommitRowView({
         selected && styles.selected,
         opts.showColumnDividers && styles.showDividers,
       )}
-      style={{ top }}
+      style={{ top, height }}
       onMouseDown={(e) => {
         if (e.shiftKey) e.preventDefault(); // no text selection on range clicks
         onPick(commitKey(c), e);

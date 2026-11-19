@@ -12,6 +12,7 @@ import { codePreviewExtensions } from "@/editor/api";
 import { basename } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, List, Popup, Select, Spinner, fileIconName, listNavigate } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { openLocation, readFileLines } from "./ipc";
 import {
   dismissUsagesPopup,
@@ -83,6 +84,7 @@ const ROW = 24;
 function UsagesPopupInner() {
   const { anchor, symbol, groups, note, loading, scope } = useUsagesPopup();
   const preview = useUsagesPopupPreview((s) => s.preview);
+  const rowHeight = useRowHeight(ROW);
   const all = useMemo<Usage[]>(() => groups.flatMap((g) => g.usages), [groups]);
   const [filter, setFilter] = useState("");
   const accessOptions = useUsageAccessOptions();
@@ -210,7 +212,7 @@ function UsagesPopupInner() {
         )}
         <div
           className={styles.body}
-          style={{ height: rowCount * ROW, minHeight: `min(${Math.min(rowCount, 3) * ROW}px, 18vh)` }}
+          style={{ height: rowCount * rowHeight, minHeight: `min(${Math.min(rowCount, 3) * rowHeight}px, 18vh)` }}
         >
           <List
             items={items}
@@ -221,7 +223,7 @@ function UsagesPopupInner() {
             onActiveChange={setActive}
             focusable={false}
             hoverSelects
-            rowHeight={ROW}
+            rowHeight={rowHeight}
             aria-label="Usages"
             onActivate={pick}
             empty={

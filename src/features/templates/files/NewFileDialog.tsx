@@ -93,7 +93,6 @@ function TemplateStep({
           onActivate={(t) => onPick(t)}
           focusable={false}
           hoverSelects
-          rowHeight={24}
           className={styles.templateList}
           aria-label="File templates"
           renderItem={(t) => (

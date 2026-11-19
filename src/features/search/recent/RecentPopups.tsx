@@ -387,7 +387,6 @@ function RecentFilesDialog() {
             }}
             onActivate={(t) => openTool(t.tw)}
             focusable={false}
-            rowHeight={24}
             aria-label="Tool windows"
             renderItem={(t) => <ToolRow tw={t.tw} title={t.title} indices={t.indices} />}
           />
@@ -414,7 +413,6 @@ function RecentFilesDialog() {
             isSelected={(f) => effectiveColumn === "files" && !!fileSelection.keys?.has(f.path)}
             onActivate={(f, _i, e) => openFile(f, e.shiftKey)}
             focusable={false}
-            rowHeight={24}
             aria-label={switcher ? "Open files" : "Recent files"}
             empty={
               paths && (
