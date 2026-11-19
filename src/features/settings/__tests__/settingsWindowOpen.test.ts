@@ -139,4 +139,43 @@ describe("the native Settings window", () => {
     useProject.setState({ project: null, settings: null });
     dispose();
   });
+
+  it("reconciles globalBase with remote settings_get_global when supported by the remote server", async () => {
+    loadBuiltinPages.mockResolvedValue(() => {});
+    windowTakeLaunch.mockResolvedValueOnce(null);
+    settingsGetGlobal.mockResolvedValueOnce({
+      appearance: { theme: "dark" },
+      mcpServer: { enabled: false },
+    });
+    projectCurrent.mockResolvedValueOnce({
+      root: "/home/dev/repo",
+      name: "repo",
+      displayName: "repo",
+      trusted: true,
+      isGit: true,
+      settings: { appearance: { theme: "dark" }, mcpServer: { enabled: false } },
+    });
+    windowTakeSettingsInit.mockResolvedValueOnce({
+      launch: { settingsPage: "agents.mcpServer", newProjects: false },
+      remote: {
+        target: { type: "ssh", config: "devbox" },
+        root: "/home/dev/repo",
+        host: "devbox",
+        os: "linux",
+        commands: ["project_current", "settings_get_global"],
+      },
+      project: null,
+      globalSettings: { appearance: { theme: "dark" }, mcpServer: { enabled: true } },
+      updates: true,
+    });
+
+    const dispose = activateSettingsWindow("main");
+    await vi.waitFor(() => expect(useSettingsDialog.getState().pagesLoading).toBe(false));
+    await vi.waitFor(() => expect(useSettingsDialog.getState().globalBase.mcpServer.enabled).toBe(false));
+    expect(useSettingsDialog.getState().base.mcpServer.enabled).toBe(false);
+
+    disableRemote();
+    useProject.setState({ project: null, settings: null });
+    dispose();
+  });
 });

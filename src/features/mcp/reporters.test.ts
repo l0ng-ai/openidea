@@ -5,10 +5,13 @@ const state = vi.hoisted(() => ({
   selection: { from: 3, to: 5 },
   remote: false,
   root: "/p",
+  trusted: true as boolean | undefined,
   registryChanged: () => {},
   editorChanged: () => {},
   projectChanged: () => {},
+  trustChanged: () => {},
   remoteChanged: () => {},
+  uiReady: vi.fn(async () => undefined),
   reportOpen: vi.fn(async () => undefined),
   reportFocused: vi.fn(async () => undefined),
 }));
@@ -39,9 +42,14 @@ vi.mock("@/editor/api", () => ({
 }));
 vi.mock("@/platform/project", () => ({
   useProject: {
-    getState: () => ({ project: { root: state.root } }),
+    getState: () => ({ project: { root: state.root, trusted: state.trusted } }),
     subscribe: (fn: (s: unknown, prev: unknown) => void) => {
-      state.projectChanged = () => fn({ project: { root: state.root } }, { project: null });
+      state.projectChanged = () => fn({ project: { root: state.root, trusted: state.trusted } }, { project: null });
+      state.trustChanged = () =>
+        fn(
+          { project: { root: state.root, trusted: state.trusted } },
+          { project: { root: state.root, trusted: false } },
+        );
       return () => {};
     },
   },
@@ -60,7 +68,7 @@ vi.mock("@/platform/ipc", () => ({
   onIdeEvent: () => () => {},
   ideEventsReady: async () => {},
   commands: {
-    mcpUiReady: vi.fn(async () => {}),
+    mcpUiReady: state.uiReady,
     mcpSetOpenEditors: state.reportOpen,
     mcpSetFocusedEditor: state.reportFocused,
   },
@@ -78,6 +86,7 @@ describe("MCP editor reports", () => {
     state.selection = { from: 3, to: 5 };
     state.remote = false;
     state.root = "/p";
+    state.trusted = true;
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     stop = activate();
   });
@@ -144,13 +153,27 @@ describe("MCP editor reports", () => {
     expect(state.reportOpen).toHaveBeenCalledTimes(2);
     expect(state.reportFocused).toHaveBeenCalledTimes(2);
   });
-  it("resends unchanged editors after reconnecting at the same root", async () => {
+  it("resends unchanged editors and marks UI ready after reconnecting at the same root", async () => {
     state.remote = true;
     await vi.advanceTimersByTimeAsync(300);
+    state.uiReady.mockClear();
     state.remoteChanged();
     await vi.advanceTimersByTimeAsync(300);
+    expect(state.uiReady).toHaveBeenCalledWith(true);
     expect(state.reportOpen).toHaveBeenCalledTimes(2);
     expect(state.reportFocused).toHaveBeenCalledTimes(2);
+  });
+  it("registers UI readiness once a restricted project is trusted", async () => {
+    stop();
+    state.trusted = false;
+    state.uiReady.mockClear();
+    stop = activate();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(state.uiReady).not.toHaveBeenCalled();
+    state.trusted = true;
+    state.trustChanged();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(state.uiReady).toHaveBeenCalledWith(true);
   });
   it("forwards remote editor reports and stops after disposal", async () => {
     state.remote = true;

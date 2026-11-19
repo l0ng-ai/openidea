@@ -731,6 +731,10 @@ impl Host {
         agents.set_mcp_servers_hook(Box::new(move || {
             crate::ops::agent::session_mcp_servers(&settings, &approvals, &secrets, &root)
         }));
+        {
+            let mcp_executable = self.mcp_executable.clone();
+            agents.set_mcp_executable_hook(Box::new(move || mcp_executable.read().clone()));
+        }
         (db, http_history, agents)
     }
 }

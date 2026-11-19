@@ -59,7 +59,8 @@ pub struct HostConfig {
 }
 
 pub struct Host {
-    pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
+    pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
+    pub mcp: mcp::McpService,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     /// Every `Diagnostics` event the host ever emitted, per file and producer:
     /// the snapshot plugins read (`problems`), independent of windows and reports.
@@ -152,7 +153,8 @@ impl Host {
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
-            mcp_executable: RwLock::default(),
+            mcp_executable: Arc::default(),
+            mcp: Default::default(),
             diagnostics,
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
@@ -222,12 +224,12 @@ impl Host {
         }
     }
 
-    /// Associates the plugin runtime that executes this host's project operations.
-    /// Publishes only the executable of the running built-in MCP service.
+    /// Publishes the executable of the running built-in MCP service (`None` while it is off).
     pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
         *self.mcp_executable.write() = executable;
     }
 
+    /// Associates the plugin runtime that executes this host's project operations.
     pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
         *self.plugin_host.write() = Arc::downgrade(plugins);
     }
