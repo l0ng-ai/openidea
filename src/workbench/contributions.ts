@@ -1883,9 +1883,15 @@ export function registerEndpointProvider(p: EndpointProvider): () => void {
   };
 }
 
-export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+/** Endpoints of every provider, or of those `provider` accepts (by provider id). */
+export async function searchEndpoints(
+  root: string | null,
+  provider: (id: string) => boolean = () => true,
+): Promise<EndpointEntry[]> {
   if (!root) return [];
-  const results = await Promise.allSettled([...endpointProviders.values()].map(async (p) => p.endpoints(root)));
+  const results = await Promise.allSettled(
+    [...endpointProviders.values()].filter((p) => provider(p.id)).map(async (p) => p.endpoints(root)),
+  );
   return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
