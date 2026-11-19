@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Location } from "@/bindings";
 
 const openFile = vi.fn(async () => undefined);
@@ -19,7 +19,6 @@ const { closePopup, openPopup, useLspPopup } = await import("./popupStore");
 const { useDocWindow, hoverDoc, pushHistory, stepHistory, hoverCandidates } = await import("./docs");
 const { mountHoverDoc } = await import("./DocView");
 const { hoverSource } = await import("./hover");
-import popupStyles from "./Popups.module.css";
 import { registerImportsOnPasteActions } from "./importsOnPaste";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -352,7 +351,7 @@ describe("quick definition popup", () => {
 });
 
 describe("reformat dialog", () => {
-  it("wraps its content in the padded body", () => {
+  it("offers only whole-file formatting when the editor has no selection", () => {
     const onRun = vi.fn();
     openPopup({
       kind: "reformat",
@@ -363,9 +362,10 @@ describe("reformat dialog", () => {
       onRun,
     });
     render(<LspPopups />);
-    const body = screen.getByRole("dialog", { name: "Reformat File" }).querySelector("[data-dialog-body]")!;
-    expect(body.firstElementChild).toHaveClass(popupStyles.reformatBody!);
-    expect(body.firstElementChild!.querySelectorAll("fieldset")).toHaveLength(2);
+    const scope = within(screen.getByRole("group", { name: "Scope" }));
+    expect(scope.getByRole("radio", { name: "Selected text" })).toBeDisabled();
+    expect(scope.getByRole("radio", { name: "Whole file" })).toBeChecked();
+    expect(within(screen.getByRole("group", { name: "Options" })).getByRole("checkbox")).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(onRun).toHaveBeenCalledWith({ selectionOnly: false, optimizeImports: false });
   });

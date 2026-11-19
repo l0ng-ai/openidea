@@ -8875,6 +8875,7 @@
   "{length} selected items": "已选择 {length} 项",
   "Include subdirectories": "包含子目录",
   "Only VCS changed text": "仅 VCS 更改的文本",
+  "Filters": "筛选条件",
   "Files are reformatted by their language's formatter and saved; files without one are skipped.": "文件由各自语言的格式化程序重新格式化并保存；没有格式化程序的文件将被跳过。",
   "No changed files to reformat": "没有需要重新格式化的已更改文件",
   "No files to reformat": "没有需要重新格式化的文件",
