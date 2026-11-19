@@ -206,6 +206,7 @@ Limits: interactive rebase doesn't support ranges with merge commits, and **Undo
 
 - **Shelve Changes…** lets you pick files and a name; the changes are then reverted.
 - **Unshelve…** applies a shelf (or one file of it) with a three-way merge, into a changelist you choose.
+- **Shelve Silently** (`⇧⌘H` / `Ctrl+Shift+H`, also on the Changes toolbar) shelves the selected changes, or the active changelist, without the dialog: one shelf per changelist, named after it. **Unshelve Silently** (`⌥⌘U` / `Ctrl+Alt+U` in the Shelf) applies the selected shelf or file into the changelist with the shelf's name, else the active one.
 - The **Shelf** tab shows shelves with diff, compare with local, patch export, rename and delete.
 
 Turn on **Combine stashes and shelves in one tab** in the Git settings to show both in one tab.
