@@ -200,8 +200,11 @@ fn js_name_pattern(target: &Target) -> String {
     let pattern = escape_regexp(&target.path.join(" "));
     // `test.each` placeholders (%s, $name, ${…}) match anything.
     let pattern = JS_PATTERN_PLACEHOLDER.replace_all(&pattern, ".*");
-    if target.kind == Kind::Suite { format!("^{pattern}") } else { format!("^{pattern}$") }
+    // A suite matches its own tests ("math adds"), not a sibling sharing its prefix ("mathematics").
+    if target.kind == Kind::Suite { format!("^{pattern}(?: |$)") } else { format!("^{pattern}$") }
 }
+
+re!(NODE_TEST_IMPORT, r#"\bfrom\s+["']node:test["']|\brequire\(\s*["']node:test["']\s*\)"#);
 
 // ---------------------------------------------------------------- Python
 
@@ -786,6 +789,12 @@ pub fn target_config(
     };
     let with = |extra: Vec<String>| [file.args.clone(), extra].concat();
     match file.kind.as_str() {
+        // `node --test` reads `--test-name-pattern` (not `-t`), and only before the first file.
+        "npm" | "bun" | "deno" if NODE_TEST_IMPORT.is_match(content) => {
+            let mut args = file.args.clone();
+            args.insert(args.len().saturating_sub(1), format!("--test-name-pattern={}", js_name_pattern(target)));
+            Some(named(args))
+        }
         "npm" | "bun" | "deno" => Some(named(with(vec!["-t".into(), js_name_pattern(target)]))),
         "pytest" | "python" => {
             Some(named(replace_last(file.args.clone(), |f| format!("{f}::{}", target.path.join("::")))))
@@ -898,7 +907,7 @@ mod tests {
         );
         assert_eq!(js_name_pattern(&ts[1]), "^math adds$");
         assert_eq!(js_name_pattern(&ts[3]), "^math nested n=.*$");
-        assert_eq!(js_name_pattern(&ts[0]), "^math");
+        assert_eq!(js_name_pattern(&ts[0]), "^math(?: |$)");
         assert!(detect("test('x', () => {})", "src/math.ts").is_empty());
     }
 
@@ -960,6 +969,25 @@ mod tests {
         assert_eq!(c.args, ["test", "-p", "ide-mcp", "--", "stdio::tests::adds", "--exact"]);
         let c = target_config(root, &ts[1], "src/lib.rs", &configs, src).unwrap();
         assert!(!c.args.iter().any(|a| a == "-p"), "outside every member: the workspace's tests, {:?}", c.args);
+    }
+
+    #[test]
+    fn js_targets_filter_by_name_with_the_files_runner_flag() {
+        let root = Path::new("/p");
+        let mut test = blank("npm:test".into(), "test", "npm", "pnpm".into(), vec!["run".into(), "test".into()]);
+        test.is_test = true;
+        let configs = vec![test];
+        let body = "describe('m', () => {\n  it('adds', () => {});\n});\n";
+        let ts = detect(body, "src/a.test.ts");
+        let c = target_config(root, &ts[0], "src/a.test.ts", &configs, body).unwrap();
+        assert_eq!(c.args, ["run", "test", "--", "src/a.test.ts", "-t", "^m(?: |$)"]);
+
+        let src = format!("import {{ describe, it }} from \"node:test\";\n{body}");
+        let ts = detect(&src, "src/a.test.ts");
+        let c = target_config(root, &ts[0], "src/a.test.ts", &configs, &src).unwrap();
+        assert_eq!(c.args, ["run", "test", "--", "--test-name-pattern=^m(?: |$)", "src/a.test.ts"]);
+        let c = target_config(root, &ts[1], "src/a.test.ts", &configs, &src).unwrap();
+        assert_eq!(c.args, ["run", "test", "--", "--test-name-pattern=^m adds$", "src/a.test.ts"]);
     }
 
     #[test]

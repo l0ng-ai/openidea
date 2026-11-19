@@ -66,7 +66,7 @@ describe("detectRunTargets", () => {
     expect(ts[3]!.parameterized).toBe(true);
     expect(jsNamePattern(ts[1]!)).toBe("^math adds$");
     expect(jsNamePattern(ts[3]!)).toBe("^math nested n=.*$");
-    expect(jsNamePattern(ts[0]!)).toBe("^math");
+    expect(jsNamePattern(ts[0]!)).toBe("^math(?: |$)");
     expect(detectRunTargets("test('x', () => {})", "src/math.ts")).toEqual([]);
   });
 
@@ -174,6 +174,14 @@ describe("targetConfig", () => {
       "-t",
       "^m adds$",
     ]);
+    const js = "describe('m', () => {\n  it('adds', () => {});\n});";
+    const jsArgs = (src: string, i: number) =>
+      targetConfig(detectRunTargets(src, "src/a.test.ts")[i]!, "src/a.test.ts", configs, src)!.args;
+    expect(jsArgs(js, 0)).toEqual(["run", "test", "src/a.test.ts", "-t", "^m(?: |$)"]);
+    // node:test ignores `-t`, and reads options only before the first file.
+    const nodeTest = `import { describe, it } from "node:test";\n${js}`;
+    expect(jsArgs(nodeTest, 0)).toEqual(["run", "test", "--test-name-pattern=^m(?: |$)", "src/a.test.ts"]);
+    expect(jsArgs(nodeTest, 1)).toEqual(["run", "test", "--test-name-pattern=^m adds$", "src/a.test.ts"]);
     expect(first("class TestC:\n    def test_a(self): pass", "tests/test_c.py").args).toEqual([
       "tests/test_c.py::TestC::test_a",
     ]);

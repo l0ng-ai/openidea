@@ -408,7 +408,13 @@ export function jsNamePattern(target: RunTarget): string {
   let pattern = escapeRegExp(full);
   // `test.each` placeholders (%s, $name, ${…}) match anything.
   pattern = pattern.replace(/%[sdifjo#p]|\\\$\\\{[^}]*\\\}|\$\w+/g, ".*");
-  return target.kind === "suite" ? `^${pattern}` : `^${pattern}$`;
+  // A suite matches its own tests ("math adds"), not a sibling sharing its prefix ("mathematics").
+  return target.kind === "suite" ? `^${pattern}(?: |$)` : `^${pattern}$`;
+}
+
+/** The file uses Node's built-in runner, which filters with `--test-name-pattern` instead of `-t`. */
+function usesNodeTest(content: string | undefined): boolean {
+  return !!content && /\bfrom\s+["']node:test["']|\brequire\(\s*["']node:test["']\s*\)/.test(content);
 }
 
 function withLast(args: string[], f: (last: string) => string): string[] {
@@ -482,6 +488,13 @@ export function targetConfig(
     case "npm":
     case "bun":
     case "deno":
+      // `node --test` stops reading options at the first file, so the pattern goes before it.
+      if (usesNodeTest(content))
+        return named([
+          ...file.args.slice(0, -1),
+          `--test-name-pattern=${jsNamePattern(target)}`,
+          ...file.args.slice(-1),
+        ]);
       return named([...file.args, "-t", jsNamePattern(target)]);
     case "pytest":
     case "python":
