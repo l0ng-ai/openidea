@@ -30,13 +30,15 @@ export async function chooseProjectWindow(
   const r = await ask({
     title: t("app.window.askTitle"),
     width: canAdd ? 640 : undefined,
-    body: tx`Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open "${name}"?`,
+    body: canAdd
+      ? tx`Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open "${name}"?`
+      : t("app.window.askBody", { name }),
     buttons: [
       { id: "cancel", label: t("common.cancel") },
       ...(canAdd
         ? [
             { id: "attach", label: t("app.window.askAttach") },
-            { id: "tab", label: "New Tab" },
+            { id: "tab", label: tx`New Tab` },
           ]
         : []),
       { id: "new", label: t("app.window.askNew") },
