@@ -3,6 +3,7 @@
 use ide_core::event::NotifyLevel;
 use ide_core::output_encoding::decode_tool_output;
 use ide_core::{CancellationToken, Diagnostic, IdeEvent, Pos, Range, Severity, SharedSink};
+use ide_text::AppliedChange;
 use ide_workspace::SettingsStore;
 use ide_workspace::documents::DocumentObserver;
 use parking_lot::Mutex;
@@ -245,6 +246,23 @@ impl Phpstan {
 impl DocumentObserver for Phpstan {
     fn saved(&self, _doc: ide_core::DocId, path: &Path, _text: &str) {
         self.files_saved([path.to_path_buf()]);
+    }
+
+    /// The shown ranges belong to the saved text PHPStan ran on, so an edit that
+    /// reaches the buffer before the next save would paint them on other lines
+    /// (`issue #4482`): drop them until the file is saved again.
+    fn changed(
+        &self,
+        _doc: ide_core::DocId,
+        path: &Path,
+        _version: u32,
+        _changes: &[AppliedChange],
+        _full_text: &dyn Fn() -> String,
+    ) {
+        if !path.extension().is_some_and(|e| e == "php") || !self.shown.lock().contains(path) {
+            return;
+        }
+        self.publish(path.to_path_buf(), Vec::new());
     }
 }
 
@@ -845,6 +863,35 @@ mod tests {
         assert_eq!(f.diagnostics().len(), 1);
         f.checker.files_removed([f.root.join("src")].iter());
         assert_eq!(f.diagnostics()[1], (a, vec![]));
+        f.checker.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_before_the_next_save_drops_the_saved_text_diagnostics() {
+        let f = Fixture::new();
+        let a = f.file("A.php");
+        f.report(&a, &["constant.notFound"]);
+        f.checker.files_saved([a.clone()]);
+        f.until("the check", |f| f.diagnostics().len() == 1).await;
+
+        let edit = || {
+            [AppliedChange { range: ide_core::Range::point(ide_core::Pos::new(1, 0)), text: "$aaa = array();".into() }]
+        };
+        let full = || String::new();
+        DocumentObserver::changed(f.checker.as_ref(), ide_core::DocId(0), &a, 1, &edit(), &full);
+        f.until("the drop", |f| f.diagnostics().len() == 2).await;
+        assert_eq!(f.diagnostics()[1], (a.clone(), vec![]));
+        // Further edits of the same dirty buffer change nothing.
+        DocumentObserver::changed(f.checker.as_ref(), ide_core::DocId(0), &a, 2, &edit(), &full);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(f.diagnostics().len(), 2);
+
+        // The next save checks the file again.
+        f.report(&a, &["constant.notFound"]);
+        f.checker.files_saved([a.clone()]);
+        f.until("the fresh check", |f| f.diagnostics().len() == 3).await;
+        assert_eq!(f.diagnostics()[2], (a.clone(), vec![Some("constant.notFound".to_string())]));
         f.checker.stop();
     }
 }
