@@ -6974,6 +6974,8 @@ export type HttpResponse = {
 	version: string,
 	headers: ([string, string])[],
 	contentType: string | null,
+	/**  Followed redirects, first hop first; empty when not redirected. */
+	redirects?: RedirectHop[],
 	/**  Body as text (lossy UTF-8); `None` for binary bodies. */
 	body: string | null,
 	/**  Size in bytes as received (after decompression). */
@@ -10315,6 +10317,13 @@ export type RecentProjectGroup = {
 	/**  Its projects, in the order they were added. */
 	paths: IpcPath[],
 	expanded?: boolean,
+};
+
+/**  One followed redirect: the response and the `Location` it pointed to. */
+export type RedirectHop = {
+	status: number,
+	statusText: string,
+	location: string,
 };
 
 export type RefactoringProblem = {
