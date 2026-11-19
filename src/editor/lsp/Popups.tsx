@@ -1,5 +1,5 @@
 /** React popups for LSP editor features, rendered as a workbench overlay. */
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import {
   Checkbox,
@@ -49,11 +49,17 @@ function ItemIcon({ item }: { item: ListPopupItem }) {
   return <span className={styles.iconSpacer} />;
 }
 
-function ListPreviewPanel({ preview }: { preview: ListPreview | null | "loading" }) {
+function ListPreviewPanel({
+  preview,
+  themeClasses,
+}: {
+  preview: ListPreview | null | "loading";
+  themeClasses?: string;
+}) {
   if (preview === "loading") return <div className={styles.previewPanel} aria-busy="true" />;
   if (!preview) return null;
   return (
-    <div className={styles.previewPanel} aria-label={tx("Preview")}>
+    <div className={clsx(styles.previewPanel, themeClasses)} role="region" aria-label={tx("Preview")}>
       {preview.kind === "text" ? (
         <div className={styles.previewText}>{preview.text}</div>
       ) : (
@@ -69,6 +75,9 @@ function ListPreviewPanel({ preview }: { preview: ListPreview | null | "loading"
     </div>
   );
 }
+
+const LIST_PREVIEW_WIDTH = 420;
+const MIN_SIDE_BY_SIDE_WIDTH = 660;
 
 function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
   const [query, setQuery] = useState("");
@@ -91,6 +100,13 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
 
   const [preview, setPreview] = useState<{ id: string; data: ListPreview | null } | null>(null);
   const fetchPreview = popup.preview;
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    if (!fetchPreview) return;
+    const resize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, [fetchPreview]);
   useEffect(() => {
     if (!fetchPreview || !activeItem || activeItem.disabled) return;
     const ctrl = new AbortController();
@@ -164,22 +180,46 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         ? ("loading" as const)
         : null
     : null;
+  const hasPreview = shownPreview !== null;
+  const previewBelow = hasPreview && viewportWidth <= MIN_SIDE_BY_SIDE_WIDTH;
+  const previewLeft =
+    hasPreview &&
+    !previewBelow &&
+    popup.anchor.x + width + LIST_PREVIEW_WIDTH > viewportWidth - 6 &&
+    popup.anchor.x >= LIST_PREVIEW_WIDTH + 6;
+  const anchor = useMemo(() => {
+    if (!fetchPreview) return popup.anchor;
+    const x = popup.anchor.x - (previewLeft ? LIST_PREVIEW_WIDTH : 0);
+    return {
+      getBoundingClientRect: () =>
+        new DOMRect(
+          Math.max(0, Math.min(x, window.innerWidth)),
+          Math.max(0, Math.min(popup.anchor.y, window.innerHeight)),
+          0,
+          0,
+        ),
+    };
+  }, [fetchPreview, popup.anchor, previewLeft]);
+  const popupSize = {
+    width: hasPreview ? width + LIST_PREVIEW_WIDTH : width,
+    "--list-preview-width": `${LIST_PREVIEW_WIDTH}px`,
+  } as CSSProperties;
   const indexOf = (item: ListPopupItem) => popup.items.indexOf(item);
   return (
     <Popup
       open
-      anchor={popup.anchor}
+      anchor={anchor}
       onClose={closePopup}
       aria-label={popup.title}
-      className={clsx(styles.listPopup, popup.preview && styles.withPreview)}
-      style={popup.preview ? undefined : { width }}
+      className={clsx(
+        styles.listPopup,
+        hasPreview && styles.withPreview,
+        previewBelow && styles.previewBelow,
+        previewLeft && styles.previewLeft,
+      )}
+      style={popupSize}
     >
-      <div
-        className={styles.listMain}
-        style={popup.preview ? { width } : undefined}
-        data-testid="list-popup"
-        aria-busy={popup.busy || undefined}
-      >
+      <div className={styles.listMain} data-testid="list-popup" aria-busy={popup.busy || undefined}>
         <div className={styles.listHeader}>
           <span className={styles.listTitle}>{popup.title}</span>
           {popup.busy && <Spinner size={12} />}
@@ -260,7 +300,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
           />
         </div>
       </div>
-      {popup.preview && <ListPreviewPanel preview={shownPreview} />}
+      {popup.preview && <ListPreviewPanel preview={shownPreview} themeClasses={popup.themeClasses} />}
       {sub?.item.submenu && (
         <Popup
           open
@@ -404,6 +444,19 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   const focusSeq = useLspPopup((s) => s.focusSeq);
   const scope = useRef<HTMLDivElement>(null);
   const opened = useRef(focusSeq);
+  // The captured caret can end up outside the viewport while the popup is open.
+  const anchor = useMemo(
+    () => ({
+      getBoundingClientRect: () =>
+        new DOMRect(
+          Math.max(0, Math.min(popup.anchor.x, window.innerWidth)),
+          Math.max(0, Math.min(popup.anchor.y, window.innerHeight)),
+          0,
+          0,
+        ),
+    }),
+    [popup.anchor],
+  );
   useEffect(() => {
     if (focusSeq !== opened.current)
       scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
@@ -412,7 +465,7 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   return (
     <Popup
       open
-      anchor={popup.anchor}
+      anchor={anchor}
       onClose={closePopup}
       aria-label="Documentation"
       className={styles.docPopup}

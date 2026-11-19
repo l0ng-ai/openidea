@@ -133,6 +133,64 @@ test("breadcrumbs follow the caret into the symbol under it", async ({ workbench
   await expect(bar).toBeHidden();
 });
 
+test("narrow breadcrumb bars keep the current symbol visible and allow opening earlier crumbs", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const path = page.getByRole("navigation", { name: "Breadcrumbs", exact: true });
+  const code = page.getByRole("navigation", { name: "Code breadcrumbs" });
+  await editor.locator(".cm-line", { hasText: "service.find(status" }).click();
+  await expect(code).toContainText("list()");
+
+  await page.evaluate(async () => {
+    const documentModule = "/src/editor/core/model/document.ts";
+    const editorModule = "/src/editor/core/controller.ts";
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useOutline }, { useEditorStatus }, { useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ documentModule),
+      import(/* @vite-ignore */ editorModule),
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({ settings: { ...base, editor: { ...base.editor, fontSize: 17 } } });
+    const activePath = useEditorStatus.getState().status.path;
+    let outline = useOutline.getState()[activePath];
+    for (const name of ["OrderProcessingStrategies", "SalesApplicationRouting", "CheckoutWorkspaceConfiguration"]) {
+      outline = [{ ...outline[0], name, detail: null, children: outline }];
+    }
+    useOutline.setState({ [activePath]: outline });
+  });
+
+  await page.setViewportSize({ width: 620, height: 620 });
+  const fullyInBar = (bar: typeof path, label: string) =>
+    bar.evaluate((nav, text) => {
+      const crumb = [...nav.querySelectorAll("button")].find((button) => button.textContent === text);
+      if (!crumb) return false;
+      const { left, right } = nav.getBoundingClientRect();
+      const rect = crumb.getBoundingClientRect();
+      return rect.width > 0 && rect.left >= left - 1 && rect.right <= right + 1;
+    }, label);
+  for (const bar of [path, code]) {
+    await expect.poll(() => fullyInBar(bar, "list()")).toBe(true);
+    await expect(bar.locator('[aria-current="location"]')).toHaveText("list()");
+  }
+  await expect(code.locator('[aria-current="location"]')).toHaveCSS("font-size", "17px");
+  await code.hover();
+  await page.mouse.wheel(0, -1200);
+  await expect.poll(() => fullyInBar(code, "CheckoutWorkspaceConfiguration")).toBe(true);
+
+  const current = path.locator('[aria-current="location"]');
+  await current.focus();
+  await current.press("Home");
+  const project = path.getByRole("button", { name: /acme-api/ }).first();
+  await expect(project).toBeFocused();
+  await expect.poll(() => fullyInBar(path, "acme-api")).toBe(true);
+  await project.press("ArrowDown");
+  await expect(page.getByRole("listbox", { name: "acme-api" })).toBeVisible();
+});
+
 /** What the in-memory backend has saved for `path`. */
 const saved = (page: Page, path: string) =>
   page.evaluate(async (path) => {
