@@ -132,6 +132,21 @@
   font-size: var(--fs-small);
   text-align: right;
 }
+.redirects {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-secondary);
+}
+.redirectHop {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .tabBody {
   flex: 1;
   min-height: 0;

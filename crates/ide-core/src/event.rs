@@ -89,6 +89,8 @@ pub enum IdeEvent {
     DocDirty {
         doc: DocId,
         dirty: bool,
+        /// Text version when this transition occurred, including when it was saved.
+        version: u32,
     },
     /// A complete workspace edit can be undone as one operation.
     WorkspaceEditApplied {

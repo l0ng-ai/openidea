@@ -14,6 +14,7 @@ mod config;
 mod conversation;
 mod elicitation;
 mod external;
+pub mod hermes;
 pub mod mcp;
 mod model;
 mod native;
@@ -709,7 +710,8 @@ impl AgentManager {
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
     /// in the project: what the agent offered last time there, unadvertised builtins,
-    /// and, for Claude Code, skills and custom commands on disk it has not listed.
+    /// and, for Claude Code, skills and custom commands on disk it has not listed (for Hermes,
+    /// its profile's skills).
     pub async fn commands(&self, provider: &str, task: Option<&str>) -> IdeResult<Vec<AgentCommand>> {
         let (provider, offered, cwd) = match task {
             Some(id) => {
@@ -743,10 +745,18 @@ impl AgentManager {
                 offered.push(command);
             }
         }
+        let home = self.shared.paths.home_dir.clone();
+        if provider == "hermes" || provider.starts_with("hermes-") {
+            let found = blocking(move || {
+                let profile = hermes::root(home.as_deref()).and_then(|root| hermes::profile_home(&root, &provider));
+                Ok(profile.map(|p| skills::hermes(&p)).unwrap_or_default())
+            })
+            .await?;
+            return Ok(skills::merge(offered, found));
+        }
         if provider != "claude" && provider != "claude-acp" {
             return Ok(offered);
         }
-        let home = self.shared.paths.home_dir.clone();
         let found = blocking(move || Ok(skills::discover(&cwd, home.as_deref()))).await?;
         Ok(skills::merge(offered, found))
     }
@@ -832,6 +842,7 @@ impl AgentManager {
             retry: None,
             background: Box::default(),
             mcp_overrides: BTreeMap::new(),
+            stats: Box::default(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -949,6 +960,7 @@ impl AgentManager {
             retry: None,
             background: Box::default(),
             mcp_overrides: req.mcp_overrides,
+            stats: Box::default(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -1316,6 +1328,7 @@ impl AgentManager {
                 resets_ms: None,
                 retry: None,
                 background: Box::default(),
+                stats: Box::default(),
                 ..s.task.clone()
             };
             TaskFile {
@@ -2653,7 +2666,13 @@ impl Task {
                 .await;
         }
         match result {
-            Ok(v) => Ok(v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_owned()),
+            Ok(v) => {
+                if let Some(tokens) = config::tokens_of(&v) {
+                    self.state.lock().task.stats.tokens = Some(tokens);
+                    self.emit_task();
+                }
+                Ok(v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_owned())
+            }
             Err(e) => Err(self.failure(e)),
         }
     }
@@ -3187,6 +3206,17 @@ impl Task {
             return;
         }
         if kind == "session_info_update" {
+            let depth = update.pointer("/_meta/hermes/sessionProvenance/compressionDepth").and_then(Value::as_u64);
+            if let Some(depth) = depth.and_then(|d| u32::try_from(d).ok()) {
+                let changed = {
+                    let mut s = self.state.lock();
+                    std::mem::replace(&mut s.task.stats.compressions, depth) != depth
+                };
+                if changed {
+                    self.persist();
+                    self.emit_task();
+                }
+            }
             // The agent's own title for the session replaces the first line of the prompt,
             // unless the user named the task.
             let title = update.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
@@ -4038,7 +4068,7 @@ fn entry_event(
     entry: &AgentEntry,
 ) -> AgentEvent {
     let text = match entry {
-        AgentEntry::Agent { text } | AgentEntry::Thought { text } => Some(text),
+        AgentEntry::Agent { text } | AgentEntry::Thought { text, .. } => Some(text),
         _ => None,
     };
     let Some(text) = text else {

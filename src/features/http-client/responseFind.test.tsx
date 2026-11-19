@@ -29,6 +29,7 @@ const exchange: HttpExchange = {
     version: "HTTP/1.1",
     headers: [["content-type", "text/plain"]],
     contentType: "text/plain",
+    redirects: [],
     body: "alpha beta\nbeta gamma\nBeta",
     size: 26,
     truncated: false,
