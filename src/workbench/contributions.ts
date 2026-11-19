@@ -1063,6 +1063,9 @@ export interface FileDecoration {
   suffixColor?: string;
   /** CSS colour tinting the editor tab (a data source's colour on its console). */
   tint?: string;
+  /** Display name and icon for a specialized file tab. The path still identifies the document. */
+  tabTitle?: string;
+  tabIcon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;
@@ -1817,6 +1820,11 @@ export interface RunAnythingProvider {
   items(query: string): RunAnythingItem[];
   /** Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one. */
   execute?(line: string): boolean | Promise<boolean>;
+  /**
+   * Whether `execute` runs `line` as a command this provider recognizes (cheap,
+   * synchronous): Markdown offers run icons for such lines in code blocks.
+   */
+  accepts?(line: string): boolean;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();
