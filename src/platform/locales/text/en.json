@@ -721,7 +721,6 @@
   "Packaging Artifacts": "Packaging Artifacts",
   "Configure JAR, WAR, or exploded WAR artifacts for packaging and application server deployment.": "Configure JAR, WAR, or exploded WAR artifacts for packaging and application server deployment.",
   "Detected Build Web Artifacts": "Detected Build Web Artifacts",
-  "Home Path": "Home Path",
   "No SDK installations detected yet.": "No SDK installations detected yet.",
   "SDK Details": "SDK Details",
   "Use as Project SDK": "Use as Project SDK",
