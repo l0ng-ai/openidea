@@ -357,8 +357,8 @@ pub async fn debug_send_input(host: &Host, session: DebugSessionId, text: String
     host.debugger.send_input(session, &text)
 }
 
-pub async fn debug_hot_reload(host: &Host, session: DebugSessionId) -> IdeResult<()> {
-    host.debugger.hot_reload(session).await
+pub async fn debug_hot_reload(host: &Host, session: DebugSessionId, reason: HotReloadReason) -> IdeResult<()> {
+    host.debugger.hot_reload(session, reason).await
 }
 
 pub async fn debug_hot_restart(host: &Host, session: DebugSessionId) -> IdeResult<()> {

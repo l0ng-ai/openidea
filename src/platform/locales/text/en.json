@@ -2579,5 +2579,8 @@
   "Could not open the editor window": "Could not open the editor window",
   "Formatting": "Formatting",
   "Format with gofumpt": "Format with gofumpt",
-  "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "gopls applies gofumpt's stricter rules on top of gofmt when reformatting."
+  "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.",
+  "Hot reload on save": "Hot reload on save",
+  "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
+  "Hot reload on save failed: {0}": "Hot reload on save failed: {0}"
 }

@@ -756,7 +756,7 @@ export function registerDebugActions(): () => void {
       when: "debugSessionRunning && debugSessionDart",
       run: () => {
         const s = activeSession();
-        if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id)));
+        if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id, "manual")));
       },
     },
     {
