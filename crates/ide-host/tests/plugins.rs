@@ -2218,6 +2218,8 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let agent = info.java_agent.clone().expect("agent metadata");
     assert_eq!(agent.file_name, "fixture agent.jar");
     assert_eq!(agent.args.as_deref(), Some("mode=test"));
+    assert!(agent.vm_options.is_empty());
+    assert!(agent.jdk.is_none());
     assert!(!agent.approved);
     let source = f.host.java_agents();
     let launch = || {

@@ -1,6 +1,7 @@
 //! Java agents of plugins (`[[contributes.javaAgents]]`): the JVM of an Application,
 //! Spring Boot or JAR Application configuration gets one `-javaagent:<jar>[=<args>]`
-//! per plugin whose `java.agent` capability the user granted, for Run and Debug alike.
+//! per plugin whose `java.agent` capability the user granted, for Run and Debug alike,
+//! plus any `vmOptions` the declaration lists (before the agent).
 //!
 //! The grant records the jar's content hash; an agent whose jar no longer has it is
 //! left out (with a console line) until the user approves it again. The desktop
@@ -26,6 +27,10 @@ pub struct ContributedAgent {
     /// The jar in the plugin's package (absolute).
     pub jar: PathBuf,
     pub args: Option<String>,
+    /// Extra JVM flags (`vmOptions`), inserted before `-javaagent:`.
+    pub vm_options: Vec<String>,
+    /// When `Some("jetbrains")`, `vm_options` apply only on a JetBrains Runtime.
+    pub jdk: Option<String>,
     /// The jar's hash recorded when the user granted `java.agent`; `None`: not granted.
     pub approved_hash: Option<String>,
 }
@@ -37,37 +42,98 @@ pub trait JavaAgentSource: Send + Sync {
 
 static SOURCE: RwLock<Option<Arc<dyn JavaAgentSource>>> = RwLock::new(None);
 
-/// Installs (or removes) the source [`current`] reads.
+/// Installs (or removes) the source [`current`] / [`current_for`] read.
 pub fn set_java_agent_source(source: Option<Arc<dyn JavaAgentSource>>) {
     *SOURCE.write() = source;
 }
 
-/// What a launch adds: the `-javaagent:` options, and a console line per agent left out.
+/// What a launch adds: VM options then `-javaagent:` options, and a console line per skip.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Agents {
     pub options: Vec<String>,
     pub notes: Vec<String>,
 }
 
-/// The agents the installed source allows now (none without a source).
+/// The agents the installed source allows now (none without a source); no JDK gate.
 pub fn current() -> Agents {
+    current_for(None)
+}
+
+/// Like [`current`], gating `vmOptions` with `jdk = "jetbrains"` against `java`.
+pub fn current_for(java: Option<&Path>) -> Agents {
     let source = SOURCE.read().clone();
-    source.map(|s| approved(&s.agents())).unwrap_or_default()
+    source.map(|s| approved_for(&s.agents(), java)).unwrap_or_default()
 }
 
 /// Granted agents whose jar still has the hash approved for it; an ungranted one is
 /// left out silently, a changed or missing jar with a note.
 pub fn approved(agents: &[ContributedAgent]) -> Agents {
+    approved_for(agents, None)
+}
+
+/// Like [`approved`], applying `vmOptions` only when the JDK filter matches `java`.
+pub fn approved_for(agents: &[ContributedAgent], java: Option<&Path>) -> Agents {
     let mut out = Agents::default();
     for agent in agents {
         let Some(hash) = &agent.approved_hash else { continue };
         let pin = ProgramPin { path: agent.jar.clone(), hash: hash.clone() };
         match pin.verify() {
-            Ok(jar) => out.options.push(option(jar, agent.args.as_deref())),
+            Ok(jar) => {
+                push_vm_options(&mut out, agent, java);
+                let opt = option(jar, agent.args.as_deref());
+                if !out.options.contains(&opt) {
+                    out.options.push(opt);
+                }
+            }
             Err(e) => out.notes.push(format!("The Java agent of plugin {} was not added: {e}", agent.plugin)),
         }
     }
     out
+}
+
+fn push_vm_options(out: &mut Agents, agent: &ContributedAgent, java: Option<&Path>) {
+    if agent.vm_options.is_empty() {
+        return;
+    }
+    if !jdk_allows(java, agent.jdk.as_deref()) {
+        out.notes.push(format!(
+            "JVM options of plugin {} were not added: they require a {} JDK.",
+            agent.plugin,
+            agent.jdk.as_deref().unwrap_or("matching")
+        ));
+        return;
+    }
+    for opt in &agent.vm_options {
+        if !out.options.contains(opt) {
+            out.options.push(opt.clone());
+        }
+    }
+}
+
+/// `jdk = "jetbrains"` matches JetBrains Runtime; unknown `java` / unknown filter → skip options.
+pub fn jdk_allows(java: Option<&Path>, filter: Option<&str>) -> bool {
+    match filter.map(str::trim).filter(|s| !s.is_empty()) {
+        None => true,
+        Some("jetbrains") => java.map(is_jetbrains_jdk).unwrap_or(false),
+        Some(_) => false,
+    }
+}
+
+fn is_jetbrains_jdk(java: &Path) -> bool {
+    release_field(java, "IMPLEMENTOR").is_some_and(|v| v.to_ascii_lowercase().contains("jetbrains"))
+}
+
+/// `KEY="value"` from the JDK `release` file next to `bin/java` (or JDK 8's `jre/bin/java`).
+fn release_field(java: &Path, key: &str) -> Option<String> {
+    let java = std::fs::canonicalize(java).unwrap_or_else(|_| java.to_path_buf());
+    let prefix = format!("{key}=");
+    java.ancestors().skip(2).take(2).find_map(|home| {
+        let text = std::fs::read_to_string(home.join("release")).ok()?;
+        text.lines().find_map(|l| {
+            let l = l.trim();
+            l.strip_prefix(&prefix).map(|v| v.trim().trim_matches('"').to_owned())
+        })
+    })
 }
 
 /// `-javaagent:<jar>[=<args>]`, one argument: the JVM takes the path as it is, spaces included.
@@ -185,8 +251,16 @@ mod tests {
             plugin: "acme.spring".into(),
             jar: jar.path.clone(),
             args: args.map(str::to_owned),
+            vm_options: Vec::new(),
+            jdk: None,
             approved_hash: granted.then(|| jar.hash.clone()),
         }
+    }
+
+    fn with_vm(mut agent: ContributedAgent, opts: &[&str], jdk: Option<&str>) -> ContributedAgent {
+        agent.vm_options = opts.iter().map(|s| (*s).to_owned()).collect();
+        agent.jdk = jdk.map(str::to_owned);
+        agent
     }
 
     #[test]
@@ -299,5 +373,51 @@ mod tests {
         for kind in ["junit", "maven", "gradle", "tomcat", "java-file", "remote-jvm-debug"] {
             assert!(!applies(kind), "{kind}");
         }
+    }
+
+    #[test]
+    fn vm_options_go_before_the_javaagent_and_dedupe() {
+        let jar = jar();
+        let agent = with_vm(agent(&jar, None, true), &["-XX:+AllowEnhancedClassRedefinition", "-Xmx1g"], None);
+        let granted = approved(&[agent]);
+        let javaagent = format!("-javaagent:{}", jar.path.display());
+        assert_eq!(granted.options, ["-XX:+AllowEnhancedClassRedefinition".into(), "-Xmx1g".into(), javaagent.clone()]);
+
+        let mut args = strings(&["-Xmx1g", "-cp", "/p/classes", "app.Main"]);
+        add_to_args(&mut args, &granted.options);
+        // User already has `-Xmx1g`: only the new flag and the agent are inserted.
+        assert_eq!(
+            args,
+            strings(&["-Xmx1g", "-cp", "/p/classes", "-XX:+AllowEnhancedClassRedefinition", &javaagent, "app.Main"])
+        );
+        let mut again = strings(&["-XX:+AllowEnhancedClassRedefinition", "-cp", "x", "Main"]);
+        add_to_args(&mut again, &["-XX:+AllowEnhancedClassRedefinition".into(), javaagent.clone()]);
+        assert_eq!(again, strings(&["-XX:+AllowEnhancedClassRedefinition", "-cp", "x", &javaagent, "Main"]));
+    }
+
+    #[test]
+    fn jetbrains_vm_options_skip_on_other_jdks() {
+        let jar = jar();
+        let dir = tempfile::tempdir().unwrap();
+        let jbr = dir.path().join("jbr");
+        std::fs::create_dir_all(jbr.join("bin")).unwrap();
+        std::fs::write(jbr.join("release"), "JAVA_VERSION=\"17\"\nIMPLEMENTOR=\"JetBrains s.r.o.\"\n").unwrap();
+        let temurin = dir.path().join("temurin");
+        std::fs::create_dir_all(temurin.join("bin")).unwrap();
+        std::fs::write(temurin.join("release"), "JAVA_VERSION=\"17\"\nIMPLEMENTOR=\"Eclipse Adoptium\"\n").unwrap();
+
+        let agent = with_vm(agent(&jar, None, true), &["-XX:+AllowEnhancedClassRedefinition"], Some("jetbrains"));
+        let on_jbr = approved_for(std::slice::from_ref(&agent), Some(&jbr.join("bin/java")));
+        assert!(on_jbr.options.iter().any(|o| o == "-XX:+AllowEnhancedClassRedefinition"));
+        assert!(on_jbr.notes.is_empty());
+
+        let on_other = approved_for(std::slice::from_ref(&agent), Some(&temurin.join("bin/java")));
+        assert!(!on_other.options.iter().any(|o| o == "-XX:+AllowEnhancedClassRedefinition"));
+        assert!(on_other.options.iter().any(|o| o.starts_with("-javaagent:")));
+        assert_eq!(on_other.notes.len(), 1);
+
+        let unknown = approved_for(&[agent], None);
+        assert!(!unknown.options.iter().any(|o| o == "-XX:+AllowEnhancedClassRedefinition"));
+        assert!(unknown.options.iter().any(|o| o.starts_with("-javaagent:")));
     }
 }

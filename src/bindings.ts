@@ -9394,6 +9394,10 @@ export type PluginJavaAgent = {
 	fileName: string,
 	/**  The optional argument passed after `=`. */
 	args: string | null,
+	/**  Extra JVM flags from `vmOptions` (API 1.14). */
+	vmOptions: string[],
+	/**  When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime. */
+	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
 };

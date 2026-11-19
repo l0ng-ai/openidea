@@ -2457,6 +2457,7 @@
   "Run code inside the Java applications you start": "Run code inside the Java applications you start",
   "Java agents of {list} were not added: they load only in local projects.": "Java agents of {list} were not added: they load only in local projects.",
   "Java agent": "Java agent",
+  "JVM options": "JVM options",
   "Pull Requests": "Pull Requests",
   "1 Pull Request": "1 Pull Request",
   "{count} Pull Requests": "{count} Pull Requests",
@@ -2682,5 +2683,6 @@
   "When Build opens, whether it takes keyboard focus from the editor.": "When Build opens, whether it takes keyboard focus from the editor.",
   "Hover actions": "Hover actions",
   "Hover action": "Hover action",
-  "{count} hover actions": "{count} hover actions"
+  "{count} hover actions": "{count} hover actions",
+  "{description}; JVM options: {flags}": "{description}; JVM options: {flags}"
 }
