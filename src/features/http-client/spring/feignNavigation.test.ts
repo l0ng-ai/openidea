@@ -101,6 +101,15 @@ describe("core service-aware Feign navigation", () => {
     expect(await resolve()).toEqual([]); // Current source revalidation rejects the cached target.
   });
 
+  it("keeps the disk index while a controller is edited", async () => {
+    await resolve();
+    for (let version = 2; version < 6; version++) {
+      _emitEditorEvent({ type: "docChanged", doc: 9, path: users, baseVersion: version - 1, version, changes: [] });
+      await resolve();
+    }
+    expect(commands.springRouteSources).toHaveBeenCalledTimes(1);
+  });
+
   it("overlays recently edited unsaved controllers absent from the disk index", async () => {
     await resolve();
     const path = "/p/users/src/main/kotlin/Added.kt";

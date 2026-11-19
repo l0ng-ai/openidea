@@ -12,6 +12,8 @@ import { withDeadline } from "../../perf/lib/lifecycle.ts";
 import { Server } from "../../smoke/server.ts";
 import { copyProject } from "./projects.ts";
 import { installTauriShim, type ShimWindow } from "../../smoke/tauriShim.ts";
+import { RenameObservations } from "./commandObservation.ts";
+import { openFileMeasured } from "../../perf/lib/editing.ts";
 
 /** How long after its answer Show Usages invoked again widens it (`HINT_MS` in code-insight/usages.ts), plus a margin. */
 const SHOW_USAGES_HINT_MS = 4200;
@@ -126,8 +128,7 @@ export class Session {
   private server!: Server;
   private relayQueue: Promise<unknown> = Promise.resolve();
   private pendingNotes: Array<[kind: "channel" | "event", a: unknown, b: unknown]> = [];
-  /** The last answer to each command that succeeded, for what the UI only summarises. */
-  readonly lastAnswer = new Map<string, unknown>();
+  readonly renameObservations = new RenameObservations();
   /** Editors changed by a scenario: path → the text to put back. */
   private readonly edited = new Map<string, string>();
   readonly pageErrors: string[] = [];
@@ -180,12 +181,15 @@ export class Session {
       await withDeadline(this.context.close(), 5000, "late session context close");
       throw new Error("session already closed");
     }
+    await this.context.exposeFunction("__openideaEvalRenameAnswer", (scope: number) =>
+      this.renameObservations.wait(scope),
+    );
     await this.context.exposeFunction("__openideaRelay", async (cmd: string, args: unknown) => {
       const start = this.timeline.now();
       this.timeline.inFlight++;
       const answered = this.timeline.sent(cmd, start);
       try {
-        const value = await this.server.invoke(cmd, args);
+        const value = await this.renameObservations.invoke(cmd, args, () => this.server.invoke(cmd, args));
         this.record(cmd, start, true, value);
         return { ok: value ?? null };
       } catch (err) {
@@ -244,7 +248,6 @@ export class Session {
         ? (value as { locations: unknown[] }).locations.length
         : undefined;
     this.timeline.calls.push({ cmd, start, ms: this.timeline.now() - start, ok, bytes, items });
-    if (ok) this.lastAnswer.set(cmd, value);
   }
 
   /** Delivers server notifications in order, batched per turn of the event loop. */
@@ -286,20 +289,7 @@ export class Session {
   /** Opens `rel` (project-relative, or a URI) in an editor and waits until its text is shown. */
   async openFile(rel: string) {
     const path = /^[a-z]+:\/\//.test(rel) ? rel : join(this.root, rel);
-    const bare = rel.replace(/[?#].*$/, "");
-    const name = bare.slice(bare.lastIndexOf("/") + 1);
-    await this.page.evaluate(
-      async ({ path, name }) => {
-        const w = window as unknown as {
-          __perf: { waitShown(s: string, t: string | null, ms: number): Promise<number> };
-          __openideaPerf: { openFile(p: string): Promise<void> };
-        };
-        await w.__openideaPerf.openFile(path);
-        await w.__perf.waitShown('[role="tab"][aria-selected="true"]', name, 30_000);
-        await w.__perf.waitShown(".cm-content .cm-line", null, 30_000);
-      },
-      { path, name },
-    );
+    await this.page.evaluate(openFileMeasured, { path, timeoutMs: 30_000 });
   }
 
   /**
@@ -422,6 +412,7 @@ export class Session {
 
   /** Back to an idle workbench: popups dismissed, edits undone, every editor closed. */
   async reset() {
+    this.renameObservations.reset();
     // Show Usages invoked again within 4 s of its hint widens the previous search: wait it out.
     const since = await this.page.evaluate(() => {
       const at = (window as unknown as { __openideaEvalShowUsagesAt?: number }).__openideaEvalShowUsagesAt;
@@ -443,6 +434,7 @@ export class Session {
 
   async close() {
     this.closed = true;
+    this.renameObservations.reset();
     const results = await Promise.allSettled([
       this.context ? withDeadline(this.context.close(), 5000, "session context close") : Promise.resolve(),
       this.server?.close(),
