@@ -757,10 +757,14 @@ const bulbPlugin = ViewPlugin.fromClass(
  */
 const BULB_COLUMNS = 3;
 
-export function bulbLine(state: EditorView["state"], line: number): { line: number; gutter: boolean } {
+export function bulbLine(
+  state: EditorView["state"],
+  line: number,
+  avoidLine?: number,
+): { line: number; gutter: boolean } {
   const doc = state.doc;
   const free = (n: number) => {
-    if (n < 1 || n > doc.lines) return false;
+    if (n < 1 || n > doc.lines || n === avoidLine) return false;
     const text = doc.line(n).text;
     return text.length - text.trimStart().length >= BULB_COLUMNS || !text.trim();
   };
@@ -786,8 +790,12 @@ class FloatingBulb {
       void showIntentions(this.view);
     });
     view.scrollDOM.appendChild(this.dom);
+    view.scrollDOM.addEventListener("openidea-hover-actions", this.onInlineAction);
     this.place();
   }
+
+  /** An hover action group asked for the anchor line; use the bulb's fallback. */
+  private readonly onInlineAction = () => this.place();
 
   update(u: ViewUpdate) {
     const bulb = u.state.field(bulbField, false) ?? null;
@@ -807,7 +815,8 @@ class FloatingBulb {
     this.view.requestMeasure({
       key: this,
       read: (view) => {
-        const at = bulbLine(view.state, bulb.line);
+        const reserved = Number(view.scrollDOM.dataset.hoverActionLine);
+        const at = bulbLine(view.state, bulb.line, Number.isFinite(reserved) ? reserved : undefined);
         const line = view.state.doc.line(at.line);
         const content = view.contentDOM.getBoundingClientRect();
         const scroller = view.scrollDOM.getBoundingClientRect();
@@ -833,6 +842,7 @@ class FloatingBulb {
   }
 
   destroy() {
+    this.view.scrollDOM.removeEventListener("openidea-hover-actions", this.onInlineAction);
     this.dom.remove();
   }
 }

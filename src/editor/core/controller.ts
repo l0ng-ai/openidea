@@ -50,6 +50,7 @@ import { t, tx } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
 import { windowBackgroundHex } from "@/workbench/theme";
+import { hoverActionsAt } from "@/platform/hoverActions";
 import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
@@ -864,8 +865,22 @@ export class EditorController implements SlotHost {
     if (pos !== null && !view.state.selection.ranges.some((r) => r.from <= pos && pos <= r.to))
       view.dispatch({ selection: EditorSelection.cursor(pos) });
     const hasSel = !view.state.selection.main.empty;
+    const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
+    const hoverItems: MenuItem[] = hoverActionsAt(slot.model.doc, caretLine).map(({ plugin, action }) => ({
+      label: action.label,
+      icon: "run",
+      run: () =>
+        void call(
+          commands.lspExecuteCommand(slot.model.doc, {
+            title: action.tooltip ?? action.label,
+            command: `openidea.plugin-language:${plugin}:${action.command}`,
+            arguments: [JSON.stringify(action.argument)],
+          }),
+        ).catch(console.warn),
+    }));
     const items: MenuItem[] = [
       { kind: "action", action: "code.showIntentions", label: "Show Context Actions", icon: "bulb" },
+      ...(hoverItems.length ? ([{ kind: "separator" }, ...hoverItems] as MenuItem[]) : []),
       { kind: "separator" },
       // Like IDEA, Cut / Copy only with a selection.
       ...((hasSel
