@@ -58,18 +58,17 @@ export function JdbcDriverProfiles({
   onClose: () => void;
 }) {
   const tx = useTx();
+  const profiles = sourceVendor ? drivers.filter((d) => d.vendor === sourceVendor) : drivers;
   const [selection, setSelection] = useState(
-    drivers.some((d) => d.id === selected)
-      ? selected
-      : ((sourceVendor && drivers.find((d) => d.vendor === sourceVendor)?.id) ?? drivers[0]?.id ?? ""),
+    profiles.some((d) => d.id === selected) ? selected : (profiles[0]?.id ?? ""),
   );
   const [draft, setDraft] = useState<DbJdbcDriver | null>(null);
   const [confirm, setConfirm] = useState<"trust" | "delete" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [classes, setClasses] = useState<string[]>([]);
-  const current = drivers.find((d) => d.id === selection);
-  const changedType = draft && drivers.some((d) => d.id === draft.id && d.vendor && d.vendor !== draft.vendor);
+  const current = profiles.find((d) => d.id === selection);
+  const changedType = draft && profiles.some((d) => d.id === draft.id && d.vendor && d.vendor !== draft.vendor);
   const name = current?.name ?? "";
   const set = (patch: Partial<DbJdbcDriver>) => setDraft((d) => d && { ...d, ...patch });
   const classValid =
@@ -111,7 +110,12 @@ export function JdbcDriverProfiles({
     if (!draft || !valid || busy) return;
     setBusy(true);
     setError(null);
-    const driver = { ...draft, name: draft.name.trim(), className: draft.className.trim() };
+    const driver = {
+      ...draft,
+      ...(sourceVendor && { vendor: sourceVendor }),
+      name: draft.name.trim(),
+      className: draft.className.trim(),
+    };
     try {
       await call(commands.dbSaveJdbcDriver(driver));
       onSave(driver);
@@ -133,7 +137,7 @@ export function JdbcDriverProfiles({
     try {
       await call(commands.dbRemoveJdbcDriver(current.id));
       onRemove(current.id);
-      setSelection(drivers.find((d) => d.id !== current.id)?.id ?? "");
+      setSelection(profiles.find((d) => d.id !== current.id)?.id ?? "");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -148,7 +152,7 @@ export function JdbcDriverProfiles({
         open
         title={
           draft
-            ? drivers.some((d) => d.id === draft.id)
+            ? profiles.some((d) => d.id === draft.id)
               ? "Edit JDBC Driver"
               : "Add JDBC Driver"
             : "JDBC Driver Profiles"
@@ -167,7 +171,7 @@ export function JdbcDriverProfiles({
               ]
             : [
                 { label: "Close", role: "cancel", disabled: busy },
-                ...(onUse && current && (!sourceVendor || current.vendor === sourceVendor)
+                ...(onUse && current
                   ? [{ label: "Use Driver", role: "default" as const, onClick: () => onUse(current) }]
                   : []),
               ]
@@ -193,9 +197,9 @@ export function JdbcDriverProfiles({
               </span>
               <Select
                 aria-label="Data source type"
-                options={DRIVER_TYPES}
+                options={sourceVendor ? DRIVER_TYPES.filter((type) => type.value === sourceVendor) : DRIVER_TYPES}
                 value={draft.vendor ?? ""}
-                disabled={busy}
+                disabled={busy || !!sourceVendor}
                 onChange={(vendor) => set({ vendor: vendor || null })}
               />
               <span className={styles.formLabel}>
@@ -266,9 +270,10 @@ export function JdbcDriverProfiles({
               </span>
               <Select
                 aria-label="JDBC driver profiles"
-                value={selection}
-                options={drivers.map((d) => ({ value: d.id, label: d.name, verbatim: true }))}
+                value={current?.id ?? ""}
+                options={profiles.map((d) => ({ value: d.id, label: d.name, verbatim: true }))}
                 placeholder="No JDBC driver profiles"
+                disabled={!profiles.length}
                 onChange={setSelection}
               />
               <span />

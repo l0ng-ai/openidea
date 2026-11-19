@@ -25,7 +25,7 @@ Presets set the default port and, where needed, SSL (for example Redshift, Neon 
 
 ## JDBC drivers
 
-In a named data source's **General** tab, **Driver** defaults to **Built-in**. Use **Manage Drivers…** to add a JDBC profile for that data source type or associate an existing profile with it. Select the profile from **Driver** to use JDBC while keeping the source type and icon. **Go to Driver** opens the profile and its JAR list. To use a driver for a database without a preset, choose **New › Data Source › Custom JDBC**.
+In a named data source's **General** tab, **Driver** defaults to **Built-in**. Use **Manage Drivers…** to view or add JDBC profiles for that data source type. Select the profile from **Driver** to use JDBC while keeping the source type and icon. **Go to Driver** opens the selected profile and its JAR list. Choose **New › Data Source › Custom JDBC** for databases without a preset, or open its **Manage Drivers…** to see all profiles and change their associated types.
 
 Add a named profile with the vendor's driver JAR, any dependency JARs, the fully qualified driver class, and an optional JDBC URL template. OpenIDEA reads the driver classes declared in the selected JARs. You can choose a different class or enter its full name manually. Use `{host}`, `{port}`, `{database}` or `{file}` in a template to get matching connection fields, or edit the JDBC URL directly. Only import drivers you trust. OpenIDEA loads their code in a separate process using an installed Java 17 or newer runtime.
 

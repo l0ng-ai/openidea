@@ -38,7 +38,7 @@
   "Go to Driver": "转到驱动",
   "Loading JDBC driver profiles…": "正在加载 JDBC 驱动配置…",
   "The JDBC driver profile is missing. Select or add a profile before connecting.": "找不到此 JDBC 驱动配置。请先选择或添加配置再连接。",
-  "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type.": "此 JDBC 驱动配置已关联到其他数据源类型。请选择匹配的配置或修改当前配置的类型。",
+  "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type in Custom JDBC.": "此 JDBC 驱动配置已关联到其他数据源类型。请选择匹配的配置，或在自定义 JDBC 中修改它的类型。",
   "The URL and Advanced properties are saved with the data source. Enter passwords in the Password field.": "URL 和高级属性将随数据源保存。请在密码字段输入密码。",
   "For read-only access, use a database account with read-only privileges.": "如需只读访问，请使用具有只读权限的数据库账号。",
   "Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH tunnel, configure the equivalent route before connecting.": "请检查 JDBC URL、TLS 设置和连接属性。如果原生连接使用了 SSH 隧道，请在连接前配置相应的通道。",

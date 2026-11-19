@@ -3,7 +3,17 @@ import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 test("uses a local JDBC profile for a named data source through mocked IPC", async ({ workbench: page }, info) => {
   await stubDesktop(page);
   await page.evaluate(async () => {
-    const drivers: Record<string, unknown>[] = [];
+    const drivers: Record<string, unknown>[] = [
+      { id: "sqlite-fixture", vendor: "sqlite", name: "SQLite JDBC" },
+      { id: "postgres-fixture", vendor: "postgres", name: "PostgreSQL JDBC" },
+      { id: "legacy-fixture", name: "Legacy JDBC" },
+      { id: "clickhouse-fixture", vendor: "clickhouse", name: "Existing ClickHouse JDBC" },
+    ].map((driver) => ({
+      ...driver,
+      jars: [`/mock/${driver.id}.jar`],
+      className: "org.example.jdbc.Driver",
+      urlTemplate: "jdbc:example:local",
+    }));
     let sources: Record<string, unknown>[] = [];
     Object.assign(window.__ipc.handlers, {
       db_jdbc_drivers: () => drivers,
@@ -60,9 +70,17 @@ test("uses a local JDBC profile for a named data source through mocked IPC", asy
   await expect(source.getByRole("button", { name: "Connection driver", exact: true })).toHaveText("Built-in");
   await source.getByRole("button", { name: "Manage Drivers…", exact: true }).click();
   const profiles = page.getByRole("dialog", { name: "JDBC Driver Profiles", exact: true });
+  const profilesPicker = profiles.getByRole("button", { name: "JDBC driver profiles", exact: true });
+  await profilesPicker.click();
+  const choices = page.getByRole("listbox").getByRole("option");
+  await expect(choices).toHaveText(["Existing ClickHouse JDBC"]);
+  await page.screenshot({ path: info.outputPath("jdbc-manage-drivers-dropdown.png"), animations: "disabled" });
+  await page.getByRole("option", { name: "Existing ClickHouse JDBC", exact: true }).click();
   await profiles.getByRole("button", { name: "Add…", exact: true }).click();
   const editor = page.getByRole("dialog", { name: "Add JDBC Driver", exact: true });
-  await expect(editor.getByRole("button", { name: "Data source type", exact: true })).toHaveText("ClickHouse");
+  const typePicker = editor.getByRole("button", { name: "Data source type", exact: true });
+  await expect(typePicker).toHaveText("ClickHouse");
+  await expect(typePicker).toBeDisabled();
   await editor.getByLabel("Name:", { exact: true }).fill("Example local driver");
   await editor.getByRole("button", { name: "Add JARs…", exact: true }).click();
   await expect(editor.getByText("dependency.jar", { exact: true })).toBeVisible();
@@ -135,8 +153,9 @@ test("uses a local JDBC profile for a named data source through mocked IPC", asy
   const reopened = page.getByRole("dialog", { name: "Data Source: Mock connection", exact: true });
   await expect(reopened.getByRole("button", { name: "Data source type", exact: true })).toHaveText("ClickHouse");
   await reopened.getByRole("button", { name: "Go to Driver", exact: true }).click();
-  await expect(profiles.getByRole("button", { name: "JDBC driver profiles", exact: true })).toHaveText(
-    "Example local driver",
-  );
+  await expect(profilesPicker).toHaveText("Example local driver");
   await expect(profiles.getByText("dependency.jar", { exact: true })).toBeVisible();
+  await profilesPicker.click();
+  await expect(choices).toHaveText(["Existing ClickHouse JDBC", "Example local driver"]);
+  await page.screenshot({ path: info.outputPath("jdbc-go-to-driver-dropdown.png"), animations: "disabled" });
 });

@@ -42,8 +42,8 @@ const driver: DbJdbcDriver = {
   urlTemplate: "jdbc:example://<host>:<port>/<database>",
 };
 
-function select(label: string, option: string, root: Pick<typeof screen, "getByRole"> = screen) {
-  fireEvent.click(root.getByRole("button", { name: label }));
+function select(label: string, option: string) {
+  fireEvent.click(screen.getByRole("button", { name: label }));
   fireEvent.click(within(screen.getByRole("listbox")).getByText(option, { exact: true }));
 }
 
@@ -386,22 +386,25 @@ describe("JDBC drivers for named database types", () => {
     } else expect(test).toBeDisabled();
   });
 
-  it("keeps an incompatible profile available to repair while blocking the saved source", async () => {
+  it("blocks an incompatible source and keeps the scoped manager empty", async () => {
     render(
       <SourceDialog initial={{ driver: "jdbc", vendor: "neon", jdbcDriver: driver.id, url: "jdbc:example:local" }} />,
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Select a matching profile or update its type.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Select a matching profile or update its type in Custom JDBC.",
+    );
     expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Go to Driver" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Drivers…" }));
     const profiles = within(screen.getByRole("dialog", { name: "JDBC Driver Profiles" }));
-    expect(profiles.getByRole("button", { name: "JDBC driver profiles" })).toHaveTextContent(driver.name);
-    expect(profiles.getByText("Custom JDBC only")).toBeVisible();
+    const picker = profiles.getByRole("button", { name: "JDBC driver profiles" });
+    expect(picker).toHaveTextContent("No JDBC driver profiles");
+    expect(picker).toBeDisabled();
     expect(profiles.queryByRole("button", { name: "Use Driver" })).toBeNull();
   });
 
-  it("associates an existing profile with a wire-compatible preset and reopens it with that type", async () => {
+  it("uses a matching profile with a wire-compatible preset and reopens it with that type", async () => {
     const pg = { ...driver, id: "pg", name: "PostgreSQL JDBC", vendor: "postgres" };
-    backend.call.mockImplementation(async ([op]) => (op === "list" ? [pg, driver] : "OK"));
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [pg, { ...driver, vendor: "neon" }] : "OK"));
     const { unmount } = render(
       <SourceDialog
         initial={{
@@ -424,19 +427,8 @@ describe("JDBC drivers for named database types", () => {
     await waitFor(() => expect(manage).toBeEnabled());
     fireEvent.click(driverButton);
     const choices = within(screen.getByRole("listbox"));
-    expect(choices.getAllByRole("option")).toHaveLength(1);
-    fireEvent.click(choices.getByRole("option", { name: "Built-in" }));
-    fireEvent.click(manage);
-    select("JDBC driver profiles", driver.name);
-    expect(screen.queryByRole("button", { name: "Use Driver" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Edit…" }));
-    const editor = within(screen.getByRole("dialog", { name: "Edit JDBC Driver" }));
-    select("Data source type", "Neon", editor);
-    fireEvent.click(editor.getByRole("button", { name: "Save" }));
-    fireEvent.click(screen.getByRole("button", { name: "Trust and Save" }));
-    const useDriver = await screen.findByRole("button", { name: "Use Driver" });
-    expect(backend.call).toHaveBeenCalledWith(["save", { ...driver, vendor: "neon" }]);
-    fireEvent.click(useDriver);
+    expect(choices.getAllByRole("option")).toHaveLength(2);
+    fireEvent.click(choices.getByRole("option", { name: driver.name }));
     expect(screen.getByRole("button", { name: "Data source type" })).toHaveTextContent("Neon");
     expect(driverButton).toHaveTextContent(driver.name);
     expect(screen.queryByRole("tab", { name: "SSH/SSL" })).toBeNull();
@@ -584,6 +576,65 @@ describe("JDBC drivers for named database types", () => {
 });
 
 describe("local JDBC driver profiles", () => {
+  it("scopes the picker, editing and deletion to the source's type", async () => {
+    const clickhouse = { ...driver, id: "ch", name: "ClickHouse JDBC", vendor: "clickhouse" };
+    const sqlite = { ...driver, id: "sqlite", name: "SQLite JDBC", vendor: "sqlite" };
+    const pg = { ...driver, id: "pg", name: "PostgreSQL JDBC", vendor: "postgres" };
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [sqlite, pg, driver, clickhouse] : "OK"));
+    render(<SourceDialog initial={null} preset={{ driver: "clickhouse" }} />);
+    const manage = screen.getByRole("button", { name: "Manage Drivers…" });
+    await waitFor(() => expect(manage).toBeEnabled());
+    fireEvent.click(manage);
+    const profiles = within(screen.getByRole("dialog", { name: "JDBC Driver Profiles" }));
+    const picker = profiles.getByRole("button", { name: "JDBC driver profiles" });
+    expect(picker).toHaveTextContent(clickhouse.name);
+    fireEvent.click(picker);
+    const choices = within(screen.getByRole("listbox"));
+    expect(choices.getAllByRole("option")).toHaveLength(1);
+    fireEvent.click(choices.getByRole("option", { name: clickhouse.name }));
+
+    fireEvent.click(profiles.getByRole("button", { name: "Edit…" }));
+    const editor = within(screen.getByRole("dialog", { name: "Edit JDBC Driver" }));
+    const type = editor.getByRole("button", { name: "Data source type" });
+    expect(type).toHaveTextContent("ClickHouse");
+    expect(type).toBeDisabled();
+    fireEvent.click(editor.getByRole("button", { name: "Cancel" }));
+
+    fireEvent.click(profiles.getByRole("button", { name: "Delete…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => {
+      const emptyPicker = profiles.getByRole("button", { name: "JDBC driver profiles" });
+      expect(emptyPicker).toHaveTextContent("No JDBC driver profiles");
+      expect(emptyPicker).toBeDisabled();
+    });
+    expect(backend.call).toHaveBeenCalledWith(["remove", clickhouse.id]);
+    expect(profiles.getByRole("button", { name: "Edit…" })).toBeDisabled();
+    expect(profiles.getByRole("button", { name: "Delete…" })).toBeDisabled();
+    fireEvent.click(profiles.getByRole("button", { name: "Add…" }));
+    const addType = within(screen.getByRole("dialog", { name: "Add JDBC Driver" })).getByRole("button", {
+      name: "Data source type",
+    });
+    expect(addType).toHaveTextContent("ClickHouse");
+    expect(addType).toBeDisabled();
+  });
+
+  it("lets the unscoped manager associate an existing legacy profile", async () => {
+    render(
+      <JdbcDriverProfiles
+        drivers={[driver]}
+        selected={driver.id}
+        onSave={vi.fn()}
+        onRemove={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit…" }));
+    select("Data source type", "Neon");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Trust and Save" }));
+    await waitFor(() => expect(backend.call).toHaveBeenCalledWith(["save", { ...driver, vendor: "neon" }]));
+  });
+
   it("warns before reassigning a profile previously associated with a named type", async () => {
     render(
       <JdbcDriverProfiles

@@ -40,7 +40,7 @@
   "Go to Driver": "Go to Driver",
   "Loading JDBC driver profiles…": "Loading JDBC driver profiles…",
   "The JDBC driver profile is missing. Select or add a profile before connecting.": "The JDBC driver profile is missing. Select or add a profile before connecting.",
-  "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type.": "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type.",
+  "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type in Custom JDBC.": "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type in Custom JDBC.",
   "The URL and Advanced properties are saved with the data source. Enter passwords in the Password field.": "The URL and Advanced properties are saved with the data source. Enter passwords in the Password field.",
   "For read-only access, use a database account with read-only privileges.": "For read-only access, use a database account with read-only privileges.",
   "Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH tunnel, configure the equivalent route before connecting.": "Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH tunnel, configure the equivalent route before connecting.",

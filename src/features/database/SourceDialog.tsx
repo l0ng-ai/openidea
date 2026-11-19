@@ -822,7 +822,7 @@ export function SourceDialog({
           ]}
         />
         <Button disabled={!jdbcProfiles.drivers} onClick={() => setShowJdbcProfiles(true)}>
-          {tx(installedJdbcProfile && !genericJdbc ? "Go to Driver" : "Manage Drivers…")}
+          {tx(jdbc && jdbcProfile && !genericJdbc ? "Go to Driver" : "Manage Drivers…")}
         </Button>
       </div>
       {jdbcProfiles.error ? (
@@ -840,7 +840,7 @@ export function SourceDialog({
         <span className={`${styles.formFull} ${styles.bad}`} role="alert">
           {tx(
             installedJdbcProfile
-              ? "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type."
+              ? "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type in Custom JDBC."
               : "The JDBC driver profile is missing. Select or add a profile before connecting.",
           )}
         </span>
@@ -1684,7 +1684,7 @@ export function SourceDialog({
       {showJdbcProfiles && jdbcProfiles.drivers && (
         <JdbcDriverProfiles
           drivers={jdbcProfiles.drivers}
-          selected={s.jdbcDriver ?? ""}
+          selected={jdbc ? (jdbcProfile?.id ?? "") : ""}
           sourceVendor={genericJdbc ? undefined : vendor.id}
           onClose={() => setShowJdbcProfiles(false)}
           onSave={(driver) => {
