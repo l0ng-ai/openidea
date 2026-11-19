@@ -96,8 +96,19 @@ export function rustBudgets(packages: readonly string[], budgets: Record<string,
   );
 }
 
-/** Read the selected workload only; fresh runs require both artifact files since `started`. */
-export function collectRustMetrics(dir: string, packages: readonly string[], started?: number): Record<string, number> {
+export interface RustArtifacts {
+  metrics: Record<string, number>;
+  artifacts: Array<{ path: string; modifiedAt: string }>;
+  errors: string[];
+}
+
+/** Keep valid partial results and file dates even when another selected artifact is invalid. */
+export function inspectRustArtifacts(
+  dir: string,
+  packages: readonly string[],
+  started?: number,
+  now = Date.now(),
+): RustArtifacts {
   const selected = new Set(selectRustPackages(packages));
   const expected = new Set([...selected].flatMap((p) => RUST_BENCHMARKS[p]!));
   const owners = new Map<string, string>();
@@ -109,6 +120,9 @@ export function collectRustMetrics(dir: string, packages: readonly string[], sta
     }
   }
   const metrics: Record<string, number> = {};
+  const artifacts: RustArtifacts["artifacts"] = [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
   function readNew(sub: string) {
     // Criterion sanitizes slashes in ungrouped function names to underscores.
     const top = relative(dir, sub).split(sep)[0]!;
@@ -130,10 +144,14 @@ export function collectRustMetrics(dir: string, packages: readonly string[], sta
     const owner = owners.get(id) ?? groups.get(id.split("/")[0]!);
     if (owner && !selected.has(owner)) return;
     if (!expected.has(id)) throw new Error(`unknown selected Criterion ID: ${id}`);
-    if (Object.hasOwn(metrics, id)) throw new Error(`duplicate Criterion ID: ${id}`);
+    if (seen.has(id)) throw new Error(`duplicate Criterion ID: ${id}`);
+    seen.add(id);
     for (const file of [bench, estimates]) {
-      if (started !== undefined && statSync(file).mtimeMs < started)
-        throw new Error(`stale Criterion artifact: ${file}`);
+      const modified = statSync(file).mtimeMs;
+      artifacts.push({ path: relative(dir, file), modifiedAt: new Date(modified).toISOString() });
+      // Allow filesystem timestamp rounding, not future-dated benchmark results.
+      if (modified > now + 1000) throw new Error(`future Criterion artifact: ${file}`);
+      if (started !== undefined && modified < started) throw new Error(`stale Criterion artifact: ${file}`);
     }
     const est: unknown = JSON.parse(readFileSync(estimates, "utf8"));
     const mean = est && typeof est === "object" && "mean" in est ? est.mean : undefined;
@@ -144,14 +162,29 @@ export function collectRustMetrics(dir: string, packages: readonly string[], sta
     metrics[id] = value / 1000;
   }
   function visit(path: string) {
-    if (!existsSync(path)) return;
-    readNew(path);
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      if (entry.isDirectory() && !["new", "base", "report"].includes(entry.name)) visit(join(path, entry.name));
+    try {
+      if (!existsSync(path)) return;
+      try {
+        readNew(path);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        if (entry.isDirectory() && !["new", "base", "report"].includes(entry.name)) visit(join(path, entry.name));
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
     }
   }
   visit(dir);
   const missing = [...expected].filter((id) => !Object.hasOwn(metrics, id));
-  if (missing.length) throw new Error(`missing selected Criterion IDs: ${missing.join(", ")}`);
-  return metrics;
+  if (missing.length) errors.push(`missing selected Criterion IDs: ${missing.join(", ")}`);
+  return { metrics, artifacts, errors };
+}
+
+/** Strict convenience interface for consumers that require the complete selected workload. */
+export function collectRustMetrics(dir: string, packages: readonly string[], started?: number): Record<string, number> {
+  const result = inspectRustArtifacts(dir, packages, started);
+  if (result.errors.length) throw new Error(result.errors.join("\n"));
+  return result.metrics;
 }

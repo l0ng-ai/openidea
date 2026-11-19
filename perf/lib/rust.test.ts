@@ -1,9 +1,18 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { collectRustMetrics, RUST_BENCHMARKS, rustBudgets, rustPaths, selectRustPackages } from "./rust.ts";
+import {
+  collectRustMetrics,
+  inspectRustArtifacts,
+  RUST_BENCHMARKS,
+  rustBudgets,
+  rustPaths,
+  selectRustPackages,
+} from "./rust.ts";
+import { runRust } from "./rustRun.ts";
+
+const TEXT_BENCHMARKS = RUST_BENCHMARKS["ide-text"]!.length;
 
 const roots: string[] = [];
 function fixture() {
@@ -56,20 +65,18 @@ describe("Rust workload contract", () => {
     expect(selectRustPackages(["ide-text", "ide-text"])).toEqual(["ide-text"]);
   });
 
-  it("rejects unknown CLI packages without invoking cargo", () => {
+  it("reports unknown packages without invoking cargo", async () => {
     const root = fixture();
     const marker = join(root, "cargo-invoked");
     writeFileSync(join(root, "cargo"), `#!/bin/sh\n: > '${marker}'\nexit 99\n`, { mode: 0o755 });
-    const result = spawnSync(
-      process.execPath,
-      [resolve(import.meta.dirname, "../rust.ts"), "--package", "not-a-crate"],
-      {
-        env: { ...process.env, PATH: root, CARGO_TARGET_DIR: join(root, "target") },
-        encoding: "utf8",
-      },
-    );
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/unknown Rust package/);
+    const code = await runRust({
+      root,
+      packages: ["not-a-crate"],
+      env: { ...process.env, PATH: root },
+    });
+    expect(code).toBe(1);
+    const report = JSON.parse(readFileSync(join(root, "target/perf/report-rust.json"), "utf8"));
+    expect(report.errors[0].error).toMatch(/unknown Rust package/);
     expect(existsSync(marker)).toBe(false);
   });
 
@@ -121,7 +128,7 @@ describe("Rust workload contract", () => {
     artifact(root, "heap/index_1m_objects", "bad");
     const unrelated = artifact(root, "heap/dominators_1m_random");
     writeFileSync(join(unrelated, "benchmark.json"), "{");
-    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(RUST_BENCHMARKS["ide-text"].length);
+    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(TEXT_BENCHMARKS);
   });
 
   it("rejects duplicate IDs and unknown selected IDs even with complete expected results", () => {
@@ -163,7 +170,7 @@ describe("Rust workload contract", () => {
     const dir = artifact(root, "text/open_1mb");
     utimesSync(join(dir, file), new Date(0), new Date(0));
     expect(() => collectRustMetrics(root, ["ide-text"], 1)).toThrow(/stale/);
-    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(RUST_BENCHMARKS["ide-text"].length);
+    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(TEXT_BENCHMARKS);
   });
   it("rejects overflowing JSON numeric estimates, including observe-only metrics", () => {
     const root = fixture();
@@ -171,5 +178,23 @@ describe("Rust workload contract", () => {
     const dir = artifact(root, "syntax_2mb/outline_uncached");
     writeFileSync(join(dir, "estimates.json"), '{"mean":{"point_estimate":1e309}}');
     expect(() => collectRustMetrics(root, ["ide-language"])).toThrow(/estimate/);
+  });
+
+  it.each(["benchmark.json", "estimates.json"])("rejects future %s even in inspection mode", (file) => {
+    const root = fixture();
+    complete(root, ["ide-text"]);
+    const date = new Date(Date.now() + 60_000);
+    utimesSync(join(root, "text/open_1mb/new", file), date, date);
+    expect(() => collectRustMetrics(root, ["ide-text"])).toThrow(/future Criterion artifact/);
+  });
+
+  it("retains partial valid metrics and dated artifacts after malformed selected output", () => {
+    const root = fixture();
+    complete(root, ["ide-text"]);
+    writeFileSync(join(root, "text/open_1mb/new/estimates.json"), "{");
+    const result = inspectRustArtifacts(root, ["ide-text"]);
+    expect(Object.keys(result.metrics)).toHaveLength(TEXT_BENCHMARKS - 1);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.artifacts).toContainEqual(expect.objectContaining({ path: "text/open_1mb/new/benchmark.json" }));
   });
 });
