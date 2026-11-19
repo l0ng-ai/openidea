@@ -866,6 +866,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             change_type: crate::hot_code_replace_type(body.get("changeType")),
             message: str_("message").unwrap_or_default(),
         }),
+        "flutter.appStarted" => s.emit(DebugEvent::FlutterAppStarted),
         // Sent only by adapters told `supportsInvalidatedEvent` (kotlin-lsp).
         "invalidated" => s.emit(DebugEvent::Invalidated {
             areas: body

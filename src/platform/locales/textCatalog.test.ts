@@ -93,6 +93,7 @@ const UNTRANSLATED = new Set<string>([
   // Product names
   "Cargo",
   "CMake",
+  "Flutter",
   "Prettier",
   "oxfmt",
   "Ruff",

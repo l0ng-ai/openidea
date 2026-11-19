@@ -290,6 +290,7 @@ describe("catalogs", () => {
     "YAML",
     "XML",
     "Maven",
+    "Flutter",
     "Thymeleaf",
     "sbt",
     "Gradle",
