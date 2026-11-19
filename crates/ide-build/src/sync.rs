@@ -558,14 +558,18 @@ mod tests {
         assert!(loaded.gradle[0].sync_error.as_deref().unwrap().contains("cannot start"));
         assert!(loaded.gradle[1].sync_error.is_none());
         assert_eq!(loaded.gradle[1].projects[0].tasks[0].name, "healthy");
-        let bad_wrapper = root.join("a/gradlew");
-        std::fs::write(&bad_wrapper, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&bad_wrapper, std::fs::Permissions::from_mode(0o644)).unwrap();
-        models[0].command = bad_wrapper.to_string_lossy().into_owned();
+        // A wrapper without the execute bit (committed from Windows, unpacked from a zip)
+        // runs through `sh`, and its mode is left alone.
+        let plain_wrapper = root.join("a/gradlew");
+        std::fs::write(&plain_wrapper, "#!/bin/sh\nprintf '%s\\n' 'Build tasks' '-----------' 'plain - ok'\n").unwrap();
+        std::fs::set_permissions(&plain_wrapper, std::fs::Permissions::from_mode(0o644)).unwrap();
+        models[0].command = plain_wrapper.to_string_lossy().into_owned();
         run(&models[0]).unwrap();
         let loaded = crate::load_linked(root, &cache, None, &Default::default(), &settings);
-        assert!(loaded.gradle[0].sync_error.as_deref().unwrap().contains("cannot start"));
+        assert!(loaded.gradle[0].sync_error.is_none());
+        assert_eq!(loaded.gradle[0].projects[0].tasks[0].name, "plain");
         assert!(loaded.gradle[1].sync_error.is_none());
+        assert_eq!(std::fs::metadata(&plain_wrapper).unwrap().permissions().mode() & 0o777, 0o644);
         let blocked_cache = root.join("blocked-cache");
         std::fs::write(&blocked_cache, "a file cannot contain sync caches").unwrap();
         assert!(
@@ -1008,6 +1012,28 @@ mod tests {
         assert_eq!(sync_maven_options(&["-T4".to_owned()]), Vec::<String>::new());
         assert_eq!(sync_maven_options(&["--threads=4".to_owned()]), Vec::<String>::new());
         assert!(sync_maven_options(&[]).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maven_sync_runs_a_wrapper_without_the_execute_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("pom.xml"), "<project><groupId>g</groupId><artifactId>a</artifactId></project>")
+            .unwrap();
+        let mvnw = root.join("mvnw");
+        std::fs::write(&mvnw, "#!/bin/sh\nprintf '%s\\n' \"$@\" > mvnw-args\n").unwrap();
+        std::fs::set_permissions(&mvnw, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let cache = tmp.path().join("cache");
+        sync_maven(&root, &cache, &SyncOptions::default(), &CancellationToken::new(), &|_| {}).unwrap();
+        let args = std::fs::read_to_string(root.join("mvnw-args")).unwrap();
+        assert!(args.contains("help:effective-pom"), "args: {args}");
+        let loaded = crate::load_linked(&root, &cache, None, &Default::default(), &Default::default());
+        let maven = loaded.maven.unwrap();
+        assert!(maven.synced_at.is_some() && maven.sync_error.is_none(), "{:?}", maven.sync_error);
+        assert_eq!(std::fs::metadata(&mvnw).unwrap().permissions().mode() & 0o777, 0o644);
     }
 
     #[cfg(unix)]

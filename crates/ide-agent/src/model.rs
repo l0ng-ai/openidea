@@ -633,6 +633,10 @@ pub struct NewAgentTask {
     /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
     #[serde(default)]
     pub mcp_overrides: BTreeMap<String, bool>,
+    /// Creates the task without sending `prompt` (it only names the task): the composer's
+    /// `!` command runs in it first.
+    #[serde(default)]
+    pub idle: bool,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the

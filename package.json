@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && node scripts/check-webkit.ts",
+    "build": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit && vite build && node scripts/check-webkit.ts",
     "preview": "vite preview",
     "tauri": "node scripts/tauri.ts",
     "test": "vitest run",

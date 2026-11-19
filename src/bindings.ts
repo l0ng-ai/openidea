@@ -551,6 +551,11 @@ export const commands = {
 	dockerContainerStats: (endpoint: DockerEndpoint, id: string) => typedError<DockerContainerStats, IdeError>(__TAURI_INVOKE("docker_container_stats", { endpoint, id })),
 	/**  Processes running inside a container (`docker top`). */
 	dockerContainerTop: (endpoint: DockerEndpoint, id: string) => typedError<DockerProcessList, IdeError>(__TAURI_INVOKE("docker_container_top", { endpoint, id })),
+	/**
+	 *  Closes the connection's SSH tunnel and, when nothing else uses it, its SSH connection
+	 *  (Services › Disconnect); other endpoints keep nothing open.
+	 */
+	dockerDisconnect: (endpoint: DockerEndpoint) => typedError<null, IdeError>(__TAURI_INVOKE("docker_disconnect", { endpoint })),
 	/**  Follows `docker events` until the daemon goes away or the request is cancelled. */
 	dockerEvents: (request: RequestId, endpoint: DockerEndpoint, onEvent: Channel<DockerEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_events", { request, endpoint, onEvent })),
 	/**  Layers of an image (`docker image history`). */
@@ -8685,6 +8690,11 @@ export type NewAgentTask = {
 	base: string | null,
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`). */
 	mcpOverrides?: { [key in string]: boolean },
+	/**
+	 *  Creates the task without sending `prompt` (it only names the task): the composer's
+	 *  `!` command runs in it first.
+	 */
+	idle?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */

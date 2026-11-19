@@ -723,6 +723,35 @@ describe("single-file producers (scratches)", () => {
       expect(t.config).toMatchObject({ kind: "gradle", cwd: "backend" });
       expect(t.config!.args).toEqual(["test", "--tests", "demo.AppTest.works"]);
     });
+
+    it("a test-named class with a main runs its main; without one, its tests (IDEA semantics)", () => {
+      const maven = nested("maven", "");
+      // `Test.java` with a `main`: the file-level context runs the program.
+      const withMain =
+        "package demo;\npublic class Test {\n  public static void main(String[] a) {\n  }\n  @Test\n  void works() {\n  }\n}\n";
+      const main = produceFile(
+        { path: `${ROOT}/src/test/java/demo/Test.java`, root: ROOT, configs: maven, content: withMain },
+        ALL,
+      )!;
+      expect(main.config).toMatchObject({ kind: "application", name: "Test" });
+      expect(main.config!.args).toEqual(["-cp", "${testClasspath}", "demo.Test"]);
+      // The caret inside a `@Test` method still runs that test, main or not.
+      const onTest = produceContext(at("src/test/java/demo/Test.java", maven, withMain, 5), ALL)!;
+      expect(onTest.config).toMatchObject({ kind: "maven" });
+      expect(onTest.config!.args).toEqual([
+        "test",
+        "-Dtest=demo.Test#works",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+      ]);
+      // No `main`: the file-level context runs the class's tests.
+      const noMain = "package demo;\npublic class Test {\n  @Test\n  void works() {\n  }\n}\n";
+      const tests = produceFile(
+        { path: `${ROOT}/src/test/java/demo/Test.java`, root: ROOT, configs: maven, content: noMain },
+        ALL,
+      )!;
+      expect(tests.config).toMatchObject({ kind: "maven", isTest: true });
+      expect(tests.config!.args).toEqual(["test", "-Dtest=Test"]);
+    });
   });
 
   it("C / C++: compile with debug info into the compile directory", () => {

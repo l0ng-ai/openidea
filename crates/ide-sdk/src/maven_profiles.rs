@@ -3,7 +3,6 @@
 //! user `settings.xml`. The profiles chosen in the Maven tool window are therefore
 //! passed as a copy of the user's settings with those profiles activated.
 
-use crate::apply::setting_path;
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
@@ -45,13 +44,11 @@ pub fn configure_offline(cfg: &mut LanguageServerConfig, offline: bool) {
     }
 }
 
-/// The user's settings (Settings › Maven, else `~/.m2/settings.xml`) with `active`
-/// added to `<activeProfiles>`. Named after its content: m2e reloads a settings file
-/// only when the configured path changes.
+/// The user settings m2e reads (Settings › Maven, else `~/.m2/settings.xml`, with the
+/// configured local repository) with `active` added to `<activeProfiles>`. Named after its
+/// content: m2e reloads a settings file only when the configured path changes.
 fn write_settings(root: &Path, s: &Settings, active: &[&str], dir: &Path) -> Option<PathBuf> {
-    let user = setting_path(root, &s.languages.java.maven.user_settings)
-        .or_else(|| crate::home_dir().map(|h| h.join(".m2").join("settings.xml")));
-    let base = user.and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_else(|| "<settings>\n</settings>\n".into());
+    let (_, base) = crate::apply::m2e_user_settings(root, s, &crate::home_dir().unwrap_or_default());
     let Some(text) = with_active_profiles(&base, active) else {
         tracing::warn!("Maven profiles not passed to jdtls: the user settings.xml has no <settings> element");
         return None;
@@ -104,7 +101,7 @@ pub fn with_active_profiles(text: &str, ids: &[&str]) -> Option<String> {
 }
 
 /// Start of the element `open` (`<name`), not a longer name sharing its prefix.
-fn find_tag(masked: &str, open: &str, from: usize) -> Option<usize> {
+pub(crate) fn find_tag(masked: &str, open: &str, from: usize) -> Option<usize> {
     let mut at = from;
     while let Some(i) = masked[at..].find(open) {
         let start = at + i;
@@ -118,7 +115,7 @@ fn find_tag(masked: &str, open: &str, from: usize) -> Option<usize> {
 }
 
 /// `text` with comments and CDATA blanked out, byte offsets unchanged.
-fn mask_comments(text: &str) -> String {
+pub(crate) fn mask_comments(text: &str) -> String {
     let mut out = text.as_bytes().to_vec();
     let mut at = 0;
     while at < text.len() {
@@ -285,6 +282,15 @@ mod tests {
             assert_eq!(user_settings(&plain), None);
         }
         assert!(!Path::new(&second).exists());
+
+        // The local repository of Settings › Maven stays in the copy (#1739).
+        s.languages.java.maven.local_repository = tmp.path().join("configured").to_string_lossy().into_owned();
+        let mut cfg = jdtls();
+        configure_jdtls(&mut cfg, tmp.path(), &s, &profiles(&["native"]), &dir);
+        let text = std::fs::read_to_string(user_settings(&cfg).unwrap()).unwrap();
+        let expected =
+            format!("<localRepository>{}</localRepository>", tmp.path().join("configured").to_string_lossy());
+        assert!(text.contains(&expected) && !text.contains("/repo<"), "{text}");
 
         let mut other_server: LanguageServerConfig =
             serde_json::from_value(json!({ "name": "kotlin-lsp", "command": "kotlin-lsp" })).unwrap();

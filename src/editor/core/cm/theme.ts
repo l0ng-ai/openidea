@@ -420,4 +420,8 @@ export const openideaTheme = EditorView.theme({
   "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": {
     paddingRight: "calc(24px + var(--cm-corner-inset, 0px))",
   },
+  // The wrapped-part indent is a negative `text-indent` on the line (prefs.ts). Widgets inherit
+  // it, and a block-level box inside one (the inline blame, a line-end hint) would start its
+  // text that many columns to the left, over the code.
+  ".cm-line [contenteditable='false']": { textIndent: "0" },
 });

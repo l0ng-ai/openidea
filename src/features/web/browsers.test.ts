@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProjectInfo, Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { textEditorWrapperFor, useTextEditorWrappers } from "@/workbench/contributions";
-import { isHtmlPath, isWebPath, isWebResource } from "./browsers";
+import { menuGroupItems, textEditorWrapperFor, useTextEditorWrappers } from "@/workbench/contributions";
+import { isHtmlPath, isWebPagePath, isWebPath, isWebResource } from "./browsers";
 import { activate } from "./index";
 
 const types = (patterns: string[], removedPatterns: string[] = []) => ({ patterns, removedPatterns, hashbangs: [] });
@@ -38,13 +38,57 @@ describe("HTML files follow File Types", () => {
   ])("%s", (_name, files, path, expected) => {
     setFiles(files);
     expect(isHtmlPath(path)).toBe(expected);
-    expect(isWebPath(path)).toBe(expected);
   });
 
-  it("keeps SVG files openable in a browser", () => {
+  it.each<[string, object, string, boolean, boolean]>([
+    ["default .html", {}, "/p/a.html", true, true],
+    ["default .shtml", {}, "/p/a.shtml", true, true],
+    ["no association", {}, "/p/a.foo", false, false],
+    ["a name without a dot", {}, "/p/html", false, false],
+    ["added extension", toFoo, "/p/a.foo", true, true],
+    ["override to HTML", { fileTypeOverrides: { "a.txt": "html" } }, "/p/a.txt", true, true],
+    ["*.html moved to another language", movedAway, "/p/a.html", false, true],
+    ["*.html moved, other case", movedAway, "/p/A.HTML", false, true],
+    ["*.html removed", { fileTypes: { html: types([], ["*.html"]) } }, "/p/a.html", false, true],
+    ["override away from HTML", { fileTypeOverrides: { "a.html": "plaintext" } }, "/p/a.html", false, true],
+    ["override of .shtml", { fileTypeOverrides: { "a.shtml": "php" } }, "/p/a.shtml", false, true],
+    [
+      "override of another file type",
+      { ...toFoo, fileTypeOverrides: { "a.foo": "plaintext" } },
+      "/p/a.foo",
+      false,
+      false,
+    ],
+  ])("a browser can open: %s", (_name, files, path, html, page) => {
+    setFiles(files);
+    expect(isHtmlPath(path)).toBe(html);
+    expect(isWebPagePath(path)).toBe(page);
+    expect(isWebPath(path)).toBe(page);
+  });
+
+  it("keeps SVG files openable in a browser, without the page menu item", () => {
     setFiles({});
     expect(isHtmlPath("/p/a.svg")).toBe(false);
+    expect(isWebPagePath("/p/a.svg")).toBe(false);
     expect(isWebPath("/p/A.SVG")).toBe(true);
+  });
+
+  it("offers a retyped page in the browser menus without the preview", () => {
+    setFiles(movedAway);
+    const off = activate();
+    try {
+      const context = { paths: ["/p/a.html"], dirs: [false] };
+      const direct = menuGroupItems("projectView", context).filter(
+        (i) => "action" in i && i.action === "web.openInBrowser",
+      );
+      expect(direct).toHaveLength(1);
+      const browser = menuGroupItems("openIn", context).find((i) => "label" in i && i.label === "Browser");
+      const labels = (browser as { submenu: { label?: string }[] }).submenu.map((i) => i.label);
+      expect(labels).toContain("Default Browser");
+      expect(labels).not.toContain("Built-in Preview");
+    } finally {
+      off();
+    }
   });
 
   it("updates open tabs only when File Types change", () => {
