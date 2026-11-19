@@ -485,15 +485,11 @@ describe("read-only results with a reason", () => {
     expect(backend.applyEdits).not.toHaveBeenCalled();
   });
 
-  it("keeps an unresolved SQL Server table schema read-only", async () => {
+  it("resolves an unqualified SQL Server table in the console's schema", async () => {
     backend.driver = "sqlServer";
     show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
     await act(async () => render(<ResultsView />));
-    expect(await screen.findByRole("note")).toHaveTextContent(
-      "Read-only: the table schema could not be identified in the result database.",
-    );
-    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
-    expect(backend.details).not.toHaveBeenCalled();
+    expect(backend.details).toHaveBeenCalledWith("pg", "public", "users");
   });
 
   it.each(["postgres", "sqlServer"] as const)("matches case-sensitive key columns exactly for %s", async (driver) => {

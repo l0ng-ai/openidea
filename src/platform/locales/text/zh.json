@@ -8875,6 +8875,7 @@
   "{length} selected items": "已选择 {length} 项",
   "Include subdirectories": "包含子目录",
   "Only VCS changed text": "仅 VCS 更改的文本",
+  "Filters": "筛选条件",
   "Files are reformatted by their language's formatter and saved; files without one are skipped.": "文件由各自语言的格式化程序重新格式化并保存；没有格式化程序的文件将被跳过。",
   "No changed files to reformat": "没有需要重新格式化的已更改文件",
   "No files to reformat": "没有需要重新格式化的文件",
@@ -9108,5 +9109,17 @@
   "{count} hover actions": "{count} 个悬停操作",
   "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}",
   "Sorting Options": "排序选项",
-  "Sort by Duration": "按持续时间排序"
+  "Sort by Duration": "按持续时间排序",
+  "Move file '{name}'": "移动文件「{name}」",
+  "Move directory '{name}'": "移动目录「{name}」",
+  "Move {count} items": "移动 {count} 个项目",
+  "Browse for target directory": "浏览目标目录",
+  "Select Target Directory": "选择目标目录",
+  "Cannot move a folder into itself": "不能将文件夹移动到自身目录中",
+  "Already in this directory": "已在此目录中",
+  "Resize left merge pane": "调整左侧合并窗格宽度",
+  "Resize right merge pane": "调整右侧合并窗格宽度",
+  "Database and schema": "数据库和 schema",
+  "Shelve Silently": "静默搁置",
+  "Unshelve Silently": "静默取消搁置"
 }

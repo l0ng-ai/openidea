@@ -442,7 +442,8 @@ pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
         DbDriver::Sqlite | DbDriver::Jdbc => None,
         DbDriver::Postgres => Some("SELECT current_schema()"),
         DbDriver::Mysql => Some("SELECT DATABASE()"),
-        DbDriver::SqlServer => Some("SELECT DB_NAME()"),
+        // The login's default schema; the database is the console's target (IDEA's `database.schema`).
+        DbDriver::SqlServer => Some("SELECT SCHEMA_NAME()"),
         DbDriver::Oracle => Some("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL"),
         DbDriver::Snowflake => Some("SELECT CURRENT_SCHEMA()"),
     }
@@ -450,12 +451,13 @@ pub fn current_schema(driver: DbDriver) -> Option<&'static str> {
 
 /// The statement that makes unqualified names resolve in `schema` on the
 /// connection that runs it (a query console's active schema; `None`: the driver
-/// has no schema to switch — SQLite's `main`, ClickHouse's `USE` differs).
+/// has no schema to switch — SQLite's `main`, ClickHouse's `USE` differs, and SQL Server
+/// cannot change a session's default schema, so its console schema only scopes resolution).
 pub fn use_schema(driver: DbDriver, schema: &str) -> Option<String> {
     match driver {
-        DbDriver::Sqlite | DbDriver::Clickhouse | DbDriver::Jdbc => None,
+        DbDriver::Sqlite | DbDriver::Clickhouse | DbDriver::Jdbc | DbDriver::SqlServer => None,
         DbDriver::Postgres => Some(format!("SET search_path TO {}", quote_ident(driver, schema))),
-        DbDriver::Mysql | DbDriver::SqlServer => Some(format!("USE {}", quote_ident(driver, schema))),
+        DbDriver::Mysql => Some(format!("USE {}", quote_ident(driver, schema))),
         DbDriver::Oracle => Some(format!("ALTER SESSION SET CURRENT_SCHEMA = {}", quote_ident(driver, schema))),
         DbDriver::Snowflake => Some(format!("USE SCHEMA {}", quote_ident(driver, schema))),
     }
@@ -1030,7 +1032,7 @@ mod tests {
         assert_eq!(quote_ident(DbDriver::SqlServer, "a]b"), "[a]]b]");
         assert_eq!(qualified(DbDriver::SqlServer, "dbo", "t"), "[dbo].[t]");
         assert_eq!(qualified(DbDriver::SqlServer, "", "t"), "[t]");
-        assert_eq!(current_schema(DbDriver::SqlServer), Some("SELECT DB_NAME()"));
+        assert_eq!(current_schema(DbDriver::SqlServer), Some("SELECT SCHEMA_NAME()"));
         assert_eq!(crate::conn::begin_statement(DbDriver::SqlServer), "BEGIN TRAN");
         assert_eq!(
             schemas(DbDriver::SqlServer, true),
@@ -1149,7 +1151,7 @@ mod tests {
     fn schema_switch_statement_per_dialect() {
         assert_eq!(use_schema(DbDriver::Postgres, "app data"), Some("SET search_path TO \"app data\"".into()));
         assert_eq!(use_schema(DbDriver::Mysql, "a`b"), Some("USE `a``b`".into()));
-        assert_eq!(use_schema(DbDriver::SqlServer, "app] data"), Some("USE [app]] data]".into()));
+        assert_eq!(use_schema(DbDriver::SqlServer, "dbo"), None);
         assert_eq!(use_schema(DbDriver::Postgres, "a\"b"), Some("SET search_path TO \"a\"\"b\"".into()));
         assert_eq!(use_schema(DbDriver::Oracle, "a\"b"), Some("ALTER SESSION SET CURRENT_SCHEMA = \"a\"\"b\"".into()));
         assert!(sqlserver_databases().contains("state = 0 AND HAS_DBACCESS(name) = 1"));
