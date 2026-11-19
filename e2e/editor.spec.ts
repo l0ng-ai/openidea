@@ -638,3 +638,15 @@ test("dragging the Markdown split divider resizes and reflows editor and preview
     .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
     .toBe(Math.round(initialEditor));
 });
+
+test("Markdown Preview only leaves the Project view clickable", async ({ workbench: page }) => {
+  await openFromTree(page, "README.md");
+  await page.getByRole("button", { name: "Preview Only" }).click();
+  await expect(page.getByRole("document", { name: "Markdown preview" })).toBeVisible();
+
+  const row = page.getByRole("treeitem", { name: "build.gradle.kts", exact: true });
+  // A hidden editor panel used to leave an implicit resize region over everything left of the preview,
+  // which swallowed the click.
+  await row.click();
+  await expect(row).toHaveAttribute("aria-selected", "true");
+});
