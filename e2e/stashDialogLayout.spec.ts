@@ -46,13 +46,15 @@ test("Stash wraps the current branch and accepts a multiline message in a narrow
   await dialog.getByRole("checkbox", { name: "Include untracked files" }).check();
   await message.press("Control+Enter");
   await expect(dialog).toBeHidden();
-  expect(await ipcCalls(page, "vcs_stash_push")).toEqual([
-    {
-      repo: root,
-      message: "Set aside settlement work\nContinue after the release.",
-      keepIndex: true,
-      includeUntracked: true,
-      paths: null,
-    },
-  ]);
+  await expect
+    .poll(() => ipcCalls(page, "vcs_stash_push"))
+    .toEqual([
+      {
+        repo: root,
+        message: "Set aside settlement work\nContinue after the release.",
+        keepIndex: true,
+        includeUntracked: true,
+        paths: null,
+      },
+    ]);
 });
