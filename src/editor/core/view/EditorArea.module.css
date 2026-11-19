@@ -151,52 +151,126 @@
 }
 
 /* Find / replace bar */
-.find {
+.findContainer {
   flex: none;
-  display: grid;
-  grid-template-columns: minmax(220px, 420px) auto 1fr;
-  align-items: center;
-  column-gap: var(--space-1-5);
-  row-gap: var(--space-1-5);
-  padding: 6px 8px 6px 10px;
+  min-width: 0;
+  container: editor-find / inline-size;
   background: var(--bg-editor-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
-.findExpandable {
-  grid-template-columns: auto minmax(220px, 420px) auto 1fr;
+.find {
+  display: grid;
+  grid-template-columns: [mode] auto [field] minmax(0, 420px) [actions] fit-content(50%) [close] minmax(
+      min-content,
+      1fr
+    );
+  align-items: start;
+  row-gap: var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
 }
 .findExpand {
-  grid-column: 1;
-  grid-row: 1;
-}
-.findExpandable .findField {
-  grid-column: 2;
+  grid-area: 1 / mode;
+  margin-inline-end: var(--space-1);
 }
 .findField {
+  grid-area: 1 / field;
+}
+.replaceField {
+  grid-area: 2 / field;
+}
+.findField,
+.replaceField {
   min-width: 0;
 }
-.findButtons {
+.findClose {
+  grid-area: 1 / close;
+  justify-self: end;
+  margin-inline-start: var(--space-1);
+}
+.findExpand,
+.findClose {
+  margin-block-start: var(--space-1);
+}
+.findButtons,
+.replaceButtons {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
+  min-height: var(--h-field);
+  margin-inline-start: var(--space-1-5);
+}
+.findButtons {
+  grid-area: 1 / actions;
   gap: var(--space-0-5);
 }
+.replaceButtons {
+  grid-area: 2 / actions;
+  gap: var(--space-1);
+}
 .findCount {
-  font-size: var(--fs-ui);
+  min-inline-size: 5ch;
+  padding-inline: var(--space-1);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
-  padding: 0 8px 0 4px;
-  min-width: 56px;
   white-space: nowrap;
 }
 .findCountNone {
   color: var(--danger);
 }
-.findClose {
-  justify-self: end;
+
+@container editor-find (width < 500px) {
+  .find {
+    grid-template-columns: [mode] auto [field] minmax(0, 1fr) [close] auto;
+  }
+  .findButtons,
+  .replaceButtons {
+    grid-column: field / -1;
+    min-height: 0;
+    margin-inline-start: 0;
+  }
+  .findButtons {
+    grid-row: 2;
+  }
+  .replaceField {
+    grid-row: 3;
+  }
+  .replaceButtons {
+    grid-row: 4;
+  }
+  .replaceButtons > button {
+    max-width: 100%;
+    height: auto;
+    min-height: var(--h-control);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
-.replaceButtons {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
+
+@container editor-find (width < 224px) {
+  .findField,
+  .replaceField,
+  .replaceButtons {
+    grid-column: mode / -1;
+  }
+  .findExpand,
+  .findClose {
+    grid-row: 2;
+    margin-block-start: 0;
+  }
+  .findButtons {
+    grid-column: field;
+  }
+  .findInput {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(20px, 1fr));
+    height: auto;
+    padding-block: var(--space-1);
+  }
+  .findInput textarea {
+    grid-column: 2 / -1;
+  }
 }
 
 /* Go to line */

@@ -815,8 +815,9 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
   const [history, setHistory] = useState(() => readHistory("evaluate"));
   const [historyMenu, setHistoryMenu] = useState(false);
   const historyPos = useRef(-1);
-  const historyButton = useRef<HTMLSpanElement>(null);
+  const historyButton = useRef<HTMLButtonElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
+  const expressionId = useId();
   const session = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const paused = session?.status === "paused";
   const close = () => useOverlays.setState({ evaluate: null });
@@ -875,7 +876,10 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
       onClose={close}
       title="Evaluate"
       width={620}
+      minWidth={340}
+      minHeight={240}
       resizable="both"
+      className={styles.evalDialog}
       aria-label="Evaluate expression"
       footerStart={
         <Button
@@ -895,13 +899,14 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
       ]}
     >
       <div className={styles.evalBody}>
-        <div className={styles.field}>
-          <span className={styles.label}>
+        <div className={styles.evalExpression}>
+          <label className={styles.label} htmlFor={expressionId}>
             <T>Expression</T>
-          </span>
+          </label>
           <div className={styles.evalInputRow}>
             <textarea
               ref={field}
+              id={expressionId}
               className={styles.evalInput}
               rows={lines}
               value={expression}
@@ -917,19 +922,22 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               spellCheck={false}
               autoComplete="off"
               data-autofocus=""
-              aria-label={tx("Expression")}
-              placeholder={paused ? "Expression to evaluate in the selected frame" : "Pause the program to evaluate"}
+              placeholder={tx(
+                paused ? "Expression to evaluate in the selected frame" : "Pause the program to evaluate",
+              )}
             />
             {completion.popup}
-            <span ref={historyButton}>
-              <IconButton
-                icon="history"
-                title="History"
-                size="small"
-                disabled={!history.length}
-                onClick={() => setHistoryMenu(true)}
-              />
-            </span>
+            <IconButton
+              ref={historyButton}
+              className={styles.evalHistory}
+              icon="history"
+              title="History"
+              size="small"
+              aria-haspopup="menu"
+              aria-expanded={historyMenu}
+              disabled={!history.length}
+              onClick={() => setHistoryMenu(true)}
+            />
           </div>
           <Menu
             open={historyMenu}
@@ -942,32 +950,37 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               .map((h) => ({ label: h.replace(/\s+/g, " "), verbatim: true, run: () => recall(h) }))}
           />
         </div>
-        {ambiguous && (
-          <div className={styles.evalImport} role="group" aria-label={tx("Class to import")}>
-            <span className={styles.label}>{tx`Choose the class to import for ${className}:`}</span>
-            {ambiguous.candidates.map((c) => (
-              <Button
-                key={c}
-                variant="ghost"
-                size="small"
-                onClick={() => {
-                  if (session) rememberImport(session.id, c);
-                  void run();
-                }}
-              >
-                {c}
-              </Button>
-            ))}
-          </div>
-        )}
         <div className={styles.evalResult}>
-          {result ? (
-            <VariablesView roots={[result]} session={session?.id ?? null} aria-label="Evaluation result" />
-          ) : (
-            <div className={styles.empty}>
-              {paused ? tx("Press Enter to evaluate") : tx("Evaluation is available while the program is suspended")}
-            </div>
-          )}
+          <span className={styles.label}>
+            <T>Result</T>
+          </span>
+          <div className={styles.evalResultContent}>
+            {ambiguous && (
+              <div className={styles.evalImport} role="group" aria-label={tx("Class to import")}>
+                <span className={styles.label}>{tx`Choose the class to import for ${className}:`}</span>
+                {ambiguous.candidates.map((c) => (
+                  <Button
+                    key={c}
+                    variant="ghost"
+                    size="small"
+                    onClick={() => {
+                      if (session) rememberImport(session.id, c);
+                      void run();
+                    }}
+                  >
+                    {c}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {result ? (
+              <VariablesView roots={[result]} session={session?.id ?? null} aria-label="Evaluation result" />
+            ) : (
+              <div className={styles.evalHint}>
+                {paused ? tx("Press Enter to evaluate") : tx("Evaluation is available while the program is suspended")}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </Dialog>
