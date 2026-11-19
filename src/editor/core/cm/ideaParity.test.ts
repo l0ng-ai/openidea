@@ -66,6 +66,7 @@ function show(view: EditorView): string {
 }
 
 const javascript = await languages.find((l) => l.name === "JavaScript")!.load();
+const yaml = await languages.find((l) => l.name === "YAML")!.load();
 
 describe("Move Statement", () => {
   it("moves a multi-line statement as a whole, never one of its lines", () => {
@@ -202,6 +203,19 @@ describe("paste reformatting", () => {
     const v = make("if {\n|\n}", [braceIndent, pasteReindentFilter("indentBlock")]);
     paste(v, "a();\n    b();\n  c();");
     expect(v.state.doc.toString()).toBe("if {\n  a();\n    b();\n  c();\n}");
+  });
+
+  it("pastes onto a blank line at the previous line's indent when the language has no indent engine", () => {
+    const doc = "service:\n  database:\n    query-timeout: 30\n    pool:\n      validation-query: SELECT 1\n";
+    const v = make(doc + "|", [yaml, pasteReindentFilter("indentEachLine")]);
+    paste(v, "query-timeout: 30");
+    expect(v.state.doc.toString()).toBe(doc + "      query-timeout: 30");
+  });
+
+  it("pastes a block onto a blank line at the indent of the nearest non-empty line above", () => {
+    const v = make("outer:\n  key: 1\n\n|\ntrailing: 2", [yaml, pasteReindentFilter("indentBlock")]);
+    paste(v, "a: 1\n      b: 2");
+    expect(v.state.doc.toString()).toBe("outer:\n  key: 1\n\n  a: 1\n  b: 2\ntrailing: 2");
   });
 });
 

@@ -37,7 +37,11 @@ export function pinnedTools(file: string): Record<string, string> {
 
 function which(cmd: string): string | null {
   try {
-    const found = execFileSync(process.platform === "win32" ? "where" : "which", [cmd], { encoding: "utf8" })
+    const found = execFileSync(process.platform === "win32" ? "where" : "which", [cmd], {
+      encoding: "utf8",
+      timeout: 10_000,
+      killSignal: "SIGKILL",
+    })
       .split("\n")[0]!
       .trim();
     return found ? realpathSync(found) : null;
@@ -69,7 +73,11 @@ function jdtlsVersion(): string | null {
 function javaVersion(): string | null {
   const home = process.env.JAVA_HOME;
   const java = home ? join(home, "bin", process.platform === "win32" ? "java.exe" : "java") : "java";
-  const r = spawnSync(java, ["-XshowSettings:properties", "-version"], { encoding: "utf8" });
+  const r = spawnSync(java, ["-XshowSettings:properties", "-version"], {
+    encoding: "utf8",
+    timeout: 10_000,
+    killSignal: "SIGKILL",
+  });
   const props = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   const version = /java\.runtime\.version = (\S+)/.exec(props)?.[1];
   const vendor = /java\.vendor = (.+)/.exec(props)?.[1]?.trim();

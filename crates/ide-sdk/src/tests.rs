@@ -902,9 +902,11 @@ fn always_update_snapshots_adds_dash_u_once() {
     apply_to_run_configs(&mut own, tmp.path(), &s);
     assert_eq!(own[0].args, ["--update-snapshots", "package"]);
 
+    // Settings apply to the stored configuration at each launch, so turning it off drops -U.
     s.languages.java.maven.update_snapshots = false;
-    apply_to_run_configs(&mut configs, tmp.path(), &s);
-    assert_eq!(configs[0].args, ["package"]);
+    let mut stored = vec![run("maven", "./mvnw", &["package"])];
+    apply_to_run_configs(&mut stored, tmp.path(), &s);
+    assert_eq!(stored[0].args, ["package"]);
 }
 
 #[test]

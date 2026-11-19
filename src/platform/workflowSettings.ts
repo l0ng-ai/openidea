@@ -62,6 +62,12 @@ export interface CommitSettingsValid {
   doubleClickOpensDiff: boolean | null;
   /** Team conventions for Generate Commit Message with Agent, added to its prompt. */
   agentInstructions: string;
+  /** The agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+  agent: string;
+  /** That agent's model for commit messages; empty keeps the model the agent would use. */
+  agentModel: string;
+  /** That model's thinking level for commit messages; empty keeps the agent's. */
+  agentEffort: string;
 }
 
 export interface VcsSettingsValid {
@@ -300,6 +306,9 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       disabledPluginChecks: [],
       doubleClickOpensDiff: null,
       agentInstructions: "",
+      agent: "",
+      agentModel: "",
+      agentEffort: "",
     },
     confirmation: {
       onCreate: "ask",
@@ -465,6 +474,9 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
       doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
       agentInstructions: text(c.agentInstructions, d.commit.agentInstructions),
+      agent: text(c.agent, d.commit.agent),
+      agentModel: text(c.agentModel, d.commit.agentModel),
+      agentEffort: text(c.agentEffort, d.commit.agentEffort),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
