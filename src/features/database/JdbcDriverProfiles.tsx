@@ -69,6 +69,7 @@ export function JdbcDriverProfiles({
   const [error, setError] = useState<string | null>(null);
   const [classes, setClasses] = useState<string[]>([]);
   const current = drivers.find((d) => d.id === selection);
+  const changedType = draft && drivers.some((d) => d.id === draft.id && d.vendor && d.vendor !== draft.vendor);
   const name = current?.name ?? "";
   const set = (patch: Partial<DbJdbcDriver>) => setDraft((d) => d && { ...d, ...patch });
   const classValid =
@@ -348,6 +349,14 @@ export function JdbcDriverProfiles({
                   )
                 : tx`Delete driver profile ${name}? Data sources using it will need another driver profile.`}
             </p>
+            {confirm === "trust" && changedType && (
+              <p className={styles.formFull}>
+                <T>
+                  Sources that use this profile for its previous type will need a matching profile the next time they
+                  connect, including sources in other projects.
+                </T>
+              </p>
+            )}
             {confirm === "trust" && (
               <ul className={styles.formFull}>
                 {draft?.jars.map((jar) => (

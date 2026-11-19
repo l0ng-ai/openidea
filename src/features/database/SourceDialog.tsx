@@ -183,6 +183,7 @@ const parseSecs = (v: string) => {
 };
 
 const windowsAbsolutePath = /^(?:[A-Za-z]:[/\\]|[/\\]{2})/;
+const jdbcUrlPlaceholder = /<[^>]+>|\{(?:host|port|database|file)\}/;
 
 function absoluteDatabaseFile(path: string, root: string | undefined): boolean {
   return root && windowsAbsolutePath.test(root)
@@ -199,6 +200,34 @@ function sqliteJdbcFile(file: string | null | undefined, root: string | undefine
   if (!root || (windows && /^(?:[A-Za-z]:|\/)/.test(path))) return null;
   const directory = windows ? root.replace(/\\/g, "/") : root;
   return `${directory.replace(/\/+$/, "")}/${path}`;
+}
+
+function builtInTarget(s: DataSource, driver: DataSource["driver"], root: string | undefined): Partial<DataSource> {
+  const url = s.url ?? "";
+  if (driver === "sqlite") {
+    const path = /^jdbc:sqlite3?:(.+)$/i.exec(url)?.[1] ?? "";
+    const file = windowsAbsolutePath.test(root ?? "") ? path.replace(/^\/([A-Za-z]:[/\\])/, "$1") : path;
+    return {
+      file: !/[?#]/.test(file) && !jdbcUrlPlaceholder.test(file) && absoluteDatabaseFile(file, root) ? file : null,
+    };
+  }
+  // The native form has one host. Multi-host and driver-specific descriptors need a manual target.
+  const target = url.replace(/^jdbc:clickhouse:(?=https?:\/\/)/i, "");
+  const parsed =
+    jdbcUrlPlaceholder.test(target) || target.includes("#") || /[;,\s]/.test(target.split("?", 1)[0] ?? "")
+      ? null
+      : parseSourceUrl(target)?.source;
+  if (parsed?.driver !== driver || !parsed?.host) return { host: "", port: null, database: "", ssl: "verifyFull" };
+  return {
+    host: parsed.host,
+    port: parsed.port,
+    database: parsed.database,
+    user: parsed.user || s.user,
+    ssl: parsed.ssl && parsed.ssl !== "prefer" ? parsed.ssl : "verifyFull",
+    sslCaFile: parsed.sslCaFile ?? "",
+    sslCertFile: parsed.sslCertFile ?? "",
+    sslKeyFile: parsed.sslKeyFile ?? "",
+  };
 }
 
 function blank(): DataSource {
@@ -416,8 +445,13 @@ export function SourceDialog({
   // The URL being typed in default mode (null: show the fields' URL).
   const [urlDraft, setUrlDraft] = useState<string | null>(null);
   const [showJdbcProfiles, setShowJdbcProfiles] = useState(false);
-  const [nativeDraft, setNativeDraft] = useState<{ source: DataSource; password: string | undefined } | null>(null);
+  const [nativeDraft, setNativeDraft] = useState<{
+    source: DataSource;
+    password: string | undefined;
+    endpoint: Pick<DataSource, "host" | "port" | "database" | "user" | "file">;
+  } | null>(null);
   const nativeSource = nativeDraft?.source;
+  const [restoredNativeTarget, setRestoredNativeTarget] = useState(false);
   const [connectionSecurityConfirmed, setConnectionSecurityConfirmed] = useState(false);
   const jdbc = s.driver === "jdbc";
   const vendor = vendorOf(s);
@@ -429,6 +463,13 @@ export function SourceDialog({
   const installedJdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
   const projectRoot = useProject((st) => st.project?.root);
   const nativeUrl = nativeSource?.urlOnly ? parseSourceUrl(nativeSource.url ?? "") : null;
+  const nativeOptions = nativeSource?.options;
+  const reviewSessionSettings =
+    nativeOptions?.startupScript ||
+    nativeOptions?.defaultSchema ||
+    nativeOptions?.timeZone ||
+    nativeOptions?.transaction === "manual";
+  const newJdbcPassword = jdbc && nativeSource?.driver === "snowflake" && s.snowflake?.auth !== "password";
   const reviewJdbcSecurity =
     jdbc &&
     ((savedJdbcWithPreset &&
@@ -445,9 +486,10 @@ export function SourceDialog({
           nativeSource.sslCaFile ||
           nativeSource.sslCertFile ||
           nativeSource.sslKeyFile ||
-          nativeSource.options?.startupScript ||
+          nativeSource.readOnly ||
+          reviewSessionSettings ||
           (nativeSource.properties?.length ?? 0) > 0)));
-  const reviewBuiltinSecurity = !jdbc && initial?.driver === "jdbc" && !nativeSource;
+  const reviewBuiltinSecurity = !jdbc && (initial?.driver === "jdbc" || restoredNativeTarget);
   const loadedDbs = useDatabase((st) => (initial?.id ? st.databases[initial.id] : undefined));
   const loadedSchemas = useDatabase((st) => (initial?.id ? st.schemas[initial.id] : undefined));
 
@@ -477,11 +519,14 @@ export function SourceDialog({
   const oracle = s.driver === "oracle";
   const snowflake = s.driver === "snowflake";
   const sf: DbSnowflake = { ...blankSnowflake(), ...s.snowflake };
-  const setSnowflake = (patch: Partial<DbSnowflake>) =>
-    setS((x) => ({ ...x, snowflake: { ...blankSnowflake(), ...x.snowflake, ...patch } }));
-  const browserSignIn = snowflake && sf.auth === "browser";
   const urlOnly = !sqlite && !jdbc && !!s.urlOnly;
   const parsedUrl = urlOnly ? parseSourceUrl(s.url ?? "") : null;
+  const snowflakeAuth = parsedUrl?.source.snowflake?.auth ?? sf.auth;
+  const setSnowflake = (patch: Partial<DbSnowflake>) => {
+    if (patch.auth && patch.auth !== snowflakeAuth) setPassword("");
+    setS((x) => ({ ...x, snowflake: { ...blankSnowflake(), ...x.snowflake, ...patch } }));
+  };
+  const browserSignIn = snowflake && snowflakeAuth === "browser";
   const urlValid = !!parsedUrl && parsedUrl.source.driver === s.driver;
   const host = urlOnly ? (parsedUrl?.source.host ?? "") : (s.host ?? "");
   const database = urlOnly ? (parsedUrl?.source.database ?? "") : (s.database ?? "");
@@ -511,17 +556,25 @@ export function SourceDialog({
       return;
     }
     const parsed = s.urlOnly ? parseSourceUrl(s.url ?? "")?.source : undefined;
-    setNativeDraft({ source: s, password });
     const file = parsed?.file ?? s.file;
     const secure = ["require", "verifyCa", "verifyFull"].includes(parsed?.ssl ?? s.ssl ?? "");
-    set({
-      driver: "jdbc",
-      vendor: type.driver === "jdbc" ? "" : type.id,
+    const endpoint = {
       host: parsed?.host ?? s.host,
       port: (parsed ? parsed.port : s.port) ?? (clickhouse && secure ? 8443 : vendor.port),
       database: parsed?.database ?? s.database,
       user: parsed?.user || s.user,
       file: sqlite ? sqliteJdbcFile(file, projectRoot) : file,
+    };
+    setNativeDraft({ source: s, password, endpoint });
+    const snowflakeOptions = { ...sf, ...parsed?.snowflake };
+    const needsJdbcPassword = snowflake && snowflakeOptions.auth !== "password";
+    if (needsJdbcPassword) setPassword(undefined);
+    set({
+      ...endpoint,
+      driver: "jdbc",
+      vendor: type.driver === "jdbc" ? "" : type.id,
+      ...(snowflake ? { snowflake: snowflakeOptions } : {}),
+      ...(needsJdbcPassword ? { savePassword: false } : {}),
       urlOnly: true,
       url: profile?.urlTemplate ?? "",
       jdbcDriver: profile?.id ?? "",
@@ -534,8 +587,7 @@ export function SourceDialog({
       sslKeyFile: "",
     });
   };
-  const jdbcUrlValid =
-    /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) && !/<[^>]+>|\{(?:host|port|database|file)\}/.test(jdbcUrl);
+  const jdbcUrlValid = /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) && !jdbcUrlPlaceholder.test(jdbcUrl);
   const valid = jdbc
     ? !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || connectionSecurityConfirmed)
     : (!reviewBuiltinSecurity || connectionSecurityConfirmed) &&
@@ -573,6 +625,10 @@ export function SourceDialog({
       else chooseProfile(undefined, v);
       return;
     }
+    if (jdbc && genericJdbc && installedJdbcProfile?.vendor === v.id) {
+      set({ vendor: v.id });
+      return;
+    }
     const previous =
       jdbc && nativeSource
         ? {
@@ -581,12 +637,22 @@ export function SourceDialog({
             color: s.color,
             comment: s.comment,
             global: s.global,
+            savePassword: newJdbcPassword ? nativeSource.savePassword : s.savePassword,
             readOnly: s.readOnly,
             introspection: intro,
             options: { ...blankOptions(), ...nativeSource.options, autoDisconnectSecs: options.autoDisconnectSecs },
           }
         : s;
-    if (nativeDraft) setPassword(nativeDraft.password);
+    if (nativeDraft) {
+      setPassword(nativeDraft.password);
+      const changed = (["host", "port", "database", "user", "file"] as const).some(
+        (field) => s[field] !== nativeDraft.endpoint[field],
+      );
+      setRestoredNativeTarget(changed || (!!s.url && !fromTemplate && s.url !== template));
+    } else {
+      setRestoredNativeTarget(false);
+      if (jdbc && v.driver === "snowflake" && sf.auth !== "password") setPassword(undefined);
+    }
     setNativeDraft(null);
     if (jdbc && nativeSource && vendorOf(nativeSource).id === v.id) {
       setS(previous);
@@ -601,18 +667,7 @@ export function SourceDialog({
         driver: v.driver,
         vendor: v.id === v.driver ? "" : v.id,
         port,
-        ...(x.driver === "jdbc"
-          ? {
-              jdbcDriver: "",
-              urlOnly: false,
-              url: "",
-              properties: [],
-              options: { ...blankOptions(), autoDisconnectSecs: options.autoDisconnectSecs },
-              ssh: null,
-              ...(v.driver === "sqlite" && !absoluteDatabaseFile(x.file ?? "", projectRoot) ? { file: null } : {}),
-            }
-          : {}),
-        ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.driver === "jdbc" ? "prefer" : x.ssl),
+        ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.ssl),
         ...(v.driver === "snowflake"
           ? { host: x.host === "localhost" ? "" : x.host, snowflake: { ...blankSnowflake(), ...x.snowflake } }
           : {}),
@@ -621,6 +676,17 @@ export function SourceDialog({
               user: x.user || "default",
               database: x.database || "default",
               options: { ...blankOptions(), ...x.options, transaction: "auto" as const },
+            }
+          : {}),
+        ...(x.driver === "jdbc"
+          ? {
+              jdbcDriver: "",
+              urlOnly: false,
+              url: "",
+              properties: [],
+              options: { ...blankOptions(), autoDisconnectSecs: options.autoDisconnectSecs },
+              ssh: null,
+              ...builtInTarget({ ...x, url: jdbcUrl }, v.driver, projectRoot),
             }
           : {}),
       };
@@ -649,7 +715,14 @@ export function SourceDialog({
     if (p.password) setPassword(p.password);
   };
 
-  const setUrlOnly = (on: boolean) => set(on && !s.url?.trim() ? { urlOnly: on, url: sourceUrl(s) } : { urlOnly: on });
+  const setConnectionUrl = (url: string, on: boolean) => {
+    if (snowflake) {
+      const auth = (on ? parseSourceUrl(url)?.source.snowflake?.auth : undefined) ?? sf.auth;
+      if (auth !== snowflakeAuth) setPassword("");
+    }
+    set({ url, urlOnly: on });
+  };
+  const setUrlOnly = (on: boolean) => setConnectionUrl(on && !s.url?.trim() ? sourceUrl(s) : (s.url ?? ""), on);
 
   /** Test Connection, or with `tunnel` the SSH/SSL tab's Test SSH Tunnel (no database login). */
   const runTest = async (tunnel = false) => {
@@ -819,6 +892,7 @@ export function SourceDialog({
                   <Button
                     onClick={() => {
                       set({ url: template });
+                      setTest(null);
                       setConnectionSecurityConfirmed(false);
                     }}
                   >
@@ -916,7 +990,7 @@ export function SourceDialog({
             </>
           )}
           <label className={styles.formLabel} htmlFor="db-password" hidden={browserSignIn}>
-            {tx(snowflake ? snowflakeSecretLabel(sf.auth) : "Password:")}
+            {tx(snowflake ? snowflakeSecretLabel(snowflakeAuth) : "Password:")}
           </label>
           <div className={styles.formRow} hidden={browserSignIn}>
             <Input
@@ -925,7 +999,7 @@ export function SourceDialog({
               type="password"
               value={password ?? ""}
               placeholder={
-                initial && password === undefined
+                initial && password === undefined && !newJdbcPassword
                   ? "<unchanged>"
                   : snowflake && sf.auth === "keyPair"
                     ? "Only for an encrypted key"
@@ -997,7 +1071,7 @@ export function SourceDialog({
                   : urlDraft !== null && parseSourceUrl(urlDraft)?.source.driver !== s.driver
             }
             placeholder={jdbc ? jdbcProfile?.urlTemplate : sourceUrl(s)}
-            onChange={(e) => (jdbc || urlOnly ? set({ url: e.target.value }) : typeUrl(e.target.value))}
+            onChange={(e) => (jdbc || urlOnly ? setConnectionUrl(e.target.value, true) : typeUrl(e.target.value))}
             onBlur={() => setUrlDraft(null)}
           />
           <span />
@@ -1023,9 +1097,31 @@ export function SourceDialog({
               ? tx(
                   "Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH tunnel, configure the equivalent route before connecting.",
                 )
-              : tx("Review the built-in connection settings, credentials and TLS before connecting.")}
+              : tx(
+                  restoredNativeTarget
+                    ? "The built-in driver restores the previous target and credentials. Review them before connecting."
+                    : "Review the built-in connection settings, credentials and TLS before connecting.",
+                )}
           </span>
-          {jdbc && nativeUrl?.password && (
+          {jdbc && nativeSource?.readOnly && (
+            <span className={styles.formHint}>
+              <T>JDBC asks the driver for a read-only connection. Use a database account with read-only privileges.</T>
+            </span>
+          )}
+          {jdbc && reviewSessionSettings && (
+            <span className={styles.formHint}>
+              <T>
+                JDBC uses auto-commit. Review your startup script, default schema, and time zone, and configure
+                equivalent settings supported by your driver or database.
+              </T>
+            </span>
+          )}
+          {newJdbcPassword && (
+            <span className={styles.formHint}>
+              <T>This source uses a separate credential for JDBC. Enter a password if your driver requires one.</T>
+            </span>
+          )}
+          {jdbc && !newJdbcPassword && nativeUrl?.password && (
             <span className={styles.formHint}>
               <T>If the connection used a password in the previous URL, enter it in the Password field.</T>
             </span>
