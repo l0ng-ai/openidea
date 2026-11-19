@@ -892,7 +892,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             followSelection(nodes);
           }}
           onActivate={(n) => openNode(n, roots, mode === "dialog")}
-          onJumpToSource={(n) => {
+          onJumpToSource={async (n) => {
+            if (n.type === "group") {
+              const files = n.files.filter((f) => onDisk(f) && !f.path.endsWith("/"));
+              for (const [i, file] of files.entries()) {
+                await editorService().openFile(file.path, { focus: i === files.length - 1 });
+              }
+              return;
+            }
             const file = n.type === "file" ? n : selectedNodes().find((x) => x.type === "file");
             if (file?.path && file.kind !== "deleted") void editorService().openFile(file.path, { focus: true });
           }}
