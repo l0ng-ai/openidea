@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test, vi } from "vitest";
-import { launchBrowser, withDeadline } from "./lifecycle.ts";
+import { chromiumInstalled, launchBrowser, withDeadline } from "./lifecycle.ts";
 
 test("a deadline rejects an unanswered operation and releases its timer", async () => {
   vi.useFakeTimers();
@@ -15,7 +15,7 @@ test("a deadline rejects an unanswered operation and releases its timer", async 
   }
 });
 
-test.each(["blocked renderer", "missing animation frames"])(
+test.skipIf(!chromiumInstalled(true)).each(["blocked renderer", "missing animation frames"])(
   "Node deadline survives %s and browser cleanup terminates it",
   { timeout: 20_000 },
   async (mode) => {
