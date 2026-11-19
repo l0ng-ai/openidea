@@ -1,3 +1,4 @@
+import type * as ProjectStore from "../src/platform/project";
 import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 test.use({ video: "on" });
@@ -114,9 +115,11 @@ test("restricting an attached folder leaves the current project untouched", asyn
 test("restricted attachments can be trusted individually from the banner", async ({ workbench: page }) => {
   await stubDesktop(page);
   await page.evaluate(async () => {
-    const m = "/src/platform/project.ts";
-    const { useProject } = await import(/* @vite-ignore */ m);
+    // Load the running workbench's store in the browser.
+    const projectPath = "/src/platform/project.ts";
+    const { useProject }: typeof ProjectStore = await import(/* @vite-ignore */ projectPath);
     const primary = useProject.getState().project;
+    if (!primary) throw new Error("Expected the sample project to be open");
     let current = {
       ...primary,
       trusted: false,
@@ -126,11 +129,11 @@ test("restricted attachments can be trusted individually from the banner", async
     const trusted = new Set([primary.root]);
     window.__ipc.handlers.project_trust_status = ({ path }) => ({
       root: path,
-      trusted: trusted.has(path),
+      trusted: typeof path === "string" && trusted.has(path),
       decided: true,
     });
     window.__ipc.handlers.project_trust_set = ({ path, trusted: allow }) => {
-      if (allow) trusted.add(path);
+      if (allow && typeof path === "string") trusted.add(path);
       current = { ...current, trusted: current.workspace.projects.every((path) => trusted.has(path)) };
     };
     window.__ipc.handlers.project_current = () => current;

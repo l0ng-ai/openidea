@@ -26,7 +26,7 @@ const firstTask: AgentTask = {
 const secondTask: AgentTask = { ...firstTask, id: "focus-second", title: "Second focus task" };
 const draft = "draft keep this unsent";
 const reboundShortcut = "Control+Meta+Shift+J";
-const subagent: AgentEntry = {
+const subagent: Extract<AgentEntry, { type: "subagent" }> = {
   type: "subagent",
   id: "focus-child",
   title: "Inspect focus behavior",
