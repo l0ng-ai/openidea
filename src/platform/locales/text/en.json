@@ -2743,5 +2743,7 @@
   "Resize right merge pane": "Resize right merge pane",
   "Database and schema": "Database and schema",
   "Loading…": "Loading…",
-  "<schema>": "<schema>"
+  "<schema>": "<schema>",
+  "Shelve Silently": "Shelve Silently",
+  "Unshelve Silently": "Unshelve Silently"
 }
