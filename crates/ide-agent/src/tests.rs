@@ -1899,6 +1899,32 @@ async fn real_claude_task_in_a_worktree() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hermes_session_info_names_the_task_and_counts_compressions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        // "again" ends the turn at once; the default prompt waits for a permission answer.
+        .create(NewAgentTask { prompt: text("again"), provider: "claude".into(), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    let info = |title: &str, depth: u32| {
+        json!({"sessionUpdate": "session_info_update", "title": title, "updatedAt": "2026-11-18T18:35:32.068362+00:00",
+            "_meta": {"hermes": {"sessionProvenance": {"sessionKind": "root", "parentHermesSessionId": null,
+                "compressionDepth": depth}}}})
+    };
+    handle.on_update(None, &info("Make a 3-step plan and carry it out: 1) list the…", 0));
+    handle.on_update(None, &info("List files and edit notes.txt", 0));
+    let t = handle.state.lock().task.clone();
+    assert_eq!(t.title, "List files and edit notes.txt", "the agent's latest title wins");
+    assert_eq!(t.stats.compressions, 0);
+    handle.on_update(None, &info("List files and edit notes.txt", 2));
+    assert_eq!(handle.state.lock().task.stats.compressions, 2);
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn renamed_titles_survive_updates_forks_and_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
@@ -3552,11 +3578,13 @@ fn streamed_text_is_sent_as_appends() {
     );
     let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other"));
     assert!(matches!(replaced, AgentEvent::Entry { .. }), "text that doesn't extend the sent text is sent whole");
-    let thought = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm…".into() });
+    let thought = AgentEntry::Thought { text: "hmm…".into(), started_ms: None };
+    let thought = entry_event("t", &mut streamed, None, 4, &thought);
     assert!(matches!(thought, AgentEvent::Entry { index: 4, .. }), "a new message starts whole");
     let tool = AgentEntry::Error { message: "x".into() };
     entry_event("t", &mut streamed, None, 4, &tool);
-    let again = entry_event("t", &mut streamed, None, 4, &AgentEntry::Thought { text: "hmm… ok".into() });
+    let again = AgentEntry::Thought { text: "hmm… ok".into(), started_ms: None };
+    let again = entry_event("t", &mut streamed, None, 4, &again);
     assert!(matches!(again, AgentEvent::Entry { .. }), "an entry replaced by another kind forgets its text");
 
     let long = "é".repeat(5000);

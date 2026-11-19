@@ -9048,5 +9048,12 @@
   "Detect commands that can be run right from Markdown files": "检测可以直接从 Markdown 文件运行的命令",
   "Run commands from": "运行命令的目录",
   "Markdown file parent directory": "Markdown 文件的父目录",
-  "Hermes profile": "Hermes 配置文件"
+  "Hermes profile": "Hermes 配置文件",
+  "Exit code": "退出码",
+  "The agent compressed the conversation to fit its context": "智能体压缩了对话以适应其上下文",
+  "compressed ×{count}": "已压缩 ×{count}",
+  "Tokens of the last turn": "上一轮的令牌",
+  "in {count}": "输入 {count}",
+  "cached {count}": "缓存 {count}",
+  "out {count}": "输出 {count}"
 }
