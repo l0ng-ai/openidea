@@ -504,6 +504,9 @@ impl Session {
 
 /// How long Stop waits for a launched program to exit before reporting the session ended.
 pub(crate) const DEBUGGEE_EXIT_WAIT: Duration = Duration::from_secs(10);
+/// How long a stop waits for a killed program to be gone (Windows ends processes asynchronously).
+#[cfg(windows)]
+const DEBUGGEE_KILL_WAIT: Duration = Duration::from_secs(5);
 
 pub(crate) async fn remember_debuggee(s: &Arc<Session>) {
     #[cfg(windows)]
@@ -643,14 +646,24 @@ pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
     }
     #[cfg(windows)]
     {
+        use std::time::Instant;
         remember_debuggee(s).await;
-        let deadline = std::time::Instant::now() + DEBUGGEE_EXIT_WAIT;
+        let deadline = Instant::now() + DEBUGGEE_EXIT_WAIT;
+        let mut killed: Option<Instant> = None;
         // The captured tree is the oracle when it was captured; otherwise the job (every
         // process the launch started) is, so a failed capture can no longer end the wait
         // while the program still holds its port.
         while launch_running(s) {
-            if s.stop_force.swap(false, Ordering::AcqRel) || std::time::Instant::now() >= deadline {
+            let now = Instant::now();
+            if s.stop_force.swap(false, Ordering::AcqRel) || (killed.is_none() && now >= deadline) {
                 signal_debuggee(s, true).await;
+                killed.get_or_insert(now);
+            }
+            // Termination is asynchronous, and a process TerminateProcess can't end (stuck in
+            // the kernel) would hold the stop forever: give up on it, as on Unix.
+            if killed.is_some_and(|at| now.duration_since(at) >= DEBUGGEE_KILL_WAIT) {
+                tracing::warn!(session = s.id.0, pid, "stop: the debugged program did not exit after it was killed");
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
