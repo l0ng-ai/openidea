@@ -1487,8 +1487,8 @@ pub struct Child {
 
 impl Child {
     /// What it printed since the last read, up to 1 MiB per stream, or one
-    /// whole character when `max_bytes` is smaller;
-    /// `status` is `Some` once it ended.
+    /// whole character when `max_bytes` is smaller. `status` is `Some` in the
+    /// chunk that holds the last of its output: poll until it is set.
     pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
         imp::child_poll(&self.inner, max_bytes)
     }
@@ -1509,6 +1509,7 @@ impl Child {
     }
 
     /// Waits up to `timeout_ms` for it to end (0 only checks), then reads it.
+    /// When more is left than one chunk holds, `status` comes with a later [`poll`](Self::poll).
     pub fn wait(&self, timeout_ms: u32) -> Result<Chunk, Error> {
         imp::child_wait(&self.inner, timeout_ms)
     }

@@ -272,4 +272,6 @@ let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PRO
 - 环境变量只能追加：名称已存在于准备好的环境中（包括登录 shell 的 `PATH`）会报错。最多 64 项。
 - 调用会随任务或调用一起取消，超时即终止；耗时的工作请放进 `host::begin_task`。丢弃 `Child` 会终止进程，
   禁用或回收插件会结束它启动的所有子进程。
+- `Child` 的 `poll` 和 `wait` 返回上次读取之后的输出；`status` 随包含最后一段输出的那次结果返回，读到它为止。
+  没有读取的输出每个流只保留最后 1 MiB；要拿到会结束的命令的完整输出，请用 `run_command`。
 - 用户可以在 **设置 › 插件** 中为 `process:` 授权全局或按项目选择可执行文件；插件仍使用其声明的程序名调用。
