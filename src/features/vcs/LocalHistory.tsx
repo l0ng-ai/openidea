@@ -212,7 +212,7 @@ export function LocalHistoryEditor({ input }: { input: EditorInput }) {
   return (
     <SplitGroup
       elementRef={container}
-      className={styles.root}
+      className={`${styles.root} ${styles.resizable}`}
       orientation={stacked ? "vertical" : "horizontal"}
       storageKey="openidea.localHistory.layout"
     >
