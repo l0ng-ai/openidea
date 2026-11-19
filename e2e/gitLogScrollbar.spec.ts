@@ -76,6 +76,47 @@ test.beforeEach(async ({ workbench: page }) => {
   });
 });
 
+test("fits a wide graph and saved columns without horizontal scrolling", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const module = "/src/features/vcs/logOptions.ts";
+    const { useLogOptions } = await import(/* @vite-ignore */ module);
+    useLogOptions.setState({
+      showColumnHeaders: true,
+      showHash: true,
+      showSignature: true,
+      columnWidths: { author: 400, date: 240 },
+    });
+  });
+  const list = page.getByRole("listbox", { name: "Commits" });
+  await expect(list.getByRole("separator", { name: "Resize Date column" })).toBeVisible();
+
+  for (const width of [1400, 620, 400]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect
+      .poll(() =>
+        list.evaluate((element) => {
+          const header = [...element.querySelectorAll("[data-log-column]")];
+          const row = [...element.querySelector('[role="option"]')!.children];
+          const right = element.getBoundingClientRect().right;
+          return {
+            fits: element.scrollWidth === element.clientWidth,
+            aligned: header.every((cell, i) => {
+              const heading = cell.getBoundingClientRect();
+              const data = row[i]!.getBoundingClientRect();
+              return heading.width > 0 && heading.right <= right && Math.abs(heading.right - data.right) < 1;
+            }),
+          };
+        }),
+      )
+      .toEqual({ fits: true, aligned: true });
+  }
+
+  await list.hover();
+  await page.mouse.wheel(450, 450);
+  await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  expect(await list.evaluate((element) => element.scrollLeft)).toBe(0);
+});
+
 test("keeps a wide Git graph filled during scrollbar drags and its edges interactive afterwards", async ({
   workbench: page,
 }) => {
