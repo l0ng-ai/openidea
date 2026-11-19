@@ -121,6 +121,18 @@ fn redact_urls(s: &str) -> String {
     out
 }
 
+/// The first `< file` include that does not resolve (symlinks followed) to a file under `root`.
+fn include_outside_project<'a>(includes: &'a [String], base: &Path, root: &Path) -> Option<&'a str> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    includes
+        .iter()
+        .find(|inc| {
+            inc.contains("{{")
+                || !std::fs::canonicalize(base.join(inc.as_str())).is_ok_and(|resolved| resolved.starts_with(&root))
+        })
+        .map(String::as_str)
+}
+
 fn http_run_request() -> Tool {
     Tool::new(
         "http_run_request",
@@ -151,6 +163,12 @@ The `url` field in the result is as written in the file (unsubstituted); transpo
                 root: Some(call.root()),
                 env: env.as_deref(),
             };
+            // An include is read and sent as the request body: keep it inside the project.
+            let includes = ide_http::body_files(&text, index);
+            let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            if let Some(inc) = include_outside_project(&includes, &base, call.root()) {
+                return Err(IdeError::invalid(format!("body file `{inc}` is outside the project")));
+            }
             // Prepare before confirm so the dialog shows the real destination (after env substitution).
             let prepared = ide_http::prepare(&input)?;
             let subject = prepared.name.clone().unwrap_or_else(|| format!("{} {}", prepared.method, prepared.url));
@@ -164,6 +182,9 @@ The `url` field in the result is as written in the file (unsubstituted); transpo
             }
             if prepared.body.is_some() {
                 detail.push_str("\nBody: present");
+            }
+            if !includes.is_empty() {
+                detail.push_str(&format!("\nBody files: {}", includes.join(", ")));
             }
             call.confirm(&subject, Some(detail)).await?;
 
@@ -232,6 +253,26 @@ mod tests {
         assert!(is_http_file(Path::new("a.http")));
         assert!(is_http_file(Path::new("a.REST")));
         assert!(!is_http_file(Path::new("a.txt")));
+    }
+
+    #[test]
+    fn body_includes_must_stay_in_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let outside = tmp.path().join("secret.txt");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("body.json"), "{}").unwrap();
+        std::fs::write(&outside, "key").unwrap();
+        let inc = |s: &str| vec![s.to_owned()];
+        assert_eq!(include_outside_project(&inc("body.json"), &root, &root), None);
+        assert!(include_outside_project(&inc("../secret.txt"), &root, &root).is_some());
+        assert!(include_outside_project(&inc(outside.to_str().unwrap()), &root, &root).is_some());
+        assert!(include_outside_project(&inc("{{file}}"), &root, &root).is_some());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("link.json")).unwrap();
+            assert!(include_outside_project(&inc("link.json"), &root, &root).is_some());
+        }
     }
 
     #[test]

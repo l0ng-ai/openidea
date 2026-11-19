@@ -86,6 +86,24 @@ pub fn prepare(input: &RunInput<'_>) -> IdeResult<PreparedRequest> {
     exec::prepare(raw, &parsed.variables, &envs, input.env, input.file.and_then(Path::parent))
 }
 
+/// Raw `< file` include paths of request `index` of `text`, as written (unsubstituted).
+pub fn body_files(text: &str, index: u32) -> Vec<String> {
+    let parsed = parse::parse(text);
+    parsed
+        .requests
+        .get(index as usize)
+        .map(|r| {
+            r.body
+                .iter()
+                .filter_map(|p| match p {
+                    parse::BodyPart::File(f) => Some(f.clone()),
+                    parse::BodyPart::Text(_) => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Convert to cURL and Copy: request `index` of `text`, resolved, as a cURL command.
 pub fn curl(input: &RunInput<'_>) -> IdeResult<String> {
     prepare(input).map(|r| curl::to_curl(&r))

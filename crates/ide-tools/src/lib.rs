@@ -1447,7 +1447,7 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let http = Http::new(&self.system_path)?;
+        let http = Http::new_secure(&self.system_path)?;
         emit(InstallEvent::Line { text: "Resolving the latest release…".into() });
         let dl = self.resolve_release(&http, source, assets, cancel)?;
         emit(InstallEvent::Line { text: format!("Downloading {} ({})", dl.name, dl.url) });
@@ -1584,7 +1584,7 @@ impl Tools {
     fn latest_version(&self, method: Method, cancel: &CancellationToken) -> IdeResult<Option<String>> {
         match method {
             Method::Release { source, assets, .. } => {
-                let http = Http::new(&self.system_path)?;
+                let http = Http::new_secure(&self.system_path)?;
                 Ok(Some(self.resolve_release(&http, source, assets, cancel)?.version))
             }
             Method::Npm { packages } => {
@@ -1718,8 +1718,13 @@ fn fetch_verified(
         (Some(h), _) => Some(h.clone()),
         (None, Some(url)) => match http.get_text(url, cancel) {
             Ok(text) => sources::parse_checksum(&text, &dl.name),
-            Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-            Err(_) => None,
+            Err(e) => {
+                return Err(if e.kind == ErrorKind::Cancelled {
+                    e
+                } else {
+                    IdeError::new(ErrorKind::Io, format!("cannot fetch the checksum for {}: {}", dl.name, e.message))
+                });
+            }
         },
         (None, None) => None,
     };

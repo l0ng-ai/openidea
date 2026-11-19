@@ -75,9 +75,9 @@ impl History {
     /// Saves `exchange`, dropping the oldest entries beyond [`MAX_ENTRIES`].
     pub fn add(&self, exchange: &HttpExchange) -> IdeResult<()> {
         let _g = self.lock.lock();
-        std::fs::create_dir_all(&self.dir)?;
+        create_private_dir(&self.dir)?;
         let json = serde_json::to_string(exchange).map_err(|e| IdeError::internal(e.to_string()))?;
-        std::fs::write(self.file(&exchange.entry.id)?, json)?;
+        write_private(&self.file(&exchange.entry.id)?, json.as_bytes())?;
         let mut index = self.read_index();
         index.insert(0, exchange.entry.clone());
         for old in index.drain(MAX_ENTRIES.min(index.len())..) {
@@ -90,7 +90,7 @@ impl History {
 
     fn write_index(&self, index: &[HistoryEntry]) -> IdeResult<()> {
         let json = serde_json::to_string_pretty(index).map_err(|e| IdeError::internal(e.to_string()))?;
-        std::fs::write(self.dir.join(INDEX), json)?;
+        write_private(&self.dir.join(INDEX), json.as_bytes())?;
         Ok(())
     }
 
@@ -106,6 +106,31 @@ impl History {
         }
         Ok(())
     }
+}
+
+/// History holds resolved `Authorization` headers and bodies: keep it owner-only.
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)
 }
 
 #[cfg(test)]
@@ -134,6 +159,19 @@ mod tests {
             },
             response: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("h");
+        History::new(dir.clone()).add(&exchange("a")).unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("a.json")), 0o600);
+        assert_eq!(mode(&dir.join(INDEX)), 0o600);
     }
 
     #[test]

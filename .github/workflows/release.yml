@@ -112,10 +112,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         if: steps.key.outputs.skip != 'true'
         with: { targets: wasm32-wasip2 }
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: steps.key.outputs.skip != 'true'
         with: { key: release-plugins }
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         if: steps.key.outputs.skip != 'true'
         with: { version: 11 }
       - uses: actions/setup-node@v5

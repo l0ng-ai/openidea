@@ -32,6 +32,9 @@ on:
     paths: *paths
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: language-smoke-${{ github.ref }}
   # A new push supersedes a PR's run; on main every merge runs to the end (and saves the cache).

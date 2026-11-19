@@ -369,6 +369,12 @@ impl Http {
         Ok(Self { curl, gh, explicit_github_token, https_only: false, revoke_best_effort, accept: None })
     }
 
+    /// `Http::new`, HTTPS only (redirects included) outside tests, which serve over `file://`.
+    pub fn new_secure(search_path: &std::ffi::OsStr) -> IdeResult<Self> {
+        let http = Self::new(search_path)?;
+        Ok(if cfg!(test) { http } else { http.https_only() })
+    }
+
     /// Refuses every protocol but HTTPS, redirects included.
     pub fn https_only(mut self) -> Self {
         self.https_only = true;

@@ -8,7 +8,7 @@ use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -138,7 +138,8 @@ fn serve(
     // The helper writes its request at once: an idle connection must not hold a thread.
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     let Ok(mut reader) = stream.try_clone().map(BufReader::new) else { return };
-    if reader.read_line(&mut line).is_err() {
+    // A prompt is a short JSON line: bound what a connection may make us buffer.
+    if (&mut reader).take(64 * 1024).read_line(&mut line).is_err() {
         return;
     }
     let Ok(req) = serde_json::from_str::<Request>(&line) else { return };

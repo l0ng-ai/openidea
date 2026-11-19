@@ -87,7 +87,12 @@ impl DebugManager {
         let copied = tokio::task::spawn_blocking({
             let dir = dir.clone();
             move || {
-                std::fs::create_dir_all(&dir)?;
+                // Owner-only and never an existing directory: the temp dir is shared and the name guessable.
+                #[cfg_attr(not(unix), allow(unused_mut))]
+                let mut builder = std::fs::DirBuilder::new();
+                #[cfg(unix)]
+                std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+                builder.create(&dir)?;
                 std::fs::copy(&recorded, dir.join("page.cpuprofile"))?;
                 // The adapter's own copy is in the system's temporary directory: no use keeping two.
                 let _ = std::fs::remove_file(&recorded);

@@ -302,12 +302,12 @@ impl TempConfig {
         let nanos =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let dir = std::env::temp_dir().join(format!("openidea-docker-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
+        // Fails if the name is taken, and is owner-only from the start: the temp dir is shared.
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        }
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir)?;
         if let Some(contexts) = user_config_dir().map(|d| d.join("contexts")).filter(|d| d.is_dir()) {
             let _ = copy_dir(&contexts, &dir.join("contexts"));
         }

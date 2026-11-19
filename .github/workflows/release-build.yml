@@ -71,13 +71,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with: { ref: "${{ env.TAG }}" }
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with: { key: "${{ matrix.target }}", cache-on-failure: true }
       - name: Linux deps
         if: runner.os == 'Linux'
@@ -104,7 +104,7 @@ jobs:
             [ -n "${!v}" ] && { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
           done
           true
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -180,7 +180,7 @@ jobs:
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with: { key: "server-${{ matrix.target }}", cache-on-failure: true }
       - name: musl toolchain
         if: runner.os == 'Linux'
