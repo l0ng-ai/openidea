@@ -487,13 +487,22 @@ function VarRow({
     );
   const kind = node.error ? null : classifyValue(node.value, node.typeName);
   const shown = shownValue(node.value, node.typeName);
+  const evaluation = node.kind === "eval";
   return (
     <span className={styles.row}>
       <Icon name={nodeIcon(node)} size={16} className={styles.nodeIcon} />
       {!shown.entry && (
         <>
-          <span className={clsx(styles.name, node.kind === "var" && styles.varName, changed && styles.changed)}>
-            {node.name}
+          <span
+            className={clsx(
+              styles.name,
+              evaluation && styles.evalName,
+              node.kind === "var" && styles.varName,
+              changed && styles.changed,
+            )}
+            title={evaluation ? node.name : undefined}
+          >
+            {evaluation ? oneLine(node.name) : node.name}
           </span>
           <span className={styles.eq}>=</span>
         </>
