@@ -218,15 +218,44 @@
   min-width: 0;
   overflow: hidden;
 }
-.crumbButton {
-  flex: none;
-  max-width: 240px;
-  gap: 5px;
-  color: var(--fg);
-}
-.crumbButton:last-child {
-  flex: 0 1 auto;
+.crumbStrip {
+  display: flex;
+  align-items: center;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.crumbStrip::-webkit-scrollbar {
+  display: none;
+}
+.crumbStrip:is([data-crumbs-before], [data-crumbs-after]) {
+  --crumb-mask: linear-gradient(
+    to right,
+    var(--crumb-start, black),
+    black var(--space-3),
+    black calc(100% - var(--space-3)),
+    var(--crumb-end, black)
+  );
+  -webkit-mask-image: var(--crumb-mask);
+  mask-image: var(--crumb-mask);
+}
+.crumbStrip[data-crumbs-before] {
+  --crumb-start: transparent;
+}
+.crumbStrip[data-crumbs-after] {
+  --crumb-end: transparent;
+}
+.crumbStrip .crumbButton {
+  flex: none;
+  max-width: min(240px, 100%);
+  margin: 0;
+  padding: 0 var(--space-1);
+  font: inherit;
+  color: inherit;
+}
+.crumbStrip .crumbButton[aria-current="location"] {
+  color: var(--fg);
 }
 .crumbIcon {
   flex: none;
@@ -240,7 +269,6 @@
 .statusSep {
   flex: none;
   color: var(--fg-faint);
-  margin: 0 2px;
 }
 .lock {
   display: inline-flex;
@@ -339,13 +367,23 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-0-5);
-  height: 26px;
-  padding: 0 8px;
+  height: max(24px, calc(1em + var(--space-2)));
+  padding: 0 var(--space-2);
   overflow: hidden;
   background: var(--bg-editor, var(--bg-island));
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.codeCrumbs .crumbStrip {
+  gap: var(--space-0-5);
+}
+.codeCrumbs .crumbButton {
+  height: max(20px, calc(1em + var(--space-1)));
+  max-width: 100%;
+}
+.codeCrumbs .crumbButton[aria-current="location"] {
+  background: var(--bg-tree-selected-inactive);
 }
 .codeCrumbsTop {
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));

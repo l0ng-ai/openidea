@@ -332,3 +332,115 @@ describe("Export Test Results", () => {
     expect(testTree.exportResults).not.toBeNull();
   });
 });
+
+describe("Sorting Options", () => {
+  beforeEach(() => localStorage.setItem("openidea.run.testFilters", JSON.stringify({ showPassed: true })));
+  afterEach(() => localStorage.clear());
+
+  /** Run order: beta (item10, Item2, item1), Alpha (zeta); item1 reported no duration. */
+  function timed() {
+    const r = new TestResults();
+    r.apply([
+      { type: "result", path: ["beta", "item10()"], status: "passed", durationMs: 5 },
+      { type: "result", path: ["beta", "Item2()"], status: "passed", durationMs: 30 },
+      { type: "result", path: ["beta", "item1()"], status: "failed" },
+      { type: "result", path: ["Alpha", "zeta()"], status: "passed", durationMs: 100 },
+    ]);
+    r.finish(1);
+    return r;
+  }
+  const view = (results: TestResults, running = false) => (
+    <TestTreeView results={results} version={1} cwd="/p" selected={null} onSelect={() => {}} running={running} />
+  );
+  const rows = () => screen.getAllByRole("treeitem").map((el) => el.textContent!.replace(/[\d.]+ m?s$/, ""));
+  const option = (name: string) => {
+    fireEvent.click(screen.getByRole("button", { name: "Sorting Options" }));
+    return screen.getByRole("menuitemcheckbox", { name });
+  };
+
+  it("keeps the run order until a sort is chosen", () => {
+    render(view(timed()));
+    expect(rows()).toEqual(["beta", "item10()", "Item2()", "item1()", "Alpha", "zeta()"]);
+    expect(screen.getByRole("button", { name: "Sorting Options" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("Sort Alphabetically orders suites and tests by name, ignoring case and comparing numbers, and is remembered", () => {
+    const { unmount } = render(view(timed()));
+    fireEvent.click(option("Sort Alphabetically"));
+    expect(rows()).toEqual(["Alpha", "zeta()", "beta", "item1()", "Item2()", "item10()"]);
+    expect(screen.getByRole("button", { name: "Sorting Options" })).toHaveAttribute("aria-pressed", "true");
+    unmount();
+    render(view(timed()));
+    expect(rows()).toEqual(["Alpha", "zeta()", "beta", "item1()", "Item2()", "item10()"]);
+    fireEvent.click(option("Sort Alphabetically"));
+    expect(rows()).toEqual(["beta", "item10()", "Item2()", "item1()", "Alpha", "zeta()"]);
+  });
+
+  it("Sort by Duration puts the slowest first at each level, tests without a duration last", () => {
+    render(view(timed()));
+    fireEvent.click(option("Sort by Duration"));
+    expect(rows()).toEqual(["Alpha", "zeta()", "beta", "Item2()", "item10()", "item1()"]);
+  });
+
+  it("the two sorts replace each other, as in IDEA", () => {
+    render(view(timed()));
+    fireEvent.click(option("Sort by Duration"));
+    expect(option("Sort by Duration")).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Sort Alphabetically" }));
+    expect(option("Sort Alphabetically")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("menuitemcheckbox", { name: "Sort by Duration" })).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Sort by Duration" }));
+    expect(rows()).toEqual(["Alpha", "zeta()", "beta", "Item2()", "item10()", "item1()"]);
+    expect(option("Sort Alphabetically")).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("a saved pair of sorts loads as Sort by Duration alone", () => {
+    localStorage.setItem(
+      "openidea.run.testFilters",
+      JSON.stringify({ showPassed: true, sortAlphabetically: true, sortByDuration: true }),
+    );
+    render(view(timed()));
+    expect(rows()).toEqual(["Alpha", "zeta()", "beta", "Item2()", "item10()", "item1()"]);
+    expect(option("Sort Alphabetically")).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("the button opens and closes the menu", () => {
+    render(view(timed()));
+    const button = screen.getByRole("button", { name: "Sorting Options" });
+    expect(button).toHaveAttribute("aria-haspopup", "menu");
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("menuitemcheckbox", { name: "Sort by Duration" })).toBeNull();
+  });
+
+  it("Sort by Duration waits for the run to finish", () => {
+    localStorage.setItem("openidea.run.testFilters", JSON.stringify({ showPassed: true, sortByDuration: true }));
+    const { rerender } = render(view(timed(), true));
+    expect(rows()).toEqual(["beta", "item10()", "Item2()", "item1()", "Alpha", "zeta()"]);
+    expect(option("Sort by Duration")).toHaveAttribute("aria-disabled", "true");
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    rerender(view(timed(), false));
+    expect(rows()).toEqual(["Alpha", "zeta()", "beta", "Item2()", "item10()", "item1()"]);
+  });
+
+  it("Previous / Next Failed Test follow the sorted order", () => {
+    const r = new TestResults();
+    r.apply([
+      { type: "result", path: ["s", "b()"], status: "failed" },
+      { type: "result", path: ["s", "a()"], status: "failed" },
+    ]);
+    r.finish(1);
+    function Selecting() {
+      const [selected, setSelected] = useState<string | null>(null);
+      return (
+        <TestTreeView results={r} version={1} cwd="/p" selected={selected} onSelect={setSelected} running={false} />
+      );
+    }
+    render(<Selecting />);
+    fireEvent.click(option("Sort Alphabetically"));
+    act(() => void occurrenceNavigator("run")!.go(1, false));
+    expect(screen.getByRole("treeitem", { selected: true }).textContent).toBe("a()");
+  });
+});

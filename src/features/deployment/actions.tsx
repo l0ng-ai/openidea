@@ -22,7 +22,12 @@ import {
   type DeploymentServerValid,
 } from "@/platform/remoteSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { notifications, projectViewSelection, toolWindowService } from "@/workbench/contributions";
+import {
+  changesViewSelection,
+  notifications,
+  projectViewSelection,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { defaultGroup, initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
@@ -37,12 +42,13 @@ const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : St
 const projectRoot = () => useProject.getState().project?.root ?? null;
 const deployment = () => workflowSettings().deployment;
 
-/** The files an action works on (menu argument, project view selection or the editor's file). */
+/** The files an action works on (menu, Commit selection, Project view or the editor). */
 export function actionTargets(arg: unknown): string[] {
   const editorPath = getContext().editorPath;
   return targetPaths(arg, {
     part: useDeployment.getState().part,
     selection: projectViewSelection(),
+    changesSelection: changesViewSelection(),
     editorPath: typeof editorPath === "string" ? editorPath : null,
     projectRoot: projectRoot(),
   });
@@ -61,7 +67,7 @@ function notifyNoServers() {
 function notifyNoTargets() {
   notifications().notify({
     level: "info",
-    title: "Select files in the Project view or open a file in the editor",
+    title: "Select files in the Project view, Commit tool window, or open a file in the editor",
     group: GROUP,
     key: "deployment.noTarget",
   });

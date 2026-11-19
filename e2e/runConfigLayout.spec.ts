@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
-async function openConfigurations(page: Page) {
-  await page.evaluate(async () => {
+async function openConfigurations(page: Page, target?: string) {
+  await page.evaluate(async (target) => {
     const path = "/src/features/run/store.ts";
     const { useRun } = await import(/* @vite-ignore */ path);
     const base = {
@@ -21,6 +21,7 @@ async function openConfigurations(page: Page) {
           ...base,
           id: "layout:app",
           name: "Payments development server",
+          target,
           beforeLaunch: [{ kind: "run", target: "layout:prepare" }],
         },
         { ...base, id: "layout:prepare", name: "Prepare generated sources for the payments development server" },
@@ -29,9 +30,30 @@ async function openConfigurations(page: Page) {
       loaded: true,
       editorOpen: true,
     });
-  });
+  }, target);
   await expect(page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true })).toBeVisible();
 }
+
+test("long run target names leave room for configuration names in the sidebar", async ({ workbench: page }) => {
+  const target = "payments-development-shared-staging-runner-west";
+  await openConfigurations(page, target);
+  const dialog = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  const tree = dialog.getByRole("tree", { name: "Run configurations", exact: true });
+  const row = tree.getByRole("treeitem", { name: /^Payments development server/ });
+  const name = row.getByText("Payments development server", { exact: true });
+  const badge = row.getByText(`@ ${target}`, { exact: true });
+  await expect(badge).toBeVisible();
+
+  for (const width of [1100, 520]) {
+    await page.setViewportSize({ width, height: 820 });
+    await expect.poll(async () => (await name.boundingBox())!.width).toBeGreaterThan(width === 1100 ? 80 : 50);
+    await expect.poll(() => tree.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  }
+
+  await expect(badge).toBeHidden();
+  await expect(row).toHaveAttribute("title", new RegExp(`Payments development server @ ${target}`));
+  await expect(dialog.getByRole("textbox", { name: "Name", exact: true })).toHaveValue("Payments development server");
+});
 
 test("run configuration sidebar resizes with mouse and keyboard and remembers the layout", async ({
   workbench: page,

@@ -1464,6 +1464,20 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
 
+// Commit / Local Changes selection while that tool window has focus. Provided by
+// features/vcs so Deployment (and similar) shortcuts see multi-file picks there.
+let changesSelection: (() => string[]) | undefined;
+
+export function provideChangesViewSelection(get: () => string[]): () => void {
+  changesSelection = get;
+  return () => {
+    if (changesSelection === get) changesSelection = undefined;
+  };
+}
+
+/** Selected change-tree paths (absolute) while Commit/Local Changes is focused. */
+export const changesViewSelection = (): string[] => changesSelection?.() ?? [];
+
 /** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
 export interface ProjectViewLead {
   path: string;
