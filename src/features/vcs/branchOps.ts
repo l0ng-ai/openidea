@@ -4,6 +4,7 @@ import type { Branch, BranchInfo, CheckoutOptions, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { openWorktree } from "./openWorktree";
 import { ask } from "@/workbench/messages";
 import { branchNamePrefixes, isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
 import { showCommitRange } from "./CompareBranches";
@@ -153,7 +154,7 @@ async function performCheckout(
           options = { ...options, ignoreOtherWorktrees: true };
           continue;
         }
-        if (r.button === "open") await executeAction("file.openProjectPath", path);
+        if (r.button === "open") await openWorktree(path);
         return false;
       }
     }

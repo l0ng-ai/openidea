@@ -2,9 +2,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
-import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { openWorktree } from "./openWorktree";
 import {
   Checkbox,
   Dialog,
@@ -839,7 +839,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
           title="Open in New Window"
           size="small"
           disabled={!current}
-          onClick={() => current && void executeAction("file.openProjectPath", current.path)}
+          onClick={() => current && void openWorktree(current.path)}
         />
       </div>
       <Tree<WorktreeNode>
@@ -861,7 +861,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         selected={selectedKeys}
         multiSelect={false}
         onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
-        onActivate={(n) => n.worktree && void executeAction("file.openProjectPath", n.worktree.path)}
+        onActivate={(n) => n.worktree && void openWorktree(n.worktree.path)}
         className={listClassName ?? styles.worktreeListDialog}
         aria-label="Worktrees"
       />
