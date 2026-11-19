@@ -14,8 +14,8 @@
   opacity: 1;
 }
 
-.button {
-  width: 16px;
+.button,
+.overflow {
   height: 16px;
   padding: 0;
   display: flex;
@@ -24,9 +24,18 @@
   border: 0;
   border-radius: var(--radius-small);
   background: transparent;
-  color: var(--text-muted);
-  box-shadow: none;
+  color: var(--fg-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
   cursor: pointer;
+}
+
+.button {
+  width: 16px;
+}
+
+.overflow {
+  width: 18px;
 }
 
 .button:has(.label) {
@@ -35,14 +44,16 @@
 }
 
 .button:hover,
-.button:focus-visible {
-  background: var(--surface-hover);
+.button:focus-visible,
+.overflow:hover,
+.overflow:focus-visible {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .button svg {
   width: 14px;
   height: 14px;
-  filter: grayscale(1);
   opacity: 0.8;
 }
 
@@ -56,53 +67,4 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-}
-
-.overflow {
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--text-muted);
-  font:
-    13px/1 -apple-system,
-    sans-serif;
-  cursor: pointer;
-}
-
-.overflow:hover,
-.overflow:focus-visible {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.menu {
-  position: absolute;
-  z-index: 30;
-  min-width: 180px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-.menu button {
-  display: block;
-  width: 100%;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.menu button:hover {
-  background: var(--surface-hover);
 }

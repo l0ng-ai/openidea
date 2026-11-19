@@ -2679,5 +2679,8 @@
   "Focus Build tool window": "Focus Build tool window",
   "Only on errors": "Only on errors",
   "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.": "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.",
-  "When Build opens, whether it takes keyboard focus from the editor.": "When Build opens, whether it takes keyboard focus from the editor."
+  "When Build opens, whether it takes keyboard focus from the editor.": "When Build opens, whether it takes keyboard focus from the editor.",
+  "Hover actions": "Hover actions",
+  "Hover action": "Hover action",
+  "{count} hover actions": "{count} hover actions"
 }

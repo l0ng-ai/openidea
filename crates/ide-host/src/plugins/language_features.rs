@@ -276,7 +276,7 @@ impl PluginHost {
         }
         out
     }
-    /// Optional API 1.12 hover inline actions. Only plugins declaring the
+    /// Optional API 1.14 hover actions. Only plugins declaring the
     /// `hover-actions` provider kind are asked; the released language-features
     /// export remains unchanged.
     pub fn language_hover_actions(&self, doc: &ProviderDocument) -> Vec<(String, HoverAction)> {

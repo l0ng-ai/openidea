@@ -1,5 +1,5 @@
 /**
- * Hover-revealed inline editor actions (API 1.12).
+ * Hover-revealed inline editor actions (API 1.14).
  *
  * The host decides which action matches a line. This layer implements the
  * editor-local parts of the interaction:
@@ -9,13 +9,15 @@
  * - the action is anchored to the action's `line`, not the hovered
  *   line, so hovering a method body shows the button at its declaration.
  */
-import type { EditorView, ViewUpdate } from "@codemirror/view";
+import type { EditorView } from "@codemirror/view";
 
 import { call, commands, type HoverAction } from "@/platform/ipc";
 import type { EditorDocContext } from "@/editor/api";
 import { markerIcon } from "./lineMarkerGutter";
 import { gutterIconMarkup } from "@/ui/icons";
 import { setHoverActions } from "@/platform/hoverActions";
+import { tx } from "@/platform/i18n";
+import { showContextMenu } from "@/ui";
 import styles from "./HoverActions.module.css";
 
 export type PlacedHoverAction = { plugin: string; action: HoverAction };
@@ -50,10 +52,6 @@ class HoverActionLayer {
   private readonly onFocusIn = (event: FocusEvent) => {
     if (event.target instanceof Node && this.root.contains(event.target)) this.setVisible(true);
   };
-  private menu: HTMLDivElement | null = null;
-  private readonly onDocumentClick = (event: MouseEvent) => {
-    if (this.menu && !this.menu.contains(event.target as Node)) this.closeMenu();
-  };
   private readonly onWindowBlur = () => this.forceHide();
   private readonly onVisibilityChange = () => {
     if (document.visibilityState === "hidden") this.forceHide();
@@ -72,14 +70,13 @@ class HoverActionLayer {
     this.root.className = `${styles.layer} cm-plugin-hover-actions`;
     this.root.dataset.visible = "false";
     this.root.setAttribute("role", "group");
-    this.root.setAttribute("aria-label", "Hover actions");
+    this.root.setAttribute("aria-label", tx`Hover actions`);
     view.dom.appendChild(this.root);
     view.contentDOM.addEventListener("mousemove", this.onMove);
     view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
     window.addEventListener("resize", this.onResize);
     this.root.addEventListener("focusin", this.onFocusIn);
     this.view.dom.addEventListener("focusout", this.onFocusOut);
-    document.addEventListener("click", this.onDocumentClick);
     window.addEventListener("blur", this.onWindowBlur);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
   }
@@ -107,8 +104,6 @@ class HoverActionLayer {
     setHoverActions(this.ctx.doc, next);
     this.clear();
   }
-
-  update(_update: ViewUpdate) {}
 
   private stripWidth(): number {
     const width = (this.view as EditorView & { defaultCharacterWidth?: number }).defaultCharacterWidth ?? 8;
@@ -170,8 +165,8 @@ class HoverActionLayer {
       return;
     }
     this.shown = [...matches];
-    this.reposition();
     this.setVisible(true);
+    this.reposition();
   }
 
   private currentSignature(): string {
@@ -221,7 +216,7 @@ class HoverActionLayer {
     button.type = "button";
     button.className = `${styles.button} cm-plugin-hover-action`;
     button.title = action.tooltip ?? action.label;
-    button.setAttribute("aria-label", action.label || action.tooltip || "Hover action");
+    button.setAttribute("aria-label", action.label || action.tooltip || tx`Hover action`);
     const icon = action.icon ? gutterIconMarkup(markerIcon(action.icon)) : null;
     if (icon) button.innerHTML = icon;
     else {
@@ -244,43 +239,25 @@ class HoverActionLayer {
     button.type = "button";
     button.className = `${styles.overflow} cm-plugin-hover-action-overflow`;
     button.textContent = "…";
-    button.title = `${matches.length} hover actions`;
-    button.setAttribute("aria-label", `${matches.length} hover actions`);
+    const label = tx`${matches.length} hover actions`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
     button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (this.menu) this.closeMenu();
-      else this.openMenu(matches, button);
+      const rect = button.getBoundingClientRect();
+      showContextMenu(
+        { x: rect.left, y: rect.bottom + 4 },
+        matches.map(({ plugin, action }) => ({
+          label: action.tooltip ?? action.label,
+          verbatim: true,
+          run: () => this.runAction(plugin, action),
+        })),
+        { owner: this.view.dom },
+      );
     });
     this.root.appendChild(button);
-  }
-
-  private openMenu(matches: readonly PlacedHoverAction[], anchor: HTMLElement) {
-    this.closeMenu();
-    const menu = document.createElement("div");
-    menu.className = `${styles.menu} cm-plugin-hover-action-menu`;
-    for (const { plugin, action } of matches) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.textContent = action.tooltip ?? action.label;
-      item.addEventListener("click", () => {
-        this.closeMenu();
-        this.runAction(plugin, action);
-      });
-      menu.appendChild(item);
-    }
-    this.view.dom.appendChild(menu);
-    const rect = anchor.getBoundingClientRect();
-    const editor = this.view.dom.getBoundingClientRect();
-    menu.style.left = `${Math.max(0, rect.left - editor.left)}px`;
-    menu.style.top = `${rect.bottom - editor.top + 4}px`;
-    this.menu = menu;
-  }
-
-  private closeMenu() {
-    this.menu?.remove();
-    this.menu = null;
   }
 
   private reposition() {
@@ -339,10 +316,9 @@ class HoverActionLayer {
   }
 
   private forceHide() {
-    if (!this.shown.length && !this.menu) return;
+    if (!this.shown.length) return;
     this.shown = [];
     this.reserveLine(null);
-    this.closeMenu();
     this.root.replaceChildren();
     this.setVisible(false);
   }
@@ -357,12 +333,10 @@ class HoverActionLayer {
     window.removeEventListener("resize", this.onResize);
     this.root.removeEventListener("focusin", this.onFocusIn);
     this.view.dom.removeEventListener("focusout", this.onFocusOut);
-    document.removeEventListener("click", this.onDocumentClick);
     window.removeEventListener("blur", this.onWindowBlur);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
     this.reserveLine(null);
     setHoverActions(this.ctx.doc, []);
-    this.closeMenu();
     this.root.remove();
   }
 }

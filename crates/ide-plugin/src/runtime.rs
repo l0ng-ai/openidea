@@ -22,9 +22,8 @@ use crate::wit_host::language_features_bindings::exports::openidea::plugin::lang
 use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
 use crate::wit_host::search_bindings::exports::openidea::plugin::search_provider as wit_search;
 use crate::wit_host::{
-    bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings,
-    hover_actions_bindings, hover_bindings, indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings,
-    syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
+    indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;

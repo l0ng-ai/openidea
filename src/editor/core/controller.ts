@@ -868,6 +868,7 @@ export class EditorController implements SlotHost {
     const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
     const hoverItems: MenuItem[] = hoverActionsAt(slot.model.doc, caretLine).map(({ plugin, action }) => ({
       label: action.label,
+      verbatim: true,
       icon: "run",
       run: () =>
         void call(
