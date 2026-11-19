@@ -6,7 +6,14 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { create } from "zustand";
-import type { ApplyOutcome, ChangedFile, FileStatus, ShelvedChangeList, ShelfDiffFile } from "@/bindings";
+import type {
+  ApplyOutcome,
+  ChangedFile,
+  ChangelistState,
+  FileStatus,
+  ShelvedChangeList,
+  ShelfDiffFile,
+} from "@/bindings";
 import { setContext } from "@/platform/context";
 import { shortcutLabel } from "@/platform/keymap";
 import { openDiff, openVcsDiff, withChain, type DiffData } from "./diffInput";
@@ -88,6 +95,13 @@ export function defaultChangeFiles(paths?: readonly string[]): FileStatus[] {
   );
 }
 
+/** Name a shelf of `list`'s changes gets by default: the list's name once the project has several. */
+function shelfName(state: ChangelistState, list: string): string {
+  return state.lists.length > 1
+    ? (state.lists.find((l) => l.id === list) ?? activeList(state)).name
+    : "Uncommitted changes";
+}
+
 export function shelveChanges(paths?: readonly string[]) {
   const files = defaultChangeFiles(paths);
   if (!files.length) {
@@ -95,8 +109,42 @@ export function shelveChanges(paths?: readonly string[]) {
     return;
   }
   const state = useChangelists.getState().state;
-  const name = state.lists.length > 1 ? activeList(state).name : "Uncommitted changes";
-  openDialog((close) => <ShelveDialog files={files} initialName={name} onClose={close} />);
+  openDialog((close) => <ShelveDialog files={files} initialName={shelfName(state, state.active)} onClose={close} />);
+}
+
+/** IDEA's Shelve Silently: no dialog, one shelf per changelist the changes belong to, named after it. */
+export async function shelveSilently(paths?: readonly string[]) {
+  // Without a dialog to review the files, pick them after unsaved edits reach the disk.
+  await saveAll();
+  await refreshNow();
+  const files = defaultChangeFiles(paths);
+  if (!files.length) {
+    notifications().notify({ group: "vcs", level: "info", title: "No changes to shelve" });
+    return;
+  }
+  const state = useChangelists.getState().state;
+  const byList = new Map<string, string[]>();
+  for (const f of files) {
+    const list = listOf(state, relOf(f.path));
+    const own = byList.get(list);
+    if (own) own.push(stripSlash(f.path));
+    else byList.set(list, [stripSlash(f.path)]);
+  }
+  for (const [list, chosen] of byList) if (!(await shelveFiles(shelfName(state, list), chosen))) return;
+}
+
+async function shelveFiles(name: string, paths: string[]): Promise<ShelvedChangeList | undefined> {
+  const entry = await runOp(tx`Shelve changes “${name}”`, () => call(commands.vcsShelve(name, paths)));
+  if (!entry) return undefined;
+  void loadShelves().catch(() => undefined);
+  notifications().notify({
+    group: "vcs",
+    level: "info",
+    title: `Shelved ${entry.files.length} file${entry.files.length === 1 ? "" : "s"}`,
+    body: entry.name,
+    actions: [{ label: "Show Shelf", run: showShelf }],
+  });
+  return entry;
 }
 
 /** Files of `node` and everything below it. */
@@ -227,16 +275,7 @@ function ShelveDialog({
     if (!chosen.length || !name.trim()) return;
     onClose();
     await saveAll();
-    const entry = await runOp(tx`Shelve changes “${name.trim()}”`, () => call(commands.vcsShelve(name.trim(), chosen)));
-    if (!entry) return;
-    void loadShelves().catch(() => undefined);
-    notifications().notify({
-      group: "vcs",
-      level: "info",
-      title: `Shelved ${entry.files.length} file${entry.files.length === 1 ? "" : "s"}`,
-      body: entry.name,
-      actions: [{ label: "Show Shelf", run: showShelf }],
-    });
+    await shelveFiles(name.trim(), chosen);
   };
   return (
     <Dialog
@@ -304,6 +343,33 @@ async function unshelveFiles(entry: ShelvedChangeList, paths: readonly string[],
   return outcome;
 }
 
+/** Unshelves `paths` of `entry` into the `target` changelist. */
+async function applyShelf(entry: ShelvedChangeList, paths: readonly string[], remove: boolean, target: string) {
+  const outcome = await runOp(tx`Unshelve “${entry.name}”`, () => unshelveFiles(entry, paths, remove), {
+    refresh: false,
+  });
+  if (!outcome) return;
+  await refreshNow();
+  const repo = shelfRepository(entry);
+  const rels = [...outcome.applied, ...outcome.conflicts].map((p) => relOf(repositoryPath(repo, p)));
+  updateChangelists((s) => moveFiles(s, rels, target));
+  void loadShelves().catch(() => undefined);
+  await reportApply(outcome, `Unshelved “${entry.name}”`);
+}
+
+/**
+ * IDEA's Unshelve Silently: no dialog; into the changelist named like the shelf, else the active one,
+ * removing applied files from the shelf as the Shelf setting says.
+ */
+export async function unshelveSilently(entry: ShelvedChangeList, path?: string) {
+  const paths = path === undefined ? entry.files.map((f) => f.path) : [path];
+  if (!paths.length) return;
+  const state = useChangelists.getState().state;
+  const target = state.lists.find((l) => l.name === entry.name)?.id ?? state.active;
+  await saveAll();
+  await applyShelf(entry, paths, workflowSettings().vcs.shelf.removeApplied, target);
+}
+
 function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; path?: string; onClose: () => void }) {
   const lists = useChangelists((s) => s.state);
   const [target, setTarget] = useState(lists.active);
@@ -322,15 +388,7 @@ function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; pa
     if (!chosen.length) return;
     onClose();
     await saveAll();
-    const outcome = await runOp(tx`Unshelve “${entry.name}”`, () => unshelveFiles(entry, chosen, remove), {
-      refresh: false,
-    });
-    if (!outcome) return;
-    await refreshNow();
-    const rels = [...outcome.applied, ...outcome.conflicts].map((p) => relOf(repositoryPath(repo, p)));
-    updateChangelists((s) => moveFiles(s, rels, target));
-    void loadShelves().catch(() => undefined);
-    await reportApply(outcome, `Unshelved “${entry.name}”`);
+    await applyShelf(entry, chosen, remove, target);
   };
   return (
     <Dialog
