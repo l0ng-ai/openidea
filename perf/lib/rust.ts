@@ -12,6 +12,7 @@ export const RUST_BENCHMARKS: Readonly<Record<string, readonly string[]>> = {
     "text/offset_to_pos_round_trip",
     "text/pos_to_byte",
     "text/text_for_save_crlf_1mb",
+    "text/diff_one_edit_5mb",
   ],
   "ide-language": [
     "syntax_2mb/outline_uncached",
@@ -42,6 +43,7 @@ export const RUST_BENCHMARKS: Readonly<Record<string, readonly string[]>> = {
     "search_5k/literal",
     "search_5k/regex",
     "search_5k/dense_limit",
+    "search_dense_files/24x40k_limit",
     "search_excluded_subtrees/5k_dependencies",
   ],
   "ide-host": ["plugins/load_50", "plugins/cold_activation", "plugins/syntax_highlights_2k_lines"],

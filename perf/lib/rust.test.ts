@@ -26,13 +26,13 @@ afterEach(() => {
 });
 
 describe("Rust workload contract", () => {
-  it("owns 38 unique IDs and exactly six observe-only metrics", () => {
+  it("owns 40 unique IDs and exactly six observe-only metrics", () => {
     const ids = Object.values(RUST_BENCHMARKS).flat();
-    expect(ids).toHaveLength(38);
-    expect(new Set(ids).size).toBe(38);
+    expect(ids).toHaveLength(40);
+    expect(new Set(ids).size).toBe(40);
     const budgets = JSON.parse(readFileSync(resolve(import.meta.dirname, "../budgets.json"), "utf8")).rust;
     const selected = rustBudgets(selectRustPackages(), budgets);
-    expect(Object.keys(selected)).toHaveLength(32);
+    expect(Object.keys(selected)).toHaveLength(34);
     expect(ids.filter((id) => !(id in budgets))).toEqual([
       "syntax_2mb/outline_uncached",
       "syntax_2mb/folding_uncached",
@@ -41,7 +41,7 @@ describe("Rust workload contract", () => {
       "startup_20k/reopen_wait_idle",
       "search_excluded_subtrees/5k_dependencies",
     ]);
-    expect(Object.keys(rustBudgets(["ide-text"], budgets))).toHaveLength(8);
+    expect(Object.keys(rustBudgets(["ide-text"], budgets))).toHaveLength(9);
     const missing = { ...budgets };
     delete missing["text/open_1mb"];
     expect(() => rustBudgets(["ide-text"], missing)).toThrow(/classification/);
@@ -88,7 +88,7 @@ describe("Rust workload contract", () => {
   it("accepts a complete full workload and converts nanoseconds to microseconds", () => {
     const root = fixture();
     complete(root, selectRustPackages());
-    expect(Object.keys(collectRustMetrics(root, selectRustPackages()))).toHaveLength(38);
+    expect(Object.keys(collectRustMetrics(root, selectRustPackages()))).toHaveLength(40);
     expect(collectRustMetrics(root, ["ide-text"])["text/open_1mb"]).toBe(1);
   });
 
@@ -121,7 +121,7 @@ describe("Rust workload contract", () => {
     artifact(root, "heap/index_1m_objects", "bad");
     const unrelated = artifact(root, "heap/dominators_1m_random");
     writeFileSync(join(unrelated, "benchmark.json"), "{");
-    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(8);
+    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(RUST_BENCHMARKS["ide-text"].length);
   });
 
   it("rejects duplicate IDs and unknown selected IDs even with complete expected results", () => {
@@ -163,7 +163,7 @@ describe("Rust workload contract", () => {
     const dir = artifact(root, "text/open_1mb");
     utimesSync(join(dir, file), new Date(0), new Date(0));
     expect(() => collectRustMetrics(root, ["ide-text"], 1)).toThrow(/stale/);
-    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(8);
+    expect(Object.keys(collectRustMetrics(root, ["ide-text"]))).toHaveLength(RUST_BENCHMARKS["ide-text"].length);
   });
   it("rejects overflowing JSON numeric estimates, including observe-only metrics", () => {
     const root = fixture();
