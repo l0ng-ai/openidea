@@ -241,6 +241,9 @@ pub enum PluginEvent {
     /// Complete replacement of one plugin's project-scoped decorations.
     #[serde(rename_all = "camelCase")]
     DecorationsChanged { plugin_id: String, sets: Vec<DecorationSet> },
+    /// Complete replacement of one plugin's console highlight rules (empty: none).
+    #[serde(rename_all = "camelCase")]
+    ConsoleRulesChanged { plugin_id: String, rules: Vec<ide_plugin::ConsoleRule> },
     /// Open a file in the invoking window.
     EditorOpen { path: ide_core::IpcPath, selection: Option<ide_core::Range> },
     /// Change selection or scrolling only in this window's already open editor.

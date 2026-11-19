@@ -347,6 +347,8 @@ const Row = memo(function Row({
               // Maven / Gradle module folders are bold too, as in IDEA.
               moduleFolder && styles.moduleLabel,
               faded && !deco.color && styles.excluded,
+              // IDEA strikes out deprecated classes.
+              file?.deprecated && styles.deprecated,
               deco.error && styles.error,
             )}
             style={deco.color ? { color: deco.color } : undefined}

@@ -292,6 +292,15 @@ export function registerVcsActions(): () => void {
       run: (c) => showCloneDialog(typeof c.arg === "string" ? c.arg : ""),
     },
     {
+      // File › New › Project from Version Control: the same dialog, under the name the File menu uses.
+      id: "vcs.cloneProject",
+      title: "Project from Version Control…",
+      category: "File",
+      icon: "git-pull",
+      keywords: ["clone", "checkout", "git", "new project"],
+      run: () => showCloneDialog(""),
+    },
+    {
       id: "vcs.push",
       title: "Push…",
       category: "Git",
@@ -422,7 +431,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
-      keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
+      keyWhen: "!editorTextFocus && !diffEditorFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =

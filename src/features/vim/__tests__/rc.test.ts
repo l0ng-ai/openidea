@@ -36,13 +36,16 @@ describe("ideavimrc parsing", () => {
     );
   });
 
-  it.each([
-    ["set clipboard+=unnamedplus", { kind: "set", name: "clipboard", value: "unnamedplus", op: "+=" }],
-    ["set cb^=unnamed", { kind: "set", name: "cb", value: "unnamed", op: "^=" }],
-    ["set tw-=10", { kind: "set", name: "tw", value: "10", op: "-=" }],
-    ["set clipboard=unnamed,unnamedplus", { kind: "set", name: "clipboard", value: "unnamed,unnamedplus" }],
-  ])("parses %s", (line, command) => {
-    expect(parseVimrc(line)).toEqual({ commands: [command], ignored: [] });
+  it("parses set with Vim's =, +=, -= and ^= forms", () => {
+    expect(parseVimrc("set clipboard=unnamedplus").commands).toEqual([
+      { kind: "set", name: "clipboard", value: "unnamedplus" },
+    ]);
+    expect(parseVimrc("set clipboard+=unnamed cb^=unnamedplus tw-=10").commands).toEqual([
+      { kind: "set", name: "clipboard", value: "unnamed", op: "+=" },
+      { kind: "set", name: "cb", value: "unnamedplus", op: "^=" },
+      { kind: "set", name: "tw", value: "10", op: "-=" },
+    ]);
+    expect(parseVimrc("set ideajoin+=x").ignored.map((i) => i.reason)).toEqual(["option not supported: ideajoin"]);
   });
 
   it("parses map variants with modes, noremap and the leader in effect at that line", () => {

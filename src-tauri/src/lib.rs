@@ -143,6 +143,8 @@ pub fn run() {
     let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
+    #[cfg(target_os = "linux")]
+    let app = app.plugin(linux_webkit::smooth_scrolling_plugin());
     #[cfg(not(target_os = "linux"))]
     let window_state = tauri_plugin_window_state::Builder::default()
         .with_state_flags(window_state_flags())
@@ -238,7 +240,10 @@ pub fn run() {
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
-        commands::mcp::apply(&app.state::<AppState>());
+        {
+            let state = app.state::<AppState>();
+            state.host.mcp.apply(&state.host);
+        }
         #[cfg(windows)]
         if let Err(error) = windows::allow_external_launches(app.handle()) {
             windows::report_cli_error(app.handle(), error);
@@ -346,7 +351,7 @@ pub fn run() {
             windows::flush_auxiliary_geometry(app);
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.stop_processes_on_exit();
-                commands::mcp::stop(&state);
+                state.host.mcp.stop(&state.host);
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }

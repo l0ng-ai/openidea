@@ -25,6 +25,7 @@ import {
   maybeEditorService,
   toolWindowService,
   useContributions,
+  useProjectViewRoots,
   useFileDecoration,
   type OpenEditorTab,
   type ToolWindowContribution,
@@ -51,6 +52,13 @@ import { showSearchEverywhere } from "../everywhere/store";
 import { cycleSwitcher, hideRecentPopup, showRecentPopup, useRecentPopup } from "./store";
 import styles from "./RecentPopups.module.css";
 import { tx } from "@/platform/i18n";
+
+/** Whether Delete in `target` (a filter field) has text to delete: a selection or text after the caret. */
+function textAfterCaret(target: EventTarget): boolean {
+  if (!(target instanceof HTMLInputElement)) return false;
+  const { selectionStart, selectionEnd, value } = target;
+  return selectionStart !== selectionEnd || (selectionEnd ?? value.length) < value.length;
+}
 
 export function RecentPopupsOverlay() {
   const open = useRecentPopup((s) => s.open);
@@ -91,6 +99,14 @@ function RecentFilesDialog() {
   const step = useRecentPopup((s) => s.step);
   const edited = useTracking((s) => s.edited);
   const root = useProject((s) => s.project?.root ?? null);
+  const viewRoots = useProjectViewRoots((s) => s.roots);
+  const labelled = useMemo(
+    () =>
+      [...viewRoots.values()].flatMap((r) =>
+        r.scope === "scratches" && r.path ? [{ path: r.path, label: r.label }] : [],
+      ),
+    [viewRoots],
+  );
   const toolWindows = useContributions((s) => s.toolWindows);
   const [paths, setPaths] = useState<string[] | null>(null);
   // Switcher: the open editor tabs (files and others), when the editor service lists them.
@@ -135,13 +151,13 @@ function RecentFilesDialog() {
   const files = useMemo(
     () =>
       tabs
-        ? switcherItems(paths ?? [], tabs, query, root).filter((f) => !removed.has(f.path))
+        ? switcherItems(paths ?? [], tabs, query, root, labelled).filter((f) => !removed.has(f.path))
         : filterRecentFiles(
             (paths ?? []).filter((p) => !removed.has(p)),
             query,
-            { root, edited, editedOnly },
+            { root, labelled, edited, editedOnly },
           ),
-    [paths, tabs, removed, query, root, edited, editedOnly],
+    [paths, tabs, removed, query, root, labelled, edited, editedOnly],
   );
   const fileRows = useMemo(() => files.map((f) => ({ ...f, key: f.path })), [files]);
   const tools = useMemo(() => switcherToolWindows(toolWindows.values(), !!root, query), [toolWindows, root, query]);
@@ -258,8 +274,9 @@ function RecentFilesDialog() {
       cycleSwitcher(e.shiftKey ? -1 : 1);
       return;
     }
-    // In Recent Files Backspace edits the speed search text first.
-    if (e.key === "Delete" || (e.key === "Backspace" && !query)) {
+    // In Recent Files Backspace edits the speed search text first, and so does Delete while
+    // the filter has text after the caret.
+    if ((e.key === "Delete" && !textAfterCaret(e.target)) || (e.key === "Backspace" && !query)) {
       e.preventDefault();
       void removeSelected();
       return;
@@ -592,8 +609,9 @@ function RecentLocationsDialog() {
       open(items[active], e.shiftKey);
       return;
     }
-    // IDEA: Delete removes the selected place (Backspace too while there is no filter text).
-    if ((e.key === "Delete" || (e.key === "Backspace" && !query)) && items[active]) {
+    // IDEA: Delete removes the selected place (Backspace too while there is no filter text), unless
+    // the filter has text after the caret to delete.
+    if (((e.key === "Delete" && !textAfterCaret(e.target)) || (e.key === "Backspace" && !query)) && items[active]) {
       e.preventDefault();
       dismissLocation(items[active]!);
       return;

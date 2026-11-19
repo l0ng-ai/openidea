@@ -269,7 +269,7 @@ function StripeHandle({
     const origin = e.clientX;
     const icons = parseFloat(getComputedStyle(stripe).getPropertyValue("--stripe-icon-button")) || 30;
     const start = names ? width : icons;
-    const releaseCursor = lockDragCursor("ew-resize");
+    const releaseCursor = lockDragCursor("col-resize");
     let next = { names, width, px: start };
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return end();
@@ -945,7 +945,7 @@ function SplitHandle({ anchor, hidden }: { anchor: ToolWindowAnchor; hidden: boo
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     const origin = stacked ? e.clientY : e.clientX;
-    const releaseCursor = lockDragCursor(stacked ? "ns-resize" : "ew-resize");
+    const releaseCursor = lockDragCursor(stacked ? "row-resize" : "col-resize");
     let ratio: number | null = null;
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return end();
@@ -1018,7 +1018,7 @@ function UndockEdge({ anchor }: { anchor: ToolWindowAnchor }) {
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     const origin = vertical ? e.clientX : e.clientY;
-    const releaseCursor = lockDragCursor(vertical ? "ew-resize" : "ns-resize");
+    const releaseCursor = lockDragCursor(vertical ? "col-resize" : "row-resize");
     let next = m.size;
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return end();
@@ -1201,7 +1201,7 @@ function GapHandle({
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const origin = vertical ? e.clientX : e.clientY;
-    const releaseCursor = lockDragCursor(vertical ? "ew-resize" : "ns-resize");
+    const releaseCursor = lockDragCursor(vertical ? "col-resize" : "row-resize");
     let next = m.size;
     const move = (ev: globalThis.PointerEvent) => {
       if (!(ev.buttons & 1)) return end();

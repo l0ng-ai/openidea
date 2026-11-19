@@ -504,11 +504,15 @@ describe("read-only results with a reason", () => {
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
   });
 
-  it("keeps ClickHouse read-only", async () => {
-    backend.driver = "clickhouse";
+  it.each(["clickhouse", "jdbc"] as const)("keeps %s read-only", async (driver) => {
+    backend.driver = driver;
     show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
     await act(async () => render(<ResultsView />));
-    expect(await screen.findByRole("note")).toHaveTextContent("Use the query console to change ClickHouse data.");
+    expect(await screen.findByRole("note")).toHaveTextContent(
+      driver === "jdbc"
+        ? "Use the query console to change JDBC data."
+        : "Use the query console to change ClickHouse data.",
+    );
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
   });
 

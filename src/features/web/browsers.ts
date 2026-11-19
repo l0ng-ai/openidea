@@ -17,8 +17,11 @@ export function isHtmlPath(path: string): boolean {
   return hasFileType(path, HTML_LANGUAGES, HTML_EXTENSIONS, settings?.files, project?.root ?? null);
 }
 
+/** Pages a browser can show, also when File Types give their extension to another language. */
+export const isWebPagePath = (path: string) => isHtmlPath(path) || /\.(html?|xhtml|shtml)$/i.test(path);
+
 /** Files a browser can show (Open In › Browser). */
-export const isWebPath = (path: string) => isHtmlPath(path) || /\.svg$/i.test(path);
+export const isWebPath = (path: string) => isWebPagePath(path) || /\.svg$/i.test(path);
 
 export const useBrowsers = create<{ list: Browser[] }>(() => ({ list: [] }));
 
@@ -33,11 +36,11 @@ export async function loadBrowsers(): Promise<void> {
 
 export const browserIcon = (id: string) => (hasIcon(`browser-${id}`) ? `browser-${id}` : "web");
 
-/** Paths shown with the built-in preview beside the editor. */
+/** Editor tabs showing the built-in preview beside the editor (each split pane has its own). */
 export const useWebPreview = create<Record<string, boolean>>(() => ({}));
 
-export function togglePreview(path: string, on = !useWebPreview.getState()[path]) {
-  useWebPreview.setState({ [path]: on });
+export function togglePreview(tabId: string, on = !useWebPreview.getState()[tabId]) {
+  useWebPreview.setState({ [tabId]: on });
 }
 
 /** The built-in server's URL for `path`. */

@@ -38,6 +38,7 @@ export interface GitSettingsValid {
   pushDialogOnlyProtected: boolean;
   combineStashAndShelf: boolean;
   stagingArea: boolean;
+  cliStatus: boolean;
 }
 
 export interface CommitSettingsValid {
@@ -78,6 +79,8 @@ export interface VcsSettingsValid {
   };
   shelf: { removeApplied: boolean };
   issueNavigation: IssueLinkValid[];
+  /** Directory Mappings: repository roots excluded from / added to the detected ones. */
+  mappings: { excluded: string[]; added: string[] };
 }
 
 /** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
@@ -114,6 +117,7 @@ export interface DebuggerSettingsValid {
   valueTooltipDelay: number;
   skipLibraryCode: boolean;
   debugServerPage: boolean;
+  flutterHotReloadOnSave: boolean;
   python: { attachSubprocess: boolean; gevent: boolean };
 }
 
@@ -135,6 +139,16 @@ export interface ExternalDiffValid {
   parameters: string;
 }
 
+export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10";
+
+export const TERMINAL_MAX_FPS_OPTIONS: readonly { value: TerminalMaxFps; label: string }[] = [
+  { value: "unlimited", label: "Unlimited" },
+  { value: "60", label: "60 FPS" },
+  { value: "30", label: "30 FPS" },
+  { value: "15", label: "15 FPS" },
+  { value: "10", label: "10 FPS" },
+];
+
 export interface TerminalSettingsValid {
   startDirectory: string;
   env: Record<string, string>;
@@ -153,6 +167,11 @@ export interface TerminalSettingsValid {
   escapeToEditor: boolean;
   cursorShape: CursorShape;
   cursorBlink: boolean;
+  /**
+   * Cap how often PTY output is painted. `unlimited` writes every chunk;
+   * while the document is hidden a slower floor always applies (#4216).
+   */
+  maxFps: TerminalMaxFps;
   useEditorFont: boolean;
   fontFamily: string;
   fontSize: number;
@@ -258,6 +277,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       pushDialogOnlyProtected: false,
       combineStashAndShelf: false,
       stagingArea: false,
+      cliStatus: false,
     },
     commit: {
       nonModal: true,
@@ -287,6 +307,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     shelf: { removeApplied: false },
     issueNavigation: [],
+    mappings: { excluded: [], added: [] },
   },
   console: {
     softWrap: false,
@@ -324,6 +345,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     valueTooltipDelay: 700,
     skipLibraryCode: true,
     debugServerPage: false,
+    flutterHotReloadOnSave: true,
     python: { attachSubprocess: true, gevent: false },
   },
   run: {
@@ -352,6 +374,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     escapeToEditor: false,
     cursorShape: "block",
     cursorBlink: true,
+    maxFps: "unlimited",
     useEditorFont: true,
     fontFamily: "JetBrains Mono",
     fontSize: 13,
@@ -418,6 +441,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       pushDialogOnlyProtected: bool(g.pushDialogOnlyProtected, d.git.pushDialogOnlyProtected),
       combineStashAndShelf: bool(g.combineStashAndShelf, d.git.combineStashAndShelf),
       stagingArea: bool(g.stagingArea, d.git.stagingArea),
+      cliStatus: bool(g.cliStatus, d.git.cliStatus),
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
@@ -452,6 +476,10 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
           .map((x) => ({ pattern: text(x.pattern, ""), link: text(x.link, "") }))
           .filter((x) => x.pattern.trim())
       : [],
+    mappings: {
+      excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
+      added: strings(obj(v.mappings).added, d.mappings.added),
+    },
   };
 }
 
@@ -496,6 +524,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
     debugServerPage: bool(v.debugServerPage, d.debugServerPage),
+    flutterHotReloadOnSave: bool(v.flutterHotReloadOnSave, d.flutterHotReloadOnSave),
     python: {
       attachSubprocess: bool(py.attachSubprocess, d.python.attachSubprocess),
       gevent: bool(py.gevent, d.python.gevent),
@@ -554,6 +583,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),
     cursorBlink: bool(v.cursorBlink, d.cursorBlink),
+    maxFps: oneOf(v.maxFps, ["unlimited", "60", "30", "15", "10"] as const, d.maxFps),
     useEditorFont: bool(v.useEditorFont, d.useEditorFont),
     fontFamily: nonEmpty(v.fontFamily, d.fontFamily),
     fontSize: num(v.fontSize, d.fontSize, WORKFLOW_LIMITS.terminalFontSize),

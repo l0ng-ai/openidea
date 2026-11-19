@@ -18,7 +18,7 @@ import { lazyWhen } from "@/ui";
 import { useProject } from "@/platform/project";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
-import { settingsActions } from "./actions";
+import { NEW_PROJECTS_PAGE, settingsActions } from "./actions";
 import {
   LazyProjectStructureDialog,
   LazySettingsDialog,
@@ -57,7 +57,8 @@ async function showSettings(page?: string, newProjects = false) {
       console.warn("settings window unavailable, using the dialog", e);
     }
   }
-  await loadBuiltinPages();
+  const targetPage = page ?? (newProjects ? NEW_PROJECTS_PAGE : useSettingsDialog.getState().pageId);
+  await loadBuiltinPages({ pageId: targetPage });
   // Like a launch into the open window: go to the page, keep the edits not applied yet.
   if (useSettingsDialog.getState().open) relaunchSettings({ page, newProjects });
   else openSettings(page, { newProjects });
@@ -87,7 +88,7 @@ export function activate(): () => void {
       ...appearanceToggleActions(),
       presentationAssistantAction(),
       ...navigationBarActions(),
-      ...settingsActions((page, newProjects) => void showSettings(page, newProjects)),
+      ...settingsActions((page, newProjects) => showSettings(page, newProjects)),
       {
         id: "file.projectStructure",
         title: "Project Structure…",

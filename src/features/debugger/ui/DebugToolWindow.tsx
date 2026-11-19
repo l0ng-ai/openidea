@@ -233,6 +233,7 @@ export function DebugToolWindow() {
           <>
             <ToolButton action="debug.hotReload" icon="hot-reload" />
             <ToolButton action="debug.hotRestart" icon="refresh" />
+            {rootOf(active).vmServiceUri && <ToolButton action="debug.openDevTools" icon="external-link" />}
             <span className={styles.sep} aria-hidden />
           </>
         )}

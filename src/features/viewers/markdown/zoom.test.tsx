@@ -128,7 +128,7 @@ describe("editor font size actions", () => {
     const md = open(mdCtx);
     const otherMd = open(otherMdCtx);
     activate(md);
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
     render(
       <MarkdownEditor path={mdCtx.path} tabId="t">
         <div />
@@ -208,7 +208,7 @@ describe("editor font size actions", () => {
       views.push(view);
       activate(view);
 
-      act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+      act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
       render(
         <MarkdownEditor path={mdCtx.path} tabId="t">
           <div />
@@ -373,7 +373,7 @@ describe("editor font size actions", () => {
 
 describe("Markdown preview font size", () => {
   const preview = () => {
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
     render(
       <MarkdownEditor path={mdCtx.path} tabId="t">
         <div />

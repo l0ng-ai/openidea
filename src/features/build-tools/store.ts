@@ -130,8 +130,11 @@ export function updateSettings(patch: (s: BuildSettings) => BuildSettings) {
   if (root) writeSettings(root, settings);
 }
 
-export const toggleMavenOffline = () =>
+export function toggleMavenOffline() {
   updateSettings((s) => ({ ...s, maven: { ...s.maven, offline: !s.maven.offline } }));
+  // The Java language server resolves the project offline when the last sync was.
+  if (useBuild.getState().model?.maven) scheduleMavenReload(null);
+}
 export const toggleSkipTests = () =>
   updateSettings((s) => ({ ...s, maven: { ...s.maven, skipTests: !s.maven.skipTests } }));
 export const toggleGradleOffline = () =>
@@ -139,7 +142,7 @@ export const toggleGradleOffline = () =>
 export const toggleGradleSkipTests = () =>
   updateSettings((s) => ({ ...s, gradle: { ...s.gradle, skipTests: !s.gradle.skipTests } }));
 
-/** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
+/** Delay before reloading Maven after a profile or offline toggle, so a few toggles in a row reload once. */
 export const PROFILE_RELOAD_DELAY_MS = 800;
 let profileReload: ReturnType<typeof setTimeout> | undefined;
 const profileRoots = new Set<string | null>();
@@ -150,6 +153,10 @@ export function setProfile(profile: string | MavenProfile, checked: boolean) {
   updateSettings((s) => ({ ...s, maven: { ...s.maven, profiles: { ...s.maven.profiles, [id]: checked } } }));
   // The Java language server and Build Project resolve the project with the profiles of the
   // last sync, so a new choice reloads it (IDEA re-imports on a profile change too).
+  scheduleMavenReload(projectRoot);
+}
+
+function scheduleMavenReload(projectRoot: string | null) {
   profileRoots.add(projectRoot);
   clearTimeout(profileReload);
   profileReload = setTimeout(() => {

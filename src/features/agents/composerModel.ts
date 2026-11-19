@@ -60,11 +60,22 @@ export function messageTokens(text: string): MessageToken[] {
 
 export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
-  | { kind: "command"; query: string; from: number; to: number };
+  | { kind: "command"; query: string; from: number; to: number }
+  /** A word of a `!` command line: its first word (`command`) or an argument. */
+  | { kind: "shell"; query: string; from: number; to: number; command: boolean };
 
-/** The `@file` or `/command` being typed at `caret`, if any; both may follow other text. */
+/**
+ * The `@file` or `/command` being typed at `caret`, if any; both may follow other text. In a
+ * `!` command line, the word at `caret` instead.
+ */
 export function completionAt(text: string, caret: number): Completion | null {
   const before = text.slice(0, caret);
+  if (text.startsWith("!") && caret > 0) {
+    if (before.includes("\n")) return null;
+    const query = /\S*$/.exec(before.slice(1))![0];
+    const from = caret - query.length;
+    return { kind: "shell", query, from, to: caret, command: !before.slice(1, from).trim() };
+  }
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
@@ -74,6 +85,20 @@ export function completionAt(text: string, caret: number): Completion | null {
     from,
     to: caret,
   };
+}
+
+/**
+ * The earlier `!` commands (newest first, without the `!`) that extend `query`, each once.
+ */
+export function shellHistoryMatches(history: readonly string[], query: string, max: number): string[] {
+  const out: string[] = [];
+  for (const line of history) {
+    if (!line.startsWith("!") || line.includes("\n")) continue;
+    const command = line.slice(1).trim();
+    if (command && command !== query.trim() && command.startsWith(query) && !out.includes(command)) out.push(command);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */
@@ -394,6 +419,15 @@ export function toPrompt(draft: ComposerDraft): AgentPrompt {
     files: files.map((f) => f.path),
     images: draft.images,
   };
+}
+
+/**
+ * The shell command of a message starting with `!` (Claude Code's bash mode): it runs in the
+ * task's folder instead of going to the agent. `null` for any other message.
+ */
+export function shellCommand(d: ComposerDraft): string | null {
+  if (!d.text.startsWith("!") || d.images.length > 0 || d.files.some((f) => f.attached)) return null;
+  return d.text.slice(1).trim() || null;
 }
 
 export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);

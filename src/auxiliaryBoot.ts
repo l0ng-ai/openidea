@@ -20,6 +20,11 @@ export async function bootAuxiliaryWindow(aux: { kind: AuxKind; parent: string }
       mountWindowRoot(bootDiffWindow(aux.parent));
       return;
     }
+    case "editor": {
+      const { bootEditorWindow } = await import("./editorWindowBoot");
+      mountWindowRoot(bootEditorWindow(aux.parent));
+      return;
+    }
     case "deployment": {
       const { bootDeploymentWindow } = await import("./deploymentWindowBoot");
       mountWindowRoot(bootDeploymentWindow(aux.parent));

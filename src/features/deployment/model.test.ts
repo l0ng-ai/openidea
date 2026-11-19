@@ -13,6 +13,7 @@ import {
   sshRemedy,
   summarizeReport,
   transferMenuEntries,
+  defaultGroup,
   syncChoices,
   syncSteps,
   targetPaths,
@@ -111,6 +112,18 @@ describe("servers and reports", () => {
     expect(actions([a], "")).toEqual(named);
     expect(actions([a, b], "a")).toEqual([...named, ...choosers]);
     expect(actions([a, b], "")).toEqual(choosers);
+    // A default server group uploads to its servers; the rest choose one server.
+    const groups = [{ id: "g", name: "All stages", servers: [b.id, a.id] }];
+    expect(
+      transferMenuEntries({ ...DEFAULT_DEPLOYMENT, servers: [a, b], groups, defaultServer: "g" }).map(
+        (e) => e.label ?? e.action,
+      ),
+    ).toEqual(["Upload to All stages", ...choosers]);
+    expect(defaultGroup({ ...DEFAULT_DEPLOYMENT, servers: [a, b], groups, defaultServer: "g" })?.servers).toEqual([
+      b,
+      a,
+    ]);
+    expect(defaultGroup({ ...DEFAULT_DEPLOYMENT, servers: [a, b], groups, defaultServer: "a" })).toBeNull();
   });
 
   it("summarizes transfer reports", () => {

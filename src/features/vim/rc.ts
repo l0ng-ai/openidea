@@ -197,15 +197,13 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
       if (!restWords.length) return ignore("set without options");
       for (const opt of restWords) {
         const eq = /^([a-zA-Z]+)([-+^]?)=(.*)$/.exec(opt);
-        const cmd: RcCommand | null = eq
-          ? eq[2]
-            ? { kind: "set", name: eq[1]!, value: eq[3]!, op: `${eq[2]}=` as SetOp }
-            : { kind: "set", name: eq[1]!, value: eq[3]! }
-          : /^[a-zA-Z]+$/.test(opt)
-            ? !SUPPORTED_OPTIONS.has(opt) && opt.startsWith("no") && SUPPORTED_OPTIONS.has(opt.slice(2))
-              ? { kind: "set", name: opt.slice(2), value: false }
-              : { kind: "set", name: opt, value: true }
-            : null;
+        let cmd: RcCommand | null = null;
+        if (eq) {
+          cmd = { kind: "set", name: eq[1]!, value: eq[3]!, ...(eq[2] ? { op: `${eq[2]}=` as SetOp } : {}) };
+        } else if (/^[a-zA-Z]+$/.test(opt)) {
+          const negated = !SUPPORTED_OPTIONS.has(opt) && opt.startsWith("no") && SUPPORTED_OPTIONS.has(opt.slice(2));
+          cmd = { kind: "set", name: negated ? opt.slice(2) : opt, value: !negated };
+        }
         if (!cmd) ignore(`unsupported option syntax: ${opt}`);
         else if (!SUPPORTED_OPTIONS.has(cmd.name)) ignore(`option not supported: ${cmd.name}`);
         else commands.push(cmd);

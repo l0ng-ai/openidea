@@ -84,7 +84,7 @@ function storedOptions(): ViewOptions {
 }
 
 /** IDEA's Project view panes ("Project ▾" in the tool window header). */
-export type ViewMode = "unity" | "project" | "projectFiles" | "openFiles" | "changedFiles" | "scratches";
+export type ViewMode = "unity" | "project" | "projectFiles" | "openFiles" | "changedFiles" | "scratches" | "scope";
 
 export const VIEW_MODES: ReadonlyArray<[ViewMode, string]> = [
   ["unity", "Unity"],
@@ -96,7 +96,7 @@ export const VIEW_MODES: ReadonlyArray<[ViewMode, string]> = [
 ];
 
 /** Modes listing just some files (expanded as they appear). */
-export const isFilteredMode = (mode: ViewMode) => mode === "openFiles" || mode === "changedFiles";
+export const isFilteredMode = (mode: ViewMode) => mode === "openFiles" || mode === "changedFiles" || mode === "scope";
 
 export type Editing =
   | { kind: "new"; parent: string; nodeKind: "file" | "dir"; pkg?: PackageKind }
@@ -134,12 +134,17 @@ interface ProjectTreeState {
   openFiles: readonly string[];
   /** Files with VCS changes (All Changed Files mode). */
   changedFiles: readonly string[];
+  /** The user scope a "scope" pane shows (Settings › Scopes), by name. */
+  scope: string | null;
+  /** The files of `scope`. */
+  scopeFiles: readonly string[];
   /** Loaded document outlines per file path, for the "Show Members" rows (empty for unsupported files). */
   outlines: ReadonlyMap<string, readonly OutlineItem[]>;
 }
 
 const OPTIONS_KEY = "openidea.projectTree.options";
 const MODE_KEY = "openidea.projectTree.mode";
+const SCOPE_KEY = "openidea.projectTree.scope";
 const expandedKey = (root: string) => `openidea.projectTree.expanded:${root}`;
 const MAX_PERSISTED = 3000;
 
@@ -178,11 +183,14 @@ export const useProjectTree = create<ProjectTreeState>(() => ({
   mode: readMode(),
   openFiles: [],
   changedFiles: [],
+  scope: readJson<string>(SCOPE_KEY),
+  scopeFiles: [],
   outlines: new Map(),
 }));
 
 function readMode(): ViewMode {
   const m = readJson<string>(MODE_KEY);
+  if (m === "scope" && readJson<string>(SCOPE_KEY)) return "scope";
   return VIEW_MODES.find(([id]) => id === m)?.[0] ?? "project";
 }
 
@@ -210,7 +218,13 @@ let memo: {
 const EMPTY_MODEL: TreeModel = { roots: [], children: new Map(), byKey: new Map(), keyOfPath: new Map() };
 
 const filesOf = (s: ProjectTreeState) =>
-  s.mode === "openFiles" ? s.openFiles : s.mode === "changedFiles" ? s.changedFiles : null;
+  s.mode === "openFiles"
+    ? s.openFiles
+    : s.mode === "changedFiles"
+      ? s.changedFiles
+      : s.mode === "scope"
+        ? s.scopeFiles
+        : null;
 
 function treeOptions(s: ProjectTreeState): TreeOptions {
   return s.mode === "unity" && s.unity && s.root ? { ...s.options, compact: false, unityRoot: s.root } : s.options;
@@ -422,6 +436,25 @@ export function autoExpand(model: TreeModel) {
 export function setOpenFiles(paths: readonly string[]) {
   const prev = get().openFiles;
   if (prev.length !== paths.length || prev.some((p, i) => p !== paths[i])) set({ openFiles: [...paths] });
+}
+
+/** Shows the user scope `name` as a pane of the Project view (IDEA's scope views). */
+export function setScopeView(name: string) {
+  const s = get();
+  if (s.mode === "scope" && s.scope === name) return;
+  writeJson(SCOPE_KEY, name);
+  if (s.mode === "scope") {
+    autoExpanded.clear();
+    set({ scope: name, scopeFiles: [], expanded: new Set(), selected: new Set(), lead: null, editing: null });
+    return;
+  }
+  set({ scope: name, scopeFiles: [] });
+  setViewMode("scope");
+}
+
+export function setScopeFiles(paths: readonly string[]) {
+  const prev = get().scopeFiles;
+  if (prev.length !== paths.length || prev.some((p, i) => p !== paths[i])) set({ scopeFiles: [...paths] });
 }
 
 export function setChangedFiles(paths: readonly string[]) {

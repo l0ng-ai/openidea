@@ -7,7 +7,7 @@
  * default one mid-drag. `global.css` keys off `data-drag-cursor` instead and
  * wins over those cursors with `!important`.
  */
-export type DragCursor = "ew-resize" | "ns-resize" | "nwse-resize";
+export type DragCursor = "col-resize" | "row-resize" | "ew-resize" | "ns-resize" | "nwse-resize";
 
 const active = new Set<() => void>();
 let listening = false;

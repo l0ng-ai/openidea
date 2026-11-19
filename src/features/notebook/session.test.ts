@@ -142,6 +142,26 @@ describe("shared notebook mutation session", () => {
     expect(session.getState().reveal!.seq).toBeGreaterThan(first.seq);
   });
 
+  it("reveals the nearest cell with an editor before or after a cell", async () => {
+    const m = model();
+    const cell = (id: string, cellType: string) => ({ ...m.read().cells[0]!, id, cellType });
+    m.replace({
+      ...m.read(),
+      cells: [cell("a", "code"), cell("md", "markdown"), cell("raw", "raw"), cell("b", "code")],
+    });
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    // A Markdown preview and a raw cell have no editor.
+    expect(session.revealAdjacent("a", 1, 3)).toBe(true);
+    expect(session.getState().reveal).toMatchObject({ cell: "b", selection: { line: 0, col: 3 }, align: "auto" });
+    session.markdownEditing.add("md");
+    expect(session.revealAdjacent("b", -1, 0)).toBe(true);
+    expect(session.getState().reveal).toMatchObject({ cell: "md", selection: { col: 0 } });
+    expect(session.getState().reveal!.selection!.line).toBeGreaterThan(1e6);
+    expect(session.revealAdjacent("a", -1, 0)).toBe(false);
+    expect(session.revealAdjacent("b", 1, 0)).toBe(false);
+  });
+
   it("retires event listeners even when the backend project disappears during close", async () => {
     const m = model();
     const session = new NotebookSession("/p/a.ipynb", m.backend, true);

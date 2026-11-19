@@ -471,7 +471,8 @@ async fn run_target_validation_gates_launches_and_preserves_selection() {
             f._tmp.path().join("plugins"),
             Arc::new(|_: Option<&str>, _| {}),
             Limits {
-                timeout: Duration::from_millis(200),
+                // Room for a reclaimed instance to start again on a slow runner.
+                timeout: Duration::from_millis(750),
                 idle_timeout: Some(Duration::from_millis(20)),
                 restart_backoff: Duration::ZERO,
                 ..Default::default()

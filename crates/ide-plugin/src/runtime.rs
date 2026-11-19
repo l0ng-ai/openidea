@@ -19,6 +19,7 @@ use crate::types::{
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
 use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
+use crate::wit_host::search_bindings::exports::openidea::plugin::search_provider as wit_search;
 use crate::wit_host::{
     bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
     indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
@@ -56,7 +57,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.11";
+pub const API_VERSION: &str = "1.13";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -390,6 +391,11 @@ pub trait HostApi: Send + Sync {
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
         let _ = (client, id, item);
         Err(HostError::Invalid("window status unavailable".into()))
+    }
+    /// Replaces the plugin's console highlight rules (API 1.12); empty removes them.
+    fn console_rules(&self, rules: Vec<crate::ConsoleRule>) -> Result<(), HostError> {
+        let _ = rules;
+        Err(HostError::Failed("console rules unavailable".into()))
     }
     /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
     /// for window `client` (every window if `None`).
@@ -1042,6 +1048,7 @@ struct Exports {
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
     endpoints: Option<wit_endpoints::Guest>,
+    search: Option<wit_search::Guest>,
     run_configurations: Option<wit_configs::Guest>,
     launch_configurations: Option<wit_launch::Guest>,
     test_results: Option<wit_tests::Guest>,
@@ -1182,6 +1189,7 @@ impl Runtime {
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
+        let search_indices = wit_search::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let launch_indices = wit_launch::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
@@ -1246,6 +1254,7 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let search = search_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let endpoints = match endpoint_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
@@ -1268,6 +1277,7 @@ impl Runtime {
                 commit_checks,
                 inlay,
                 endpoints,
+                search,
                 run_configurations,
                 launch_configurations,
                 test_results,
@@ -1834,6 +1844,55 @@ impl Runtime {
             Ok(v) => Ok(view_from_wit(v)),
             Err(e) => Err(CallError::Guest(e.into())),
         }
+    }
+
+    /// An on-demand category query, always non-interactive and bounded.
+    pub fn search(
+        &mut self,
+        category: &str,
+        query: &str,
+        limit: u32,
+        invocation: Invocation,
+    ) -> Result<crate::search::SearchPage, CallError> {
+        if self.exports.search.is_none() {
+            return Err(CallError::missing_export("search-provider"));
+        }
+        let result = self.call(invocation, Duration::from_secs(2), |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let r = e.search.as_ref().expect("checked").call_search(
+                &mut *store,
+                category,
+                query,
+                limit,
+                wasmtime::component::Resource::new_borrow(ctx.rep()),
+            );
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        let page = result.map_err(|e| CallError::Guest(e.into()))?;
+        if page.items.len() > limit as usize {
+            return Err(CallError::Guest(GuestError::Invalid("too many search results".into())));
+        }
+        Ok(crate::search::SearchPage {
+            has_more: page.has_more,
+            items: page
+                .items
+                .into_iter()
+                .map(|i| crate::search::SearchItem {
+                    id: i.id,
+                    title: i.title,
+                    description: i.description,
+                    target: match i.target {
+                        wit_search::SearchTarget::Location(l) => {
+                            crate::search::SearchTarget::Location(location_from_wit(l))
+                        }
+                        wit_search::SearchTarget::Command(c) => {
+                            crate::search::SearchTarget::Command { id: c.id, arg: c.arg }
+                        }
+                    },
+                })
+                .collect(),
+        })
     }
 
     /// Project routes, with an explicit project invocation and background budget.

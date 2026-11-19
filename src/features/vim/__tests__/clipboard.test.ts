@@ -1,79 +1,207 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
-import { getCM, Vim } from "@replit/codemirror-vim";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Vim } from "@replit/codemirror-vim";
+import {
+  _installClipboardHooksFor,
+  _installPasteActionFor,
+  installClipboardHooks,
+  type ClipboardRegisterController,
+  type VimPasteAction,
+} from "../clipboard";
 
-let osClipboard = "";
+const clipboard = vi.hoisted(() => ({ write: vi.fn<(text: string) => Promise<void>>() }));
+
 vi.mock("@/platform/clipboard", () => ({
-  writeClipboardText: vi.fn(async (text: string) => {
-    osClipboard = text;
-  }),
-  readClipboardPlainText: vi.fn(async () => osClipboard),
+  writeClipboardText: (text: string) => clipboard.write(text),
+  // Outside the desktop app the platform helper reads through the WebView.
+  readClipboardPlainText: () => navigator.clipboard.readText(),
 }));
 
-const { applyRcCommands, vimExtension } = await import("../engine");
-const { parseVimrc } = await import("../rc");
+function fakeController(pasted = "unused") {
+  const pushes: unknown[][] = [];
+  const register = { linewise: true, blockwise: false, toString: () => pasted };
+  const controller: ClipboardRegisterController = {
+    pushText: (...args) => void pushes.push(args),
+    getRegister: () => register,
+  };
+  return { controller, pushes, register };
+}
 
-const tick = () => new Promise((r) => setTimeout(r, 0));
+/** Runs the action `_installPasteActionFor` defines, against a fake actions object and controller. */
+function pasteHarness(controller: ClipboardRegisterController) {
+  let action: VimPasteAction | undefined;
+  _installPasteActionFor((name, fn) => {
+    expect(name).toBe("paste");
+    action = fn;
+  });
+  const pastes: unknown[][] = [];
+  const context = { continuePaste: (...args: unknown[]) => void pastes.push(args) };
+  const state = vi.spyOn(Vim, "getVimGlobalState_").mockReturnValue({ registerController: controller } as never);
+  return {
+    run(actionArgs: Record<string, unknown> = { registerName: "+" }) {
+      action!.call(context as never, {}, actionArgs, {});
+    },
+    pastes,
+    restore: () => state.mockRestore(),
+  };
+}
 
-describe("Vim and the system clipboard", () => {
-  let view: EditorView | null = null;
+/** A promise rejection is reported to the caller, not to the process. */
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+describe("Vim clipboard hooks", () => {
   beforeEach(() => {
-    osClipboard = "";
-  });
-  afterEach(() => {
-    view?.destroy();
-    view = null;
-    applyRcCommands([]);
+    clipboard.write.mockReset();
+    clipboard.write.mockResolvedValue(undefined);
+    Vim.setOption("clipboard", "ideaput,autoselect");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: vi.fn(async () => ""), writeText: vi.fn(async () => {}) },
+    });
   });
 
-  const open = (doc: string, rc = "") => {
-    applyRcCommands(parseVimrc(rc).commands);
-    const parent = document.createElement("div");
-    document.body.appendChild(parent);
-    view = new EditorView({ parent, state: EditorState.create({ doc, extensions: vimExtension() }) });
-    return getCM(view)!;
-  };
-  const keys = async (cm: ReturnType<typeof getCM>, seq: string) => {
-    for (const k of seq) Vim.handleKey(cm as never, k, "user");
-    await tick();
-  };
-  const doc = () => view!.state.doc.toString();
+  it("installs once per controller", () => {
+    const { controller, pushes } = fakeController();
+    _installClipboardHooksFor(controller);
+    _installClipboardHooksFor(controller);
+    controller.pushText(null, "yank", "one", false);
+    expect(pushes).toHaveLength(1);
+    expect(clipboard.write).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op without a register controller", () => {
+    const state = vi.spyOn(Vim, "getVimGlobalState_").mockReturnValue({} as never);
+    const define = vi.spyOn(Vim, "defineAction").mockImplementation(() => {});
+    try {
+      expect(() => installClipboardHooks()).not.toThrow();
+      expect(define).toHaveBeenCalledWith("paste", expect.any(Function));
+    } finally {
+      state.mockRestore();
+      define.mockRestore();
+    }
+  });
+
+  it("keeps the system clipboard out of unnamed register writes by default", () => {
+    const { controller, pushes } = fakeController();
+    _installClipboardHooksFor(controller);
+    controller.pushText(null, "yank", "one\n", true);
+    controller.pushText(null, "delete", "two\n", true);
+    expect(pushes).toHaveLength(2);
+    expect(clipboard.write).not.toHaveBeenCalled();
+  });
 
   it.each([
-    { name: "explicit + register", rc: "", yank: '"+yy', put: '"+p' },
-    { name: "explicit * register", rc: "", yank: '"*yy', put: '"*p' },
-    { name: "clipboard+=unnamedplus", rc: "set clipboard+=unnamedplus", yank: "yy", put: "p" },
-    { name: "clipboard=unnamed", rc: "set clipboard=unnamed", yank: "yy", put: "p" },
-  ])("$name: yanks a line to the OS clipboard and puts it back linewise", async ({ rc, yank, put }) => {
-    const cm = open("one\ntwo", rc);
-    await keys(cm, yank);
-    expect(osClipboard).toBe("one\n");
-    await keys(cm, put);
-    expect(doc()).toBe("one\none\ntwo");
+    ["yank", null, "one\n", true, "one\n"],
+    ["delete", null, "abc", false, "abc"],
+    ["change", undefined, "x", false, "x"],
+    ["yank", '"', "alpha", false, "alpha"],
+    ["yank", null, "line", true, "line\n"],
+  ])(
+    "mirrors %s into the system clipboard with clipboard=unnamed",
+    (operator, registerName, text, linewise, expected) => {
+      Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
+      const { controller } = fakeController();
+      _installClipboardHooksFor(controller);
+      controller.pushText(registerName, operator, text, linewise);
+      expect(clipboard.write).toHaveBeenCalledWith(expected);
+    },
+  );
+
+  it("mirrors with clipboard=unnamedplus too", () => {
+    Vim.setOption("clipboard", "unnamedplus");
+    const { controller } = fakeController();
+    _installClipboardHooksFor(controller);
+    controller.pushText(null, "yank", "one\n", true);
+    expect(clipboard.write).toHaveBeenCalledWith("one\n");
   });
 
-  it("puts text copied in another app characterwise", async () => {
-    const cm = open("ab", "set clipboard=unnamedplus");
-    osClipboard = "X\r\nY";
-    await keys(cm, "p");
-    expect(doc()).toBe("aX\nYb");
+  it.each([["a"], ["0"], ["_"], ["+"]])("leaves explicit register %s out of the system clipboard", (registerName) => {
+    Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
+    const { controller } = fakeController();
+    _installClipboardHooksFor(controller);
+    controller.pushText(registerName, "yank", "one\n", true);
+    expect(clipboard.write).not.toHaveBeenCalled();
   });
 
-  it("leaves the unnamed register alone without the option, and after the rc file drops it", async () => {
-    let cm = open("one\ntwo");
-    await keys(cm, "yy");
-    expect(osClipboard).toBe("");
-
-    cm = open("one\ntwo", "set clipboard=unnamedplus");
-    applyRcCommands([]);
-    await keys(cm, "dd");
-    expect(osClipboard).toBe("");
+  it("does not write empty text", () => {
+    Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
+    const { controller } = fakeController();
+    _installClipboardHooksFor(controller);
+    controller.pushText(null, "delete", "", false);
+    expect(clipboard.write).not.toHaveBeenCalled();
   });
 
-  it("deletes into the clipboard with unnamedplus", async () => {
-    const cm = open("one two", "set clipboard^=unnamedplus");
-    await keys(cm, "dw");
-    expect(osClipboard).toBe("one ");
+  it("keeps Vim state when the clipboard rejects and keeps trying", async () => {
+    Vim.setOption("clipboard", "ideaput,autoselect,unnamed");
+    clipboard.write.mockRejectedValueOnce(new Error("denied"));
+    const { controller, pushes } = fakeController();
+    _installClipboardHooksFor(controller);
+    controller.pushText(null, "yank", "one", false);
+    await settle();
+    expect(pushes).toHaveLength(1);
+    controller.pushText(null, "yank", "two", false);
+    await settle();
+    expect(clipboard.write).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalizes clipboard text and derives the paste shape for the + register", async () => {
+    vi.spyOn(navigator.clipboard, "readText").mockResolvedValue("hello\r\n");
+    const { controller, register } = fakeController();
+    register.linewise = false;
+    register.blockwise = true;
+    const harness = pasteHarness(controller);
+    try {
+      harness.run();
+      await settle();
+      const [_cm, actionArgs, _vim, text, passedRegister] = harness.pastes[0]!;
+      expect(text).toBe("hello\n");
+      expect(actionArgs).toEqual({ registerName: "+", linewise: true });
+      expect(passedRegister).toBe(register);
+      expect(register).toEqual({ linewise: true, blockwise: false, toString: expect.any(Function) });
+      expect(JSON.stringify(text)).not.toContain("\\r");
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it("pastes clipboard text without a trailing line break character-wise", async () => {
+    vi.spyOn(navigator.clipboard, "readText").mockResolvedValue("hello");
+    const { controller, register } = fakeController();
+    const harness = pasteHarness(controller);
+    try {
+      harness.run();
+      await settle();
+      expect(harness.pastes[0]![3]).toBe("hello");
+      expect((harness.pastes[0]![1] as { linewise?: boolean }).linewise).toBe(false);
+      expect(register.linewise).toBe(false);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it("falls back to the register text when the clipboard read is denied", async () => {
+    vi.spyOn(navigator.clipboard, "readText").mockRejectedValue(new Error("denied"));
+    const { controller, register } = fakeController("stale\n");
+    const harness = pasteHarness(controller);
+    try {
+      harness.run();
+      await settle();
+      expect(harness.pastes).toHaveLength(1);
+      const [_cm, _actionArgs, _vim, text, passedRegister] = harness.pastes[0]!;
+      expect(text).toBe("stale\n");
+      expect(passedRegister).toBe(register);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it("leaves internal register pastes alone", () => {
+    const { controller } = fakeController("a\r\nb");
+    const harness = pasteHarness(controller);
+    try {
+      harness.run({ registerName: "0" });
+      expect(harness.pastes[0]![3]).toBe("a\r\nb");
+    } finally {
+      harness.restore();
+    }
   });
 });

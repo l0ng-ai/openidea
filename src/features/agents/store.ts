@@ -19,23 +19,27 @@ import type {
   AgentTask,
   ExternalSession,
   Isolation,
+  RequestId,
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { confirm, showError } from "@/workbench/messages";
 import {
   bypassDefaults,
   canSend,
+  shellCommand,
   cursorModelDefaults,
   emptyDraft,
   isMentioned,
   isPerModelOption,
+  mentionOf,
+  referenceOf,
   toPrompt,
   withIdeContext,
   type ComposerDraft,
@@ -87,6 +91,8 @@ export type SessionLocation = "editor" | "toolWindow";
 
 interface AgentsState {
   loaded: boolean;
+  /** Tasks running a `!` command from their composer. */
+  shellRunning: Set<string>;
   /** Why the tasks could not be loaded. */
   error: string | null;
   tasks: Map<string, AgentTask>;
@@ -181,6 +187,7 @@ export function savedDraft(saved: Partial<Draft>): Draft {
 
 export const useAgents = create<AgentsState>(() => ({
   loaded: false,
+  shellRunning: new Set(),
   error: null,
   tasks: new Map(),
   unread: new Set(),
@@ -373,7 +380,7 @@ export function markVisible(task: string): () => void {
 
 let generation = 0;
 let draftGeneration = 0;
-const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number }>();
+const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number | null }>();
 
 const selectedProvider = () => {
   const { providers, draft } = useAgents.getState();
@@ -397,7 +404,7 @@ function applyModelCatalog(catalog: AgentModelCatalog) {
   });
 }
 
-/** Refreshes only the New Task agent; discovery failures stay beside the cached choices. */
+/** Refresh the New Task agent, including settings for the draft's selected model. */
 export async function refreshModels(
   provider = selectedProvider()?.id,
   force = true,
@@ -406,25 +413,55 @@ export async function refreshModels(
   const selected = selectedProvider();
   if (!provider || !selected?.installed || selected.id !== provider || useProject.getState().project?.trusted === false)
     return;
+  model ??= draftConfig(selected, useAgents.getState().draft).find((o) => o.category === "model")?.current ?? null;
+  await refreshProviderModels(selected, force, model, draftGeneration);
+}
+
+/** Discover switch candidates without using or updating the session's settings. */
+export async function refreshTaskModels(id: string, force = true): Promise<void> {
+  const { tasks, providers } = useAgents.getState();
+  const task = tasks.get(id);
+  if (!task || task.status === "archived" || !task.config.some((o) => o.category === "model")) return;
+  const provider = providers.find((p) => p.id === task.provider);
+  if (!provider?.installed || useProject.getState().project?.trusted === false) return;
+  await refreshProviderModels(provider, force, null, null);
+}
+
+async function refreshProviderModels(
+  selected: AgentProvider,
+  force: boolean,
+  model: string | null,
+  draftGen: number | null,
+): Promise<void> {
+  const provider = selected.id;
   const state = useAgents.getState();
   const catalog = state.modelCatalogs.get(provider);
-  model ??= draftConfig(selected, state.draft).find((o) => o.category === "model")?.current ?? null;
   const missingModelSettings =
     model !== null && !Object.hasOwn(catalog?.thoughtLevels ?? selected.thoughtLevels ?? {}, model);
   const requestTarget = state.modelRequestTargets.get(provider);
   const launch = launchKey(selected);
   const pending = modelFlights.get(provider);
   if (
-    (pending?.launch === launch && pending.generation === generation && pending.draftGeneration === draftGeneration) ||
+    pending?.launch === launch &&
+    pending.generation === generation &&
+    (draftGen === null || pending.draftGeneration === null || pending.draftGeneration === draftGen)
+  ) {
+    // A chat joining a draft lookup still needs its result if the draft switches providers.
+    if (draftGen === null) pending.draftGeneration = null;
+    return;
+  }
+  if (
     catalog?.refreshing ||
     (force &&
-      (requestTarget === undefined || requestTarget === model || (!missingModelSettings && !catalog?.error)) &&
+      (draftGen === null ||
+        requestTarget === undefined ||
+        requestTarget === model ||
+        (!missingModelSettings && !catalog?.error)) &&
       catalog?.retryAtMs != null &&
       catalog.retryAtMs > Date.now())
   )
     return;
   const gen = generation;
-  const draftGen = draftGeneration;
   const root = useProject.getState().project?.root;
   const flight = { launch, generation: gen, draftGeneration: draftGen };
   modelFlights.set(provider, flight);
@@ -432,12 +469,17 @@ export async function refreshModels(
     modelRequests: new Set(s.modelRequests).add(provider),
     modelRequestTargets: new Map(s.modelRequestTargets).set(provider, model),
   }));
-  const current = () =>
-    gen === generation &&
-    root === useProject.getState().project?.root &&
-    draftGen === draftGeneration &&
-    selectedProvider()?.id === provider &&
-    launchKey(selectedProvider()!) === launch;
+  const current = () => {
+    const activeProvider = useAgents.getState().providers.find((p) => p.id === provider);
+    return (
+      gen === generation &&
+      root === useProject.getState().project?.root &&
+      (flight.draftGeneration === null ||
+        (flight.draftGeneration === draftGeneration && selectedProvider()?.id === provider)) &&
+      activeProvider !== undefined &&
+      launchKey(activeProvider) === launch
+    );
+  };
   try {
     const result = await call(commands.agentRefreshModels(provider, force, model));
     // A streamed status/completion is newer than the snapshot returned by the command.
@@ -1130,6 +1172,7 @@ export async function startTask(
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
   const started = generation;
+  const command = shellCommand(composer);
   const options = draftConfig(
     providers.find((p) => p.id === draft.provider),
     draft,
@@ -1164,6 +1207,8 @@ export async function startTask(
         isolation,
         base: isolation === "worktree" ? draft.base : null,
         mcpOverrides: draft.mcpOverrides ?? {},
+        // A `!` command runs in the new task before the agent hears anything.
+        idle: command !== null,
       }),
     );
     if (generation !== started) return;
@@ -1177,6 +1222,10 @@ export async function startTask(
     clearSubmittedComposer(HOME, composer, started);
     const closed = await editorService().closeInput?.(HOME_KEY);
     if (generation === started && closed !== false) openTask(task.id);
+    if (command !== null && generation === started)
+      void execShell(task.id, command).catch((e: unknown) =>
+        notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) }),
+      );
   } catch (e) {
     if (generation === started) throw e;
   }
@@ -1302,10 +1351,52 @@ function remember(text: string) {
   save(HISTORY_KEY, history);
 }
 
+/** The `!` commands running per task, so Stop ends them. */
+const shellRuns = new Map<string, Set<RequestId>>();
+
+function trackShell(task: string, request: RequestId, running: boolean) {
+  const runs = shellRuns.get(task) ?? new Set<RequestId>();
+  if (running) runs.add(request);
+  else runs.delete(request);
+  if (runs.size) shellRuns.set(task, runs);
+  else shellRuns.delete(task);
+  useAgents.setState((s) => {
+    const shellRunning = new Set(s.shellRunning);
+    if (runs.size) shellRunning.add(task);
+    else shellRunning.delete(task);
+    return { shellRunning };
+  });
+}
+
+/** Runs a `!` line in the task's folder; its output reaches the agent with the next message. */
+async function runShell(task: string, composer: ComposerDraft, command: string) {
+  clearSubmittedComposer(task, composer, generation);
+  remember(`!${command}`);
+  await execShell(task, command);
+}
+
+async function execShell(task: string, command: string) {
+  const request = nextRequestId();
+  trackShell(task, request, true);
+  try {
+    await call(commands.agentShell(task, command, request));
+  } finally {
+    trackShell(task, request, false);
+  }
+}
+
+/** Stops the task's turn and the `!` commands it runs. */
+export async function stopTask(task: string): Promise<void> {
+  for (const request of shellRuns.get(task) ?? []) void commands.cancelRequest(request);
+  if (isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready")) await cancelTask(task);
+}
+
 /** Sends the session composer's message: queued while the agent works, or with `now` interrupting it. */
 export async function sendMessage(task: string, now: boolean): Promise<void> {
   const composer = composerDraft(task);
   if (!canSend(composer)) return;
+  const command = shellCommand(composer);
+  if (command !== null) return runShell(task, composer, command);
   const started = generation;
   await call(commands.agentPrompt(task, promptOf(task, composer), now));
   clearSubmittedComposer(task, composer, started);
@@ -1479,27 +1570,57 @@ function activeComposerKey(): string {
   return s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
 }
 
+/** The project a New Task started now would run in (the New Task page's project picker). */
+export function homeProjectRoot(): string | null {
+  const project = useProject.getState().project;
+  const members = project?.workspace?.projects ?? [];
+  const last = useAgents.getState().draft.projectRoot;
+  return last && members.includes(last) ? last : (members[0] ?? project?.root ?? null);
+}
+
+/** A file or folder (trailing slash) to reference, with the lines meant. */
+export interface ReferenceTarget {
+  path: string;
+  lines?: { from: number; to: number };
+}
+
 /**
  * Adds `@file` references (with an optional line range) to the composer on show (else the one
- * typed in last) and shows it: IDEA-style "send this to the chat".
+ * typed in last) and shows it: IDEA-style "send this to the chat". Paths resolve like the
+ * composer's own drops: inside the task's folder, or named by their workspace project. Returns
+ * how many were added; a path outside every project shows a notice.
  */
-export function addReferences(refs: Array<{ path: string; rel: string; mention: string }>) {
+export function addReferences(targets: readonly ReferenceTarget[]): number {
   const s = useAgents.getState();
   const key = activeComposerKey();
   const task = key === HOME ? null : s.tasks.get(key)!;
+  const project = useProject.getState().project;
+  const root = task ? task.cwd : homeProjectRoot();
+  const roots = {
+    root: root ?? "",
+    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root ?? "",
+    members: project?.workspace?.projects,
+  };
   const current = composerDraft(key);
-  // A worktree task sees the same files under its own directory.
-  const root = task?.isolation === "worktree" ? task.cwd : null;
-  const files: FileRef[] = refs.map((r) => ({
-    path: root ? `${root}/${r.rel}` : r.path,
-    rel: r.rel,
-  }));
-  const mentions = refs.map((r) => r.mention).join(" ");
-  const text =
-    current.text && !/\s$/.test(current.text) ? `${current.text} ${mentions} ` : `${current.text}${mentions} `;
+  const files: FileRef[] = [];
+  const mentions: string[] = [];
+  for (const { path, lines } of targets) {
+    const ref = root ? referenceOf(roots, path) : null;
+    if (!ref) continue;
+    // A folder keeps its trailing slash, so its chip is a folder reference.
+    const rel = /[\\/]$/.test(path) && ref.rel !== "." ? `${ref.rel}/` : ref.rel;
+    files.push({ path: ref.path, rel });
+    mentions.push(mentionOf(rel, lines));
+  }
+  if (files.length < targets.length)
+    notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
+  if (!files.length) return 0;
+  const joined = mentions.join(" ");
+  const text = current.text && !/\s$/.test(current.text) ? `${current.text} ${joined} ` : `${current.text}${joined} `;
   updateComposer(key, { text, files: [...current.files, ...files] });
   if (task) openTask(task.id);
   else openHome();
+  return files.length;
 }
 
 /** Stops the task's turn, or with `subagent` only that subagent's work. */

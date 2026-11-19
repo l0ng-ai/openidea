@@ -45,7 +45,7 @@ Supported lines:
 | `source <file>`                                                                   | Reads another file by the same rules. `~` is your home directory.                                                                                                             |
 | `" comment`                                                                       | Ignored.                                                                                                                                                                      |
 
-`set clipboard+=unnamedplus` (or `unnamed`) makes yanks, deletes and `p` without a register use the system clipboard. The `+` and `*` registers always do; both are the same clipboard.
+`set clipboard+=unnamedplus` (or `unnamed`) also copies yanks, deletes and changes without a register to the system clipboard. The `"+` register always reads and writes the system clipboard.
 
 Anything else (functions, `if`, `autocmd`, plugin commands) is reported as ignored and never executed.
 

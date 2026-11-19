@@ -25,6 +25,7 @@ import {
   registerTitleItem,
   registerToolWindow,
 } from "@/workbench/contributions";
+import { restartFlutterDaemon, selectFlutterDevice, useFlutterDevices } from "@/workbench/flutterDevices";
 import { chooserJustClosed, ConfigChooserOverlay } from "./ConfigChooser";
 import {
   compiledDebugPlan,
@@ -66,6 +67,7 @@ import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
@@ -579,6 +581,58 @@ export function activate(): () => void {
         run: () => rerunActive(),
       },
       {
+        id: "run.flutterChooseDevice",
+        title: "Select Flutter Device…",
+        category: "Run",
+        when: "flutterProject",
+        run: () => {
+          const chooserOpen = !useFlutterDevices.getState().chooserOpen;
+          useFlutterDevices.setState({ chooserOpen });
+          if (chooserOpen) void call(commands.flutterDevicesRefresh()).catch(() => undefined);
+        },
+      },
+      {
+        id: "run.flutterSelectDevice",
+        title: "Use Flutter Device",
+        category: "Run",
+        hidden: true,
+        when: "flutterProject",
+        run: ({ arg }) => {
+          if (typeof arg === "string") selectFlutterDevice(arg);
+        },
+      },
+      {
+        id: "run.flutterRestartDaemon",
+        title: "Restart Flutter Daemon",
+        category: "Run",
+        when: "flutterProject",
+        run: () => restartFlutterDaemon(),
+      },
+      {
+        id: "run.flutterHotReload",
+        title: "Hot Reload",
+        category: "Run",
+        icon: "hot-reload",
+        description: "Flutter: inject the changed sources into the running app",
+        when: "run.flutterHotReloadable",
+        run: () => {
+          const session = hotReloadSession();
+          if (session) hotReload(session.id);
+        },
+      },
+      {
+        id: "run.flutterHotRestart",
+        title: "Hot Restart",
+        category: "Run",
+        icon: "refresh",
+        description: "Flutter: restart the app, discarding its state",
+        when: "run.flutterHotReloadable",
+        run: () => {
+          const session = hotReloadSession();
+          if (session) hotRestart(session.id);
+        },
+      },
+      {
         id: "run.chooseConfig",
         title: "Select Run/Debug Configuration…",
         description:
@@ -821,6 +875,7 @@ export function activate(): () => void {
       const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
       setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
+      setContext("run.flutterHotReloadable", !!hotReloadSession());
     }),
     // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
     useRun.subscribe((s, prev) => {

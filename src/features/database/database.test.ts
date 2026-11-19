@@ -291,7 +291,7 @@ describe("data source types", () => {
     expect(vendorPreset(vendorById("oracle")!)).toEqual({ driver: "oracle", vendor: "", port: 1521 });
     expect(
       VENDORS.every((v) =>
-        ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse", "oracle", "snowflake"].includes(v.driver),
+        ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse", "oracle", "snowflake", "jdbc"].includes(v.driver),
       ),
     ).toBe(true);
     const labels = VENDORS.map((v) => v.label);

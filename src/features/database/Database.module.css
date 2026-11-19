@@ -67,7 +67,7 @@
   right: -3px;
   width: 6px;
   height: 100%;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .rowNumber {
   display: flex;
@@ -369,6 +369,46 @@
 .formHint {
   font-size: var(--fs-small);
   color: var(--fg-muted);
+}
+.jdbcJars {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.jdbcJars ul {
+  width: 100%;
+  max-height: 160px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jdbcJars li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.jdbcJars li span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.jdbcDetails {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.jdbcDetails dt {
+  margin-top: var(--space-2);
+  color: var(--fg-secondary);
+}
+.jdbcDetails dd {
+  margin: var(--space-1) 0;
+  overflow-wrap: anywhere;
+}
+.jdbcDetails ul {
+  margin: 0;
+  padding-left: var(--space-4);
 }
 .formFull {
   grid-column: 1 / -1;
@@ -1478,4 +1518,8 @@
 }
 .dumpError {
   color: var(--danger);
+}
+
+.jdbcJarPath {
+  overflow-wrap: anywhere;
 }

@@ -473,7 +473,25 @@ export function showManageRemotes() {
 }
 
 function RemotesDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
+  const [repo, setRepo] = useState(currentRepo);
+  return (
+    <Dialog
+      open
+      title="Git Remotes"
+      onClose={onClose}
+      width={560}
+      buttons={[{ label: "OK", role: "default", autoFocus: true, onClick: onClose }]}
+    >
+      <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={setRepo} />
+        {/* Keyed: picking another repository starts a fresh list, so answers for the previous one are dropped. */}
+        <RemotesList key={repo} repo={repo} />
+      </div>
+    </Dialog>
+  );
+}
+
+function RemotesList({ repo }: { repo: string | null }) {
   const [remotes, setRemotes] = useState<Remote[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -527,49 +545,35 @@ function RemotesDialog({ onClose }: { onClose: () => void }) {
   const current = remotes.find((r) => r.name === selected);
 
   return (
-    <Dialog
-      open
-      title="Git Remotes"
-      onClose={onClose}
-      width={560}
-      buttons={[{ label: "OK", role: "default", autoFocus: true, onClick: onClose }]}
-    >
-      <div className={styles.form}>
-        <div className={styles.manageBar} role="toolbar" aria-label={tx("Remotes")}>
-          <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
-          <IconButton
-            icon="minus"
-            title="Remove Remote"
-            size="small"
-            disabled={!current}
-            onClick={() => void remove()}
-          />
-          <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
-        </div>
-        <div className={styles.choiceList} role="listbox" aria-label={tx("Remotes")}>
-          {!remotes.length && (
-            <div className={styles.empty}>
-              <T>No remotes</T>
-            </div>
-          )}
-          {remotes.map((r) => (
-            <button
-              key={r.name}
-              type="button"
-              role="option"
-              aria-selected={r.name === selected}
-              className={clsx(styles.manageRow, r.name === selected && styles.manageRowSelected)}
-              onClick={() => setSelected(r.name)}
-              onDoubleClick={() => edit(r)}
-            >
-              <span className={styles.fileName}>{r.name}</span>
-              <span className={clsx(styles.fileDir, styles.mono)}>{r.url}</span>
-            </button>
-          ))}
-        </div>
-        {error && <div className={styles.error}>{error}</div>}
+    <>
+      <div className={styles.manageBar} role="toolbar" aria-label={tx("Remotes")}>
+        <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
+        <IconButton icon="minus" title="Remove Remote" size="small" disabled={!current} onClick={() => void remove()} />
+        <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
       </div>
-    </Dialog>
+      <div className={styles.choiceList} role="listbox" aria-label={tx("Remotes")}>
+        {!remotes.length && (
+          <div className={styles.empty}>
+            <T>No remotes</T>
+          </div>
+        )}
+        {remotes.map((r) => (
+          <button
+            key={r.name}
+            type="button"
+            role="option"
+            aria-selected={r.name === selected}
+            className={clsx(styles.manageRow, r.name === selected && styles.manageRowSelected)}
+            onClick={() => setSelected(r.name)}
+            onDoubleClick={() => edit(r)}
+          >
+            <span className={styles.fileName}>{r.name}</span>
+            <span className={clsx(styles.fileDir, styles.mono)}>{r.url}</span>
+          </button>
+        ))}
+      </div>
+      {error && <div className={styles.error}>{error}</div>}
+    </>
   );
 }
 
@@ -683,13 +687,14 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   const [groups, setGroups] = useState<RepoWorktrees[]>([]);
   /** The selected tree row (`r:` repository, `w:` worktree). */
   const [selected, setSelected] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<{ project: string | undefined; message: string } | null>(null);
   /** The last reload wins: a scan of the roots may change them while it runs. */
   const run = useRef(0);
+  const mutationRun = useRef(0);
   const reload = () => {
     const id = ++run.current;
     return Promise.all(
-      repos.map((root) =>
+      useVcs.getState().roots.map((root) =>
         call(commands.vcsWorktrees(root)).then(
           (worktrees): RepoWorktrees => ({ root, worktrees }),
           (e): RepoWorktrees => ({ root, worktrees: [], error: errorMessage(e) }),
@@ -698,7 +703,6 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     ).then((lists) => {
       if (id !== run.current) return;
       setGroups(groupWorktrees(lists));
-      setError(null);
     });
   };
   useEffect(() => {
@@ -738,6 +742,23 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     return [...flags, w.path].join("  ");
   };
 
+  const mutate = async (task: () => Promise<unknown>, selection: string | null) => {
+    if (projectRoot !== useProject.getState().project?.root) return;
+    const id = ++mutationRun.current;
+    let failure: string | null = null;
+    try {
+      await task();
+    } catch (e) {
+      failure = errorMessage(e);
+    }
+    if (projectRoot !== useProject.getState().project?.root) return;
+    if (id === mutationRun.current) {
+      setMutationError(failure === null ? null : { project: projectRoot, message: failure });
+      if (failure === null) setSelected(selection);
+    }
+    await reload();
+  };
+
   const remove = async () => {
     if (!current || !currentGroup || current.main || containsProject) return;
     const ok = await confirmDialog({
@@ -747,22 +768,22 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
       danger: true,
     });
     if (!ok) return;
-    try {
-      await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, false));
-    } catch (e) {
-      const force = await confirmDialog({
-        title: "Remove Worktree",
-        message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
-        okLabel: "Force Remove",
-        danger: true,
-      });
-      if (force)
-        await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, true)).catch((x) =>
-          setError(errorMessage(x)),
-        );
-    }
-    setSelected(null);
-    await reload();
+    await mutate(async () => {
+      try {
+        await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, false));
+      } catch (e) {
+        if (projectRoot !== useProject.getState().project?.root) return;
+        const force = await confirmDialog({
+          title: "Remove Worktree",
+          message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
+          okLabel: "Force Remove",
+          danger: true,
+        });
+        if (!force) throw e;
+        if (projectRoot === useProject.getState().project?.root)
+          await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, true));
+      }
+    }, null);
   };
 
   const move = async () => {
@@ -784,13 +805,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
       okLabel: "Move",
     });
     if (!ok) return;
-    try {
-      await call(commands.vcsMoveWorktree(currentGroup.root, current.path, to));
-      setSelected(`w:${to}`);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-    await reload();
+    await mutate(() => call(commands.vcsMoveWorktree(currentGroup.root, current.path, to)), `w:${to}`);
   };
 
   return (
@@ -858,7 +873,11 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
             </div>
           ),
       )}
-      {error && <div className={styles.error}>{error}</div>}
+      {mutationError && mutationError.project === projectRoot && (
+        <div className={styles.error} role="alert">
+          {mutationError.message}
+        </div>
+      )}
     </div>
   );
 }

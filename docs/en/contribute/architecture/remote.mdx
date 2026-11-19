@@ -38,7 +38,7 @@ flowchart LR
 ## The server
 
 ```text
-openidea-server --stdio | --connect <host> <port> | --version
+openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
 ```
 
 - `--stdio` serves one desktop client over stdin/stdout. stdout carries the protocol, so logs go to stderr (filter with `OPENIDEA_LOG`).
@@ -78,12 +78,12 @@ A few commands are always local even if the server knows them: `open_project` an
 
 ### What runs where
 
-| On the remote machine                                    | On the desktop                       |
-| -------------------------------------------------------- | ------------------------------------ |
-| The project: files, documents, settings                  | Windows, menus, the webview          |
-| Language servers, index, search                          | Client UI settings, keymaps, themes  |
-| Git, terminals, runs, debug adapters                     | The SSH connection and port forwards |
-| Code plugins of the project, their processes and fetches | Plugin secrets (keychain)            |
+| On the remote machine                                     | On the desktop                       |
+| --------------------------------------------------------- | ------------------------------------ |
+| The project: files, documents, settings                   | Windows, menus, the webview          |
+| Language servers, index, search                           | Client UI settings, keymaps, themes  |
+| Git, terminals, runs, debug adapters, built-in MCP server | The SSH connection and port forwards |
+| Code plugins of the project, their processes and fetches  | Plugin secrets (keychain)            |
 
 ## Port forwarding
 

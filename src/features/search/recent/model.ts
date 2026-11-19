@@ -18,10 +18,27 @@ export interface RecentFileItem {
   editor?: { input: EditorInput; icon: string };
 }
 
+/** A folder outside the project shown by its label (the Scratches root): `Scratches/requests.http`. */
+export interface LabelledRoot {
+  path: string;
+  label: string;
+}
+
+function displayPath(path: string, root: string | null, labelled: readonly LabelledRoot[] = []): string {
+  if (root && path.startsWith(root + "/")) return path.slice(root.length + 1);
+  const outside = labelled.find((r) => path.startsWith(r.path + "/"));
+  return outside ? `${outside.label}/${path.slice(outside.path.length + 1)}` : path;
+}
+
 export function filterRecentFiles(
   paths: readonly string[],
   query: string,
-  opts: { root: string | null; edited?: ReadonlySet<string>; editedOnly?: boolean },
+  opts: {
+    root: string | null;
+    labelled?: readonly LabelledRoot[];
+    edited?: ReadonlySet<string>;
+    editedOnly?: boolean;
+  },
 ): RecentFileItem[] {
   const out: RecentFileItem[] = [];
   const seen = new Set<string>();
@@ -29,7 +46,7 @@ export function filterRecentFiles(
     if (seen.has(path)) continue;
     seen.add(path);
     if (opts.editedOnly && !opts.edited?.has(path)) continue;
-    const rel = opts.root && path.startsWith(opts.root + "/") ? path.slice(opts.root.length + 1) : path;
+    const rel = displayPath(path, opts.root, opts.labelled);
     const name = basename(rel);
     let indices: number[] = [];
     if (query.trim()) {
@@ -70,6 +87,7 @@ export function switcherItems(
   tabs: readonly OpenEditorTab[],
   query: string,
   root: string | null,
+  labelled: readonly LabelledRoot[] = [],
 ): RecentFileItem[] {
   const fileTabs = new Map(tabs.filter(isFileTab).map((t) => [t.input.path!, t]));
   const ordered = [
@@ -83,7 +101,7 @@ export function switcherItems(
   const out: RecentFileItem[] = [];
   for (const t of ordered) {
     if (isFileTab(t)) {
-      out.push(...filterRecentFiles([t.input.path!], query, { root }));
+      out.push(...filterRecentFiles([t.input.path!], query, { root, labelled }));
       continue;
     }
     let indices: number[] = [];

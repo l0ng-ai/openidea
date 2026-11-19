@@ -36,7 +36,7 @@ pub fn explain_statement(driver: DbDriver, statement: &str) -> String {
         DbDriver::Sqlite => format!("EXPLAIN QUERY PLAN {s}"),
         DbDriver::Postgres => format!("EXPLAIN (FORMAT JSON) {s}"),
         DbDriver::Clickhouse => format!("EXPLAIN json = 1 {s}"),
-        DbDriver::Mysql => format!("EXPLAIN {s}"),
+        DbDriver::Mysql | DbDriver::Jdbc => format!("EXPLAIN {s}"),
         DbDriver::SqlServer => format!("SET SHOWPLAN_TEXT ON; {s}"),
         DbDriver::Oracle => format!("EXPLAIN PLAN FOR {s}"),
         DbDriver::Snowflake => format!("EXPLAIN USING TABULAR {s}"),
@@ -77,6 +77,7 @@ pub fn parse(driver: DbDriver, result: &QueryResult) -> IdeResult<Vec<PlanNode>>
             let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
             Ok(mysql(&names, &result.rows))
         }
+        DbDriver::Jdbc => Err(IdeError::invalid("Custom JDBC execution plans are unsupported")),
         DbDriver::SqlServer => Ok(Vec::new()),
         DbDriver::Snowflake => {
             let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();

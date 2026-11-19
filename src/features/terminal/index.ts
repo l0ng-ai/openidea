@@ -21,6 +21,7 @@ import { CLI_KIND, CliDoneMark, cliData, moveTerminalToEditor } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
+import { notifyTerminalVisibility } from "./outputGate";
 import type { SessionOptions } from "./session";
 
 const WINDOW = "terminal";
@@ -333,6 +334,12 @@ export function activate(): () => void {
       const rt = terminalRuntime();
       (rt?.sessionForTerminalId(e.terminal) ?? rt?.cliSessionForTerminalId(e.terminal))?.exited(e.code);
     }),
+    (() => {
+      if (typeof document === "undefined") return () => {};
+      const onVisibility = () => notifyTerminalVisibility();
+      document.addEventListener("visibilitychange", onVisibility);
+      return () => document.removeEventListener("visibilitychange", onVisibility);
+    })(),
     // Sessions belong to the project. Remember this project's tabs, then open the next one's.
     useProject.subscribe((s, prev) => {
       const rt = terminalRuntime();

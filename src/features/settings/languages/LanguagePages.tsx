@@ -365,6 +365,7 @@ export function RustPage() {
 // Go
 
 export function GoPage() {
+  const [gofumpt, setGofumpt] = useSetting<boolean>("languages.go.gofumpt");
   const { list } = useDetected("go");
   const defaultGopath = list.find((s) => s.extra)?.extra;
   return (
@@ -388,6 +389,14 @@ export function GoPage() {
           label="Project GOPATH"
           placeholder={defaultGopath ? tildify(defaultGopath) : "go env GOPATH"}
           title="Select GOPATH"
+        />
+      </Section>
+      <Section title="Formatting">
+        <Toggle
+          label="Format with gofumpt"
+          checked={gofumpt}
+          onChange={setGofumpt}
+          hint="gopls applies gofumpt's stricter rules on top of gofmt when reformatting."
         />
       </Section>
     </div>

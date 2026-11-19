@@ -50,6 +50,8 @@ pub struct Settings {
     /// Per language server, by name (`rust-analyzer`): launch and protocol
     /// options on top of the language definition, or a server defined here.
     pub language_servers: BTreeMap<String, LanguageServerSettings>,
+    /// Tools › Download sources: a mirror prefix for the release archives the installer fetches.
+    pub tool_downloads: ToolDownloadSettings,
     /// Editor › Inspections profiles.
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
@@ -361,6 +363,22 @@ impl Default for McpServerSettings {
     }
 }
 
+/// Tools › Download sources: a mirror the installer tries when `github.com` is slow or
+/// unreachable.
+///
+/// The mirror is a proxy prefix: the official URL is appended to it unchanged
+/// (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
+/// public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
+/// hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
+/// default, so every download stays on its official host until the user opts in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ToolDownloadSettings {
+    /// Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
+    /// every download on its official host.
+    pub github_mirror: String,
+}
+
 /// Absent profiles retain automatic discovery for existing projects.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -499,6 +517,7 @@ impl Default for Settings {
             external_tools: Vec::new(),
             tools: BTreeMap::new(),
             language_servers: BTreeMap::new(),
+            tool_downloads: ToolDownloadSettings::default(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),
@@ -752,6 +771,8 @@ pub struct AppearanceSettings {
     pub compact_mode: bool,
     /// IDEA "Use smaller indents in trees": tool window trees indent less per level.
     pub small_tree_indents: bool,
+    /// Linux: WebKit animates each mouse wheel step
+    pub smooth_scrolling: bool,
     pub full_path_in_title: bool,
     pub project_colors_in_toolbar: bool,
     pub dnd_with_alt_only: bool,
@@ -770,6 +791,8 @@ pub struct AppearanceSettings {
     pub show_tool_window_names: bool,
     pub show_tool_window_badges: bool,
     pub widescreen_tool_windows: bool,
+    /// Each tool window keeps its own size; off, the windows of a side share one.
+    pub remember_tool_window_sizes: bool,
     /// View › Appearance › Toolbar; hidden leaves IDEA's compact window header.
     pub show_main_toolbar: bool,
     pub show_status_bar: bool,
@@ -885,6 +908,7 @@ impl Default for AppearanceSettings {
             different_tool_window_background: false,
             compact_mode: false,
             small_tree_indents: false,
+            smooth_scrolling: true,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
             dnd_with_alt_only: false,
@@ -898,6 +922,7 @@ impl Default for AppearanceSettings {
             show_tool_window_names: false,
             show_tool_window_badges: true,
             widescreen_tool_windows: false,
+            remember_tool_window_sizes: false,
             show_main_toolbar: true,
             show_status_bar: true,
             navigation_bar: NavigationBarPosition::StatusBar,
@@ -1378,6 +1403,8 @@ pub struct GoSettings {
     pub goroot: String,
     /// Empty = `go env GOPATH`.
     pub gopath: String,
+    /// Format with gofumpt, a stricter gofmt (gopls `gofumpt`).
+    pub gofumpt: bool,
     pub build_tags: GoBuildTags,
     pub modules: GoModules,
 }
@@ -1750,6 +1777,16 @@ mod tests {
         assert_eq!(a.preferred_dark_theme, "dark");
         let kept: Settings = serde_json::from_str(r#"{"appearance":{"theme":"solarized-dark"}}"#).unwrap();
         assert_eq!(kept.appearance.theme, "solarized-dark");
+    }
+
+    #[test]
+    fn smooth_scrolling_defaults_on_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"zoom":110}}"#).unwrap();
+        assert!(old.appearance.smooth_scrolling);
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"smoothScrolling":false}}"#).unwrap();
+        assert!(!off.appearance.smooth_scrolling);
+        let json = serde_json::to_value(&off).unwrap();
+        assert_eq!(json["appearance"]["smoothScrolling"], false);
     }
 
     #[test]

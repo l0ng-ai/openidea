@@ -353,6 +353,7 @@ export function activate(): () => void {
         icon: "db-plan",
         keywords: ["query plan", "explain", "sql"],
         when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
+        enabled: () => sourceById(consoleSource(activeEditor()?.ctx.path ?? ""))?.driver !== "jdbc",
         run: async () => {
           const current = projectRequest();
           const e = activeEditor();

@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { windowsPty } from "./windowsPty";
+import { windowsPtyOptions } from "./windowsPty";
 import { usePlatform } from "@/platform/platformInfo";
 import { useRemote } from "@/platform/remote";
 
@@ -15,5 +15,5 @@ it.each(["linux", "windows"])("does not apply the desktop build to a remote %s P
   useRemote.setState({
     session: { os, host: "test", root: "/repo", target: { kind: "ssh", config: "test" }, commands: [] },
   });
-  expect(windowsPty()).toBeUndefined();
+  expect(windowsPtyOptions()).toEqual({ reflowCursorLine: false });
 });

@@ -1599,7 +1599,7 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
   }
 }
 
-/** Keystrokes typed into a console that emulates a terminal, sent as they are. */
+/** Keystrokes for the process (typed into a terminal console, or Flutter's hot reload keys), sent as they are. */
 export function writeTerminal(sessionId: string, data: string) {
   const session = getSession(sessionId);
   if (!session || session.runId === null || session.status !== "running") return;

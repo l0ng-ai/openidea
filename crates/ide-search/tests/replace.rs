@@ -18,6 +18,7 @@ fn query(pattern: &str) -> SearchQuery {
         scope: SearchScope::Project,
         max_matches: 0,
         context: Default::default(),
+        include_excluded: false,
     }
 }
 

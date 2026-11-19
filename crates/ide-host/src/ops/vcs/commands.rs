@@ -214,10 +214,6 @@ pub enum RemoteOp {
         tag: String,
         remote: String,
     },
-    /// Fast-forwards local `branch` (not checked out) to its upstream.
-    UpdateBranch {
-        branch: String,
-    },
     /// Pull dialog: `branches` of `remote` (none = the configured merge branch).
     PullFrom {
         remote: String,
@@ -336,6 +332,13 @@ fn keep_private(root: &Path) {
     if let Err(e) = ide_vcs::changelists::ensure_ignored(&ide_core::project_dir::path(root, ""), &PRIVATE_ENTRIES) {
         tracing::warn!("could not update .openidea/.gitignore: {e}");
     }
+}
+
+/// Directory Mappings: the repository roots detection finds, before any are excluded or added.
+#[command(trust = always)]
+pub async fn vcs_detected_roots(host: &Host, window: &str) -> IdeResult<Vec<PathBuf>> {
+    let project = host.project(window)?;
+    blocking(move || project.detected_repository_roots()).await
 }
 
 /// The project's repositories, the primary one first.
@@ -940,13 +943,38 @@ pub async fn vcs_remote(
                 &cancel,
                 &out,
             ),
-            RemoteOp::UpdateBranch { branch } => r.update_branch(&branch, &cancel, &out),
             RemoteOp::PushTag { tag, remote } => r.push_tag(&tag, &remote, &cancel, &out),
             RemoteOp::DeleteRemoteTag { tag, remote } => r.delete_remote_tag(&tag, &remote, &cancel, &out),
             RemoteOp::PullFrom { remote, branches, rebase, options } => {
                 r.pull_from(&remote, &branches, rebase, &options, &cancel, &out)
             }
         })
+    })
+    .await
+    .map_err(|e| ide_core::IdeError::internal(e.to_string()))?;
+    host.end_request(request);
+    result
+}
+
+/// Branches › Update Selected: fast-forwards local `branches` to their upstreams, one
+/// fetch per remote; the result says what happened to each. Cancellable.
+#[command(trust = trusted)]
+pub async fn vcs_update_branches(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    request: RequestId,
+    branches: Vec<String>,
+    on_output: Channel<String>,
+) -> IdeResult<Vec<BranchUpdate>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = tokio::task::spawn_blocking(move || {
+        let out = |line: String| {
+            let _ = on_output.send(line);
+        };
+        project.with_repo_recorded(repo.as_deref(), Some("Git pull"), |r| r.update_branches(&branches, &cancel, &out))
     })
     .await
     .map_err(|e| ide_core::IdeError::internal(e.to_string()))?;
@@ -1059,6 +1087,22 @@ pub async fn vcs_config_get(
 ) -> IdeResult<Option<String>> {
     let project = LogAccess::new(host, window, repo.as_deref());
     blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.config_get(&key))).await
+}
+
+/// Git User Name Is Not Defined: sets `user.name` / `user.email` for commits in the
+/// repository, or globally.
+#[command(trust = trusted)]
+pub async fn vcs_set_user_identity(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    name: String,
+    email: String,
+    global: bool,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || project.with_repo_at(repo.as_deref(), |r| r.set_user_identity(&name, &email, global))).await
 }
 
 /// Local history operation that may take a while (hooks, large checkouts); git's
@@ -1569,6 +1613,7 @@ ide_command::domain!(
     vcs_compare_paths,
     vcs_compare_scope,
     vcs_config_get,
+    vcs_set_user_identity,
     vcs_conflict_versions,
     vcs_create_branch,
     vcs_create_patch,
@@ -1606,6 +1651,7 @@ ide_command::domain!(
     vcs_rebase,
     vcs_rebase_with,
     vcs_remote,
+    vcs_update_branches,
     vcs_remotes,
     vcs_remove_worktree,
     vcs_rename_branch,
@@ -1616,6 +1662,7 @@ ide_command::domain!(
     vcs_revision_files,
     vcs_reword,
     vcs_roots,
+    vcs_detected_roots,
     vcs_shelf_delete,
     vcs_shelf_diff,
     vcs_shelf_import,
