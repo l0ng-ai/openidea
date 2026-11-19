@@ -154,6 +154,28 @@
   flex: 1;
   min-height: 0;
 }
+/* A console's request in flight; the previous result stays below it. */
+.executing {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.executingText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.executingTime {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
 /* Gives way before the name does. */
 .treeDetail {
   color: var(--fg-muted);
@@ -657,6 +679,12 @@
 }
 
 /* Console run feedback: timing after a statement, gutter check / error, error banner. */
+:global(.cm-openidea-db-executing) {
+  background: var(--accent-soft);
+}
+:global(.cm-openidea-db-elapsed) {
+  font-variant-numeric: tabular-nums;
+}
 :global(.cm-openidea-db-timing) {
   margin-left: 1.5em;
   color: var(--fg-muted);

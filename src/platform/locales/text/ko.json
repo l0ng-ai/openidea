@@ -2965,8 +2965,6 @@
   "Run a command, configuration or goal": "명령, 구성 또는 목표 실행",
   "Run Anything entries": "무엇이든 실행 항목",
   "Press Enter to run the command in the project directory": "Enter를 눌러 프로젝트 디렉터리에서 명령을 실행하세요",
-  "Type a command": "명령 입력",
-  "Enter to run, Tab to complete. Other commands run in the project directory.": "Enter로 실행, Tab으로 완성합니다. 그 밖의 명령은 프로젝트 디렉터리에서 실행됩니다.",
   "Recent": "최근",
   "Search types": "유형 검색",
   "Search configuration types": "구성 유형 검색",

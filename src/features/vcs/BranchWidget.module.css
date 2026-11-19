@@ -3,8 +3,8 @@
   align-items: center;
   gap: var(--space-1);
   max-width: 280px;
-  height: 30px;
-  border-radius: 6px;
+  height: var(--h-toolbar-widget);
+  border-radius: var(--radius-toolbar-dropdown);
 }
 .icon {
   flex: none;
