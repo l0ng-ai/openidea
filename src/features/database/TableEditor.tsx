@@ -14,7 +14,7 @@ import {
   type DbTablePage,
   type RequestId,
 } from "@/platform/ipc";
-import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu, tooltipAttrs } from "@/ui";
+import { EmptyState, Icon, IconButton, Select, Spinner, Toolbar, showContextMenu } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { SqlFilterInput } from "./SqlFilterInput";
 import { ColumnsPopup } from "./ColumnsPopup";
@@ -35,6 +35,7 @@ import styles from "./Database.module.css";
 import { registerTableEditor, tableEditorChanged, type TableEditorHandle } from "./tableEditorFocus";
 import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
+import { pageWindow } from "./resultView";
 
 const PAGE_SIZES = ["100", "500", "1000", "5000"];
 
@@ -283,9 +284,18 @@ export function TableEditor({ input }: { input: EditorInput }) {
   useEffect(() => registerTableEditor(viewRef.current!, handle), [handle]);
   useEffect(() => tableEditorChanged(handle), [handle, dirty, editable]);
   const orderInvalid = orderDraft !== null && !parseOrderBy(orderDraft, names);
+  const hasMore = page?.result.hasMore ?? false;
+  const { first, last, total } = pageWindow({
+    page: offset / limit,
+    pageSize: limit,
+    rows: loaded,
+    hasMore,
+    total: null,
+  });
+  const singlePage = offset === 0 && !hasMore;
   return (
     <div className={styles.view} ref={viewRef} data-db-table-editor="">
-      <div className={styles.toolbar}>
+      <Toolbar className={styles.toolbar} aria-label="Table actions">
         <IconButton
           icon="refresh"
           title="Reload Page"
@@ -293,55 +303,31 @@ export function TableEditor({ input }: { input: EditorInput }) {
           onClick={reload}
           disabled={loading}
         />
-        <div className={styles.pager}>
-          <IconButton
-            icon="chevron-left"
-            title="Previous Page"
-            shortcut={shortcutLabel("db.previousPage")}
-            disabled={!canPrevious}
-            onClick={() => setOffset(Math.max(0, offset - limit))}
-          />
-          <span>
-            {loaded ? `${offset + 1}–${offset + loaded}` : "0"}
-            {page?.result.hasMore ? " of more" : ""}
-          </span>
-          <IconButton
-            icon="chevron-right"
-            title="Next Page"
-            shortcut={shortcutLabel("db.nextPage")}
-            disabled={!canNext}
-            onClick={() => setOffset(offset + limit)}
-          />
-          <Select
-            aria-label="Page size"
-            value={String(limit)}
-            options={PAGE_SIZES.map((v) => ({ value: v, label: v }))}
-            onChange={(v) => {
-              setOffset(0);
-              setLimit(Number(v));
-            }}
-          />
-        </div>
+        <IconButton
+          icon="search"
+          title="Search"
+          shortcut={shortcutLabel("find.inFile")}
+          aria-pressed={searchOpen}
+          onClick={() => setSearchOpen(!searchOpen)}
+        />
         {editable && (
           <>
+            <span className={styles.toolbarSeparator} />
             <IconButton icon="plus" title="Add Row" shortcut={shortcutLabel("db.addRow")} onClick={addRow} />
-            <Button
-              size="small"
-              variant="primary"
-              disabled={!dirty}
-              onClick={() => void submit()}
-              {...tooltipAttrs("Submit", shortcutLabel("db.submitChanges"))}
-            >
-              <T>Submit</T>
-            </Button>
-            <Button
-              size="small"
+            <IconButton
+              icon="revert"
+              title="Revert"
+              shortcut={shortcutLabel("db.revertChanges")}
               disabled={!dirty}
               onClick={() => setEdits(emptyEdits())}
-              {...tooltipAttrs("Revert", shortcutLabel("db.revertChanges"))}
-            >
-              <T>Revert</T>
-            </Button>
+            />
+            <IconButton
+              icon="arrow-up"
+              title="Submit"
+              shortcut={shortcutLabel("db.submitChanges")}
+              disabled={!dirty}
+              onClick={() => void submit()}
+            />
           </>
         )}
         {loading && <Spinner size={12} />}
@@ -361,18 +347,12 @@ export function TableEditor({ input }: { input: EditorInput }) {
           disabled={!editable}
           onClick={() => openDialog({ kind: "import", id: ref.id, schema: ref.schema, table: ref.table })}
         />
-        <IconButton
-          icon="search"
-          title="Search"
-          shortcut={shortcutLabel("find.inFile")}
-          aria-pressed={searchOpen}
-          onClick={() => setSearchOpen(!searchOpen)}
-        />
         <PanelToggle panel={panel} onChange={setPanel} />
-      </div>
+      </Toolbar>
       <div className={styles.filterBar}>
         <label className={styles.filterField}>
           <Icon name="filter" size={14} />
+          <span aria-hidden="true">WHERE</span>
           <SqlFilterInput
             kind="where"
             schema={ref.schema}
@@ -391,6 +371,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
         </label>
         <label className={styles.filterField}>
           <Icon name="db-sort" size={14} />
+          <span aria-hidden="true">ORDER BY</span>
           <SqlFilterInput
             kind="order"
             schema={ref.schema}
@@ -451,6 +432,44 @@ export function TableEditor({ input }: { input: EditorInput }) {
             driver={source?.driver}
             sort={sort}
             onSort={onSort}
+            pager={
+              <Toolbar className={styles.resultPager} aria-label="Table pages">
+                {!singlePage && (
+                  <>
+                    <IconButton
+                      size="small"
+                      icon="chevron-left"
+                      title="Previous Page"
+                      shortcut={shortcutLabel("db.previousPage")}
+                      disabled={!canPrevious}
+                      onClick={() => setOffset(Math.max(0, offset - limit))}
+                    />
+                    <span className={styles.resultPagerRange}>
+                      {loaded ? tx`${first}-${last} of ${total ?? `${last + 1}+`}` : tx`${loaded} rows`}
+                    </span>
+                    <IconButton
+                      size="small"
+                      icon="chevron-right"
+                      title="Next Page"
+                      shortcut={shortcutLabel("db.nextPage")}
+                      disabled={!canNext}
+                      onClick={() => setOffset(offset + limit)}
+                    />
+                  </>
+                )}
+                <Select
+                  variant="ghost"
+                  aria-label="Page size"
+                  value={String(limit)}
+                  options={PAGE_SIZES.map((v) => ({ value: v, label: v }))}
+                  renderValue={singlePage ? () => tx`${loaded} rows` : undefined}
+                  onChange={(v) => {
+                    setOffset(0);
+                    setLimit(Number(v));
+                  }}
+                />
+              </Toolbar>
+            }
             rowMenu={(rows) =>
               editable
                 ? [

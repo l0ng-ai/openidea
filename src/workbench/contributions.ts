@@ -1063,6 +1063,9 @@ export interface FileDecoration {
   suffixColor?: string;
   /** CSS colour tinting the editor tab (a data source's colour on its console). */
   tint?: string;
+  /** Display name and icon for a specialized file tab. The path still identifies the document. */
+  tabTitle?: string;
+  tabIcon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;
