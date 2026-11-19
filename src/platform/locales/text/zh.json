@@ -9057,5 +9057,6 @@
   "When Build opens, whether it takes keyboard focus from the editor.": "构建窗口打开时，是否从编辑器夺取键盘焦点。",
   "Hover actions": "悬停操作",
   "Hover action": "悬停操作",
-  "{count} hover actions": "{count} 个悬停操作"
+  "{count} hover actions": "{count} 个悬停操作",
+  "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}"
 }

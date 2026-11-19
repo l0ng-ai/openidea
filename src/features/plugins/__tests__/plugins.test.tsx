@@ -40,7 +40,8 @@ import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
 import { catalogState, filterCatalog, filterPlugins, NO_REPOSITORY, PluginsPage } from "../PluginsPage";
-import { ConsentDialogHost, provideConsentDialog } from "../consent";
+import { ConsentDialogHost, capabilityDescription, provideConsentDialog } from "../consent";
+import { useI18n } from "@/platform/i18n";
 import {
   adoptIconTheme,
   compareVersions,
@@ -1669,6 +1670,30 @@ describe("marketplace", () => {
     expect(within(permissions).getByLabelText("JVM options")).toHaveTextContent(
       "-XX:+AllowEnhancedClassRedefinition (jetbrains)",
     );
+  });
+
+  it("translates the java.agent permission apart from the JVM flags the host appends", () => {
+    const cap = {
+      id: "java.agent",
+      risk: "high" as const,
+      description: "Run code inside the Java applications you start; JVM options: -XX:+AllowEnhancedClassRedefinition",
+      optional: true,
+      granted: false,
+    };
+    const before = useI18n.getState().texts;
+    useI18n.setState({
+      texts: {
+        "Run code inside the Java applications you start": "在你启动的 Java 应用中运行代码",
+        "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}",
+      },
+    });
+    try {
+      expect(capabilityDescription(cap)).toBe(
+        "在你启动的 Java 应用中运行代码；JVM 选项：-XX:+AllowEnhancedClassRedefinition",
+      );
+    } finally {
+      useI18n.setState({ texts: before });
+    }
   });
 
   it("warns when a granted Java agent jar changed and can approve it again", async () => {

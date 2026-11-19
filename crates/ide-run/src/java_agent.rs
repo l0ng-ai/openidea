@@ -407,11 +407,11 @@ mod tests {
         std::fs::write(temurin.join("release"), "JAVA_VERSION=\"17\"\nIMPLEMENTOR=\"Eclipse Adoptium\"\n").unwrap();
 
         let agent = with_vm(agent(&jar, None, true), &["-XX:+AllowEnhancedClassRedefinition"], Some("jetbrains"));
-        let on_jbr = approved_for(&[agent.clone()], Some(&jbr.join("bin/java")));
+        let on_jbr = approved_for(std::slice::from_ref(&agent), Some(&jbr.join("bin/java")));
         assert!(on_jbr.options.iter().any(|o| o == "-XX:+AllowEnhancedClassRedefinition"));
         assert!(on_jbr.notes.is_empty());
 
-        let on_other = approved_for(&[agent.clone()], Some(&temurin.join("bin/java")));
+        let on_other = approved_for(std::slice::from_ref(&agent), Some(&temurin.join("bin/java")));
         assert!(!on_other.options.iter().any(|o| o == "-XX:+AllowEnhancedClassRedefinition"));
         assert!(on_other.options.iter().any(|o| o.starts_with("-javaagent:")));
         assert_eq!(on_other.notes.len(), 1);

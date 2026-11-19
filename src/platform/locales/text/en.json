@@ -2683,5 +2683,6 @@
   "When Build opens, whether it takes keyboard focus from the editor.": "When Build opens, whether it takes keyboard focus from the editor.",
   "Hover actions": "Hover actions",
   "Hover action": "Hover action",
-  "{count} hover actions": "{count} hover actions"
+  "{count} hover actions": "{count} hover actions",
+  "{description}; JVM options: {flags}": "{description}; JVM options: {flags}"
 }
