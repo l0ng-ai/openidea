@@ -12,6 +12,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { Icon, Kbd, List, Popup, SearchField, T, firstSelectable, listNavigate } from "@/ui";
 import { runAnythingProviderList } from "@/workbench/contributions";
+import { useRowHeight } from "@/ui/density";
 import { buildRows, clearHistory, pushHistory, readHistory, shellRunConfig, type Row } from "./model";
 import styles from "./RunAnything.module.css";
 
@@ -49,6 +50,7 @@ const commandAnchor = { getBoundingClientRect: () => new DOMRect(window.innerWid
 
 function RunAnythingPopup({ root }: { root: string }) {
   const field = useRef<HTMLInputElement>(null);
+  const rowHeight = useRowHeight(ROW_HEIGHT);
   const listId = useId();
   const [line, setLine] = useState("");
   const [active, setActive] = useState(-1);
@@ -86,8 +88,8 @@ function RunAnythingPopup({ root }: { root: string }) {
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
     if (["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(e.key)) {
-      const height = e.currentTarget.ownerDocument.getElementById(listId)?.clientHeight ?? ROW_HEIGHT;
-      const pageSize = Math.max(1, Math.floor(height / ROW_HEIGHT) - 1);
+      const height = e.currentTarget.ownerDocument.getElementById(listId)?.clientHeight ?? rowHeight;
+      const pageSize = Math.max(1, Math.floor(height / rowHeight) - 1);
       const next = listNavigate(e.key, { items: rows, active, wrap: true, isSection, pageSize });
       if (next !== null && hasRows) {
         e.preventDefault();
@@ -171,7 +173,7 @@ function RunAnythingPopup({ root }: { root: string }) {
               onActivate={(r) => run(r)}
               focusable={false}
               hoverSelects={false}
-              rowHeight={ROW_HEIGHT}
+              rowHeight={rowHeight}
               className={styles.rows}
               aria-label="Run Anything entries"
               renderItem={(r, state) =>

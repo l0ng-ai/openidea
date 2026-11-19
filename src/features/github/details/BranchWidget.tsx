@@ -78,7 +78,6 @@ export function BranchWidget({
             getKey={(a) => a}
             onActivate={(a) => run(a)}
             hoverSelects
-            rowHeight={24}
             aria-label={tx("Branches")}
             renderItem={(a, state) => (
               <div className={styles.popupRow} data-active={state.active || undefined}>

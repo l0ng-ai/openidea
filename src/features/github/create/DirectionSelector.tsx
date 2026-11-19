@@ -178,7 +178,6 @@ function HeadPopup(props: { anchor: HTMLElement; initialRepo: GHRemote; onClose:
         onActivate={(r) => choose(r)}
         focusable={false}
         hoverSelects
-        rowHeight={24}
         className={styles.headList}
         aria-label="Branches"
         empty={<div className={styles.hint}>{tx("Nothing to show")}</div>}

@@ -4,12 +4,21 @@ import { commands, call, onIdeEvent, ideEventsReady } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 
-import { registerOverlay } from "@/workbench/contributions";
+import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
+import { BackgroundStatus } from "./BackgroundStatus";
 import { McpConfirmHost } from "./ConfirmDialog";
 import { denyAll, dropConfirm, handleMcpRequest } from "./requests";
 
 export function activate(): () => void {
   const offOverlay = registerOverlay({ id: "mcp.confirm", component: McpConfirmHost });
+  const offStatus = registerStatusItem({
+    id: "mcp.background",
+    align: "right",
+    priority: 4,
+    title: "Background Projects",
+    component: BackgroundStatus,
+    lightEdit: true,
+  });
   const offRequests = onIdeEvent("mcpRequest", (e) => void handleMcpRequest(e.id, e.request));
   const offClosed = onIdeEvent("mcpRequestClosed", (e) => dropConfirm(e.id));
   const ready = () => {
@@ -104,6 +113,7 @@ export function activate(): () => void {
     disposed = true;
     unload();
     offOverlay();
+    offStatus();
     offRequests();
     offClosed();
     window.removeEventListener("beforeunload", unload);

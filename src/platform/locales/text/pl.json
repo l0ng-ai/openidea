@@ -4314,7 +4314,6 @@
   "Edit the deployment servers and options": "Edytuj serwery wdrażania i opcje",
   "Configuration…": "Konfiguracja…",
   "No deployment server configured": "Brak skonfigurowanego serwera wdrażania",
-  "Select files in the Project view or open a file in the editor": "Wybierz pliki w widoku Projektu lub otwórz plik w edytorze",
   "Upload to": "Prześlij do",
   "Download from": "Pobierz z",
   "Sync with Deployed to": "Synchronizuj z wdrożeniem na",
@@ -5941,5 +5940,6 @@
   "Back to Changed Files": "Powrót do zmienionych plików",
   "Default (the module's JDK)": "Domyślnie (zestaw JDK modułu)",
   "Use classpath of module": "Użyj ścieżki klas modułu",
-  "Find by main class": "Znajdź według klasy głównej"
+  "Find by main class": "Znajdź według klasy głównej",
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Wybierz pliki w widoku Projektu, oknie Commit lub otwórz plik w edytorze"
 }
