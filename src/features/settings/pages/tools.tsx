@@ -33,6 +33,11 @@ const SEND_KEY_OPTIONS = [
   { value: "enter", label: "Enter" },
   { value: "modEnter", label: "⌘Enter" },
 ];
+const APP_TITLE_OPTIONS = [
+  { value: "running", label: "When command is running" },
+  { value: "always", label: "Always" },
+  { value: "off", label: "Never" },
+];
 const WHILE_RUNNING_OPTIONS = [
   { value: "queue", label: "Queues the message for after the turn" },
   { value: "steer", label: "Sends it into the turn" },
@@ -601,6 +606,12 @@ export const TOOLS_PAGES: PageSpec[] = [
         options: [
           { kind: "custom", label: "Shell path", component: ShellPathRow },
           { kind: "text", key: "terminal.tabName", label: "Default Tab name", placeholder: "Local" },
+          {
+            kind: "select",
+            key: "terminal.appTitleAsTabName",
+            label: "Use application title as tab name",
+            options: APP_TITLE_OPTIONS,
+          },
           {
             kind: "custom",
             label: "Audible bell",
