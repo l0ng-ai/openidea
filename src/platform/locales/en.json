@@ -201,6 +201,7 @@
   "menu.file.newScratchFile": "Scratch File",
   "menu.new": "New",
   "menu.workspace.create": "Workspace…",
+  "menu.vcs.cloneProject": "Project from Version Control…",
   "menu.workspace.open": "Open Workspace…",
   "menu.workspace.manage": "Manage Workspace…",
   "menu.file.newUntitled": "Untitled File",

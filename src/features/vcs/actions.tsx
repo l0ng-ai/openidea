@@ -292,6 +292,15 @@ export function registerVcsActions(): () => void {
       run: (c) => showCloneDialog(typeof c.arg === "string" ? c.arg : ""),
     },
     {
+      // File › New › Project from Version Control: the same dialog, under the name the File menu uses.
+      id: "vcs.cloneProject",
+      title: "Project from Version Control…",
+      category: "File",
+      icon: "git-pull",
+      keywords: ["clone", "checkout", "git", "new project"],
+      run: () => showCloneDialog(""),
+    },
+    {
       id: "vcs.push",
       title: "Push…",
       category: "Git",

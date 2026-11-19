@@ -201,6 +201,7 @@
   "menu.file.newScratchFile": "临时文件",
   "menu.new": "新建",
   "menu.workspace.create": "工作区…",
+  "menu.vcs.cloneProject": "来自版本控制的项目…",
   "menu.workspace.open": "打开工作区…",
   "menu.workspace.manage": "管理工作区…",
   "menu.file.newUntitled": "无标题文件",

@@ -1514,6 +1514,7 @@
   "Generate Requests for Controller": "为控制器生成请求",
   "Generate…": "生成…",
   "Get from Version Control…": "从版本控制获取…",
+  "Project from Version Control…": "来自版本控制的项目…",
   "Gevent compatible": "兼容 Gevent",
   "Git Branches": "Git 分支",
   "Git Log": "Git 日志",
