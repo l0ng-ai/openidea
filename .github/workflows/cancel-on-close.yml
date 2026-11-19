@@ -19,24 +19,23 @@ jobs:
             const pr = context.payload.pull_request;
             const { owner, repo } = context.repo;
             const headRepo = pr.head.repo?.full_name;
+            // The API's status filter lags behind new runs: list the branch and check each one.
+            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+              owner,
+              repo,
+              branch: pr.head.ref,
+              per_page: 100,
+            });
             let cancelled = 0;
-            for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
-              const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
-                owner,
-                repo,
-                branch: pr.head.ref,
-                status,
-                per_page: 100,
-              });
-              for (const run of runs) {
-                if (run.id === context.runId || run.head_repository?.full_name !== headRepo) continue;
-                if (!['pull_request', 'pull_request_target'].includes(run.event)) continue;
-                try {
-                  await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
-                  cancelled++;
-                } catch (e) {
-                  core.warning(`run ${run.id}: ${e.message}`);
-                }
+            for (const run of runs) {
+              if (run.id === context.runId || run.status === 'completed') continue;
+              if (run.head_repository?.full_name !== headRepo) continue;
+              if (!['pull_request', 'pull_request_target'].includes(run.event)) continue;
+              try {
+                await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
+                cancelled++;
+              } catch (e) {
+                core.warning(`run ${run.id}: ${e.message}`);
               }
             }
             core.info(`Cancelled ${cancelled} run(s) of #${pr.number}`);
