@@ -947,8 +947,9 @@ test("indents process-run thoughts and tool calls clearly and aligns output-less
     const expandableToolChevron = toolRows[0]!
       .querySelector<SVGElement>("[class*='_toolChevron_']")!
       .getBoundingClientRect();
-    const completedReadIcon = [...toolRows[1]!.querySelectorAll("svg")].at(-1)!.getBoundingClientRect();
-    const runningReadIcon = toolRows[2]!.querySelector("svg")!.getBoundingClientRect();
+    const kindIcon = (row: HTMLElement) => row.querySelector<SVGElement>("[class*='_toolKindIcon_']")!;
+    const completedReadIcon = kindIcon(toolRows[1]!).getBoundingClientRect();
+    const runningReadIcon = kindIcon(toolRows[2]!).getBoundingClientRect();
     return {
       summaryChevronCenter: summaryChevron.left + summaryChevron.width / 2,
       guideLeft: processBody.left,

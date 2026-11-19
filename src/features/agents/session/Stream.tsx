@@ -39,7 +39,7 @@ import {
 import { selectionIn } from "../selection";
 import styles from "../Session.module.css";
 import { useAgents } from "../store";
-import { foldedTurns } from "../timeline";
+import { foldedTurns, thoughtDurations } from "../timeline";
 import {
   conversationRows,
   foldTurnRows,
@@ -382,6 +382,7 @@ export function Stream({
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
   const replies = useMemo(() => (entries && !subagent ? replyTurns(entries) : null), [entries, subagent]);
   const times = useMemo(() => (entries && !subagent ? replyTimes(entries) : null), [entries, subagent]);
+  const thinking = useMemo(() => (entries ? thoughtDurations(entries) : null), [entries]);
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
@@ -413,12 +414,13 @@ export function Stream({
         turnCount={turns?.size ?? 0}
         reply={replies?.get(row.index)}
         time={times?.get(row.index) ?? null}
+        thoughtMs={thinking?.get(row.index) ?? null}
         working={row.index === lastIndex && busy}
         onOpenSubagent={onOpenSubagent}
         onDiagramDrawn={onDiagramDrawn}
       />
     ),
-    [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
+    [task, turns, replies, times, thinking, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
   );
   const renderConversationRow = (row: ConversationRow): ReactNode =>
     row.kind === "turn" ? (
@@ -430,7 +432,14 @@ export function Stream({
         ))}
       </TurnFold>
     ) : row.kind === "process" ? (
-      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} onDiagramDrawn={onDiagramDrawn} />
+      <ProcessRun
+        row={row}
+        task={task}
+        lastIndex={lastIndex}
+        busy={busy}
+        thinking={thinking}
+        onDiagramDrawn={onDiagramDrawn}
+      />
     ) : (
       renderRow(row)
     );

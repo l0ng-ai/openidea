@@ -108,6 +108,29 @@ pub struct AgentTask {
     /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_overrides: BTreeMap<String, bool>,
+    /// Token counts of the last turn and context compressions, when the agent reports them.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub stats: Box<AgentSessionStats>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionStats {
+    /// The last turn's tokens (`session/prompt` result `usage`).
+    #[serde(default)]
+    pub tokens: Option<AgentTokens>,
+    /// How many times the agent compressed the conversation (Hermes `compressionDepth`).
+    #[serde(default)]
+    pub compressions: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTokens {
+    pub input: u32,
+    pub cached: u32,
+    pub output: u32,
 }
 
 /// A task the agent runs in the background while the conversation goes on.
@@ -479,6 +502,9 @@ pub enum AgentEntry {
     },
     Thought {
         text: String,
+        /// When the reasoning started (ms since the epoch); `None` in tasks saved before.
+        #[serde(default)]
+        started_ms: Option<f64>,
     },
     Tool {
         id: String,
@@ -490,6 +516,11 @@ pub enum AgentEntry {
         /// Text the tool reported (command output…), truncated.
         output: Option<String>,
         diffs: Vec<AgentToolDiff>,
+        /// When the call started and ended (ms since the epoch); `None` in tasks saved before.
+        #[serde(default)]
+        started_ms: Option<f64>,
+        #[serde(default)]
+        ended_ms: Option<f64>,
     },
     Plan {
         items: Vec<AgentPlanItem>,

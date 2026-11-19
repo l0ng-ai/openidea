@@ -82,6 +82,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("kiro", "Kiro", Driver::Acp, &["kiro-cli", "acp"], "Run `kiro-cli login` in a terminal."),
     ("vibe", "Mistral Vibe", Driver::Acp, &["vibe-acp"], "Run `vibe` in a terminal and sign in."),
     ("omp", "OMP", Driver::Acp, &["omp", "acp"], "Run `omp` in a terminal and sign in."),
+    ("hermes", "Hermes Agent", Driver::Acp, &["hermes", "acp"], "Run `hermes model` in a terminal."),
 ];
 
 fn builtins() -> Vec<ProviderSpec> {
@@ -503,7 +504,7 @@ fn validated_custom_id(id: &str) -> IdeResult<String> {
 }
 
 /// Turns an `acp.json` server name into a file-stem id (`"My Agent!"` → `"my-agent"`).
-fn slugify_id(name: &str) -> String {
+pub(crate) fn slugify_id(name: &str) -> String {
     let mut id = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -715,6 +716,15 @@ fn is_executable(p: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hermes_is_built_in_over_acp() {
+        let spec = builtin_spec("hermes").unwrap();
+        assert_eq!(spec.driver, Driver::Acp);
+        let info = describe(&spec);
+        assert_eq!((info.name.as_str(), info.command.as_str()), ("Hermes Agent", "hermes acp"));
+        assert_eq!(info.login_hint.as_deref(), Some("Run `hermes model` in a terminal."));
+    }
 
     #[test]
     fn qoder_global_and_cn_editions_are_both_built_in() {
