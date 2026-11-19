@@ -1170,6 +1170,7 @@ export async function startTask(
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
   const started = generation;
+  const command = shellCommand(composer);
   const options = draftConfig(
     providers.find((p) => p.id === draft.provider),
     draft,
@@ -1204,6 +1205,8 @@ export async function startTask(
         isolation,
         base: isolation === "worktree" ? draft.base : null,
         mcpOverrides: draft.mcpOverrides ?? {},
+        // A `!` command runs in the new task before the agent hears anything.
+        idle: command !== null,
       }),
     );
     if (generation !== started) return;
@@ -1217,6 +1220,10 @@ export async function startTask(
     clearSubmittedComposer(HOME, composer, started);
     const closed = await editorService().closeInput?.(HOME_KEY);
     if (generation === started && closed !== false) openTask(task.id);
+    if (command !== null && generation === started)
+      void execShell(task.id, command).catch((e: unknown) =>
+        notifications().notify({ level: "error", title: "Couldn't send the message", body: String(e) }),
+      );
   } catch (e) {
     if (generation === started) throw e;
   }
@@ -1361,9 +1368,14 @@ function trackShell(task: string, request: RequestId, running: boolean) {
 
 /** Runs a `!` line in the task's folder; its output reaches the agent with the next message. */
 async function runShell(task: string, composer: ComposerDraft, command: string) {
+  clearSubmittedComposer(task, composer, generation);
+  remember(`!${command}`);
+  await execShell(task, command);
+}
+
+async function execShell(task: string, command: string) {
   const request = nextRequestId();
   trackShell(task, request, true);
-  clearSubmittedComposer(task, composer, generation);
   try {
     await call(commands.agentShell(task, command, request));
   } finally {
