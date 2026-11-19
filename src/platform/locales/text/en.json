@@ -1258,6 +1258,8 @@
   "Plan {done}/{length}": "Plan {done}/{length}",
   "1 changed file": "1 changed file",
   "{count} changed files": "{count} changed files",
+  "{count} more notification": "{count} more notification",
+  "{count} more notifications": "{count} more notifications",
   "Send into the agent's turn": "Send into the agent's turn",
   "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "Queue a message for when the agent is done (⌘⇧↵ sends it now)",
   "Queue a message for when the agent is done": "Queue a message for when the agent is done",

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { create } from "zustand";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
-import { txTemplate } from "@/platform/i18n";
+import { tx, txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import type { NotificationService } from "./contributions";
 
@@ -127,6 +127,33 @@ export function balloonTimeout(n: Pick<IdeNotification, "level" | "sticky" | "lo
 const MAX_HISTORY = 200;
 let seq = 0;
 
+/**
+ * OS toasts are coalesced: a burst of balloons raised while OpenIDEA is in the
+ * background (an external agent editing files, a build) shows one toast for the
+ * whole burst instead of one per balloon (#4466). Balloons and the
+ * Notifications tool window keep every notification.
+ */
+const SYSTEM_TOAST_QUIET_MS = 3000;
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+let toastBatch: Array<{ title: string; body: string }> = [];
+
+/** Flushes `toastBatch`: the last balloon's text plus how many more arrived with it. */
+function sendToastBatch() {
+  toastTimer = undefined;
+  const batch = toastBatch;
+  toastBatch = [];
+  if (!batch.length) return;
+  const last = batch[batch.length - 1]!;
+  const more = batch.length - 1;
+  const body =
+    more === 0
+      ? last.body
+      : [last.body, more === 1 ? tx`${more} more notification` : tx`${more} more notifications`]
+          .filter(Boolean)
+          .join("\n");
+  void call(commands.showSystemNotification(last.title, body)).catch(() => {});
+}
+
 export function notify(n: Parameters<NotificationService["notify"]>[0]): number {
   const id = ++seq;
   const group = groupOf(n);
@@ -163,7 +190,9 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     // In the UI language, as the balloon shows it; a plugin's own text stays as written.
     const shown = (text: string) => (n.verbatim ? text : txTemplate(text));
     const plain = typeof n.body === "string" ? shown(n.body) : "";
-    void call(commands.showSystemNotification(shown(n.title), plain)).catch(() => {});
+    toastBatch.push({ title: shown(n.title), body: plain });
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(sendToastBatch, SYSTEM_TOAST_QUIET_MS);
   }
   return id;
 }
