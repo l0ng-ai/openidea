@@ -218,21 +218,23 @@ function TabGroup({ group, corners }: { group: string; corners: Corners | null }
           <GroupTabs group={group} />
         </ToolWindowHeader>
       )}
-      {active && <TerminalFindBar sessionKey={active.session} />}
-      <div ref={panelsRef} className={styles.panels}>
-        {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} />}
-        {tabs.map((t) => (
-          <div
-            key={t.id}
-            role="tabpanel"
-            id={`${TAB_PREFIX}-panel-${t.id}`}
-            aria-labelledby={`${TAB_PREFIX}-tab-${t.id}`}
-            className={styles.panel}
-            hidden={t.id !== selected}
-          >
-            <TerminalPane sessionKey={t.session} active={t.id === selected} autofocus={t.id === activeTab} />
-          </div>
-        ))}
+      <div className={styles.output}>
+        {active && <TerminalFindBar sessionKey={active.session} />}
+        <div ref={panelsRef} className={styles.panels}>
+          {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} />}
+          {tabs.map((t) => (
+            <div
+              key={t.id}
+              role="tabpanel"
+              id={`${TAB_PREFIX}-panel-${t.id}`}
+              aria-labelledby={`${TAB_PREFIX}-tab-${t.id}`}
+              className={styles.panel}
+              hidden={t.id !== selected}
+            >
+              <TerminalPane sessionKey={t.session} active={t.id === selected} autofocus={t.id === activeTab} />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
