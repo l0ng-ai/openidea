@@ -9106,5 +9106,7 @@
   "{count} hover actions": "{count} 个悬停操作",
   "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}",
   "Sorting Options": "排序选项",
-  "Sort by Duration": "按持续时间排序"
+  "Sort by Duration": "按持续时间排序",
+  "Resize left merge pane": "调整左侧合并窗格宽度",
+  "Resize right merge pane": "调整右侧合并窗格宽度"
 }
