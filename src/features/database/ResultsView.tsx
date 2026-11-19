@@ -577,7 +577,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               {notice}
             </div>
           )}
-          <div className={clsx(styles.fill, styles.gridHost)}>
+          <div className={styles.fill}>
             <DataView
               columns={gridColumns}
               rowCount={rowCount}
@@ -590,6 +590,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
               firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
+              pager={<Pager tab={busy ? { ...tab, busy: true } : tab} />}
               aria-label={tab.title}
               rowState={(row) => (row >= loaded ? "inserted" : edits.deletes.has(row) ? "deleted" : null)}
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
@@ -611,7 +612,6 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
                   : []
               }
             />
-            <Pager tab={busy ? { ...tab, busy: true } : tab} />
           </div>
         </>
       )}
@@ -817,7 +817,7 @@ export function ResultsView() {
             ...results.map((r) => ({
               id: String(r.id),
               label: r.title,
-              icon: r.plan ? "db-plan" : "database",
+              icon: r.plan ? "db-plan" : "db-table",
               closable: true,
               pinned: r.pinned,
               tooltip: r.outcome.statement.text,
