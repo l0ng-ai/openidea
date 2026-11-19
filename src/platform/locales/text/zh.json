@@ -5219,7 +5219,8 @@
   "Edit the deployment servers and options": "编辑部署服务器和选项",
   "Configuration…": "配置…",
   "No deployment server configured": "未配置部署服务器",
-  "Select files in the Project view or open a file in the editor": "请在项目视图中选择文件，或在编辑器中打开文件",
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "请在项目视图或提交工具窗口中选择文件，或在编辑器中打开文件",
+
   "Upload to": "上传到",
   "Download from": "下载自",
   "Sync with Deployed to": "与已部署的同步",

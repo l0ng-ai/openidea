@@ -7,6 +7,7 @@ import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowS
 import { editorsFor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
+  provideChangesViewSelection,
   registerEditorKind,
   registerMenuGroup,
   registerOverlay,
@@ -16,7 +17,7 @@ import {
 import { executeAction, registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
-import { registerVcsActions } from "./actions";
+import { commitWindowFocused, registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
 import { registerLogPaneActions } from "./logPaneActions";
@@ -203,6 +204,8 @@ export function activate(): () => void {
     installPreparedMessage(),
     installDraftRevision(),
     provideCommit(),
+    // Deployment shortcuts (and similar) use this while Commit / Local Changes is focused.
+    provideChangesViewSelection(() => (commitWindowFocused() ? useCommit.getState().selection : [])),
     installIncomingCheck(),
     installFileConfirmations(),
     installDiffEditorHost(),
