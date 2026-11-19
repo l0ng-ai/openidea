@@ -205,6 +205,7 @@ diff_external_tool                           always             desktop      bin
 doc_autosave                                 always             project_host bindings async
 doc_close                                    always             project_host bindings async
 doc_edit                                     always             project_host bindings async
+doc_flutter_outline                          always             project_host bindings async
 doc_folding                                  always             project_host bindings async
 doc_highlights                               always             project_host bindings async
 doc_language                                 always             project_host bindings async

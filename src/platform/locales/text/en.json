@@ -2621,6 +2621,7 @@
   "Hot reload on save": "Hot reload on save",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
   "Hot reload on save failed: {0}": "Hot reload on save failed: {0}",
+  "Show Only Widgets": "Show Only Widgets",
   "Update failed": "Update failed",
   "Updating branches": "Updating branches",
   "Updated: {names}": "Updated: {names}",

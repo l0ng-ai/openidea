@@ -39,6 +39,24 @@
 .badge {
   flex: none;
 }
+/* The Flutter plugin's widget icon: its disc image with the class's initial on top. */
+.widgetBadge {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: url("@/ui/expui/flutter/widget@2x.png") center / 16px no-repeat;
+  color: var(--flutter-widget-fg);
+  font-size: 10px;
+  line-height: 1;
+}
+.privateWidget {
+  background-image: url("@/ui/expui/flutter/widget_private@2x.png");
+}
+.widgetBuild {
+  font-weight: 600;
+}
 .name {
   flex: none;
   max-width: 100%;

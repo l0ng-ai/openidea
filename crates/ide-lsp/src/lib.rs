@@ -15,6 +15,7 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod flutter_outline;
 mod go_mod;
 mod go_scope;
 mod handler;
@@ -131,6 +132,15 @@ struct DocState {
     notebook: Option<PathBuf>,
     /// When the servers last got new text (open or change): diagnostics published before are stale.
     changed: std::time::Instant,
+    flutter_outline: Option<FlutterOutline>,
+}
+
+/// The widget tree last published for a document, valid while that server instance runs.
+/// ponytail: positions lag edits until the server's next publish, which follows each analysis.
+struct FlutterOutline {
+    server: ide_core::ServerId,
+    generation: u64,
+    items: Vec<OutlineItem>,
 }
 
 impl DocState {
@@ -1268,6 +1278,7 @@ impl LspManager {
             compose_detected,
             notebook: None,
             changed: std::time::Instant::now(),
+            flutter_outline: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -2404,6 +2415,33 @@ impl LspManager {
             }
         }
         out.finish(None)
+    }
+
+    /// The document's widget tree, when its running Dart server published one.
+    pub fn flutter_outline(&self, doc: DocId) -> Option<Vec<OutlineItem>> {
+        let docs = self.docs.lock();
+        let d = docs.get(&doc)?;
+        let outline = d.flutter_outline.as_ref()?;
+        d.servers
+            .iter()
+            .any(|a| a.server.id == outline.server && a.server.is_live(outline.generation))
+            .then(|| outline.items.clone())
+    }
+
+    /// Records a published outline; whether what the open documents of `path` show changed.
+    fn set_flutter_outline(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        items: Option<Vec<OutlineItem>>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path) {
+            changed |= d.flutter_outline.is_some() || items.is_some();
+            d.flutter_outline = items.clone().map(|items| FlutterOutline { server: server.id, generation, items });
+        }
+        changed
     }
 
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
