@@ -136,7 +136,7 @@ const completion: Scenario = {
       const before = await h.counters();
       const narrow = await h.typeMeasured("etOrd", 150);
       const work = Harness.delta(before, await h.counters());
-      const arrows = await h.pressMeasured(Array(20).fill("ArrowDown"), 60);
+      const arrows = await h.completionArrowsMeasured(20, 60);
       await h.page.keyboard.press("Escape");
       return {
         openMs,
@@ -310,13 +310,9 @@ const scroll: Scenario = {
     const smooth = frameSummary(await wheel(160, 120), refresh);
     const tbtMs = totalBlockingTime(await h.longTasksSince(t0));
     const fling = frameSummary(await wheel(60, 600), refresh);
-    // Jump far: scrollbar drag / Ctrl+End style repositioning.
-    const jumpMs = await h.measure(
-      () => h.page.keyboard.press("Control+End"),
-      ".cm-content",
-      "export class Repository",
-      5_000,
-    );
+    // Jump far: document-end repositioning.
+    await h.setCursor(0);
+    const jumpMs = await h.jumpToEnd();
     return {
       ...smooth,
       tbtMs,
@@ -673,7 +669,7 @@ const popups: Scenario = {
     );
     // Editing the query: Backspace → list re-filtered and painted.
     const refresh = await h.refreshMs();
-    const keyLat = await h.typeMeasured("\b\b\b\b\b\b", 80);
+    const keyLat = await h.typeMeasured("\b\b\b\b\b\b", 80, "input");
     await h.page.keyboard.press("Escape");
     await h.page.locator('[role="dialog"]').waitFor({ state: "detached" });
 

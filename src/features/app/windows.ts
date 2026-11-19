@@ -186,6 +186,10 @@ export async function openProjectWithPolicy(path: string, files: readonly string
     await attachProject(path, files);
     return;
   }
+  if (mode === "tab") {
+    await openProjectTab(path, files);
+    return;
+  }
   try {
     // A window that already has the project is focused instead.
     const outcome = await call(commands.windowOpenProject(path, false, [...files]));
@@ -211,6 +215,19 @@ async function attachProject(path: string, files: readonly string[] = []): Promi
     if (project) useProject.setState({ project, settings: project.settings });
     await executeAction("project.reveal", path);
     await openInEditor(files);
+  } catch (e) {
+    openFailed(path, e);
+  }
+}
+
+/** Opens `path` as a new project tab of this window: a window of its own, joined into this window's group. */
+async function openProjectTab(path: string, files: readonly string[]): Promise<void> {
+  try {
+    // `new_window` always answers with the window holding the project, focused or just created;
+    // either way that window becomes this window's tab.
+    const outcome = await openProjectWindow(path, true, files);
+    if (outcome.kind === "current") return;
+    await call(commands.windowGroupJoin(outcome.label));
   } catch (e) {
     openFailed(path, e);
   }

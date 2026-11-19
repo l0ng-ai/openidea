@@ -1,4 +1,5 @@
 {
+  "Problems actions": "问题操作",
   "Windows file and folder names cannot end with a period or space": "Windows 文件和文件夹名称不能以句点或空格结尾",
   "Use URL template": "使用 URL 模板",
   "Use Driver": "使用驱动程序",
@@ -2944,6 +2945,7 @@
   "System-Dependent": "取决于系统",
   "Tests failed: {detail}": "测试失败：{detail}",
   "TODO comment": "TODO 注释",
+  "TODO actions": "TODO 操作",
   "TODO filters": "TODO 筛选器",
   "TODO items": "TODO 项",
   "TODO items unavailable": "TODO 项不可用",
@@ -9002,6 +9004,7 @@
   "Hot reload on save": "保存时热重载",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "保存正在运行的 Flutter 调试会话里的 Dart 文件时重新加载应用，文件有错误时跳过。",
   "Hot reload on save failed: {0}": "保存时热重载失败：{0}",
+  "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?": "项目可以在新窗口中打开、替换当前项目、附加到已打开的项目，或以新标签页在当前窗口中打开。\n要如何打开“{name}”？",
   "Show Only Widgets": "仅显示 Widget",
   "Update failed": "更新失败",
   "Updating branches": "正在更新分支",
