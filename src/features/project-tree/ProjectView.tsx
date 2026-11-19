@@ -907,7 +907,7 @@ export function ProjectView() {
         </div>
       )}
       <Tree<ProjectNode>
-        horizontalScroll
+        horizontalScroll={options.horizontalScroll}
         aria-label="Project"
         focusContext="projectViewFocus"
         handleRef={setTreeHandle}
