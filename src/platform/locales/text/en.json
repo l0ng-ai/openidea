@@ -267,6 +267,7 @@
   "Heap: {label}": "Heap: {label}",
   "Writing the heap dump…": "Writing the heap dump…",
   "Linking objects…": "Linking objects…",
+  "Computing…": "Computing…",
   "Computing dominators…": "Computing dominators…",
   "Computing retained sizes…": "Computing retained sizes…",
   "Finding paths to GC roots…": "Finding paths to GC roots…",
