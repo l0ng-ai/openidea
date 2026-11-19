@@ -8914,5 +8914,8 @@
   "Missing editor request": "缺少编辑器请求",
   "The editor’s project is no longer open": "编辑器所属的项目已关闭",
   "Timed out opening the editor window": "打开编辑器窗口超时",
-  "Could not open the editor window": "无法打开编辑器窗口"
+  "Could not open the editor window": "无法打开编辑器窗口",
+  "Formatting": "格式化",
+  "Format with gofumpt": "使用 gofumpt 格式化",
+  "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "重新格式化时，gopls 会在 gofmt 的基础上应用 gofumpt 更严格的规则。"
 }

@@ -1384,6 +1384,8 @@ pub struct GoSettings {
     pub goroot: String,
     /// Empty = `go env GOPATH`.
     pub gopath: String,
+    /// Format with gofumpt, a stricter gofmt (gopls `gofumpt`).
+    pub gofumpt: bool,
     pub build_tags: GoBuildTags,
     pub modules: GoModules,
 }
