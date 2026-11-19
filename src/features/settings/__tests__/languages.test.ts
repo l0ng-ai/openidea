@@ -25,6 +25,7 @@ describe("languages settings", () => {
       python: { interpreter: " /usr/bin/python3 ", activateVirtualenv: "yes" },
       node: { packageManager: "pip" },
       rust: { checkCommand: "clippy", checkOnSave: false },
+      go: { gofumpt: true },
       typescript: { version: "" },
       java: {
         jdtlsVmArgs: " -Xmx2g ",
@@ -43,6 +44,9 @@ describe("languages settings", () => {
     expect(v.node.packageManager).toBe("");
     expect(v.rust.checkCommand).toBe("clippy");
     expect(v.rust.checkOnSave).toBe(false);
+    expect(v.go.gofumpt).toBe(true);
+    expect(DEFAULT_LANGUAGES.go.gofumpt).toBe(false);
+    expect(validateLanguages({ go: { gofumpt: "yes" } }).go.gofumpt).toBe(false);
     expect(v.typescript.version).toBe("bundled");
     expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(v.java.jdk).toBe("");

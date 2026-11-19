@@ -2452,7 +2452,10 @@ fn go_constraints_change_only_protocol_settings() {
     original.settings = Some(json!({"analyses":{"unusedparams":true}}));
     let mut defaults = original.clone();
     configure_server(&mut defaults, tmp.path(), tmp.path(), &settings);
-    assert_eq!(defaults.settings, Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}})));
+    assert_eq!(
+        defaults.settings,
+        Some(json!({"analyses":{"unusedparams":true}, "buildFlags":[], "env":{}, "gofumpt":false}))
+    );
     defaults.settings = original.settings.clone();
     assert_eq!(defaults, original);
     settings.languages.go.build_tags.custom = "integration".into();
@@ -2462,7 +2465,8 @@ fn go_constraints_change_only_protocol_settings() {
     assert_eq!(
         configured.settings.take(),
         Some(json!({
-            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"}
+            "analyses":{"unusedparams":true}, "buildFlags":["-tags=integration"], "env":{"GOOS":"linux"},
+            "gofumpt":false
         }))
     );
     configured.settings = original.settings.clone();
@@ -2477,10 +2481,50 @@ fn go_empty_constraints_preserve_explicit_server_defaults() {
     use serde_json::json;
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = server("gopls");
-    cfg.initialization_options =
-        Some(toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})).unwrap());
+    cfg.initialization_options = Some(
+        toml::Value::try_from(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}, "gofumpt":true}))
+            .unwrap(),
+    );
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
-    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}})));
+    assert_eq!(cfg.settings, Some(json!({"buildFlags":["-tags=legacy"], "env":{"GOPROXY":"direct"}, "gofumpt":true})));
+}
+
+#[test]
+fn go_gofumpt_setting_reaches_gopls_and_turns_off_in_place() {
+    use crate::apply::server_protocol_overrides;
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut settings = Settings::default();
+    settings.languages.go.gofumpt = true;
+    let mut on = server("gopls");
+    configure_server(&mut on, tmp.path(), tmp.path(), &settings);
+    assert_eq!(on.settings.as_ref().unwrap()["gofumpt"], json!(true));
+    assert_eq!(on.initialization_options, server("gopls").initialization_options);
+    // The setting wins over the language definition's value.
+    let mut explicit = server("gopls");
+    explicit.settings = Some(json!({"gofumpt": false}));
+    configure_server(&mut explicit, tmp.path(), tmp.path(), &settings);
+    assert_eq!(explicit.settings.unwrap()["gofumpt"], json!(true));
+    // Turned off: an explicit false, because gopls keeps omitted keys on reconfiguration.
+    let mut off = server("gopls");
+    configure_server(&mut off, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(off.settings.unwrap()["gofumpt"], json!(false));
+    // Off leaves a server-level value alone.
+    let mut own = server("gopls");
+    own.settings = Some(json!({"gofumpt": true}));
+    configure_server(&mut own, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(own.settings.unwrap()["gofumpt"], json!(true));
+    // Off doesn't shadow gofumpt in Settings › Language Servers initializationOptions.
+    let mut user = Settings::default();
+    user.language_servers
+        .insert("gopls".into(), serde_json::from_value(json!({"initializationOptions": {"gofumpt": true}})).unwrap());
+    let mut from_user = server("gopls");
+    configure_server(&mut from_user, tmp.path(), tmp.path(), &user);
+    server_protocol_overrides(&mut from_user, &user);
+    assert_eq!(from_user.settings.unwrap()["gofumpt"], json!(true));
+    let mut other = server("rust-analyzer");
+    configure_server(&mut other, tmp.path(), tmp.path(), &settings);
+    assert_eq!(other.settings, None);
 }
 
 #[test]

@@ -193,6 +193,7 @@ export interface LanguagesValid {
   go: {
     goroot: string;
     gopath: string;
+    gofumpt: boolean;
     buildTags: GoBuildTags;
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
@@ -291,7 +292,13 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
-  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
+  go: {
+    goroot: "",
+    gopath: "",
+    gofumpt: false,
+    buildTags: DEFAULT_GO_BUILD_TAGS,
+    modules: { env: {}, autoVendor: true },
+  },
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
@@ -450,6 +457,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     go: {
       goroot: text(go.goroot, d.go.goroot),
       gopath: text(go.gopath, d.go.gopath),
+      gofumpt: bool(go.gofumpt, d.go.gofumpt),
       buildTags: Object.fromEntries(
         Object.entries(DEFAULT_GO_BUILD_TAGS).map(([key, value]) => [key, text(tags[key], value)]),
       ) as unknown as GoBuildTags,

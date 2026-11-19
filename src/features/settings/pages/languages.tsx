@@ -103,7 +103,7 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     title: "Go",
     group: LANGUAGES_GROUP,
     order: 390,
-    keywords: ["goroot", "gopath", "go sdk", "gopls"],
+    keywords: ["goroot", "gopath", "go sdk", "gopls", "gofumpt", "format"],
     component: GoPage,
   },
   {

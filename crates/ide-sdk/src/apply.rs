@@ -1187,13 +1187,19 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         for (key, value) in module_env {
             build["env"][key] = json!(value);
         }
+        if s.languages.go.gofumpt {
+            build["gofumpt"] = json!(true);
+        }
         let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
         // gopls retains omitted keys on reconfiguration. Explicit empty values
         // restore defaults when the last project constraint is cleared.
+        // Settings › Language Servers options are merged later, so look at them too.
         let init = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok());
-        for (key, default) in [("buildFlags", json!([])), ("env", json!({}))] {
+        let user_init = s.language_servers.get(&cfg.name).and_then(|ls| ls.initialization_options.as_ref());
+        for (key, default) in [("buildFlags", json!([])), ("env", json!({})), ("gofumpt", json!(false))] {
             if settings.get(key).is_none() {
-                settings[key] = init.as_ref().and_then(|v| v.get(key)).cloned().unwrap_or(default);
+                let explicit = user_init.and_then(|v| v.get(key)).or_else(|| init.as_ref()?.get(key));
+                settings[key] = explicit.cloned().unwrap_or(default);
             }
         }
         merge(&mut settings, build);

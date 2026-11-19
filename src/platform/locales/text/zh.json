@@ -8917,5 +8917,8 @@
   "Could not open the editor window": "无法打开编辑器窗口",
   "Download Mirrors": "下载镜像",
   "Mirror prefix for GitHub downloads": "GitHub 下载镜像前缀",
-  "Only downloads from github.com (most language servers and debuggers) are accelerated. Eclipse JDT LS, Open VSX and Maven Central are not affected — reach them through System Settings › HTTP Proxy instead. A public proxy such as https://gh-proxy.com/ works as the prefix.": "仅加速来自 github.com 的下载（多数语言服务器和调试器）。Eclipse JDT LS、Open VSX 和 Maven Central 不受影响，请改用“系统设置 › HTTP 代理”。可使用 https://gh-proxy.com/ 这类公共代理作为前缀。"
+  "Only downloads from github.com (most language servers and debuggers) are accelerated. Eclipse JDT LS, Open VSX and Maven Central are not affected — reach them through System Settings › HTTP Proxy instead. A public proxy such as https://gh-proxy.com/ works as the prefix.": "仅加速来自 github.com 的下载（多数语言服务器和调试器）。Eclipse JDT LS、Open VSX 和 Maven Central 不受影响，请改用“系统设置 › HTTP 代理”。可使用 https://gh-proxy.com/ 这类公共代理作为前缀。",
+  "Formatting": "格式化",
+  "Format with gofumpt": "使用 gofumpt 格式化",
+  "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "重新格式化时，gopls 会在 gofmt 的基础上应用 gofumpt 更严格的规则。"
 }
