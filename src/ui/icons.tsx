@@ -448,6 +448,7 @@ const ICONS = {
   "test-pending": "run/testNotRunYet",
   "test-show-passed": "run/showPassed",
   "test-show-ignored": "run/showIgnored",
+  "test-sort": "runConfigurations/sortByDuration",
   debug: "run/debug",
   "run-coverage": "run/runWithCoverage",
   profile: "run/profile",

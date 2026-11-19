@@ -9091,5 +9091,7 @@
   "Hover actions": "悬停操作",
   "Hover action": "悬停操作",
   "{count} hover actions": "{count} 个悬停操作",
-  "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}"
+  "{description}; JVM options: {flags}": "{description}；JVM 选项：{flags}",
+  "Sorting Options": "排序选项",
+  "Sort by Duration": "按持续时间排序"
 }
