@@ -104,6 +104,7 @@ export type LspPopup =
       pin?: { label: string; run: () => void };
       /** Side panel for the selected row, fetched lazily; `signal` aborts when the selection moves. */
       preview?: (item: ListPopupItem, signal: AbortSignal) => Promise<ListPreview | null>;
+      themeClasses?: string;
       /** Runs when the popup goes away (closed, replaced or a row ran). */
       onClose?: () => void;
     }
