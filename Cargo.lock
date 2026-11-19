@@ -4660,6 +4660,7 @@ dependencies = [
 name = "ide-lsp"
 version = "0.1.49"
 dependencies = [
+ "criterion",
  "dunce",
  "encoding_rs",
  "futures",

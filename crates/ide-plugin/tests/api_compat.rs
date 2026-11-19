@@ -33,6 +33,7 @@ fn components() -> Vec<PathBuf> {
         repo().join("crates/ide-plugin/tests/fixtures/diagnostics/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/inlay-hints/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/language-features/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/hover-actions/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/symbols/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/api14/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/execution/dist/plugin.wasm"),
@@ -112,7 +113,7 @@ fn the_version_check_runs_compatible_components_and_explains_the_rest() {
         assert_eq!(check_api(&v(ok), &host), Ok(()), "{ok}");
     }
     let newer = check_api(&v("1.15.0"), &host).unwrap_err();
-    assert!(newer.contains("1.14") && newer.contains("update OpenIDEA"), "{newer}");
+    assert!(newer.contains("1.15") && newer.contains("update OpenIDEA"), "{newer}");
     assert!(check_api(&v("2.0.0"), &host).unwrap_err().contains("update OpenIDEA"));
     let older = check_api(&v("0.2.0"), &host).unwrap_err();
     assert!(older.contains("rebuild it with the 1.14 SDK"), "{older}");
@@ -140,6 +141,21 @@ fn shipped_components_are_built_for_this_api() {
         let built_for = built_for.unwrap_or_else(|| panic!("{} uses no plugin interface", wasm.display()));
         assert_eq!((built_for.major, built_for.minor), (host.major, host.minor), "{}", wasm.display());
     }
+}
+
+#[test]
+fn a_1_14_component_exports_the_optional_hover_actions_world() {
+    let engine = PluginEngine::new().unwrap();
+    let component =
+        engine.compile(&repo().join("crates/ide-plugin/tests/fixtures/hover-actions/dist/plugin.wasm")).unwrap();
+    let exports: Vec<String> =
+        component.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
+    assert!(exports.iter().any(|name| name.starts_with("openidea:plugin/hover-actions@1.14.0")), "{exports:?}");
+    // A 1.13-compatible plugin that does not export the new world stays valid.
+    let old = engine.compile(&repo().join("plugins/official/test-runner/dist/plugin.wasm")).unwrap();
+    let old_exports: Vec<String> =
+        old.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
+    assert!(!old_exports.iter().any(|name| name.starts_with("openidea:plugin/hover-actions")));
 }
 
 // --- a later host, simulated -------------------------------------------------------------

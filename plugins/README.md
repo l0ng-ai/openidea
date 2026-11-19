@@ -428,8 +428,41 @@ are always available. Calling a gated function without its capability returns
 
 ### API 1.14
 
-API 1.14.0 is in development on `main`. Use `engines.openidea = "^1.14"` when
-relying on the new fields. Plugins for 1.13 and earlier keep working. New in 1.14:
+API 1.14.0 is in development on `main`. Use `engines.openidea = "^1.14"` and the
+matching SDK. Plugins for 1.13 and earlier keep working. New in 1.14:
+
+- **Hover-revealed line actions.** The optional `hover-actions` export
+  (world `plugin-hover-actions`, SDK `HoverActions`, registration
+  `register_plugin!(Plugin, hover_actions)`) contributes clickable actions at
+  the left edge of an editor line. Declare `kinds = ["hover-actions"]` under
+  `[[contributes.providers]]`. The host reveals an action while the pointer is
+  in the first four character columns of the editing area for any line in its
+  `start-line`/`end-line` range, anchors it to `line`, and never covers the
+  code text. The released `language-features` interfaces stay unchanged.
+
+Example:
+
+```rust
+#[derive(Default)]
+struct MyPlugin;
+impl openidea_plugin::HoverActions for MyPlugin {
+    fn hover_actions(&mut self, doc: &openidea_plugin::language_features::Document)
+        -> Vec<openidea_plugin::HoverAction>
+    {
+        vec![openidea_plugin::HoverAction {
+            line: 0,
+            start_line: 0,
+            end_line: 10,
+            icon: Some("run".into()),
+            label: "Call this method".into(),
+            tooltip: Some("Call this method".into()),
+            command: "call".into(),
+            argument: None,
+        }]
+    }
+}
+openidea_plugin::register_plugin!(MyPlugin, hover_actions);
+```
 
 - **JVM options on Java agents.** `[[contributes.javaAgents]]` accepts optional
   `vmOptions` (flags inserted before `-javaagent:`) and `jdk = "jetbrains"` so
@@ -1588,6 +1621,7 @@ and register `register_plugin!(MyPlugin, language_features)`:
 | `implementation`      | `implementation(doc, at)`                        | Merged with LSP Go to Implementation, deduplicated by location.                                                                                                                                                                                                                                                                                                 |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with LSP Go to Type Declaration, deduplicated by location.                                                                                                                                                                                                                                                                                               |
 | `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. Icons accept the same names, aliases and declared marker SVG paths as line markers.                                                                                                           |
+| `hover-actions`       | `hover_actions(doc)`                             | Left-edge actions revealed by line-edge hover, with an anchor line and an inclusive trigger line range (API 1.14).                                                                                                                                                                                                                                              |
 
 The optional WIT interface is `language-features`, in worlds
 `plugin-language-features` / `editor-language-features`. Its own `document`

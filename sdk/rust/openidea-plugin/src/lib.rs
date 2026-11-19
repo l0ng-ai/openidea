@@ -59,6 +59,7 @@ mod types;
 pub mod views;
 
 pub use host::{Invocation, Project, Task, TextEditor};
+pub use language_features::{HoverAction, HoverActions};
 pub use types::*;
 
 #[cfg(target_arch = "wasm32")]
@@ -84,6 +85,20 @@ pub mod syntax_bindings {
         pub_export_macro: true,
         export_macro_name: "__export_syntax_world",
         default_bindings_module: "openidea_plugin::syntax_bindings",
+    });
+}
+
+/// The optional `hover-actions` export: clickable actions shown at the
+/// left edge of a line while the pointer is in its trigger strip.
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod hover_actions_bindings {
+    wit_bindgen::generate!({
+        world: "hover-actions-provider",
+        path: "wit",
+        pub_export_macro: true,
+        export_macro_name: "__export_hover_actions_world",
+        default_bindings_module: "openidea_plugin::hover_actions_bindings",
     });
 }
 
@@ -326,6 +341,9 @@ macro_rules! __optional_exports {
     (file_actions, $plugin:ty, $component:ident) => {
         $crate::__file_actions_exports!($plugin, $component);
     };
+    (hover_actions, $plugin:ty, $component:ident) => {
+        $crate::__hover_actions_exports!($plugin, $component);
+    };
     (search, $plugin:ty, $component:ident) => { $crate::__search_exports!($plugin, $component); };
     (endpoints, $plugin:ty, $component:ident) => {
         $crate::__endpoints_exports!($plugin, $component);
@@ -373,6 +391,51 @@ macro_rules! __optional_exports {
         }
 
     $crate::syntax_bindings::__export_syntax_world!($component with_types_in $crate::syntax_bindings);
+    };
+}
+
+/// `register_plugin!(T, hover_actions)`: `T` also exports
+/// [`HoverActions`](crate::HoverActions).
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __hover_actions_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::hover_actions_bindings::exports::openidea::plugin::hover_actions::Guest
+            for $component
+        {
+            fn hover_actions(
+                doc: $crate::hover_actions_bindings::exports::openidea::plugin::hover_actions::Document,
+            ) -> ::std::vec::Vec<
+                $crate::hover_actions_bindings::exports::openidea::plugin::hover_actions::HoverAction,
+            > {
+                let d = $crate::providers::Document {
+                    path: doc.path.clone(),
+                    language: doc.language.clone(),
+                    version: doc.version,
+                    text: doc.text.clone(),
+                };
+                let result = $crate::__rt::with::<$plugin, _>(|p| p.hover_actions(&d));
+                result
+                    .into_iter()
+                    .map(|v| {
+                        $crate::hover_actions_bindings::exports::openidea::plugin::hover_actions::HoverAction {
+                            line: v.line,
+                            start_line: v.start_line,
+                            end_line: v.end_line,
+                            icon: v.icon,
+                            label: v.label,
+                            tooltip: v.tooltip,
+                            command: v.command,
+                            argument: v.argument,
+                        }
+                    })
+                    .collect()
+            }
+        }
+        $crate::hover_actions_bindings::__export_hover_actions_world!(
+            $component with_types_in $crate::hover_actions_bindings
+        );
     };
 }
 
@@ -693,7 +756,7 @@ pub mod __rt {
         static INSTANCE: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
     }
 
-    pub(crate) fn with<T: Plugin + Default, R>(f: impl FnOnce(&mut T) -> R) -> R {
+    pub fn with<T: Plugin + Default, R>(f: impl FnOnce(&mut T) -> R) -> R {
         INSTANCE.with(|cell| {
             let mut slot = cell.borrow_mut();
             let plugin = slot.get_or_insert_with(|| Box::new(T::default()));
