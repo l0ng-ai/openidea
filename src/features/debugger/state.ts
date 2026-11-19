@@ -94,6 +94,8 @@ export interface DebugSession {
   caps: DebugCapabilities | null;
   /** State of the backend that reads a JVM's objects; absent until the backend reports one. */
   jvmBackend?: JvmBackendState;
+  /** Flutter: the app's VM Service, which DevTools connects to. */
+  vmServiceUri?: string;
   /** A cancelled JDT build may have lost class-file deltas needed by this session. */
   hotSwapNeedsRestart?: boolean;
   /** `flutter debug_adapter` reported the app as started: it can take a hot reload. */
@@ -410,6 +412,7 @@ export function publishContext() {
     "debugCanHotSwap",
     Object.values(useDebug.getState().sessions).some((x) => isLive(x) && !!x.caps?.hotCodeReplace),
   );
+  setContext("debugHasVmService", !!s && isLive(s) && !!rootOf(s).vmServiceUri);
   // Refresh Memory View acts on the selected session only.
   setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
   setContext("debugHasJsPage", !!s && isLive(s) && sessionSupports("jsPage", s));
@@ -1396,6 +1399,17 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "jsNetwork":
       queueNetworkEvent(id, event.event);
+      break;
+    case "flutterVmService":
+      patch(id, { vmServiceUri: event.uri });
+      break;
+    case "flutterNavigate":
+      // Focus stays in the inspector, where the next widget gets picked.
+      void maybeEditorService()?.openFile(event.path, {
+        selection: { line: event.line, col: event.column },
+        preview: true,
+        focus: false,
+      });
       break;
     case "jsNetworkUnavailable":
       setRefused(id, "network", "");

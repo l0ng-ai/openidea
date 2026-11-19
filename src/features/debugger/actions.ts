@@ -15,6 +15,7 @@ import {
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
+import { openExternalUrl } from "@/platform/openUrl";
 import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
@@ -282,6 +283,21 @@ function browserUnavailable(name: string): boolean {
     body: "JavaScript Debug isn't available in a remote project yet.",
   });
   return true;
+}
+
+/** The browser opens on this desktop, which can't reach a server on a remote project's machine. */
+async function openDevTools(vmServiceUri: string) {
+  if (isRemoteWindow()) {
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      title: "Flutter DevTools isn't available in a remote project yet",
+    });
+    return;
+  }
+  const server = await call(commands.flutterDevtoolsUrl());
+  const query = new URLSearchParams({ ide: "OpenIDEA", uri: vmServiceUri });
+  await openExternalUrl(`${server}/inspector?${query}`);
 }
 
 async function startBrowser(config: RunConfig, root: string, show?: boolean) {
@@ -771,6 +787,19 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s) void report("Hot Restart failed", call(commands.debugHotRestart(s.id)));
+      },
+    },
+    {
+      id: "debug.openDevTools",
+      title: "Open Flutter DevTools",
+      category: "Debug",
+      icon: "external-link",
+      description: "Flutter: inspect the running app in the browser",
+      when: "debugHasVmService",
+      run: () => {
+        const s = activeSession();
+        const uri = s && rootOf(s).vmServiceUri;
+        if (uri) void report("Couldn't open Flutter DevTools", openDevTools(uri));
       },
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),

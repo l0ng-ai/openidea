@@ -99,6 +99,8 @@ pub(crate) struct Session {
     pub js_overrides: tokio::sync::Mutex<Option<tokio::sync::watch::Sender<Vec<crate::JsResponseRule>>>>,
     /// The file js-debug records the page's CPU profile into, while one is being recorded.
     pub js_profile: parking_lot::Mutex<Option<std::path::PathBuf>>,
+    /// `flutter debug_adapter` announced its app: the Dart adapter sends the same `dart.*` events.
+    pub flutter_app: AtomicBool,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -274,6 +276,7 @@ impl Session {
             launch_type: std::sync::OnceLock::new(),
             js_overrides: tokio::sync::Mutex::new(None),
             js_profile: parking_lot::Mutex::new(None),
+            flutter_app: AtomicBool::new(false),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),
@@ -897,6 +900,18 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         // js-debug, after `startProfile`: where it records the profile.
         "profileStarted" => {
             *s.js_profile.lock() = str_("file").map(std::path::PathBuf::from);
+        }
+        // Sent before `dart.debuggerUris`, for `launch` and `attach` alike.
+        "flutter.appStart" => s.flutter_app.store(true, Ordering::Release),
+        "dart.debuggerUris" if s.flutter_app.load(Ordering::Acquire) => {
+            if let Some(uri) = str_("vmServiceUri") {
+                s.emit(DebugEvent::FlutterVmService { uri });
+            }
+        }
+        "dart.toolEvent" if s.flutter_app.load(Ordering::Acquire) => {
+            if let Some(event) = crate::flutter_navigation(&body) {
+                s.emit(event);
+            }
         }
         _ => tracing::trace!("dap: ignored event {event}"),
     }

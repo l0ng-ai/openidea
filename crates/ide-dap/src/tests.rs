@@ -572,6 +572,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     json!({"type": "event", "event": "hotcodereplace", "body": {"changeType": 3, "message": "Build completed"}})
                 );
             }
+            "hotRestart" => {
+                ok!(msg, Value::Null);
+                let uris = json!({"vmServiceUri": "ws://127.0.0.1:1/t=/ws"});
+                let navigate =
+                    |file: &str| json!({"kind": "navigate", "data": {"fileUri": file, "line": 3, "column": 5}});
+                // Not Flutter's yet: a plain Dart session sends these too.
+                send!(json!({"type": "event", "event": "dart.debuggerUris", "body": uris}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("file:///early.dart")}));
+                send!(json!({"type": "event", "event": "flutter.appStart", "body": {}}));
+                send!(json!({"type": "event", "event": "dart.debuggerUris", "body": uris}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": {"kind": "other", "data": {}}}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("package:a/a.dart")}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("file:///a%20b/main.dart")}));
+            }
             "terminate" => {
                 ok!(msg, Value::Null);
                 send!(json!({"type": "event", "event": "terminated"}));
@@ -1904,6 +1918,22 @@ async fn hot_reload_sends_its_reason_and_reports_the_flutter_app() {
     let reasons: Vec<_> = requests(&h, "hotReload").iter().map(|args| args["reason"].clone()).collect();
     assert_eq!(reasons, [json!("manual"), json!("save")]);
     h.wait_event(|e| matches!(e, DebugEvent::FlutterAppStarted)).await;
+}
+
+#[tokio::test]
+async fn flutter_events_need_a_flutter_app() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.manager.hot_restart(id).await.unwrap();
+    let navigate = h.wait_event(|e| matches!(e, DebugEvent::FlutterNavigate { .. })).await;
+    let DebugEvent::FlutterNavigate { path, line, column } = navigate else { unreachable!() };
+    assert_eq!((path.as_ref(), line, column), (Path::new("/a b/main.dart"), 2, 4));
+    let events = h.events.lock();
+    let count = |want: fn(&DebugEvent) -> bool| {
+        events.iter().filter(|e| matches!(e, IdeEvent::Debug { event, .. } if want(event))).count()
+    };
+    assert_eq!(count(|e| matches!(e, DebugEvent::FlutterVmService { uri } if uri == "ws://127.0.0.1:1/t=/ws")), 1);
+    assert_eq!(count(|e| matches!(e, DebugEvent::FlutterNavigate { .. })), 1);
 }
 
 #[tokio::test]

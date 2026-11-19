@@ -2,8 +2,8 @@
 //! adapter run too, so a remote project lists the devices of its remote machine.
 use crate::Host;
 use ide_command::command;
-use ide_core::IdeResult;
 use ide_core::event::FlutterDeviceList;
+use ide_core::{IdeError, IdeResult};
 
 /// The project's Flutter devices, starting its `flutter daemon` on first use. Changes arrive as
 /// `IdeEvent::FlutterDevices`.
@@ -25,4 +25,15 @@ pub fn flutter_daemon_restart(host: &Host, window: &str) -> IdeResult<FlutterDev
     Ok(host.project(window)?.flutter.restart())
 }
 
-ide_command::domain!(flutter: flutter_devices, flutter_devices_refresh, flutter_daemon_restart);
+/// The address of the project's DevTools server, started on first use. A server that failed or
+/// exited is only started again by the next request.
+#[command(trust = trusted)]
+pub async fn flutter_devtools_url(host: &Host, window: &str) -> IdeResult<String> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || project.devtools.url())
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(IdeError::unavailable)
+}
+
+ide_command::domain!(flutter: flutter_devices, flutter_devices_refresh, flutter_daemon_restart, flutter_devtools_url);
