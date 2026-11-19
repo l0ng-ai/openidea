@@ -68,6 +68,16 @@
   font-size: var(--fs-small);
   font-weight: 600;
 }
+.groupHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: 6px 16px 2px;
+  color: var(--fg);
+  font-weight: 600;
+  white-space: nowrap;
+  --icon-color: var(--fg-muted);
+}
 .badge {
   align-self: flex-start;
   margin-top: 1px;
