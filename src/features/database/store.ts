@@ -174,6 +174,12 @@ export interface SourceCatalog {
   databases: Record<string, DbCatalogSchema[]>;
 }
 
+export interface ConsoleExecution {
+  startedAt: number;
+  /** Statements submitted (a batch runs them in order; the backend doesn't say which one is current). */
+  statements: number;
+}
+
 interface DatabaseState {
   sources: DataSource[];
   loaded: boolean;
@@ -205,6 +211,8 @@ interface DatabaseState {
   output: OutputLine[];
   /** Console path → running request. */
   running: Record<string, RequestId>;
+  /** Console path → what its running request submitted, and since when (ms since the epoch). */
+  executions: Record<string, ConsoleExecution>;
   maxRows: number;
   dialog: DialogState | null;
   /** Target of the tree's lead node. */
@@ -271,6 +279,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   activeResult: null,
   output: [],
   running: {},
+  executions: {},
   maxRows: 500,
   dialog: null,
   selectedSource: null,
@@ -1233,6 +1242,8 @@ export async function executeConsole(
   text: string,
   from: number,
   to: number,
+  /** Called once the statements are submitted, with what was submitted. */
+  onStart?: (statements: readonly SqlStatement[]) => void,
 ): Promise<DbStatementOutcome[]> {
   const id = consoleSource(path);
   if (!id) {
@@ -1252,8 +1263,14 @@ export async function executeConsole(
   const prev = useDatabase.getState().running[path];
   if (prev) void commands.cancelRequest(prev);
   const request = nextRequestId();
-  useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
+  useDatabase.setState((s) => ({
+    running: { ...s.running, [path]: request },
+    executions: { ...s.executions, [path]: { startedAt: Date.now(), statements: statements.length } },
+  }));
+  onStart?.(statements);
   try {
+    // IDEA brings the results up as the run starts, showing it executing.
+    if (!inEditorResults()) showServiceView(RESULTS_VIEW, false);
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     if (!current()) return [];
@@ -1296,7 +1313,9 @@ export async function executeConsole(
       if (s.running[path] !== request) return s;
       const running = { ...s.running };
       delete running[path];
-      return { running };
+      const executions = { ...s.executions };
+      delete executions[path];
+      return { running, executions };
     });
   }
 }

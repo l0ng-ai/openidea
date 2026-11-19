@@ -151,52 +151,126 @@
 }
 
 /* Find / replace bar */
-.find {
+.findContainer {
   flex: none;
-  display: grid;
-  grid-template-columns: minmax(220px, 420px) auto 1fr;
-  align-items: center;
-  column-gap: var(--space-1-5);
-  row-gap: var(--space-1-5);
-  padding: 6px 8px 6px 10px;
+  min-width: 0;
+  container: editor-find / inline-size;
   background: var(--bg-editor-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
-.findExpandable {
-  grid-template-columns: auto minmax(220px, 420px) auto 1fr;
+.find {
+  display: grid;
+  grid-template-columns: [mode] auto [field] minmax(0, 420px) [actions] fit-content(50%) [close] minmax(
+      min-content,
+      1fr
+    );
+  align-items: start;
+  row-gap: var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
 }
 .findExpand {
-  grid-column: 1;
-  grid-row: 1;
-}
-.findExpandable .findField {
-  grid-column: 2;
+  grid-area: 1 / mode;
+  margin-inline-end: var(--space-1);
 }
 .findField {
+  grid-area: 1 / field;
+}
+.replaceField {
+  grid-area: 2 / field;
+}
+.findField,
+.replaceField {
   min-width: 0;
 }
-.findButtons {
+.findClose {
+  grid-area: 1 / close;
+  justify-self: end;
+  margin-inline-start: var(--space-1);
+}
+.findExpand,
+.findClose {
+  margin-block-start: var(--space-1);
+}
+.findButtons,
+.replaceButtons {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
+  min-height: var(--h-field);
+  margin-inline-start: var(--space-1-5);
+}
+.findButtons {
+  grid-area: 1 / actions;
   gap: var(--space-0-5);
 }
+.replaceButtons {
+  grid-area: 2 / actions;
+  gap: var(--space-1);
+}
 .findCount {
-  font-size: var(--fs-ui);
+  min-inline-size: 5ch;
+  padding-inline: var(--space-1);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
-  padding: 0 8px 0 4px;
-  min-width: 56px;
   white-space: nowrap;
 }
 .findCountNone {
   color: var(--danger);
 }
-.findClose {
-  justify-self: end;
+
+@container editor-find (width < 500px) {
+  .find {
+    grid-template-columns: [mode] auto [field] minmax(0, 1fr) [close] auto;
+  }
+  .findButtons,
+  .replaceButtons {
+    grid-column: field / -1;
+    min-height: 0;
+    margin-inline-start: 0;
+  }
+  .findButtons {
+    grid-row: 2;
+  }
+  .replaceField {
+    grid-row: 3;
+  }
+  .replaceButtons {
+    grid-row: 4;
+  }
+  .replaceButtons > button {
+    max-width: 100%;
+    height: auto;
+    min-height: var(--h-control);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
-.replaceButtons {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
+
+@container editor-find (width < 224px) {
+  .findField,
+  .replaceField,
+  .replaceButtons {
+    grid-column: mode / -1;
+  }
+  .findExpand,
+  .findClose {
+    grid-row: 2;
+    margin-block-start: 0;
+  }
+  .findButtons {
+    grid-column: field;
+  }
+  .findInput {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(20px, 1fr));
+    height: auto;
+    padding-block: var(--space-1);
+  }
+  .findInput textarea {
+    grid-column: 2 / -1;
+  }
 }
 
 /* Go to line */
@@ -218,15 +292,44 @@
   min-width: 0;
   overflow: hidden;
 }
-.crumbButton {
-  flex: none;
-  max-width: 240px;
-  gap: 5px;
-  color: var(--fg);
-}
-.crumbButton:last-child {
-  flex: 0 1 auto;
+.crumbStrip {
+  display: flex;
+  align-items: center;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.crumbStrip::-webkit-scrollbar {
+  display: none;
+}
+.crumbStrip:is([data-crumbs-before], [data-crumbs-after]) {
+  --crumb-mask: linear-gradient(
+    to right,
+    var(--crumb-start, black),
+    black var(--space-3),
+    black calc(100% - var(--space-3)),
+    var(--crumb-end, black)
+  );
+  -webkit-mask-image: var(--crumb-mask);
+  mask-image: var(--crumb-mask);
+}
+.crumbStrip[data-crumbs-before] {
+  --crumb-start: transparent;
+}
+.crumbStrip[data-crumbs-after] {
+  --crumb-end: transparent;
+}
+.crumbStrip .crumbButton {
+  flex: none;
+  max-width: min(240px, 100%);
+  margin: 0;
+  padding: 0 var(--space-1);
+  font: inherit;
+  color: inherit;
+}
+.crumbStrip .crumbButton[aria-current="location"] {
+  color: var(--fg);
 }
 .crumbIcon {
   flex: none;
@@ -240,7 +343,6 @@
 .statusSep {
   flex: none;
   color: var(--fg-faint);
-  margin: 0 2px;
 }
 .lock {
   display: inline-flex;
@@ -339,13 +441,23 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-0-5);
-  height: 26px;
-  padding: 0 8px;
+  height: max(24px, calc(1em + var(--space-2)));
+  padding: 0 var(--space-2);
   overflow: hidden;
   background: var(--bg-editor, var(--bg-island));
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.codeCrumbs .crumbStrip {
+  gap: var(--space-0-5);
+}
+.codeCrumbs .crumbButton {
+  height: max(20px, calc(1em + var(--space-1)));
+  max-width: 100%;
+}
+.codeCrumbs .crumbButton[aria-current="location"] {
+  background: var(--bg-tree-selected-inactive);
 }
 .codeCrumbsTop {
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
