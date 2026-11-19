@@ -14,6 +14,9 @@ import {
   IconButton,
   Input,
   Select,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   Tree,
   folderIconName,
   showContextMenu,
@@ -2085,32 +2088,43 @@ function ProjectStructureDialogInner() {
     >
       <PageContext.Provider value={ctx}>
         <SettingsFormContext.Provider value={form}>
-          <div className={styles.psDialogLayout}>
-            <nav className={styles.psNavSidebar} aria-label={tx("Project Structure sections")} onKeyDown={onNavKeyDown}>
-              {NAV_GROUPS.map((group) => (
-                <div key={group.title} className={styles.psNavGroup}>
-                  <div className={styles.psNavGroupHeader}>
-                    <T>{group.title}</T>
+          <SplitGroup
+            id="project-structure-layout"
+            orientation="horizontal"
+            className={styles.psDialogLayout}
+            storageKey="openidea.projectStructure.layout"
+          >
+            <SplitPanel id="project-structure-sections" defaultSize="15%" minSize="152px" maxSize="45%">
+              <nav
+                className={styles.psNavSidebar}
+                aria-label={tx("Project Structure sections")}
+                onKeyDown={onNavKeyDown}
+              >
+                {NAV_GROUPS.map((group) => (
+                  <div key={group.title} className={styles.psNavGroup}>
+                    <div className={styles.psNavGroupHeader}>
+                      <T>{group.title}</T>
+                    </div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={clsx(styles.psNavItem, section === item.id && styles.psNavItemActive)}
+                        aria-current={section === item.id ? "page" : undefined}
+                        onClick={() => selectProjectStructureSection(item.id)}
+                      >
+                        <Icon name={item.icon} size={14} />
+                        <span>
+                          <T>{item.label}</T>
+                        </span>
+                      </button>
+                    ))}
                   </div>
-                  {group.items.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={clsx(styles.psNavItem, section === item.id && styles.psNavItemActive)}
-                      aria-current={section === item.id ? "page" : undefined}
-                      onClick={() => selectProjectStructureSection(item.id)}
-                    >
-                      <Icon name={item.icon} size={14} />
-                      <span>
-                        <T>{item.label}</T>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </nav>
-
-            <div className={styles.psDialogMain}>
+                ))}
+              </nav>
+            </SplitPanel>
+            <SplitHandle aria-label={tx("Project Structure sections")} />
+            <SplitPanel id="project-structure-details" className={styles.psDialogMain}>
               <div className={styles.psDialogHeader}>
                 <div className={styles.psDialogCrumbs}>
                   <span>
@@ -2136,8 +2150,8 @@ function ProjectStructureDialogInner() {
                 {section === "artifacts" && <ArtifactsSection />}
                 {section === "sdks" && <SdksSection />}
               </div>
-            </div>
-          </div>
+            </SplitPanel>
+          </SplitGroup>
         </SettingsFormContext.Provider>
       </PageContext.Provider>
     </Dialog>
