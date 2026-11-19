@@ -1,5 +1,5 @@
 /** React popups for LSP editor features, rendered as a workbench overlay. */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import {
   Checkbox,
@@ -11,6 +11,7 @@ import {
   List,
   MenuList,
   Popup,
+  Radio,
   Select,
   Spinner,
   SymbolBadge,
@@ -35,6 +36,7 @@ import { renderCode } from "./markdown";
 import { describeSummary } from "./workspaceEdit";
 import { useUsagesStatus } from "./navigation";
 import styles from "./Popups.module.css";
+import fieldsetStyles from "@/ui/DialogFieldset.module.css";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
@@ -392,6 +394,54 @@ function RenamePopup({ popup }: { popup: Extract<LspPopup, { kind: "rename" }> }
   );
 }
 
+function SymbolRenameDialog({ popup }: { popup: Extract<LspPopup, { kind: "symbolRename" }> }) {
+  const [value, setValue] = useState(popup.initial);
+  const field = useId();
+  const name = value.trim();
+  return (
+    <Dialog
+      open
+      title="Rename"
+      aria-label={popup.title}
+      onClose={closePopup}
+      blockWorkbenchShortcuts
+      width={440}
+      buttons={[
+        {
+          label: "Rename",
+          role: "default",
+          disabled: !name,
+          onClick: () => {
+            closePopup();
+            popup.onSubmit(name);
+          },
+        },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={popup.themeClasses}>
+        <div className={styles.symbolRename}>
+          <div className={styles.renameContext}>{popup.title}</div>
+          <label htmlFor={field}>
+            <T>New name</T>
+          </label>
+          <Input
+            id={field}
+            className={styles.renameField}
+            mono
+            data-autofocus
+            autoSelect
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            invalid={!name}
+          />
+          {popup.note && <div className={styles.symbolRenameNote}>{popup.note}</div>}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
   const focusSeq = useLspPopup((s) => s.focusSeq);
   const scope = useRef<HTMLDivElement>(null);
@@ -536,6 +586,7 @@ function savePreviewSize(size: { w: number; h: number }) {
 }
 
 function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }> }) {
+  const rename = popup.renameThemeClasses !== undefined;
   const root = useProject((s) => s.project?.root ?? "");
   const { summary } = popup;
   const [initialSize] = useState(loadPreviewSize);
@@ -543,8 +594,9 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
     <Dialog
       open
       onClose={closePopup}
-      title={popup.title}
-      className={styles.previewDialog}
+      title={rename ? "Rename" : popup.title}
+      aria-label={popup.title}
+      className={clsx(styles.previewDialog, rename && styles.renamePreview)}
       width={560}
       minWidth={400}
       minHeight={220}
@@ -565,6 +617,7 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
         { label: "Cancel", role: "cancel" },
       ]}
     >
+      {rename && <div className={styles.previewContext}>{popup.title}</div>}
       {popup.warnings?.map((w) => (
         <div key={w} className={styles.previewWarning} role="note">
           <Icon name="warning" size={14} />
@@ -573,7 +626,10 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
       ))}
       <div className={styles.previewSummary}>{describeSummary(summary)}</div>
       {popup.occurrences ? (
-        <ul className={styles.previewList} aria-label={tx("Occurrences")}>
+        <ul
+          className={clsx(styles.previewList, styles.previewOccurrences, popup.renameThemeClasses)}
+          aria-label={tx("Occurrences")}
+        >
           {popup.occurrences.map((o, i) => {
             const lead = o.text.length - o.text.trimStart().length;
             const text = o.text.trim();
@@ -596,7 +652,9 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
           {summary.entries.map((e) => (
             <li key={e.path} className={styles.previewRow}>
               <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
-              <span className={styles.previewName}>{basename(e.path)}</span>
+              <span className={styles.previewName} title={relativePath(root, e.path)}>
+                {basename(e.path)}
+              </span>
               <span className={styles.previewPath} title={relativePath(root, e.path)}>
                 {relativePath(root, e.path)}
               </span>
@@ -625,7 +683,7 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
       open
       onClose={closePopup}
       title={popup.title}
-      width={380}
+      width={400}
       buttons={[
         {
           label: "Run",
@@ -639,33 +697,27 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.reformatBody}>
-        <fieldset className={styles.reformatGroup}>
-          <legend className={styles.reformatLegend}>
+      <div className={fieldsetStyles.body}>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
             <T>Scope</T>
           </legend>
-          <label className={styles.reformatOption}>
-            <input
-              type="radio"
-              name="reformat-scope"
-              checked={!selectionOnly}
-              onChange={() => setSelectionOnly(false)}
-            />
-            <T>Whole file</T>
-          </label>
-          <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
-            <input
-              type="radio"
-              name="reformat-scope"
-              checked={selectionOnly}
-              disabled={!popup.hasSelection}
-              onChange={() => setSelectionOnly(true)}
-            />
-            <T>Selected text</T>
-          </label>
+          <Radio
+            name="reformat-scope"
+            checked={selectionOnly}
+            disabled={!popup.hasSelection}
+            onChange={() => setSelectionOnly(true)}
+            label="Selected text"
+          />
+          <Radio
+            name="reformat-scope"
+            checked={!selectionOnly}
+            onChange={() => setSelectionOnly(false)}
+            label="Whole file"
+          />
         </fieldset>
-        <fieldset className={styles.reformatGroup}>
-          <legend className={styles.reformatLegend}>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
             <T>Options</T>
           </legend>
           <Checkbox
@@ -742,6 +794,8 @@ export function LspPopups() {
       return <ListPopup key={seq} popup={popup} />;
     case "rename":
       return <RenamePopup key={seq} popup={popup} />;
+    case "symbolRename":
+      return <SymbolRenameDialog key={seq} popup={popup} />;
     case "doc":
       return <DocPopup key={seq} popup={popup} />;
     case "definition":

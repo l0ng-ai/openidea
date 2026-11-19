@@ -324,6 +324,8 @@ export const intellijMacos: Record<string, string[]> = {
   "view.quickSwitchScheme": ["Ctrl+`"],
   // Commit tool window (change lists) and Git log; keyWhen limits them to those tool windows.
   "vcs.changelist.move": ["Meta+Shift+M"],
+  "vcs.shelveSilently": ["Meta+Shift+H"],
+  "vcs.unshelveSilently": ["Meta+Alt+U"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Meta+Alt+Shift+C"],
   "vcs.log.goToRef": ["Meta+F"],

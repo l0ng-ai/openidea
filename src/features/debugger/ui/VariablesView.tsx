@@ -415,7 +415,9 @@ function VarEditRow({
   useEffect(() => acquirePopup(), []);
   return (
     <span className={styles.row}>
-      <span className={styles.name}>{node.name}</span>
+      <span className={styles.name} title={node.name}>
+        {node.name}
+      </span>
       <span className={styles.eq}>=</span>
       <input
         className={clsx(styles.editInput, error && styles.editInvalid)}
@@ -465,18 +467,21 @@ function VarRow({
   const valueRef = useRef<HTMLSpanElement>(null);
   const [overflow, setOverflow] = useState(false);
   useLayoutEffect(() => {
-    const el = valueRef.current;
-    if (!el) {
+    const text = valueRef.current;
+    const group = text?.parentElement;
+    if (!text || !group) {
       setOverflow(false);
       return;
     }
-    const update = () => setOverflow(el.scrollWidth > el.clientWidth + 1);
+    // The group measures the space available before the Show button takes any of it.
+    const update = () => setOverflow(text.scrollWidth > group.clientWidth + 1);
     update();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(update);
-    observer.observe(el);
+    observer.observe(group);
+    observer.observe(text);
     return () => observer.disconnect();
-  }, [node.value]);
+  }, [node.value, node.typeName, node.error]);
   if (node.kind === "message") return <span className={styles.message}>{node.name}</span>;
   if (node.kind === "scope")
     return (
@@ -487,13 +492,22 @@ function VarRow({
     );
   const kind = node.error ? null : classifyValue(node.value, node.typeName);
   const shown = shownValue(node.value, node.typeName);
+  const evaluation = node.kind === "eval";
   return (
-    <span className={styles.row}>
+    <span className={styles.row} title={node.name}>
       <Icon name={nodeIcon(node)} size={16} className={styles.nodeIcon} />
       {!shown.entry && (
         <>
-          <span className={clsx(styles.name, node.kind === "var" && styles.varName, changed && styles.changed)}>
-            {node.name}
+          <span
+            className={clsx(
+              styles.name,
+              evaluation && styles.evalName,
+              node.kind === "var" && styles.varName,
+              changed && styles.changed,
+            )}
+            title={evaluation ? node.name : undefined}
+          >
+            {evaluation ? oneLine(node.name) : node.name}
           </span>
           <span className={styles.eq}>=</span>
         </>
@@ -502,23 +516,29 @@ function VarRow({
         <span className={styles.error}>{oneLine(node.error)}</span>
       ) : (
         <>
-          {shown.label && <span className={styles.type}>{shown.label}</span>}
-          <span ref={valueRef} className={clsx(styles.value, kind && styles[kind])} title={node.value}>
-            {oneLine(shown.text)}
-          </span>
-          {overflow && (
-            <button
-              type="button"
-              className={styles.showValue}
-              title={tx("Show")}
-              onClick={(e) => {
-                e.stopPropagation();
-                onShowValue(node);
-              }}
-            >
-              …{tx("Show")}
-            </button>
+          {shown.label && (
+            <span className={styles.type} title={shown.label}>
+              {shown.label}
+            </span>
           )}
+          <span className={styles.valueGroup}>
+            <span ref={valueRef} className={clsx(styles.value, kind && styles[kind])} title={node.value}>
+              {oneLine(shown.text)}
+            </span>
+            {overflow && (
+              <button
+                type="button"
+                className={styles.showValue}
+                title={tx("Show")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onShowValue(node);
+                }}
+              >
+                …{tx("Show")}
+              </button>
+            )}
+          </span>
         </>
       )}
     </span>

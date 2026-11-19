@@ -1,5 +1,5 @@
 /** Bounded local configuration evidence, never an effective runtime identity. */
-import type { FileEntry } from "@/platform/ipc";
+import { isErrorKind, type FileEntry } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
 
 export interface ServiceReader {
@@ -90,7 +90,7 @@ export async function loadServiceName(module: string, reader: ServiceReader): Pr
     try {
       entries = await reader.directory(directory);
     } catch (error) {
-      if ((error as { kind?: string }).kind === "notFound") continue;
+      if (isErrorKind(error, "notFound")) continue;
       return null;
     }
     for (const file of entries) {

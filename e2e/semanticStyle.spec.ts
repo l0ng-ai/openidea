@@ -9,9 +9,9 @@ test("semantic roles honor all Color Scheme attributes and keep modifier styles"
     [".cm-sem-function:not(.cm-sem-static)", "rgb(102, 136, 170)"],
     [".cm-sem-parameter", "rgb(119, 153, 187)"],
     [".cm-sem-constant", "rgb(136, 170, 204)"],
-  ]) {
+  ] as const) {
     const role = page.locator(selector);
-    await expect(role).toHaveCSS("color", color!);
+    await expect(role).toHaveCSS("color", color);
     await expect(role).toHaveCSS("background-color", "rgb(221, 238, 255)");
   }
   await expect(page.locator(".cm-sem-namespace")).toHaveCSS("font-style", "italic");
