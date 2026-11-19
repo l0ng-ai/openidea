@@ -9,6 +9,7 @@ import { ResultsView } from "./ResultsView";
 import { executeConsole, explainConsole, pinResult, rerunResult, useDatabase, type ResultTab } from "./store";
 import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
+import { provideToolWindowService } from "@/workbench/contributions";
 
 const backend = vi.hoisted(() => ({
   driver: "postgres" as DbDriver,
@@ -95,6 +96,7 @@ function show(text: string, columns: Array<{ name: string }>, rows: (string | nu
 }
 
 beforeEach(() => {
+  provideToolWindowService({ show: () => {} } as never);
   vi.clearAllMocks();
   backend.statements.mockImplementation((_id: unknown, text: string) =>
     Promise.resolve({ status: "ok", data: [{ from: 0, to: text.length, text }] }),
@@ -807,5 +809,66 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     fail();
     await rerun;
     expect(useDatabase.getState().activeResult).toBe(fresh);
+  });
+});
+
+describe("a console request in flight", () => {
+  const hold = () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const execute = backend.execute.getMockImplementation()!;
+    backend.execute.mockImplementationOnce(async (...args: unknown[]) => {
+      await gate;
+      return execute(...(args as Parameters<typeof execute>));
+    });
+    return () => finish();
+  };
+
+  it("shows that it is executing instead of No results on a first run", async () => {
+    show("SELECT 1", [{ name: "id" }], [["1"]]);
+    useDatabase.setState({ results: [], activeResult: null, consoles: { "console.sql": "pg" } });
+    const finish = hold();
+    await act(async () => render(<ResultsView />));
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = executeConsole("console.sql", "SELECT pg_sleep(5)", 0, 0);
+      await vi.waitFor(() => expect(backend.execute).toHaveBeenCalled());
+    });
+    expect(screen.queryByText("No results")).toBeNull();
+    expect(screen.getByText("Executing in console.sql…").parentElement).toHaveTextContent(/\d+ ms$/);
+    await act(async () => {
+      finish();
+      await pending;
+    });
+    expect(screen.queryByText(/Executing in/)).toBeNull();
+    expect(useDatabase.getState().executions).toEqual({});
+  });
+
+  it("keeps the previous result visible while the next run executes", async () => {
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    useDatabase.setState({ consoles: { "console.sql": "pg" } });
+    backend.statements.mockResolvedValueOnce({
+      status: "ok",
+      data: [
+        { from: 0, to: 8, text: "SELECT 1" },
+        { from: 10, to: 18, text: "SELECT 2" },
+      ],
+    });
+    const finish = hold();
+    await act(async () => render(<ResultsView />));
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = executeConsole("console.sql", "SELECT 1; SELECT 2", 0, 18);
+      await vi.waitFor(() => expect(backend.execute).toHaveBeenCalled());
+    });
+    expect(screen.getByText("Executing 2 statements in console.sql…")).toBeTruthy();
+    expect(screen.getByText("Ann")).toBeTruthy();
+    await act(async () => {
+      finish();
+      await pending;
+    });
+    expect(screen.queryByText(/Executing/)).toBeNull();
   });
 });

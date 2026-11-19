@@ -30,6 +30,14 @@
   color: var(--fg);
 }
 
+.evalName {
+  flex: 0 1 auto;
+  max-width: 45%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .varName {
   color: var(--debug-name, var(--syn-property));
 }

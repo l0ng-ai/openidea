@@ -150,22 +150,58 @@
   display: flex;
   flex-direction: column;
 }
+.pushOptions,
+.pushTagOptions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.pushOptions {
+  flex-wrap: wrap;
+  max-width: 100%;
+  font-size: var(--fs-ui);
+}
+.pushTargetBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+}
+.pushTargetSource {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--fg-secondary);
+}
+.pushTargetControls {
+  display: flex;
+  align-items: center;
+  flex: 1 1 240px;
+  min-width: 0;
+  gap: var(--space-1);
+}
+.pushTargetControls .targetInput {
+  flex: 0 1 330px;
+  min-width: 8ch;
+  width: auto;
+  margin: 0;
+}
 .pushTreeWrap {
   flex: 1;
   min-height: 220px;
   display: flex;
   flex-direction: column;
-  padding: 14px;
+  padding: var(--space-2) var(--space-3) var(--space-3);
 }
 .pushListWrap {
   flex: 1;
   min-height: 180px;
   display: flex;
   flex-direction: column;
-  padding: 0 14px 14px;
+  padding: var(--space-2) var(--space-3) var(--space-3);
 }
 .pushSplit {
-  flex: 1 1 min(540px, 60vh);
+  flex: 1 1 min(450px, 65vh);
   min-height: 0;
 }
 /* The panel's own `height: 100%` doesn't resolve against a flex-basis height in WebKit: stretch instead. */
@@ -209,8 +245,8 @@
 .pushSplitPanel > .pushTreeWrap {
   min-height: 0;
 }
-.pushTreeWrap .commitRow[data-idle],
-.pushTreeWrap .commitRow[data-idle] label {
+.pushRepoRow[data-idle],
+.pushRepoRow[data-idle] label {
   color: var(--fg-subtle);
 }
 .pushChanges {
@@ -218,21 +254,23 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding-top: 8px;
+  padding-top: var(--space-2);
 }
 .pushChanges .comparison {
   flex: 1;
   height: auto;
   min-height: 0;
-  padding: 0 14px 14px;
+  padding: 0 var(--space-3) var(--space-2);
 }
 .pushChangesTitle {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  min-height: 24px;
-  padding: 0 14px 6px;
+  min-height: var(--h-control);
+  padding: 0 var(--space-3) var(--space-1);
   color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
 .pushGrouping {
   margin-left: auto;
@@ -250,8 +288,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  margin: 0 14px 8px;
-  padding: 6px 8px;
+  margin: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-2);
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
@@ -416,23 +454,55 @@
   white-space: nowrap;
 }
 /* Fits the remote and target fields into a 22px tree row. */
+.pushRepoRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+}
+.pushRepoName {
+  min-width: 20px;
+}
+.pushRepoLabel,
+.pushSourceBranch,
+.pushRemoteName {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pushSourceBranch,
+.pushRemoteName {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.pushRemoteName {
+  flex: none;
+  max-width: 14ch;
+}
 .pushRowTarget {
   --h-field: var(--h-control-small);
   --h-control: var(--h-control-small);
   display: inline-flex;
   align-items: center;
   gap: var(--space-0-5);
-  min-width: 0;
+  min-width: 10ch;
   font-size: var(--fs-small);
 }
-.pushRowTarget button {
+.pushTargetControls > button,
+.pushRowTarget > button {
+  min-width: 0;
+  max-width: 18ch;
   font-size: var(--fs-small);
 }
 .pushRowSeparator {
+  flex: none;
   color: var(--fg-faint);
 }
 .pushRowInput {
-  min-width: 0;
+  min-width: 7ch;
   font-size: var(--fs-small);
 }
 .pushRowInput[data-changed]:not(:focus-visible) {

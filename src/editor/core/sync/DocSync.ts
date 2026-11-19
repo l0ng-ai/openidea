@@ -25,7 +25,7 @@
  * the snapshot, selections mapped).
  */
 import { ChangeSet, Text } from "@codemirror/state";
-import type { TextChange } from "@/platform/ipc";
+import { isErrorKind, type TextChange } from "@/platform/ipc";
 import { minimalChanges } from "./diff";
 
 export interface SyncTransport {
@@ -63,10 +63,6 @@ export const frameScheduler: Scheduler = (fn) => {
   requestAnimationFrame(once);
   setTimeout(once, 50);
 };
-
-function isOutOfSync(e: unknown): boolean {
-  return typeof e === "object" && e !== null && (e as { kind?: string }).kind === "outOfSync";
-}
 
 export function toTextChanges(cs: ChangeSet): TextChange[] {
   const out: TextChange[] = [];
@@ -210,7 +206,7 @@ export class DocSync {
   }
 
   private onReject(error: unknown) {
-    if (!isOutOfSync(error)) {
+    if (!isErrorKind(error, "outOfSync")) {
       this.host.onError?.(error);
       this.hardResync(error);
       return;

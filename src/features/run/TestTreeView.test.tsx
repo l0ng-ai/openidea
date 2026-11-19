@@ -49,6 +49,12 @@ function Host(props: {
   );
 }
 
+function moreItem(name: string) {
+  const trigger = screen.getByRole("button", { name: "More Actions" });
+  if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  return screen.getByRole("menuitem", { name });
+}
+
 describe("TestTreeView", () => {
   beforeEach(() => localStorage.clear());
   afterEach(() => vi.clearAllMocks());
@@ -264,17 +270,17 @@ describe("Expand All / Collapse All", () => {
     expect(rows()).toContain("reuses()");
   });
 
-  it("the buttons run the actions, and are unavailable without suites", () => {
+  it("the menu runs the actions, and they are unavailable without suites", () => {
     const dispose = registerActions([
       { id: "run.expandAllTests", title: "Expand All", run: () => {} },
       { id: "run.collapseAllTests", title: "Collapse All", run: () => {} },
     ]);
     onTestFinished(dispose);
     const { unmount } = render(view(nested()));
-    fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
-    expect(actions.executeAction).toHaveBeenCalledWith("run.expandAllTests", undefined);
-    fireEvent.click(screen.getByRole("button", { name: "Collapse All" }));
-    expect(actions.executeAction).toHaveBeenCalledWith("run.collapseAllTests", undefined);
+    fireEvent.click(moreItem("Expand All"));
+    expect(actions.executeAction).toHaveBeenCalledWith("run.expandAllTests");
+    fireEvent.click(moreItem("Collapse All"));
+    expect(actions.executeAction).toHaveBeenCalledWith("run.collapseAllTests");
     unmount();
     expect(testTree.expandAll).toBeNull();
 
@@ -282,8 +288,8 @@ describe("Expand All / Collapse All", () => {
     flat.apply([{ type: "result", path: ["main_test"], status: "failed" }]);
     flat.finish(1);
     render(view(flat));
-    expect(screen.getByRole("button", { name: "Expand All" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Collapse All" })).toBeDisabled();
+    expect(moreItem("Expand All")).toHaveAttribute("aria-disabled", "true");
+    expect(moreItem("Collapse All")).toHaveAttribute("aria-disabled", "true");
   });
 });
 
@@ -306,9 +312,9 @@ describe("Export Test Results", () => {
     />
   );
 
-  it("the button and the action open the dialog for the finished run", () => {
+  it("the menu and the action open the dialog for the finished run", () => {
     const { unmount } = render(view(finished(), false));
-    fireEvent.click(screen.getByRole("button", { name: "Export Test Results…" }));
+    fireEvent.click(moreItem("Export Test Results…"));
     expect(screen.getByRole("dialog", { name: "Export Test Results" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     act(() => testTree.exportResults!());
@@ -322,13 +328,13 @@ describe("Export Test Results", () => {
 
   it("is unavailable while the tests run and without results", () => {
     const { rerender } = render(view(finished(), true));
-    expect(screen.getByRole("button", { name: "Export Test Results…" })).toBeDisabled();
+    expect(moreItem("Export Test Results…")).toHaveAttribute("aria-disabled", "true");
     expect(testTree.exportResults).toBeNull();
     rerender(view(new TestResults(), false));
-    expect(screen.getByRole("button", { name: "Export Test Results…" })).toBeDisabled();
+    expect(moreItem("Export Test Results…")).toHaveAttribute("aria-disabled", "true");
     expect(testTree.exportResults).toBeNull();
     rerender(view(finished(), false));
-    expect(screen.getByRole("button", { name: "Export Test Results…" })).toBeEnabled();
+    expect(moreItem("Export Test Results…")).not.toHaveAttribute("aria-disabled", "true");
     expect(testTree.exportResults).not.toBeNull();
   });
 });
