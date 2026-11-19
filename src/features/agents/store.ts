@@ -38,6 +38,8 @@ import {
   emptyDraft,
   isMentioned,
   isPerModelOption,
+  mentionOf,
+  referenceOf,
   toPrompt,
   withIdeContext,
   type ComposerDraft,
@@ -1556,27 +1558,57 @@ function activeComposerKey(): string {
   return s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
 }
 
+/** The project a New Task started now would run in (the New Task page's project picker). */
+export function homeProjectRoot(): string | null {
+  const project = useProject.getState().project;
+  const members = project?.workspace?.projects ?? [];
+  const last = useAgents.getState().draft.projectRoot;
+  return last && members.includes(last) ? last : (members[0] ?? project?.root ?? null);
+}
+
+/** A file or folder (trailing slash) to reference, with the lines meant. */
+export interface ReferenceTarget {
+  path: string;
+  lines?: { from: number; to: number };
+}
+
 /**
  * Adds `@file` references (with an optional line range) to the composer on show (else the one
- * typed in last) and shows it: IDEA-style "send this to the chat".
+ * typed in last) and shows it: IDEA-style "send this to the chat". Paths resolve like the
+ * composer's own drops: inside the task's folder, or named by their workspace project. Returns
+ * how many were added; a path outside every project shows a notice.
  */
-export function addReferences(refs: Array<{ path: string; rel: string; mention: string }>) {
+export function addReferences(targets: readonly ReferenceTarget[]): number {
   const s = useAgents.getState();
   const key = activeComposerKey();
   const task = key === HOME ? null : s.tasks.get(key)!;
+  const project = useProject.getState().project;
+  const root = task ? task.cwd : homeProjectRoot();
+  const roots = {
+    root: root ?? "",
+    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root ?? "",
+    members: project?.workspace?.projects,
+  };
   const current = composerDraft(key);
-  // A worktree task sees the same files under its own directory.
-  const root = task?.isolation === "worktree" ? task.cwd : null;
-  const files: FileRef[] = refs.map((r) => ({
-    path: root ? `${root}/${r.rel}` : r.path,
-    rel: r.rel,
-  }));
-  const mentions = refs.map((r) => r.mention).join(" ");
-  const text =
-    current.text && !/\s$/.test(current.text) ? `${current.text} ${mentions} ` : `${current.text}${mentions} `;
+  const files: FileRef[] = [];
+  const mentions: string[] = [];
+  for (const { path, lines } of targets) {
+    const ref = root ? referenceOf(roots, path) : null;
+    if (!ref) continue;
+    // A folder keeps its trailing slash, so its chip is a folder reference.
+    const rel = /[\\/]$/.test(path) && ref.rel !== "." ? `${ref.rel}/` : ref.rel;
+    files.push({ path: ref.path, rel });
+    mentions.push(mentionOf(rel, lines));
+  }
+  if (files.length < targets.length)
+    notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
+  if (!files.length) return 0;
+  const joined = mentions.join(" ");
+  const text = current.text && !/\s$/.test(current.text) ? `${current.text} ${joined} ` : `${current.text}${joined} `;
   updateComposer(key, { text, files: [...current.files, ...files] });
   if (task) openTask(task.id);
   else openHome();
+  return files.length;
 }
 
 /** Stops the task's turn, or with `subagent` only that subagent's work. */
