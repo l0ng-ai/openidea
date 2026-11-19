@@ -1,6 +1,6 @@
 /**
  * Lightweight editor window (`editor-<parent>-<n>`): one project file in a window of its own
- * (IDEA-style "Open in New Window" without a second workbench).
+ * ("Open in New Window" without a second workbench).
  */
 import clsx from "clsx";
 import { create } from "zustand";
@@ -8,6 +8,7 @@ import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AUX_CLOSED, EDITOR_READY, type AuxCloseResult, type EditorReadyResult } from "@/platform/auxWindow";
 import { setContext } from "@/platform/context";
+import { t, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { commands, type EditorLaunch } from "@/platform/ipc";
 import { basename, useProject } from "@/platform/project";
@@ -20,8 +21,10 @@ import { OverlayHost } from "@/workbench/OverlayHost";
 import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme } from "@/workbench/theme";
+import { ask } from "@/workbench/messages";
 import { editorController } from "./controller";
-import styles from "@/features/vcs/common.module.css";
+import type { DocModel } from "./model/document";
+import styles from "./EditorWindow.module.css";
 
 const useEditorWindow = create<{
   path: string | null;
@@ -45,13 +48,31 @@ async function reportReady(parent: string, result: Omit<EditorReadyResult, "labe
 }
 
 /**
- * Loads the launch's file into this window's editor. `confirmLeave` settles unsaved changes
- * before the window closes.
+ * Settles this window's unsaved files before it closes. Only its own documents count: the project
+ * window keeps its processes and any copy of the same file it still has open.
  */
-export function activateEditorWindow(
-  parent: string,
-  confirmLeave: (project: string | null) => Promise<boolean>,
-): () => void {
+async function settleUnsaved(models: DocModel[], project: string | null): Promise<boolean> {
+  const dirty = models.filter((model) => model.getMeta().dirty);
+  if (dirty.length === 0) return true;
+  if (useProject.getState().settings?.files?.autoSave !== false) {
+    await Promise.all(dirty.map((model) => model.save("auto")));
+    return true;
+  }
+  const answer = await ask({
+    title: t("app.unsaved.title"),
+    body: t("app.unsaved.body", { count: dirty.length, project: project ?? t("app.title.default") }),
+    buttons: [
+      { id: "discard", label: t("app.unsaved.discard") },
+      { id: "save", label: t("app.unsaved.save"), primary: true },
+    ],
+    icon: "warning",
+  });
+  if (answer.button === "save") await Promise.all(dirty.map((model) => model.save("explicit")));
+  return answer.button === "save" || answer.button === "discard";
+}
+
+/** Loads the launch's file into this window's editor. */
+export function activateEditorWindow(parent: string): () => void {
   let projectName: string | null = null;
   const native = getCurrentWindow();
   let disposed = false;
@@ -68,7 +89,7 @@ export function activateEditorWindow(
       let closed = false;
       try {
         await Promise.all(models.map((model) => model.sync.whenIdle()));
-        closed = await confirmLeave(projectName);
+        closed = await settleUnsaved(models, projectName);
         if (closed) {
           for (const model of models) model.dispose();
           await Promise.all(
@@ -78,7 +99,7 @@ export function activateEditorWindow(
           );
         }
       } catch (error) {
-        notifications().notify({ level: "error", title: "Could not close editor", body: String(error) });
+        notifications().notify({ level: "error", title: tx("Could not close editor"), body: String(error) });
       } finally {
         if (!closed) event.preventDefault();
         const result: AuxCloseResult = {
@@ -96,13 +117,6 @@ export function activateEditorWindow(
       if (disposed) off();
       else stopClose = off;
     });
-  const onKey = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || isImeKey(event) || isPopupOpen()) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void native.close();
-    }
-  };
   const onCloseShortcut = (event: KeyboardEvent) => {
     if (isImeKey(event) || isPopupOpen()) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") {
@@ -111,17 +125,16 @@ export function activateEditorWindow(
       void native.close();
     }
   };
-  window.addEventListener("keydown", onKey);
   window.addEventListener("keydown", onCloseShortcut, true);
   void (async () => {
     let path = "";
     try {
       await restoreRemote();
       const launch = (await commands.windowTakeLaunch())?.editor as EditorLaunch | null | undefined;
-      if (!launch?.path) throw new Error("Missing editor request");
+      if (!launch?.path) throw new Error(tx("Missing editor request"));
       path = launch.path;
       const project = await commands.projectCurrent();
-      if (!project) throw new Error("The editor’s project is no longer open");
+      if (!project) throw new Error(tx("The editor’s project is no longer open"));
       projectName = project.name;
       // Settings only: restoring the project's editor session here would overwrite the main window's tabs.
       useProject.setState({ settings: project.settings });
@@ -147,7 +160,6 @@ export function activateEditorWindow(
   return () => {
     disposed = true;
     stopClose?.();
-    window.removeEventListener("keydown", onKey);
     window.removeEventListener("keydown", onCloseShortcut, true);
   };
 }
@@ -158,19 +170,19 @@ export function EditorWindow() {
   const os = usePlatform((s) => s.os);
   const ownTitleBar = usePlatform((s) => s.overlayTitleBar || s.framelessTitleBar);
   return (
-    <main className={clsx(styles.comparisonWindow, os === "linux" && styles.comparisonWindowEdge)}>
+    <main className={clsx(styles.window, os === "linux" && styles.edge)}>
       {ownTitleBar && <TitleBar minimal dialog title={title} />}
       {error ? (
         <div className={styles.error} role="alert">
           {error}
         </div>
       ) : !path ? (
-        <div className={styles.comparisonWindowLoading} role="status">
+        <div className={styles.loading} role="status">
           <Spinner />
           <T>Loading…</T>
         </div>
       ) : (
-        <div className={styles.comparisonWindowBody}>
+        <div className={styles.body}>
           <EditorArea />
         </div>
       )}

@@ -2535,5 +2535,10 @@
   "60 FPS": "60 FPS",
   "30 FPS": "30 FPS",
   "15 FPS": "15 FPS",
-  "10 FPS": "10 FPS"
+  "10 FPS": "10 FPS",
+  "Could not close editor": "Could not close editor",
+  "Missing editor request": "Missing editor request",
+  "The editor’s project is no longer open": "The editor’s project is no longer open",
+  "Timed out opening the editor window": "Timed out opening the editor window",
+  "Could not open the editor window": "Could not open the editor window"
 }

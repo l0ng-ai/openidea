@@ -1,7 +1,6 @@
 import type { ComponentType } from "react";
 import { activate as editor } from "./editor/core";
 import { activateEditorWindow, EditorWindow } from "./editor/core/EditorWindow";
-import { confirmLeave } from "./features/app/closeGuard";
 import { installLocaleSync } from "./features/app/locale";
 import { installMenuBridge } from "./features/app/menuBridge";
 import { trackRuntimeSettings } from "./features/settings/runtime";
@@ -18,7 +17,7 @@ export function bootEditorWindow(parent: string): ComponentType {
     ["settings", trackRuntimeSettings],
     ["menu", installMenuBridge],
     ["editor", editor],
-    ["editorWindow", () => activateEditorWindow(parent, (project) => confirmLeave(undefined, project))],
+    ["editorWindow", () => activateEditorWindow(parent)],
   ]);
   installKeyboardDispatcher();
   return EditorWindow;
