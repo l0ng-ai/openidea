@@ -26,8 +26,10 @@ import type {
   PluginEvent,
   Prompt,
   StatusItem,
+  StatusMenuEntry,
   WorkbenchEvent,
 } from "@/bindings";
+import { useRef, useState } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setPluginDecorations } from "./decorations";
@@ -44,6 +46,7 @@ import { isRemoteWindow } from "@/platform/remote";
 import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
+import { Menu, type MenuItem } from "@/ui";
 import { notifications, maybeCommitService, maybeEditorService, registerStatusItem } from "@/workbench/contributions";
 import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
@@ -117,6 +120,8 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const declared = useDeclaredStatusItems((s) => s.items.get(itemKey));
   const entry = running ?? declared;
   const t = usePluginT(entry?.pluginId ?? "");
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   if (!entry) return null;
   const { pluginId, item } = entry;
   const command = item.command;
@@ -124,17 +129,59 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const translate = running ? t : (text: string) => text;
   const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
   const text = translate(item.text);
+  const menu = running ? (item.menu ?? []) : [];
+  const onClick = menu.length
+    ? () => setOpen((o) => !o)
+    : command
+      ? () => void runPluginCommand(pluginId, command)
+      : undefined;
   return (
     <VerbatimTextContext.Provider value={true}>
       <BarButton
+        ref={anchor}
         tooltip={tooltip}
         aria-label={tooltip ?? text}
-        onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
+        aria-haspopup={menu.length ? "menu" : undefined}
+        aria-expanded={menu.length ? open : undefined}
+        onClick={onClick}
       >
         {text}
       </BarButton>
+      {menu.length > 0 && (
+        <Menu
+          open={open}
+          onClose={() => setOpen(false)}
+          anchor={anchor}
+          placement="top-end"
+          items={statusMenuItems(pluginId, menu, translate)}
+          aria-label={tooltip ?? text}
+        />
+      )}
     </VerbatimTextContext.Provider>
   );
+}
+
+/** A status item's menu (`ui.set-status-item-menu`): an action runs its plugin command with its argument. */
+export function statusMenuItems(
+  pluginId: string,
+  menu: readonly StatusMenuEntry[],
+  translate: (text: string) => string,
+): MenuItem[] {
+  return menu.map((entry): MenuItem => {
+    switch (entry.kind) {
+      case "separator":
+        return { kind: "separator" };
+      case "header":
+        return { kind: "header", label: translate(entry.label) };
+      case "action":
+        return {
+          label: translate(entry.label),
+          verbatim: true,
+          shortcut: entry.description ?? undefined,
+          run: () => void runPluginCommand(pluginId, entry.command, entry.argument),
+        };
+    }
+  });
 }
 
 /** The item's name in the status bar menu: its plugin's, plus what it declares (tooltip or text). */

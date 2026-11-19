@@ -8,7 +8,8 @@
 //!   `Authorization: Bearer <token>` (random, per run); requests from another
 //!   `Origin` or `Host` are refused (DNS rebinding).
 //! - **Projects:** the `X-OpenIDEA-Project` header or the `?project=` query
-//!   names a folder; the server picks the open project containing it.
+//!   names a folder; the server picks the open project containing it, or the
+//!   project the IDE serves it from without a window.
 //! - **Discovery:** `<app-data>/mcp/server.json` (`address`, `port`, `token`,
 //!   `pid`, `version`; readable only by the user) while the server runs.
 //! - **Stdio:** `<app exe> --mcp-stdio [--project <path>]` reads the discovery
@@ -60,10 +61,16 @@ pub enum ToolCallError {
 /// Where the tools come from (the IDE host). Calls block; the server runs
 /// them off its async threads.
 pub trait ToolRegistry: Send + Sync + 'static {
-    /// Roots of the projects open in the IDE that the server serves.
+    /// Roots of the projects open in a window of the IDE that the server serves.
     fn projects(&self) -> Vec<PathBuf>;
-    /// The tools callable for `project` (one of [`Self::projects`]). `Err`
-    /// says why there are none (an unsupported project).
+    /// The root of the project the IDE serves `path` from without a window (a background
+    /// project), asked when no project of [`Self::projects`] contains `path`. Opens nothing:
+    /// the first call for that root does.
+    fn resolve(&self, _path: &Path) -> Option<PathBuf> {
+        None
+    }
+    /// The tools callable for `project` (one of [`Self::projects`] or a root
+    /// [`Self::resolve`] gave). `Err` says why there are none (an unsupported project).
     fn tools(&self, project: &Path) -> Result<Vec<Tool>, String>;
     fn call_with_client(
         &self,

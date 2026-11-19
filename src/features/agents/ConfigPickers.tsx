@@ -1,7 +1,7 @@
 /**
  * Model, effort, mode and approvals controls for a composer's bottom row. The model button
- * opens a searchable model list (pinned models first, context size above it); the effort is
- * its own picker beside it, one click away.
+ * opens a searchable model list (pinned models first) and keeps effort and context settings
+ * together above it.
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
@@ -119,16 +119,16 @@ export function ConfigPickers({
   const effort = config.find((o) => o.category === "thought_level" && o.values.length > 0);
   const modelConfigs = modelConfigOptions(config);
   const hasCostMeta = model?.values.some((v) => !!v.costCategory || !!v.usageMultiplier || !!v.pricing) ?? false;
-  const combinedModel = model && (modelRefresh || modelConfigs.length > 0 || hasCostMeta);
+  const combinedModel = !!model && (!!modelRefresh || modelConfigs.length > 0 || hasCostMeta || !!effort);
+  const tuckedEffort = combinedModel ? (effort ?? null) : null;
   const tuckedModelConfig = new Set(modelConfigs.map((o) => o.id));
   const mode = options.find((o) => o.category === "mode");
   const allowAll = mode && options.find((o) => switchValues(o));
-  // Effort sits right after the model, as its own one-click picker.
   const inline = options.filter(
     (o) => o !== effort && o !== allowAll && !(combinedModel && tuckedModelConfig.has(o.id)),
   );
-  if (effort) inline.splice(model ? inline.indexOf(model) + 1 : 0, 0, effort);
-  // The compact menu holds everything but the model and effort buttons (and the model's own parameters).
+  if (effort && !tuckedEffort) inline.splice(model ? inline.indexOf(model) + 1 : 0, 0, effort);
+  // The compact menu holds everything but the model, effort, and model-specific parameters.
   const secondary = options.filter(
     (o) => o.category !== "model" && o !== effort && !(combinedModel && tuckedModelConfig.has(o.id)),
   );
@@ -146,6 +146,8 @@ export function ConfigPickers({
               model={o}
               modelValue={valueOf(o)}
               modelConfigs={modelConfigs}
+              effort={tuckedEffort}
+              effortValue={tuckedEffort ? valueOf(tuckedEffort) : null}
               valueOf={valueOf}
               onChange={onChange}
               modelRefresh={modelRefresh}
@@ -254,11 +256,16 @@ function ConfigPicker({
   );
 }
 
-/** The model button: a searchable model list, with context size and the model's own settings above it. */
+/** Effort levels that fit the popup's segmented control; more (Codex has six) get a dropdown. */
+const SEGMENTED_EFFORT_MAX = 4;
+
+/** The model button: a searchable model list, with effort, context size and model settings above it. */
 function ModelPicker({
   model,
   modelValue,
   modelConfigs,
+  effort,
+  effortValue,
   valueOf,
   onChange,
   modelRefresh,
@@ -266,6 +273,8 @@ function ModelPicker({
   model: AgentConfigOption;
   modelValue: string | null;
   modelConfigs: AgentConfigOption[];
+  effort: AgentConfigOption | null;
+  effortValue: string | null;
   valueOf: (o: AgentConfigOption) => string | null;
   onChange: (option: string, value: string) => void;
   modelRefresh?: ModelRefresh;
@@ -282,9 +291,13 @@ function ModelPicker({
 
   const contextOption = modelConfigs.find((o) => isContextOption(o.id) && o.values.length > 0);
   const contextValue = contextOption ? valueOf(contextOption) : null;
-  const contextLabel = contextOption ? (selected(contextOption, contextValue)?.name ?? null) : null;
+  const contextLabel = contextOption
+    ? ((selected(contextOption, contextValue) ?? contextOption.values[0])?.name ?? null)
+    : null;
+  const effortLabel = effort ? ((selected(effort, effortValue) ?? effort.values[0])?.name ?? null) : null;
   const otherModelConfigs = modelConfigs.filter((o) => o !== contextOption);
   const summary = [
+    effortLabel ? `${tx("Effort Level")}: ${effortLabel}` : null,
     contextLabel ? `${tx("Context Size")}: ${contextLabel}` : null,
     ...otherModelConfigs.map((o) => {
       const current = selected(o, valueOf(o));
@@ -310,7 +323,11 @@ function ModelPicker({
         }}
       >
         <span className={styles.chipValue}>{modelName}</span>
-        {contextLabel && <span className={styles.chipDetail}>{contextLabel}</span>}
+        {(effortLabel || contextLabel) && (
+          <span className={clsx(styles.chipDetail, styles.modelDetail)}>
+            {[effortLabel, contextLabel].filter(Boolean).join(" · ")}
+          </span>
+        )}
         <Icon name="chevron-down" size={14} className={styles.chipChevron} />
       </button>
       <Popup
@@ -325,8 +342,29 @@ function ModelPicker({
             <T>Choose another model before starting.</T>
           </p>
         )}
-        {(contextOption || otherModelConfigs.length > 0) && (
+        {(effort || contextOption || otherModelConfigs.length > 0) && (
           <div className={styles.quickSettings}>
+            {effort && (
+              <div className={styles.quickRow}>
+                <span className={styles.quickLabel}>
+                  <T>Effort Level</T>
+                </span>
+                {effort.values.length <= SEGMENTED_EFFORT_MAX ? (
+                  <SegmentedControl
+                    ariaLabel={tx("Effort Level")}
+                    options={effort.values.map((v) => ({
+                      value: v.value,
+                      label: v.name,
+                      description: v.description ?? undefined,
+                    }))}
+                    value={effortValue ?? effort.values[0]!.value}
+                    onChange={(v) => onChange(effort.id, v)}
+                  />
+                ) : (
+                  <ConfigPicker option={effort} value={effortValue} onChange={onChange} framed />
+                )}
+              </div>
+            )}
             {contextOption && (
               <div className={styles.quickRow}>
                 <span className={styles.quickLabel}>

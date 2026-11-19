@@ -31,3 +31,8 @@ zip.workspace = true
 tempfile.workspace = true
 encoding_rs.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "did_change"
+harness = false

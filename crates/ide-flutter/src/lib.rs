@@ -8,6 +8,10 @@
 //! a watcher in its process group ends the group once the IDE is gone, even after a crash. A
 //! daemon that fails stays failed until the user restarts it.
 
+mod devtools;
+
+pub use devtools::DevToolsServer;
+
 use ide_android::AndroidDevice;
 use ide_core::event::{FlutterDaemonStatus, FlutterDevice, FlutterDeviceList};
 use ide_core::process::{kill_tree, own_group, prepare, terminate_tree};
@@ -227,26 +231,28 @@ fn refresh_adb(shared: &Arc<Shared>, generation: u64) {
     });
 }
 
-/// `flutter daemon`, ended with its whole process group when process `parent` is gone.
+/// A tool that does not end with its stdin, ended with its whole process group when process
+/// `parent` is gone.
 #[cfg(unix)]
-fn daemon_command(executable: &Path, parent: u32) -> Command {
+fn watched_command(executable: &Path, args: &[&str], parent: u32) -> Command {
     const WATCHED: &str = r#"(while kill -0 "$1" 2>/dev/null; do sleep 5; done; kill -KILL 0) </dev/null >/dev/null 2>&1 &
-exec "$2" daemon"#;
+shift
+exec "$@""#;
     let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", WATCHED, "sh"]).arg(parent.to_string()).arg(executable);
+    cmd.args(["-c", WATCHED, "sh"]).arg(parent.to_string()).arg(executable).args(args);
     cmd
 }
 
-// No watcher on Windows, so a crashed IDE leaves the daemon; a Job Object would cover it.
+// No watcher on Windows, so a crashed IDE leaves the tool; a Job Object would cover it.
 #[cfg(not(unix))]
-fn daemon_command(executable: &Path, _parent: u32) -> Command {
+fn watched_command(executable: &Path, args: &[&str], _parent: u32) -> Command {
     let mut cmd = Command::new(executable);
-    cmd.arg("daemon");
+    cmd.args(args);
     cmd
 }
 
-fn spawn_daemon(executable: &Path, root: &Path) -> std::io::Result<Child> {
-    let mut cmd = daemon_command(executable, std::process::id());
+fn spawn_watched(executable: &Path, args: &[&str], root: &Path) -> std::io::Result<Child> {
+    let mut cmd = watched_command(executable, args, std::process::id());
     cmd.current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     prepare(own_group(&mut cmd));
     cmd.spawn()
@@ -299,7 +305,7 @@ fn run(shared: &Arc<Shared>, generation: u64) {
     let Some(executable) = executable else {
         return finish(shared, generation, FlutterDaemonStatus::NotInstalled);
     };
-    let mut child = match spawn_daemon(&executable, &shared.root) {
+    let mut child = match spawn_watched(&executable, &["daemon"], &shared.root) {
         Ok(child) => child,
         Err(e) => {
             let message = format!("could not run {}: {e}", executable.display());
@@ -530,7 +536,7 @@ cat > /dev/null
             std::fs::write(&flutter, "#!/bin/sh\necho $$ > pid\nexec sleep 60\n").unwrap();
             std::fs::set_permissions(&flutter, std::fs::Permissions::from_mode(0o755)).unwrap();
             let mut ide = Command::new("sleep").arg("60").spawn().unwrap();
-            let mut cmd = daemon_command(&flutter, ide.id());
+            let mut cmd = watched_command(&flutter, &["daemon"], ide.id());
             cmd.current_dir(dir.path()).stdin(Stdio::piped());
             let mut daemon = own_group(&mut cmd).spawn().unwrap();
             wait_for("the daemon", || dir.path().join("pid").is_file());

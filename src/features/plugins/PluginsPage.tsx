@@ -600,7 +600,7 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
   );
 }
 
-/** The agent a `java.agent` grant loads: its jar's file name and arguments, as `-javaagent:` takes them. */
+/** The agent a `java.agent` grant loads: jar, args, and any contributed JVM options. */
 function JavaAgentDetail({ plugin, cap, disabled }: { plugin: PluginInfo; cap: CapabilityInfo; disabled: boolean }) {
   const agent = plugin.javaAgent;
   if (!agent) return null;
@@ -610,12 +610,18 @@ function JavaAgentDetail({ plugin, cap, disabled }: { plugin: PluginInfo; cap: C
       await setPluginCapability(plugin.id, cap.id, true);
     }
   };
+  const agentLabel = `${agent.fileName}${agent.args ? `=${agent.args}` : ""}`;
+  const vmLabel = agent.vmOptions.length ? `${agent.vmOptions.join(" ")}${agent.jdk ? ` (${agent.jdk})` : ""}` : null;
   return (
     <div className={styles.programPermission}>
       <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("Java agent")}>
-        {agent.fileName}
-        {agent.args ? `=${agent.args}` : ""}
+        {agentLabel}
       </span>
+      {vmLabel && (
+        <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("JVM options")}>
+          {vmLabel}
+        </span>
+      )}
       {cap.granted && !agent.approved && (
         <div className={styles.error} role="alert">
           <p>

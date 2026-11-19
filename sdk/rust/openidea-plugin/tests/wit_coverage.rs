@@ -56,7 +56,8 @@ fn every_imported_function_has_an_sdk_wrapper() {
 fn every_optional_export_can_be_registered() {
     let mut resolve = Resolve::default();
     let (pkg, _) = resolve.push_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("wit")).unwrap();
-    let source = sdk_source();
+    // rustfmt may break `… ::Guest` and `for` onto separate lines.
+    let source = sdk_source().split_whitespace().collect::<Vec<_>>().join(" ");
     let base = &resolve.worlds[resolve.packages[pkg].worlds["plugin"]];
     let mut missing = Vec::new();
     let mut checked = 0;

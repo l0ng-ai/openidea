@@ -1,4 +1,4 @@
-package openidea:plugin@1.13.0;
+package openidea:plugin@1.14.0;
 
 /// Writes to the IDE log, tagged with the plugin id.
 interface log {
@@ -16,6 +16,27 @@ interface ui {
         tooltip: option<string>,
         /// One of the plugin's commands, run when the item is clicked.
         command: option<string>,
+    }
+
+    /// An action in a status bar item's menu (API 1.14).
+    record status-menu-action {
+        /// Up to 256 bytes, one line.
+        label: string,
+        /// Secondary text shown after the label, such as a URL (up to 256 bytes).
+        description: option<string>,
+        /// The id of a command the plugin declares, run when the entry is chosen.
+        command: string,
+        /// Passed to the command as its argument (up to 64 KiB).
+        argument: option<string>,
+    }
+
+    /// An entry of a status bar item's menu (API 1.14).
+    variant status-menu-entry {
+        action(status-menu-action),
+        /// A line between groups of actions.
+        separator,
+        /// A caption above a group (up to 256 bytes, one line).
+        header(string),
     }
 
     record pick-item {
@@ -90,6 +111,14 @@ interface ui {
     set-window-status-item: func(id: string, item: status-item) -> result<_, error>;
     /// Removes this window's override, falling back to the global item.
     remove-window-status-item: func(id: string) -> result<_, error>;
+    /// `set-status-item` with a menu (API 1.14): clicking the item opens the
+    /// menu anchored to it instead of running the item's command, and choosing
+    /// an action runs its command in that window. At most 64 entries. An empty
+    /// menu is the same as `set-status-item`. An action naming a command the
+    /// plugin does not declare fails the call and changes nothing.
+    set-status-item-menu: func(id: string, item: status-item, menu: list<status-menu-entry>) -> result<_, error>;
+    /// `set-window-status-item` with a menu, as `set-status-item-menu` (API 1.14).
+    set-window-status-item-menu: func(id: string, item: status-item, menu: list<status-menu-entry>) -> result<_, error>;
     /// Replaces the plugin's console highlight rules (API 1.12); an empty
     /// list removes them. Every window applies them to the stdout and stderr
     /// lines of its Run and Debug consoles; the plugin never sees the output.

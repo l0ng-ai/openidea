@@ -45,6 +45,7 @@ import {
   effectiveSsh,
   idleTargets,
   newSourceId,
+  sourceIcon,
   splitTarget,
   targetOf,
 } from "./model";
@@ -601,13 +602,21 @@ export function watchIdleConnections(everyMs = 5000): () => void {
   return () => clearInterval(timer);
 }
 
-/** Console files of coloured data sources, tinted like IDEA's (file decorations). */
-export function consoleTints(s: Pick<DatabaseState, "consoles" | "sources">): Map<string, FileDecoration> {
+/** Managed consoles show their source in the tab. Ordinary SQL files can also inherit a source tint. */
+export function consoleDecorations(s: Pick<DatabaseState, "consoles" | "sources">): Map<string, FileDecoration> {
   const out = new Map<string, FileDecoration>();
   for (const [path, target] of Object.entries(s.consoles)) {
-    const id = splitTarget(target).id;
-    const tint = colorVar(s.sources.find((x) => x.id === id)?.color);
-    if (tint) out.set(path, { tint });
+    const { id, database } = splitTarget(target);
+    const source = s.sources.find((x) => x.id === id);
+    if (!source) continue;
+    const tint = colorVar(source.color);
+    // db_console_path and db_consoles own this directory, including already saved consoles.
+    const consoleName = /(?:^|\/)consoles\/db\/[^/]+\/(console(?:_\d+)?)\.sql$/.exec(path.replaceAll("\\", "/"))?.[1];
+    if (consoleName) {
+      const name = source.name || id;
+      const label = database ? `${name}: ${database}` : name;
+      out.set(path, { tint, tabTitle: `${consoleName} [${label}]`, tabIcon: sourceIcon(source) });
+    } else if (tint) out.set(path, { tint });
   }
   return out;
 }

@@ -214,10 +214,6 @@ pub enum RemoteOp {
         tag: String,
         remote: String,
     },
-    /// Fast-forwards local `branch` (not checked out) to its upstream.
-    UpdateBranch {
-        branch: String,
-    },
     /// Pull dialog: `branches` of `remote` (none = the configured merge branch).
     PullFrom {
         remote: String,
@@ -947,13 +943,38 @@ pub async fn vcs_remote(
                 &cancel,
                 &out,
             ),
-            RemoteOp::UpdateBranch { branch } => r.update_branch(&branch, &cancel, &out),
             RemoteOp::PushTag { tag, remote } => r.push_tag(&tag, &remote, &cancel, &out),
             RemoteOp::DeleteRemoteTag { tag, remote } => r.delete_remote_tag(&tag, &remote, &cancel, &out),
             RemoteOp::PullFrom { remote, branches, rebase, options } => {
                 r.pull_from(&remote, &branches, rebase, &options, &cancel, &out)
             }
         })
+    })
+    .await
+    .map_err(|e| ide_core::IdeError::internal(e.to_string()))?;
+    host.end_request(request);
+    result
+}
+
+/// Branches › Update Selected: fast-forwards local `branches` to their upstreams, one
+/// fetch per remote; the result says what happened to each. Cancellable.
+#[command(trust = trusted)]
+pub async fn vcs_update_branches(
+    host: &Host,
+    window: &str,
+    repo: Option<PathBuf>,
+    request: RequestId,
+    branches: Vec<String>,
+    on_output: Channel<String>,
+) -> IdeResult<Vec<BranchUpdate>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = tokio::task::spawn_blocking(move || {
+        let out = |line: String| {
+            let _ = on_output.send(line);
+        };
+        project.with_repo_recorded(repo.as_deref(), Some("Git pull"), |r| r.update_branches(&branches, &cancel, &out))
     })
     .await
     .map_err(|e| ide_core::IdeError::internal(e.to_string()))?;
@@ -1630,6 +1651,7 @@ ide_command::domain!(
     vcs_rebase,
     vcs_rebase_with,
     vcs_remote,
+    vcs_update_branches,
     vcs_remotes,
     vcs_remove_worktree,
     vcs_rename_branch,

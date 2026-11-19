@@ -156,11 +156,28 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
-  it("appends list option values from the rc file", () => {
+  it("applies +=, -= and ^= to list and number options from the rc file", () => {
     try {
-      const problems = applyRcCommands(parseVimrc("set clipboard+=unnamed\nset clipboard+=unnamedplus").commands);
+      const problems = applyRcCommands(
+        parseVimrc("set clipboard+=unnamed\nset cb+=unnamedplus\nset clipboard+=unnamed").commands,
+      );
       expect(problems).toEqual([]);
       expect(Vim.getOption("clipboard")).toBe("ideaput,autoselect,unnamed,unnamedplus");
+      applyRcCommands(parseVimrc("set clipboard-=autoselect\nset clipboard^=unnamedplus").commands);
+      expect(Vim.getOption("clipboard")).toBe("ideaput,unnamed,unnamedplus");
+      applyRcCommands(parseVimrc("set clipboard^=autoselect").commands);
+      expect(Vim.getOption("clipboard")).toBe("autoselect,ideaput,unnamed,unnamedplus");
+      const timeout = Vim.getOption("insertModeEscKeysTimeout");
+      applyRcCommands(
+        parseVimrc(
+          "set insertModeEscKeysTimeout=100\nset insertModeEscKeysTimeout+=50\nset insertModeEscKeysTimeout^=2\nset insertModeEscKeysTimeout-=60",
+        ).commands,
+      );
+      expect(Vim.getOption("insertModeEscKeysTimeout")).toBe(240);
+      expect(applyRcCommands(parseVimrc("set insertModeEscKeysTimeout+=x").commands)).toEqual([
+        "insertModeEscKeysTimeout: number required: x",
+      ]);
+      Vim.setOption("insertModeEscKeysTimeout", timeout);
     } finally {
       Vim.setOption("clipboard", "ideaput,autoselect");
     }
@@ -390,7 +407,7 @@ describe("Vim engine", () => {
     /** A key's keydown, then the text it types. jsdom reports an Apple vendor, so CodeMirror
      * treats it as Safari and drops the keydown within 100ms of `compositionend`. */
     const press = (view: EditorView, key: string, text: string) => {
-      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
       typeText(view, text);
     };
     let clock = 0;
@@ -433,6 +450,19 @@ describe("Vim engine", () => {
       press(view, "j", "j");
       await tick();
       expect(view.state.doc.toString()).toBe("");
+      view.destroy();
+    });
+
+    it("drops the text an input method echoes after a key Vim took outside Insert mode (#4402)", async () => {
+      const view = makeView();
+      press(view, "j", "j");
+      expect(view.state.doc.toString()).toBe("one two\nthree");
+      expect(view.state.selection.main.head).toBe(8);
+      press(view, "i", "i");
+      expect(view.state.doc.toString()).toBe("one two\nthree");
+      // Keys typed in the new Insert mode stay text, even the same letter.
+      press(view, "i", "i");
+      expect(view.state.doc.toString()).toBe("one two\nithree");
       view.destroy();
     });
 

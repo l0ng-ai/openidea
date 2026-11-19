@@ -176,10 +176,15 @@ export function trimMiddle(text: string, max: number): string {
 
 const APP_TITLE_MAX = 30;
 
-/** The title the program in the tab set, while a command runs (at the prompt it is the shell's own). */
+/**
+ * The title the program in the tab set (OSC 0/2), per Settings › Terminal: by default only
+ * while a command runs (at the prompt it is the shell's own), as IDEA does.
+ */
 function appTitle(tab: TerminalTab, sessions?: Record<string, SessionSnapshot>): string | null {
   const s = sessions?.[tab.session];
-  return s?.commandRunning ? s.appTitle : null;
+  const when = workflowSettings().terminal.appTitleAsTabName;
+  if (!s?.appTitle || when === "off") return null;
+  return when === "always" || s.commandRunning ? s.appTitle : null;
 }
 
 /**
@@ -239,6 +244,14 @@ export function newTab(cwd: string, name?: string, command?: SessionOptions["com
     selected: { ...s.selected, [tab.group]: tab.id },
     activeTab: tab.id,
   }));
+  return tab;
+}
+
+/** Opens a shell tab at `cwd` and types `lines` into it, each followed by Return. */
+export function newTabRunning(cwd: string, name: string | undefined, lines: readonly string[]): TerminalTab {
+  const tab = newTab(cwd, name);
+  // Sent once the shell's PTY exists (the session buffers input until then).
+  getSession(tab.session)?.input(lines.map((line) => `${line}\r`).join(""));
   return tab;
 }
 

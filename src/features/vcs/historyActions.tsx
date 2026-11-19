@@ -13,6 +13,7 @@ import { executeAction, registerActions, type Action } from "@/platform/actions"
 import { checkoutDetached, newBranch, rebaseOnto } from "./branchOps";
 import { openUrl } from "./issueLinks";
 import { commitWebUrl } from "./model";
+import { remoteWebSource } from "./remoteUrl";
 import {
   commitChangelist,
   deleteChangelist,
@@ -156,7 +157,7 @@ function withCommits(fn: (cs: Commit[]) => unknown, allowReadOnly = false) {
 async function openCommitInBrowser(c: Commit) {
   const upstream = useVcs.getState().branch?.upstream;
   const remote = upstream ? upstream.slice(0, upstream.indexOf("/")) : "origin";
-  const url = await call(commands.vcsConfigGet(currentRepo(), `remote.${remote}.url`)).catch(() => null);
+  const url = await remoteWebSource(currentRepo(), remote);
   const page = url ? commitWebUrl(url, c.id) : null;
   if (page) await openUrl(page);
   else notifications().notify({ group: "vcs", level: "warning", title: `No web URL for remote '${remote}'` });

@@ -2218,6 +2218,8 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let agent = info.java_agent.clone().expect("agent metadata");
     assert_eq!(agent.file_name, "fixture agent.jar");
     assert_eq!(agent.args.as_deref(), Some("mode=test"));
+    assert!(agent.vm_options.is_empty());
+    assert!(agent.jdk.is_none());
     assert!(!agent.approved);
     let source = f.host.java_agents();
     let launch = || {
@@ -6382,6 +6384,32 @@ fn api14_window_status_overrides_fall_back_and_are_withdrawn() {
     assert!(f.host.status_snapshot("main").is_empty());
     assert!(f.take_events().iter().any(|(window, event)| window.as_deref() == Some("main")
         && matches!(event, PluginEvent::WindowStatusItemChanged { item: None, .. })));
+}
+
+#[test]
+fn a_status_item_menu_reaches_the_ui_and_names_only_declared_commands() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    f.run("api14", "menu-status", Some("App: running")).unwrap();
+    let item = f.host.status_snapshot("main").into_iter().find(|i| i.id == "menu").unwrap().item;
+    assert_eq!(item.text, "App: running");
+    assert_eq!(
+        item.menu,
+        [
+            ide_plugin::StatusMenuEntry::Header { label: "App".into() },
+            ide_plugin::StatusMenuEntry::Action {
+                label: "Open".into(),
+                description: Some("https://app.test".into()),
+                command: "events".into(),
+                argument: Some("web".into()),
+            },
+            ide_plugin::StatusMenuEntry::Separator,
+        ]
+    );
+    let err = f.run("api14", "bad-menu-status", Some("changed")).unwrap_err();
+    assert!(err.contains("undeclared"), "{err}");
+    let item = f.host.status_snapshot("main").into_iter().find(|i| i.id == "menu").unwrap().item;
+    assert_eq!(item.text, "App: running", "a refused menu changes nothing");
 }
 
 #[test]

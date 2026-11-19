@@ -94,3 +94,30 @@ test("a second click on a Git Log toolbar button closes its popup", async ({ wor
     await expect(row).toBeHidden();
   }
 });
+
+test("Git Log keeps filters and actions inside the commit pane at the minimum window width", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 400, height: 500 });
+  const toolbar = page.getByRole("toolbar", { name: "Log filters" });
+  const clippedButtons = () =>
+    toolbar.evaluate((el) => {
+      const bar = el.getBoundingClientRect();
+      return Array.from(el.querySelectorAll("button"))
+        .filter((button) => {
+          if (getComputedStyle(button).visibility === "hidden") return false;
+          const box = button.getBoundingClientRect();
+          return box.width > 0 && (box.right > bar.right + 1 || box.bottom > bar.bottom + 1);
+        })
+        .map((button) => button.getAttribute("aria-label"));
+    });
+  await expect.poll(clippedButtons).toEqual([]);
+  const search = toolbar.getByRole("textbox", { name: "Filter by message" });
+  await expect(search).toBeVisible();
+  expect((await search.boundingBox())!.width).toBeGreaterThan(12);
+  await toolbar.getByRole("button", { name: "View Options" }).click();
+  await expect(page.getByRole("menuitemcheckbox", { name: "Tag Names" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await toolbar.getByRole("button", { name: "More Filters" }).click();
+  await expect(page.getByRole("menuitem", { name: "Paths" })).toBeVisible();
+});

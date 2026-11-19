@@ -229,6 +229,15 @@ fn match_console_encoding(
     fix.notice
 }
 
+/// A script without the execute bit as `/bin/sh <script>` (see [`ide_core::process::needs_sh`]).
+/// Applied last, so the encoding and Java fixes above still see the script itself.
+fn sh_for_unexecutable(inv: &mut Invocation) {
+    if !inv.shell && ide_core::process::needs_sh(&inv.program) {
+        let script = std::mem::replace(&mut inv.program, "/bin/sh".into());
+        inv.args.insert(0, script.to_string_lossy().into_owned());
+    }
+}
+
 /// A launch's pathing jar / argfile, deleted when dropped (the process exited, or never started).
 struct TempFile(Option<PathBuf>);
 
@@ -382,6 +391,7 @@ impl ProcessManager {
         let notice =
             if extras.emulate_terminal { None } else { match_console_encoding(&mut inv, &mut env, config, options) };
         let temp = shorten_java(&mut inv, config, &cwd)?;
+        sh_for_unexecutable(&mut inv);
         if extras.emulate_terminal && followup.is_some() {
             return Err(IdeError::invalid("Go build and run requires the output console"));
         }
@@ -769,6 +779,13 @@ impl ProcessManager {
 
     pub fn list(&self) -> Vec<RunInfo> {
         self.runs.lock().values().map(|e| e.info()).collect()
+    }
+
+    /// The runs started for the project at `root` (that root exactly) that have not exited.
+    pub fn running_in(&self, root: &Path) -> Vec<RunInfo> {
+        let runs = self.runs.lock();
+        let live = runs.values().filter(|e| e.project_root == root && !e.exited.load(Ordering::Acquire));
+        live.map(|e| e.info()).collect()
     }
 
     /// Kills every running process tree at once (shutting down).
@@ -1396,6 +1413,38 @@ fn input_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn scripts_without_the_execute_bit_run_through_sh() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("gradlew");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let inv = || Invocation {
+            program: script.clone(),
+            args: vec!["build".into()],
+            raw_args: false,
+            shell: false,
+            display: "./gradlew build".into(),
+        };
+        let mut plain = inv();
+        sh_for_unexecutable(&mut plain);
+        assert_eq!(plain.program, PathBuf::from("/bin/sh"));
+        assert_eq!(plain.args, [script.to_string_lossy().as_ref(), "build"]);
+        assert_eq!(plain.display, "./gradlew build");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut executable = inv();
+        sh_for_unexecutable(&mut executable);
+        assert_eq!(executable.program, script);
+        // Not a `#!` script (a binary that lost its mode): left to fail as it is.
+        std::fs::write(&script, b"\x7fELF").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut binary = inv();
+        sh_for_unexecutable(&mut binary);
+        assert_eq!(binary.program, script);
+    }
 
     #[test]
     fn shell_lines_use_cmd_verbatim_on_windows() {

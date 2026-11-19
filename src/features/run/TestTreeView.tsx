@@ -14,9 +14,10 @@ import {
 } from "@/ui";
 import { useOccurrenceNavigator } from "@/workbench/contributions";
 import { openTarget } from "./navigate";
-import { nodeStatus, type TestNode, type TestResults, type TestStatus } from "./testing";
+import { formatDuration, nodeDuration, nodeStatus, type TestNode, type TestResults, type TestStatus } from "./testing";
 import { parseComparison } from "./testing/comparison";
 import { TEST_TREE_FOCUS, testTree } from "./testTree";
+import { ExportTestResultsDialog } from "./ExportTestResultsDialog";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -57,28 +58,6 @@ export function showTestDiff(node: TestNode): boolean {
     right: { text: c.actual, label: c.labels?.actual ?? "Actual" },
   });
   return true;
-}
-
-export function formatDuration(ms: number | undefined): string {
-  if (ms === undefined) return "";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1).replace(/\.?0+$/, "")} s`;
-  const m = Math.floor(ms / 60_000);
-  return `${m} m ${Math.round((ms % 60_000) / 1000)} s`;
-}
-
-function totalDuration(node: TestNode): number | undefined {
-  if (node.durationMs !== undefined) return node.durationMs;
-  let sum = 0;
-  let any = false;
-  for (const c of node.children) {
-    const d = totalDuration(c);
-    if (d !== undefined) {
-      sum += d;
-      any = true;
-    }
-  }
-  return any ? sum : undefined;
 }
 
 export function StatusIcon({ status }: { status: TestStatus | null }) {
@@ -134,6 +113,8 @@ export interface TestTreeViewProps {
   selected: string | null;
   onSelect: (id: string | null) => void;
   running: boolean;
+  /** The run configuration's name (Export Test Results names the file after it). */
+  name?: string;
   /** Run / Debug the selected tests (context menu); absent when the configuration can't be narrowed. */
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
@@ -146,6 +127,7 @@ export function TestTreeView({
   selected,
   onSelect,
   running,
+  name = "Tests",
   onRunTests,
   canRunTests,
 }: TestTreeViewProps) {
@@ -158,6 +140,7 @@ export function TestTreeView({
       return next;
     });
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const tree = useRef<TreeHandle>(null);
   const selectedKeys = useMemo(
@@ -240,13 +223,17 @@ export function TestTreeView({
     return set;
   }, [expanded, roots]);
 
+  // Export Test Results waits for the run to finish.
+  const canExport = !running && !results.isEmpty;
   // Collapse All leaves the top-level suites in view, as IDEA's test tree does.
   useEffect(() => {
     testTree.expandAll = () => setExpanded(suiteIds(results.roots));
     testTree.collapseAll = () => setExpanded(new Set());
+    testTree.exportResults = canExport ? () => setExporting(true) : null;
     return () => {
       testTree.expandAll = null;
       testTree.collapseAll = null;
+      testTree.exportResults = null;
     };
   });
   const hasSuites = roots.some((n) => n.children.length > 0);
@@ -317,7 +304,18 @@ export function TestTreeView({
           title="Next Failed Test"
           disabled={!hasNextFailed}
         />
+        <IconButton
+          icon="export"
+          size="small"
+          iconSize={16}
+          title="Export Test Results…"
+          disabled={!canExport}
+          onClick={() => setExporting(true)}
+        />
       </div>
+      {exporting && (
+        <ExportTestResultsDialog results={results} name={name} cwd={cwd} onClose={() => setExporting(false)} />
+      )}
       <Tree<TestNode>
         aria-label="Test results"
         className={styles.testTree}
@@ -342,7 +340,7 @@ export function TestTreeView({
         onContextMenu={contextMenu}
         renderNode={(n) => {
           const s = nodeStatus(n);
-          const d = totalDuration(n);
+          const d = nodeDuration(n);
           return (
             <span className={styles.testRow}>
               <StatusIcon status={s} />

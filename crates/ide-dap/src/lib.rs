@@ -420,6 +420,22 @@ fn add_flutter_device(arguments: &mut Value, device: Value) {
     }
 }
 
+/// The source a `navigate` tool event points at (1-based there). A `package:` location comes
+/// with the file the adapter resolved it to.
+fn flutter_navigation(body: &Value) -> Option<ide_core::event::DebugEvent> {
+    if body.get("kind")?.as_str()? != "navigate" {
+        return None;
+    }
+    let data = body.get("data")?;
+    let uri = data.get("resolvedFileUri").or_else(|| data.get("fileUri"))?.as_str()?;
+    let position = |key| data.get(key)?.as_u64().map(|n| n.saturating_sub(1) as u32);
+    Some(ide_core::event::DebugEvent::FlutterNavigate {
+        path: kotlin_lsp::source_path(uri)?.into(),
+        line: position("line")?,
+        column: position("column").unwrap_or(0),
+    })
+}
+
 fn no_session(s: DebugSessionId) -> IdeError {
     IdeError::not_found(format!("no debug session {}", s.0))
 }
@@ -1128,7 +1144,7 @@ impl DebugManager {
         let mut launch = if launch_in_config {
             None
         } else {
-            let reply = s.conn.send_request(request, arguments.clone())?;
+            let reply = s.conn.send_request(request, arguments.clone()).await?;
             Some(Box::pin(async move { reply.await.unwrap_or(Err(DapError::Closed)) }))
         };
         let mut initialized = s.initialized.subscribe();
@@ -1206,7 +1222,7 @@ impl DebugManager {
         }
         if s.supports("supportsConfigurationDoneRequest") {
             if s.adapter == kotlin::ADAPTER {
-                drop(s.conn.send_request("configurationDone", json!({}))?);
+                drop(s.conn.send_request("configurationDone", json!({})).await?);
             } else {
                 s.conn.request_timeout("configurationDone", Value::Null, REQUEST_TIMEOUT).await?;
             }
@@ -1220,7 +1236,7 @@ impl DebugManager {
             }
             None => {
                 // GDB 15: the breakpoints are in, so its `run` cannot miss them.
-                let reply = s.conn.send_request(request, arguments)?;
+                let reply = s.conn.send_request(request, arguments).await?;
                 reply.await.unwrap_or(Err(DapError::Closed))?;
             }
         }
@@ -1230,7 +1246,7 @@ impl DebugManager {
         // never answered), and the page is already loading: its document and first scripts
         // are not in the list.
         if js_debug::is_page(s) {
-            let answer = s.conn.send_request("enableNetworking", js_debug::networking_arguments())?;
+            let answer = s.conn.send_request("enableNetworking", js_debug::networking_arguments()).await?;
             let session = s.clone();
             // Not waited for here: the page runs on. A refusal is told to the Network view,
             // which would otherwise wait for requests that never come.

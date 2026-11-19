@@ -63,6 +63,10 @@ pub struct PluginJavaAgent {
     pub file_name: String,
     /// The optional argument passed after `=`.
     pub args: Option<String>,
+    /// Extra JVM flags from `vmOptions` (API 1.14).
+    pub vm_options: Vec<String>,
+    /// When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime.
+    pub jdk: Option<String>,
     /// The jar still has the hash recorded when `java.agent` was granted.
     pub approved: bool,
 }

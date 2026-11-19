@@ -170,6 +170,12 @@ pub struct CommitSettings {
     pub double_click_opens_diff: Option<bool>,
     /// Team conventions for Generate Commit Message with Agent, added to its prompt.
     pub agent_instructions: String,
+    /// The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent.
+    pub agent: String,
+    /// That agent's model for commit messages; empty keeps the model the agent would use.
+    pub agent_model: String,
+    /// That model's thinking level for commit messages; empty keeps the agent's.
+    pub agent_effort: String,
 }
 
 impl Default for CommitSettings {
@@ -192,6 +198,9 @@ impl Default for CommitSettings {
             disabled_plugin_checks: Vec::new(),
             double_click_opens_diff: None,
             agent_instructions: String::new(),
+            agent: String::new(),
+            agent_model: String::new(),
+            agent_effort: String::new(),
         }
     }
 }
@@ -306,6 +315,23 @@ pub struct SqlResolutionScope {
     pub data_source: String,
     /// Schema unqualified names resolve in; empty for the data source's default.
     pub schema: String,
+}
+
+/// Build, Execution, Deployment › Compiler (Build tool window behaviour).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BuildSettings {
+    /// When to open the Build tool window: `always` | `onError` | `never`.
+    pub open_tool_window: String,
+    /// When to focus the Build tool window: `always` | `onError` | `never`.
+    pub focus_tool_window: String,
+}
+
+impl Default for BuildSettings {
+    fn default() -> Self {
+        // Builds open the tool window without taking focus.
+        Self { open_tool_window: "always".into(), focus_tool_window: "never".into() }
+    }
 }
 
 /// Build, Execution, Deployment › Console.
@@ -448,6 +474,9 @@ pub struct TerminalSettings {
     /// Shell command line; empty = the login shell.
     pub shell_path: String,
     pub tab_name: String,
+    /// Title a program sets (OSC 0/2) as the tab's name: `running` (while a command runs),
+    /// `always`, or `off`.
+    pub app_title_as_tab_name: String,
     pub audible_bell: bool,
     pub close_on_exit: bool,
     pub mouse_reporting: bool,
@@ -483,6 +512,7 @@ impl Default for TerminalSettings {
             env: BTreeMap::new(),
             shell_path: String::new(),
             tab_name: "Local".into(),
+            app_title_as_tab_name: "running".into(),
             audible_bell: true,
             close_on_exit: true,
             mouse_reporting: true,

@@ -1,13 +1,21 @@
 /** Built-in MCP server status and client configurations. */
 import { useEffect, useState } from "react";
 import { commands, call, isTauri, onIdeEvent, type McpServerStatus } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { backgroundProjectState, useBackgroundProjects } from "@/platform/mcpBackground";
+import { basename, useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
 import { useTx } from "@/platform/i18n";
+import { useRemote } from "@/platform/remote";
 import { Button, Input, T, copyText } from "@/ui";
-import { Row } from "../components/Form";
+import { GlobListEditor, Row, SettingNumber, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
-import { DEFAULT_MCP_ADDRESS, MCP_PORT_LIMITS } from "../model/schema";
+import {
+  DEFAULT_MCP_ADDRESS,
+  MCP_BACKGROUND_IDLE_LIMITS,
+  MCP_BACKGROUND_MODES,
+  MCP_BACKGROUND_PROJECT_LIMITS,
+  MCP_PORT_LIMITS,
+} from "../model/schema";
 import { useSettingsDialog } from "../model/staging";
 import type { PageSpec } from "./spec";
 import styles from "./McpServer.module.css";
@@ -139,6 +147,150 @@ function McpServerEndpoint() {
   );
 }
 
+/**
+ * Background projects belong to OpenIDEA on this computer: a remote window's settings are its
+ * host's, whose server serves only the project open in that window.
+ */
+function useRemoteHost(): boolean {
+  return useRemote((s) => s.session !== null);
+}
+
+/** The folders, the idle time and the limit apply only while a mode serves something. */
+function useBackgroundOff(): boolean {
+  const [mode] = useSetting<string>("mcpServer.backgroundProjects");
+  return useRemoteHost() || mode === "off";
+}
+
+function BackgroundMode() {
+  return (
+    <SettingSelect
+      k="mcpServer.backgroundProjects"
+      label="Serve without a window"
+      options={BACKGROUND_MODES}
+      disabled={useRemoteHost()}
+      hint="Decides which folders without a window agents can use: a project opens on the first tool call for a path inside it and unloads when idle. Trusted projects adds trusted projects, trusted recent projects and repositories inside trusted locations to the folders below; Listed projects serves only the folders below. An untrusted folder gets read-only tools."
+    />
+  );
+}
+
+function BackgroundFolders() {
+  const [paths, setPaths] = useSetting<string[]>("mcpServer.backgroundProjectPaths");
+  const off = useBackgroundOff();
+  return (
+    <Row
+      label="Folders"
+      stacked
+      disabled={off}
+      hint="Folders served without a window: a tool call for a path inside one opens that folder as a project."
+    >
+      <div inert={off} className={off ? styles.off : undefined}>
+        <GlobListEditor
+          value={paths}
+          onChange={setPaths}
+          placeholder="/path/to/project"
+          emptyText="No folders listed"
+          itemLabel="Folder"
+          aria-label="Folders"
+          browse={{ directory: true, title: "Choose Folder to Serve" }}
+        />
+      </div>
+    </Row>
+  );
+}
+
+function BackgroundIdleMinutes() {
+  return (
+    <SettingNumber
+      k="mcpServer.backgroundIdleMinutes"
+      label="Unload after"
+      {...MCP_BACKGROUND_IDLE_LIMITS}
+      integer
+      unit="min"
+      disabled={useBackgroundOff()}
+      hint="Minutes without a request before a background project unloads. 0 never unloads."
+    />
+  );
+}
+
+function BackgroundProjectLimit() {
+  return (
+    <SettingNumber
+      k="mcpServer.backgroundProjectLimit"
+      label="Project limit"
+      {...MCP_BACKGROUND_PROJECT_LIMITS}
+      integer
+      disabled={useBackgroundOff()}
+      hint="Most background projects loaded at once. At the limit the project idle the longest is unloaded; when all are busy, the request is refused."
+    />
+  );
+}
+
+/** The projects loaded now. Unloading acts at once: it is not an edit of the settings. */
+function BackgroundOpenNow() {
+  const tx = useTx();
+  const loaded = useBackgroundProjects();
+  const remote = useRemoteHost();
+  const projects = remote ? [] : loaded;
+  const [mode] = useSetting<string>("mcpServer.backgroundProjects");
+  const [enabled] = useSetting<boolean>("mcpServer.enabled");
+  const unload = (root: string) => void call(commands.mcpUnloadBackgroundProject(root)).catch(() => undefined);
+  return (
+    <Row
+      label="Open now"
+      stacked
+      hint="Unloading acts at once. The project loads again on the next tool call that names it, if the mode still serves it."
+    >
+      {projects.length === 0 ? (
+        <span className={styles.status}>
+          {remote ? (
+            <T>A remote host serves only the project open in its window</T>
+          ) : !enabled ? (
+            <T>The MCP server is off</T>
+          ) : mode === "off" ? (
+            <T>Background projects are off</T>
+          ) : (
+            <T>No background projects are loaded</T>
+          )}
+        </span>
+      ) : (
+        <ul className={styles.projects}>
+          {projects.map((project) => {
+            const name = basename(project.root);
+            return (
+              <li key={project.root} className={styles.project}>
+                <div className={styles.projectText}>
+                  <span className={styles.projectName} title={name}>
+                    {name}
+                  </span>
+                  <span className={styles.path} title={project.root}>
+                    {project.root}
+                  </span>
+                  <span className={styles.status}>{backgroundProjectState(project)}</span>
+                </div>
+                <Button
+                  size="small"
+                  className={styles.unload}
+                  aria-label={tx`Unload ${project.root}`}
+                  onClick={() => unload(project.root)}
+                >
+                  <T>Unload</T>
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Row>
+  );
+}
+
+const BACKGROUND_MODE_LABELS: Record<(typeof MCP_BACKGROUND_MODES)[number], string> = {
+  off: "Off",
+  trusted: "Trusted projects",
+  listed: "Listed projects",
+};
+const BACKGROUND_MODES = MCP_BACKGROUND_MODES.map((value) => ({ value, label: BACKGROUND_MODE_LABELS[value] }));
+
 export const MCP_SERVER_PAGE: PageSpec = {
   id: "agents.mcpServer",
   title: "IDE MCP Server",
@@ -223,6 +375,31 @@ export const MCP_SERVER_PAGE: PageSpec = {
           label: "Endpoint",
           keywords: ["Copy HTTP Config", "Copy Stdio Config", "Client configuration", "Status"],
           component: McpServerEndpoint,
+        },
+      ],
+    },
+    {
+      title: "Background projects",
+      options: [
+        {
+          kind: "custom",
+          label: "Serve without a window",
+          keywords: Object.values(BACKGROUND_MODE_LABELS),
+          component: BackgroundMode,
+        },
+        {
+          kind: "custom",
+          label: "Folders",
+          keywords: ["Choose Folder to Serve", "background projects", "listed"],
+          component: BackgroundFolders,
+        },
+        { kind: "custom", label: "Unload after", component: BackgroundIdleMinutes },
+        { kind: "custom", label: "Project limit", component: BackgroundProjectLimit },
+        {
+          kind: "custom",
+          label: "Open now",
+          keywords: ["Unload", "background projects", "No background projects are loaded"],
+          component: BackgroundOpenNow,
         },
       ],
     },

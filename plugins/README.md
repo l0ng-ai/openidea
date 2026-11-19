@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.13.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.14.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -144,7 +144,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                                                                                          | no            |
 | `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
 | `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
-| `javaAgents`        | `path` (a jar in the package), `args?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; _Java agents_)                                                                                                       | no            |
+| `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; _Java agents_)                                                      | no            |
 | `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
 | `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
@@ -425,6 +425,56 @@ are always available. Calling a gated function without its capability returns
 (Git Toolbox still shows the branch without `vcs.write`).
 
 ## 3. Writing code (Rust SDK)
+
+### API 1.14
+
+API 1.14.0 is in development on `main`. Use `engines.openidea = "^1.14"` and the
+matching SDK. Plugins for 1.13 and earlier keep working. New in 1.14:
+
+- **Hover-revealed line actions.** The optional `hover-actions` export
+  (world `plugin-hover-actions`, SDK `HoverActions`, registration
+  `register_plugin!(Plugin, hover_actions)`) contributes clickable actions at
+  the left edge of an editor line. Declare `kinds = ["hover-actions"]` under
+  `[[contributes.providers]]`. The host reveals an action while the pointer is
+  in the first four character columns of the editing area for any line in its
+  `start-line`/`end-line` range, anchors it to `line`, and never covers the
+  code text. The released `language-features` interfaces stay unchanged.
+
+Example:
+
+```rust
+#[derive(Default)]
+struct MyPlugin;
+impl openidea_plugin::HoverActions for MyPlugin {
+    fn hover_actions(&mut self, doc: &openidea_plugin::language_features::Document)
+        -> Vec<openidea_plugin::HoverAction>
+    {
+        vec![openidea_plugin::HoverAction {
+            line: 0,
+            start_line: 0,
+            end_line: 10,
+            icon: Some("run".into()),
+            label: "Call this method".into(),
+            tooltip: Some("Call this method".into()),
+            command: "call".into(),
+            argument: None,
+        }]
+    }
+}
+openidea_plugin::register_plugin!(MyPlugin, hover_actions);
+```
+
+- **Status bar item menus.** `host::set_status_item_menu(id, item, &menu)` and
+  `set_window_status_item_menu` (`ui.set-status-item-menu` /
+  `set-window-status-item-menu`) attach a menu to a status bar item: clicking the item
+  opens it anchored to the item instead of running `command`. Entries are actions (label,
+  optional description, one of the plugin's commands and its argument), separators and
+  headers, at most 64.
+
+- **JVM options on Java agents.** `[[contributes.javaAgents]]` accepts optional
+  `vmOptions` (flags inserted before `-javaagent:`) and `jdk = "jetbrains"` so
+  JetBrains Runtime–only flags are skipped on other JDKs. Same `java.agent`
+  grant. See _Java agents_.
 
 ### API 1.13
 
@@ -746,6 +796,7 @@ then run `openidea-plugin check`.
 | `host::storage::{get, set, delete, keys}`                                                                      | `storage`                                    | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                                                                                                                                                                  |
 | `host::set_status_item(id, item)`, `remove_status_item`                                                        | `ui`                                         | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                                                                                                                                                      |
 | `host::set_window_status_item(id, item)`, `remove_window_status_item(id)`                                      | `ui.{set,remove}-window-status-item`         | API 1.4: window-only override; removed on window close or plugin stop; removing falls back to the global item. Click runs its command in that window.                                                                                                                                                                                                     |
+| `host::set_status_item_menu(id, item, menu)`, `set_window_status_item_menu`                                    | `ui.set-{,window-}status-item-menu`          | API 1.14: the item with a menu that a click opens instead of running its command; actions run declared commands with their argument.                                                                                                                                                                                                                      |
 | `host::execute_command(id, arg)` → `Option<String>`                                                            | `command-runner.execute`                     | API 1.4: requires high-risk `ide.commands` for IDE actions and other plugins; this plugin's own commands are exempt. Stable IDE action or `plugin.<plugin-id>.<command-id>` in the invoking window. IDE actions return none; plugin commands return their result. Unknown ids are not-found; at most 8 nested calls, no re-entry into a waiting instance. |
 | `host::ipc_connect(name)` → `Connection`                                                                       | `ipc.connect`                                | API 1.4: `write(bytes)`, `read(max_bytes, timeout_ms)`, `close()`; requires `ipc:<path>`, at most 8 connections, closed on drop or plugin stop. Runs on the project server in remote projects.                                                                                                                                                            |
 | `host::secret_set(name, value)`, `secret_delete(name)`                                                         | `secrets.{set,delete}`                       | API 1.4: requires `secrets` and a declared name. Never returns the value.                                                                                                                                                                                                                                                                                 |
@@ -1578,6 +1629,7 @@ and register `register_plugin!(MyPlugin, language_features)`:
 | `implementation`      | `implementation(doc, at)`                        | Merged with LSP Go to Implementation, deduplicated by location.                                                                                                                                                                                                                                                                                                 |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with LSP Go to Type Declaration, deduplicated by location.                                                                                                                                                                                                                                                                                               |
 | `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. Icons accept the same names, aliases and declared marker SVG paths as line markers.                                                                                                           |
+| `hover-actions`       | `hover_actions(doc)`                             | Left-edge actions revealed by line-edge hover, with an anchor line and an inclusive trigger line range (API 1.14).                                                                                                                                                                                                                                              |
 
 The optional WIT interface is `language-features`, in worlds
 `plugin-language-features` / `editor-language-features`. Its own `document`
@@ -2332,34 +2384,40 @@ mappings, traces, SQL) can have the IDE load a Java agent into the JVMs it
 starts. Declare the agent; no code is needed:
 
 ```toml
-engines.openidea = "^1.10"
+engines.openidea = "^1.14"
 
 [[contributes.javaAgents]]
 path = "agent/openidea-spring-agent.jar"   # inside the package, like every manifest path
 args = "optional-arguments"                # optional
+vmOptions = ["-XX:+AllowEnhancedClassRedefinition"]  # optional, API 1.14
+jdk = "jetbrains"                          # optional: only those VM options on JBR
 ```
 
 - One agent per plugin. A second declaration, a `path` that leaves the package
   (`..`, an absolute path, a symlink pointing outside) or a missing file is
   refused when the manifest is read, so a bad path fails at install, not at
-  launch. `args` is one line.
+  launch. `args` is one line. `vmOptions` are single flags starting with `-`
+  (no spaces); `jdk` is only `"jetbrains"` when set. Declaring `vmOptions` or
+  `jdk` needs `engines.openidea = "^1.14"`.
 - The declaration derives the optional high-risk capability `java.agent`, "Run
   code inside the Java applications you start". It is not listed under
   `[capabilities]` (a manifest that lists it is refused). On grant the IDE
   records the jar's content hash and checks it again before every launch; a
   changed jar is left out, with a line in the console, until the user approves
-  `java.agent` again in Settings › Plugins. Settings shows the agent's file name
-  and arguments next to the permission, and when the jar no longer matches the
-  approved hash it shows the reason and an **Approve new jar** action. Refusing
-  or revoking it keeps the rest
-  of the plugin working, and the next launch has no agent.
-- The IDE adds one `-javaagent:<absolute path>[=<args>]` argument to the Java
-  command line of **Application**, **Spring Boot** and **JAR Application**
-  configurations, for Run and Debug alike, after the configuration's VM
-  options. Arguments are separate argv items (no shell), so a path with spaces
-  needs no quoting; a shortened command line moves only the classpath into its
-  argument file. The same `-javaagent:` already among the VM options is not
-  added again.
+  `java.agent` again in Settings › Plugins. Settings shows the agent's file name,
+  arguments and JVM options next to the permission, and when the jar no longer
+  matches the approved hash it shows the reason and an **Approve new jar**
+  action. The install dialog's `java.agent` description lists the exact
+  `vmOptions`. Refusing or revoking it keeps the rest of the plugin working, and
+  the next launch has no agent.
+- The IDE adds any `vmOptions`, then one `-javaagent:<absolute path>[=<args>]`,
+  to the Java command line of **Application**, **Spring Boot** and **JAR
+  Application** configurations, for Run and Debug alike, after the
+  configuration's own VM options. A flag the user already set is not duplicated.
+  With `jdk = "jetbrains"`, those VM options are skipped (with a console note)
+  when the launcher is not JetBrains Runtime; the agent still loads. Arguments
+  are separate argv items (no shell), so a path with spaces needs no quoting; a
+  shortened command line moves only the classpath into its argument file.
 - Not in this version: tests (JUnit), Maven and Gradle goals (an Application
   set to _Build and run using: Gradle_ runs as a Gradle task), application
   servers (Tomcat), remote JVM debug, configurations on a run target, and
@@ -2937,7 +2995,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0 and 1.13.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0 and 1.14.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

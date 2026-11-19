@@ -12,6 +12,14 @@ export function buildToolRecovery(message: string) {
     return { body: message, actions: [settings] };
   }
   const actions = downloadJdkActions(message);
+  if (/No plugin found for prefix '[^']+'/.test(message)) {
+    // Offline, or without the user's mirrors: the plugin group metadata is not in the local repository.
+    actions.push({ label: tx("Open Maven Settings"), run: () => void executeAction("file.settings", "build.maven") });
+    const hint = tx(
+      "Maven could not find a plugin the reload uses. In offline mode it must already be in the local repository: turn offline mode off and reload once. Otherwise check the settings.xml and local repository in Maven settings.",
+    );
+    return { body: `${hint}\n\n${message}`, actions };
+  }
   const incompatible = /Can't use Java .* and Gradle .* to import Gradle project/i.test(message);
   const missing = /command not found: ([^\r\n]+)|cannot start ([^\r\n]+?): [^\r\n]*\(os error [23]\)/i.exec(message);
   const command = (missing?.[1] ?? missing?.[2] ?? "").trim().replace(/^["'`]|["'`]$/g, "");

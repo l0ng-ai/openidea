@@ -46,6 +46,10 @@ import { PLAYFUL_AFTER_LIMITS } from "@/platform/agentStatus";
 /** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
 export const DEFAULT_MCP_PORT = 26371;
 export const MCP_PORT_LIMITS = { min: 1, max: 65535 };
+/** Agents › IDE MCP Server › Background projects: the idle minutes (0 = never unload) and the project limit. */
+export const MCP_BACKGROUND_IDLE_LIMITS = { min: 0, max: 1440 };
+export const MCP_BACKGROUND_PROJECT_LIMITS = { min: 1, max: 32 };
+export const MCP_BACKGROUND_MODES = ["off", "trusted", "listed"] as const;
 /** Agents › IDE MCP Server › Listen address: its default (`ide-core::settings::DEFAULT_MCP_ADDRESS`). */
 export const DEFAULT_MCP_ADDRESS = "127.0.0.1";
 
@@ -139,6 +143,14 @@ export interface ValidSettings extends WorkflowSettings {
     port: number;
     /** Keep the bearer token across runs rather than make a new one each run. */
     fixedToken: boolean;
+    /** Which folders without an open window the server still serves. */
+    backgroundProjects: (typeof MCP_BACKGROUND_MODES)[number];
+    /** The folders `listed` serves (and `trusted` serves even when untrusted). */
+    backgroundProjectPaths: string[];
+    /** Minutes a background project may sit idle before it unloads; 0 keeps it until the IDE quits. */
+    backgroundIdleMinutes: number;
+    /** Background projects loaded at once. */
+    backgroundProjectLimit: number;
   };
 }
 
@@ -247,6 +259,10 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     fixedPort: true,
     port: DEFAULT_MCP_PORT,
     fixedToken: false,
+    backgroundProjects: "off",
+    backgroundProjectPaths: [],
+    backgroundIdleMinutes: 30,
+    backgroundProjectLimit: 8,
   },
   ...DEFAULT_WORKFLOW,
 };
@@ -458,6 +474,24 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       fixedPort: bool(obj(root.mcpServer).fixedPort, d.mcpServer.fixedPort),
       port: num(obj(root.mcpServer).port, d.mcpServer.port, MCP_PORT_LIMITS, true),
       fixedToken: bool(obj(root.mcpServer).fixedToken, d.mcpServer.fixedToken),
+      backgroundProjects: oneOf(
+        obj(root.mcpServer).backgroundProjects,
+        MCP_BACKGROUND_MODES,
+        d.mcpServer.backgroundProjects,
+      ),
+      backgroundProjectPaths: [...new Set(stringList(obj(root.mcpServer).backgroundProjectPaths))],
+      backgroundIdleMinutes: num(
+        obj(root.mcpServer).backgroundIdleMinutes,
+        d.mcpServer.backgroundIdleMinutes,
+        MCP_BACKGROUND_IDLE_LIMITS,
+        true,
+      ),
+      backgroundProjectLimit: num(
+        obj(root.mcpServer).backgroundProjectLimit,
+        d.mcpServer.backgroundProjectLimit,
+        MCP_BACKGROUND_PROJECT_LIMITS,
+        true,
+      ),
     },
     ...validateWorkflow(root),
   };

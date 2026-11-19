@@ -1,11 +1,11 @@
 id = "test.language-features"
 name = "Language features fixture"
 version = "0.1.0"
-engines.openidea = "^1.4"
+engines.openidea = "^1.14"
 wasm = "dist/plugin.wasm"
 
 [[contributes.providers]]
-kinds = ["formatting", "signature-help", "document-highlights", "document-links", "code-lenses", "selection-ranges", "folding", "colors", "document-symbols", "implementation", "type-definition", "gutter-actions", "injections"]
+kinds = ["formatting", "signature-help", "document-highlights", "document-links", "code-lenses", "selection-ranges", "folding", "colors", "document-symbols", "implementation", "type-definition", "gutter-actions", "hover-actions", "injections"]
 languages = ["plaintext", "text", "sql"]
 
 [[contributes.providers]]

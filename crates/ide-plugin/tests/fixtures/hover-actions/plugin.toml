@@ -1,0 +1,14 @@
+id = "test.hover-actions"
+name = "Hover actions fixture"
+version = "0.1.0"
+engines.openidea = "^1.14"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["hover-actions"]
+languages = ["plaintext", "text"]
+
+[[contributes.commands]]
+id = "run"
+title = "Run hover action"
+icon = "run"

@@ -2116,6 +2116,23 @@ impl HostApi for PluginApi {
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
     }
 
+    fn check_status_menu(&self, menu: &[ide_plugin::StatusMenuEntry]) -> Result<(), HostError> {
+        let actions: Vec<ide_plugin::NotificationAction> = menu
+            .iter()
+            .filter_map(|entry| match entry {
+                ide_plugin::StatusMenuEntry::Action { label, command, argument, .. } => {
+                    Some(ide_plugin::NotificationAction {
+                        label: label.clone(),
+                        command: command.clone(),
+                        argument: argument.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        check_actions(self, &actions)
+    }
+
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
         let closed = self.shared.closed_clients.lock();
         let blocked = self.shared.prompts_blocked.lock();

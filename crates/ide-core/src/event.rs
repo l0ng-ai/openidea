@@ -36,6 +36,8 @@ pub enum IdeEvent {
     },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
+    /// A project was loaded or unloaded for the MCP server without a window of its own.
+    McpBackgroundProjectsChanged,
     /// A window entered or left full screen, itself or as a member of a full-screen window group.
     WindowFullscreenChanged,
     /// This remote window's connection to its host ended on its own (network loss, the host or
@@ -312,6 +314,8 @@ pub enum LspRefreshKind {
     InlayHints,
     SemanticTokens,
     CodeLens,
+    /// The Dart server published a document's Flutter outline.
+    FlutterOutline,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -370,6 +374,18 @@ pub enum DebugEvent {
     /// `flutter debug_adapter`'s `flutter.appStarted` event (launch and attach): the session is
     /// a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
     FlutterAppStarted,
+    /// The VM Service of a Flutter session's app, which DevTools connects to.
+    FlutterVmService {
+        uri: String,
+        /// The Flutter device the app runs on.
+        device: Option<String>,
+    },
+    /// Flutter's inspector selected a widget: its source, 0-based.
+    FlutterNavigate {
+        path: crate::IpcPath,
+        line: u32,
+        column: u32,
+    },
     /// The session's capabilities changed after it started: fetch them again.
     Capabilities,
     /// The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
