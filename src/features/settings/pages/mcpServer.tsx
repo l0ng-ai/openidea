@@ -147,7 +147,6 @@ function McpServerEndpoint() {
   );
 }
 
-/** Folders served without a window. Staged like every option on the page: they apply on Apply. */
 /**
  * Background projects belong to OpenIDEA on this computer: a remote window's settings are its
  * host's, whose server serves only the project open in that window.
