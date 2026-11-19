@@ -357,9 +357,11 @@ struct TaskFile {
     /// Settings the user chose, re-applied to every new or reloaded session.
     #[serde(default)]
     wanted: Vec<AgentConfigChoice>,
-    /// Option id of a discovered model in `wanted` that still needs a same-session reload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Pending model option id in task files saved before pending settings were stored separately.
+    #[serde(default, skip_serializing)]
     pending_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_switch: Option<PendingModel>,
     /// In the project's own checkout: files already changed when the task started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     before: BTreeMap<String, worktree::Stamp>,
@@ -384,6 +386,26 @@ struct TaskFile {
     title_renamed: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct PendingModel {
+    model: AgentConfigChoice,
+    candidate: Option<AgentConfigValue>,
+    options: Vec<AgentConfigOption>,
+    choices: Vec<AgentConfigChoice>,
+}
+
+impl PendingModel {
+    fn apply(&self, wanted: &mut Vec<AgentConfigChoice>, confirmed: &[AgentConfigOption]) {
+        wanted.retain(|choice| {
+            choice.id != self.model.id
+                && !self.options.iter().any(|o| o.id == choice.id)
+                && !confirmed.iter().any(|o| o.id == choice.id && config::is_per_model_option(o))
+        });
+        wanted.push(self.model.clone());
+        wanted.extend(self.choices.iter().cloned());
+    }
+}
+
 /// The changed files of a checkout, stamped.
 type Snapshot = BTreeMap<String, worktree::Stamp>;
 
@@ -392,8 +414,9 @@ struct TaskState {
     session_id: Option<String>,
     conversation: Conversation,
     wanted: Vec<AgentConfigChoice>,
-    pending_model: Option<String>,
+    pending_model: Option<PendingModel>,
     model_choice: u64,
+    discovering_model: Option<u64>,
     before: Arc<BTreeMap<String, worktree::Stamp>>,
     saved: Option<String>,
     /// See `TaskFile::touched`.
@@ -415,20 +438,40 @@ struct TaskState {
 }
 
 impl TaskState {
-    fn pending_model(&self) -> Option<&AgentConfigChoice> {
-        let id = self.pending_model.as_deref()?;
-        self.wanted.iter().find(|c| c.id == id)
-    }
-
     fn snapshot(&self) -> AgentTask {
         let mut task = self.task.clone();
-        if let Some(choice) = self.pending_model()
-            && let Some(model) = task.config.iter_mut().find(|o| o.id == choice.id)
+        if let Some(pending) = &self.pending_model
+            && let Some(model) = task.config.iter_mut().find(|o| o.id == pending.model.id)
         {
-            model.current = Some(choice.value.clone());
+            model.current = Some(pending.model.value.clone());
+            if let Some(candidate) = &pending.candidate
+                && !model.values.iter().any(|v| v.value == candidate.value)
+            {
+                model.values.push(candidate.clone());
+            }
             task.config.retain(|o| !config::is_per_model_option(o));
+            task.config.extend(pending.options.iter().cloned().map(|mut option| {
+                if let Some(choice) = pending.choices.iter().find(|choice| choice.id == option.id) {
+                    option.current = Some(choice.value.clone());
+                }
+                option
+            }));
         }
         task
+    }
+}
+
+struct DiscoveringModel<'a> {
+    state: &'a Mutex<TaskState>,
+    generation: u64,
+}
+
+impl Drop for DiscoveringModel<'_> {
+    fn drop(&mut self) {
+        let mut s = self.state.lock();
+        if s.discovering_model == Some(self.generation) {
+            s.discovering_model = None;
+        }
     }
 }
 
@@ -796,6 +839,7 @@ impl AgentManager {
             entries: Vec::new(),
             wanted: Vec::new(),
             pending_model: None,
+            pending_switch: None,
             before: BTreeMap::new(),
             saved: None,
             touched: Some(BTreeSet::new()),
@@ -912,6 +956,7 @@ impl AgentManager {
             entries: Vec::new(),
             wanted: req.config,
             pending_model: None,
+            pending_switch: None,
             before,
             saved,
             touched: (req.isolation == Isolation::Local).then(BTreeSet::new),
@@ -948,6 +993,9 @@ impl AgentManager {
             let mut s = task.state.lock();
             if s.task.status == AgentStatus::Archived {
                 return Err(IdeError::invalid("the task is archived"));
+            }
+            if s.discovering_model.is_some() {
+                return Err(IdeError::unavailable("Model settings are still loading"));
             }
             if s.busy {
                 let item = AgentQueued { id: uuid::Uuid::new_v4().simple().to_string(), prompt };
@@ -1068,6 +1116,24 @@ impl AgentManager {
         let task = self.task(id)?;
         let (target, change) = {
             let mut s = task.state.lock();
+            let busy = s.busy;
+            let archived = s.task.status == AgentStatus::Archived;
+            if let Some(pending) = &mut s.pending_model
+                && let Some(target) = pending.options.iter().find(|o| o.id == option)
+            {
+                if archived || busy {
+                    return Err(IdeError::invalid("The pending model settings cannot be changed now"));
+                }
+                if !target.values.iter().any(|v| v.value == value) {
+                    return Err(IdeError::invalid(format!("{} has no value {value}", target.name)));
+                }
+                pending.choices.retain(|c| c.id != option);
+                pending.choices.push(AgentConfigChoice { id: option.to_owned(), value });
+                drop(s);
+                task.persist();
+                task.emit_task();
+                return Ok(());
+            }
             let target = s
                 .task
                 .config
@@ -1075,6 +1141,9 @@ impl AgentManager {
                 .find(|o| o.id == option)
                 .ok_or_else(|| IdeError::not_found("no such setting"))?
                 .clone();
+            if s.pending_model.is_some() && config::is_per_model_option(&target) {
+                return Err(IdeError::invalid("This setting is not available on the selected model"));
+            }
             if !target.values.iter().any(|v| v.value == value) {
                 if target.category.as_deref() != Some("model") {
                     return Err(IdeError::invalid(format!("{} has no value {value}", target.name)));
@@ -1083,8 +1152,12 @@ impl AgentManager {
             } else {
                 let switching_model = target.category.as_deref() == Some("model");
                 if switching_model {
+                    if s.pending_model.is_some() && s.busy {
+                        return Err(IdeError::invalid("The pending model settings cannot be changed now"));
+                    }
                     s.model_choice += 1;
                     s.pending_model = None;
+                    s.discovering_model = None;
                 }
                 let previous_levels = (switching_model && target.current.as_deref() != Some(value.as_str()))
                     .then(|| s.task.config.extract_if(.., |o| config::is_per_model_option(o)).collect::<Vec<_>>());
@@ -1116,33 +1189,19 @@ impl AgentManager {
             && (previous.as_deref() != Some(value.as_str()) || !model_options)
         {
             let provider = task.state.lock().task.provider.clone();
-            let mut levels = self.shared.paths.catalogs.levels(&self.shared, &provider, &value);
-            let mut error = None;
-            if levels.is_none()
-                && let Some(spec) = self.shared.spec(&provider)
-            {
-                let (catalog, flight) = self.shared.paths.catalogs.request(&self.shared, spec, false, Some(&value));
-                error = catalog.error;
-                if let Some(mut ready) = flight {
-                    while !*ready.borrow_and_update() {
-                        if ready.changed().await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                levels = self.shared.paths.catalogs.levels(&self.shared, &provider, &value);
-            }
+            let levels = self.shared.paths.catalogs.load_levels(&self.shared, &provider, &value).await;
             // Another selection may have superseded this discovery while it was waiting.
             if task.state.lock().model_choice != model_choice {
                 return Ok(());
             }
-            let Some(levels) = levels else {
-                restore_config_choice(&task, &target, &value, previous.as_deref(), model_choice, previous_levels);
-                task.persist();
-                task.emit_task();
-                return Err(IdeError::unavailable(
-                    error.unwrap_or_else(|| "The agent did not report settings for the selected model".into()),
-                ));
+            let levels = match levels {
+                Ok(levels) => levels,
+                Err(error) => {
+                    restore_config_choice(&task, &target, &value, previous.as_deref(), model_choice, previous_levels);
+                    task.persist();
+                    task.emit_task();
+                    return Err(IdeError::unavailable(error));
+                }
             };
             let mut s = task.state.lock();
             if s.model_choice != model_choice {
@@ -1265,6 +1324,7 @@ impl AgentManager {
                 entries,
                 wanted: s.wanted.clone(),
                 pending_model: None,
+                pending_switch: None,
                 before: (*s.before).clone(),
                 saved: s.saved.clone(),
                 touched: s.touched.as_deref().cloned(),
@@ -1310,6 +1370,8 @@ impl AgentManager {
                 };
                 s.session_id = None;
                 s.pending_model = None;
+                s.model_choice += 1;
+                s.discovering_model = None;
                 s.conversation = Conversation::default();
                 // The fresh session reports its own usage; nothing carries over.
                 s.task.usage = None;
@@ -1908,6 +1970,24 @@ impl Task {
         let mut task = file.task;
         config::add_client_options(&task.provider, &mut task.config);
         let conversation = Conversation::restore(file.entries, file.subagents);
+        let mut wanted = file.wanted;
+        let pending_model = file.pending_switch.or_else(|| {
+            let id = file.pending_model?;
+            let index = wanted.iter().position(|choice| choice.id == id)?;
+            let model = wanted.remove(index);
+            if let Some(value) = task.model.clone() {
+                wanted.push(AgentConfigChoice { id, value });
+            }
+            let catalog = shared.paths.catalogs.cached(&shared, &task.provider);
+            let candidate = catalog
+                .config
+                .iter()
+                .find(|o| o.category.as_deref() == Some("model"))
+                .and_then(|o| o.values.iter().find(|v| v.value == model.value))
+                .cloned();
+            let options = catalog.thought_levels.get(&model.value).cloned().unwrap_or_default();
+            Some(PendingModel { model, candidate, options, choices: Vec::new() })
+        });
         Arc::new(Self {
             id: task.id.clone(),
             shared,
@@ -1915,9 +1995,10 @@ impl Task {
                 task,
                 session_id: file.session_id,
                 conversation,
-                wanted: file.wanted,
-                pending_model: file.pending_model,
+                wanted,
+                pending_model,
                 model_choice: 0,
+                discovering_model: None,
                 before: Arc::new(file.before),
                 saved: file.saved,
                 touched: file.touched.map(Arc::new),
@@ -2111,7 +2192,8 @@ impl Task {
                 session_id: s.session_id.clone(),
                 entries: s.conversation.main.entries.clone(),
                 wanted: s.wanted.clone(),
-                pending_model: s.pending_model.clone(),
+                pending_model: None,
+                pending_switch: s.pending_model.clone(),
                 before: (*s.before).clone(),
                 saved: s.saved.clone(),
                 touched: s.touched.as_deref().cloned(),
@@ -2264,13 +2346,18 @@ impl Task {
         let candidate = self.shared.paths.catalogs.fresh_model(&self.shared, &spec, &value).ok_or_else(|| {
             IdeError::invalid(format!("{} has no value {value} in the current model catalog", target.name))
         })?;
-        let model_choice = {
+        let selection = {
             let mut s = self.state.lock();
+            if s.task.status == AgentStatus::Archived {
+                return Err(IdeError::invalid("the task is archived"));
+            }
             s.model_choice += 1;
-            s.model_choice
+            s.discovering_model = Some(s.model_choice);
+            DiscoveringModel { state: &self.state, generation: s.model_choice }
         };
+        let model_choice = selection.generation;
         // A prompt starting during the switch must not grab the peer we're about to recycle.
-        let _connecting = self.connecting.lock().await;
+        let connecting = self.connecting.lock().await;
         {
             let s = self.state.lock();
             if s.model_choice != model_choice {
@@ -2293,16 +2380,16 @@ impl Task {
             Ok(None)
         };
 
-        let accepted = {
-            let mut s = self.state.lock();
-            if s.model_choice != model_choice {
-                return Ok(());
-            }
-            if s.task.status == AgentStatus::Archived {
-                return Err(IdeError::invalid("the task is archived"));
-            }
-            let pending = match result {
-                Ok(Some(reply)) => {
+        let refused = match result {
+            Ok(Some(reply)) => {
+                let (config, model) = {
+                    let mut s = self.state.lock();
+                    if s.model_choice != model_choice {
+                        return Ok(());
+                    }
+                    if s.task.status == AgentStatus::Archived {
+                        return Err(IdeError::invalid("the task is archived"));
+                    }
                     if let Some(options) = reply.get("configOptions") {
                         config::merge_update(&mut s.task.config, options);
                     } else if s.task.model.as_deref() != Some(value.as_str()) {
@@ -2321,36 +2408,66 @@ impl Task {
                     model.current = Some(value.clone());
                     s.task.model = Some(value.clone());
                     sync_usage_context_size(&mut s.task);
-                    false
-                }
-                refused => {
-                    if s.session_id.is_none()
-                        || live.as_ref().is_some_and(|l| !l.resumable)
-                        || self.start_fresh.load(Ordering::Acquire)
-                    {
-                        return Err(IdeError::unavailable(
-                            refused.err().unwrap_or_else(|| "The agent does not support resuming this session.".into()),
-                        ));
-                    }
-                    if s.busy || !s.background_tasks.is_empty() || !self.permissions.lock().is_empty() {
-                        return Err(IdeError::invalid("wait until the agent is done"));
-                    }
-                    true
-                }
-            };
-            s.wanted.retain(|c| c.id != target.id);
-            s.pending_model = pending.then(|| target.id.clone());
-            s.wanted.push(AgentConfigChoice { id: target.id, value });
-            (!pending).then(|| {
-                let model = s.task.model.clone().filter(|_| s.task.config.iter().any(config::is_per_model_option));
-                (s.task.config.clone(), model)
-            })
+                    s.pending_model = None;
+                    s.wanted.retain(|c| c.id != target.id);
+                    s.wanted.push(AgentConfigChoice { id: target.id, value });
+                    let model = s.task.model.clone().filter(|_| s.task.config.iter().any(config::is_per_model_option));
+                    (s.task.config.clone(), model)
+                };
+                self.shared.remember(&provider, Some(&config), None, model.as_deref());
+                self.persist();
+                self.emit_task();
+                return Ok(());
+            }
+            refused => refused,
         };
-        if let Some((config, model)) = accepted {
-            self.shared.remember(&provider, Some(&config), None, model.as_deref());
-        } else {
-            self.recycle_resumable_session();
+        {
+            let s = self.state.lock();
+            if s.model_choice != model_choice {
+                return Ok(());
+            }
+            if s.session_id.is_none()
+                || live.as_ref().is_some_and(|l| !l.resumable)
+                || self.start_fresh.load(Ordering::Acquire)
+            {
+                return Err(IdeError::unavailable(
+                    refused.err().unwrap_or_else(|| "The agent does not support resuming this session.".into()),
+                ));
+            }
+            if s.busy || !s.background_tasks.is_empty() || !self.permissions.lock().is_empty() {
+                return Err(IdeError::invalid("wait until the agent is done"));
+            }
         }
+        // Catalog discovery never owns the chat session. Let a newer model choice supersede it.
+        drop(connecting);
+        let options = self.shared.paths.catalogs.load_levels(&self.shared, &provider, &value).await;
+        let _connecting = self.connecting.lock().await;
+        {
+            let mut s = self.state.lock();
+            if s.model_choice != model_choice {
+                return Ok(());
+            }
+            if s.task.status == AgentStatus::Archived {
+                return Err(IdeError::invalid("the task is archived"));
+            }
+            if s.busy || !s.background_tasks.is_empty() || !self.permissions.lock().is_empty() {
+                return Err(IdeError::invalid("wait until the agent is done"));
+            }
+            let options = options.map_err(IdeError::unavailable)?;
+            let choices = s
+                .pending_model
+                .take()
+                .filter(|pending| pending.model.value == value)
+                .map(|pending| pending.choices)
+                .unwrap_or_default();
+            s.pending_model = Some(PendingModel {
+                model: AgentConfigChoice { id: target.id, value },
+                candidate: Some(candidate),
+                options,
+                choices,
+            });
+        }
+        self.recycle_resumable_session();
         self.persist();
         self.emit_task();
         Ok(())
@@ -2612,10 +2729,9 @@ impl Task {
         }
         let (provider_id, cwd, saved, pending) = {
             let s = self.state.lock();
-            let pending = s.pending_model().map(|choice| (choice.clone(), s.task.model.clone()));
-            (s.task.provider.clone(), s.task.cwd.0.clone(), s.session_id.clone(), pending)
+            (s.task.provider.clone(), s.task.cwd.0.clone(), s.session_id.clone(), s.pending_model.clone())
         };
-        let pending_model = pending.as_ref().map(|(choice, _)| choice);
+        let pending_model = pending.as_ref();
         let raw_spec = self.shared.spec(&provider_id).ok_or_else(|| format!("unknown agent {provider_id}"))?;
         let can_fallback =
             raw_spec.driver == provider::Driver::Copilot && !self.shared.uses_copilot_acp_fallback(&raw_spec);
@@ -2641,22 +2757,12 @@ impl Task {
         let live = match opened {
             Ok(live) => live,
             Err(err) => {
-                if let Some((choice, previous)) = pending {
-                    let mut s = self.state.lock();
-                    if s.pending_model() == Some(&choice) {
-                        s.pending_model = None;
-                        s.wanted.retain(|c| c.id != choice.id);
-                        if let Some(model) = s.task.config.iter_mut().find(|o| o.id == choice.id) {
-                            model.current.clone_from(&previous);
-                        }
-                        s.task.model.clone_from(&previous);
-                        if let Some(value) = previous {
-                            s.wanted.push(AgentConfigChoice { id: choice.id, value });
-                        }
-                        drop(s);
-                        self.persist();
-                        self.emit_task();
-                    }
+                let mut s = self.state.lock();
+                if pending.is_some() && s.pending_model == pending {
+                    s.pending_model = None;
+                    drop(s);
+                    self.persist();
+                    self.emit_task();
                 }
                 return Err(err.message);
             }
@@ -2671,7 +2777,7 @@ impl Task {
         spec: provider::ProviderSpec,
         cwd: &Path,
         saved: Option<String>,
-        pending_model: Option<&AgentConfigChoice>,
+        pending_model: Option<&PendingModel>,
     ) -> Result<Live, SessionOpenError> {
         let launch_cwd = cwd.to_path_buf();
         let mut spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
@@ -2697,14 +2803,15 @@ impl Task {
             }
         });
         // Speaks ACP v1 or v2, whichever the agent chooses; the task sees v1 either way.
-        let client = acp::Dialect::wrap(Arc::new(Client { task: Arc::downgrade(self) }));
+        let client = Client::new(self, saved.as_deref().filter(|_| pending_model.is_some()));
+        let handler = acp::Dialect::wrap(client.clone());
         let raw_peer =
-            (self.shared.connector)(&spec, cwd, client.clone(), on_stderr).map_err(|e| SessionOpenError {
+            (self.shared.connector)(&spec, cwd, handler.clone(), on_stderr).map_err(|e| SessionOpenError {
                 message: format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command),
                 allow_acp_fallback: !native::copilot::is_missing_binary_error(&e),
             })?;
         let mut stop_on_err = KillOnDrop(Some(raw_peer.clone()));
-        let peer = acp::Conn::new(raw_peer, client);
+        let peer = acp::Conn::new(raw_peer, handler);
 
         let init = peer.initialize(&client_info()).await.map_err(|e| {
             let is_auth = matches!(&e, RpcError::Server { code, message, .. } if acp::auth_required(*code, message));
@@ -2803,7 +2910,13 @@ impl Task {
 
         // The session's settings, then the user's choices on top.
         // A session that reports none keeps the last known ones, but what is set is unknown.
-        let reported = config::options_of(&result);
+        let mut reported = config::options_of(&result);
+        if let Some(update) = client.take_opening_config()
+            && let Some(config) = update.get("configOptions")
+            && reported.iter().all(|o| o.category.as_deref() != Some("model"))
+        {
+            config::merge_update(&mut reported, config);
+        }
         let known = !reported.is_empty();
         if known {
             self.shared.remember(provider_id, Some(&reported), None, model_of(&reported).as_deref());
@@ -2811,19 +2924,33 @@ impl Task {
         let (mut options, mut wanted) = {
             let s = self.state.lock();
             let options = if known { reported } else { s.task.config.clone() };
-            let wanted = s.wanted.clone();
+            let mut wanted = s.wanted.clone();
+            if let Some(pending) = pending_model {
+                pending.apply(&mut wanted, &s.task.config);
+            }
             (options, wanted)
         };
         config::add_client_options(provider_id, &mut options);
         // Changing model can replace the effort / context-tier choices; validate those only afterwards.
-        wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id) {
-            Some(o) if o.category.as_deref() == Some("model") => 0,
-            Some(o) if config::is_per_model_option(o) => 2,
-            _ => 1,
+        wanted.sort_by_key(|c| {
+            if let Some(pending) = pending_model {
+                if c == &pending.model {
+                    return 0;
+                }
+                if pending.choices.contains(c) {
+                    return 2;
+                }
+            }
+            match options.iter().find(|o| o.id == c.id) {
+                Some(o) if o.category.as_deref() == Some("model") => 0,
+                Some(o) if config::is_per_model_option(o) => 2,
+                _ => 1,
+            }
         });
         let mut model_options = known;
         for choice in &wanted {
-            let pending = pending_model == Some(choice);
+            let pending = pending_model.is_some_and(|p| &p.model == choice);
+            let explicit = pending_model.is_some_and(|p| p.choices.contains(choice));
             if pending
                 && !options.iter().any(|o| {
                     o.id == choice.id
@@ -2833,6 +2960,19 @@ impl Task {
             {
                 return Err(SessionOpenError {
                     message: format!("The reloaded session does not offer model {}.", choice.value),
+                    allow_acp_fallback: false,
+                });
+            }
+            if explicit
+                && (!model_options
+                    || !options.iter().any(|o| {
+                        o.id == choice.id
+                            && config::is_per_model_option(o)
+                            && o.values.iter().any(|v| v.value == choice.value)
+                    }))
+            {
+                return Err(SessionOpenError {
+                    message: format!("The selected model no longer offers {} value {}.", choice.id, choice.value),
                     allow_acp_fallback: false,
                 });
             }
@@ -2847,7 +2987,7 @@ impl Task {
             if config::is_per_model_option(&o) && !model_options {
                 continue;
             }
-            let already = known && o.current.as_deref() == Some(choice.value.as_str());
+            let already = (known || explicit) && o.current.as_deref() == Some(choice.value.as_str());
             if already || !o.values.iter().any(|v| v.value == choice.value) {
                 continue;
             }
@@ -2856,14 +2996,30 @@ impl Task {
             params["sessionId"] = json!(session_id);
             match peer.request::<_, Value>(method, params, None).await {
                 Ok(reply) => {
-                    if pending && !config::accepts_model(&reply, &o.id, &choice.value) {
+                    let observed = client.take_opening_config();
+                    let report =
+                        if reply.get("configOptions").is_some() { &reply } else { observed.as_ref().unwrap_or(&reply) };
+                    if pending && !config::accepts_model(report, &o.id, &choice.value) {
                         return Err(SessionOpenError {
                             message: format!("The reloaded session did not switch to model {}.", choice.value),
                             allow_acp_fallback: false,
                         });
                     }
-                    if let Some(fresh) = reply.get("configOptions") {
+                    if let Some(fresh) = report.get("configOptions") {
                         config::merge_update(&mut options, fresh);
+                        if explicit
+                            && !options.iter().any(|option| {
+                                option.id == choice.id && option.current.as_deref() == Some(choice.value.as_str())
+                            })
+                        {
+                            return Err(SessionOpenError {
+                                message: format!(
+                                    "The selected model did not accept {} value {}.",
+                                    choice.id, choice.value
+                                ),
+                                allow_acp_fallback: false,
+                            });
+                        }
                         model_options = true;
                     } else if o.category.as_deref() == Some("model") {
                         if o.current.as_deref() != Some(choice.value.as_str()) {
@@ -2875,7 +3031,7 @@ impl Task {
                         o.current = Some(choice.value.clone());
                     }
                 }
-                Err(e) if pending => {
+                Err(e) if pending || explicit => {
                     return Err(SessionOpenError { message: self.describe(e), allow_acp_fallback: false });
                 }
                 Err(e) => tracing::warn!("agent task {}: setting {} to {} failed: {e}", self.id, o.id, choice.value),
@@ -2885,6 +3041,16 @@ impl Task {
         self.shared.remember(provider_id, Some(&options), None, model.as_deref());
         {
             let mut s = self.state.lock();
+            if let Some(pending) = pending_model {
+                if s.pending_model.as_ref() != Some(pending) {
+                    return Err(SessionOpenError {
+                        message: "The pending model settings changed while reopening the session.".into(),
+                        allow_acp_fallback: false,
+                    });
+                }
+                let TaskState { task, wanted, .. } = &mut *s;
+                pending.apply(wanted, &task.config);
+            }
             s.task.model = model_of(&options).or(s.task.model.take());
             s.task.config = options;
             s.pending_model = None;
@@ -2894,6 +3060,7 @@ impl Task {
             // The (re)started process runs nothing yet: whatever it reports next is all of it.
             s.background_tasks = Vec::new();
             s.task.background.clear();
+            *client.opening_config.lock() = None;
         }
         self.persist();
         self.emit_task();
@@ -3361,6 +3528,28 @@ impl Task {
 /// Answers the agent's requests on behalf of one task.
 struct Client {
     task: Weak<Task>,
+    opening_config: Mutex<Option<OpeningConfig>>,
+}
+
+/// Config replays belong to the candidate connection until its model and settings are confirmed.
+struct OpeningConfig {
+    session: String,
+    options: Option<Value>,
+}
+
+impl Client {
+    fn new(task: &Arc<Task>, opening_session: Option<&str>) -> Arc<Self> {
+        Arc::new(Self {
+            task: Arc::downgrade(task),
+            opening_config: Mutex::new(
+                opening_session.map(|id| OpeningConfig { session: id.to_owned(), options: None }),
+            ),
+        })
+    }
+
+    fn take_opening_config(&self) -> Option<Value> {
+        self.opening_config.lock().as_mut()?.options.take()
+    }
 }
 
 impl Handler for Client {
@@ -3377,6 +3566,14 @@ impl Handler for Client {
         if method == "session/update"
             && let (Some(task), Some(update)) = (self.task.upgrade(), params.get("update"))
         {
+            if update.get("sessionUpdate").and_then(Value::as_str) == Some("config_option_update")
+                && let Some(opening) = self.opening_config.lock().as_mut()
+            {
+                if params.get("sessionId").and_then(Value::as_str) == Some(opening.session.as_str()) {
+                    opening.options = Some(update.clone());
+                }
+                return;
+            }
             task.on_update(params.get("sessionId").and_then(Value::as_str), update);
         }
     }
