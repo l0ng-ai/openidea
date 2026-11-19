@@ -258,7 +258,12 @@ function ProjectRow({
         showContextMenu(e, recentMenu(m.project));
       }}
     >
-      <ProjectBadge name={m.project.name} className={styles.projectBadge} missing={!!m.project.missing} />
+      <ProjectBadge
+        name={m.project.name}
+        path={m.project.path}
+        className={styles.projectBadge}
+        missing={!!m.project.missing}
+      />
       <span className={styles.projectText}>
         <HighlightedText
           className={clsx(styles.projectName, m.project.missing && styles.unavailable)}

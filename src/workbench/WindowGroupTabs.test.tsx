@@ -92,7 +92,9 @@ it("offers Move Tab to New Window for every tab in its context menu", () => {
 it("offers Tab Color… in the context menu", () => {
   render(<WindowGroupTabs />);
   fireEvent.contextMenu(screen.getByRole("tab", { name: "Backend" }));
-  const item = useContextMenuStore.getState().menu!.items.find((i) => "label" in i && i.label === "Tab Color…") as {
+  const item = useContextMenuStore
+    .getState()
+    .menu!.items.find((i) => "label" in i && i.label === "Change Project Color…") as {
     run?: () => unknown;
   };
   void item.run?.();

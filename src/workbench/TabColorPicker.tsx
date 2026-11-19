@@ -56,11 +56,11 @@ function Panel({ target }: { target: TabColorTarget }) {
       open
       anchor={{ x: target.x, y: target.y }}
       onClose={close}
-      aria-label={tx("Tab Color")}
+      aria-label={tx("Project Color")}
       className={styles.panel}
       trapFocus
     >
-      <div className={styles.swatches} role="radiogroup" aria-label={tx("Tab Color")}>
+      <div className={styles.swatches} role="radiogroup" aria-label={tx("Project Color")}>
         {PRESETS.map((p, i) => {
           const on = current === p.slot;
           return (

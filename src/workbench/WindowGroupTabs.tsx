@@ -110,7 +110,7 @@ export function WindowGroupTabs() {
                   run: () => executeAction("window.detachTab", tab.label),
                 },
                 {
-                  label: tx("Tab Color…"),
+                  label: tx("Change Project Color…"),
                   run: () => executeAction("window.setTabColor", tab.label),
                 },
                 { kind: "separator" },

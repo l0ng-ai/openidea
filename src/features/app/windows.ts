@@ -421,7 +421,7 @@ export function windowActions(): Action[] {
     },
     {
       id: "window.setTabColor",
-      title: "Tab Color…",
+      title: "Change Project Color…",
       category: t("app.category.window"),
       when: "windowGrouped",
       run: ({ arg }) => {

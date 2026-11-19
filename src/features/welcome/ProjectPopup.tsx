@@ -225,7 +225,12 @@ function GroupBoundary({
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
   return (
     <>
-      <ProjectBadge name={m.project.name} className={styles.badge} missing={!!m.project.missing} />
+      <ProjectBadge
+        name={m.project.name}
+        path={m.project.path}
+        className={styles.badge}
+        missing={!!m.project.missing}
+      />
       <span className={styles.text} title={unavailableTitle(m.project)}>
         <span className={styles.top}>
           <HighlightedText
