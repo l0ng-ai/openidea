@@ -2944,6 +2944,7 @@
   "System-Dependent": "取决于系统",
   "Tests failed: {detail}": "测试失败：{detail}",
   "TODO comment": "TODO 注释",
+  "TODO actions": "TODO 操作",
   "TODO filters": "TODO 筛选器",
   "TODO items": "TODO 项",
   "TODO items unavailable": "TODO 项不可用",
