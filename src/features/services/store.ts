@@ -58,6 +58,8 @@ export interface ConnectionState {
   snapshot: DockerSnapshot | null;
   loading: boolean;
   error: string | null;
+  /** Disconnected for this session: no snapshots, events or polling until Connect. */
+  disconnected?: boolean;
 }
 
 interface DockerState {
@@ -231,6 +233,7 @@ const again = new Set<string>();
 export function refresh(id?: string): Promise<void> {
   if (!isTauri()) return Promise.resolve();
   if (id === undefined) return Promise.all(connections().map((c) => refresh(c.id))).then(() => undefined);
+  if (connectionState(id).disconnected) return Promise.resolve();
   const running = inflight.get(id);
   if (running) {
     again.add(id);
@@ -239,12 +242,14 @@ export function refresh(id?: string): Promise<void> {
   patchConn(id, { loading: true });
   const p = call(commands.dockerSnapshot(endpointOf(id)))
     .then((snapshot) => {
-      if (!connections().some((c) => c.id === id)) return;
+      if (!connections().some((c) => c.id === id) || connectionState(id).disconnected) return;
       const wasReady = connectionState(id).snapshot?.availability.kind === "ready";
       patchConn(id, { snapshot, error: null });
       if (snapshot.availability.kind === "ready" && !wasReady) startEvents(id);
     })
-    .catch((e) => patchConn(id, { error: errorMessage(e) }))
+    .catch((e) => {
+      if (!connectionState(id).disconnected) patchConn(id, { error: errorMessage(e) });
+    })
     .finally(() => {
       inflight.delete(id);
       if (connections().some((c) => c.id === id)) patchConn(id, { loading: false });
@@ -268,7 +273,7 @@ let pollTimer: ReturnType<typeof setInterval> | undefined;
 let watchers = 0;
 
 function startEvents(id: string) {
-  if (events.has(id) || watchers === 0) return;
+  if (events.has(id) || watchers === 0 || connectionState(id).disconnected) return;
   const request = nextRequestId();
   events.set(id, request);
   const channel = new Channel<DockerEvent>();
@@ -313,6 +318,22 @@ export function watch(): () => void {
       stopEvents();
     }
   };
+}
+
+/**
+ * Disconnect: stops talking to the connection's daemon (its event stream and polling; for an
+ * SSH connection, the SSH sessions they open) until Connect. Not saved: a new session connects.
+ */
+export function disconnectConnection(id: string): void {
+  stopEvents(id);
+  clearTimeout(debounces.get(id));
+  again.delete(id);
+  patchConn(id, { snapshot: null, error: null, loading: false, disconnected: true });
+}
+
+export function connectConnection(id: string): Promise<void> {
+  patchConn(id, { disconnected: false });
+  return refresh(id);
 }
 
 // ---------------------------------------------------------------------------
