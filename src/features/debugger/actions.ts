@@ -50,6 +50,7 @@ import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { warnPinnedFlutterDevice } from "@/workbench/flutterDevices";
+import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools } from "./flutter/devTools";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import { attachConfig } from "./attach";
 import {
@@ -296,8 +297,7 @@ async function openDevTools(vmServiceUri: string) {
     return;
   }
   const server = await call(commands.flutterDevtoolsUrl());
-  const query = new URLSearchParams({ ide: "OpenIDEA", uri: vmServiceUri });
-  await openExternalUrl(`${server}/inspector?${query}`);
+  await openExternalUrl(devToolsUrl(server, { page: "inspector" }, { uri: vmServiceUri }));
 }
 
 async function startBrowser(config: RunConfig, root: string, show?: boolean) {
@@ -791,7 +791,7 @@ export function registerDebugActions(): () => void {
     },
     {
       id: "debug.openDevTools",
-      title: "Open Flutter DevTools",
+      title: "Open Flutter DevTools in Browser",
       category: "Debug",
       icon: "external-link",
       description: "Flutter: inspect the running app in the browser",
@@ -800,6 +800,18 @@ export function registerDebugActions(): () => void {
         const s = activeSession();
         const uri = s && rootOf(s).vmServiceUri;
         if (uri) void report("Couldn't open Flutter DevTools", openDevTools(uri));
+      },
+    },
+    {
+      id: "debug.refreshDevTools",
+      title: "Refresh Flutter DevTools",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: load the DevTools page again",
+      when: "flutterProject",
+      run: (c) => {
+        const id = c.arg;
+        for (const w of DEVTOOLS_WINDOWS) if (!id || id === w.id) refreshDevTools(w.id);
       },
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),

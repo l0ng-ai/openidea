@@ -4768,7 +4768,9 @@ export type DebugEvent =
  */
 { kind: "flutterAppStarted" } | 
 /**  The VM Service of a Flutter session's app, which DevTools connects to. */
-{ kind: "flutterVmService"; uri: string } | 
+{ kind: "flutterVmService"; uri: string; 
+/**  The Flutter device the app runs on. */
+device: string | null } | 
 /**  Flutter's inspector selected a widget: its source, 0-based. */
 { kind: "flutterNavigate"; path: IpcPath; line: number; column: number } | 
 /**  The session's capabilities changed after it started: fetch them again. */

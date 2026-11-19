@@ -96,6 +96,8 @@ export interface DebugSession {
   jvmBackend?: JvmBackendState;
   /** Flutter: the app's VM Service, which DevTools connects to. */
   vmServiceUri?: string;
+  /** Flutter: the device the app runs on. */
+  flutterDevice?: string | null;
   /** A cancelled JDT build may have lost class-file deltas needed by this session. */
   hotSwapNeedsRestart?: boolean;
   /** `flutter debug_adapter` reported the app as started: it can take a hot reload. */
@@ -1401,7 +1403,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       queueNetworkEvent(id, event.event);
       break;
     case "flutterVmService":
-      patch(id, { vmServiceUri: event.uri });
+      patch(id, { vmServiceUri: event.uri, flutterDevice: event.device });
       break;
     case "flutterNavigate":
       // Focus stays in the inspector, where the next widget gets picked.

@@ -46,14 +46,14 @@ describe("Flutter DevTools", () => {
 
   it("offers DevTools once the session reports its VM Service", () => {
     expect(getContext().debugHasVmService).toBe(false);
-    handleDebugEvent(id, { kind: "flutterVmService", uri });
+    handleDebugEvent(id, { kind: "flutterVmService", uri, device: null });
     publishContext();
     expect(useDebug.getState().sessions[id]?.vmServiceUri).toBe(uri);
     expect(getContext().debugHasVmService).toBe(true);
   });
 
   it("opens the inspector of the session's app in the browser", async () => {
-    handleDebugEvent(id, { kind: "flutterVmService", uri });
+    handleDebugEvent(id, { kind: "flutterVmService", uri, device: null });
     publishContext();
     await executeAction("debug.openDevTools");
     await vi.waitFor(() => expect(openUrl).toHaveBeenCalledOnce());
@@ -64,7 +64,7 @@ describe("Flutter DevTools", () => {
 
   it("reports a server that could not start", async () => {
     devtoolsUrl.mockResolvedValue({ status: "error", error: { kind: "unavailable", message: "boom" } });
-    handleDebugEvent(id, { kind: "flutterVmService", uri });
+    handleDebugEvent(id, { kind: "flutterVmService", uri, device: null });
     publishContext();
     await executeAction("debug.openDevTools");
     await vi.waitFor(() => expect(notes).toHaveLength(1));
@@ -74,7 +74,7 @@ describe("Flutter DevTools", () => {
 
   it("explains that a remote project has no DevTools", async () => {
     remote.on = true;
-    handleDebugEvent(id, { kind: "flutterVmService", uri });
+    handleDebugEvent(id, { kind: "flutterVmService", uri, device: null });
     publishContext();
     await executeAction("debug.openDevTools");
     await vi.waitFor(() => expect(notes).toHaveLength(1));

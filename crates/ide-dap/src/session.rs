@@ -99,8 +99,9 @@ pub(crate) struct Session {
     pub js_overrides: tokio::sync::Mutex<Option<tokio::sync::watch::Sender<Vec<crate::JsResponseRule>>>>,
     /// The file js-debug records the page's CPU profile into, while one is being recorded.
     pub js_profile: parking_lot::Mutex<Option<std::path::PathBuf>>,
-    /// `flutter debug_adapter` announced its app: the Dart adapter sends the same `dart.*` events.
-    pub flutter_app: AtomicBool,
+    /// The device of the app `flutter debug_adapter` announced, once it did: the Dart adapter
+    /// sends the same `dart.*` events.
+    pub flutter_app: std::sync::OnceLock<Option<String>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -276,7 +277,7 @@ impl Session {
             launch_type: std::sync::OnceLock::new(),
             js_overrides: tokio::sync::Mutex::new(None),
             js_profile: parking_lot::Mutex::new(None),
-            flutter_app: AtomicBool::new(false),
+            flutter_app: std::sync::OnceLock::new(),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),
@@ -902,13 +903,15 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             *s.js_profile.lock() = str_("file").map(std::path::PathBuf::from);
         }
         // Sent before `dart.debuggerUris`, for `launch` and `attach` alike.
-        "flutter.appStart" => s.flutter_app.store(true, Ordering::Release),
-        "dart.debuggerUris" if s.flutter_app.load(Ordering::Acquire) => {
-            if let Some(uri) = str_("vmServiceUri") {
-                s.emit(DebugEvent::FlutterVmService { uri });
+        "flutter.appStart" => {
+            let _ = s.flutter_app.set(str_("deviceId"));
+        }
+        "dart.debuggerUris" => {
+            if let (Some(device), Some(uri)) = (s.flutter_app.get(), str_("vmServiceUri")) {
+                s.emit(DebugEvent::FlutterVmService { uri, device: device.clone() });
             }
         }
-        "dart.toolEvent" if s.flutter_app.load(Ordering::Acquire) => {
+        "dart.toolEvent" if s.flutter_app.get().is_some() => {
             if let Some(event) = crate::flutter_navigation(&body) {
                 s.emit(event);
             }

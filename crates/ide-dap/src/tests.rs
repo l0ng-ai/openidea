@@ -580,7 +580,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 // Not Flutter's yet: a plain Dart session sends these too.
                 send!(json!({"type": "event", "event": "dart.debuggerUris", "body": uris}));
                 send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("file:///early.dart")}));
-                send!(json!({"type": "event", "event": "flutter.appStart", "body": {}}));
+                send!(json!({"type": "event", "event": "flutter.appStart", "body": {"deviceId": "d1"}}));
                 send!(json!({"type": "event", "event": "dart.debuggerUris", "body": uris}));
                 send!(json!({"type": "event", "event": "dart.toolEvent", "body": {"kind": "other", "data": {}}}));
                 send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("package:a/a.dart")}));
@@ -1932,7 +1932,12 @@ async fn flutter_events_need_a_flutter_app() {
     let count = |want: fn(&DebugEvent) -> bool| {
         events.iter().filter(|e| matches!(e, IdeEvent::Debug { event, .. } if want(event))).count()
     };
-    assert_eq!(count(|e| matches!(e, DebugEvent::FlutterVmService { uri } if uri == "ws://127.0.0.1:1/t=/ws")), 1);
+    assert_eq!(
+        count(
+            |e| matches!(e, DebugEvent::FlutterVmService { uri, device } if uri == "ws://127.0.0.1:1/t=/ws" && device.as_deref() == Some("d1"))
+        ),
+        1
+    );
     assert_eq!(count(|e| matches!(e, DebugEvent::FlutterNavigate { .. })), 1);
 }
 

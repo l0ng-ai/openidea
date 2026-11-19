@@ -373,6 +373,8 @@ pub enum DebugEvent {
     /// The VM Service of a Flutter session's app, which DevTools connects to.
     FlutterVmService {
         uri: String,
+        /// The Flutter device the app runs on.
+        device: Option<String>,
     },
     /// Flutter's inspector selected a widget: its source, 0-based.
     FlutterNavigate {
