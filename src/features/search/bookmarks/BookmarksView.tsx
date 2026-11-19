@@ -286,7 +286,9 @@ export function BookmarksView() {
               return (
                 <span className={styles.node}>
                   <Icon name="toolwindow-bookmarks" size={16} className={styles.icon} />
-                  <span className={clsx(styles.label, n.isDefault && styles.defaultList)}>{n.list.name}</span>
+                  <span className={clsx(styles.label, n.isDefault && styles.defaultList)} title={n.list.name}>
+                    {n.list.name}
+                  </span>
                   <span className={styles.meta}>
                     {t("search.bookmarks.count", { count: n.count })}
                     {n.isDefault ? tx(" · default") : ""}
@@ -297,7 +299,9 @@ export function BookmarksView() {
               return (
                 <span className={styles.node}>
                   <Icon name="folder" size={16} className={styles.icon} />
-                  <span className={styles.label}>{n.name}</span>
+                  <span className={styles.label} title={n.path}>
+                    {n.name}
+                  </span>
                   <span className={styles.meta}>{n.dir}</span>
                 </span>
               );
@@ -305,38 +309,49 @@ export function BookmarksView() {
               return (
                 <span className={styles.node}>
                   <Icon name={fileIconName(n.name)} size={16} className={styles.icon} />
-                  <span className={styles.label}>{n.name}</span>
+                  <span className={styles.label} title={n.path}>
+                    {n.name}
+                  </span>
                   {n.bookmarked && <Icon name="bookmark" size={12} className={styles.icon} label="Bookmarked file" />}
                   <span className={styles.meta}>{n.dir}</span>
                 </span>
               );
-            case "mark":
+            case "mark": {
+              const { bookmark } = n;
+              const line = bookmark.line + 1;
+              const label = bookmarkLabel(bookmark) || tx("(empty line)");
+              const isCommit = bookmark.path.startsWith("git-log:");
+              const fileAndLine = `${basename(bookmark.path)}:${line}`;
               return (
                 <span className={styles.node}>
-                  {n.bookmark.mnemonic ? (
-                    <span className={styles.mnemonic} aria-label={`Mnemonic ${n.bookmark.mnemonic}`}>
-                      {n.bookmark.mnemonic}
+                  {bookmark.mnemonic ? (
+                    <span className={styles.mnemonic} aria-label={`Mnemonic ${bookmark.mnemonic}`}>
+                      {bookmark.mnemonic}
                     </span>
                   ) : (
                     <Icon name="bookmark" size={16} className={styles.icon} />
                   )}
-                  {n.bookmark.description ? (
+                  {isCommit && !bookmark.description ? (
                     <>
-                      <span className={styles.label}>{n.bookmark.description}</span>
-                      <span className={styles.meta}>
-                        {basename(n.bookmark.path)}:{n.bookmark.line + 1}
-                      </span>
+                      <span className={styles.label}>{fileAndLine}</span>
+                      <span className={styles.code}>{label}</span>
                     </>
                   ) : (
                     <>
-                      <span className={styles.label}>
-                        {basename(n.bookmark.path)}:{n.bookmark.line + 1}
+                      {!isCommit && (
+                        <span className={styles.lineNumber} title={`${bookmark.path}:${line}`}>
+                          {line}:
+                        </span>
+                      )}
+                      <span className={styles.label} title={label}>
+                        {label}
                       </span>
-                      <span className={styles.code}>{n.bookmark.text.trim() || tx("(empty line)")}</span>
+                      {isCommit && <span className={styles.meta}>{fileAndLine}</span>}
                     </>
                   )}
                 </span>
               );
+            }
           }
         }}
       />

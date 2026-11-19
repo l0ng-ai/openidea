@@ -17,6 +17,7 @@
   flex: none;
 }
 .label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -37,6 +38,11 @@
   text-overflow: ellipsis;
   white-space: pre;
   color: var(--fg-subtle);
+}
+.lineNumber {
+  flex: none;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
 }
 .mnemonic {
   flex: none;
