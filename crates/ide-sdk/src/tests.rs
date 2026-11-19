@@ -1,7 +1,8 @@
 use crate::apply::{
     apply_to_run_configs, apply_to_run_configs_in, configure_python_extra_paths, configure_server,
     configure_vue_module_resolution, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived, without_derived_in,
+    ruff_configuration, server_command_paths, server_protocol_overrides, terminal_activation, tool_install_environment,
+    tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -338,6 +339,39 @@ fn jdtls_honors_the_configured_maven_local_repository() {
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
     assert!(cfg.args.iter().all(|a| !a.contains("maven.repo.local")));
+}
+
+#[test]
+fn java_analyzer_gets_the_project_jdk_and_maven_local_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let configured = |s: &Settings| {
+        let mut cfg = server("java-analyzer");
+        configure_server(&mut cfg, tmp.path(), tmp.path(), s);
+        server_protocol_overrides(&mut cfg, s);
+        cfg.initialization_options.map(|v| serde_json::to_value(v).unwrap())
+    };
+    // Unset: the server discovers both itself.
+    assert_eq!(configured(&Settings::default()), None);
+    let jdk = tmp.path().join("jdk17");
+    fake_jdk(&jdk);
+    let repo = tmp.path().join("m2-repo");
+    let mut s = Settings::default();
+    s.languages.java.jdk = jdk.to_string_lossy().into_owned();
+    s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let options = configured(&s).unwrap();
+    assert_eq!(options["jdkHome"], jdk.canonicalize().unwrap().to_string_lossy().as_ref());
+    assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
+    // A `jdkHome` in the server's own settings wins.
+    s.language_servers.insert(
+        "java-analyzer".into(),
+        ide_core::settings::LanguageServerSettings {
+            initialization_options: Some(serde_json::json!({ "jdkHome": "/opt/jdk21" })),
+            ..Default::default()
+        },
+    );
+    let options = configured(&s).unwrap();
+    assert_eq!(options["jdkHome"], "/opt/jdk21");
+    assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
 }
 
 #[test]
@@ -2961,4 +2995,27 @@ fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
     let mut cfg = server("vtsls");
     assert!(!configure_vue_module_resolution(&mut cfg, tmp.path()));
     assert!(cfg.initialization_options.is_none());
+}
+
+#[test]
+fn server_command_paths_report_executables_set_for_built_in_servers() {
+    let servers = [server("java-analyzer"), server("jdtls"), server("kmp-lsp")];
+    let mut s = Settings::default();
+    let entry = |command: &str| ide_core::settings::LanguageServerSettings {
+        command: command.into(),
+        languages: vec!["java".into()],
+        ..Default::default()
+    };
+    s.language_servers.insert("java-analyzer".into(), entry("/opt/java-analyzer/bin/java-analyzer"));
+    s.language_servers.insert("jdtls".into(), entry("bin/jdtls"));
+    // A bare name is looked up like the definition's command.
+    s.language_servers.insert("kmp-lsp".into(), entry("kmp-lsp-nightly"));
+    let root = Path::new("/work");
+    assert_eq!(
+        server_command_paths(&servers, root, &s),
+        [
+            ("java-analyzer".to_owned(), "/opt/java-analyzer/bin/java-analyzer".into()),
+            ("jdtls".to_owned(), root.join("bin/jdtls")),
+        ]
+    );
 }

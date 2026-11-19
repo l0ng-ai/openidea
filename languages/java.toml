@@ -70,6 +70,15 @@ exclusions = ["**/node_modules/**", "**/.metadata/**", "**/archetype-resources/*
 maven = { enabled = true }
 gradle = { enabled = true, wrapper = { enabled = true } }
 
+# java-analyzer: a native Java server that imports Maven / Gradle builds itself and
+# also serves debugging (`java-analyzer dap`) and the run classpath without jdtls.
+[[language-servers]]
+name = "java-analyzer"
+fallback = true
+command = "java-analyzer"
+root-markers = ["java-analyzer.toml", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "build.xml", ".project"]
+install-hint = "Install java-analyzer in Settings › Languages & Frameworks › Language Servers (https://github.com/l0ng-ai/java-analyzer)"
+
 [[language-servers]]
 name = "kmp-lsp"
 fallback = true

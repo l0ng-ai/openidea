@@ -794,6 +794,28 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "java-analyzer",
+        display: "java-analyzer",
+        kind: LanguageServer,
+        commands: &["java-analyzer"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "l0ng-ai/java-analyzer" },
+            assets: &[
+                rule(Mac, Arm64, "java-analyzer-macos-aarch64.gz"),
+                rule(Mac, X64, "java-analyzer-macos-x86_64.gz"),
+                rule(Linux, Arm64, "java-analyzer-linux-aarch64.gz"),
+                rule(Linux, X64, "java-analyzer-linux-x86_64.gz"),
+                rule(Windows, Arm64, "java-analyzer-windows-aarch64.zip"),
+                rule(Windows, X64, "java-analyzer-windows-x86_64.zip"),
+            ],
+            locate: &["java-analyzer"],
+        },
+        fallback: None,
+        version: ver("java-analyzer"),
+        homepage: "https://github.com/l0ng-ai/java-analyzer",
+        needs: &[],
+    },
+    ToolSpec {
         name: "kmp-lsp",
         display: "kmp-lsp",
         kind: LanguageServer,
