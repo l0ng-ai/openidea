@@ -30,6 +30,7 @@ fn query(pattern: &str) -> SearchQuery {
         scope: SearchScope::Project,
         max_matches: 0,
         context: Default::default(),
+        include_excluded: false,
     }
 }
 
@@ -312,6 +313,25 @@ fn match_limit() {
     let (_, summary) = run(p.path(), &SearchQuery { max_matches: 14, ..query("x") });
     assert!(summary.limit_hit);
     assert_eq!(summary.matches, 14);
+}
+
+#[test]
+fn match_limit_across_parallel_files() {
+    // One file per folder, so several walker threads search at once.
+    let content = "x\n".repeat(50);
+    let names: Vec<String> = (0..16).map(|i| format!("m{i}/a.txt")).collect();
+    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), content.as_bytes())).collect();
+    let p = project(&files);
+    for _ in 0..20 {
+        let (views, summary) = run(p.path(), &SearchQuery { max_matches: 800, ..query("x") });
+        assert!(!summary.limit_hit);
+        assert_eq!((total(&views), summary.matches, summary.files), (800, 800, 16));
+
+        let (views, summary) = run(p.path(), &SearchQuery { max_matches: 799, ..query("x") });
+        assert!(summary.limit_hit);
+        assert_eq!((total(&views), summary.matches), (799, 799));
+        assert_eq!(summary.files as usize, views.len());
+    }
 }
 
 #[test]
@@ -773,6 +793,31 @@ fn non_utf8_files_are_searched_as_text() {
     assert_eq!(paths(&views), ["src/A.java"]);
     assert_eq!(views[0].matches[0].text, "    //中文搜索验证 Chinese Chinese Chinese");
     assert_eq!(views[0].matches[0].ranges, [(13, 20), (21, 28), (29, 36)]);
+}
+
+#[test]
+fn dropped_matches_give_back_their_budget() {
+    // Matches claimed before a late NUL (binary) or late GBK bytes (searched again as text).
+    let head = b"needle\n".repeat(100);
+    let filler = b"a".repeat(200_000);
+    let binary = [head.as_slice(), &filler, b"\0\n"].concat();
+    let late_gbk = [head.as_slice(), &filler, b"\n", &gbk("中文\n")].concat();
+    // One project each: a thread's searcher keeps its grown buffer for the next file.
+    for (file, bytes, found) in [("bin.dat", binary, 0), ("late.txt", late_gbk, 100)] {
+        let p = project(&[(file, &bytes)]);
+        let (views, summary) = run(p.path(), &query("needle"));
+        assert_eq!((total(&views), summary.matches), (found, found as u32), "{file}");
+        assert!(!summary.limit_hit);
+    }
+}
+
+#[test]
+fn non_utf8_files_past_the_limit_show_decoded_text() {
+    let p = project(&[("a.txt", &gbk(&"x 中文\n".repeat(200)))]);
+    let (views, summary) = run(p.path(), &SearchQuery { max_matches: 100, ..query("x") });
+    assert!(summary.limit_hit);
+    assert_eq!((total(&views), summary.matches), (100, 100));
+    assert!(views[0].matches.iter().all(|m| m.text == "x 中文"));
 }
 
 #[test]

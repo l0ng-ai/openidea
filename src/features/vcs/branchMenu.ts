@@ -25,7 +25,7 @@ import {
   rebaseOnto,
   renameBranch,
   toggleFavoriteBranch,
-  updateBranch,
+  updateBranches,
   useFavoriteBranches,
 } from "./branchOps";
 import { showCompareBranches } from "./CompareBranches";
@@ -47,7 +47,7 @@ async function pullInto(remoteBranch: string, rebase: boolean) {
   );
 }
 
-/** The Branches pane's context menu: `selected` carries the multi-selection, which Delete acts on as a whole. */
+/** The Branches pane's context menu: `selected` carries the multi-selection, which Update Selected and Delete act on as a whole. */
 export function branchMenu(
   b: Branch,
   current: string | null,
@@ -66,6 +66,16 @@ export function branchMenu(
     icon: "star",
     run: run(() => toggleFavoriteBranch(b)),
   };
+  // Update Selected acts on every selected local branch, each in its own repository.
+  const update: MenuItem =
+    selected.filter((t) => t.branch && !t.branch.remote).length > 1
+      ? { label: "Update Selected", icon: "git-pull", run: run(() => updateBranches(selected)) }
+      : {
+          label: "Update",
+          icon: "git-pull",
+          disabled: !b.current && !b.upstream,
+          run: run(() => updateBranches([{ branch: b }])),
+        };
   const history: MenuItem = {
     label: "Show History",
     icon: "history",
@@ -75,7 +85,7 @@ export function branchMenu(
     return [
       { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch()) },
       { kind: "separator" },
-      { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update", { repo: currentRepo() })) },
+      update,
       { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push", { repo: currentRepo() })) },
       { kind: "separator" },
       { label: "Rename…", run: run(() => renameBranch(b)) },
@@ -104,11 +114,11 @@ export function branchMenu(
       { label: tx`Pull into '${cur}' Using Merge`, run: run(() => pullInto(b.name, false)) },
     );
   if (!b.remote)
-    items.push(
-      { kind: "separator" },
-      { label: "Update", icon: "git-pull", disabled: !b.upstream, run: run(() => updateBranch(b.name)) },
-      { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push", { branch: b.name })) },
-    );
+    items.push({ kind: "separator" }, update, {
+      label: "Push…",
+      icon: "git-push",
+      run: run(() => executeAction("vcs.push", { branch: b.name })),
+    });
   items.push(
     { kind: "separator" },
     ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b)) }]),
@@ -174,6 +184,12 @@ export function commonBranchMenu(b: CommonBranch, roots: readonly string[], done
   ];
   if (!b.remote)
     items.push(
+      { kind: "separator" },
+      {
+        label: "Update",
+        icon: "git-pull",
+        run: run(() => updateBranches(roots.map((repo) => ({ repo, branch: b })))),
+      },
       { kind: "separator" },
       { label: "Delete", danger: true, icon: "trash", run: run(() => deleteInRepos(b.name, roots)) },
     );

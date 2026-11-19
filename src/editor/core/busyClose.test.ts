@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerEditorKind, type EditorKindContribution } from "@/workbench/contributions";
+import { registerEditorKind, setFileDecorations, type EditorKindContribution } from "@/workbench/contributions";
 import { t } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { confirm } from "@/workbench/messages";
@@ -163,6 +163,21 @@ describe("editor kinds' isBusy on tab-limit eviction", () => {
       expect(keys()).toEqual(["busy-probe:3"]);
     } finally {
       dispose();
+    }
+  });
+});
+
+describe("Close non-modified files first", () => {
+  it("keeps a tab with a VCS change, as Close Unmodified Tabs does", async () => {
+    controller = new EditorController(createMemoryBackend({ "/p/a.ts": "a", "/p/b.ts": "b", "/p/c.ts": "c" }));
+    controller.start();
+    useProject.setState({ settings: { editor: { tabs: { tabLimit: 2, closingPolicy: "unchanged" } } } as never });
+    setFileDecorations("vcs", new Map([["/p/a.ts", { color: "modified" }]]));
+    try {
+      for (const path of ["/p/a.ts", "/p/b.ts", "/p/c.ts"]) await controller.openFile(path);
+      expect(pane().tabs.map((tab) => tab.input.path)).toEqual(["/p/a.ts", "/p/c.ts"]);
+    } finally {
+      setFileDecorations("vcs", new Map());
     }
   });
 });

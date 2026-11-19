@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_SETTINGS_KEYS } from "./clientSettings";
 import { commands, call, type Settings } from "./ipc";
 import { loadSettings, useProject } from "./project";
-import { connectRemote, disableRemote, enableRemote, isRemoteWindow, remoteRouting } from "./remote";
+import {
+  connectRemote,
+  disableRemote,
+  enableRemote,
+  isRemoteWindow,
+  localGlobalSettings,
+  remoteRouting,
+} from "./remote";
 import { invoke as routedInvoke } from "./tauriCore";
 
 const handlers = vi.hoisted(() => new Map<string, () => void>());
@@ -151,6 +158,34 @@ describe("remote client settings", () => {
   ])("preserves routing for host setting %s", (key) => {
     expect(remoteRouting("settings_set", { scope: "project", key }, served)).toBe("remote");
     expect(remoteRouting("settings_set", { scope: "global", key }, served)).toBe("both");
+  });
+  it("routes mcpServer settings and MCP commands to the remote host without mutating local MCP settings", async () => {
+    const withMcp = new Set([...served, "settings_get_global", "mcp_server_status", "mcp_ui_ready", "mcp_respond"]);
+    enableRemote({
+      target: { kind: "ssh", config: "test" },
+      root: "/remote",
+      host: "test",
+      os: "linux",
+      commands: [...withMcp],
+    });
+    expect(remoteRouting("settings_set", { scope: "global", key: "mcpServer.enabled", value: "true" }, withMcp)).toBe(
+      "remote",
+    );
+    expect(
+      remoteRouting("settings_set", { scope: "global", key: "mcpServer.address", value: '"0.0.0.0"' }, withMcp),
+    ).toBe("remote");
+    expect(remoteRouting("mcp_server_status", undefined, withMcp)).toBe("remote");
+    expect(remoteRouting("mcp_ui_ready", { ready: true }, withMcp)).toBe("remote");
+    expect(remoteRouting("mcp_respond", { id: 1, allow: true, error: null }, withMcp)).toBe("remote");
+
+    expect(await commands.settingsGetGlobal()).toMatchObject({
+      keymap: "my-map",
+      editor: { fontSize: 19, tabSize: 2 },
+    });
+    expect(await localGlobalSettings()).toMatchObject({
+      keymap: "my-map",
+      editor: { fontSize: 19, tabSize: 8 },
+    });
   });
   it("merges settings before publishing a newly connected project", async () => {
     disableRemote();

@@ -103,6 +103,17 @@
 .italic {
   font-style: italic;
 }
+/* A file with errors, as the Project view marks it. */
+.error {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  /* Room for the wave below the line box, which the ellipsis' overflow would clip. */
+  padding-block: 4px;
+  margin-block: -4px;
+}
 .dimmed {
   opacity: 0.6;
 }

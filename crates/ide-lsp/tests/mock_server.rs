@@ -1,6 +1,6 @@
 //! Protocol tests against in-memory mock language servers.
 
-use ide_core::event::ServerStatus;
+use ide_core::event::{LspRefreshKind, ServerStatus};
 use ide_core::{
     CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
 };
@@ -23,6 +23,7 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    omit_server_info: std::sync::atomic::AtomicBool,
     binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
@@ -149,7 +150,11 @@ impl Handler for MockHandler {
                 if let Some(error) = s.errors.lock().get("initialize").cloned() {
                     return Err(error);
                 }
-                Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
+                let mut result = json!({ "capabilities": s.caps.lock().clone() });
+                if !s.omit_server_info.load(Ordering::SeqCst) {
+                    result["serverInfo"] = json!({ "name": "mock" });
+                }
+                Ok(result)
             }
             "shutdown" => Ok(Value::Null),
             _ => {
@@ -477,6 +482,23 @@ async fn dart_file_watching_requires_an_explicit_registration() {
 }
 
 // ------------------------------------------------------------------ tests
+
+#[tokio::test(flavor = "multi_thread")]
+async fn servers_start_once_the_project_environment_has_loaded() {
+    let h = harness(&[("mock", incremental_caps())]);
+    // The project's direnv environment (a Nix devshell) is still being read.
+    ide_core::project_env::begin_loading(&h.root);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Starting).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let server = h.launcher.state("mock");
+    assert_eq!(server.launches.load(Ordering::SeqCst), 0);
+    ide_core::project_env::set(&h.root, vec![("OPENIDEA_TEST_DEVSHELL".into(), Some("1".into()))]);
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert_eq!(server.launches.load(Ordering::SeqCst), 1);
+    ide_core::project_env::remove(&h.root);
+    h.mgr.shutdown_all().await;
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn linked_projects_initialize_separate_language_server_roots() {
@@ -969,6 +991,33 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.shutdown_all().await;
 }
 
+/// jdtls runs the annotation processors itself and writes their output; a Maven build's
+/// copy of those files must not reach it as an edit, or jdtls recompiles javac's copy and
+/// overwrites its classes with broken ones (#4128).
+#[tokio::test(flavor = "multi_thread")]
+async fn jdtls_does_not_hear_of_annotation_processor_output() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = h.open("Open.java", "class Open {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let source = h.root.join("m/src/main/java/com/x/FooMapping.java");
+    let generated = h.root.join("m/target/generated-sources/annotations/com/x/FooMappingImpl.java");
+    let test_generated = h.root.join("m/target/generated-test-sources/test-annotations/com/x/T.java");
+    h.mgr.watched_files_changed(
+        &[test_generated],
+        &[generated.clone(), source.clone()],
+        std::slice::from_ref(&generated),
+        &[h.root.join("m/target/generated-sources/annotations")],
+    );
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles"),
+        vec![json!({ "changes": [{ "uri": uri_of(&source), "type": 2 }] })]
+    );
+    h.mgr.shutdown_all().await;
+}
+
 /// An external change to a document open on the server's current instance reaches it only
 /// through the reload's `didChange`: a watched-file change for it too would make a server
 /// that re-reads the file on one (csharp-ls) apply the reload and then the diff computed
@@ -1408,6 +1457,65 @@ async fn unsupported_feature_names_the_running_servers_that_lack_it() {
     assert_eq!(e.message, "plain, other doesn't support inline completion");
     let e = h.mgr.type_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming).await.unwrap_err();
     assert_eq!(e.message, "plain, other doesn't support type hierarchy");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flutter_outline_follows_the_document_and_the_server_instance() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::FlutterOutline, .. }))
+            .count()
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    let unit = |children: Value| {
+        json!({ "uri": uri_of(&path), "outline": {
+            "kind": "DART_ELEMENT", "range": at, "codeRange": at,
+            "dartElement": { "kind": "COMPILATION_UNIT", "name": "<unit>" },
+            "children": children,
+        }})
+    };
+    let widgets = json!([{ "kind": "NEW_INSTANCE", "className": "Text", "range": at, "codeRange": at }]);
+    let peer = h.launcher.state("mock").peer();
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 1).await;
+    assert_eq!(h.mgr.flutter_outline(doc).unwrap()[0].name, "Text");
+
+    // The widgets are gone from the file: the ordinary structure applies again.
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(json!([]))).unwrap();
+    eventually(|| refreshes() == 2).await;
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 3).await;
+
+    // Reopening starts without the closed document's tree.
+    h.mgr.did_close(doc);
+    assert!(h.mgr.flutter_outline(doc).is_none());
+    let (reopened, _) = h.open("a.mk", "Text('x')\n");
+    assert!(h.mgr.flutter_outline(reopened).is_none());
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets)).unwrap();
+    eventually(|| refreshes() == 4).await;
+    assert!(h.mgr.flutter_outline(reopened).is_some());
+
+    // A restarted server has analysed nothing yet.
+    let server = h
+        .events
+        .lock()
+        .iter()
+        .find_map(|e| match e {
+            IdeEvent::LanguageServer { server, name, .. } if name == "mock" => Some(*server),
+            _ => None,
+        })
+        .unwrap();
+    h.mgr.restart(server).await.unwrap();
+    assert!(h.mgr.flutter_outline(reopened).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2547,6 +2655,35 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn eslint_configuration_includes_workspace_folder() {
+    let h = harness_configured("mock", "mk", &[("eslint", incremental_caps()), ("mock", incremental_caps())], |cfg| {
+        if cfg.name == "eslint" {
+            cfg.settings = Some(json!({ "workingDirectory": { "mode": "auto" } }));
+        }
+    });
+    h.open("a.mk", "x");
+    h.wait_status("eslint", ServerStatus::Ready).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let items = json!({ "items": [{ "section": "" }] });
+    let eslint: Value =
+        h.launcher.state("eslint").peer().request("workspace/configuration", items.clone(), None).await.unwrap();
+    assert_eq!(
+        eslint,
+        json!([{
+            "flag": true,
+            "nested": { "deep": 1 },
+            "workingDirectory": { "mode": "auto" },
+            "workspaceFolder": {
+                "uri": uri_of(&h.root),
+                "name": h.root.file_name().unwrap().to_string_lossy(),
+            },
+        }])
+    );
+    let other: Value = h.launcher.state("mock").peer().request("workspace/configuration", items, None).await.unwrap();
+    assert_eq!(other, json!([{ "flag": true, "nested": { "deep": 1 } }]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn settings_changes_reach_servers_without_restarts() {
     let h = harness(&[("mock", incremental_caps()), ("extra", incremental_caps())]);
     let settings: Arc<Mutex<Option<Value>>> = Default::default();
@@ -2983,13 +3120,13 @@ async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|arg| (arg["path"].as_str().unwrap().to_owned(), arg["test"].as_bool().unwrap()))
+        .map(|arg| (PathBuf::from(arg["path"].as_str().unwrap()), arg["test"].as_bool().unwrap()))
         .collect();
     assert_eq!(
         paths,
         vec![
-            (h.root.join("target/generated-sources/protobuf/grpc-java").to_string_lossy().into_owned(), false),
-            (h.root.join("target/generated-sources/protobuf/java").to_string_lossy().into_owned(), false),
+            (h.root.join("target/generated-sources/protobuf/grpc-java"), false),
+            (h.root.join("target/generated-sources/protobuf/java"), false),
         ]
     );
 }
@@ -3611,6 +3748,52 @@ async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     h.wait_status("alt", ServerStatus::Ready).await;
 }
 
+/// #4061: an Angular template opened under another spelling of the project's
+/// (canonical) path, other letter case on macOS or a symlinked folder, still
+/// gets the Angular server, which answers hover and Go to Declaration there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
+    let h = harness_configured("mock", "html", &[("framework", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["angular.json".into()];
+        cfg.require_root_marker = true;
+    });
+    std::fs::write(h.root.join("angular.json"), "{}").unwrap();
+    let app = h.root.join("apps/myapp/src/app");
+    std::fs::create_dir_all(&app).unwrap();
+    let (template, component) = (app.join("example.component.html"), app.join("example.component.ts"));
+    std::fs::write(&template, "<button (click)=\"onConfirm()\">Confirm</button>\n").unwrap();
+    std::fs::write(&component, "export class ExampleComponent {\n  onConfirm() {}\n}\n").unwrap();
+    let framework = h.launcher.state("framework");
+    framework.respond("textDocument/hover", json!({ "contents": "(method) ExampleComponent.onConfirm(): void" }));
+    let target = Range::new(Pos::new(1, 2), Pos::new(1, 11));
+    let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
+    framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
+
+    #[cfg(unix)]
+    let links = tempfile::tempdir().unwrap();
+    let mut spellings = Vec::new();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&h.root, links.path().join("linked")).unwrap();
+        spellings.push(links.path().join("linked").join(template.strip_prefix(&h.root).unwrap()));
+    }
+    // Only on a case-insensitive disk (macOS, Windows).
+    let upper = PathBuf::from(template.to_string_lossy().to_uppercase());
+    if upper.exists() {
+        spellings.push(upper);
+    }
+    for path in spellings {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &path, &h.lang, 1, "<button (click)=\"onConfirm()\">Confirm</button>\n");
+        eventually(|| framework.docs.lock().contains_key(&uri_of(&path))).await;
+        let hover = h.mgr.hover(doc, Pos::new(0, 20), Default::default()).await.unwrap();
+        assert!(hover.is_some_and(|h| h.contents.value.contains("onConfirm")), "{}", path.display());
+        let defs = h.mgr.goto(doc, Pos::new(0, 20), GotoKind::Definition).await.unwrap();
+        assert_eq!((&*defs[0].path, defs[0].range), (component.as_path(), target), "{}", path.display());
+    }
+    assert_eq!(h.statuses("framework").iter().filter(|s| **s == ServerStatus::Starting).count(), 1);
+}
+
 /// A server that `replaces` another (a PHP server with its own Laravel support and
 /// `laravel-lsp`) keeps it away while it serves, and only then.
 #[tokio::test(flavor = "multi_thread")]
@@ -3934,16 +4117,31 @@ async fn navigation_rename_format_and_decorations() {
     let item = json!({ "name": "foo", "kind": 12, "uri": uri, "range": r(0,0,0,11), "selectionRange": r(0,3,0,6), "data": "id" });
     s.respond("textDocument/prepareCallHierarchy", json!([item]));
     s.respond("callHierarchy/incomingCalls", json!([{ "from": { "name": "main", "kind": 12, "uri": uri, "range": r(1,0,1,6), "selectionRange": r(1,0,1,3) }, "fromRanges": [r(1,0,1,3)] }]));
-    let calls = h
-        .mgr
-        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default())
-        .await
-        .unwrap()
-        .items;
+    let hierarchy =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    let root = hierarchy.root.expect("the prepared item");
+    assert_eq!((root.name.as_str(), root.selection_range), ("foo", rng(0, 3, 0, 6)));
+    assert_eq!(root.path.to_path_buf(), path);
+    let calls = hierarchy.items;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "main");
     assert_eq!(calls[0].from_ranges, vec![rng(1, 0, 1, 3)]);
     assert_eq!(s.requested("callHierarchy/incomingCalls")[0]["item"]["data"], "id");
+
+    // Outgoing calls of each prepared item are in that item's file.
+    let other = path.with_file_name("b.mk");
+    let second =
+        json!({ "name": "foo", "kind": 12, "uri": uri_of(&other), "range": r(4,0,4,11), "selectionRange": r(4,3,4,6) });
+    s.respond("textDocument/prepareCallHierarchy", json!([item, second]));
+    s.respond("callHierarchy/outgoingCalls", json!([{ "to": { "name": "bar", "kind": 12, "uri": uri, "range": r(2,0,2,6), "selectionRange": r(2,0,2,3) }, "fromRanges": [r(0,8,0,11)] }]));
+    let callees = h
+        .mgr
+        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Outgoing, Default::default())
+        .await
+        .unwrap()
+        .items;
+    let from: Vec<_> = callees.iter().map(|c| c.from_path.clone().map(|p| p.into_path_buf())).collect();
+    assert_eq!(from, [Some(path.clone()), Some(other)]);
 
     // No documentSymbolProvider → None so callers fall back to tree-sitter.
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);
@@ -7740,6 +7938,39 @@ async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
     h.mgr.restart(server).await.unwrap();
     eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
         .await;
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_go_file_reuses_module_and_reopens_after_restart() {
+    let h = harness_configured("go", "go", &[("gopls", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["go.work".into(), "go.mod".into()];
+    });
+    h.launcher.state("gopls").omit_server_info.store(true, Ordering::SeqCst);
+    let module = h.root.join("service");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.test/service\n").unwrap();
+    h.open("service/main.go", "package service\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let cache = tempfile::tempdir().unwrap();
+    let external = cache.path().join("dependency.go");
+    std::fs::write(&external, "package dependency\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &external, &h.lang, 1, "package dependency\n");
+    let state = h.launcher.state("gopls");
+    let opened_external = || {
+        state.notified("textDocument/didOpen").iter().filter(|p| p["textDocument"]["uri"] == uri_of(&external)).count()
+    };
+    eventually(|| opened_external() == 1).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| opened_external() == 2).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    assert_eq!(h.mgr.servers().len(), 1);
+    let inits = state.requested("initialize");
+    assert_eq!(inits.len(), 2);
+    assert!(inits.iter().all(|p| p["rootUri"] == uri_of(&module)));
     h.mgr.shutdown_all().await;
 }
 

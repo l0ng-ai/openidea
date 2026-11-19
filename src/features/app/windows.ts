@@ -26,6 +26,7 @@ import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";
+import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
@@ -57,6 +58,13 @@ async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
   // A folder of a WSL distro runs there, not as a network folder; the window then drops untitled buffers.
   const wsl = await commands.wslResolve(path).catch(() => null);
+  try {
+    // Asked before leaving, so Don't Open keeps the current project and its processes running.
+    if (!wsl) await confirmProjectTrust(path, "local");
+  } catch (e) {
+    openFailed(path, e);
+    return false;
+  }
   if (!(await confirmLeaveProject(!wsl))) return false;
   try {
     if (wsl) await connectRemote(wsl.target, wsl.path);
@@ -409,6 +417,25 @@ export function windowActions(): Action[] {
       run: async ({ arg }) => {
         const label = typeof arg === "string" ? arg : useWindowGroup.getState().tabs.find((tab) => tab.current)?.label;
         if (label) await call(commands.windowGroupDetach(label));
+      },
+    },
+    {
+      id: "window.setTabColor",
+      title: "Change Project Color…",
+      category: t("app.category.window"),
+      when: "windowGrouped",
+      run: ({ arg }) => {
+        const tabs = useWindowGroup.getState().tabs;
+        const label = typeof arg === "string" ? arg : tabs.find((tab) => tab.current)?.label;
+        const tab = tabs.find((t) => t.label === label);
+        if (!tab?.root) return;
+        const rect = document.querySelector(`[data-project-tab="${CSS.escape(tab.label)}"]`)?.getBoundingClientRect();
+        openTabColorPicker({
+          root: tab.root,
+          name: tab.name,
+          x: rect ? rect.left : window.innerWidth / 2 - 110,
+          y: rect ? rect.bottom : 64,
+        });
       },
     },
     {

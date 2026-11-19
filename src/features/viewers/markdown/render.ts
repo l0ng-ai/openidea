@@ -3,11 +3,13 @@
  * blocks inside one HTML container) is wrapped in an element carrying its
  * 0-based source line (`data-line`) for scroll sync; images keep their source in `data-src` and are loaded by the preview
  * (local files through the backend, as the CSP blocks file URLs). Mermaid
- * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`. YAML front matter is shown
+ * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`; math becomes `[data-math]`
+ * placeholders, typeset by the preview (`renderMath`). YAML front matter is shown
  * as a table of its top-level fields.
  */
 import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
+import { mathExtension } from "@/editor/lsp/markdownMath";
 import { opensOtherShare } from "@/platform/paths";
 
 const escapeHtml = (s: string) =>
@@ -22,7 +24,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-});
+}).use(mathExtension());
 
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
@@ -143,13 +145,14 @@ function trackContainers(raw: string, open: string[]) {
   }
 }
 
-export function renderMarkdown(text: string): string {
+/** The preview's blocks: each top-level block, or run of blocks inside one HTML container, as unsanitized HTML. */
+function blocks(text: string): { line: number; html: string }[] {
   const front = frontMatter(text);
   const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
   const tokens = marked.lexer(body);
   const slugs = new Map<string, number>();
   let line = front?.lines ?? 0;
-  let html = front ? `<div data-line="0">${frontMatterTable(front.fields)}</div>` : "";
+  const out = front ? [{ line: 0, html: frontMatterTable(front.fields) }] : [];
   // Blocks inside an HTML container left open (`<details>`, `<div>`…) share its wrapper up to
   // the close: a wrapper per block would end the container early and spill its content out.
   const open: string[] = [];
@@ -170,18 +173,103 @@ export function renderMarkdown(text: string): string {
     group.html += body;
     if (token.type === "html") trackContainers(token.raw, open);
     if (open.length) continue;
-    html += `<div data-line="${group.line}">${group.html}</div>`;
+    out.push(group);
     group = null;
   }
-  if (group) html += `<div data-line="${group.line}">${group.html}</div>`;
+  if (group) out.push(group);
+  return out;
+}
+
+const SANITIZE = {
+  USE_PROFILES: { html: true },
+  ADD_ATTR: ["data-src", "data-line", "data-front-matter", "data-math"],
   // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
-  return purify().sanitize(html, {
-    USE_PROFILES: { html: true },
-    ADD_ATTR: ["data-src", "data-line", "data-front-matter"],
-    // `srcset` and `<source>` would pick an image past the one the preview loads.
-    FORBID_TAGS: ["style", "form", "source"],
-    FORBID_ATTR: ["style", "srcset"],
-  });
+  // `srcset` and `<source>` would pick an image past the one the preview loads.
+  FORBID_TAGS: ["style", "form", "source"],
+  FORBID_ATTR: ["style", "srcset"],
+};
+
+const wrap = (line: number, html: string) => `<div data-line="${line}">${html}</div>`;
+
+const sanitizeWhole = (all: readonly { line: number; html: string }[]) =>
+  purify().sanitize(all.map((b) => wrap(b.line, b.html)).join(""), SANITIZE);
+
+export function renderMarkdown(text: string): string {
+  return sanitizeWhole(blocks(text));
+}
+
+/**
+ * `renderMarkdown` for a preview that re-renders as the file is edited: blocks sanitized for an
+ * earlier render are reused, so an edit sanitizes only the blocks it changed. Same output.
+ */
+export function createMarkdownRenderer(): (text: string) => string {
+  // Sanitized wrapper contents by unsanitized block HTML; `null` for a block that leaks.
+  let cache = new Map<string, string | null>();
+  return (text) => {
+    const all = blocks(text);
+    const misses = [...new Set(all.map((b) => b.html).filter((html) => !cache.has(html)))];
+    for (const html of misses) if (PARSER_STATE.test(html)) cache.set(html, null);
+    if (misses.length && !all.some((b) => cache.get(b.html) === null)) sanitizeApart(misses, cache);
+    const kept = new Map<string, string | null>();
+    for (const b of all) {
+      const clean = cache.get(b.html);
+      if (clean !== undefined) kept.set(b.html, clean);
+    }
+    cache = kept;
+    const parts = all.map((b) => cache.get(b.html));
+    if (parts.some((part) => typeof part !== "string")) return sanitizeWhole(all);
+    return all.map((b, i) => wrap(b.line, parts[i]!)).join("");
+  };
+}
+
+const WRAPPER_OPEN = '<div data-line="0">';
+// Tags that change how the parser reads the blocks after them without moving the markers.
+const PARSER_STATE = /<(?:form|frameset)(?=[\s/>]|$)/i;
+
+/**
+ * Sanitizes `blocks` in one pass, a marker after each, and records what each one sanitizes to
+ * in `cache`. That equals its part of the whole document only if the HTML parser reads it the
+ * same way on its own: an unclosed `<b>`, `<textarea>`, `<table>` or `<!--` carries into the
+ * blocks after it, which moves or swallows the marker. The first block that does is recorded
+ * as `null`; the blocks after it are not recorded.
+ */
+function sanitizeApart(blocks: readonly string[], cache: Map<string, string | null>) {
+  const nonce = Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join("");
+  const marker = `<p data-marker="${nonce}">.</p>`;
+  const isMarker = (node: Node | undefined) =>
+    node instanceof Element &&
+    node.tagName === "P" &&
+    node.attributes.length === 1 &&
+    node.getAttribute("data-marker") === nonce &&
+    node.childNodes.length === 1 &&
+    node.firstChild!.nodeType === Node.TEXT_NODE &&
+    node.textContent === ".";
+  // Blocks the parser read on their own: each a top-level wrapper with its marker right after it.
+  let apart = 0;
+  const checkParse = (node: Node) => {
+    if (node.nodeName !== "BODY") return;
+    const nodes = node.childNodes;
+    while (apart < blocks.length && nodes[2 * apart]?.nodeName === "DIV" && isMarker(nodes[2 * apart + 1])) apart++;
+    if (apart === blocks.length && nodes.length !== 2 * blocks.length) apart--;
+  };
+  const p = purify();
+  p.addHook("beforeSanitizeElements", checkParse);
+  let html: string;
+  try {
+    html = p.sanitize(blocks.map((b) => wrap(0, b) + marker).join(""), SANITIZE);
+  } finally {
+    p.removeHook("beforeSanitizeElements", checkParse);
+  }
+  const parts = html.split(marker);
+  for (let i = 0; i < apart; i++) {
+    const part = parts[i]!;
+    if (!part.startsWith(WRAPPER_OPEN) || !part.endsWith("</div>")) {
+      cache.set(blocks[i]!, null);
+      return;
+    }
+    cache.set(blocks[i]!, part.slice(WRAPPER_OPEN.length, -"</div>".length));
+  }
+  if (apart < blocks.length) cache.set(blocks[apart]!, null);
 }
 
 export type LinkTarget =
@@ -192,9 +280,9 @@ export type LinkTarget =
 /** Directory of `file` (forward slashes). */
 const dirOf = (file: string) => file.slice(0, Math.max(0, file.lastIndexOf("/")));
 
-/** Joins `rel` onto `dir`, resolving `.` / `..`. Absolute `rel` (leading `/`) is kept. */
+/** Joins `rel` onto `dir`, resolving `.` / `..`. Absolute `rel` (`/…` or `C:/…`) is kept. */
 export function joinPath(dir: string, rel: string): string {
-  const parts = (rel.startsWith("/") ? rel : `${dir}/${rel}`).split("/");
+  const parts = (rel.startsWith("/") || /^[A-Za-z]:\//.test(rel) ? rel : `${dir}/${rel}`).split("/");
   const out: string[] = [];
   for (const p of parts) {
     if (p === "..") {

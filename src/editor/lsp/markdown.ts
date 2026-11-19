@@ -192,8 +192,26 @@ function highlightBlocks(root: HTMLElement, fallback: string | null) {
     const lang = cls ? cls.slice("language-".length) : fallback;
     const text = (code.textContent ?? "").replace(/\n+$/, "");
     code.textContent = text;
-    void highlightInto(code, text, lang);
+    void highlightInto(code, text, lang).then(() => wrapPlainNames(code));
   });
+}
+
+/**
+ * Puts the names a grammar left as plain text in spans (`.tok-name`), as the ones it
+ * recognised are, so a signature's names can be followed (`linkSignatureTypes` in docs.ts):
+ * signatures aren't always code a grammar parses (`(method) Cart.add(product: Product)`).
+ */
+function wrapPlainNames(code: HTMLElement) {
+  for (const node of [...code.childNodes]) {
+    if (node.nodeType !== Node.TEXT_NODE) continue;
+    const parts = (node.textContent ?? "").split(/([\p{L}_$][\p{L}\p{N}_$]*)/u);
+    if (parts.length < 2) continue;
+    node.replaceWith(
+      ...parts.map((p, i) =>
+        i % 2 ? Object.assign(document.createElement("span"), { className: "tok-name", textContent: p }) : p,
+      ),
+    );
+  }
 }
 
 /** A documentation link to a source position (`file://…#L12,5`, `jdt://…#L42`); null for web links. */

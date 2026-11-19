@@ -271,6 +271,26 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("keeps the buffer dirty when the backend declines an autosave", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 0, to: 1, insert: "X" } });
+    backend.autosave = vi.fn(async () => false);
+    const save = vi.spyOn(backend, "save");
+    try {
+      await model.save("auto");
+      expect(backend.autosave).toHaveBeenCalledTimes(1);
+      expect(save).not.toHaveBeenCalled();
+      expect(model.getMeta().dirty).toBe(true);
+      await model.save("explicit");
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(model.getMeta().dirty).toBe(false);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("closes the backend document when the last slot goes away", async () => {
     const { backend, manager } = setup({ "/p/a.txt": "x" });
     const model = await manager.acquire("/p/a.txt");
@@ -326,6 +346,49 @@ describe("DocumentManager + slots", () => {
     expect(slot.currentState().facet(languageFacet)?.name).toBe("angular-typescript");
     slot.dispose();
     manager.stop();
+  });
+
+  it("keeps a modified file open when its last tab closes without autosave, and reopens it with the changes", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
+    try {
+      const a = await manager.acquire("/p/a.txt");
+      const slot = new EditorSlot(a, "t1", host);
+      backend.patch(a.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      slot.dispose();
+      const b = await manager.acquire("/p/b.txt");
+      new EditorSlot(b, "t2", host).dispose();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(backend.files.get("/p/a.txt")).toBe("a\n");
+      expect(await manager.acquire("/p/a.txt")).toBe(a);
+      expect(a.getMeta().dirty).toBe(true);
+      expect(manager.byPath.has("/p/b.txt")).toBe(false);
+      await manager.saveAll("explicit");
+      expect(backend.files.get("/p/a.txt")).toBe("changed a\n");
+    } finally {
+      manager.stop();
+    }
+  });
+
+  it("drops the modified files kept without a tab when the project goes, but keeps untitled buffers", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "a\n" }, { files: { autoSave: false } });
+    try {
+      const a = await manager.acquire("/p/a.txt");
+      const slot = new EditorSlot(a, "t1", host);
+      backend.patch(a.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      slot.dispose();
+      const untitled = manager.adopt(await backend.openUntitled(null));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(manager.byPath.get("/p/a.txt")).toBe(a);
+      manager.releaseProjectDocuments();
+      expect(a.closed).toBe(true);
+      expect(manager.byPath.has("/p/a.txt")).toBe(false);
+      expect(manager.byId.has(a.doc)).toBe(false);
+      expect(useDocMeta.getState()["/p/a.txt"]).toBeUndefined();
+      expect(manager.byPath.get(untitled.path)).toBe(untitled);
+      expect(await manager.acquire("/p/a.txt")).not.toBe(a);
+    } finally {
+      manager.stop();
+    }
   });
 
   it("Save All rejects a failed document save after saving the remaining dirty documents", async () => {

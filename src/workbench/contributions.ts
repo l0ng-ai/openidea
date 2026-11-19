@@ -17,7 +17,16 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, Location, SearchQuery, RunConfig, RunId, SymbolKind } from "@/bindings";
+import type {
+  CommitSelection,
+  ConsoleRule,
+  FileMatches,
+  Location,
+  SearchQuery,
+  RunConfig,
+  RunId,
+  SymbolKind,
+} from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -1012,6 +1021,24 @@ export function showFindResults(source: FindResultsSource) {
 }
 
 // ---------------------------------------------------------------------------
+// Console highlight rules: plugins supply them, the Run and Debug consoles apply
+// them to process output (`ui/consoleRules`).
+
+export const useConsoleRules = create<{ providers: ReadonlyMap<string, readonly ConsoleRule[]> }>(() => ({
+  providers: new Map(),
+}));
+
+/** Replaces the rules of one provider (a plugin id); an empty list removes them. */
+export function setConsoleRules(provider: string, rules: readonly ConsoleRule[]) {
+  useConsoleRules.setState((s) => {
+    const providers = new Map(s.providers);
+    if (rules.length) providers.set(provider, rules);
+    else if (!providers.delete(provider)) return s;
+    return { providers };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // File decorations: colour / badge / tooltip for a path, shown by the project
 // tree, editor tabs, Search Everywhere, etc. Providers (VCS status, problems)
 // push decorations into this store; consumers read with `useFileDecoration`.
@@ -1209,6 +1236,28 @@ export function registerSettingsPage(page: SettingsPageContribution): () => void
       const pages = new Map(s.pages);
       pages.delete(page.id);
       return { pages };
+    });
+}
+
+/** Registers a batch of settings pages in one store update; returns a batched disposer. */
+export function registerSettingsPages(list: SettingsPageContribution[]): () => void {
+  if (!list.length) return () => {};
+  const owned = new Map<string, SettingsPageContribution>();
+  for (const page of list) owned.set(page.id, page);
+  useSettingsPages.setState((s) => {
+    const pages = new Map(s.pages);
+    for (const [id, page] of owned) pages.set(id, page);
+    return { pages };
+  });
+  return () =>
+    useSettingsPages.setState((s) => {
+      let next: Map<string, SettingsPageContribution> | null = null;
+      for (const [id, page] of owned) {
+        if (s.pages.get(id) !== page) continue;
+        next ??= new Map(s.pages);
+        next.delete(id);
+      }
+      return next ? { pages: next } : s;
     });
 }
 
@@ -2110,4 +2159,42 @@ export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>
 export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
   useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
   return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
+}
+
+// ---------------------------------------------------------------------------
+// Search Everywhere categories. Custom categories are opt-in tabs, never All sources.
+export type SearchCategoryId = `plugin:${string}:${string}`;
+export interface SearchCategory {
+  id: SearchCategoryId;
+  title: string;
+  search(
+    request: import("@/bindings").RequestId,
+    query: string,
+    limit: number,
+  ): Promise<import("@/bindings").PluginSearchPage>;
+  /** Resolve within this provider, rather than looking up an ambiguous global action id. */
+  command(id: string): import("@/platform/actions").Action | undefined;
+}
+const searchCategoryProviders = new Map<SearchCategoryId, SearchCategory>();
+const searchCategoryListeners = new Set<() => void>();
+export function searchCategories(): readonly SearchCategory[] {
+  return [...searchCategoryProviders.values()];
+}
+export function onSearchCategoriesChanged(listener: () => void): () => void {
+  searchCategoryListeners.add(listener);
+  return () => {
+    searchCategoryListeners.delete(listener);
+  };
+}
+function searchCategoriesChanged() {
+  notifyEach(searchCategoryListeners, (listener) => listener(), "search categories changed");
+}
+export function registerSearchCategory(category: SearchCategory): () => void {
+  searchCategoryProviders.set(category.id, category);
+  searchCategoriesChanged();
+  return () => {
+    if (searchCategoryProviders.get(category.id) !== category) return;
+    searchCategoryProviders.delete(category.id);
+    searchCategoriesChanged();
+  };
 }

@@ -25,7 +25,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications, projectViewSelection, toolWindowService } from "@/workbench/contributions";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
-import { initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
+import { defaultGroup, initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
 import { withSsh } from "./ssh";
 import { REMOTE_HOST_WINDOW, patchSync, useDeployment } from "./store";
 import styles from "./Deployment.module.css";
@@ -468,7 +468,15 @@ export function registerDeploymentActions(): () => void {
       icon: "export",
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
-      run: withTargets(async (paths) => transfer("upload", await defaultServer("Upload to", paths), paths)),
+      run: withTargets(async (paths) => {
+        // The default server group: each of its servers in turn, as Upload to… on the group does.
+        const group = defaultGroup(deployment());
+        if (group) {
+          for (const server of group.servers) await transfer("upload", server, paths);
+          return;
+        }
+        await transfer("upload", await defaultServer("Upload to", paths), paths);
+      }),
     },
     {
       id: "deployment.uploadTo",

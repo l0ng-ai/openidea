@@ -69,6 +69,17 @@ describe("response bodies", () => {
     );
   });
 
+  it("keeps a `>` inside an attribute value within its tag", () => {
+    expect(prettyMarkup("<rules><rule when=\"a > b\"/><rule when='c > d'>x</rule></rules>")).toBe(
+      ["<rules>", '  <rule when="a > b"/>', "  <rule when='c > d'>x</rule>", "</rules>"].join("\n"),
+    );
+    expect(prettyMarkup('<div><button onclick="items.filter(i => i.done)">Go</button><p>after</p></div>', true)).toBe(
+      ["<div>", '  <button onclick="items.filter(i => i.done)">Go</button>', "  <p>after</p>", "</div>"].join("\n"),
+    );
+    // An unclosed quote still ends the tag at the first `>`.
+    expect(prettyMarkup('<a><b title="x>1</b></a>')).toBe(["<a>", '  <b title="x>1</b>', "</a>"].join("\n"));
+  });
+
   it("formats sizes and durations", () => {
     expect(formatSize(512)).toBe("512 B");
     expect(formatSize(2048)).toBe("2.0 KB");

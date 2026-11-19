@@ -92,11 +92,12 @@ Build on, or cross-compile for, the host's platform, then point `OPENIDEA_SERVER
 
 The flags are meant for the desktop app, but `--version` is handy for checking an installed build.
 
-| Flag                      | Meaning                                                                                                        |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `--version`               | Print the server version and protocol version, then exit.                                                      |
-| `--stdio`                 | Serve one desktop client over stdin / stdout. Logs go to stderr.                                               |
-| `--connect <host> <port>` | Relay one TCP connection to `<host>:<port>` over stdin / stdout. Used for port forwarding into dev containers. |
+| Flag                            | Meaning                                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--version`                     | Print the server version and protocol version, then exit.                                                      |
+| `--stdio`                       | Serve one desktop client over stdin / stdout. Logs go to stderr.                                               |
+| `--mcp-stdio [--project <dir>]` | Relay stdio MCP traffic to the running `openidea-server` MCP server on this host.                              |
+| `--connect <host> <port>`       | Relay one TCP connection to `<host>:<port>` over stdin / stdout. Used for port forwarding into dev containers. |
 
 ```bash
 ls ~/.openidea/server/*/*/openidea-server

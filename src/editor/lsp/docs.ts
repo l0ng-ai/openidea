@@ -14,6 +14,7 @@ import { closePopup, updatePopup, useLspPopup, type DocEntry } from "./popupStor
 import { isEmptyMarkup, languageForPath, openDocLink, sourceLink, type DocLinkHandler } from "./markdown";
 import { resolveGoRef, signatureRef } from "./docLinks/go";
 import { docUrlResolver } from "./docLinks";
+import { signatureNameTarget } from "./docLinks/signature";
 import type { DocTarget } from "./docLinks/symbols";
 import { lspRequest } from "./lsp";
 import { readFileLines, withDocument } from "./files";
@@ -231,16 +232,64 @@ export function docLinkHandler(host: DocHost): DocLinkHandler {
 
 /** The signature block of gopls documentation, whose type names `linkSignatureTypes` follows. */
 const GO_SIGNATURE = ":scope > pre:first-of-type > code.language-go";
+/** Names in other languages' signatures worth asking about (grammars without type names tag them as variables). */
+const SIGNATURE_NAME = ".tok-typeName, .tok-className, .tok-variableName:not(.tok-definition), .tok-name";
 
 /**
- * Go: a click on a type name in the signature shows that type's documentation
- * in the same view, when the name resolves to exactly one declaration.
+ * The signature code block `el` is in: the code blocks that open the documentation
+ * (rust-analyzer's module path and signature, others' signature) or the one closing it
+ * after a rule (clangd); not the examples in between.
+ */
+function signatureBlock(dom: HTMLElement, el: Element): HTMLElement | null {
+  const pre = el.closest("pre");
+  if (!pre || pre.parentElement !== dom) return null;
+  const blocks = [...dom.children];
+  const i = blocks.indexOf(pre);
+  const leading = blocks.slice(0, i).every((b) => b.tagName === "PRE");
+  const closing = i === blocks.length - 1 && blocks[i - 1]?.tagName === "HR";
+  return leading || closing ? pre : null;
+}
+
+/**
+ * A click on a type name in the signature shows that type's documentation in the same view,
+ * when the name resolves to exactly one declaration. Go resolves by its imports; other
+ * languages ask the server where the name is declared, resolving a name once the pointer is
+ * over it so only the names that lead somewhere look like links.
  */
 export function linkSignatureTypes(dom: HTMLElement, host: DocHost, entry: DocEntry) {
+  const refs = new WeakMap<Element, Promise<DocTarget | null>>();
+  const nameAt = (e: Event) => {
+    const name = (e.target as Element | null)?.closest?.(SIGNATURE_NAME);
+    const block = name && signatureBlock(dom, name);
+    return name && block && !block.querySelector("code.language-go") ? { name, block } : null;
+  };
+  const resolve = (name: Element, block: HTMLElement) => {
+    let ref = refs.get(name);
+    if (!ref) {
+      ref = (async () => {
+        const decl = await entry.source?.().catch(() => null);
+        const lines = (block.textContent ?? "").trimEnd().split("\n").length;
+        return decl ? signatureNameTarget(decl, name.textContent ?? "", lines) : null;
+      })().catch(() => null);
+      refs.set(name, ref);
+      void ref.then((t) => t && name.setAttribute("data-doc-ref", ""));
+    }
+    return ref;
+  };
+  dom.addEventListener("mouseover", (e) => {
+    const at = nameAt(e);
+    if (at) void resolve(at.name, at.block);
+  });
   dom.addEventListener("click", (e) => {
+    if (!document.getSelection()?.isCollapsed) return;
+    const at = nameAt(e);
+    if (at) {
+      void resolve(at.name, at.block).then((t) => t && followTo(host, t));
+      return;
+    }
     const name = (e.target as Element | null)?.closest?.(".tok-typeName");
     const code = dom.querySelector(GO_SIGNATURE);
-    if (!name || !code?.contains(name) || !document.getSelection()?.isCollapsed) return;
+    if (!name || !code?.contains(name)) return;
     const before = document.createRange();
     before.setStart(code, 0);
     before.setEndBefore(name);

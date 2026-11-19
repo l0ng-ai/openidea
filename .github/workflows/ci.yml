@@ -5,6 +5,7 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -12,8 +13,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A newer push supersedes the run in progress, on main too.
-  cancel-in-progress: true
+  # A newer push supersedes a pull request's run in progress. Runs on main and in the merge
+  # queue finish, so a broken main shows up and the queue's required checks report.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,7 +25,7 @@ env:
 
 jobs:
   # Which parts a pull request touches, so jobs it can't affect skip and leave the
-  # shared runners to others. Pushes and manual runs always run everything.
+  # shared runners to others. Pushes, the merge queue and manual runs always run everything.
   changes:
     name: Changes
     runs-on: ubuntu-latest
@@ -32,7 +34,12 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
+      server: ${{ steps.classify.outputs.server }}
+      plugins: ${{ steps.classify.outputs.plugins }}
+      deny: ${{ steps.classify.outputs.deny }}
       frontend: ${{ steps.classify.outputs.frontend }}
+      e2e: ${{ steps.classify.outputs.e2e }}
+      catalog: ${{ steps.classify.outputs.catalog }}
     steps:
       - id: classify
         env:
@@ -40,26 +47,55 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          jobs="rust server plugins deny frontend e2e catalog"
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            for job in $jobs; do echo "$job=true" >> "$GITHUB_OUTPUT"; done
             exit 0
           fi
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
             --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
           cat files.txt
+          # A change to CI itself runs everything.
+          ci='^\.github/(workflows/ci\.yml|actions/)'
           docs='^(docs/|\.agents/|\.claude/|\.idea/|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|[^/]+\.md$|LICENSE$|NOTICE$)'
           # Frontend-only paths. The Rust code embeds a few files under src/; those stay out.
-          web='^(src/|e2e/|perf/|public/|scripts/|smoke/|index\.html$|vite\.config\.ts$|tsconfig[^/]*\.json$|knip\.ts$|playwright\.config\.ts$|\.oxlintrc\.json$|\.oxfmtrc\.json$)'
+          web='^(src/|e2e/|perf/|public/|scripts/|smoke/|evals/|index\.html$|vite\.config\.ts$|tsconfig[^/]*\.json$|knip\.ts$|playwright\.config\.ts$|\.oxlintrc\.json$|\.oxfmtrc\.json$)'
           embedded='^src/(bindings\.ts|styles/tokens\.css|features/plugins/views/frame-bridge\.js|platform/keymaps/)'
-          # A job runs when any changed file falls outside the paths that can't affect it.
-          rust=false
-          if grep -Ev "$docs|$web" files.txt | grep -q . || grep -Eq "$embedded" files.txt; then rust=true; fi
-          frontend=false
-          if grep -Ev "$docs" files.txt | grep -q .; then frontend=true; fi
-          echo "rust=$rust frontend=$frontend"
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
-          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          # Plugin web pages are their own pnpm projects, checked by the Plugins job only.
+          plugin_web='^plugins/official/[^/]+/web-src/'
+          # Paths the frontend checks never read...
+          backend='^(crates/|src-tauri/|sdk/|wit/|java/|fixtures/|Cargo\.(toml|lock)$|deny\.toml$|rustfmt\.toml$|rust-toolchain(\.toml)?$|\.cargo/)'
+          # ...except these, which frontend tests and e2e fixtures load.
+          read_by_web='^(fixtures/(folding|django-app)/|crates/ide-plugin/tests/fixtures/|crates/ide-db/(src|tests/fixtures)/snowflake/|src-tauri/(icons|capabilities)/|src-tauri/tauri\.conf\.json$)'
+          # What the browser app and its e2e tests are built from.
+          app='^(src/|e2e/|public/|index\.html$|vite\.config\.ts$|tsconfig\.json$|playwright\.config\.ts$|package\.json$|pnpm-(lock|workspace)\.yaml$|crates/ide-plugin/tests/fixtures/|src-tauri/(icons|capabilities)/|src-tauri/tauri\.conf\.json$)'
+          # The plugin workspaces: the SDK, the plugins, their interface and the host's fixture plugins.
+          plugin_ws='^(sdk/|plugins/|wit/|crates/ide-plugin/tests/fixtures/|rust-toolchain(\.toml)?$)'
+          # Never compiled into the openidea-server binary.
+          not_server='^(src-tauri/|sdk/|fixtures/|crates/[^/]+/(tests|benches)/)'
+          deps='(^|/)Cargo\.(toml|lock)$|^deny\.toml$'
+          # The text catalog test reads the string literals of every Rust source.
+          rust_source='^(crates|src-tauri/src)/.*\.rs$'
+
+          any() { grep -Eq "$1" files.txt; }
+          outside() { [ -n "$(grep -Ev "$1" files.txt || true)" ]; }
+          set_job() { echo "$1=$2" | tee -a "$GITHUB_OUTPUT"; }
+
+          if any "$ci"; then
+            for job in $jobs; do set_job "$job" true; done
+            exit 0
+          fi
+          on() { if "${@:2}"; then set_job "$1" true; else set_job "$1" false; fi; }
+          rust_build() { outside "$1" || any "$embedded"; }
+          web_checks() { outside "$docs|$plugin_web|$backend" || any "$read_by_web"; }
+          catalog_only() { ! web_checks && any "$rust_source"; }
+          on rust rust_build "$docs|$web|$plugin_web"
+          on server rust_build "$docs|$web|$plugin_web|$not_server"
+          on plugins any "$plugin_ws"
+          on deny any "$deps"
+          on frontend web_checks
+          on e2e any "$app"
+          on catalog catalog_only
 
   rust:
     name: Rust (${{ matrix.os }})
@@ -106,12 +142,28 @@ jobs:
         if: runner.os == 'Linux'
         run: git diff --exit-code src/bindings.ts src-tauri/tests/commands.snap
 
+  # One check that always reports, for the ruleset to require: a skipped matrix job reports
+  # under its unexpanded name, so the per-OS checks never appear on frontend-only PRs.
+  rust-checks:
+    name: Rust checks
+    needs: [changes, rust]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.rust.result }}
+        run: |
+          echo "changes: $CHANGES, rust: $RUST"
+          [ "$CHANGES" = success ] && { [ "$RUST" = success ] || [ "$RUST" = skipped ]; }
+
   # The remote development server ships as a static Linux binary (release-build.yml):
   # keep that build working.
   server:
     name: Remote server (linux musl)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.server == 'true'
     timeout-minutes: 40
     runs-on: ubuntu-22.04
     steps:
@@ -129,7 +181,7 @@ jobs:
   plugins:
     name: Plugins (SDK, official, fixtures)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.plugins == 'true'
     timeout-minutes: 30
     runs-on: ubuntu-22.04
     env:
@@ -181,7 +233,7 @@ jobs:
   deny:
     name: Cargo deny
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.deny == 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -210,10 +262,26 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  # A backend-only change can still drop a string the text catalog uses: run that one test.
+  catalog:
+    name: Text catalog
+    needs: changes
+    if: needs.changes.outputs.catalog == 'true'
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with: { version: 11 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm vitest run src/platform/locales/textCatalog.test.ts
+
   e2e:
     name: E2E (${{ matrix.shard }}/2)
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     strategy:

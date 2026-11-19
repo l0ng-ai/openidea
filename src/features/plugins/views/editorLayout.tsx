@@ -3,7 +3,8 @@
  * `"preview"`): the file opens in the text editor, wrapped with the plugin's
  * editor and the Editor / Editor and Preview / Preview switch (in the tab
  * strip, or floating when tabs are hidden), as Markdown's preview. The
- * layout is kept per file; files not switched yet start in the declared one.
+ * layout is kept per editor tab (split panes of one file each have their own);
+ * tabs not switched yet start in the declared one.
  */
 import clsx from "clsx";
 import { useRef, type ReactNode } from "react";
@@ -15,21 +16,21 @@ import styles from "./PluginView.module.css";
 
 export type EditorLayout = "editor" | "split" | "preview";
 
-/** `<plugin>/<editor>` → path → layout. */
-export const useEditorLayouts = create<{ byPath: Record<string, EditorLayout> }>(() => ({ byPath: {} }));
+/** `<plugin>/<editor>:<tab>` → layout. */
+const useEditorLayouts = create<{ byTab: Record<string, EditorLayout> }>(() => ({ byTab: {} }));
 
-const layoutKey = (pluginId: string, editorId: string, path: string) => `${pluginId}/${editorId}:${path}`;
+const layoutKey = (pluginId: string, editorId: string, tabId: string) => `${pluginId}/${editorId}:${tabId}`;
 
-export function layoutOf(pluginId: string, decl: CustomEditorDecl, path: string, byPath: Record<string, EditorLayout>) {
-  return byPath[layoutKey(pluginId, decl.id, path)] ?? (decl.layout === "preview" ? "preview" : "split");
+function layoutOf(pluginId: string, decl: CustomEditorDecl, tabId: string, byTab: Record<string, EditorLayout>) {
+  return byTab[layoutKey(pluginId, decl.id, tabId)] ?? (decl.layout === "preview" ? "preview" : "split");
 }
 
-export function setEditorLayout(pluginId: string, editorId: string, path: string, layout: EditorLayout) {
-  useEditorLayouts.setState((s) => ({ byPath: { ...s.byPath, [layoutKey(pluginId, editorId, path)]: layout } }));
+function setEditorLayout(pluginId: string, editorId: string, tabId: string, layout: EditorLayout) {
+  useEditorLayouts.setState((s) => ({ byTab: { ...s.byTab, [layoutKey(pluginId, editorId, tabId)]: layout } }));
 }
 
-function LayoutActions({ pluginId, decl, path }: { pluginId: string; decl: CustomEditorDecl; path: string }) {
-  const layout = useEditorLayouts((s) => layoutOf(pluginId, decl, path, s.byPath));
+function LayoutActions({ pluginId, decl, tabId }: { pluginId: string; decl: CustomEditorDecl; tabId: string }) {
+  const layout = useEditorLayouts((s) => layoutOf(pluginId, decl, tabId, s.byTab));
   const button = (value: EditorLayout, icon: string, title: string) => (
     <IconButton
       icon={icon}
@@ -37,7 +38,7 @@ function LayoutActions({ pluginId, decl, path }: { pluginId: string; decl: Custo
       size="small"
       title={title}
       pressed={layout === value}
-      onClick={() => setEditorLayout(pluginId, decl.id, path, value)}
+      onClick={() => setEditorLayout(pluginId, decl.id, tabId, value)}
     />
   );
   return (
@@ -51,8 +52,8 @@ function LayoutActions({ pluginId, decl, path }: { pluginId: string; decl: Custo
 
 /** The `tabActions` of a wrapper: the layout switch in the editor's tab strip. */
 export function layoutActions(pluginId: string, decl: CustomEditorDecl) {
-  return function PluginLayoutActions({ path }: { path: string; tabId: string }) {
-    return <LayoutActions pluginId={pluginId} decl={decl} path={path} />;
+  return function PluginLayoutActions({ tabId }: { path: string; tabId: string }) {
+    return <LayoutActions pluginId={pluginId} decl={decl} tabId={tabId} />;
   };
 }
 
@@ -60,6 +61,7 @@ export function layoutActions(pluginId: string, decl: CustomEditorDecl) {
 export function layoutWrapper(pluginId: string, decl: CustomEditorDecl) {
   return function PluginEditorLayout({
     path,
+    tabId,
     children,
     actionsInTabs = false,
   }: {
@@ -68,7 +70,7 @@ export function layoutWrapper(pluginId: string, decl: CustomEditorDecl) {
     children: ReactNode;
     actionsInTabs?: boolean;
   }) {
-    const layout = useEditorLayouts((s) => layoutOf(pluginId, decl, path, s.byPath));
+    const layout = useEditorLayouts((s) => layoutOf(pluginId, decl, tabId, s.byTab));
     const ref = useRef<HTMLDivElement>(null);
     return (
       <div ref={ref} className={clsx(styles.split, styles[`layout-${layout}`])}>
@@ -81,7 +83,7 @@ export function layoutWrapper(pluginId: string, decl: CustomEditorDecl) {
         )}
         {!actionsInTabs && (
           <FloatingToolbar targetRef={ref}>
-            <LayoutActions pluginId={pluginId} decl={decl} path={path} />
+            <LayoutActions pluginId={pluginId} decl={decl} tabId={tabId} />
           </FloatingToolbar>
         )}
       </div>

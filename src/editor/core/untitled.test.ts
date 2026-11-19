@@ -15,6 +15,7 @@ const { serializeSession } = await import("./model/session");
 const { useDocMeta } = await import("./model/document");
 const { save } = await import("@/platform/dialog");
 const editorKinds = await import("@/workbench/contributions");
+const { useProject } = await import("@/platform/project");
 
 let ctrl: InstanceType<typeof EditorController> | null = null;
 let backend: MemoryBackend;
@@ -156,6 +157,19 @@ describe("untitled editor input", () => {
     expect(await ctrl!.closeTab(paneId, tab.id)).toBe(true);
     expect(Object.values(useTabs.getState().panes).flatMap((p) => p.tabs)).toHaveLength(0);
     expect([...backend.files.keys()]).toEqual(["/p/main.rs"]);
+  });
+
+  it("follows the window into another project but not to the Welcome screen", async () => {
+    const project = (root: string) => ({ root, name: root, trusted: true, isGit: false, settings: {} }) as never;
+    try {
+      await ctrl!.openUntitled({ focus: false });
+      useProject.setState({ project: project("/a") });
+      expect(activeTab().input.kind).toBe("untitled");
+      useProject.setState({ project: null });
+      expect(Object.values(useTabs.getState().panes).flatMap((p) => p.tabs)).toEqual([]);
+    } finally {
+      useProject.setState({ project: null });
+    }
   });
 
   it("reuses the buffer for a re-opened untitled name and shares it across tabs", async () => {

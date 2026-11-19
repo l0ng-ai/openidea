@@ -6,6 +6,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { editorsFor, useEditorRegistry } from "@/editor/api";
+import { onLspRefresh } from "@/editor/lsp/availability";
 import { projectPythonHierarchy, pythonSupertypeItems } from "@/editor/navigation/pythonHierarchy";
 import { call, commands, IpcError, type OutlineItem, type Pos } from "@/platform/ipc";
 import { isVirtualUri } from "@/platform/virtualDocs";
@@ -17,6 +18,8 @@ interface OutlineState {
   path: string | null;
   doc: number | null;
   items: OutlineItem[] | null;
+  /** The Dart server's widget tree of a Flutter file; the Structure view prefers it over `items`. */
+  flutter: OutlineItem[] | null;
   loading: boolean;
   error: string | null;
   /** Whether the file's language server answers type hierarchy requests (Show Inherited is offered). */
@@ -29,6 +32,7 @@ export const useOutline = create<OutlineState>(() => ({
   path: null,
   doc: null,
   items: null,
+  flutter: null,
   loading: false,
   error: null,
   inheritedSupported: false,
@@ -39,6 +43,7 @@ const IDLE_MS = 500;
 let consumers = 0;
 let stop: (() => void) | null = null;
 let seq = 0;
+let flutterSeq = 0;
 
 /** A backend document id for `path` while `fn` runs (open editors are reused). */
 async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
@@ -103,13 +108,29 @@ async function loadInherited(doc: number, path: string, items: readonly OutlineI
     useOutline.setState({ inheritedSupported: true, inherited: new Map(entries.filter(([, m]) => m.length)) });
 }
 
+async function loadFlutter(doc: number, language: string) {
+  const my = ++flutterSeq;
+  const flutter = language === "dart" ? await call(commands.docFlutterOutline(doc)).catch(() => null) : null;
+  if (my === flutterSeq) useOutline.setState({ flutter });
+}
+
 async function load(doc: number, path: string, language: string) {
   const my = ++seq;
   useOutline.setState((s) =>
     s.path === path
       ? { loading: true }
-      : { path, doc, items: null, loading: true, error: null, inheritedSupported: false, inherited: null },
+      : {
+          path,
+          doc,
+          items: null,
+          flutter: null,
+          loading: true,
+          error: null,
+          inheritedSupported: false,
+          inherited: null,
+        },
   );
+  void loadFlutter(doc, language);
   try {
     const items = await call(commands.docOutline(doc));
     if (my !== seq) return;
@@ -128,10 +149,12 @@ function start(): () => void {
     const ctx = current();
     if (!ctx) {
       seq++;
+      flutterSeq++;
       useOutline.setState({
         path: null,
         doc: null,
         items: null,
+        flutter: null,
         loading: false,
         error: null,
         inheritedSupported: false,
@@ -154,8 +177,15 @@ function start(): () => void {
     clearTimeout(timer);
     timer = setTimeout(reloadNow, IDLE_MS);
   });
+  // Published after each analysis, independently of the requests above.
+  const unsubFlutter = onLspRefresh("flutterOutline", () => {
+    const ctx = current();
+    if (ctx) void loadFlutter(ctx.doc, ctx.language);
+  });
   return () => {
     clearTimeout(timer);
+    flutterSeq++;
+    unsubFlutter();
     unsubActive();
     unsubInherited();
     unsubEdits();
@@ -193,6 +223,8 @@ interface StructureOptions {
   sortByVisibility: boolean;
   /** Members inherited from supertypes, greyed (IDEA: off). */
   showInherited: boolean;
+  /** Flutter outline: hide declarations without widgets (Flutter plugin: off). */
+  showOnlyWidgets: boolean;
 }
 
 export const useStructureOptions = create<StructureOptions>(() => ({
@@ -204,6 +236,7 @@ export const useStructureOptions = create<StructureOptions>(() => ({
   showNonPublic: true,
   sortByVisibility: false,
   showInherited: false,
+  showOnlyWidgets: false,
   ...loadJson<Partial<StructureOptions>>(OPTIONS_KEY, {}),
 }));
 
@@ -217,5 +250,6 @@ useStructureOptions.subscribe((s) =>
     showNonPublic: s.showNonPublic,
     sortByVisibility: s.sortByVisibility,
     showInherited: s.showInherited,
+    showOnlyWidgets: s.showOnlyWidgets,
   }),
 );

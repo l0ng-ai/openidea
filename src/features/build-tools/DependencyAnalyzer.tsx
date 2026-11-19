@@ -54,7 +54,7 @@ import {
   type DependencyUsage,
 } from "./analyzer";
 import { gradleProjectKey } from "./model";
-import { syncTool, useAnalyzer, useBuild } from "./store";
+import { cancelSync, syncTool, useAnalyzer, useBuild } from "./store";
 import styles from "./DependencyAnalyzer.module.css";
 
 type Mode = "list" | "tree";
@@ -64,17 +64,23 @@ type Node =
 
 const ALL_SCOPES = "*";
 const GRADLE = "gradle:";
-/** The resolvable configurations of the Java plugins. */
-const CONFIGURATIONS = ["compileClasspath", "runtimeClasspath", "testCompileClasspath", "testRuntimeClasspath"];
+const DEFAULT_GRADLE_CONFIGURATION = "runtimeClasspath";
+const NO_DEPENDENCIES: readonly MavenDependency[] = [];
 
 type GradleTree = { deps: MavenDependency[] | null; error: string | null; loading: boolean };
 /** Reports already read in this session, by workspace, build, project and configuration: reopening the tab doesn't run Gradle again. */
 const gradleTrees = new Map<string, MavenDependency[]>();
 
 /** The `dependencies` report of `path` for `configuration`, cached; a new `generation` runs Gradle again. */
-function useGradleTree(path: string | null, buildDir: string | null, configuration: string, generation: number) {
+function useGradleTree(
+  path: string | null,
+  buildDir: string | null,
+  configuration: string | null,
+  syncedAt: number | null,
+  generation: number,
+) {
   const root = useBuild((s) => s.root);
-  const key = path && root ? JSON.stringify([root, buildDir, path, configuration]) : null;
+  const key = path && root && configuration ? JSON.stringify([root, buildDir, path, configuration, syncedAt]) : null;
   const [state, setState] = useState<GradleTree & { key: string | null }>({
     key: null,
     deps: null,
@@ -84,7 +90,7 @@ function useGradleTree(path: string | null, buildDir: string | null, configurati
   const served = useRef(generation);
   const running = useRef<number | null>(null);
   useEffect(() => {
-    if (!key || !path) return;
+    if (!key || !path || !configuration) return;
     const forced = served.current !== generation;
     served.current = generation;
     const cached = gradleTrees.get(key);
@@ -101,9 +107,10 @@ function useGradleTree(path: string | null, buildDir: string | null, configurati
     const offline = useBuild.getState().settings.gradle.offline;
     call(commands.gradleDependencies(path, configuration, offline, request, buildDir))
       .then((deps) => {
+        if (!live) return;
         const tree = fromGradle(deps);
         gradleTrees.set(key, tree);
-        if (live) setState({ key, deps: tree, error: null, loading: false });
+        setState({ key, deps: tree, error: null, loading: false });
       })
       .catch((e) => {
         if (live) setState({ key, deps: cached ?? null, error: isCancelled(e) ? null : errorText(e), loading: false });
@@ -337,11 +344,13 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
   const maven = useBuild((s) => s.model?.maven ?? null);
   const gradle = useBuild((s) => s.model?.gradle);
   const syncing = useBuild((s) => s.syncing.maven);
+  const gradleSync = useBuild((s) => s.syncing.gradle);
+  const root = useBuild((s) => s.root);
   const chosen = useAnalyzer((s) => s.module);
   const [query, setQuery] = useState("");
   const [conflictsOnly, setConflictsOnly] = useState(false);
   const [scope, setScope] = useState<string>(ALL_SCOPES);
-  const [configuration, setConfiguration] = useState("runtimeClasspath");
+  const [chosenConfiguration, setConfiguration] = useState(DEFAULT_GRADLE_CONFIGURATION);
   const [generation, setGeneration] = useState(0);
   const [mode, setMode] = useState<Mode>("list");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -357,17 +366,28 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
   const pom = value != null && gradlePath == null ? value : null;
   const module = pom ? (maven?.projects.find((p) => p.pom === pom) ?? null) : null;
   const gradleProject = selectedGradle?.project ?? null;
-  const report = useGradleTree(gradlePath, selectedGradle?.build.dir ?? null, configuration, generation);
-  const deps = useMemo(
-    () => (gradlePath != null ? (report.deps ?? []) : (module?.dependencies ?? [])),
-    [gradlePath, report.deps, module],
-  );
+  const buildDir = selectedGradle?.build.dir ?? null;
+  const configurations = selectedGradle?.build.stale ? null : (gradleProject?.resolvableConfigurations ?? null);
+  const configuration = configurations?.includes(chosenConfiguration)
+    ? chosenConfiguration
+    : configurations?.includes(DEFAULT_GRADLE_CONFIGURATION)
+      ? DEFAULT_GRADLE_CONFIGURATION
+      : (configurations?.[0] ?? null);
+  const discoveryKey = root && buildDir !== null && configurations === null ? JSON.stringify([root, buildDir]) : null;
+  const attemptedDiscovery = useRef<string | null>(null);
+  useEffect(() => {
+    if (!discoveryKey) attemptedDiscovery.current = null;
+    else if (!gradleSync && attemptedDiscovery.current !== discoveryKey) {
+      attemptedDiscovery.current = discoveryKey;
+      void syncTool("gradle", buildDir);
+    }
+  }, [discoveryKey, gradleSync, buildDir]);
+  const report = useGradleTree(gradlePath, buildDir, configuration, selectedGradle?.build.syncedAt ?? null, generation);
+  const deps = (gradlePath !== null ? report.deps : module?.dependencies) ?? NO_DEPENDENCIES;
   const artifacts = useMemo(() => analyze(deps), [deps]);
   const conflicted = useMemo(() => new Set(artifacts.filter((a) => a.conflict).map((a) => a.key)), [artifacts]);
-  const filter = useMemo(
-    () => ({ query, conflictsOnly, scope: scope === ALL_SCOPES || gradlePath != null ? null : scope }),
-    [query, conflictsOnly, scope, gradlePath],
-  );
+  const scopeFilter = scope === ALL_SCOPES || gradlePath !== null ? null : scope;
+  const filter = useMemo(() => ({ query, conflictsOnly, scope: scopeFilter }), [query, conflictsOnly, scopeFilter]);
   const listed = useMemo(() => filterArtifacts(artifacts, filter), [artifacts, filter]);
   const tree = useMemo(() => filterTree(deps, filter, conflicted), [deps, filter, conflicted]);
   const roots: Node[] = useMemo(() => {
@@ -406,7 +426,11 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
     { value: ALL_SCOPES, label: tx("All scopes") },
     ...scopesOf(artifacts).map((s) => ({ value: s, label: s })),
   ];
-  const configurationOptions: SelectOption[] = CONFIGURATIONS.map((c) => ({ value: c, label: c }));
+  const configurationOptions: SelectOption[] = (configurations ?? []).map((c) => ({ value: c, label: c }));
+  const refreshGradle = () => {
+    if (configuration === null) void syncTool("gradle", buildDir);
+    else setGeneration((g) => g + 1);
+  };
 
   const nodeArtifactKey = (n: Node) => (n.kind === "artifact" ? n.artifact.key : artifactKey(n.node.dependency));
   /** The usage a row stands for: a tree node's own, else the artifact's direct (or first) one. */
@@ -517,6 +541,7 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
             className={styles.scope}
             value={configuration}
             options={configurationOptions}
+            disabled={!configurationOptions.length}
             onChange={(c) => {
               setConfiguration(c);
               setSelectedKey(null);
@@ -550,16 +575,12 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
         />
         <span className={styles.sep} />
         {gradlePath != null ? (
-          report.loading ? (
+          configuration === null && gradleSync ? (
+            <IconButton icon="stop" size="small" iconSize={16} title="Stop" onClick={() => cancelSync("gradle")} />
+          ) : report.loading ? (
             <IconButton icon="stop" size="small" iconSize={16} title="Stop" onClick={report.cancel} />
           ) : (
-            <IconButton
-              icon="refresh"
-              size="small"
-              iconSize={16}
-              title="Refresh"
-              onClick={() => setGeneration((g) => g + 1)}
-            />
+            <IconButton icon="refresh" size="small" iconSize={16} title="Refresh" onClick={refreshGradle} />
           )
         ) : syncing ? (
           <IconButton icon="stop" size="small" iconSize={16} action="maven.cancelReload" />
@@ -569,7 +590,12 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
       </div>
       {gradlePath != null ? (
         <>
-          {report.loading ? (
+          {configuration === null && gradleSync ? (
+            <div className={styles.banner} role="status">
+              <Spinner size={12} />
+              <span className={styles.bannerText}>{gradleSync.message}</span>
+            </div>
+          ) : report.loading ? (
             <div className={styles.banner} role="status">
               <Spinner size={12} />
               <span className={styles.bannerText}>
@@ -584,7 +610,22 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
               </span>
             </div>
           ) : null}
-          {report.error && !report.deps ? (
+          {configuration === null ? (
+            gradleSync ? null : configurations === null ? (
+              <EmptyState
+                title="Cannot load Gradle configurations"
+                actions={
+                  <Button size="small" onClick={refreshGradle}>
+                    Retry
+                  </Button>
+                }
+              >
+                {selectedGradle?.build.syncError}
+              </EmptyState>
+            ) : (
+              <EmptyState title="No resolvable Gradle configurations" />
+            )
+          ) : report.error && !report.deps ? (
             <EmptyState
               title="Cannot resolve dependencies"
               actions={

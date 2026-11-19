@@ -54,11 +54,14 @@ export const visibilityRank = (item: OutlineItem) => (item.visibility ? VISIBILI
 
 export function sortOutline(nodes: readonly OutlineNode[], alphabetical: boolean, byVisibility = false): OutlineNode[] {
   if (!alphabetical && !byVisibility) return nodes as OutlineNode[];
+  // Widgets keep their source order, which is how they nest on screen.
+  const inSourceOrder = nodes.some((n) => n.item.kind === "widget");
   return [...nodes]
-    .sort(
-      (a, b) =>
-        (byVisibility ? visibilityRank(a.item) - visibilityRank(b.item) : 0) ||
-        (alphabetical ? a.item.name.localeCompare(b.item.name, undefined, { sensitivity: "base" }) : 0),
+    .sort((a, b) =>
+      inSourceOrder
+        ? 0
+        : (byVisibility ? visibilityRank(a.item) - visibilityRank(b.item) : 0) ||
+          (alphabetical ? a.item.name.localeCompare(b.item.name, undefined, { sensitivity: "base" }) : 0),
     )
     .map((n) => ({ ...n, children: sortOutline(n.children, alphabetical, byVisibility) }));
 }
@@ -115,6 +118,21 @@ export function outlinePathAt(items: readonly OutlineItem[], pos: Pos): OutlineI
   }
   return [];
 }
+
+/** Show Only Widgets: widgets and the declarations that lead to one. */
+export function onlyWidgets(nodes: readonly OutlineNode[]): OutlineNode[] {
+  return nodes.flatMap((n) => {
+    const children = onlyWidgets(n.children);
+    return n.item.kind === "widget" || children.length ? [{ ...n, children }] : [];
+  });
+}
+
+/** The letter of a widget's badge: `_Badge` shows B. */
+export const widgetLetter = (name: string) => /\p{L}/u.exec(name)?.[0]?.toUpperCase() ?? "";
+
+/** A `build` method that creates widgets, emphasised like in the Flutter plugin. */
+export const isWidgetBuild = (item: OutlineItem) =>
+  item.kind === "method" && item.name.startsWith("build(") && item.children.some((c) => c.kind === "widget");
 
 export function allKeys(nodes: readonly OutlineNode[], out: string[] = []): string[] {
   for (const n of nodes) {

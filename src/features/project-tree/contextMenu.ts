@@ -1,7 +1,7 @@
 /** Context menu and "New" popup of the project view. */
 import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
-import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
+import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
@@ -28,6 +28,7 @@ import {
   openRenameDialog,
   openSelectionInRightSplit,
   paste,
+  openWithAssociatedApp,
   reformatNodes,
   reloadFromDisk,
   revealInFinder,
@@ -341,6 +342,13 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         icon: "external-link",
         run: () => void revealInFinder(nodes),
       },
+      files.length > 0 &&
+        canOpenWithSystemApp() && {
+          id: "associatedApp",
+          label: "Associated Application",
+          icon: "external-link",
+          run: () => void openWithAssociatedApp(files),
+        },
       folder && getAction("terminal.openAt")
         ? { id: "terminal", label: "Terminal", icon: "terminal", run: () => void delegate("terminal.openAt", folder) }
         : null,
@@ -502,6 +510,13 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
         icon: "external-link",
         run: () => void revealInFinder(nodes),
       },
+      nodes.every((n) => !n.dir) &&
+        canOpenWithSystemApp() && {
+          id: "associatedApp",
+          label: "Associated Application",
+          icon: "external-link",
+          run: () => void openWithAssociatedApp(nodes),
+        },
     ]),
     single &&
       !single.dir &&

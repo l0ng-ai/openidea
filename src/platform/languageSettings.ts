@@ -193,6 +193,7 @@ export interface LanguagesValid {
   go: {
     goroot: string;
     gopath: string;
+    gofumpt: boolean;
     buildTags: GoBuildTags;
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
@@ -231,6 +232,10 @@ export interface LanguagesValid {
       activeProfiles: string;
       /** Delegate IDE build/run actions to Maven (`javac`) instead of jdtls (ECJ). */
       delegateBuild: boolean;
+      /** Download dependencies' `-sources.jar` when jdtls imports the project. */
+      downloadSources: boolean;
+      /** Always update snapshots: `-U` on Maven runs, `java.maven.updateSnapshots` for jdtls. */
+      updateSnapshots: boolean;
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -289,7 +294,13 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
-  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
+  go: {
+    goroot: "",
+    gopath: "",
+    gofumpt: false,
+    buildTags: DEFAULT_GO_BUILD_TAGS,
+    modules: { env: {}, autoVendor: true },
+  },
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
@@ -314,6 +325,8 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       threads: "",
       activeProfiles: "",
       delegateBuild: false,
+      downloadSources: false,
+      updateSnapshots: false,
     },
   },
   markdown: { previewFontSize: null },
@@ -447,6 +460,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     go: {
       goroot: text(go.goroot, d.go.goroot),
       gopath: text(go.gopath, d.go.gopath),
+      gofumpt: bool(go.gofumpt, d.go.gofumpt),
       buildTags: Object.fromEntries(
         Object.entries(DEFAULT_GO_BUILD_TAGS).map(([key, value]) => [key, text(tags[key], value)]),
       ) as unknown as GoBuildTags,
@@ -492,6 +506,8 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         threads: text(maven.threads, d.java.maven.threads),
         activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
         delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
+        downloadSources: bool(maven.downloadSources, d.java.maven.downloadSources),
+        updateSnapshots: bool(maven.updateSnapshots, d.java.maven.updateSnapshots),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
 import { actionToggled, executeAction, getAction } from "@/platform/actions";
 import { registerToolWindow } from "../contributions";
 import { installToolWindowActions } from "./actions";
@@ -243,6 +244,21 @@ describe("tool window persistence", () => {
 });
 
 describe("tool window actions", () => {
+  it("titles Hide All Tool Windows 'Restore Tool Windows' while it would restore them", async () => {
+    const dispose = installToolWindowActions();
+    try {
+      showToolWindow("terminal");
+      expect(getAction("toolwindow.hideAll")?.title).toBe("Hide All Tool Windows");
+      await executeAction("toolwindow.hideAll");
+      expect(getAction("toolwindow.hideAll")?.title).toBe("Restore Tool Windows");
+      await executeAction("toolwindow.hideAll");
+      expect(isToolWindowVisible("terminal")).toBe(true);
+      expect(getAction("toolwindow.hideAll")?.title).toBe("Hide All Tool Windows");
+    } finally {
+      dispose();
+    }
+  });
+
   it("registers toolwindow.<id> and generic actions", async () => {
     const dispose = installToolWindowActions();
     expect(getAction("toolwindow.terminal")?.title).toBe("Terminal");
@@ -660,5 +676,40 @@ describe("narrow window", () => {
     collapseSidesForNarrowWindow();
     expect(useToolWindowLayout.getState().maximized).toBe("bottom");
     expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+});
+
+describe("remember size for each tool window", () => {
+  const remember = (on: boolean) =>
+    useProject.setState({ settings: { appearance: { rememberToolWindowSizes: on } } } as never);
+  afterEach(() => remember(false));
+
+  it("restores each window's own size when switching on a side", () => {
+    remember(true);
+    showToolWindow("terminal");
+    setToolWindowSize("bottom", 200);
+    showToolWindow("problems");
+    setToolWindowSize("bottom", 400);
+    showToolWindow("terminal");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(200);
+    showToolWindow("problems");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(400);
+    // Kept after a hide, across a reload, and in a saved layout.
+    hideToolWindow("problems");
+    showToolWindow("terminal");
+    loadToolWindowLayout("/work/a");
+    showToolWindow("problems");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(400);
+    expect(toolWindowLayoutSnapshot().windowSizes).toEqual({ terminal: 200, problems: 400 });
+  });
+
+  it("keeps one shared size per side when off", () => {
+    showToolWindow("terminal");
+    setToolWindowSize("bottom", 200);
+    showToolWindow("problems");
+    setToolWindowSize("bottom", 400);
+    showToolWindow("terminal");
+    expect(useToolWindowLayout.getState().sizes.bottom).toBe(400);
+    expect(useToolWindowLayout.getState().windowSizes).toEqual({});
   });
 });

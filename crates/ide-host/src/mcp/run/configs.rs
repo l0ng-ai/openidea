@@ -139,12 +139,14 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
             }
             let page = Page::of(&call, CONFIGURATIONS_LIMIT)?;
             let query = call.opt_str("query")?.map(|q| q.to_lowercase());
-            let dir = crate::mcp::scope::Scope::of(&call)?;
+            let paths = crate::mcp::search::PathScope::of(&call)?;
             let list: Vec<Value> = configs
                 .iter()
                 // A configuration belongs where it runs.
                 .filter(|c| {
-                    dir.contains(&c.cwd.as_deref().map_or_else(|| call.root().to_path_buf(), |d| call.root().join(d)))
+                    paths.matches_dir(
+                        &c.cwd.as_deref().map_or_else(|| call.root().to_path_buf(), |d| call.root().join(d)),
+                    )
                 })
                 .filter(|c| {
                     query.as_ref().is_none_or(|q| {
@@ -169,7 +171,7 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
 in the file instead of project-wide run configurations.",
     ))
     .param(Param::optional("query", ParamType::String, "Only configurations whose name, type or command contains it"))
-    .param(crate::mcp::scope::param())
+    .param(crate::mcp::search::paths_param())
     .param(Param::optional("limit", ParamType::Integer, "Configurations to return at most (default 100)"))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
@@ -356,6 +358,13 @@ async fn run_to_end(call: &Call, config: RunConfig, errors: &mut BuildErrors) ->
             t.drain(..cut);
         }
     });
+    let config = match resolve_jvm_application(call, config, errors).await? {
+        Ok(config) => config,
+        Err(reason) => {
+            errors.process_outputs.push(reason);
+            return Ok(false);
+        }
+    };
     let info = crate::ops::run::run_start(&call.host(), call.window(), config, emit, None).await?;
     let exit = wait_exit(call, info.id, None).await?.flatten();
     if exit == Some(0) {
@@ -365,6 +374,177 @@ async fn run_to_end(call: &Call, config: RunConfig, errors: &mut BuildErrors) ->
     let start = t.char_indices().rev().nth(MAX_PROCESS_OUTPUT_LENGTH - 1).map_or(0, |(i, _)| i);
     errors.process_outputs.push(t[start..].to_owned());
     Ok(false)
+}
+
+/// Run configuration kinds launched as a JVM main class (`JVM_APPLICATION_KINDS` in the UI).
+const JVM_APPLICATION_KINDS: [&str; 2] = ["application", "spring-boot"];
+const CLASSPATH: &str = "${classpath}";
+const TEST_CLASSPATH: &str = "${testClasspath}";
+
+/// `java` options whose value is the next argument (`parseJavaArgs` in the UI).
+const JAVA_OPTIONS_WITH_VALUE: [&str; 13] = [
+    "-cp",
+    "-classpath",
+    "--class-path",
+    "-p",
+    "--module-path",
+    "--upgrade-module-path",
+    "--add-modules",
+    "--add-opens",
+    "--add-exports",
+    "--add-reads",
+    "--patch-module",
+    "--limit-modules",
+    "--enable-native-access",
+];
+
+/// The main class of `java` arguments and which classpath placeholder they use (`Some(true)`:
+/// `${testClasspath}`; `None`: an explicit classpath or none).
+fn java_main_class(args: &[String]) -> (Option<&str>, Option<bool>) {
+    let mut test = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "-jar" {
+            return (None, test);
+        }
+        if matches!(a, "-cp" | "-classpath" | "--class-path") {
+            match args.get(i + 1).map(String::as_str) {
+                Some(CLASSPATH) => test = Some(false),
+                Some(TEST_CLASSPATH) => test = Some(true),
+                _ => {}
+            }
+            i += 2;
+            continue;
+        }
+        if JAVA_OPTIONS_WITH_VALUE.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if !a.starts_with('-') {
+            return (Some(a), test);
+        }
+        i += 1;
+    }
+    (None, test)
+}
+
+/// `args` with the classpath placeholders replaced and the module path added (`resolveJavaCommand`).
+fn resolved_java_args(args: &[String], info: &ide_lsp::jdtls::JavaLaunchInfo) -> Vec<String> {
+    let cp = info.class_paths.join(&info.path_list_separator);
+    let mut out = Vec::with_capacity(args.len() + 2);
+    if !info.module_paths.is_empty() && !args.iter().any(|a| a == "-p" || a == "--module-path") {
+        out.push("--module-path".to_owned());
+        out.push(info.module_paths.join(&info.path_list_separator));
+    }
+    out.extend(args.iter().map(|a| if a == CLASSPATH || a == TEST_CLASSPATH { cp.clone() } else { a.clone() }));
+    out
+}
+
+/// The module (relative to the project root) of a JVM source file: the part before
+/// `src/<set>/<language>/` (`jvmModuleDir` without a build model).
+fn jvm_module_of(rel: &str) -> Option<String> {
+    let rel = rel.replace('\\', "/");
+    let parts: Vec<&str> = rel.split('/').collect();
+    (0..parts.len().saturating_sub(3)).find_map(|i| {
+        (parts[i] == "src" && matches!(parts[i + 2], "java" | "kotlin" | "scala" | "groovy"))
+            .then(|| parts[..i].join("/"))
+    })
+}
+
+/// The module of a configuration saved without one, found from its main class's source
+/// (`findJavaModule`): `None` unless exactly one module declares it.
+async fn find_java_module(call: &Call, main: &str) -> IdeResult<Option<String>> {
+    let outer = main.split('$').next().unwrap_or(main);
+    let (pkg, simple) = outer.rsplit_once('.').unwrap_or(("", outer));
+    let mut names = vec![format!("{simple}.java"), format!("{simple}.kt")];
+    if let Some(stem) = simple.strip_suffix("Kt") {
+        names.push(format!("{stem}.kt"));
+    }
+    let mut modules = std::collections::BTreeSet::new();
+    for name in names {
+        for path in crate::ops::nav::find_files_named(&call.host(), call.window(), name).await? {
+            let path = std::path::PathBuf::from(path);
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let declared = text
+                .lines()
+                .map(str::trim)
+                .find_map(|l| l.strip_prefix("package "))
+                .map(|p| p.trim_end_matches(';').trim())
+                .unwrap_or("");
+            if declared != pkg {
+                continue;
+            }
+            let rel = path.strip_prefix(call.root()).unwrap_or(&path).to_string_lossy().into_owned();
+            modules.insert(jvm_module_of(&rel).unwrap_or_default());
+        }
+    }
+    Ok((modules.len() == 1).then(|| modules.into_iter().next().unwrap_or_default()))
+}
+
+/// A JVM application configuration ready to start, as the Run tool window launches it:
+/// built per its before-launch build policy, with `${classpath}` / `${testClasspath}`, the
+/// module path and the module's `java` resolved through jdtls. `Err` says why it cannot start
+/// (compile errors are added to `errors`). Other configurations are returned as they are.
+async fn resolve_jvm_application(
+    call: &Call,
+    config: RunConfig,
+    errors: &mut BuildErrors,
+) -> IdeResult<Result<RunConfig, String>> {
+    if !JVM_APPLICATION_KINDS.contains(&config.kind.as_str()) {
+        return Ok(Ok(config));
+    }
+    let (main, test) = java_main_class(&config.args);
+    let Some(main) = main.map(str::to_owned) else {
+        return Ok(Err(format!("No main class in '{}'", config.name)));
+    };
+    let module = match config.extras.module.clone() {
+        Some(module) => module,
+        None => match find_java_module(call, &main).await? {
+            Some(module) => module,
+            None => return Ok(Err(format!("Cannot determine the module for main class '{main}'"))),
+        },
+    };
+    let policy = config.extras.build_policy.unwrap_or_default();
+    let cancel = ide_core::CancellationToken::new();
+    let host = call.host();
+    let info = crate::ops::java::resolve_launch(
+        &host,
+        call.window(),
+        std::path::PathBuf::from(&module),
+        test == Some(true),
+        policy,
+        &cancel,
+    )
+    .await?;
+    use ide_lsp::jdtls::JavaBuildStatus;
+    if matches!(info.build, Some(JavaBuildStatus::Failed | JavaBuildStatus::WithErrors))
+        && policy != ide_run::BuildPolicy::MakeAndContinueOnErrors
+    {
+        for e in &info.errors {
+            errors.errors.push(format!(
+                "{}:{}: {}",
+                std::path::PathBuf::from(e.path.clone()).display(),
+                e.line,
+                e.message
+            ));
+        }
+        let reason = if info.build == Some(JavaBuildStatus::Failed) {
+            format!("Build failed; '{}' was not started.", config.name)
+        } else {
+            format!("Build has compile errors; '{}' was not started.", config.name)
+        };
+        return Ok(Err(reason));
+    }
+    if test.is_some() && info.class_paths.is_empty() {
+        return Ok(Err("The classpath is empty: is the module imported by the Java language server?".to_owned()));
+    }
+    let args = resolved_java_args(&config.args, &info);
+    let command = match (&info.java_exec, config.command.as_str()) {
+        (Some(exec), "java") => exec.clone(),
+        _ => config.command.clone(),
+    };
+    Ok(Ok(RunConfig { command, args, ..config }))
 }
 
 /// The configuration's before-launch tasks, as the Run tool window runs them; returns why
@@ -608,6 +788,10 @@ one by one",
             if let Some(reason) = before_launch(&call, &config, &configs, &mut Vec::new(), &mut errors).await? {
                 return Err(execution_failed(&[errors.text(), Some(reason)]));
             }
+            let config = match resolve_jvm_application(&call, config, &mut errors).await? {
+                Ok(config) => config,
+                Err(reason) => return Err(execution_failed(&[errors.text(), Some(reason)])),
+            };
             let collector = Arc::new(Mutex::new(OutputCollector::create(&config.name)?));
             let output_path = collector.lock().path.clone();
             let sink = collector.clone();
@@ -683,6 +867,40 @@ provided, values are merged over existing env.",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    #[test]
+    fn java_arguments_name_the_main_class_and_classpath_placeholder() {
+        let run = strings(&["-Xmx1g", "-cp", CLASSPATH, "--add-opens", "a/b=ALL-UNNAMED", "com.example.App", "x"]);
+        assert_eq!(java_main_class(&run), (Some("com.example.App"), Some(false)));
+        assert_eq!(java_main_class(&strings(&["-classpath", TEST_CLASSPATH, "T"])), (Some("T"), Some(true)));
+        assert_eq!(java_main_class(&strings(&["-cp", "lib/*", "Main"])), (Some("Main"), None));
+        assert_eq!(java_main_class(&strings(&["-jar", "app.jar"])), (None, None));
+    }
+
+    #[test]
+    fn resolved_java_arguments_replace_the_placeholder_and_add_the_module_path() {
+        let info = ide_lsp::jdtls::JavaLaunchInfo {
+            class_paths: vec!["/p/target/classes".into(), "/m2/a.jar".into()],
+            module_paths: vec!["/m2/mod.jar".into()],
+            path_list_separator: ":".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolved_java_args(&strings(&["-cp", CLASSPATH, "App"]), &info),
+            strings(&["--module-path", "/m2/mod.jar", "-cp", "/p/target/classes:/m2/a.jar", "App"])
+        );
+    }
+
+    #[test]
+    fn a_source_file_belongs_to_the_module_before_its_source_set() {
+        assert_eq!(jvm_module_of("repro-dto/src/main/java/com/example/App.java").as_deref(), Some("repro-dto"));
+        assert_eq!(jvm_module_of("src/test/kotlin/AppTest.kt").as_deref(), Some(""));
+        assert_eq!(jvm_module_of("scripts/App.java"), None);
+    }
 
     fn config() -> RunConfig {
         RunConfig {

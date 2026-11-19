@@ -72,19 +72,31 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
   return value;
 }
 
+function isRemoteHostOnlySetting(key: string): boolean {
+  return key === "mcpServer" || key.startsWith("mcpServer.");
+}
+
 /**
  * Where a command of a remote window runs. Local always: opening a project (a
  * local folder; leaving the remote one) and closing it (that drops the
  * connection, which ends the server's session). Client UI settings stay local.
- * Both: a global tooling setting, which
- * the server's language servers and the local windows read.
+ * Host-specific service settings (`mcpServer.*`) apply to the remote host only;
+ * other global tooling settings apply on both sides.
  */
 export function remoteRouting(cmd: string, args: InvokeArgs | undefined, served: ReadonlySet<string>) {
-  if (cmd === "system_font_families" || cmd === "settings_get_global") return "local";
+  if (cmd === "system_font_families") return "local";
   if (cmd === "settings_set" && isClientSetting((args as { key?: string } | undefined)?.key ?? "")) return "local";
   if (!served.has(cmd) || cmd === "open_project" || cmd === "close_project") return "local";
+  if (cmd === "settings_set" && isRemoteHostOnlySetting((args as { key?: string } | undefined)?.key ?? "")) {
+    return served.has("mcp_server_status") ? "remote" : "local";
+  }
   if (cmd === "settings_set" && (args as { scope?: string } | undefined)?.scope === "global") return "both";
   return "remote";
+}
+
+/** This machine's own global settings (for desktop SSH configurations even in a remote window). */
+export function localGlobalSettings(): Promise<Settings> {
+  return isTauri() ? invokeLocal<Settings>("settings_get_global") : commands.settingsGetGlobal();
 }
 
 /** All effective settings responses use the same client overlay, including writes and project snapshots. */
@@ -114,7 +126,7 @@ const route: InvokeRoute = (cmd, args, options) => {
   }
   if (destination === "local") return null;
   return remoteInvoke(cmd, args, options).then(async (result) => {
-    if (cmd === "settings_get") return clientSettings(result as Settings);
+    if (cmd === "settings_get" || cmd === "settings_get_global") return clientSettings(result as Settings);
     if (cmd === "project_current" && result) {
       const project = result as { settings: Settings };
       return { ...project, settings: await clientSettings(project.settings) };

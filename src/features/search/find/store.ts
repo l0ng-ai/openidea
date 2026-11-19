@@ -167,8 +167,6 @@ export function showFindPopup(replace: boolean, arg: FindArg & { selection?: str
   if (arg.directory) {
     patch.scopeTab = "directory";
     patch.directory = arg.directory;
-  } else if (!s.open && s.scopeTab === "directory" && !s.directory) {
-    patch.scopeTab = "project";
   }
   useFindPopup.setState(patch);
 }
@@ -244,20 +242,20 @@ export interface ScopeInputs {
 }
 
 export function resolveDirectory(dir: string, root: string | null): string {
-  const d = dir.trim().replace(/\/+$/, "");
+  const d = dir.trim();
   if (!d || d.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(d)) return d;
-  return root ? `${root}/${d}` : d;
+  return root ? `${root.replace(/\/$/, "")}/${d}` : d;
 }
 
 /** The backend scope of the popup's scope tabs. */
-export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchScope {
+export function resolveFindScope(o: FindOptions, inputs: ScopeInputs): SearchScope | null {
   const { root } = inputs;
-  if (o.scopeTab === "directory" && o.directory.trim())
-    return { kind: "directory", path: resolveDirectory(o.directory, root) };
+  if (o.scopeTab === "directory") {
+    const path = resolveDirectory(o.directory, root);
+    return path ? { kind: "directory", path } : null;
+  }
   if (o.scopeTab === "module")
-    return o.module && root
-      ? { kind: "directory", path: o.module.startsWith("/") ? o.module : `${root}/${o.module}` }
-      : { kind: "project" };
+    return o.module && root ? { kind: "directory", path: resolveDirectory(o.module, root) } : { kind: "project" };
   if (o.scopeTab !== "scope") return { kind: "project" };
   const custom = customScopeName(o.namedScope);
   if (custom !== null) {

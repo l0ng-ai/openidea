@@ -3,6 +3,7 @@
  * a WHERE filter, and pending cell edits / added / deleted rows submitted
  * together in one transaction. Tables without a primary key are read-only.
  */
+import { canModifyTable } from "./objects";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   call,
@@ -39,13 +40,41 @@ const PAGE_SIZES = ["100", "500", "1000", "5000"];
 
 export { tableTitle } from "./tableInput";
 
+/** WHERE, ORDER BY and page of a table tab, kept when a tab that is no longer kept alive mounts again. */
+interface TableViewState {
+  offset: number;
+  limit: number;
+  sort: DbSortKey[];
+  filterText: string;
+  filter: string;
+}
+
+const MAX_VIEW_STATES = 100;
+const viewStates = new Map<string, TableViewState>();
+
+function rememberViewState(key: string, state: TableViewState) {
+  viewStates.delete(key);
+  viewStates.set(key, state);
+  if (viewStates.size > MAX_VIEW_STATES) viewStates.delete(viewStates.keys().next().value!);
+}
+
+/** Test hook: forget the remembered table view states. */
+export function _resetTableViewStates() {
+  viewStates.clear();
+}
+
 export function TableEditor({ input }: { input: EditorInput }) {
   const ref = input.data as TableRef;
-  const [offset, setOffset] = useState(0);
-  const [limit, setLimit] = useState(500);
-  const [sort, setSort] = useState<DbSortKey[]>([]);
-  const [filterText, setFilterText] = useState("");
-  const [filter, setFilter] = useState("");
+  const [initial] = useState(() => viewStates.get(input.key));
+  const [offset, setOffset] = useState(initial?.offset ?? 0);
+  const [limit, setLimit] = useState(initial?.limit ?? 500);
+  const [sort, setSort] = useState<DbSortKey[]>(initial?.sort ?? []);
+  const [filterText, setFilterText] = useState(initial?.filterText ?? "");
+  const [filter, setFilter] = useState(initial?.filter ?? "");
+  useEffect(
+    () => rememberViewState(input.key, { offset, limit, sort, filterText, filter }),
+    [input.key, offset, limit, sort, filterText, filter],
+  );
   const [nonce, setNonce] = useState(0);
   const [edits, setEdits] = useState<PendingEdits>(emptyEdits);
   const [panel, setPanel] = useState<DataPanel | null>(null);
@@ -94,7 +123,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const pk = page?.details.columns.filter((c) => c.primaryKey).map((c) => c.name) ?? [];
   const fkColumns = new Set(page?.details.foreignKeys.flatMap((k) => k.columns) ?? []);
   const source = sourceById(ref.id);
-  const editable = pk.length > 0 && !source?.readOnly && source?.driver !== "clickhouse";
+  const editable = pk.length > 0 && !source?.readOnly && canModifyTable(source?.driver ?? "sqlite");
   const loaded = page?.result.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const gridColumns = useMemo(
@@ -386,11 +415,13 @@ export function TableEditor({ input }: { input: EditorInput }) {
       </div>
       {page && !editable && (
         <div className={styles.notice}>
-          {source?.driver === "clickhouse"
-            ? tx("Use the query console to change ClickHouse data.")
-            : pk.length
-              ? tx("Read-only data source.")
-              : tx("Read-only: the table has no primary key to identify rows.")}
+          {source?.driver === "jdbc"
+            ? tx("Use the query console to change JDBC data.")
+            : source?.driver === "clickhouse"
+              ? tx("Use the query console to change ClickHouse data.")
+              : pk.length
+                ? tx("Read-only data source.")
+                : tx("Read-only: the table has no primary key to identify rows.")}
         </div>
       )}
       {error ? (

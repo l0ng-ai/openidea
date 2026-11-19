@@ -28,6 +28,7 @@ import {
   paste,
   reformatNodes,
   reloadFromDisk,
+  openWithAssociatedApp,
   revealInFinder,
   selectedFiles,
   selectedNodes,
@@ -108,7 +109,7 @@ export function selectInProjectView(path?: string | null, focus = true) {
   if (!target) return false;
   if (!modeShows(target)) setViewMode("project");
   showProjectView(focus);
-  return revealPath(target, focus);
+  return revealPath(target, focus, true);
 }
 
 /**
@@ -410,6 +411,15 @@ export function registerProjectActions(): () => void {
       when: OPEN,
       keywords: ["show in explorer", "open in finder"],
       run: ({ arg }) => revealInFinder(nodesFrom(contextTarget(arg))),
+    },
+    {
+      id: "project.openWithAssociatedApp",
+      title: "Open in Associated Application",
+      category: "Project View",
+      icon: "external-link",
+      when: OPEN,
+      keywords: ["open with", "default application", "system application", "external"],
+      run: ({ arg }) => void openWithAssociatedApp(nodesFrom(contextTarget(arg))),
     },
     {
       id: "project.openInTerminal",

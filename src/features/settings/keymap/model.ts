@@ -3,7 +3,7 @@
  * (plugins' default shortcuts count as the preset's), add / remove / reset,
  * conflict detection with `when` overlap, and shortcut search.
  */
-import type { Action } from "@/platform/actions";
+import { allActions, type Action } from "@/platform/actions";
 import { evaluateWhen, type ContextKeys } from "@/platform/context";
 import {
   customKeymapId,
@@ -12,12 +12,20 @@ import {
   presetBindings,
   PRESET_TITLES,
   PRESETS,
+  useKeymap,
   withBindings,
   type Keymap,
   type KeymapDraft,
 } from "@/platform/keymap";
 
 export { presetBindings, withBindings, type KeymapDraft };
+
+export function keymapSearchLabels(): string[] {
+  const draft = useKeymap.getState();
+  return allActions()
+    .filter((a) => isKeymapAction(a, draft))
+    .map((a) => a.title);
+}
 
 export function resolveBindings(draft: KeymapDraft, id: string): string[] {
   return draft.overrides[id]?.map(normalizeBinding) ?? presetBindings(draft.preset, id);

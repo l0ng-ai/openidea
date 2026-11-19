@@ -8,7 +8,7 @@
 /// `fs` and `workspace`, and everything else goes through the imports below,
 /// gated by the capabilities granted in `plugin.toml` (a missing one returns
 /// `error::denied`).
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.13.0;
 
 world plugin {
     import log;
@@ -212,3 +212,8 @@ world mcp-tools { export mcp-provider; }
 world plugin-run-target-validation { include plugin; export run-target-validation; }
 /// Export-only validation, composed with the base plugin world.
 world run-target-validator { export run-target-validation; }
+
+/// A plugin with custom Search Everywhere categories.
+world plugin-search { include plugin; export search-provider; }
+/// Optional export composed with the base plugin by the SDK.
+world search { export search-provider; }

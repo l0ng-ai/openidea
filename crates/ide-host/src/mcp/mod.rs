@@ -10,8 +10,8 @@ mod files;
 mod http;
 mod page;
 pub mod reports;
-mod scope;
 mod search;
+pub mod service;
 mod symbols;
 mod tool;
 mod util;
@@ -23,6 +23,7 @@ pub use reports::{
     FileProblems, FocusedEditor, Reports, mcp_report_problems, mcp_set_focused_editor, mcp_set_open_editors,
 };
 pub use run::agent::{AGENT_PARAM, AgentRun, AgentRuns, NAME_PREFIX, SHELL_PARAM};
+pub use service::{McpServerStatus, McpService};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -40,6 +41,7 @@ fn tools() -> Vec<tool::Tool> {
     tools.push(check::check_files());
     tools.push(symbols::get_symbol_info());
     tools.push(symbols::find_references());
+    tools.push(symbols::get_call_hierarchy());
     tools.extend(edit::tools());
     tools.extend(run::tools());
     tools.extend(vcs::tools());
@@ -55,7 +57,7 @@ fn allowed(tool: &ide_mcp::Tool, trusted: bool) -> bool {
 impl Registry {
     fn target(&self, root: &Path) -> Result<(String, Arc<crate::Project>), String> {
         if self.0.mcp_reports.remote_roots().iter().any(|p| p == root) {
-            return Err("not supported for remote projects yet".into());
+            return Err("project is on a remote host; connect to the MCP server on that host".into());
         }
         let projects = self.0.projects.read();
         let open = || projects.iter().filter(|(_, p)| !p.light);

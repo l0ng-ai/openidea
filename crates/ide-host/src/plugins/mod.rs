@@ -20,6 +20,7 @@ mod auth;
 mod build_graph;
 pub mod commands;
 pub mod commit;
+mod console_rules;
 mod database;
 mod dependencies;
 pub(crate) mod diagnostics;
@@ -50,6 +51,7 @@ pub mod remote;
 pub mod remote_host;
 mod run_detectors;
 pub mod run_targets;
+pub mod search;
 mod semantic_tokens;
 mod snippets;
 mod theme;
@@ -436,6 +438,11 @@ impl PluginHost {
     /// Current decoration snapshots for windows opening after a plugin published them.
     pub fn decoration_sets(&self) -> std::collections::BTreeMap<String, Vec<DecorationSet>> {
         self.shared.decoration_sets()
+    }
+
+    /// Every plugin's console highlight rules, for windows opening after they were set.
+    pub fn console_rules(&self) -> std::collections::BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+        self.shared.console_rules()
     }
 
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
@@ -1804,6 +1811,12 @@ impl PluginHost {
     /// longer waits.
     pub fn answer_command(&self, client: &str, request: &str, answer: CommandAnswer) -> bool {
         request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
+    }
+
+    /// A window answered a plugin's `ClipboardRequested`; false when the call no longer
+    /// waits or asked another window.
+    pub fn answer_clipboard(&self, client: &str, request_id: &str, answer: ClipboardAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_clipboard(client, id, answer))
     }
 
     pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {

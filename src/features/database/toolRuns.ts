@@ -1,4 +1,4 @@
-/** Runs of `pg_dump` / `pg_restore` / `psql`: they outlive the dialog that started them. */
+/** Runs of the database client tools (`pg_dump`, `mysql`…): they outlive the dialog that started them. */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import {
@@ -23,6 +23,8 @@ export const TOOL_PROGRAMS: Record<DbTool, string> = {
   pgDump: "pg_dump",
   pgRestore: "pg_restore",
   psql: "psql",
+  mysqldump: "mysqldump",
+  mysql: "mysql",
 };
 
 export interface ToolRun {

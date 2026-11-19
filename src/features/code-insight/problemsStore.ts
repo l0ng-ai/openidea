@@ -49,18 +49,26 @@ export function mergeDiagnostics(
 
 const SEVERITY_ORDER: Record<Severity, number> = { error: 0, warning: 1, info: 2, hint: 3 };
 
+// A file's sources map is replaced whenever its diagnostics change, so it keys the merged list.
+const merged = new WeakMap<FileDiagnostics, readonly Diagnostic[]>();
+
 /** All diagnostics of a file across sources, ordered by position then severity. */
-export function fileDiagnostics(map: ProblemsMap, path: string): Diagnostic[] {
+export function fileDiagnostics(map: ProblemsMap, path: string): readonly Diagnostic[] {
   const sources = map.get(path);
   if (!sources) return [];
-  return [...sources.values()]
-    .flat()
-    .sort(
-      (a, b) =>
-        a.range.start.line - b.range.start.line ||
-        a.range.start.col - b.range.start.col ||
-        SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
-    );
+  let items = merged.get(sources);
+  if (!items) {
+    items = [...sources.values()]
+      .flat()
+      .sort(
+        (a, b) =>
+          a.range.start.line - b.range.start.line ||
+          a.range.start.col - b.range.start.col ||
+          SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
+      );
+    merged.set(sources, items);
+  }
+  return items;
 }
 
 /** The producer (inspection) that reported `d`, one of `path`'s problems in `map`. */
@@ -158,21 +166,34 @@ interface ProblemsState {
   raw: ProblemsMap;
   /** What the views show. */
   map: ProblemsMap;
+  /** `projectCounts(map)`, kept up to date per event. */
+  counts: SeverityCounts;
 }
 
-export const useProblems = create<ProblemsState>(() => ({ raw: new Map(), map: new Map() }));
+const NO_COUNTS: SeverityCounts = { error: 0, warning: 0, info: 0, hint: 0 };
+
+export const useProblems = create<ProblemsState>(() => ({ raw: new Map(), map: new Map(), counts: NO_COUNTS }));
+
+function recount(counts: SeverityCounts, removed: readonly Diagnostic[], added: readonly Diagnostic[]) {
+  const c = { ...counts };
+  for (const d of removed) c[d.severity]--;
+  for (const d of added) c[d.severity]++;
+  return c;
+}
 
 export function applyDiagnosticsEvent(path: string, source: string, items: readonly Diagnostic[]) {
   useProblems.setState((s) => {
     const raw = mergeDiagnostics(s.raw, path, source, items);
     if (raw === s.raw) return s;
     const map = mergeDiagnostics(s.map, path, source, applyProfile(inspectionProfile(), source, items));
-    return { raw, map };
+    if (map === s.map) return { raw };
+    const before = s.map.get(path)?.get(source) ?? [];
+    return { raw, map, counts: recount(s.counts, before, map.get(path)?.get(source) ?? []) };
   });
 }
 
 export function clearProblems() {
-  useProblems.setState({ raw: new Map(), map: new Map() });
+  useProblems.setState({ raw: new Map(), map: new Map(), counts: NO_COUNTS });
 }
 
 export function installProblemsEvents(): () => void {
@@ -180,7 +201,10 @@ export function installProblemsEvents(): () => void {
   // Typo, file references, SQL: inspections the editor runs itself.
   const offLocal = onLocalDiagnostics(applyDiagnosticsEvent);
   const offProfile = subscribeInspectionProfile(() =>
-    useProblems.setState((s) => ({ map: profiledProblems(s.raw, inspectionProfile()) })),
+    useProblems.setState((s) => {
+      const map = profiledProblems(s.raw, inspectionProfile());
+      return { map, counts: projectCounts(map) };
+    }),
   );
   return () => {
     off();

@@ -52,11 +52,30 @@ describe("markdown rendering", () => {
     expect(el.querySelector("img")?.getAttribute("onerror")).toBeNull();
   });
 
+  it("puts the names a grammar can't parse in spans too (signature links find them)", async () => {
+    const md = await freshMarkdown();
+    await md.loadMarkdown();
+    const el = md.renderMarkup({
+      kind: "markdown",
+      value: "```typescript\n(method) Cart.add(product: Product, quantity?: number): Cart\n```",
+    });
+    await vi.waitFor(() => expect(el.querySelector(".tok-name")?.textContent).toBe("Product"));
+    expect(el.querySelector("code")?.textContent).toBe("(method) Cart.add(product: Product, quantity?: number): Cart");
+  });
+
   it("renders synchronously once loaded", async () => {
     const md = await freshMarkdown();
     await md.loadMarkdown();
     expect(md.markupToHtml({ kind: "markdown", value: "`x`" })).toBe("<p><code>x</code></p>\n");
     expect(md.markupToHtml({ kind: "plaintext", value: "<b>" })).toBe('<p class="cm-lsp-plain">&#60;b&#62;</p>');
+  });
+
+  it("renders LaTeX math in LSP / documentation markdown", async () => {
+    const md = await freshMarkdown();
+    await md.loadMarkdown();
+    const root = document.createElement("div");
+    root.innerHTML = md.markupToHtml({ kind: "markdown", value: "Complexity $O(n \\log n)$" });
+    expect(root.querySelector(".katex")).not.toBeNull();
   });
 });
 

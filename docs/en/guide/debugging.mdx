@@ -163,7 +163,7 @@ Each form has **Host** and **Port** fields and shows the command to start the re
 
 - **Java HotSwap**: **Run › Debugging Actions › Reload Changed Classes** compiles your changes and reloads the changed classes into the running Java debug session. Active frames keep running the old code until they return. When JDT LS finishes a build after a save, the IDE offers the reload.
 - **Maven and Gradle**: debugging a Maven or Gradle configuration starts the JVM with a JDWP agent and attaches java-debug to it.
-- **Dart / Flutter**: **Hot Reload** and **Hot Restart** are available while a Dart session is running.
+- **Dart / Flutter**: **Hot Reload** and **Hot Restart** are available while a Dart session is running. In a Flutter project, the device selector next to the run configuration chooses where Run and Debug start the app; a run configuration's **Device** field pins it to one device. Saving a Dart file of a running Flutter debug session also hot reloads the app, unless the file has errors. Turn this off with **Hot reload on save** in **Settings › Build, Execution, Deployment › Debugger**.
 - **PHP**: if the PHP interpreter does not load Xdebug, breakpoints are skipped; the IDE warns about this when the session starts.
 - **Python**: **Settings › Build, Execution, Deployment › Python Debugger** has **Attach to subprocess automatically while debugging** and **Gevent compatible**.
 

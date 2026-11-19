@@ -59,7 +59,9 @@ pub fn fetch(
             size: None,
             sha256: Some(sha256),
         };
-        let archive = fetch_verified(&http, &dl, &staging, cancel, emit)?;
+        // The remote server binary is not part of Tools › Download sources: it always comes
+        // from its own release.
+        let archive = fetch_verified(&Default::default(), &http, &dl, &staging, cancel, emit)?;
         let unpacked = staging.join("openidea-server");
         let mut gz = flate2::read::GzDecoder::new(std::fs::File::open(&archive)?);
         std::io::copy(&mut gz, &mut std::fs::File::create(&unpacked)?)?;
