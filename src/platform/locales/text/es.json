@@ -2915,8 +2915,6 @@
   "Run a command, configuration or goal": "Ejecutar un comando, configuración o meta",
   "Run Anything entries": "Entradas de Ejecutar cualquier cosa",
   "Press Enter to run the command in the project directory": "Presiona Enter para ejecutar el comando en el directorio del proyecto",
-  "Type a command": "Escribe un comando",
-  "Enter to run, Tab to complete. Other commands run in the project directory.": "Enter para ejecutar, Tab para completar. Otros comandos se ejecutan en el directorio del proyecto.",
   "Recent": "Recientes",
   "Search types": "Buscar tipos",
   "Search configuration types": "Buscar tipos de configuración",

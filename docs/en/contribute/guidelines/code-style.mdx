@@ -29,7 +29,7 @@ Conventions:
 | ---------- | --------------------------------------- | --------------------------------------------------------------------------------------- |
 | oxfmt      | `pnpm format` (CI: `pnpm format:check`) | `.oxfmtrc.json`: print width 120, double quotes, semicolons, trailing commas everywhere |
 | oxlint     | `pnpm lint`                             | `.oxlintrc.json`: TypeScript and React plugins                                          |
-| Type check | `pnpm typecheck`                        | `tsconfig.json` and the configs of `perf/`, `scripts/`, `smoke/`                        |
+| Type check | `pnpm typecheck`                        | `tsconfig.json` and the configs of `e2e/`, `evals/`, `perf/`, `scripts/`, `smoke/`      |
 | knip       | `pnpm knip`                             | `knip.ts`: unused files, exports and dependencies                                       |
 
 `pnpm knip` fails on an export nobody imports, a file nobody reaches or a dependency nobody uses. Delete dead code rather than suppressing it; exports used only inside their own file are allowed.

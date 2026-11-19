@@ -157,6 +157,7 @@ export function activate(): () => void {
         manualCommit: new Set(),
         pendingTx: new Set(),
         running: {},
+        executions: {},
         dialog: null,
         newMenuOpen: false,
       });

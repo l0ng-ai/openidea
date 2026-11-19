@@ -23,18 +23,18 @@
 }
 /* Status bar widget (StatusBar.Widget): UI font, secondary text, rounded hover. */
 .status {
-  height: 22px;
+  height: max(var(--h-statusbar) - 8px, var(--h-control-small));
   margin: 0 -2px;
   padding: 0 6px;
   color: var(--fg-secondary);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-chrome);
 }
 /* Main toolbar widget (project / VCS / run configuration). */
 .title {
-  height: 28px;
+  height: var(--h-toolbar-widget);
   margin: 0 -4px;
   padding: 0 8px;
-  border-radius: var(--radius-toolbar-button, 6px);
+  border-radius: var(--radius-toolbar-dropdown);
   color: var(--fg-strong);
 }
 .mono {

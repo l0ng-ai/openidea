@@ -18,6 +18,7 @@ import { currentRepo, useVcs } from "./store";
 import { syncRow, syncSections, type SyncBranch, type SyncDirection, type SyncSection } from "./syncCommits";
 import styles from "./SyncCommitsPopup.module.css";
 import common from "./common.module.css";
+import { useRowHeight } from "@/ui/density";
 
 /** A commit range can be long; the popup shows what git lists, bounded like Compare Branches. */
 const LIMIT = 2000;
@@ -96,6 +97,7 @@ function SyncCommitsPopup({
   anchor: PopupAnchor;
   onClose: () => void;
 }) {
+  const rowHeight = useRowHeight(22);
   const sections = useMemo(() => syncSections(source.branch, source.direction), [source.branch, source.direction]);
   const [lists, setLists] = useState<Commit[][] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -223,7 +225,7 @@ function SyncCommitsPopup({
           onActivate={(row) => {
             if (row.type === "commit") openDiff(row.commit);
           }}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label={title}
           className={styles.list}
         />
