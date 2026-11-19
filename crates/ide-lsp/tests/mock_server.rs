@@ -1,6 +1,6 @@
 //! Protocol tests against in-memory mock language servers.
 
-use ide_core::event::ServerStatus;
+use ide_core::event::{LspRefreshKind, ServerStatus};
 use ide_core::{
     CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
 };
@@ -1457,6 +1457,65 @@ async fn unsupported_feature_names_the_running_servers_that_lack_it() {
     assert_eq!(e.message, "plain, other doesn't support inline completion");
     let e = h.mgr.type_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming).await.unwrap_err();
     assert_eq!(e.message, "plain, other doesn't support type hierarchy");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flutter_outline_follows_the_document_and_the_server_instance() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::FlutterOutline, .. }))
+            .count()
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    let unit = |children: Value| {
+        json!({ "uri": uri_of(&path), "outline": {
+            "kind": "DART_ELEMENT", "range": at, "codeRange": at,
+            "dartElement": { "kind": "COMPILATION_UNIT", "name": "<unit>" },
+            "children": children,
+        }})
+    };
+    let widgets = json!([{ "kind": "NEW_INSTANCE", "className": "Text", "range": at, "codeRange": at }]);
+    let peer = h.launcher.state("mock").peer();
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 1).await;
+    assert_eq!(h.mgr.flutter_outline(doc).unwrap()[0].name, "Text");
+
+    // The widgets are gone from the file: the ordinary structure applies again.
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(json!([]))).unwrap();
+    eventually(|| refreshes() == 2).await;
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 3).await;
+
+    // Reopening starts without the closed document's tree.
+    h.mgr.did_close(doc);
+    assert!(h.mgr.flutter_outline(doc).is_none());
+    let (reopened, _) = h.open("a.mk", "Text('x')\n");
+    assert!(h.mgr.flutter_outline(reopened).is_none());
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets)).unwrap();
+    eventually(|| refreshes() == 4).await;
+    assert!(h.mgr.flutter_outline(reopened).is_some());
+
+    // A restarted server has analysed nothing yet.
+    let server = h
+        .events
+        .lock()
+        .iter()
+        .find_map(|e| match e {
+            IdeEvent::LanguageServer { server, name, .. } if name == "mock" => Some(*server),
+            _ => None,
+        })
+        .unwrap();
+    h.mgr.restart(server).await.unwrap();
+    assert!(h.mgr.flutter_outline(reopened).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
