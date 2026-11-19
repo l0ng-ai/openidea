@@ -9025,5 +9025,8 @@
   "File '{name}' already exists. Do you want to overwrite it?": "文件 '{name}' 已存在。是否覆盖？",
   "{path} is a directory": "{path} 是目录",
   "Cannot export test results": "无法导出测试结果",
-  "Test results exported": "测试结果已导出"
+  "Test results exported": "测试结果已导出",
+  "Tab Color": "标签页颜色",
+  "Tab Color…": "标签页颜色…",
+  "Olive": "橄榄色"
 }
