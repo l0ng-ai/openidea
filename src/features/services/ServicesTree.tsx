@@ -23,6 +23,7 @@ import {
   type TreeReorder,
 } from "@/ui";
 import {
+  SERVICES_WINDOW,
   useServiceProviders,
   useToolWindowShown,
   serviceProviders,
@@ -30,6 +31,7 @@ import {
   type ServiceTreeItem,
   type ServiceItemAction,
 } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   addServiceMenu,
   clearProviderRoots,
@@ -88,6 +90,9 @@ export function ServicesTreeView() {
   const selectedKey = useServicesTree((s) => s.selectedKey);
   const selectedKeys = useServicesTree((s) => s.selectedKeys);
   const expanded = useServicesTree((s) => s.expanded);
+  const anchor = useToolWindowLayout((s) => s.placements[SERVICES_WINDOW]?.anchor ?? "bottom");
+  const sideDocked = anchor !== "bottom";
+  const orientation = sideDocked ? "vertical" : "horizontal";
   const addRef = useRef<HTMLButtonElement>(null);
   const filterRef = useRef<HTMLButtonElement>(null);
 
@@ -219,8 +224,13 @@ export function ServicesTreeView() {
           </button>
         </div>
       ) : (
-        <SplitGroup orientation="horizontal" className={styles.split} storageKey="openidea.services.detailSplit">
-          <SplitPanel id="services-items" defaultSize="40%" minSize="160px">
+        <SplitGroup
+          key={orientation}
+          orientation={orientation}
+          className={styles.split}
+          storageKey={sideDocked ? "openidea.services.detailSplit.vertical" : "openidea.services.detailSplit"}
+        >
+          <SplitPanel id="services-items" defaultSize="30%" minSize={sideDocked ? "80px" : "160px"}>
             <div className={styles.tree}>
               <Tree<ServiceTreeItem>
                 key={location}
@@ -274,7 +284,7 @@ export function ServicesTreeView() {
           <SplitHandle />
           <SplitPanel
             id="services-detail"
-            minSize="200px"
+            minSize={sideDocked ? "120px" : "200px"}
             // The panel library puts `overflow: auto` inline; the detail content
             // (a console, a log) owns its scrolling, so the pane must not add a second
             // bar. A column flex box lets that content fill the pane.

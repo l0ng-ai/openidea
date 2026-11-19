@@ -1447,6 +1447,7 @@ export function DiffEditor({
         {canSwap && <IconButton icon="swap-panels" title="Swap Sides" size="small" onClick={() => void swapSides()} />}
         <IconButton
           icon="diff-side-by-side"
+          className={styles.inlineOption}
           title="Side-by-side Viewer"
           size="small"
           pressed={viewMode === "split"}
@@ -1455,6 +1456,7 @@ export function DiffEditor({
         />
         <IconButton
           icon="diff-unified"
+          className={styles.inlineOption}
           title="Unified Viewer"
           size="small"
           pressed={viewMode === "unified"}
@@ -1478,6 +1480,7 @@ export function DiffEditor({
         />
         <IconButton
           icon="collapse-all"
+          className={styles.inlineOption}
           title="Collapse Unchanged Fragments"
           size="small"
           pressed={opts.collapse}
@@ -1486,6 +1489,7 @@ export function DiffEditor({
         {viewMode === "split" && (
           <IconButton
             icon="lock"
+            className={styles.inlineOption}
             title="Synchronize Scrolling"
             size="small"
             pressed={opts.syncScroll}

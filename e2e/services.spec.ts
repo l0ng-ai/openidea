@@ -48,6 +48,51 @@ async function move(page: Page, source: string, target: string) {
   await page.mouse.up();
 }
 
+test("Services favors details and stacks the panes when docked to the side", async ({ workbench: page }) => {
+  await configure(page);
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  const items = services.locator("[data-panel][id=services-items]");
+  const detail = services.locator("[data-panel][id=services-detail]");
+  const handle = services.locator("[data-separator]");
+  const share = async (axis: "width" | "height") => {
+    const treeSize = (await items.boundingBox())![axis];
+    return treeSize / (treeSize + (await detail.boundingBox())![axis]);
+  };
+  const dock = (anchor: "bottom" | "right" | "left") =>
+    page.evaluate(async (anchor) => {
+      const path = "/src/workbench/toolwindows/store.ts";
+      const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ path);
+      moveToolWindow("services", anchor);
+      if (anchor !== "bottom") setToolWindowSize(anchor, 280);
+    }, anchor);
+
+  await expect(handle).toHaveAttribute("aria-orientation", "vertical");
+  await expect.poll(() => share("width")).toBeCloseTo(0.3, 2);
+  await handle.press("ArrowRight");
+  await expect.poll(() => share("width")).toBeGreaterThan(0.31);
+  const bottom = await share("width");
+
+  for (const anchor of ["right", "left"] as const) {
+    await dock(anchor);
+    await expect(handle).toHaveAttribute("aria-orientation", "horizontal");
+    const treeBox = (await items.boundingBox())!;
+    const detailBox = (await detail.boundingBox())!;
+    expect(detailBox.width).toBeCloseTo(treeBox.width, 0);
+    expect(detailBox.y).toBeGreaterThanOrEqual(treeBox.y + treeBox.height - 1);
+    await expect.poll(() => share("height")).toBeCloseTo(0.3, 2);
+  }
+  await handle.press("ArrowDown");
+  await expect.poll(() => share("height")).toBeGreaterThan(0.31);
+  const side = await share("height");
+
+  await dock("bottom");
+  await expect(handle).toHaveAttribute("aria-orientation", "vertical");
+  await expect.poll(() => share("width")).toBeCloseTo(bottom, 2);
+  await dock("right");
+  await expect(handle).toHaveAttribute("aria-orientation", "horizontal");
+  await expect.poll(() => share("height")).toBeCloseTo(side, 2);
+});
+
 test("service pointer ordering works for Java and npm and survives reload", async ({ workbench: page }) => {
   await configure(page);
   const tree = page.getByRole("tree", { name: "Services", exact: true });

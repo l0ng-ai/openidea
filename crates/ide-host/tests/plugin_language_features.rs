@@ -152,6 +152,9 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let visuals = ops::lsp::plugin_language_visuals(&host, "main", doc.id).await.unwrap();
     assert_eq!(visuals.colors.len(), 1);
     assert_eq!(visuals.gutter_actions.len(), 1);
+    assert_eq!(visuals.hover_actions.len(), 1);
+    assert_eq!(visuals.hover_actions[0].1.command, "run");
+    assert_eq!(visuals.hover_actions[0].1.end_line, 2);
     assert_eq!(
         ops::lsp::plugin_color_presentations(&host, "main", doc.id, ID.into(), visuals.colors[0].1.clone())
             .await

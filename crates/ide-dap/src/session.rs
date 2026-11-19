@@ -99,6 +99,9 @@ pub(crate) struct Session {
     pub js_overrides: tokio::sync::Mutex<Option<tokio::sync::watch::Sender<Vec<crate::JsResponseRule>>>>,
     /// The file js-debug records the page's CPU profile into, while one is being recorded.
     pub js_profile: parking_lot::Mutex<Option<std::path::PathBuf>>,
+    /// The device of the app `flutter debug_adapter` announced, once it did: the Dart adapter
+    /// sends the same `dart.*` events.
+    pub flutter_app: std::sync::OnceLock<Option<String>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -274,6 +277,7 @@ impl Session {
             launch_type: std::sync::OnceLock::new(),
             js_overrides: tokio::sync::Mutex::new(None),
             js_profile: parking_lot::Mutex::new(None),
+            flutter_app: std::sync::OnceLock::new(),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),
@@ -898,6 +902,20 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         "profileStarted" => {
             *s.js_profile.lock() = str_("file").map(std::path::PathBuf::from);
         }
+        // Sent before `dart.debuggerUris`, for `launch` and `attach` alike.
+        "flutter.appStart" => {
+            let _ = s.flutter_app.set(str_("deviceId"));
+        }
+        "dart.debuggerUris" => {
+            if let (Some(device), Some(uri)) = (s.flutter_app.get(), str_("vmServiceUri")) {
+                s.emit(DebugEvent::FlutterVmService { uri, device: device.clone() });
+            }
+        }
+        "dart.toolEvent" if s.flutter_app.get().is_some() => {
+            if let Some(event) = crate::flutter_navigation(&body) {
+                s.emit(event);
+            }
+        }
         _ => tracing::trace!("dap: ignored event {event}"),
     }
 }
@@ -906,7 +924,11 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
     match command {
         "runInTerminal" => {
             let result = run_in_terminal(s, &args);
-            let _ = s.conn.respond(seq, command, result);
+            let conn = s.conn.clone();
+            let command = command.to_owned();
+            tokio::spawn(async move {
+                let _ = conn.respond(seq, &command, result).await;
+            });
         }
         "startDebugging" => {
             let mgr = mgr.clone();
@@ -915,11 +937,15 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
                 let request = args.get("request").and_then(Value::as_str).unwrap_or("launch").to_owned();
                 let configuration = args.get("configuration").cloned().unwrap_or_else(|| json!({}));
                 let result = mgr.start_child(&s, request, configuration).await;
-                let _ = s.conn.respond(seq, "startDebugging", result.map(|_| Value::Null).map_err(|e| e.message));
+                let _ = s.conn.respond(seq, "startDebugging", result.map(|_| Value::Null).map_err(|e| e.message)).await;
             });
         }
         _ => {
-            let _ = s.conn.respond(seq, command, Err(format!("unsupported reverse request {command}")));
+            let conn = s.conn.clone();
+            let command = command.to_owned();
+            tokio::spawn(async move {
+                let _ = conn.respond(seq, &command, Err(format!("unsupported reverse request {command}"))).await;
+            });
         }
     }
 }

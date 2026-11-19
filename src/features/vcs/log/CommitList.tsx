@@ -43,7 +43,7 @@ import { currentRepo, currentRepoRoot, useVcs } from "../store";
 import { ColumnHeaders } from "./ColumnHeaders";
 import { CommitSignature } from "./CommitMessage";
 import { CommitRow } from "./CommitRow";
-import { LANE, ROW, type LogColumn, type RowEvents } from "./shared";
+import { ROW, type LogColumn, type RowEvents } from "./shared";
 
 const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
@@ -197,15 +197,6 @@ export function CommitList() {
       ),
     };
   }, [hoverColor, linear, displayedGraph, headKeys]);
-  const minWidth = useMemo(
-    () =>
-      rows.reduce((width, row) => Math.max(width, row.width * LANE), 100) +
-      columns.reduce(
-        (width, column) => width + (opts.columnWidths[column.id] ?? column.width ?? 120),
-        opts.showRepository && useVcs.getState().roots.length > 1 ? 220 : 120,
-      ),
-    [rows, columns, opts.columnWidths, opts.showRepository],
-  );
   const filterBranches = useGitLog((s) => s.filters.branches);
   const currentBranch = useVcs((s) => s.branch?.head ?? null);
   // Nothing to tell apart when the log is filtered to the current branch.
@@ -581,11 +572,11 @@ export function CommitList() {
           );
         }}
       >
-        {opts.showColumnHeaders && <ColumnHeaders columns={columns} options={opts} minWidth={minWidth} />}
+        {opts.showColumnHeaders && <ColumnHeaders columns={columns} options={opts} />}
         {!commits.length && !loading && finished && (
           <div className={styles.message}>{headCommit ? tx("No commits match the filters") : tx("No commits yet")}</div>
         )}
-        <div style={{ height: virtualizer.getTotalSize(), position: "relative", minWidth }}>
+        <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {items.map((v) => {
             const c = commits[v.index];
             if (!c)

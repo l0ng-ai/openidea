@@ -126,6 +126,8 @@ export const ToolEntry = memo(function ToolEntry({
       <Fold
         className={styles.toolDetails}
         open={liveTool(entry) || expandToolOutput}
+        // A `!` command the user ran from the composer: its output is what they asked for.
+        defaultOpen={entry.id.startsWith("shell-")}
         summary={
           <summary className={styles.tool}>
             <Icon name="chevron-right" size={12} className={styles.toolChevron} />

@@ -205,6 +205,7 @@ diff_external_tool                           always             desktop      bin
 doc_autosave                                 always             project_host bindings async
 doc_close                                    always             project_host bindings async
 doc_edit                                     always             project_host bindings async
+doc_flutter_outline                          always             project_host bindings async
 doc_folding                                  always             project_host bindings async
 doc_highlights                               always             project_host bindings async
 doc_language                                 always             project_host bindings async
@@ -226,6 +227,7 @@ docker_compose_op                            trusted            desktop      bin
 docker_container_op                          trusted            desktop      bindings async
 docker_container_stats                       trusted            desktop      bindings async
 docker_container_top                         trusted            desktop      bindings async
+docker_disconnect                            always             desktop      bindings async
 docker_events                                trusted            desktop      bindings async
 docker_image_history                         trusted            desktop      bindings async
 docker_inspect                               trusted            desktop      bindings async
@@ -250,6 +252,7 @@ find_symbols_named                           always             project_host bin
 flutter_daemon_restart                       trusted            project_host bindings sync
 flutter_devices                              trusted            project_host bindings sync
 flutter_devices_refresh                      trusted            project_host bindings sync
+flutter_devtools_url                         trusted            project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async
@@ -707,6 +710,7 @@ vcs_tags                                     always             project_host bin
 vcs_undo_commit                              trusted            project_host bindings async
 vcs_unshelve                                 trusted            project_host bindings async
 vcs_unstage                                  trusted            project_host bindings async
+vcs_update_branches                          trusted            project_host bindings async
 vcs_worktrees                                always             project_host bindings async
 vcs_write_patch                              always             project_host bindings async
 web_browsers                                 always             desktop      bindings async
@@ -724,6 +728,7 @@ window_group_close                           always             desktop      bin
 window_group_close_tabs                      always             desktop      bindings sync
 window_group_current                         always             desktop      bindings sync
 window_group_detach                          always             desktop      bindings async
+window_group_join                            always             desktop      bindings async
 window_group_merge                           always             desktop      bindings async
 window_group_reorder                         always             desktop      bindings async
 window_group_restore                         always             desktop      bindings async

@@ -362,6 +362,7 @@ impl Host {
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
         project.flutter.stop();
+        project.devtools.stop();
         project.notebooks.stop_admission();
         // What the closing window started goes with it — the builds and searches it
         // asked for, its runs, its shells and its debug sessions — and its language
@@ -490,6 +491,7 @@ impl Host {
         self.terminals.kill_all();
         for project in self.projects() {
             project.flutter.kill();
+            project.devtools.kill();
         }
     }
 
@@ -513,6 +515,7 @@ impl Host {
         for project in &projects {
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
             project.flutter.kill();
+            project.devtools.kill();
         }
         for project in &projects {
             project.plugin_diagnostics.close();

@@ -52,7 +52,7 @@ export function evaluate(
   results: ScenarioResult[],
   budgets: Record<string, number>,
   baseline: ScenarioResult[] | null,
-  opts: { enforceBudgets: boolean; tolerance?: number; floor?: number },
+  opts: { expected: readonly string[]; enforceBudgets: boolean; tolerance?: number; floor?: number },
 ): Report {
   const tol = opts.tolerance ?? 0.2;
   const floor = opts.floor ?? 1;
@@ -62,7 +62,21 @@ export function evaluate(
   const rows: Row[] = [];
   const errors: Report["errors"] = [];
   const seen = new Set<string>();
+  const expected = new Set(opts.expected);
+  const produced = new Set<string>();
+  if (!expected.size) errors.push({ id: "run", error: "empty workload" });
+  if (expected.size !== opts.expected.length) errors.push({ id: "run", error: "duplicate expected scenario" });
   for (const r of results) {
+    if (!expected.has(r.id)) {
+      errors.push({ id: r.id, error: "unexpected scenario result" });
+      continue;
+    }
+    if (produced.has(r.id)) {
+      errors.push({ id: r.id, error: "duplicate scenario result" });
+      continue;
+    }
+    produced.add(r.id);
+    if (!r.error && !Object.keys(r.metrics).length) errors.push({ id: r.id, error: "no metrics produced" });
     if (r.error) errors.push({ id: r.id, error: r.error });
     for (const [m, value] of Object.entries(r.metrics)) {
       const key = `${r.id}.${m}`;
@@ -70,7 +84,7 @@ export function evaluate(
       const budget = budgets[key];
       const before = base.get(key);
       let verdict: Verdict = "ok";
-      if (!Number.isFinite(value)) verdict = budget === undefined ? "ok" : "error";
+      if (!Number.isFinite(value)) verdict = "error";
       else if (budget !== undefined && value > budget)
         verdict = opts.enforceBudgets ? "over-budget" : "over-budget-info";
       else if (before !== undefined && value > before * (1 + tol) && value - before > floor) verdict = "regressed";
@@ -78,10 +92,12 @@ export function evaluate(
       rows.push({ key, value, budget, baseline: before, verdict });
     }
   }
-  // A budgeted metric that was not produced (scenario failed or renamed) fails too.
-  const ran = new Set(results.map((r) => r.id));
+  for (const id of expected) {
+    if (!produced.has(id)) errors.push({ id, error: "missing scenario result" });
+  }
+  // Required metrics are scoped by the declared workload, never by returned data.
   for (const key of Object.keys(budgets)) {
-    if (!seen.has(key) && ran.has(key.slice(0, key.indexOf(".")))) {
+    if (!seen.has(key) && expected.has(key.slice(0, key.indexOf(".")))) {
       rows.push({ key, value: NaN, budget: budgets[key], verdict: "error" });
     }
   }

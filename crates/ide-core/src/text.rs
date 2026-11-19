@@ -239,6 +239,8 @@ pub enum SymbolKind {
     Event,
     Operator,
     Key,
+    /// A Flutter widget built in the code (Flutter outline only).
+    Widget,
     Unknown,
 }
 

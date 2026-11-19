@@ -490,6 +490,11 @@ export const commands = {
 	 *  `outOfSync` when `base_version` is stale; the UI then calls `doc_snapshot`.
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
+	/**
+	 *  Structure view of a Flutter file: its declarations with the widgets they build. `None`
+	 *  when the Dart server published no widgets for it; `doc_outline` then applies.
+	 */
+	docFlutterOutline: (doc: DocId) => typedError<OutlineItem[] | null, IdeError>(__TAURI_INVOKE("doc_flutter_outline", { doc })),
 	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError>(__TAURI_INVOKE("doc_folding", { doc })),
 	/**
 	 *  Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
@@ -551,6 +556,11 @@ export const commands = {
 	dockerContainerStats: (endpoint: DockerEndpoint, id: string) => typedError<DockerContainerStats, IdeError>(__TAURI_INVOKE("docker_container_stats", { endpoint, id })),
 	/**  Processes running inside a container (`docker top`). */
 	dockerContainerTop: (endpoint: DockerEndpoint, id: string) => typedError<DockerProcessList, IdeError>(__TAURI_INVOKE("docker_container_top", { endpoint, id })),
+	/**
+	 *  Closes the connection's SSH tunnel and, when nothing else uses it, its SSH connection
+	 *  (Services › Disconnect); other endpoints keep nothing open.
+	 */
+	dockerDisconnect: (endpoint: DockerEndpoint) => typedError<null, IdeError>(__TAURI_INVOKE("docker_disconnect", { endpoint })),
 	/**  Follows `docker events` until the daemon goes away or the request is cancelled. */
 	dockerEvents: (request: RequestId, endpoint: DockerEndpoint, onEvent: Channel<DockerEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_events", { request, endpoint, onEvent })),
 	/**  Layers of an image (`docker image history`). */
@@ -611,6 +621,11 @@ export const commands = {
 	flutterDevices: () => typedError<FlutterDeviceList, IdeError>(__TAURI_INVOKE("flutter_devices")),
 	/**  Looks at adb again, for Android devices Flutter doesn't report (awaiting authorization, offline). */
 	flutterDevicesRefresh: () => typedError<null, IdeError>(__TAURI_INVOKE("flutter_devices_refresh")),
+	/**
+	 *  The address of the project's DevTools server, started on first use. A server that failed or
+	 *  exited is only started again by the next request.
+	 */
+	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
 	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -1865,6 +1880,11 @@ export const commands = {
 	 */
 	vcsUnshelve: (id: string, remove: boolean, path: string | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_unshelve", { id, remove, path })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
+	/**
+	 *  Branches › Update Selected: fast-forwards local `branches` to their upstreams, one
+	 *  fetch per remote; the result says what happened to each. Cancellable.
+	 */
+	vcsUpdateBranches: (repo: string | null, request: RequestId, branches: string[], onOutput: Channel<string>) => typedError<BranchUpdate[], IdeError>(__TAURI_INVOKE("vcs_update_branches", { repo, request, branches, onOutput })),
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
 	vcsWritePatch: (path: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch })),
@@ -1905,6 +1925,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
 	windowGroupDetach: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_detach", { label })),
+	/**
+	 *  Adds window `label` to this window's group as a new project tab and selects it. Unlike
+	 *  [`window_group_merge`], unrelated windows keep their own group.
+	 */
+	windowGroupJoin: (label: string) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_join", { label })),
 	windowGroupMerge: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_merge")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
@@ -3164,6 +3189,18 @@ export type BranchInfo = {
 	operation: string | null,
 };
 
+export type BranchUpdate = {
+	branch: string,
+	status: BranchUpdateStatus,
+	/**  Why it failed. */
+	message: string | null,
+};
+
+/**  What Update Selected did to one local branch. */
+export type BranchUpdateStatus = "updated" | "upToDate" | 
+/**  Diverged from its upstream: left as it is. */
+"notFastForward" | "noUpstream" | "failed";
+
 /**  Editor › General › Breadcrumbs. */
 export type BreadcrumbsSettings = {
 	show?: boolean,
@@ -3267,6 +3304,14 @@ export type BuildResult = {
 	warnings: number,
 	durationMs: number | null,
 	messages: BuildMessage[],
+};
+
+/**  Build, Execution, Deployment › Compiler (Build tool window behaviour). */
+export type BuildSettings = {
+	/**  When to open the Build tool window: `always` | `onError` | `never`. */
+	openToolWindow?: string,
+	/**  When to focus the Build tool window: `always` | `onError` | `never`. */
+	focusToolWindow?: string,
 };
 
 export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet" | 
@@ -3720,6 +3765,12 @@ export type CommitSettings = {
 	doubleClickOpensDiff?: boolean | null,
 	/**  Team conventions for Generate Commit Message with Agent, added to its prompt. */
 	agentInstructions?: string,
+	/**  The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+	agent?: string,
+	/**  That agent's model for commit messages; empty keeps the model the agent would use. */
+	agentModel?: string,
+	/**  That model's thinking level for commit messages; empty keeps the agent's. */
+	agentEffort?: string,
 };
 
 export type Commit_Deserialize = {
@@ -4769,6 +4820,12 @@ export type DebugEvent =
  *  a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
  */
 { kind: "flutterAppStarted" } | 
+/**  The VM Service of a Flutter session's app, which DevTools connects to. */
+{ kind: "flutterVmService"; uri: string; 
+/**  The Flutter device the app runs on. */
+device: string | null } | 
+/**  Flutter's inspector selected a widget: its source, 0-based. */
+{ kind: "flutterNavigate"; path: IpcPath; line: number; column: number } | 
 /**  The session's capabilities changed after it started: fetch them again. */
 { kind: "capabilities" } | 
 /**
@@ -6828,6 +6885,21 @@ export type Hover = {
 	range: Range | null,
 };
 
+/**  An action rendered at the left edge of a line and revealed by hover. */
+export type HoverAction = {
+	/**  The line the button is drawn on; normally the declaration line. */
+	line: number,
+	/**  First line whose leftmost strip reveals this action, inclusive. */
+	startLine: number,
+	/**  Last line whose leftmost strip reveals this action, inclusive. */
+	endLine: number,
+	icon: string | null,
+	label: string,
+	tooltip: string | null,
+	command: string,
+	argument: string | null,
+};
+
 /**  One request with its outcome. */
 export type HttpExchange = {
 	entry: HttpHistoryEntry,
@@ -8178,7 +8250,9 @@ export type LogcatLine = {
 	message: string,
 };
 
-export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens";
+export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" | 
+/**  The Dart server published a document's Flutter outline. */
+"flutterOutline";
 
 export type MainToolbarSettings = {
 	left?: string[],
@@ -8195,10 +8269,23 @@ export type ManifestDependency = {
 	to: number,
 };
 
+export type MarkdownCommandDirectory = 
+/**  The project's root folder. */
+"project" | 
+/**  The Markdown file's parent folder. */
+"file";
+
 /**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
 export type MarkdownSettings = {
 	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
 	previewFontSize?: number | null,
+	/**
+	 *  "Detect commands that can be run right from Markdown files": gutter run icons on
+	 *  shell code blocks and on command lines in code blocks.
+	 */
+	runCommands?: boolean,
+	/**  Where those commands run; unset asks when the project and the file's folder differ. */
+	commandDirectory?: MarkdownCommandDirectory | null,
 };
 
 /**  A marketplace entry with what is installed. */
@@ -8347,6 +8434,11 @@ export type MavenSettings = {
 	 *  from a library class's Download Sources banner.
 	 */
 	downloadSources?: boolean,
+	/**
+	 *  Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
+	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
+	 */
+	updateSnapshots?: boolean,
 };
 
 /**  What keeps an idle background project loaded. */
@@ -8811,6 +8903,11 @@ export type NewAgentTask = {
 	base: string | null,
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`). */
 	mcpOverrides?: { [key in string]: boolean },
+	/**
+	 *  Creates the task without sending `prompt` (it only names the task): the composer's
+	 *  `!` command runs in it first.
+	 */
+	idle?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */
@@ -9423,6 +9520,10 @@ export type PluginJavaAgent = {
 	fileName: string,
 	/**  The optional argument passed after `=`. */
 	args: string | null,
+	/**  Extra JVM flags from `vmOptions` (API 1.14). */
+	vmOptions: string[],
+	/**  When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime. */
+	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
 };
@@ -9436,6 +9537,7 @@ export type PluginLanguageVisuals = {
 	injections: Injection[],
 	colors: ([string, ColorInfo])[],
 	gutterActions: ([string, GutterAction])[],
+	hoverActions: ([string, HoverAction])[],
 };
 
 export type PluginLocation = {
@@ -10301,8 +10403,6 @@ set_upstream?: boolean; no_verify?: boolean } |
 { op: "pushTag"; tag: string; remote: string } | 
 /**  Deletes tag `tag` on `remote` (Delete on Remote). */
 { op: "deleteRemoteTag"; tag: string; remote: string } | 
-/**  Fast-forwards local `branch` (not checked out) to its upstream. */
-{ op: "updateBranch"; branch: string } | 
 /**  Pull dialog: `branches` of `remote` (none = the configured merge branch). */
 { op: "pullFrom"; remote: string; branches: string[]; rebase: boolean; options: MergeOptions };
 
@@ -11008,6 +11108,8 @@ export type Settings_Deserialize = {
 	projectStructure?: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs?: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build?: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console?: ConsoleSettings,
 	debugger?: DebuggerSettings,
@@ -11082,6 +11184,8 @@ export type Settings_Serialize = {
 	projectStructure: ProjectStructureSettings,
 	/**  Version Control (Git, Commit, Confirmation, Issue Navigation). */
 	vcs: VcsSettings,
+	/**  Build, Execution, Deployment › Compiler (Build tool window). */
+	build: BuildSettings,
 	/**  Build, Execution, Deployment › Console. */
 	console: ConsoleSettings,
 	debugger: DebuggerSettings,
@@ -11211,6 +11315,8 @@ export type SizeSource =
 export type SkipReason = 
 /**  A configuration with this name already exists. */
 { kind: "nameTaken" } | 
+/**  An existing configuration (a detected one, say) runs the same command. */
+{ kind: "sameAs"; existing: string } | 
 /**  The configuration type has no equivalent here: a VS Code debugger (`cppdbg`), a JetBrains type (`Application`). */
 { kind: "unsupportedType"; type: string } | 
 /**  A `request` other than `launch` and `attach`. */
@@ -11536,7 +11642,9 @@ export type SymbolFilter = "all" |
 "types";
 
 /**  Symbol kinds, a stable subset of LSP `SymbolKind`. */
-export type SymbolKind = "file" | "module" | "namespace" | "package" | "class" | "interface" | "struct" | "enum" | "enumMember" | "trait" | "function" | "method" | "constructor" | "field" | "property" | "variable" | "constant" | "typeParameter" | "typeAlias" | "macro" | "event" | "operator" | "key" | "unknown";
+export type SymbolKind = "file" | "module" | "namespace" | "package" | "class" | "interface" | "struct" | "enum" | "enumMember" | "trait" | "function" | "method" | "constructor" | "field" | "property" | "variable" | "constant" | "typeParameter" | "typeAlias" | "macro" | "event" | "operator" | "key" | 
+/**  A Flutter widget built in the code (Flutter outline only). */
+"widget" | "unknown";
 
 export type SymbolMatch = {
 	name: string,
@@ -11692,6 +11800,11 @@ export type TerminalSettings = {
 	/**  Shell command line; empty = the login shell. */
 	shellPath?: string,
 	tabName?: string,
+	/**
+	 *  Title a program sets (OSC 0/2) as the tab's name: `running` (while a command runs),
+	 *  `always`, or `off`.
+	 */
+	appTitleAsTabName?: string,
 	audibleBell?: boolean,
 	closeOnExit?: boolean,
 	mouseReporting?: boolean,

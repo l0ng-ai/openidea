@@ -1,0 +1,70 @@
+.layer {
+  position: absolute;
+  z-index: 24;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+}
+
+.layer[data-visible="true"] {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.button,
+.overflow {
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.button {
+  width: 16px;
+}
+
+.overflow {
+  width: 18px;
+}
+
+.button:has(.label) {
+  width: auto;
+  padding: 0 4px;
+}
+
+.button:hover,
+.button:focus-visible,
+.overflow:hover,
+.overflow:focus-visible {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.button svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.8;
+}
+
+.button:hover svg,
+.button:focus-visible svg {
+  opacity: 1;
+}
+
+.label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

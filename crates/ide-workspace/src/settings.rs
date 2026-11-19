@@ -847,6 +847,9 @@ mod tests {
                 "disabledPluginChecks": [],
                 "doubleClickOpensDiff": null,
                 "agentInstructions": "",
+                "agent": "",
+                "agentModel": "",
+                "agentEffort": "",
             })
         );
     }

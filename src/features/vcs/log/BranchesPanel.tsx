@@ -172,8 +172,8 @@ export function BranchesPanel() {
               size="small"
               title="Update Selected"
               action="vcs.log.branches.update"
-              actionArg={target}
-              disabled={!canUpdateBranch(target ?? null)}
+              actionArg={targets}
+              disabled={!targets.some((t) => canUpdateBranch(t))}
             />
             <IconButton
               icon="trash"
@@ -283,10 +283,12 @@ export function BranchesPanel() {
                 : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
                   ? REMOTES_MENU
                   : [];
-            // Delete scopes each selected target itself and must preserve the original focus.
+            // Update Selected and Delete scope each selected target themselves and must preserve the original focus.
             const items = n?.repo
               ? menu.flatMap((item) =>
-                  n.branch && "label" in item && item.label === "Delete" ? [item] : inRepo(n.repo!, [item]),
+                  n.branch && "label" in item && (item.label === "Delete" || item.label === "Update Selected")
+                    ? [item]
+                    : inRepo(n.repo!, [item]),
                 )
               : menu;
             if (!items.length) return;

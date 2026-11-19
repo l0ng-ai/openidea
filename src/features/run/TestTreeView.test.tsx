@@ -286,3 +286,49 @@ describe("Expand All / Collapse All", () => {
     expect(screen.getByRole("button", { name: "Collapse All" })).toBeDisabled();
   });
 });
+
+describe("Export Test Results", () => {
+  function finished() {
+    const r = new TestResults();
+    r.apply([{ type: "result", path: ["calc", "TestAdd"], status: "passed" }]);
+    r.finish(0);
+    return r;
+  }
+  const view = (results: TestResults, running: boolean) => (
+    <TestTreeView
+      results={results}
+      version={1}
+      cwd="/p"
+      name="calc tests"
+      selected={null}
+      onSelect={() => {}}
+      running={running}
+    />
+  );
+
+  it("the button and the action open the dialog for the finished run", () => {
+    const { unmount } = render(view(finished(), false));
+    fireEvent.click(screen.getByRole("button", { name: "Export Test Results…" }));
+    expect(screen.getByRole("dialog", { name: "Export Test Results" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    act(() => testTree.exportResults!());
+    expect(screen.getByRole("dialog", { name: "Export Test Results" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Output file")).toHaveValue("/p/Test Results - calc tests.html");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Export Test Results" })).toBeNull();
+    unmount();
+    expect(testTree.exportResults).toBeNull();
+  });
+
+  it("is unavailable while the tests run and without results", () => {
+    const { rerender } = render(view(finished(), true));
+    expect(screen.getByRole("button", { name: "Export Test Results…" })).toBeDisabled();
+    expect(testTree.exportResults).toBeNull();
+    rerender(view(new TestResults(), false));
+    expect(screen.getByRole("button", { name: "Export Test Results…" })).toBeDisabled();
+    expect(testTree.exportResults).toBeNull();
+    rerender(view(finished(), false));
+    expect(screen.getByRole("button", { name: "Export Test Results…" })).toBeEnabled();
+    expect(testTree.exportResults).not.toBeNull();
+  });
+});

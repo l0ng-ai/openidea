@@ -108,15 +108,23 @@ async function seed(
   surface: "new" | "task" = "task",
   model = "atlas",
   status: AgentTask["status"] = "ready",
+  catalogOnly = false,
 ) {
   await stubDesktop(page);
   await page.evaluate(
-    async ({ placement, surface, provider, firstTask, secondTask, subagent, model, status, modelId }) => {
+    async ({ placement, surface, provider, firstTask, secondTask, subagent, model, status, modelId, catalogOnly }) => {
       // In-memory sample tasks belong to Vite's browser realm. Static Node imports create a different store and cannot seed the workbench.
       const storePath = "/src/features/agents/store.ts";
       const store = await import(storePath);
+      const initialCatalog = {
+        ...provider,
+        config: provider.config.map((entry) => ({
+          ...entry,
+          values: entry.values.filter((value) => value.value !== "swift"),
+        })),
+      };
       const configFor = (model: string) => [
-        { ...provider.config[0]!, current: model },
+        { ...(catalogOnly && model !== "swift" ? initialCatalog : provider).config[0]!, current: model },
         ...(provider.thoughtLevels?.[model] ?? []),
       ];
       const tasks = new Map(
@@ -150,10 +158,10 @@ async function seed(
         channel = onEvent;
         return [...tasks.values()];
       };
-      handlers.agent_providers = () => [provider];
-      handlers.agent_refresh_models = () => ({
+      handlers.agent_providers = () => [catalogOnly ? initialCatalog : provider];
+      handlers.agent_refresh_models = ({ force }) => ({
         provider: provider.id,
-        config: provider.config,
+        config: (catalogOnly && !force ? initialCatalog : provider).config,
         thoughtLevels: provider.thoughtLevels,
         refreshing: false,
         refreshedAtMs: Date.now(),
@@ -170,9 +178,15 @@ async function seed(
       handlers.vcs_branches = () => [];
       handlers.agent_set_config = async ({ task: id, option, value }) => {
         const previous = tasks.get(String(id))!;
+        const pendingModel = catalogOnly && option === modelId && value === "swift";
+        if (pendingModel) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          document.addEventListener("test:chat-model-settings-ready", () => resolve(), { once: true });
+          await promise;
+        }
         const updated =
           option === modelId
-            ? { ...previous, model: String(value), config: configFor(String(value)) }
+            ? { ...previous, model: pendingModel ? previous.model : String(value), config: configFor(String(value)) }
             : {
                 ...previous,
                 config: previous.config.map((entry) =>
@@ -204,7 +218,7 @@ async function seed(
       if (surface === "new") store.openHome();
       else store.openTask(firstTask.id);
     },
-    { placement, surface, provider, firstTask, secondTask, subagent, model, status, modelId },
+    { placement, surface, provider, firstTask, secondTask, subagent, model, status, modelId, catalogOnly },
   );
   await expect(box(page)).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
@@ -219,11 +233,12 @@ function history(page: Page) {
 function modelButton(page: Page) {
   return page.getByRole("button", { name: "Model", exact: true }).filter({ visible: true });
 }
-function effortButton(page: Page) {
-  return page.getByRole("button", { name: "Reasoning", exact: true }).filter({ visible: true });
+/** The effort is shown on the model button, after the model's name. */
+function effortLabel(page: Page) {
+  return modelButton(page).locator("[class*='modelDetail']");
 }
 async function expectEffort(page: Page, name: string) {
-  await expect(effortButton(page)).toHaveText(name);
+  await expect(effortLabel(page)).toHaveText(name);
 }
 async function selected(box: Locator) {
   return box.evaluate((element) => {
@@ -364,8 +379,8 @@ test("Settings and effort popup exclude the agent shortcut", async ({ workbench:
   await expect(search).toBeFocused();
   await expect(search).toHaveValue("keymap");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
-  await effortButton(page).click();
-  const popup = page.getByRole("listbox", { name: "Reasoning", exact: true });
+  await modelButton(page).click();
+  const popup = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
   await expect(popup).toBeVisible();
   await page.keyboard.press("Alt+t");
   expect(await ipcCalls(page, "agent_set_config")).toEqual([]);
@@ -584,18 +599,50 @@ test("New Task discovers uncached model effort before the first prompt", async (
       .poll(async () => (await ipcCalls(page, "agent_refresh_models")).filter((call) => call.model === "swift"))
       .toEqual([{ provider: provider.id, force: false, model: "swift" }]);
     await expect(page.getByRole("status").filter({ hasText: "Loading model settings…" })).toBeVisible();
-    await expect(effortButton(page)).toHaveCount(0);
+    await expect(effortLabel(page)).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("model-settings-loading.png") });
     await page.evaluate(() => document.dispatchEvent(new Event("test:model-settings-ready")));
     await expectEffort(page, "Quick");
-    await effortButton(page).click();
-    await expect(page.getByRole("option", { name: "Quick", exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: "Thorough", exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: "Gentle", exact: true })).toHaveCount(0);
+    await modelButton(page).click();
+    const efforts = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
+    await expect(efforts.getByRole("radio", { name: "Quick", exact: true })).toBeVisible();
+    await expect(efforts.getByRole("radio", { name: "Thorough", exact: true })).toBeVisible();
+    await expect(efforts.getByRole("radio", { name: "Gentle", exact: true })).toHaveCount(0);
+    await page.keyboard.press("Escape");
     await expect(box(page)).toHaveText("Keep this first task unsent");
     await expectNoSubmission(page);
     expect(await ipcCalls(page, "agent_set_config")).toEqual([]);
   } finally {
     await page.screenshot({ path: testInfo.outputPath("uncached-model-effort.png") });
   }
+});
+
+test("an existing chat can choose effort for a refreshed model before sending", async ({ workbench: page }) => {
+  await seed(page, "editor", "task", "atlas", "ready", true);
+  await box(page).fill(draft);
+  await expectEffort(page, "Gentle");
+  await modelButton(page).click();
+  const swiftModel = page.getByRole("option", { name: /^Swift\b/ });
+  await expect(swiftModel).toHaveCount(0);
+  await page.getByRole("button", { name: "Refresh models", exact: true }).click();
+  await swiftModel.click();
+
+  const loading = page.getByRole("status").filter({ hasText: "Loading model settings…" });
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  await expect(loading).toBeVisible();
+  await expect(send).toBeDisabled();
+  await expect(modelButton(page)).toHaveAttribute("title", /^Model: Atlas\b/);
+  await page.evaluate(() => document.dispatchEvent(new Event("test:chat-model-settings-ready")));
+  await expect(loading).toHaveCount(0);
+  await expect(modelButton(page)).toHaveAttribute("title", /^Model: Swift\b/);
+  await expectEffort(page, "Quick");
+  await modelButton(page).click();
+  const efforts = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
+  await expect(efforts.getByRole("radio", { name: "Gentle", exact: true })).toHaveCount(0);
+  await efforts.getByRole("radio", { name: "Thorough", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expectEffort(page, "Thorough");
+  await expect(send).toBeEnabled();
+  await expect(box(page)).toHaveText(draft);
+  await expectNoSubmission(page);
 });

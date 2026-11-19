@@ -209,6 +209,63 @@ export const sortTags = (tags: readonly string[]) =>
   [...tags].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 
 /**
+ * How well `name` matches `query`: at the start of its last segment, at a word start, matching the
+ * segment to its end, then nearer the segment's start.
+ */
+function matchDegree(name: string, query: string): number {
+  const match = wordMatch(name, query);
+  const at = match?.[0];
+  if (at === undefined) return -Infinity;
+  const segment = name.lastIndexOf("/") + 1;
+  const wordStart = at === 0 || /[\s_\-./\\:]/.test(name[at - 1]!);
+  const toEnd = match!.at(-1) === name.length - 1;
+  return (at === segment ? 4 : 0) + (wordStart ? 2 : 0) + (toEnd ? 1 : 0) - Math.abs(at - segment) / (name.length + 1);
+}
+
+/**
+ * The row to select while filtering, as IDEA's branches popup does: the best match of the
+ * lowest-ranked kind that has one (matching actions, then local branches, remote ones, tags).
+ * -1 without a query or a candidate.
+ */
+export function preferredMatch<R>(
+  rows: readonly R[],
+  query: string,
+  candidate: (row: R) => { rank: number; name: string } | null,
+): number {
+  const q = query.trim();
+  if (!q) return -1;
+  let best = -1;
+  let bestRank = Infinity;
+  let bestDegree = -Infinity;
+  rows.forEach((row, i) => {
+    const c = candidate(row);
+    if (!c || c.rank > bestRank) return;
+    const degree = matchDegree(c.name, q);
+    if (c.rank < bestRank || degree > bestDegree) {
+      best = i;
+      bestRank = c.rank;
+      bestDegree = degree;
+    }
+  });
+  return best;
+}
+
+const GROUP_RANK: Record<BranchGroup, number> = { recent: 1, local: 2, remote: 3 };
+
+/** `preferredMatch` for the branches popup of one repository. */
+export function preferredBranchRow(rows: readonly BranchRow[], query: string): number {
+  return preferredMatch(rows, query, (r) =>
+    r.type === "action"
+      ? { rank: 0, name: tx(r.action.label) }
+      : r.type === "branch"
+        ? { rank: GROUP_RANK[r.group], name: r.branch.name }
+        : r.type === "tag"
+          ? { rank: 4, name: r.tag }
+          : null,
+  );
+}
+
+/**
  * Rows for the Branches popup: actions (separated by group), then the collapsible
  * Recent (recently checked-out local branches other than the current one), Local,
  * Remote and Tags groups. Recent is open by default, Local only without Recent,

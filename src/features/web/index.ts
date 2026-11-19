@@ -22,6 +22,7 @@ import { djangoContentWatcher, djangoTemplateBanner } from "./djangoTemplates";
 import {
   browserIcon,
   isHtmlPath,
+  isWebPagePath,
   isWebPath,
   loadBrowsers,
   openInBrowser,
@@ -125,7 +126,7 @@ export function activate(): () => void {
       order: 5,
       items: (_menu, { paths, dirs }) => {
         const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
-        if (!path || !isHtmlPath(path)) return [];
+        if (!path || !isWebPagePath(path)) return [];
         return [
           {
             kind: "action",

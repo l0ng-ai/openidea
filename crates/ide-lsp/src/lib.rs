@@ -15,6 +15,7 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod flutter_outline;
 mod go_mod;
 mod go_scope;
 mod handler;
@@ -78,7 +79,7 @@ use server::{Conn, Running, Server};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 use text::{DocText, Encoding};
 use types::*;
@@ -86,6 +87,21 @@ use types::*;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 const LONG_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn did_change_content(
+    sync: SyncKind,
+    in_sync: bool,
+    key: u8,
+    events: &HashMap<u8, Vec<Value>>,
+    full: &OnceLock<Value>,
+    text: &str,
+) -> Value {
+    if !in_sync || sync == SyncKind::Full {
+        full.get_or_init(|| json!([{ "text": text }])).clone()
+    } else {
+        Value::Array(events.get(&key).cloned().unwrap_or_default())
+    }
+}
 
 /// How long a server may take to answer `initialize`. Some import the whole
 /// build there (kotlin-lsp, jdtls on a large Gradle project) and need minutes
@@ -131,6 +147,15 @@ struct DocState {
     notebook: Option<PathBuf>,
     /// When the servers last got new text (open or change): diagnostics published before are stale.
     changed: std::time::Instant,
+    flutter_outline: Option<FlutterOutline>,
+}
+
+/// The widget tree last published for a document, valid while that server instance runs.
+/// ponytail: positions lag edits until the server's next publish, which follows each analysis.
+struct FlutterOutline {
+    server: ide_core::ServerId,
+    generation: u64,
+    items: Vec<OutlineItem>,
 }
 
 impl DocState {
@@ -1268,6 +1293,7 @@ impl LspManager {
             compose_detected,
             notebook: None,
             changed: std::time::Instant::now(),
+            flutter_outline: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1355,18 +1381,14 @@ impl LspManager {
             tracing::warn!("lsp text copy of {} out of sync; resending full text", d.path.display());
             text.set(&full_text());
         }
-        let full = json!([{ "text": text.as_str() }]);
+        let full = OnceLock::new();
         for (server, run, sync, enc) in targets {
             let key = match enc {
                 Encoding::Utf8 => 8,
                 Encoding::Utf16 => 16,
                 Encoding::Utf32 => 32,
             };
-            let content = if !in_sync || sync == SyncKind::Full {
-                full.clone()
-            } else {
-                Value::Array(events.get(&key).cloned().unwrap_or_default())
-            };
+            let content = did_change_content(sync, in_sync, key, &events, &full, text.as_str());
             let params = json!({
                 "textDocument": { "uri": d.uri, "version": d.version },
                 "contentChanges": content,
@@ -2404,6 +2426,33 @@ impl LspManager {
             }
         }
         out.finish(None)
+    }
+
+    /// The document's widget tree, when its running Dart server published one.
+    pub fn flutter_outline(&self, doc: DocId) -> Option<Vec<OutlineItem>> {
+        let docs = self.docs.lock();
+        let d = docs.get(&doc)?;
+        let outline = d.flutter_outline.as_ref()?;
+        d.servers
+            .iter()
+            .any(|a| a.server.id == outline.server && a.server.is_live(outline.generation))
+            .then(|| outline.items.clone())
+    }
+
+    /// Records a published outline; whether what the open documents of `path` show changed.
+    fn set_flutter_outline(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        items: Option<Vec<OutlineItem>>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path) {
+            changed |= d.flutter_outline.is_some() || items.is_some();
+            d.flutter_outline = items.clone().map(|items| FlutterOutline { server: server.id, generation, items });
+        }
+        changed
     }
 
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
@@ -4337,6 +4386,56 @@ mod code_action_tests {
         assert!(!source_actions_only(&kinds(&["quickfix"])));
         assert!(!source_actions_only(&kinds(&["source.organizeImports", "refactor"])));
         assert!(!source_actions_only(&kinds(&["sourcefoo"])));
+    }
+}
+
+#[cfg(test)]
+mod did_change_content_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_content_does_not_build_the_full_document() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::from([(
+            key,
+            vec![json!({
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            })],
+        )]);
+
+        let content = did_change_content(SyncKind::Incremental, true, key, &events, &full, "1 MB document");
+
+        assert_eq!(content, Value::Array(events[&key].clone()));
+        assert!(full.get().is_none(), "incremental sync must not materialize the full document");
+    }
+
+    #[test]
+    fn full_sync_reuses_the_full_document_payload() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::new();
+
+        let first = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+        let second = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+
+        assert_eq!(first, json!([{ "text": "whole document" }]));
+        assert_eq!(second, first);
+        assert!(full.get().is_some());
+    }
+
+    #[test]
+    fn out_of_sync_incremental_change_sends_the_full_document() {
+        let full = OnceLock::new();
+        let events = HashMap::new();
+
+        let content = did_change_content(SyncKind::Incremental, false, 16, &events, &full, "whole document");
+
+        assert_eq!(content, json!([{ "text": "whole document" }]));
     }
 }
 
