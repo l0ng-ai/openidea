@@ -22,6 +22,7 @@ import {
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx, useTxTemplate } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { sshLabel as configLabel } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { Button, Checkbox, Dialog, IconButton, Input, Select, Tabs, T, type SelectOption } from "@/ui";
@@ -180,6 +181,25 @@ const parseSecs = (v: string) => {
   const n = parseInt(v, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
 };
+
+const windowsAbsolutePath = /^(?:[A-Za-z]:[/\\]|[/\\]{2})/;
+
+function absoluteDatabaseFile(path: string, root: string | undefined): boolean {
+  return root && windowsAbsolutePath.test(root)
+    ? windowsAbsolutePath.test(path)
+    : path.startsWith("/") || (!root && windowsAbsolutePath.test(path));
+}
+
+function sqliteJdbcFile(file: string | null | undefined, root: string | undefined): string | null {
+  if (!file) return null;
+  const windows = !!root && windowsAbsolutePath.test(root);
+  const path = windows ? file.replace(/\\/g, "/") : file;
+  if (absoluteDatabaseFile(path, root)) return path;
+  // Windows drive-relative and current-drive paths depend on the process's working directory.
+  if (!root || (windows && /^(?:[A-Za-z]:|\/)/.test(path))) return null;
+  const directory = windows ? root.replace(/\\/g, "/") : root;
+  return `${directory.replace(/\/+$/, "")}/${path}`;
+}
 
 function blank(): DataSource {
   return {
@@ -396,21 +416,38 @@ export function SourceDialog({
   // The URL being typed in default mode (null: show the fields' URL).
   const [urlDraft, setUrlDraft] = useState<string | null>(null);
   const [showJdbcProfiles, setShowJdbcProfiles] = useState(false);
-  const [nativeSource, setNativeSource] = useState<DataSource | null>(null);
-  const [jdbcSecurityConfirmed, setJdbcSecurityConfirmed] = useState(false);
+  const [nativeDraft, setNativeDraft] = useState<{ source: DataSource; password: string | undefined } | null>(null);
+  const nativeSource = nativeDraft?.source;
+  const [connectionSecurityConfirmed, setConnectionSecurityConfirmed] = useState(false);
   const jdbc = s.driver === "jdbc";
-  const jdbcProfiles = useJdbcDrivers(jdbc);
-  const jdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
+  const vendor = vendorOf(s);
+  const genericJdbc = vendor.id === "jdbc";
+  const savedJdbcWithPreset = initial?.driver === "jdbc" && (!genericJdbc || vendorOf(initial).driver !== "jdbc");
+  const jdbcProfiles = useJdbcDrivers();
+  const availableProfiles = jdbcProfiles.drivers?.filter((d) => genericJdbc || d.vendor === vendor.id);
+  const jdbcProfile = availableProfiles?.find((d) => d.id === s.jdbcDriver);
+  const installedJdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
+  const projectRoot = useProject((st) => st.project?.root);
+  const nativeUrl = nativeSource?.urlOnly ? parseSourceUrl(nativeSource.url ?? "") : null;
   const reviewJdbcSecurity =
-    nativeSource &&
-    (nativeSource.driver === "clickhouse" ||
-      nativeSource.ssh?.enabled ||
-      nativeSource.urlOnly ||
-      ["require", "verifyCa", "verifyFull"].includes(nativeSource.ssl ?? "") ||
-      nativeSource.sslCaFile ||
-      nativeSource.sslCertFile ||
-      nativeSource.sslKeyFile ||
-      (nativeSource.properties?.length ?? 0) > 0);
+    jdbc &&
+    ((savedJdbcWithPreset &&
+      (initial.jdbcDriver !== s.jdbcDriver ||
+        nativeSource ||
+        (s.url && s.url === jdbcProfile?.urlTemplate && s.url !== initial.url))) ||
+      (nativeSource &&
+        (!!initial ||
+          nativeSource.driver === "clickhouse" ||
+          nativeSource.driver === "snowflake" ||
+          nativeSource.ssh?.enabled ||
+          nativeSource.urlOnly ||
+          ["require", "verifyCa", "verifyFull"].includes(nativeSource.ssl ?? "") ||
+          nativeSource.sslCaFile ||
+          nativeSource.sslCertFile ||
+          nativeSource.sslKeyFile ||
+          nativeSource.options?.startupScript ||
+          (nativeSource.properties?.length ?? 0) > 0)));
+  const reviewBuiltinSecurity = !jdbc && initial?.driver === "jdbc" && !nativeSource;
   const loadedDbs = useDatabase((st) => (initial?.id ? st.databases[initial.id] : undefined));
   const loadedSchemas = useDatabase((st) => (initial?.id ? st.schemas[initial.id] : undefined));
 
@@ -432,7 +469,6 @@ export function SourceDialog({
   const setProperty = (i: number, patch: Partial<DbProperty>) =>
     set({ properties: properties.map((p, j) => (j === i ? { ...p, ...patch } : p)) });
 
-  const vendor = vendorOf(s);
   const sqlite = s.driver === "sqlite";
   const postgres = s.driver === "postgres";
   /** Drivers that can list every database on the host (tree level + Schemas tab). */
@@ -451,9 +487,9 @@ export function SourceDialog({
   const database = urlOnly ? (parsedUrl?.source.database ?? "") : (s.database ?? "");
   const name =
     s.name?.trim() ||
-    (jdbc
+    (genericJdbc
       ? (jdbcProfile?.name ?? tx("Custom JDBC"))
-      : sqlite
+      : vendor.driver === "sqlite"
         ? fileSourceName(s.file ?? "")
         : `${database || s.user || "db"}@${host || "localhost"}`);
   // Snowflake is reached over HTTPS, where a tunnel to another host name cannot pass certificate checks.
@@ -466,20 +502,48 @@ export function SourceDialog({
   );
   const fromTemplate = !!templateFields.length && (s.url === template || s.url === renderedUrl);
   const jdbcUrl = fromTemplate ? renderedUrl : (s.url ?? "");
-  const chooseProfile = (profile?: DbJdbcDriver) => {
-    const wasDefault = !s.url || fromTemplate || s.url === jdbcProfile?.urlTemplate;
-    set({ jdbcDriver: profile?.id ?? "", url: wasDefault ? (profile?.urlTemplate ?? "") : s.url });
+  const chooseProfile = (profile?: DbJdbcDriver, type = vendor) => {
     setTest(null);
+    setConnectionSecurityConfirmed(false);
+    if (jdbc) {
+      const wasDefault = !s.url || (!savedJdbcWithPreset && (fromTemplate || s.url === jdbcProfile?.urlTemplate));
+      set({ jdbcDriver: profile?.id ?? "", url: wasDefault ? (profile?.urlTemplate ?? "") : s.url });
+      return;
+    }
+    const parsed = s.urlOnly ? parseSourceUrl(s.url ?? "")?.source : undefined;
+    setNativeDraft({ source: s, password });
+    const file = parsed?.file ?? s.file;
+    const secure = ["require", "verifyCa", "verifyFull"].includes(parsed?.ssl ?? s.ssl ?? "");
+    set({
+      driver: "jdbc",
+      vendor: type.driver === "jdbc" ? "" : type.id,
+      host: parsed?.host ?? s.host,
+      port: (parsed ? parsed.port : s.port) ?? (clickhouse && secure ? 8443 : vendor.port),
+      database: parsed?.database ?? s.database,
+      user: parsed?.user || s.user,
+      file: sqlite ? sqliteJdbcFile(file, projectRoot) : file,
+      urlOnly: true,
+      url: profile?.urlTemplate ?? "",
+      jdbcDriver: profile?.id ?? "",
+      properties: [],
+      options: { ...blankOptions(), autoDisconnectSecs: options.autoDisconnectSecs },
+      ssh: null,
+      ssl: "disable",
+      sslCaFile: "",
+      sslCertFile: "",
+      sslKeyFile: "",
+    });
   };
   const jdbcUrlValid =
     /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) && !/<[^>]+>|\{(?:host|port|database|file)\}/.test(jdbcUrl);
   const valid = jdbc
-    ? !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || jdbcSecurityConfirmed)
-    : sqlite
-      ? !!s.file?.trim()
-      : (urlOnly ? urlValid : !!s.host?.trim()) &&
-        (!sshOn || sshTunnelReady(ssh, sshConfigs)) &&
-        (!snowflake || (!!s.user?.trim() && (sf.auth !== "keyPair" || !!sf.privateKeyFile?.trim())));
+    ? !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || connectionSecurityConfirmed)
+    : (!reviewBuiltinSecurity || connectionSecurityConfirmed) &&
+      (sqlite
+        ? !!s.file?.trim()
+        : (urlOnly ? urlValid : !!s.host?.trim()) &&
+          (!sshOn || sshTunnelReady(ssh, sshConfigs)) &&
+          (!snowflake || (!!s.user?.trim() && (sf.auth !== "keyPair" || !!sf.privateKeyFile?.trim()))));
   const sslOn = (s.ssl ?? "prefer") !== "disable";
 
   /** What is saved / tested: a preset's port when the field was left empty. */
@@ -498,33 +562,17 @@ export function SourceDialog({
       : {}),
   });
 
-  const setType = (id: string) => {
+  const setType = (id: string, builtIn = false) => {
     const v = vendorById(id);
-    if (!v) return;
+    if (!v || (v.id === vendor.id && (!jdbc || !builtIn))) return;
     setTest(null);
     setUrlDraft(null);
-    if (v.driver === "jdbc" && !jdbc) {
-      setNativeSource(s);
-      setJdbcSecurityConfirmed(false);
-      setS({
-        ...s,
-        driver: "jdbc",
-        vendor: "",
-        port: s.port ?? vendor.port,
-        urlOnly: true,
-        url: "",
-        jdbcDriver: "",
-        properties: [],
-        options: blankOptions(),
-        ssh: null,
-        ssl: "disable",
-        sslCaFile: "",
-        sslCertFile: "",
-        sslKeyFile: "",
-      });
+    setConnectionSecurityConfirmed(false);
+    if (v.driver === "jdbc") {
+      if (jdbc) set({ vendor: "" });
+      else chooseProfile(undefined, v);
       return;
     }
-    if (v.driver === s.driver && v.id === vendor.id) return;
     const previous =
       jdbc && nativeSource
         ? {
@@ -533,9 +581,13 @@ export function SourceDialog({
             color: s.color,
             comment: s.comment,
             global: s.global,
+            readOnly: s.readOnly,
+            introspection: intro,
+            options: { ...blankOptions(), ...nativeSource.options, autoDisconnectSecs: options.autoDisconnectSecs },
           }
         : s;
-    setNativeSource(null);
+    if (nativeDraft) setPassword(nativeDraft.password);
+    setNativeDraft(null);
     if (jdbc && nativeSource && vendorOf(nativeSource).id === v.id) {
       setS(previous);
       return;
@@ -549,7 +601,18 @@ export function SourceDialog({
         driver: v.driver,
         vendor: v.id === v.driver ? "" : v.id,
         port,
-        ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.ssl),
+        ...(x.driver === "jdbc"
+          ? {
+              jdbcDriver: "",
+              urlOnly: false,
+              url: "",
+              properties: [],
+              options: { ...blankOptions(), autoDisconnectSecs: options.autoDisconnectSecs },
+              ssh: null,
+              ...(v.driver === "sqlite" && !absoluteDatabaseFile(x.file ?? "", projectRoot) ? { file: null } : {}),
+            }
+          : {}),
+        ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.driver === "jdbc" ? "prefer" : x.ssl),
         ...(v.driver === "snowflake"
           ? { host: x.host === "localhost" ? "" : x.host, snowflake: { ...blankSnowflake(), ...x.snowflake } }
           : {}),
@@ -656,9 +719,59 @@ export function SourceDialog({
   const general = (
     <>
       <span className={styles.formLabel}>
-        <T>Driver:</T>
+        <T>Data source type:</T>
       </span>
-      <Select aria-label="Data source type" value={vendor.id} options={TYPES} onChange={setType} />
+      <Select aria-label="Data source type" value={vendor.id} options={TYPES} onChange={(id) => setType(id)} />
+      <span className={styles.formLabel}>{tx(genericJdbc ? "JDBC driver profile:" : "Driver:")}</span>
+      <div className={styles.formRow}>
+        <Select
+          className={styles.fill}
+          aria-label={genericJdbc ? "JDBC driver profile" : "Connection driver"}
+          value={jdbc ? (s.jdbcDriver ?? "") : ""}
+          disabled={genericJdbc && !jdbcProfiles.drivers}
+          onChange={(id) => {
+            if (!id && !genericJdbc) setType(vendor.id, true);
+            else chooseProfile(availableProfiles?.find((d) => d.id === id));
+          }}
+          options={[
+            { value: "", label: genericJdbc ? "Choose a JDBC driver profile" : "Built-in" },
+            ...(availableProfiles ?? []).map((d) => ({ value: d.id, label: d.name, verbatim: true })),
+            ...(jdbc && s.jdbcDriver && !jdbcProfile
+              ? [
+                  {
+                    value: s.jdbcDriver,
+                    label: installedJdbcProfile?.name ?? tx`${s.jdbcDriver} (missing)`,
+                    verbatim: true,
+                    disabled: true,
+                  },
+                ]
+              : []),
+          ]}
+        />
+        <Button disabled={!jdbcProfiles.drivers} onClick={() => setShowJdbcProfiles(true)}>
+          {tx(installedJdbcProfile && !genericJdbc ? "Go to Driver" : "Manage Drivers…")}
+        </Button>
+      </div>
+      {jdbcProfiles.error ? (
+        <div className={styles.formFull} role="alert">
+          {jdbcProfiles.error}{" "}
+          <Button onClick={jdbcProfiles.retry}>
+            <T>Retry</T>
+          </Button>
+        </div>
+      ) : !jdbcProfiles.drivers && jdbc ? (
+        <span className={styles.formFull} role="status">
+          <T>Loading JDBC driver profiles…</T>
+        </span>
+      ) : jdbc && s.jdbcDriver && !jdbcProfile && jdbcProfiles.drivers ? (
+        <span className={`${styles.formFull} ${styles.bad}`} role="alert">
+          {tx(
+            installedJdbcProfile
+              ? "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type."
+              : "The JDBC driver profile is missing. Select or add a profile before connecting.",
+          )}
+        </span>
+      ) : null}
       {sqlite ? (
         <FileField
           id="db-file"
@@ -672,28 +785,6 @@ export function SourceDialog({
         <>
           {jdbc ? (
             <>
-              <span className={styles.formLabel}>
-                <T>JDBC driver profile:</T>
-              </span>
-              <div className={styles.formRow}>
-                <Select
-                  className={styles.fill}
-                  aria-label="JDBC driver profile"
-                  value={s.jdbcDriver ?? ""}
-                  disabled={!jdbcProfiles.drivers}
-                  onChange={(id) => chooseProfile(jdbcProfiles.drivers?.find((d) => d.id === id))}
-                  options={[
-                    { value: "", label: "Choose a JDBC driver profile" },
-                    ...(jdbcProfiles.drivers ?? []).map((d) => ({ value: d.id, label: d.name, verbatim: true })),
-                    ...(s.jdbcDriver && !jdbcProfile
-                      ? [{ value: s.jdbcDriver, label: tx`${s.jdbcDriver} (missing)` }]
-                      : []),
-                  ]}
-                />
-                <Button disabled={!jdbcProfiles.drivers} onClick={() => setShowJdbcProfiles(true)}>
-                  <T>Manage Drivers…</T>
-                </Button>
-              </div>
               {fromTemplate &&
                 templateFields.map((key) => (
                   <Fragment key={key}>
@@ -722,30 +813,19 @@ export function SourceDialog({
                     </div>
                   </Fragment>
                 ))}
-              {!fromTemplate && templateFields.length > 0 && (
+              {!fromTemplate && template && s.url !== template && (
                 <>
                   <span />
-                  <Button onClick={() => set({ url: template })}>
+                  <Button
+                    onClick={() => {
+                      set({ url: template });
+                      setConnectionSecurityConfirmed(false);
+                    }}
+                  >
                     <T>Use URL template</T>
                   </Button>
                 </>
               )}
-              {jdbcProfiles.error ? (
-                <div className={styles.formFull} role="alert">
-                  {jdbcProfiles.error}{" "}
-                  <Button onClick={jdbcProfiles.retry}>
-                    <T>Retry</T>
-                  </Button>
-                </div>
-              ) : !jdbcProfiles.drivers ? (
-                <span className={styles.formFull} role="status">
-                  <T>Loading JDBC driver profiles…</T>
-                </span>
-              ) : s.jdbcDriver && !jdbcProfile ? (
-                <span className={`${styles.formFull} ${styles.bad}`} role="alert">
-                  <T>The JDBC driver profile is missing. Select or add a profile before connecting.</T>
-                </span>
-              ) : null}
             </>
           ) : (
             <>
@@ -934,22 +1014,30 @@ export function SourceDialog({
                     : "Editing the URL fills in the settings above.",
                 )}
           </span>
-          {jdbc && reviewJdbcSecurity && (
-            <div className={styles.formWide}>
-              <span className={styles.formHint}>
-                <T>
-                  Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH
-                  tunnel, configure the equivalent route before connecting.
-                </T>
-              </span>
-              <Checkbox
-                checked={jdbcSecurityConfirmed}
-                onChange={setJdbcSecurityConfirmed}
-                label="I have configured JDBC connection security."
-              />
-            </div>
-          )}
         </>
+      )}
+      {(reviewJdbcSecurity || reviewBuiltinSecurity) && (
+        <div className={styles.formWide}>
+          <span className={styles.formHint}>
+            {jdbc
+              ? tx(
+                  "Review the JDBC URL, TLS settings and connection properties. If your native connection used an SSH tunnel, configure the equivalent route before connecting.",
+                )
+              : tx("Review the built-in connection settings, credentials and TLS before connecting.")}
+          </span>
+          {jdbc && nativeUrl?.password && (
+            <span className={styles.formHint}>
+              <T>If the connection used a password in the previous URL, enter it in the Password field.</T>
+            </span>
+          )}
+          <Checkbox
+            checked={connectionSecurityConfirmed}
+            onChange={setConnectionSecurityConfirmed}
+            label={
+              jdbc ? "I have configured JDBC connection security." : "I have configured built-in connection security."
+            }
+          />
+        </div>
       )}
     </>
   );
@@ -1497,14 +1585,16 @@ export function SourceDialog({
           )}
         </div>
       </div>
-      {jdbc && showJdbcProfiles && jdbcProfiles.drivers && (
+      {showJdbcProfiles && jdbcProfiles.drivers && (
         <JdbcDriverProfiles
           drivers={jdbcProfiles.drivers}
           selected={s.jdbcDriver ?? ""}
+          sourceVendor={genericJdbc ? undefined : vendor.id}
           onClose={() => setShowJdbcProfiles(false)}
           onSave={(driver) => {
             jdbcProfiles.setDrivers((drivers) => [...(drivers ?? []).filter((d) => d.id !== driver.id), driver]);
-            if (!s.jdbcDriver || s.jdbcDriver === driver.id) chooseProfile(driver);
+            if (jdbc && (genericJdbc || driver.vendor === vendor.id) && (!s.jdbcDriver || s.jdbcDriver === driver.id))
+              chooseProfile(driver);
           }}
           onUse={(driver) => {
             chooseProfile(driver);

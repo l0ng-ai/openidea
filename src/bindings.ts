@@ -314,7 +314,7 @@ export const commands = {
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
-	dbJdbcDrivers: () => typedError<DbJdbcDriver[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
+	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
@@ -324,7 +324,7 @@ export const commands = {
 	 *  in the desktop shell like [`db_export_file`]: the paths in `job` are local.
 	 */
 	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
-	dbSaveJdbcDriver: (driver: DbJdbcDriver) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
+	dbSaveJdbcDriver: (driver: DbJdbcDriver_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
 	dbSaveSources: (sources: DataSource_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	dbSavedCatalog: (id: string) => typedError<{
 	databases?: DbCatalogDatabase[],
@@ -4457,9 +4457,23 @@ export type DbIntrospection = {
 	objectFilter?: string,
 };
 
-export type DbJdbcDriver = {
+export type DbJdbcDriver = DbJdbcDriver_Serialize | DbJdbcDriver_Deserialize;
+
+export type DbJdbcDriver_Deserialize = {
 	id: string,
 	name: string,
+	/**  Data source preset id; absent for a generic JDBC profile. */
+	vendor?: string | null,
+	jars: string[],
+	className: string,
+	urlTemplate: string,
+};
+
+export type DbJdbcDriver_Serialize = {
+	id: string,
+	name: string,
+	/**  Data source preset id; absent for a generic JDBC profile. */
+	vendor?: string | null,
 	jars: string[],
 	className: string,
 	urlTemplate: string,

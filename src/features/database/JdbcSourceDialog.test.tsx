@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DataSource, DbJdbcDriver } from "@/platform/ipc";
+import type { DataSource, DbJdbcDriver, ProjectInfo } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { SourceDialog } from "./SourceDialog";
 import { JdbcDriverProfiles } from "./JdbcDriverProfiles";
+import { sourceIcon, sourceLabel } from "./model";
 import { newMenu, nodeMenu } from "./treeMenu";
 import { useDatabase } from "./store";
 
@@ -40,8 +42,8 @@ const driver: DbJdbcDriver = {
   urlTemplate: "jdbc:example://<host>:<port>/<database>",
 };
 
-function select(label: string, option: string) {
-  fireEvent.click(screen.getByRole("button", { name: label }));
+function select(label: string, option: string, root: Pick<typeof screen, "getByRole"> = screen) {
+  fireEvent.click(root.getByRole("button", { name: label }));
   fireEvent.click(within(screen.getByRole("listbox")).getByText(option, { exact: true }));
 }
 
@@ -53,6 +55,7 @@ beforeEach(() => {
   backend.saveSource.mockResolvedValue(undefined);
   backend.pick.mockResolvedValue(driver.jars);
   useDatabase.setState({ sources: [], dialog: null, loaded: true });
+  useProject.setState({ project: null });
 });
 
 describe("custom JDBC data sources", () => {
@@ -231,6 +234,179 @@ describe("custom JDBC data sources", () => {
     const menu = nodeMenu({ kind: "schema", id: "jdbc-source", key: "schema", schema: "PUBLIC" });
     expect(menu).not.toEqual(expect.arrayContaining([expect.objectContaining({ action: "db.drop" })]));
     expect(menu).not.toEqual(expect.arrayContaining([expect.objectContaining({ action: "db.compareSchemas" })]));
+  });
+});
+
+describe("JDBC drivers for named database types", () => {
+  it("keeps an incompatible profile available to repair while blocking the saved source", async () => {
+    render(
+      <SourceDialog initial={{ driver: "jdbc", vendor: "neon", jdbcDriver: driver.id, url: "jdbc:example:local" }} />,
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Select a matching profile or update its type.");
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Go to Driver" }));
+    const profiles = within(screen.getByRole("dialog", { name: "JDBC Driver Profiles" }));
+    expect(profiles.getByRole("button", { name: "JDBC driver profiles" })).toHaveTextContent(driver.name);
+    expect(profiles.getByText("Custom JDBC only")).toBeVisible();
+    expect(profiles.queryByRole("button", { name: "Use Driver" })).toBeNull();
+  });
+
+  it("associates an existing profile with a wire-compatible preset and reopens it with that type", async () => {
+    const pg = { ...driver, id: "pg", name: "PostgreSQL JDBC", vendor: "postgres" };
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [pg, driver] : "OK"));
+    const { unmount } = render(
+      <SourceDialog
+        initial={{
+          id: "neon-example",
+          name: "Neon example",
+          driver: "postgres",
+          vendor: "neon",
+          host: "example.invalid",
+          ssl: "verifyFull",
+          sslCaFile: "/local/ca.pem",
+          urlOnly: true,
+          url: "postgresql://reader:url-fixture@example.invalid:5432/catalog?sslmode=verify-full",
+          savePassword: true,
+        }}
+      />,
+    );
+    const driverButton = screen.getByRole("button", { name: "Connection driver" });
+    expect(driverButton).toHaveTextContent("Built-in");
+    const manage = screen.getByRole("button", { name: "Manage Drivers…" });
+    await waitFor(() => expect(manage).toBeEnabled());
+    fireEvent.click(driverButton);
+    const choices = within(screen.getByRole("listbox"));
+    expect(choices.getAllByRole("option")).toHaveLength(1);
+    fireEvent.click(choices.getByRole("option", { name: "Built-in" }));
+    fireEvent.click(manage);
+    select("JDBC driver profiles", driver.name);
+    expect(screen.queryByRole("button", { name: "Use Driver" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit…" }));
+    const editor = within(screen.getByRole("dialog", { name: "Edit JDBC Driver" }));
+    select("Data source type", "Neon", editor);
+    fireEvent.click(editor.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Trust and Save" }));
+    const useDriver = await screen.findByRole("button", { name: "Use Driver" });
+    expect(backend.call).toHaveBeenCalledWith(["save", { ...driver, vendor: "neon" }]);
+    fireEvent.click(useDriver);
+    expect(screen.getByRole("button", { name: "Data source type" })).toHaveTextContent("Neon");
+    expect(driverButton).toHaveTextContent(driver.name);
+    expect(screen.queryByRole("tab", { name: "SSH/SSL" })).toBeNull();
+    expect(screen.getByLabelText("User:")).toHaveValue("reader");
+    expect(
+      screen.getByText("If the connection used a password in the previous URL, enter it in the Password field."),
+    ).toBeVisible();
+    const jdbcUrl = "jdbc:example://example.invalid/catalog?ssl=true";
+    fireEvent.change(screen.getByLabelText("URL:"), { target: { value: jdbcUrl } });
+    const save = screen.getByRole("button", { name: "OK" });
+    expect(save).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "I have configured JDBC connection security." }));
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(backend.saveSource).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "neon-example",
+          driver: "jdbc",
+          vendor: "neon",
+          jdbcDriver: driver.id,
+          url: jdbcUrl,
+          user: "reader",
+          savePassword: true,
+        }),
+        undefined,
+        undefined,
+      ),
+    );
+    const saved: DataSource = backend.saveSource.mock.calls[0]![0];
+    expect(sourceIcon(saved)).toBe("db-neon");
+    expect(sourceLabel(saved)).toBe("Neon example (Neon)");
+    unmount();
+    backend.call.mockImplementation(async ([op]) =>
+      op === "list"
+        ? [
+            { ...pg, vendor: "neon", urlTemplate: "jdbc:example://localhost/readonly" },
+            { ...driver, vendor: "neon", urlTemplate: "jdbc:example://{host}/{database}?ssl=true" },
+          ]
+        : "OK",
+    );
+    render(<SourceDialog initial={saved} />);
+    expect(screen.getByRole("button", { name: "Data source type" })).toHaveTextContent("Neon");
+    fireEvent.click(await screen.findByRole("button", { name: "Go to Driver" }));
+    const profiles = within(screen.getByRole("dialog", { name: "JDBC Driver Profiles" }));
+    expect(profiles.getByRole("button", { name: "JDBC driver profiles" })).toHaveTextContent(driver.name);
+    expect(profiles.getByText("dependency.jar")).toBeVisible();
+    fireEvent.click(profiles.getByText("Close", { exact: true }));
+    select("Connection driver", pg.name);
+    expect(screen.getByLabelText("URL:")).toHaveValue(jdbcUrl);
+    expect(screen.getByRole("button", { name: "Use URL template" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "I have configured JDBC connection security." }));
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Use URL template" }));
+    expect(screen.getByLabelText("URL:")).toHaveValue("jdbc:example://localhost/readonly");
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+  });
+
+  const sqlite = { ...driver, name: "Xerial SQLite", vendor: "sqlite", urlTemplate: "jdbc:sqlite:{file}" };
+
+  it.each([
+    ["/fixture/project", "fixtures/local.db", "/fixture/project/fixtures/local.db"],
+    ["D:/fixture/project", "fixtures\\local.db", "D:/fixture/project/fixtures/local.db"],
+    ["//fixture/project", "fixtures\\local.db", "//fixture/project/fixtures/local.db"],
+  ])("uses a SQLite file relative to %s and restores its native path", async (root, file, absolute) => {
+    useProject.setState({ project: { root } as ProjectInfo });
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [sqlite] : "SQLite"));
+    render(<SourceDialog initial={null} preset={{ driver: "sqlite", file }} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manage Drivers…" })).toBeEnabled());
+    select("Connection driver", sqlite.name);
+    const url = `jdbc:sqlite:${absolute}`;
+    expect(screen.getByLabelText("File:")).toHaveValue(absolute);
+    expect(screen.getByLabelText("URL:")).toHaveValue(url);
+    fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
+    await waitFor(() =>
+      expect(backend.call).toHaveBeenCalledWith([
+        "test",
+        expect.objectContaining({ driver: "jdbc", vendor: "sqlite", url }),
+        null,
+        null,
+      ]),
+    );
+    select("Connection driver", "Built-in");
+    expect(screen.getByLabelText("File:")).toHaveValue(file);
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled();
+  });
+
+  it("requires a fresh file choice for a Windows drive-relative path", async () => {
+    useProject.setState({ project: { root: "D:/fixture/project" } as ProjectInfo });
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [sqlite] : "SQLite"));
+    render(<SourceDialog initial={null} preset={{ driver: "sqlite", file: "D:local.db" }} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manage Drivers…" })).toBeEnabled());
+    select("Connection driver", sqlite.name);
+    expect(screen.getByLabelText("File:")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+  });
+
+  it("keeps shared source options and restores the native draft's password", async () => {
+    const pg = { ...driver, name: "PostgreSQL JDBC", vendor: "postgres", urlTemplate: "jdbc:example:local" };
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [pg] : "OK"));
+    render(<SourceDialog initial={{ driver: "postgres", user: "native", options: { autoDisconnectSecs: 90 } }} />);
+    fireEvent.change(screen.getByLabelText("Password:"), { target: { value: "native-fixture" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manage Drivers…" })).toBeEnabled());
+    select("Connection driver", pg.name);
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("User:"), { target: { value: "jdbc" } });
+    fireEvent.change(screen.getByLabelText("Password:"), { target: { value: "jdbc-fixture" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Options" }));
+    expect(screen.getByLabelText("Auto-disconnect after (seconds)")).toHaveValue("90");
+    fireEvent.change(screen.getByLabelText("Auto-disconnect after (seconds)"), { target: { value: "60" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Read-only" }));
+    fireEvent.click(screen.getByRole("tab", { name: "General" }));
+    select("Connection driver", "Built-in");
+    expect(screen.getByLabelText("User:")).toHaveValue("native");
+    expect(screen.getByLabelText("Password:")).toHaveValue("native-fixture");
+    fireEvent.click(screen.getByRole("tab", { name: "Options" }));
+    expect(screen.getByRole("checkbox", { name: "Read-only" })).toBeChecked();
+    expect(screen.getByLabelText("Auto-disconnect after (seconds)")).toHaveValue("60");
   });
 });
 

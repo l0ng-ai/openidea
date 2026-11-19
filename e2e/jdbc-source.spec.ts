@@ -1,6 +1,6 @@
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
-test("configures a local JDBC profile and a source through mocked IPC", async ({ workbench: page }, info) => {
+test("uses a local JDBC profile for a named data source through mocked IPC", async ({ workbench: page }, info) => {
   await stubDesktop(page);
   await page.evaluate(async () => {
     const drivers: Record<string, unknown>[] = [];
@@ -47,20 +47,22 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
     });
   });
   const source = page.getByRole("dialog", { name: "New Data Source", exact: true });
+  await source.screenshot({
+    path: info.outputPath("mock-native-clickhouse-general.png"),
+    animations: "disabled",
+  });
   await source.getByRole("tab", { name: "SSH/SSL", exact: true }).click();
   await source.screenshot({
     path: info.outputPath("mock-native-clickhouse-before-switch.png"),
     animations: "disabled",
   });
   await source.getByRole("tab", { name: "General", exact: true }).click();
-  await source.getByRole("button", { name: "Data source type", exact: true }).click();
-  await page.getByRole("option", { name: "Custom JDBC", exact: true }).click();
-  await expect(source.getByRole("tab", { name: "SSH/SSL", exact: true })).toHaveCount(0);
-  await expect(source.locator("#db-url")).toHaveValue("");
+  await expect(source.getByRole("button", { name: "Connection driver", exact: true })).toHaveText("Built-in");
   await source.getByRole("button", { name: "Manage Drivers…", exact: true }).click();
   const profiles = page.getByRole("dialog", { name: "JDBC Driver Profiles", exact: true });
   await profiles.getByRole("button", { name: "Add…", exact: true }).click();
   const editor = page.getByRole("dialog", { name: "Add JDBC Driver", exact: true });
+  await expect(editor.getByRole("button", { name: "Data source type", exact: true })).toHaveText("ClickHouse");
   await editor.getByLabel("Name:", { exact: true }).fill("Example local driver");
   await editor.getByRole("button", { name: "Add JARs…", exact: true }).click();
   await expect(editor.getByText("dependency.jar", { exact: true })).toBeVisible();
@@ -74,9 +76,11 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
   await trust.screenshot({ path: info.outputPath("mock-jdbc-driver-trust.png"), animations: "disabled" });
   await trust.getByRole("button", { name: "Trust and Save", exact: true }).click();
   await profiles.getByRole("button", { name: "Use Driver", exact: true }).click();
-  await expect(source.getByRole("button", { name: "JDBC driver profile", exact: true })).toHaveText(
+  await expect(source.getByRole("button", { name: "Connection driver", exact: true })).toHaveText(
     "Example local driver",
   );
+  await expect(source.getByRole("button", { name: "Data source type", exact: true })).toHaveText("ClickHouse");
+  await expect(source.getByRole("tab", { name: "SSH/SSL", exact: true })).toHaveCount(0);
   await source.getByLabel("Host:", { exact: true }).fill("example.invalid");
   await source.getByLabel("Database:", { exact: true }).fill("catalog");
   await expect(source.locator("#db-url")).toHaveValue("jdbc:example://example.invalid/catalog");
@@ -106,6 +110,7 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
   expect(password).toBe("mock secret");
   expect(tested).toMatchObject({
     driver: "jdbc",
+    vendor: "clickhouse",
     url,
     user: "example-user",
     readOnly: true,
@@ -117,6 +122,21 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
   const [saved] = sources as Record<string, unknown>[];
   const [{ driver }] = await ipcCalls(page, "db_save_jdbc_driver");
   expect(saved.readOnly).toBe(true);
+  expect(driver).toMatchObject({ vendor: "clickhouse" });
+  expect(saved.vendor).toBe("clickhouse");
   expect(saved.jdbcDriver).toBe((driver as Record<string, unknown>).id);
   for (const key of ["jars", "className", "classpath", "exec", "password"]) expect(saved).not.toHaveProperty(key);
+
+  await page.evaluate(async () => {
+    const path = "/src/features/database/store.ts";
+    const { openSourceDialog, useDatabase } = await import(/* @vite-ignore */ path);
+    openSourceDialog(useDatabase.getState().sources[0]);
+  });
+  const reopened = page.getByRole("dialog", { name: "Data Source: Mock connection", exact: true });
+  await expect(reopened.getByRole("button", { name: "Data source type", exact: true })).toHaveText("ClickHouse");
+  await reopened.getByRole("button", { name: "Go to Driver", exact: true }).click();
+  await expect(profiles.getByRole("button", { name: "JDBC driver profiles", exact: true })).toHaveText(
+    "Example local driver",
+  );
+  await expect(profiles.getByText("dependency.jar", { exact: true })).toBeVisible();
 });

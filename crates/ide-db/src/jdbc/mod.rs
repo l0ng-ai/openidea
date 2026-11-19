@@ -21,6 +21,9 @@ const LIMIT: usize = 16 * 1024 * 1024;
 pub struct DbJdbcDriver {
     pub id: String,
     pub name: String,
+    /// Data source preset id; absent for a generic JDBC profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
     pub jars: Vec<String>,
     pub class_name: String,
     pub url_template: String,
@@ -194,6 +197,9 @@ impl DbManager {
             .into_iter()
             .find(|d| d.id == source.jdbc_driver)
             .ok_or_else(|| IdeError::invalid("Select an installed JDBC driver profile"))?;
+        if !source.vendor.is_empty() && driver.vendor.as_deref() != Some(source.vendor.as_str()) {
+            return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
+        }
         JdbcPool::connect(source, password, driver, self.jdbc_registry()?.with_file_name("jdbc"))
             .await
             .map(Box::new)
