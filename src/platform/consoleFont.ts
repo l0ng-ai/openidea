@@ -12,8 +12,8 @@ export interface ConsoleFont {
 }
 
 /**
- * The font of the Run and Debug consoles: Tools › Terminal › Font (which can follow
- * Editor › Font), with the row height both consoles lay their lines out with. The
+ * The font of the Build, Run and Debug consoles: Tools › Terminal › Font (which can follow
+ * Editor › Font), with the row height the consoles lay their lines out with. The
  * weights match the terminal's: the editor's main and bold weights when the terminal
  * uses the editor font, else regular and bold.
  */
