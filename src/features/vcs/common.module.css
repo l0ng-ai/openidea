@@ -357,6 +357,44 @@
   outline: none;
   border-color: var(--focus-ring);
 }
+.stashForm {
+  gap: var(--space-3);
+  padding: var(--space-4);
+  font-size: var(--fs-ui);
+}
+.stashRepo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-secondary);
+}
+.stashRepo > button {
+  flex: 1;
+}
+.stashBranch {
+  color: var(--fg-secondary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.stashMessage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+.stashMessage > label {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.stashMessage > textarea {
+  min-width: 0;
+  padding: var(--space-2);
+  line-height: 1.5;
+}
+.stashOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
 /* Interactive rebase dialog. */
 .rebaseList {
   max-height: 360px;
