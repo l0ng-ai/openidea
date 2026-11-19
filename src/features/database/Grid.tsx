@@ -118,7 +118,6 @@ interface Sel {
 }
 
 const ROW_H = 24;
-const NUM_W = 48;
 
 /** Wide enough for the whole header (icon, name, filter, sort) and the longest sampled value. */
 function initialWidth(c: GridColumn, sample: Cell[], decorations: number): number {
@@ -169,6 +168,7 @@ export function Grid(props: GridProps) {
     copyFormat = "tsv",
   } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
+  const numberWidth = Math.max(40, String(firstRowNumber + rowCount - 1).length * 8 + 8);
   const [sel, setSel] = useState<Sel | null>(null);
   const dragging = useRef(false);
   useEffect(() => {
@@ -225,8 +225,8 @@ export function Grid(props: GridProps) {
   const scrollColumnIntoView = (c: number) => {
     const el = scrollRef.current;
     if (!el || c < 0 || c >= widths.length) return;
-    const left = c ? NUM_W + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
-    const right = NUM_W + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
+    const left = c ? numberWidth + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
+    const right = numberWidth + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
     if (left < el.scrollLeft) el.scrollLeft = left;
     else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = Math.min(left, right - el.clientWidth);
   };
@@ -252,8 +252,8 @@ export function Grid(props: GridProps) {
     // Runs once per request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealColumn]);
-  const totalWidth = useMemo(() => NUM_W + widths.reduce((a, b) => a + b, 0), [widths]);
-  const template = `${NUM_W}px ${widths.map((w) => `${w}px`).join(" ")}`;
+  const totalWidth = useMemo(() => numberWidth + widths.reduce((a, b) => a + b, 0), [numberWidth, widths]);
+  const template = `${numberWidth}px ${widths.map((w) => `${w}px`).join(" ")}`;
 
   const selected = (r: number, c: number) => {
     if (!sel) return false;

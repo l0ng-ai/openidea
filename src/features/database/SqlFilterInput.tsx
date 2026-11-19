@@ -101,7 +101,6 @@ export function SqlFilterInput({
           variant="bare"
           mono
           aria-label={kind === "where" ? "WHERE filter" : "ORDER BY"}
-          placeholder={kind === "where" ? "WHERE" : "ORDER BY"}
           invalid={invalid}
           value={value}
           onChange={(e) => {

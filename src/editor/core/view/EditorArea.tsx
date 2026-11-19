@@ -161,7 +161,11 @@ function useTitleHints(): Map<string, string> {
       return out.sort();
     }),
   );
-  return useMemo(() => disambiguateTitles(paths), [paths]);
+  const labels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle ?? basename(p))));
+  return useMemo(() => {
+    const byPath = new Map(paths.map((p, i) => [p, labels[i]!]));
+    return disambiguateTitles(paths, (p) => byPath.get(p) ?? basename(p));
+  }, [paths, labels]);
 }
 
 const virtualData = (input: EditorInput) => input.data as VirtualInputData | undefined;
@@ -180,6 +184,8 @@ function PaneView({ paneId }: { paneId: string }) {
   const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
+  const tabLabels = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabTitle)));
+  const tabIcons = useFileDecorations(useShallow(() => paths.map((p) => getFileDecoration(p)?.tabIcon)));
   const errors = useFileDecorations(useShallow(() => paths.map((p) => !!p && !!getFileDecoration(p)?.error)));
   const fileColors = useFileColors("editorTabs");
 
@@ -200,7 +206,7 @@ function PaneView({ paneId }: { paneId: string }) {
     return tabs.map((t, i) => {
       const full = names[i]!;
       const dot = full.lastIndexOf(".");
-      const name = t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full;
+      const name = tabLabels[i] ?? (t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full);
       const dupe = !showDirectoryForNonUnique
         ? null
         : t.input.kind === "file" && t.input.path
@@ -223,7 +229,7 @@ function PaneView({ paneId }: { paneId: string }) {
         text: dupe ? `${name} — ${dupe}` : name,
         icon: showFileIcon
           ? t.input.kind === "file" && t.input.path
-            ? file?.icon
+            ? (tabIcons[i] ?? file?.icon)
             : tabIcon(t.input, kinds)
           : undefined,
         italic: t.preview,
@@ -255,6 +261,8 @@ function PaneView({ paneId }: { paneId: string }) {
     colors,
     errors,
     tints,
+    tabLabels,
+    tabIcons,
     fileColors,
     hints,
     showExtension,

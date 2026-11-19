@@ -6,6 +6,7 @@ export {
   closeAll,
   detachTab,
   newTab,
+  newTabRunning,
   pluginSession,
   syncTerminalProject,
   tabTitle,

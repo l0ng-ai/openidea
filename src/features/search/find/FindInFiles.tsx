@@ -67,6 +67,7 @@ import {
 import { SINGLE_FIRST, isRowSelected, selectRow, selectedRows, type RowSelection } from "./rowSelection";
 import { FindSession, IDLE, matchRows, type FindState, type MatchRow } from "./session";
 import {
+  FIND_POPUP_SPLIT_KEY,
   SEARCH_CONTEXTS,
   buildQuery,
   customScopeName,
@@ -82,9 +83,7 @@ import {
   resolveFindScope,
   setFindPopupCommandHandler,
   loadFindPopupSize,
-  loadFindPopupSplit,
   saveFindPopupSize,
-  saveFindPopupSplit,
   setFindPopupNewTab,
   setFindPopupPinned,
   useFindPopup,
@@ -165,11 +164,6 @@ function FindInFilesDialog() {
   const [previewMode, setPreviewMode] = useState(false);
   const [diffPreview, setDiffPreview] = useState<{ key: string; lines: PreviewLine[] } | null>(null);
   const [initialSize] = useState(loadFindPopupSize);
-  const [split, setSplit] = useState(loadFindPopupSplit);
-  const keepSplit = (layout: Record<string, number>) => {
-    setSplit(layout);
-    saveFindPopupSplit(layout);
-  };
   const [marks, setMarks] = useState<ReplaceMarks>(NO_MARKS);
   const [running, setRunning] = useState<ReplaceRun | null>(null);
   const [progress, setProgress] = useState<ReplaceProgress | null>(null);
@@ -869,8 +863,8 @@ function FindInFilesDialog() {
         </div>
         <div className={styles.split}>
           {rows.length ? (
-            <SplitGroup orientation="vertical" id="find-popup-split" defaultLayout={split} onLayoutChanged={keepSplit}>
-              <SplitPanel id="results" minSize={ROW * 3} defaultSize="48%">
+            <SplitGroup orientation="vertical" id="find-popup-split" storageKey={FIND_POPUP_SPLIT_KEY}>
+              <SplitPanel id="results" minSize={ROW * 3} defaultSize="33%">
                 {resultsBox}
               </SplitPanel>
               <SplitHandle hairline={false} />
