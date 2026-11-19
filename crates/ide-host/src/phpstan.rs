@@ -52,6 +52,8 @@ pub(crate) struct Phpstan {
     changed: Notify,
     /// Files with PHPStan diagnostics, the only ones a clean result or a removal clears.
     shown: Mutex<HashSet<PathBuf>>,
+    /// Files edited since their last save: a check of the saved text has no ranges for them.
+    edited: Mutex<HashSet<PathBuf>>,
 }
 
 impl Phpstan {
@@ -72,6 +74,7 @@ impl Phpstan {
             queue: Mutex::new(Queue::default()),
             changed: Notify::new(),
             shown: Mutex::new(HashSet::new()),
+            edited: Mutex::new(HashSet::new()),
         })
     }
 
@@ -97,6 +100,12 @@ impl Phpstan {
         if self.lifetime.is_cancelled() || files.peek().is_none() {
             return;
         }
+        let files: Vec<PathBuf> = files.collect();
+        let mut edited = self.edited.lock();
+        for path in &files {
+            edited.remove(path);
+        }
+        drop(edited);
         self.queue.lock().push(files);
         self.changed.notify_one();
     }
@@ -206,6 +215,10 @@ impl Phpstan {
                             .await
                             .unwrap_or_default();
                         for (path, items) in results {
+                            // Edited while the saved text was checked: its lines moved since.
+                            if self.edited.lock().contains(&path) {
+                                continue;
+                            }
                             // Severe errors (a syntax error) stop the analysis of the other files.
                             if report.complete || !items.is_empty() {
                                 self.publish(path, items);
@@ -259,7 +272,7 @@ impl DocumentObserver for Phpstan {
         _changes: &[AppliedChange],
         _full_text: &dyn Fn() -> String,
     ) {
-        if !path.extension().is_some_and(|e| e == "php") || !self.shown.lock().contains(path) {
+        if !path.extension().is_some_and(|e| e == "php") || !self.edited.lock().insert(path.to_path_buf()) {
             return;
         }
         self.publish(path.to_path_buf(), Vec::new());
@@ -892,6 +905,25 @@ mod tests {
         f.checker.files_saved([a.clone()]);
         f.until("the fresh check", |f| f.diagnostics().len() == 3).await;
         assert_eq!(f.diagnostics()[2], (a.clone(), vec![Some("constant.notFound".to_string())]));
+        f.checker.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_check_finishing_after_an_edit_shows_nothing_until_the_next_save() {
+        let f = Fixture::new();
+        let a = f.file("A.php");
+        f.report(&a, &["constant.notFound"]);
+        f.checker.files_saved([a.clone()]);
+        let edit = [AppliedChange { range: ide_core::Range::point(ide_core::Pos::new(1, 0)), text: "\n".into() }];
+        DocumentObserver::changed(f.checker.as_ref(), ide_core::DocId(0), &a, 1, &edit, &String::new);
+        f.until("the check", |f| !f.runs().is_empty()).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(f.diagnostics().is_empty(), "{:?}", f.diagnostics());
+
+        f.checker.files_saved([a.clone()]);
+        f.until("the next check", |f| f.diagnostics().len() == 1).await;
+        assert_eq!(f.diagnostics()[0], (a.clone(), vec![Some("constant.notFound".to_string())]));
         f.checker.stop();
     }
 }
