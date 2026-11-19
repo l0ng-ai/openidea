@@ -2,21 +2,30 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
   min-height: 420px;
 }
 .profileRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-1) var(--space-3);
   min-height: 30px;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
-.profileSelect {
-  min-width: 220px;
+.profileControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-width: 0;
 }
-.profileRow > span {
+.profileControls > span {
   flex: none;
-  white-space: nowrap;
+}
+.profileControls > .profileSelect {
+  width: 220px;
+  min-width: 0;
 }
 .toolbar {
   display: flex;
@@ -26,24 +35,19 @@
 }
 .search {
   flex: 1;
+  min-width: 0;
   max-width: 320px;
-  margin-right: 4px;
+  margin-right: var(--space-1);
 }
 .split {
   flex: 1;
-  min-width: 520px;
-  min-height: 0;
-  display: flex;
-  gap: var(--space-3);
+  min-width: 0;
 }
 .treeWrap {
-  flex: 3;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
-  padding: 2px 0;
+  padding: var(--space-0-5) 0;
 }
 .empty {
   padding: 8px 12px;
@@ -80,13 +84,20 @@
   flex: none;
 }
 .details {
-  flex: 2;
+  flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 2px 4px;
-  overflow: auto;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.detailTitle {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .description {
   margin: 0;
@@ -95,19 +106,34 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.severityRow {
+.descriptionPane,
+.optionsPane {
+  min-height: 0;
+  overflow: auto;
+}
+.descriptionPane {
+  padding-bottom: var(--space-2);
+}
+.optionsPane {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+.severityRow {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
 }
 .options {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: var(--space-1-5);
   margin: 0;
-  padding: 10px 0 0;
+  padding: var(--space-2) 0 0;
   border: none;
   border-top: 1px solid var(--border);
   min-width: 0;
@@ -115,11 +141,12 @@
 .options legend {
   float: left;
   width: 100%;
-  padding: 0 0 4px;
+  padding: 0 0 var(--space-1);
   color: var(--fg-muted);
 }
 .levelSelect {
-  min-width: 160px;
+  width: 160px;
+  max-width: 100%;
 }
 .profileLevel {
   color: var(--fg-subtle);
