@@ -19,6 +19,7 @@ import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from 
 import { NumberInput, Row, SearchLabel, Section, Select, SettingSelect } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
+import { MirrorPrefixRow } from "./DownloadSources";
 import { MCP_SERVER_PAGE } from "./mcpServer";
 import type { PageSpec } from "./spec";
 import { BoundToggle, Grid, Indented, PageLink, TableEditor } from "./workflowControls";
@@ -818,4 +819,24 @@ export const TOOLS_PAGES: PageSpec[] = [
     ],
   },
   MCP_SERVER_PAGE,
+  {
+    id: "tools.downloadSources",
+    title: "Download Mirrors",
+    group: TOOLS_GROUP,
+    order: 590,
+    keywords: ["mirror", "download", "github", "proxy", "slow", "language server", "accelerate"],
+    sections: [
+      {
+        title: "GitHub",
+        options: [
+          {
+            kind: "custom",
+            label: "Mirror prefix for GitHub downloads",
+            keywords: ["https://gh-proxy.com/", "info"],
+            component: MirrorPrefixRow,
+          },
+        ],
+      },
+    ],
+  },
 ];

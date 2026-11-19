@@ -112,6 +112,8 @@ export interface ValidSettings extends WorkflowSettings {
   notifications: NotificationsValid;
   /** System Settings › HTTP Proxy (global). */
   proxy: ProxySettingsValid;
+  /** Tools › Download sources: a mirror prefix for the installer's release downloads. */
+  toolDownloads: { githubMirror: string };
   languages: LanguagesValid;
   cmake: ReturnType<typeof validateCMake>;
   projectStructure: ProjectStructureValid;
@@ -208,6 +210,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   customKeymaps: {},
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
+  toolDownloads: { githubMirror: "" },
   languages: DEFAULT_LANGUAGES,
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
@@ -406,6 +409,12 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     customKeymaps,
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
+    toolDownloads: {
+      githubMirror:
+        typeof obj(root.toolDownloads).githubMirror === "string"
+          ? String(obj(root.toolDownloads).githubMirror).trim()
+          : "",
+    },
     languages: validateLanguages(root.languages),
     cmake: validateCMake(root.cmake),
     projectStructure: validateProjectStructure(root.projectStructure),
