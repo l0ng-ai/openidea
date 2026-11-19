@@ -726,7 +726,7 @@ pub(crate) fn state_from(r: &Value, fallback_line: u32) -> BreakpointState {
 pub(crate) async fn event_loop(
     manager: Weak<DebugManager>,
     session: Arc<Session>,
-    mut incoming: mpsc::Receiver<Incoming>,
+    mut incoming: mpsc::UnboundedReceiver<Incoming>,
 ) {
     while let Some(msg) = incoming.recv().await {
         let Some(mgr) = manager.upgrade() else { break };

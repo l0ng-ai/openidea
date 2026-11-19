@@ -68,12 +68,11 @@ pub enum Incoming {
     Closed,
 }
 
-/// Bounded queues: a slow adapter or IDE consumer stops the reader/writer task, applying
-/// backpressure to the transport pipe instead of accumulating unbounded messages.
+/// Bounded outgoing queue: an adapter that stops reading its input holds back `send`
+/// instead of the IDE accumulating unbounded messages. The incoming queue stays unbounded:
+/// the event loop awaits requests while handling events (`stopped` restores breakpoints), so
+/// a reader parked on a full queue would never read the response that loop waits for.
 const OUT_CAPACITY: usize = 256;
-/// Generous headroom so normal event bursts never stall the reader: responses are
-/// dispatched inline as they are read, before any event queue send is awaited.
-const IN_CAPACITY: usize = 4096;
 
 type Pending = HashMap<i64, (String, oneshot::Sender<Result<Value, DapError>>)>;
 
@@ -102,7 +101,7 @@ pub struct Connection {
 
 impl Connection {
     /// Starts reader/writer tasks over `reader`/`writer`. Must be called inside a Tokio runtime.
-    pub fn start<R, W>(reader: R, writer: W) -> (Self, mpsc::Receiver<Incoming>)
+    pub fn start<R, W>(reader: R, writer: W) -> (Self, mpsc::UnboundedReceiver<Incoming>)
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
@@ -116,13 +115,13 @@ impl Connection {
         reader: R,
         mut writer: W,
         on_output: Box<dyn Fn(String) + Send + Sync>,
-    ) -> (Self, mpsc::Receiver<Incoming>)
+    ) -> (Self, mpsc::UnboundedReceiver<Incoming>)
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(OUT_CAPACITY);
-        let (in_tx, in_rx) = mpsc::channel(IN_CAPACITY);
+        let (in_tx, in_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
             out: out_tx,
             pending: Mutex::new(HashMap::new()),
@@ -165,7 +164,7 @@ impl Connection {
                     _ = reader_inner.cancel.cancelled() => break,
                 };
                 match msg {
-                    Ok(Some(body)) => dispatch(&reader_inner, &in_tx, &body).await,
+                    Ok(Some(body)) => dispatch(&reader_inner, &in_tx, &body),
                     Ok(None) => break,
                     Err(e) => {
                         tracing::warn!("dap read failed: {e}");
@@ -174,7 +173,7 @@ impl Connection {
                 }
             }
             reader_inner.close();
-            let _ = in_tx.send(Incoming::Closed).await;
+            let _ = in_tx.send(Incoming::Closed);
         });
 
         (Self { inner }, in_rx)
@@ -256,7 +255,7 @@ impl Connection {
     }
 }
 
-async fn dispatch(inner: &Inner, incoming: &mpsc::Sender<Incoming>, body: &[u8]) {
+fn dispatch(inner: &Inner, incoming: &mpsc::UnboundedSender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_dap::wire", "<-- {}", String::from_utf8_lossy(body));
     let Some(msg) = parse_message(body) else { return };
     match msg.get("type").and_then(Value::as_str) {
@@ -279,13 +278,13 @@ async fn dispatch(inner: &Inner, incoming: &mpsc::Sender<Incoming>, body: &[u8])
         Some("event") => {
             let event = msg.get("event").and_then(Value::as_str).unwrap_or_default().to_owned();
             let body = msg.get("body").cloned().unwrap_or(Value::Null);
-            let _ = incoming.send(Incoming::Event { event, body }).await;
+            let _ = incoming.send(Incoming::Event { event, body });
         }
         Some("request") => {
             let seq = msg.get("seq").and_then(Value::as_i64).unwrap_or_default();
             let command = msg.get("command").and_then(Value::as_str).unwrap_or_default().to_owned();
             let arguments = msg.get("arguments").cloned().unwrap_or(Value::Null);
-            let _ = incoming.send(Incoming::Request { seq, command, arguments }).await;
+            let _ = incoming.send(Incoming::Request { seq, command, arguments });
         }
         other => tracing::warn!("dap: unknown message type {other:?}"),
     }
@@ -332,28 +331,34 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn incoming_events_are_backpressured_when_the_consumer_is_slow() {
-        let (client, _adapter) = tokio::io::duplex(32 * 1024);
-        let (reader, mut writer) = tokio::io::split(client);
-        let (_conn, incoming) = Connection::start(reader, tokio::io::sink());
-        let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let count = written.clone();
-        let producer = tokio::spawn(async move {
-            for i in 0..5000 {
-                let body = json!({"seq": i, "type": "event", "event": "output", "body": {"output": "x"}});
-                if framing::write_message(&mut writer, body.to_string().as_bytes()).await.is_err() {
-                    break;
-                }
-                count.fetch_add(1, Ordering::Relaxed);
+    async fn a_handler_awaiting_a_request_still_gets_its_response_behind_an_event_burst() {
+        // The event loop handles `stopped` by sending `setBreakpoints` and awaiting the reply
+        // while the adapter keeps printing: the reply arrives behind thousands of events.
+        let (client_in, mut adapter_out) = tokio::io::duplex(64 * 1024);
+        let (client_out, adapter_in) = tokio::io::duplex(64 * 1024);
+        let (conn, mut incoming) = Connection::start(client_in, client_out);
+        let adapter = tokio::spawn(async move {
+            let event =
+                |seq: i64, event: &str| json!({"seq": seq, "type": "event", "event": event, "body": {"output": "x"}});
+            framing::write_message(&mut adapter_out, event(0, "stopped").to_string().as_bytes()).await.unwrap();
+            for i in 1..=5000 {
+                framing::write_message(&mut adapter_out, event(i, "output").to_string().as_bytes()).await.unwrap();
             }
+            let mut requests = BufReader::new(adapter_in);
+            let request = framing::read_message(&mut requests).await.unwrap().unwrap();
+            let request: Value = serde_json::from_slice(&request).unwrap();
+            let response = json!({"seq": 5001, "type": "response", "request_seq": request["seq"], "success": true, "command": request["command"], "body": {"breakpoints": []}});
+            framing::write_message(&mut adapter_out, response.to_string().as_bytes()).await.unwrap();
+            adapter_out
         });
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        // The reader task stops draining the adapter pipe once the incoming queue is full,
-        // so a slow IDE consumer cannot accumulate the whole event stream in memory.
-        assert!(written.load(Ordering::Relaxed) < 5000);
-        // The bounded queue held the producer back: abort the now-stalled writer.
-        drop(incoming);
-        producer.abort();
+        let Some(Incoming::Event { event, .. }) = incoming.recv().await else { panic!("no event") };
+        assert_eq!(event, "stopped");
+        let reply = tokio::time::timeout(Duration::from_secs(10), conn.request("setBreakpoints", json!({})))
+            .await
+            .expect("the reader stalled behind the events")
+            .unwrap();
+        assert_eq!(reply, json!({"breakpoints": []}));
+        let _ = adapter.await;
     }
 
     #[tokio::test]
