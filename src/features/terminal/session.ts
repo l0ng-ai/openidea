@@ -45,6 +45,8 @@ import {
 } from "./theme";
 import { wheelZoomStep } from "@/platform/wheelZoom";
 
+export const ACTIVE_SEARCH_DECORATION_CLASS = "xterm-find-active-result-decoration";
+
 export interface TerminalSearchOptions {
   caseSensitive: boolean;
   regex: boolean;
@@ -350,7 +352,7 @@ export class TerminalSession {
       const active = this.searchDecorations?.activeMatchBackground;
       const isActive = !!active && options.backgroundColor?.toLowerCase() === active.toLowerCase();
       const d = registerDecoration(isActive ? { ...options, layer: "top" } : options);
-      if (d && isActive) d.onRender((el) => el.classList.add("xterm-find-active-result-decoration"));
+      if (d && isActive) d.onRender((el) => el.classList.add(ACTIVE_SEARCH_DECORATION_CLASS));
       return d;
     };
     const runSearch =

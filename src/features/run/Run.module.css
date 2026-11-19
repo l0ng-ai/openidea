@@ -553,6 +553,7 @@
   flex: 1;
 }
 .editSidebar {
+  container: run-config-navigation / inline-size;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -595,6 +596,22 @@
 .editItemSelected:hover {
   background: var(--bg-selected-strong);
   color: var(--fg-strong);
+}
+.editTarget {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 25%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editItem .failed {
+  flex: none;
+}
+@container run-config-navigation (max-width: 220px) {
+  .editItem .chooserMuted {
+    display: none;
+  }
 }
 .editForm {
   flex: 1;
@@ -701,6 +718,7 @@
 }
 .editGroupName {
   color: var(--fg-strong);
+  font-weight: 600;
 }
 .editEmpty {
   flex: 1;

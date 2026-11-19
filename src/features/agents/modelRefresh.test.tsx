@@ -54,6 +54,7 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentCommands: async () => ok([]),
     vcsBranchInfo: async () => ok({ head: "main" }),
     vcsConfigGet: async () => ok(null),
+    vcsRemotes: async () => ok([]),
     vcsBranches: async () => ok([]),
     agentCreate: (request: NewAgentTask) => backend.create(request),
     agentEntries: async () => ok([{ type: "user", text: "Earlier message", attachments: [] }] satisfies AgentEntry[]),

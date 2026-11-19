@@ -65,6 +65,7 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const popup = page.locator(".cm-tooltip-autocomplete");
   await expect(popup.getByText("total", { exact: true })).toBeVisible();
   await expect(popup.getByText("toDto", { exact: true })).toBeVisible();
+  expect((await popup.boundingBox())!.width).toBeLessThan(360);
   const field = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^total$/ }) });
   await expect(field.locator(".cm-completionDetail")).toHaveCount(0);
   await expect(field.locator(".cm-lsp-type")).toHaveText("BigDecimal");
@@ -83,6 +84,17 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const label = await method.locator(".cm-completionLabel").boundingBox();
   // Subpixel rounding differs per platform/font; a mis-set inset is a whole icon column off.
   expect(Math.abs(label!.x - wordStart)).toBeLessThanOrEqual(2);
+  const zoomedSize = await editor.locator(".cm-content").evaluate(async (content) => {
+    const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+    const prefsModule = "/src/editor/core/cm/prefs.ts";
+    const { EditorView } = await import(/* @vite-ignore */ viewModule);
+    const { stepFontZoom } = await import(/* @vite-ignore */ prefsModule);
+    const fontSize = Number.parseFloat(getComputedStyle(content).fontSize);
+    stepFontZoom(EditorView.findFromDOM(content as HTMLElement)!, 6);
+    return `${fontSize + 6}px`;
+  });
+  await expect(editor.locator(".cm-content")).toHaveCSS("font-size", zoomedSize);
+  await expect(method.locator(".cm-completionLabel")).toHaveCSS("font-size", zoomedSize);
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
   // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
@@ -96,6 +108,76 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
+});
+
+test("long completion signatures fit the editor when the workbench is narrowed", async ({ workbench: page }) => {
+  const editor = await openSample(page);
+  const label = "transformOrder" + "AcrossParticipatingRegions".repeat(5);
+  await page.evaluate((label) => {
+    const item: CompletionItem = {
+      label,
+      labelDetail: "(order: Order, options: TransformationOptions)",
+      labelDescription: "Promise<TransformationResult>",
+      detail: `${label}(order: Order, options: TransformationOptions): Promise<TransformationResult>`,
+      kind: "method",
+      documentation: { kind: "markdown", value: "Transforms the order." },
+      sortText: null,
+      filterText: null,
+      preselect: true,
+      deprecated: false,
+      insertText: `${label}()`,
+      isSnippet: false,
+      replaceRange: null,
+      replaceRangeTab: null,
+      additionalEdits: [],
+      commitCharacters: [],
+      command: null,
+      data: null,
+      server: 1,
+    };
+    window.__ipc.handlers.lsp_completion = () => ({ isIncomplete: false, items: [item] });
+  }, label);
+  await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("order.");
+  await page.keyboard.press("Control+Space");
+
+  const popup = page.locator(".cm-tooltip-autocomplete");
+  const option = popup.getByRole("option").filter({
+    has: page.locator(".cm-completionLabel", { hasText: label }),
+  });
+  await expect(option.locator(".cm-completionLabel")).toHaveText(label);
+  await page.setViewportSize({ width: 580, height: 900 });
+  const bounds = (await editor.boundingBox())!;
+  await expect
+    .poll(async () => {
+      const box = (await popup.boundingBox())!;
+      return Math.max(bounds.x - box.x, box.x + box.width - (bounds.x + bounds.width));
+    })
+    .toBeLessThanOrEqual(2);
+  const geometry = await option.evaluate((row) => {
+    const label = row.querySelector<HTMLElement>(".cm-completionLabel")!;
+    const type = row.querySelector<HTMLElement>(".cm-lsp-type")!;
+    return {
+      nameTruncated: label.scrollWidth > label.clientWidth,
+      nameWidth: label.clientWidth,
+      typeWidth: type.clientWidth,
+      typeOverflow: type.getBoundingClientRect().right - row.getBoundingClientRect().right,
+    };
+  });
+  expect(geometry.nameTruncated).toBe(true);
+  expect(geometry.nameWidth).toBeGreaterThan(40);
+  expect(geometry.typeWidth).toBeGreaterThan(16);
+  expect(geometry.typeOverflow).toBeLessThanOrEqual(1);
+
+  await page.keyboard.press("F1");
+  await expect(popup.locator(".cm-completionInfo")).toContainText(
+    `${label}(order: Order, options: TransformationOptions)`,
+  );
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect(editor.locator(".cm-activeLine")).toContainText(`order.${label}()`);
 });
 
 test("documentation shows beside the lookup instead of being clipped by it", async ({ workbench: page }, info) => {
@@ -345,6 +427,70 @@ test("Find Usages from the editor context menu lists every usage by file and ope
   ).toHaveAttribute("aria-selected", "true");
 });
 
+test("usage locations and preview stay readable as the available space changes", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1040, height: 760 });
+  const editor = await openSample(page);
+  await page.evaluate(
+    ({ file, other }) => {
+      const locations = [
+        { path: file, range: { start: { line: 16, col: 8 }, end: { line: 16, col: 15 } } },
+        { path: file, range: { start: { line: 20, col: 27 }, end: { line: 20, col: 34 } } },
+        { path: other, range: { start: { line: 0, col: 0 }, end: { line: 0, col: 7 } } },
+      ];
+      window.__ipc.handlers.lsp_references = () => ({
+        locations,
+        classified: [{ location: locations[2], kind: "code", text: "service.submit(order)" }],
+        incomplete: null,
+        librariesSkipped: true,
+      });
+    },
+    { file: FILE, other: `${ROOT}/domain/checkout/processing/calculations/PaymentProcessingService.kt` },
+  );
+  await caretAt(editor, page, "val order: Order", "service");
+  await page.keyboard.press("Meta+Alt+F7");
+  const popup = page.getByRole("dialog", { name: "Usages" });
+  const scope = popup.getByRole("button", { name: "Scope" });
+  const openWindow = popup.getByRole("button", { name: /^Open in Find Window/ });
+  await expect(popup.getByTestId("usage-row")).toHaveCount(3);
+  await popup.getByRole("button", { name: "Show Preview" }).click();
+  const code = popup.getByRole("region", { name: "Preview" });
+  await expect(code.locator(".cm-content")).toContainText("service.find(status");
+
+  await page.setViewportSize({ width: 480, height: 470 });
+  const within = async (child: Locator, parent: Locator) => {
+    const [c, p] = await Promise.all([child.boundingBox(), parent.boundingBox()]);
+    return (
+      !!c &&
+      !!p &&
+      c.x >= p.x - 1 &&
+      c.y >= p.y - 1 &&
+      c.x + c.width <= p.x + p.width + 1 &&
+      c.y + c.height <= p.y + p.height + 1
+    );
+  };
+  await expect.poll(() => within(scope, popup)).toBe(true);
+  await expect.poll(() => within(openWindow, popup)).toBe(true);
+  await expect.poll(() => within(code, popup)).toBe(true);
+  const results = popup.getByRole("listbox", { name: "Usages" });
+  await expect.poll(() => within(popup.getByTestId("usage-row").last(), results)).toBe(true);
+  const firstRow = popup.getByTestId("usage-row").first();
+  const file = firstRow.getByText("build.gradle.kts", { exact: true });
+  await expect(file).toBeVisible();
+  const [filename, snippet] = await Promise.all([file.boundingBox(), firstRow.locator("mark").boundingBox()]);
+  expect(filename!.x + filename!.width).toBeLessThan(snippet!.x);
+  await openWindow.click();
+
+  const tree = page.getByRole("tree", { name: "Usages" });
+  const target = tree.getByRole("treeitem", { name: /^17 service\.find\(status/ });
+  await target.click();
+  const preview = page.getByRole("region", { name: "Preview" });
+  await expect(preview).toContainText("service.find(status");
+  await expect.poll(async () => (await preview.boundingBox())!.y > (await tree.boundingBox())!.y).toBe(true);
+  await page.setViewportSize({ width: 1040, height: 760 });
+  await expect.poll(async () => (await preview.boundingBox())!.x > (await tree.boundingBox())!.x).toBe(true);
+  await expect(preview).toContainText("service.find(status");
+});
+
 test("⇧F6 renames in place and sends the server's edit to be applied", async ({ workbench: page }) => {
   const editor = await openSample(page);
   await page.evaluate(
@@ -414,6 +560,85 @@ test("indexed single-file rename previews all anchors and applies only after con
   await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
   const [apply] = await ipcCalls(page, "apply_workspace_edit");
   expect(apply.edit).toMatchObject({ preconditions: [{ path: FILE, hash: "indexed-snapshot" }] });
+});
+
+test("intention previews fit narrow windows and wrap long code lines", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  const editor = await openSample(page);
+  await page.evaluate(async () => {
+    const path = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ path);
+    const { settings } = useProject.getState();
+    useProject.setState({ settings: { ...settings, editor: { ...settings?.editor, fontSize: 16 } } });
+  });
+  await expect(editor.locator(".cm-content")).toHaveCSS("font-size", "16px");
+  const replacement = "com.acme.orders." + "SharedDevelopmentOrderModel".repeat(6);
+  await page.evaluate(
+    ({ file, replacement, edit }) => {
+      window.__ipc.handlers.lsp_code_actions = () => [
+        {
+          title: "Replace Order with the fully qualified shared development order model",
+          kind: "quickfix",
+          isPreferred: true,
+          disabledReason: null,
+          edit: { files: [{ kind: "edit", path: file, edits: [{ range: edit, new_text: replacement }] }] },
+          command: null,
+          data: null,
+          server: 1,
+        },
+        ...Array.from({ length: 11 }, (_, i) => ({
+          title: `Create alternative Order model ${i + 1}`,
+          kind: "quickfix",
+          isPreferred: false,
+          disabledReason: null,
+          edit: null,
+          command: null,
+          data: null,
+          server: 1,
+        })),
+      ];
+      window.__ipc.handlers.lsp_execute_code_action = () => [];
+    },
+    { file: FILE, replacement, edit: range(20, 19, 24) },
+  );
+  await caretAt(editor, page, "val order: Order", "Order ");
+  await page.keyboard.press("Alt+Enter");
+  const popup = page.getByRole("dialog", { name: "Intentions", exact: true });
+  const options = popup.getByRole("listbox", { name: "Intentions" });
+  const preview = popup.locator('[aria-label="Preview"]');
+  await expect(preview.locator("pre")).toContainText(replacement);
+  const wide = (await options.boundingBox())!;
+  const widePreview = (await preview.boundingBox())!;
+  expect(widePreview.x).toBeGreaterThanOrEqual(wide.x + wide.width - 1);
+
+  await page.setViewportSize({ width: 1050, height: 900 });
+  await expect
+    .poll(async () => {
+      const list = (await options.boundingBox())!;
+      const code = (await preview.boundingBox())!;
+      return code.x + code.width - list.x;
+    })
+    .toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ width: 520, height: 540 });
+  await expect
+    .poll(async () => {
+      const menu = (await popup.boundingBox())!;
+      const list = (await options.boundingBox())!;
+      const code = (await preview.boundingBox())!;
+      return {
+        popupFits: menu.x >= 0 && menu.y >= 0 && menu.x + menu.width <= 521 && menu.y + menu.height <= 541,
+        previewBelow: code.y >= list.y + list.height - 1,
+        previewFits: code.x >= menu.x && code.x + code.width <= menu.x + menu.width + 1,
+      };
+    })
+    .toEqual({ popupFits: true, previewBelow: true, previewFits: true });
+  expect(await preview.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await expect(preview.locator("pre")).toHaveCSS("font-size", "16px");
+  await expect(options).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
 });
 
 test("diagnostics underline the range and ⌥⏎ applies the preferred quick fix", async ({ workbench: page }) => {

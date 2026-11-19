@@ -155,6 +155,8 @@ When a project loads and unloads:
 
 **Open now** lists the loaded projects, each with what it is doing (answering a request, kept open by a run, or how long it has been idle and when it unloads) and an **Unload** button. Unloading does not wait for **Apply**. The project loads again on the next tool call that names it, if the setting still serves it.
 
+While any project is loaded, the **Background Projects** item in the status bar (a layers icon and the count) opens the same list. Each row has the **Open in New Window** and **Unload** icon buttons, and below the list are **Unload All** and **MCP Server Settings…**.
+
 What trust decides: a trusted project works as one open in a window, with its language servers and the tools that write. A listed folder you have not trusted opens in Restricted Mode and gets only the read-only tools.
 
 A background project has no window, so some tools differ:
