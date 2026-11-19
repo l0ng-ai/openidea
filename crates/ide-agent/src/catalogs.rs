@@ -256,6 +256,38 @@ impl AgentCatalogs {
             .cloned()
     }
 
+    pub(super) async fn load_levels(
+        self: &Arc<Self>,
+        shared: &Arc<Shared>,
+        provider: &str,
+        model: &str,
+    ) -> Result<Vec<AgentConfigOption>, String> {
+        if let Some(levels) = self.levels(shared, provider, model) {
+            return Ok(levels);
+        }
+        let unavailable = || "The agent did not report settings for the selected model".to_owned();
+        let spec = shared.spec(provider).ok_or_else(unavailable)?;
+        let (_, flight) = self.request(shared, spec, false, Some(model));
+        if let Some(mut ready) = flight {
+            while !*ready.borrow_and_update() {
+                if ready.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+        self.levels(shared, provider, model).ok_or_else(|| {
+            let state = self.state.lock();
+            state
+                .entries
+                .get(&Self::key(shared, provider))
+                .and_then(|entry| {
+                    entry.model_failures.get(model).map(|failure| &failure.error).or(entry.error.as_ref())
+                })
+                .cloned()
+                .unwrap_or_else(unavailable)
+        })
+    }
+
     pub(crate) fn evict_if_idle(&self, shared: &Shared, provider: &str) {
         let key = Self::key(shared, provider);
         let mut state = self.state.lock();

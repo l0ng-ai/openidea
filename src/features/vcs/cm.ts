@@ -390,6 +390,8 @@ export const viewerTheme = EditorView.theme(
     "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: "var(--gutter-deleted)" },
     "&.cm-merge-b .cm-changedLineGutter": { background: "var(--gutter-modified)" },
     ".cm-collapsedLines": {
+      WebkitUserSelect: "none",
+      userSelect: "none",
       padding: "2px 10px",
       background: "var(--bg-elev)",
       color: "var(--fg-subtle)",
