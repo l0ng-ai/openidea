@@ -128,30 +128,49 @@ const MAX_HISTORY = 200;
 let seq = 0;
 
 /**
- * OS toasts are coalesced: a burst of balloons raised while OpenIDEA is in the
- * background (an external agent editing files, a build) shows one toast for the
- * whole burst instead of one per balloon (#4466). Balloons and the
- * Notifications tool window keep every notification.
+ * OS toasts for a burst of balloons (an external agent editing files while OpenIDEA
+ * is in the background, a build) are coalesced: the first shows at once, the ones
+ * that follow within a quiet period become one toast naming the last and how many
+ * more arrived. Balloons and the Notifications tool window keep every notification.
  */
 const SYSTEM_TOAST_QUIET_MS = 3000;
+/** A steady stream still raises a summary this often. */
+const SYSTEM_TOAST_MAX_WAIT_MS = 30_000;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 let toastBatch: Array<{ title: string; body: string }> = [];
+let toastBatchStart = 0;
 
-/** Flushes `toastBatch`: the last balloon's text plus how many more arrived with it. */
-function sendToastBatch() {
-  toastTimer = undefined;
+function showToast(title: string, body: string) {
+  void call(commands.showSystemNotification(title, body)).catch(() => {});
+}
+
+/** Ends a quiet period: the toasts held back during it, as one. */
+function flushToasts() {
   const batch = toastBatch;
   toastBatch = [];
-  if (!batch.length) return;
+  if (!batch.length) {
+    toastTimer = undefined;
+    return;
+  }
   const last = batch[batch.length - 1]!;
   const more = batch.length - 1;
-  const body =
-    more === 0
-      ? last.body
-      : [last.body, more === 1 ? tx`${more} more notification` : tx`${more} more notifications`]
-          .filter(Boolean)
-          .join("\n");
-  void call(commands.showSystemNotification(last.title, body)).catch(() => {});
+  const count = more === 1 ? tx`${more} more notification` : tx`${more} more notifications`;
+  showToast(last.title, more === 0 ? last.body : [last.body, count].filter(Boolean).join("\n"));
+  // What arrives right after the summary joins the next one.
+  toastTimer = setTimeout(flushToasts, SYSTEM_TOAST_QUIET_MS);
+}
+
+function systemToast(title: string, body: string) {
+  if (toastTimer === undefined) {
+    showToast(title, body);
+    toastTimer = setTimeout(flushToasts, SYSTEM_TOAST_QUIET_MS);
+    return;
+  }
+  if (!toastBatch.length) toastBatchStart = Date.now();
+  toastBatch.push({ title, body });
+  clearTimeout(toastTimer);
+  const waited = Date.now() - toastBatchStart;
+  toastTimer = setTimeout(flushToasts, Math.max(0, Math.min(SYSTEM_TOAST_QUIET_MS, SYSTEM_TOAST_MAX_WAIT_MS - waited)));
 }
 
 export function notify(n: Parameters<NotificationService["notify"]>[0]): number {
@@ -190,9 +209,7 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     // In the UI language, as the balloon shows it; a plugin's own text stays as written.
     const shown = (text: string) => (n.verbatim ? text : txTemplate(text));
     const plain = typeof n.body === "string" ? shown(n.body) : "";
-    toastBatch.push({ title: shown(n.title), body: plain });
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(sendToastBatch, SYSTEM_TOAST_QUIET_MS);
+    systemToast(shown(n.title), plain);
   }
   return id;
 }
