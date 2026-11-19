@@ -38,6 +38,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, confirm } from "@/workbench/messages";
 import {
   activeSchema,
+  collapseTarget,
   colorVar,
   connectRemedy,
   databaseKey,
@@ -437,12 +438,8 @@ export async function duplicateSource(id: string): Promise<void> {
 export async function renameSource(id: string, name: string): Promise<void> {
   const src = sourceById(id);
   if (!src || !name.trim() || name.trim() === src.name) return;
-  const sources = useDatabase.getState().sources.map((s) => (s.id === src.id ? { ...s, name: name.trim() } : s));
-  forget(id);
-  const current = sourceMutation(id);
-  await call(commands.dbSaveSources(sources));
-  if (!current()) return;
-  await loadSources();
+  // Saved like any edit, so what the tree had loaded under the source is loaded again.
+  await saveSource({ ...src, name: name.trim() }, undefined);
 }
 
 /** Removes the data source after asking (Database tree › Drop on a source). */
@@ -572,6 +569,7 @@ export async function disconnect(id: string): Promise<void> {
   if (!targets.includes(id)) targets.push(id);
   const current = projectRequest();
   forget(id);
+  useDatabase.setState((s) => ({ treeExpanded: collapseTarget(s.treeExpanded, id) }));
   const intent = {};
   for (const target of targets) connectionIntents.set(target, intent);
   if (!splitTarget(id).database) sourceConnectionIntents.set(id, {});
