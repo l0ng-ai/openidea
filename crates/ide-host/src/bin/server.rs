@@ -64,31 +64,6 @@ fn server_home() -> PathBuf {
     std::env::var_os("OPENIDEA_SERVER_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".openidea"))
 }
 
-/// Updates `<base>/bin/openidea-server` to point at this executable so `--mcp-stdio` client
-/// configurations copied from Settings keep working across server upgrades; falls back to
-/// `current_exe()` when a symlink cannot be written.
-fn mcp_stdio_executable(base: &std::path::Path) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    #[cfg(unix)]
-    {
-        let bin_dir = base.join("bin");
-        if std::fs::create_dir_all(&bin_dir).is_ok() {
-            let link = bin_dir.join("openidea-server");
-            let tmp = bin_dir.join(format!(".openidea-server.{}", std::process::id()));
-            let _ = std::fs::remove_file(&tmp);
-            if std::os::unix::fs::symlink(&exe, &tmp).is_ok() {
-                if std::fs::rename(&tmp, &link).is_ok() {
-                    return Some(link);
-                }
-                let _ = std::fs::remove_file(&tmp);
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = base;
-    Some(exe)
-}
-
 async fn run(base: PathBuf) -> i32 {
     let (config_dir, data_dir) = (base.join("config"), base.join("data"));
     for dir in [&config_dir, &data_dir] {
@@ -121,9 +96,8 @@ async fn run(base: PathBuf) -> i32 {
         runtime: tokio::runtime::Handle::current(),
         project_environment: true,
     }));
-    if let Some(exe) = mcp_stdio_executable(&base) {
-        host.mcp.set_stdio_executable(exe);
-    }
+    // A stable path for `--mcp-stdio` client configurations across server upgrades.
+    host.mcp.set_stdio_link(base.join("bin").join("openidea-server"));
     host.mcp.apply(&host);
     // The desktop's code plugins run here, next to the project (`plugin_sync_packages`).
     let plugins = match RemotePlugins::start(&plugins_data, &host, peer.clone()) {

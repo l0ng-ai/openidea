@@ -227,12 +227,7 @@ impl Shared {
         let mut servers = if builtin_off {
             Vec::new()
         } else {
-            let exe = self
-                .mcp_executable_hook
-                .read()
-                .as_ref()
-                .map(|hook| hook())
-                .unwrap_or_else(|| MCP_EXECUTABLE.read().clone());
+            let exe = self.mcp_executable_hook.read().as_ref().and_then(|hook| hook());
             stdio_mcp_servers(exe.as_deref(), init.mcp_stdio(), &self.paths.project_root)
         };
         let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
@@ -3786,13 +3781,6 @@ mod tests;
 
 /// The name agents know the built-in server by (its tools are `mcp__OpenIDEA__…` in Claude Code).
 const BUILTIN_SERVER: &str = "OpenIDEA";
-
-// The desktop advertises its relay only while the built-in server is listening.
-static MCP_EXECUTABLE: parking_lot::RwLock<Option<std::path::PathBuf>> = parking_lot::RwLock::new(None);
-
-pub fn set_mcp_executable(executable: Option<std::path::PathBuf>) {
-    *MCP_EXECUTABLE.write() = executable;
-}
 
 fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
     let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };

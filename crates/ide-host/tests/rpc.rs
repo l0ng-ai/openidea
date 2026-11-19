@@ -547,7 +547,7 @@ async fn serves_builtin_mcp_over_remote_dispatch_and_routes_ui_requests() {
         project_environment: false,
     }));
     let server_exe = base.join("bin/openidea-server");
-    host.mcp.set_stdio_executable(server_exe.clone());
+    host.mcp.set_stdio_link(server_exe.clone());
     host.mcp.apply(&host);
 
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
@@ -567,6 +567,7 @@ async fn serves_builtin_mcp_over_remote_dispatch_and_routes_ui_requests() {
     invoke(&peer, "project_trust_set", json!({ "path": root, "trusted": true, "folder": false })).await.unwrap();
     let initial = invoke(&peer, "mcp_server_status", json!({})).await.unwrap();
     assert_eq!(initial["running"], false);
+    assert!(!server_exe.exists(), "the stdio link is written only once the server runs");
 
     invoke(&peer, "settings_set", json!({ "scope": "global", "key": "mcpServer.fixedPort", "value": "false" }))
         .await
@@ -584,7 +585,11 @@ async fn serves_builtin_mcp_over_remote_dispatch_and_routes_ui_requests() {
     let status = invoke(&peer, "mcp_server_status", json!({})).await.unwrap();
     assert_eq!(status["running"], true);
     assert_eq!(status["project"], json!(ide_core::IpcPath::from(&root)));
-    assert_eq!(status["stdioCommand"][0], server_exe.to_string_lossy().as_ref());
+    #[cfg(unix)]
+    {
+        assert_eq!(status["stdioCommand"][0], server_exe.to_string_lossy().as_ref());
+        assert_eq!(std::fs::read_link(&server_exe).unwrap(), std::env::current_exe().unwrap());
+    }
     let first_token = status["token"].as_str().unwrap().to_owned();
     assert!(status["url"].as_str().unwrap().starts_with("http://127.0.0.1:"));
 

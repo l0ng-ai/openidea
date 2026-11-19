@@ -201,7 +201,7 @@ async fn post(
             Ok(answer) => {
                 if initializing {
                     state.lock().unwrap().initialized_on.insert(at);
-                    if total > 1 && !initialize_matched_project(&answer) {
+                    if total > 1 && !serves_project(&info, project, scope).await {
                         fallback.get_or_insert((at, answer));
                         continue;
                     }
@@ -222,12 +222,14 @@ async fn post(
     Err(last_error.unwrap_or_else(not_running))
 }
 
-fn initialize_matched_project(answer: &Answer) -> bool {
-    let Answer::Body(StatusCode::OK, body) = answer else { return false };
-    serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|v| v.pointer("/result/instructions").and_then(Value::as_str).map(|s| s.contains(" at ")))
-        .unwrap_or(false)
+/// Whether the server of `info` has `project` open: its `tools/list` doesn't answer "not open".
+async fn serves_project(info: &Discovery, project: &Path, scope: &str) -> bool {
+    let probe = serde_json::json!({ "jsonrpc": "2.0", "id": "__openidea_probe__", "method": "tools/list" });
+    let (discard, _) = tokio::sync::mpsc::unbounded_channel();
+    match post_one(info, project, &probe, scope, &discard).await {
+        Ok(answer @ Answer::Body(StatusCode::OK, _)) => !is_not_open_reply(&answer),
+        _ => false,
+    }
 }
 
 fn is_not_open_reply(answer: &Answer) -> bool {

@@ -70,7 +70,19 @@ impl Discovery {
         if let Some(entry) = server_entry_path(path, self.pid, self.port) {
             let _ = write_atomic(&entry, &bytes);
         }
+        // Entries of servers that ended without removing theirs (a crash) go now, so bridges
+        // stop trying them.
+        for (file, other) in sibling_entry_files(path) {
+            if (other.pid, other.port) != (self.pid, self.port) && !other.listening() {
+                let _ = std::fs::remove_file(file);
+            }
+        }
         Ok(())
+    }
+
+    fn listening(&self) -> bool {
+        let addr = std::net::SocketAddr::new(self.address, self.port);
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(50)).is_ok()
     }
 
     /// Removes the file at `path` if it still describes this process's server.
@@ -93,8 +105,7 @@ impl Discovery {
                 if other.pid == pid && other.port == port {
                     continue;
                 }
-                let addr = std::net::SocketAddr::new(other.address, other.port);
-                if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(50)).is_ok() {
+                if other.listening() {
                     if let Ok(bytes) = serde_json::to_vec_pretty(&other)
                         && write_atomic(path, &bytes).is_ok()
                     {

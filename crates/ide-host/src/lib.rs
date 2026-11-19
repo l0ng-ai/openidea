@@ -224,12 +224,12 @@ impl Host {
         }
     }
 
-    /// Associates the plugin runtime that executes this host's project operations.
-    /// Publishes only the executable of the running built-in MCP service.
+    /// Publishes the executable of the running built-in MCP service (`None` while it is off).
     pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
         *self.mcp_executable.write() = executable;
     }
 
+    /// Associates the plugin runtime that executes this host's project operations.
     pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
         *self.plugin_host.write() = Arc::downgrade(plugins);
     }

@@ -18,8 +18,8 @@ pub struct McpService {
     /// The address, port and token settings the running server was started with.
     running_with: Mutex<Option<Listen>>,
     error: Mutex<Option<String>>,
-    /// Executable path advertised for `--mcp-stdio`; defaults to `current_exe()`.
-    stdio_executable: RwLock<Option<PathBuf>>,
+    /// A link to this executable advertised for `--mcp-stdio` instead of `current_exe()`.
+    stdio_link: RwLock<Option<PathBuf>>,
 }
 
 /// What the address, port and token settings ask the server for.
@@ -33,13 +33,25 @@ struct Listen {
 }
 
 impl McpService {
-    /// Sets the executable path advertised in `--mcp-stdio` client configs and agent sessions.
-    pub fn set_stdio_executable(&self, executable: PathBuf) {
-        *self.stdio_executable.write() = Some(executable);
+    /// Advertises `link` in `--mcp-stdio` client configs and agent sessions, pointed at this
+    /// executable whenever the server starts. Without one (or where it can't be written),
+    /// `current_exe()` is advertised.
+    pub fn set_stdio_link(&self, link: PathBuf) {
+        *self.stdio_link.write() = Some(link);
     }
 
     pub(crate) fn stdio_executable(&self) -> PathBuf {
-        self.stdio_executable.read().clone().or_else(|| std::env::current_exe().ok()).unwrap_or_default()
+        self.stdio_link.read().clone().or_else(|| std::env::current_exe().ok()).unwrap_or_default()
+    }
+
+    fn update_stdio_link(&self) {
+        let mut link = self.stdio_link.write();
+        if let Some(path) = link.as_deref()
+            && let Err(e) = point_at_current_exe(path)
+        {
+            tracing::warn!("MCP server: cannot link {} ({e}); advertising this executable", path.display());
+            *link = None;
+        }
     }
 
     /// Starts, stops or restarts the server to match the global `mcpServer` settings:
@@ -112,6 +124,7 @@ impl McpService {
             ide_mcp::ServerOptions { address: Some(address), port: wanted.port, token },
         ) {
             Ok(started) => {
+                self.update_stdio_link();
                 host.set_mcp_executable(Some(self.stdio_executable()));
                 *server = Some(started);
                 *self.running_with.lock() = Some(wanted);
@@ -137,6 +150,27 @@ impl McpService {
             server.stop();
         }
         *self.running_with.lock() = None;
+    }
+}
+
+/// Replaces the symlink `link` with one to this executable.
+fn point_at_current_exe(link: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let exe = std::env::current_exe()?;
+        let dir = link.parent().ok_or_else(|| std::io::Error::other("no parent directory"))?;
+        std::fs::create_dir_all(dir)?;
+        let tmp = dir.join(format!(".openidea-server.{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(&exe, &tmp)?;
+        std::fs::rename(&tmp, link).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = link;
+        Err(std::io::ErrorKind::Unsupported.into())
     }
 }
 
