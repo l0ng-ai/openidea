@@ -7648,6 +7648,8 @@
   "Plan {done}/{length}": "计划 {done}/{length}",
   "1 changed file": "改动 1 个文件",
   "{count} changed files": "改动 {count} 个文件",
+  "{count} more notification": "还有 {count} 条新通知",
+  "{count} more notifications": "还有 {count} 条新通知",
   "Send into the agent's turn": "发送到当前回合",
   "Queue a message for when the agent is done (⌘⇧↵ sends it now)": "排队一条消息，agent 做完后发送（⌘⇧↵ 立即发送）",
   "Queue a message for when the agent is done": "排队一条消息，agent 做完后发送",
