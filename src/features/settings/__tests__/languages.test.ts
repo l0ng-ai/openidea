@@ -212,9 +212,18 @@ describe("languages settings", () => {
   });
 
   it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
-    expect(validateLanguages({}).markdown).toEqual({ previewFontSize: null });
-    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown).toEqual({ previewFontSize: 72 });
-    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown).toEqual({ previewFontSize: null });
+    expect(validateLanguages({}).markdown.previewFontSize).toBeNull();
+    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown.previewFontSize).toBe(72);
+    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown.previewFontSize).toBeNull();
+  });
+
+  it("detects Markdown commands by default and asks for their folder until one is chosen", () => {
+    expect(validateLanguages({}).markdown).toMatchObject({ runCommands: true, commandDirectory: null });
+    expect(validateLanguages({ markdown: { runCommands: false, commandDirectory: "file" } }).markdown).toMatchObject({
+      runCommands: false,
+      commandDirectory: "file",
+    });
+    expect(validateLanguages({ markdown: { commandDirectory: "elsewhere" } }).markdown.commandDirectory).toBeNull();
   });
 
   it("keeps the Markdown page global, like IDEA's application-level setting", () => {
