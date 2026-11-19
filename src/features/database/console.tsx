@@ -55,7 +55,17 @@ import {
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, Select, Toolbar, lazyComponent } from "@/ui";
 import { useProject } from "@/platform/project";
-import { activeSchema, schemaSwitchable, sourceIcon, sourceLabel, splitTarget, targetOf } from "./model";
+import {
+  activeSchema,
+  parseSchemaTreeValue,
+  schemaSwitchable,
+  schemaTreeRows,
+  schemaTreeValue,
+  sourceIcon,
+  sourceLabel,
+  splitTarget,
+  targetOf,
+} from "./model";
 import { loadSavedCatalog, offerIntrospection } from "./introspection";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
 import {
@@ -90,7 +100,6 @@ import {
   setConsoleSchema,
   setManualCommit,
   sourceById,
-  targetLabel,
   useDatabase,
 } from "./store";
 import styles from "./Database.module.css";
@@ -605,9 +614,11 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
     if (boundId && (sqlServer || listsDatabases(sourceById(boundId))) && !useDatabase.getState().databases[boundId])
       void loadDatabases(boundId);
   }, [boundId, sqlServer]);
+  // Loads the list again after a refresh drops it.
+  const schemasMissing = !schemaList;
   useEffect(() => {
-    if (bound && switchable && !sqlServer && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
-  }, [bound, switchable, sqlServer]);
+    if (bound && switchable && !sqlServer && schemasMissing) void loadSchemas(bound);
+  }, [bound, switchable, sqlServer, schemasMissing]);
   const schemaOptions = useMemo(() => {
     if (!switchable) return [];
     const databaseList = boundId ? databases[boundId] : undefined;
@@ -624,27 +635,18 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       out.unshift({ value: defaultSchema, label: defaultSchema, icon: "db-schema" });
     return out;
   }, [switchable, schemaList, defaultSchema, sqlServer, boundId, databases]);
-  const targets = useMemo(() => {
-    const out: Array<{ value: string; label: string; detail?: string; icon: string }> = [];
-    for (const s of sources) {
-      const id = s.id ?? "";
-      const dbs = databases[id];
-      const host = sourceLabel(s).slice((s.name ?? "").length + 1);
-      if (listsDatabases(s) && dbs?.status === "ok") {
-        for (const name of dbs.value.names)
-          out.push({
-            value: targetOf(id, name, dbs.value.current),
-            label: `${s.name ?? ""}: ${name}`,
-            detail: host,
-            icon: sourceIcon(s),
-          });
-      } else out.push({ value: id, label: s.name ?? "", detail: host, icon: sourceIcon(s) });
-    }
-    // A console bound to a database whose list is not loaded yet still shows it.
-    if (bound && !out.some((o) => o.value === bound))
-      out.push({ value: bound, label: targetLabel(bound), icon: "database" });
-    return out;
-  }, [sources, databases, bound]);
+  // IDEA's order: pick the data source, then a database and a schema in it.
+  const sourceOptions = useMemo(
+    () =>
+      sources.map((s) => ({
+        value: s.id ?? "",
+        label: s.name ?? "",
+        verbatim: true,
+        detail: sourceLabel(s).slice((s.name ?? "").length + 1),
+        icon: sourceIcon(s),
+      })),
+    [sources],
+  );
   useEffect(() => {
     if (!loaded) void loadSources();
   }, [loaded]);
@@ -731,23 +733,28 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       <Select
         variant="ghost"
         aria-label="Data source"
-        value={bound ?? null}
+        value={boundId}
         placeholder={sources.length ? "<data source>" : "None configured"}
-        options={targets}
-        onChange={(id) => bindConsole(path, id)}
+        options={sourceOptions}
+        searchable
+        onChange={(id) => id !== boundId && bindConsole(path, id)}
         disabled={!sources.length}
       />
-      {switchable && (
-        <Select
-          variant="ghost"
-          aria-label={sqlServer ? "Database" : "Schema"}
-          value={schema || null}
-          placeholder="<schema>"
-          options={schemaOptions}
-          searchable={schemaOptions.length > 10}
-          onChange={(v) => setConsoleSchema(path, v)}
-          disabled={!bound}
-        />
+      {bound && boundId && switchable && !sqlServer && listsDatabases(sourceById(boundId)) ? (
+        <DatabaseSchemaSwitcher path={path} bound={bound} sourceId={boundId} schema={schema} />
+      ) : (
+        switchable && (
+          <Select
+            variant="ghost"
+            aria-label={sqlServer ? "Database" : "Schema"}
+            value={schema || null}
+            placeholder="<schema>"
+            options={schemaOptions}
+            searchable
+            onChange={(v) => setConsoleSchema(path, v)}
+            disabled={!bound}
+          />
+        )
       )}
       {driver === "sqlite" && (
         <span className={styles.consoleSchema} title={tx("Schema")}>
@@ -756,6 +763,85 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         </span>
       )}
     </Toolbar>
+  );
+}
+
+/**
+ * The `database.schema` switcher of a data source that shows several databases (IDEA's): a tree of
+ * its databases, expanding to their schemas. Choosing a schema in another database moves the console there.
+ */
+function DatabaseSchemaSwitcher({
+  path,
+  bound,
+  sourceId,
+  schema,
+}: {
+  path: string;
+  bound: string;
+  sourceId: string;
+  schema: string;
+}) {
+  const listed = useDatabase((s) => s.databases[sourceId]);
+  const schemas = useDatabase((s) => s.schemas);
+  const read = useDatabase((s) => s.catalogs[sourceId]?.databases);
+  const current = listed?.status === "ok" ? listed.value.current : null;
+  const database = splitTarget(bound).database ?? current;
+  // The console's database starts expanded, again whenever the console moves to another one.
+  const [opened, setOpened] = useState<{ at: string | null; open: ReadonlySet<string> } | null>(null);
+  const expanded = useMemo(
+    () => (opened && opened.at === database ? opened.open : new Set(database ? [database] : [])),
+    [opened, database],
+  );
+  const targetFor = (name: string) => (name === database ? bound : targetOf(sourceId, name, current));
+  // Schemas of expanded databases that are not read yet, or were dropped by a refresh.
+  const missing = [...expanded]
+    .filter((name) => !read?.[name] && !schemas[targetFor(name)])
+    .map(targetFor)
+    .join("\n");
+  useEffect(() => {
+    for (const target of missing ? missing.split("\n") : []) void loadSchemas(target);
+  }, [missing]);
+  const rows = useMemo(() => {
+    const names = listed?.status === "ok" ? [...listed.value.names] : [];
+    // The console's database is offered even before the list loads.
+    if (database && !names.includes(database)) names.unshift(database);
+    return schemaTreeRows(names, expanded, (name) => {
+      const target = name === database ? bound : targetOf(sourceId, name, current);
+      const list = schemas[target];
+      if (list?.status === "ok") return list.value;
+      if (read?.[name]) return read[name].map((s) => s.name);
+      return list?.status === "error" ? { error: list.message } : undefined;
+    });
+  }, [listed, database, expanded, schemas, read, bound, sourceId, current]);
+  const value = database && schema ? schemaTreeValue(database, schema) : null;
+  return (
+    <Select
+      variant="ghost"
+      aria-label="Database and schema"
+      value={value}
+      placeholder="<schema>"
+      options={rows}
+      searchable
+      renderValue={() => (database ? (schema ? `${database}.${schema}` : database) : tx("<schema>"))}
+      keepOpen={(v) => parseSchemaTreeValue(v).schema === null}
+      onChange={(v) => {
+        const pick = parseSchemaTreeValue(v);
+        if (pick.schema === null) {
+          const next = new Set(expanded);
+          if (!next.delete(pick.database)) {
+            next.add(pick.database);
+            // Expanding again retries a database whose schemas could not be read.
+            const target = targetFor(pick.database);
+            if (useDatabase.getState().schemas[target]?.status === "error") void loadSchemas(target);
+          }
+          setOpened({ at: database, open: next });
+          return;
+        }
+        const target = targetFor(pick.database);
+        if (target !== bound) bindConsole(path, target);
+        setConsoleSchema(path, pick.schema);
+      }}
+    />
   );
 }
 

@@ -2740,5 +2740,8 @@
   "Sorting Options": "Sorting Options",
   "Sort by Duration": "Sort by Duration",
   "Resize left merge pane": "Resize left merge pane",
-  "Resize right merge pane": "Resize right merge pane"
+  "Resize right merge pane": "Resize right merge pane",
+  "Database and schema": "Database and schema",
+  "Loading…": "Loading…",
+  "<schema>": "<schema>"
 }
