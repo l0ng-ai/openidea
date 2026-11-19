@@ -493,14 +493,11 @@ function VarRow({
   const kind = node.error ? null : classifyValue(node.value, node.typeName);
   const shown = shownValue(node.value, node.typeName);
   return (
-    <span className={styles.row}>
+    <span className={styles.row} title={node.name}>
       <Icon name={nodeIcon(node)} size={16} className={styles.nodeIcon} />
       {!shown.entry && (
         <>
-          <span
-            className={clsx(styles.name, node.kind === "var" && styles.varName, changed && styles.changed)}
-            title={node.name}
-          >
+          <span className={clsx(styles.name, node.kind === "var" && styles.varName, changed && styles.changed)}>
             {node.name}
           </span>
           <span className={styles.eq}>=</span>
