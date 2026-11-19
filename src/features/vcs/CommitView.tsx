@@ -109,7 +109,7 @@ import { showChangesDiff, toLogChanges, type LogChange } from "./logChanges";
 import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
-import { refreshNow, repoName, selectRepo, useVcs } from "./store";
+import { existsOnDisk, refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
 
@@ -302,7 +302,7 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
 /** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
 /** The selected files that still exist in the working tree (Delete… removes them from disk). */
 /** Whether the change leaves the file in the working tree. */
-const onDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
+const onDisk = existsOnDisk;
 
 export function deletableFiles(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);

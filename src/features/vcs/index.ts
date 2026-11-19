@@ -40,7 +40,7 @@ import { SELECTION_HISTORY_KIND, type SelectionHistoryData } from "./selectionHi
 import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
-import { baseName } from "./model";
+import { baseName, stripSlash } from "./model";
 import { installCommitChecks, installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
 import { installDraftRevision, provideCommit } from "./commitSelection";
@@ -50,7 +50,7 @@ import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
-import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import { existsOnDisk, installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
@@ -205,7 +205,20 @@ export function activate(): () => void {
     installDraftRevision(),
     provideCommit(),
     // Deployment shortcuts (and similar) use this while Commit / Local Changes is focused.
-    provideChangesViewSelection(() => (commitWindowFocused() ? useCommit.getState().selection : [])),
+    provideChangesViewSelection(() => {
+      if (!commitWindowFocused()) return [];
+      // As the context menu: deleted files have nothing to upload.
+      const deleted = new Set(
+        useVcs
+          .getState()
+          .status.filter((f) => !existsOnDisk(f))
+          .map((f) => f.path),
+      );
+      return useCommit
+        .getState()
+        .selection.filter((p) => !deleted.has(p))
+        .map(stripSlash);
+    }),
     installIncomingCheck(),
     installFileConfirmations(),
     installDiffEditorHost(),
