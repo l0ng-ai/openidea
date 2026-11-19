@@ -5,8 +5,9 @@
  * Compiler messages reach the Problems view and editors as `build`
  * diagnostics, published (and cleared on the next build) by the backend.
  *
- * Explicit builds show the tool window without taking focus. A failed build
- * also selects the first error and opens its location in the editor.
+ * Build tool window open/focus follows Settings › Compiler (`build.openToolWindow` /
+ * `build.focusToolWindow`). Before-launch builds pass `activate: false` and stay
+ * hidden until a failure. A failed build also selects the first error and opens it.
  */
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
@@ -24,9 +25,29 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { workflowSettings, type BuildToolWindowWhen } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { appendOutput, finishSummary, firstError, messageFiles, type BuildStatus, type ConsoleLine } from "./model";
+
+function whenMatches(when: BuildToolWindowWhen, reason: "start" | "error"): boolean {
+  return when === "always" || (when === "onError" && reason === "error");
+}
+
+/**
+ * Opens/focuses Build according to settings. `requested` is the caller's
+ * `activate` flag: false keeps before-launch builds hidden at start.
+ */
+function showBuildWindow(reason: "start" | "error", requested: boolean) {
+  if (reason === "start" && !requested) return;
+  const { openToolWindow, focusToolWindow } = workflowSettings().build;
+  if (!whenMatches(openToolWindow, reason)) return;
+  try {
+    toolWindowService().show("build", whenMatches(focusToolWindow, reason));
+  } catch {
+    // No workbench (tests / settings window).
+  }
+}
 
 export const BUILD_TASK_ID = "build:compile";
 export const BUILD_RUNNING = "build.running";
@@ -152,13 +173,7 @@ export async function startBuild(
   useBuildRun.setState({ ...INITIAL, request, kind, file, title: taskTitle, status: "running", files: previous });
   setContext(BUILD_LAST_STATUS, null);
   setContext(BUILD_RUNNING, true);
-  if (activate) {
-    try {
-      toolWindowService().show("build", false);
-    } catch {
-      // No workbench (tests / settings window).
-    }
-  }
+  showBuildWindow("start", activate);
   upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: null, fraction: null, done: false, cancel });
   return executeBuild(
     request,
@@ -181,13 +196,7 @@ export async function startCompileFile(file: string, activate = true): Promise<B
   useBuildRun.setState({ ...INITIAL, request, kind: null, file, title: taskTitle, status: "running", files: previous });
   setContext(BUILD_LAST_STATUS, null);
   setContext(BUILD_RUNNING, true);
-  if (activate) {
-    try {
-      toolWindowService().show("build", false);
-    } catch {
-      // No workbench (tests / settings window).
-    }
-  }
+  showBuildWindow("start", activate);
   upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: null, fraction: null, done: false, cancel });
   return executeBuild(
     request,
@@ -310,15 +319,11 @@ export function selectBuildNode(key: string | null) {
 }
 
 /**
- * A failed build activates the tool window without focusing it, selects the
- * first error and navigates to it, as IDEA does by default.
+ * A failed build may open/focus the tool window (per settings), then selects
+ * the first error and navigates to it, as IDEA does by default.
  */
 function showFailure() {
-  try {
-    toolWindowService().show("build", false);
-  } catch {
-    // No workbench (tests / settings window).
-  }
+  showBuildWindow("error", true);
   const first = firstError(useBuildRun.getState().messages);
   if (!first) return;
   selectBuildNode(first.key);
