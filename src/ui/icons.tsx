@@ -312,6 +312,7 @@ const ICONS = {
   "page-first": "openidea/general/pageFirst",
   "page-last": "openidea/general/pageLast",
   sliders: "openidea/general/sliders",
+  layers: "openidea/general/layers",
   "graphql-variables": "openidea/general/graphqlVariables",
   layout: "general/layout",
   split: "general/splitVertically",
