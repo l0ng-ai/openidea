@@ -343,3 +343,28 @@ fn sync_conflicts_and_resolve() {
     assert_eq!(kinds(&ann), [("branch/a.txt".to_owned(), ChangeKind::Added)]);
     assert!(ann.login_status().unwrap().logged_in);
 }
+
+#[test]
+fn annotate_names_who_wrote_a_line_of_a_branched_file() {
+    let Some(server) = server() else { return };
+    let ann = server.client("ann-ws", "ann");
+    let bob = server.client("bob-ws", "bob");
+    let admin = server.client("admin-ws", "admin");
+    let a = write(&ann, "main/a.txt", "one\ntwo\n");
+    ann.files_added(std::slice::from_ref(&a)).unwrap();
+    let first = submit(&ann, std::slice::from_ref(&a), "add a");
+    bob.sync(&[], None, false, false).unwrap();
+    let bob_a = bob.root().join("main/a.txt");
+    bob.open_for_edit(std::slice::from_ref(&bob_a), None).unwrap();
+    std::fs::write(&bob_a, "one\nTWO\n").unwrap();
+    let second = submit(&bob, std::slice::from_ref(&bob_a), "bob edits");
+
+    admin.integrate(IntegrateKind::Integrate, "//depot/main/...", "//depot/rel/...", None, false).unwrap();
+    let branched = admin.root().join("rel/a.txt");
+    submit(&admin, std::slice::from_ref(&branched), "branch rel");
+
+    let blame = admin.blame(&branched, None, None, utf8()).unwrap();
+    let who: Vec<(&str, &str, &str)> =
+        blame.iter().map(|l| (l.author.as_str(), l.commit.as_str(), l.summary.as_str())).collect();
+    assert_eq!(who, [("ann", first.as_str(), "add a"), ("bob", second.as_str(), "bob edits")]);
+}

@@ -243,27 +243,31 @@ impl Backend for Workspace {
         encoding: TextEncoding,
     ) -> IdeResult<Vec<BlameLine>> {
         let file = self.revision_arg(path, revision);
-        let out = self.tagged(&args(["annotate", "-c", "-u", "-q", &file]))?;
+        // `-I` follows integrations to the change that wrote a line; without it every line of a
+        // branched file belongs to whoever created the branch.
+        let out = self.tagged(&args(["annotate", "-I", "-u", "-q", &file]))?;
         let lines: Vec<&crate::cli::Record> = out.records.iter().filter(|r| r.has("lower")).collect();
         let mut changes: Vec<String> = lines.iter().map(|r| r.text("lower")).collect();
         changes.sort();
         changes.dedup();
-        let mut described: HashMap<String, (f64, String)> = HashMap::new();
+        let mut described: HashMap<String, (f64, String, String)> = HashMap::new();
         for chunk in changes.chunks(crate::workspace::BATCH) {
             let mut argv = args(["describe", "-s"]);
             argv.extend(chunk.iter().cloned());
             for r in self.tagged(&argv)?.records {
                 let time = r.get("time").and_then(|t| t.parse::<f64>().ok()).unwrap_or(0.0) * 1000.0;
                 let summary = r.text("desc").lines().next().unwrap_or_default().to_owned();
-                described.insert(r.text("change"), (time, summary));
+                described.insert(r.text("change"), (time, summary, r.text("user")));
             }
         }
         let annotated: Vec<BlameLine> = lines
             .iter()
             .map(|r| {
                 let change = r.text("lower");
-                let (time_ms, summary) = described.get(&change).cloned().unwrap_or_default();
-                BlameLine { commit: change, author: r.text("user"), time_ms, summary, origin_path: None }
+                let (time_ms, summary, user) = described.get(&change).cloned().unwrap_or_default();
+                // The originating change may be one the user cannot describe (another depot).
+                let author = if user.is_empty() { r.text("user") } else { user };
+                BlameLine { commit: change, author, time_ms, summary, origin_path: None }
             })
             .collect();
         let Some(text) = text else { return Ok(annotated) };
