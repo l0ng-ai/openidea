@@ -1247,6 +1247,21 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
     }
 
+    if name == "java-analyzer" {
+        // Unset, java-analyzer finds a JDK and the Maven local repository the way Maven does;
+        // the server's own `initializationOptions` in settings are merged later and win.
+        let mut layer = serde_json::Map::new();
+        if let Some(jdk) = project_jdk(root, s) {
+            layer.insert("jdkHome".into(), json!(jdk.home.to_string_lossy()));
+        }
+        if let Some(repo) = maven_local_repository(root, s) {
+            layer.insert("maven".into(), json!({ "localRepository": repo.to_string_lossy() }));
+        }
+        if !layer.is_empty() {
+            merge_init_options(cfg, Value::Object(layer));
+        }
+    }
+
     if let Some(lib) = tsdk(server_root, s).or_else(|| tsdk(root, s)) {
         let lib_s = lib.to_string_lossy().into_owned();
         match name {
@@ -1403,6 +1418,23 @@ pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Se
         }
     }
     out
+}
+
+/// Built-in servers given an executable path in Settings › Language Servers, as
+/// (definition's command, path): they run that executable (see [`server_launch_overrides`]).
+pub fn server_command_paths<'a>(
+    servers: impl IntoIterator<Item = &'a LanguageServerConfig>,
+    root: &Path,
+    s: &Settings,
+) -> Vec<(String, PathBuf)> {
+    servers
+        .into_iter()
+        .filter_map(|server| {
+            let command = s.language_servers.get(&server.name)?.command.trim();
+            let path = command.contains(['/', '\\']).then(|| setting_path(root, command))??;
+            Some((server.command.clone(), path))
+        })
+        .collect()
 }
 
 /// Adds the servers defined in settings to the languages they serve (to list
