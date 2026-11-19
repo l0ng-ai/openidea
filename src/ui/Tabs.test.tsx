@@ -292,6 +292,23 @@ describe("Tabs close button in a narrow strip (#1740)", () => {
     act(() => RO.latest!.callback([], RO.latest as unknown as ResizeObserver));
     expect(scroller.scrollLeft).toBe(160); // min(460 - 300, 280)
   });
+
+  it("keeps the active tab revealed when the close button changes side", () => {
+    // On the left an editor tab has no close slot; on the right it gains one, so every tab widens.
+    mockRects({ left: 0, right: 300 }, [
+      { left: 0, right: 130 },
+      { left: 130, right: 260 },
+      { left: 260, right: 400 },
+    ]);
+    const { rerender } = render(
+      <Tabs items={items} activeId="c" onSelect={() => {}} onClose={() => {}} closePosition="left" />,
+    );
+    const scroller = screen.getByRole("tablist");
+    expect(scroller.scrollLeft).toBe(100); // min(400 - 300, 260)
+    mockRects({ left: 0, right: 300 }, clippedTabs);
+    rerender(<Tabs items={items} activeId="c" onSelect={() => {}} onClose={() => {}} closePosition="right" />);
+    expect(scroller.scrollLeft).toBe(160); // min(460 - 300, 280)
+  });
 });
 
 describe("Tabs drag & drop", () => {
@@ -358,7 +375,10 @@ describe("Tabs drag & drop", () => {
     hit = strip("Terminal sessions");
     pointer(window, "pointermove", 60);
     expect(dragged).toHaveClass(styles.dragging!);
-    const ghost = document.body.lastElementChild as HTMLElement;
+    // The ghost sits in a copy of the strip's classes, so the strip's tab rules still lay it out.
+    const context = document.body.lastElementChild as HTMLElement;
+    expect(context.className).toBe(strip("Terminal sessions").parentElement!.className);
+    const ghost = context.firstElementChild as HTMLElement;
     expect(ghost).toHaveAttribute("aria-hidden", "true");
     expect(ghost.style.position).toBe("fixed");
     expect(shown("Terminal sessions")).toEqual(["Local", "Local (2)", "Local (3)"]);
@@ -378,7 +398,7 @@ describe("Tabs drag & drop", () => {
         .map((b) => b.textContent),
     ).toEqual(["Local (2)", "Local", "Local (3)"]);
     expect(tab("Terminal sessions", "Local")).not.toHaveClass(styles.dragging!);
-    expect(document.body.lastElementChild).not.toBe(ghost);
+    expect(context.isConnected).toBe(false);
   });
 
   it("puts the slot back when the pointer leaves the strip and drops nothing on Escape", () => {

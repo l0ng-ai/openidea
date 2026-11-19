@@ -295,12 +295,13 @@ export function Tabs({
       // into view instead of leaving its close button clipped until a tab switch.
       revealTab(latest.current.activeId, true);
     };
+    // Also when the close button changes side: that resizes every tab but not the strip.
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [items.length, revealTab, vertical]);
+  }, [items.length, revealTab, vertical, closePosition]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.
@@ -362,18 +363,16 @@ export function Tabs({
         )
       : null;
   const marker = dragging === null ? drop : null;
+  const stripClass = clsx(
+    styles.strip,
+    styles[variant],
+    vertical ? styles.vertical : layout !== "scroll" && styles[layout],
+    closePosition === "left" && styles.closeLeft,
+    className,
+  );
 
   return (
-    <div
-      className={clsx(
-        styles.strip,
-        styles[variant],
-        vertical ? styles.vertical : layout !== "scroll" && styles[layout],
-        closePosition === "left" && styles.closeLeft,
-        className,
-      )}
-      ref={stripRef}
-    >
+    <div className={stripClass} ref={stripRef}>
       {vertical && trailing && <div className={styles.trailing}>{trailing}</div>}
       <div
         ref={scrollRef}
@@ -422,6 +421,8 @@ export function Tabs({
                         e.currentTarget,
                         { type: dnd.type, payload: dnd.payload(item.id) },
                         {
+                          // The ghost keeps the strip's layout rules (close slot, insets).
+                          ghostContext: stripClass,
                           onStart: () => {
                             draggingRef.current = item.id;
                             setDragging(item.id);
