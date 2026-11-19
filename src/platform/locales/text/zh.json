@@ -8959,5 +8959,16 @@
   "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "重新格式化时，gopls 会在 gofmt 的基础上应用 gofumpt 更严格的规则。",
   "Hot reload on save": "保存时热重载",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "保存正在运行的 Flutter 调试会话里的 Dart 文件时重新加载应用，文件有错误时跳过。",
-  "Hot reload on save failed: {0}": "保存时热重载失败：{0}"
+  "Hot reload on save failed: {0}": "保存时热重载失败：{0}",
+  "Export Test Results…": "导出测试结果…",
+  "Save the test results as an HTML report or IDEA's XML": "将测试结果保存为 HTML 报告或 IDEA 的 XML",
+  "Export Test Results": "导出测试结果",
+  "Export format:": "导出格式：",
+  "HTML": "HTML",
+  "XML": "XML",
+  "Open exported file in browser": "在浏览器中打开导出的文件",
+  "File '{name}' already exists. Do you want to overwrite it?": "文件 '{name}' 已存在。是否覆盖？",
+  "{path} is a directory": "{path} 是目录",
+  "Cannot export test results": "无法导出测试结果",
+  "Test results exported": "测试结果已导出"
 }

@@ -2582,5 +2582,16 @@
   "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.": "gopls applies gofumpt's stricter rules on top of gofmt when reformatting.",
   "Hot reload on save": "Hot reload on save",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
-  "Hot reload on save failed: {0}": "Hot reload on save failed: {0}"
+  "Hot reload on save failed: {0}": "Hot reload on save failed: {0}",
+  "Export Test Results…": "Export Test Results…",
+  "Save the test results as an HTML report or IDEA's XML": "Save the test results as an HTML report or IDEA's XML",
+  "Export Test Results": "Export Test Results",
+  "Export format:": "Export format:",
+  "HTML": "HTML",
+  "XML": "XML",
+  "Open exported file in browser": "Open exported file in browser",
+  "File '{name}' already exists. Do you want to overwrite it?": "File '{name}' already exists. Do you want to overwrite it?",
+  "{path} is a directory": "{path} is a directory",
+  "Cannot export test results": "Cannot export test results",
+  "Test results exported": "Test results exported"
 }

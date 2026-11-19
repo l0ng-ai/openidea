@@ -45,8 +45,8 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { nodeOutput } from "./testing";
-import { TestTreeView, formatDuration } from "./TestTreeView";
+import { formatDuration, nodeOutput } from "./testing";
+import { TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
@@ -261,6 +261,7 @@ export function SessionPanel({
                 version={version}
                 cwd={cwd}
                 running={running}
+                name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
