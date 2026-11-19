@@ -475,6 +475,29 @@ impl DbManager {
         }
     }
 
+    fn non_password_snowflake(source: &DataSource) -> Option<DbSnowflake> {
+        let settings = match source.driver {
+            DbDriver::Snowflake => source.resolved().map(|source| source.snowflake()).unwrap_or_default(),
+            DbDriver::Jdbc => source.snowflake.clone()?,
+            _ => return None,
+        };
+        (settings.auth != DbSnowflakeAuth::Password).then_some(settings)
+    }
+
+    fn jdbc_password_isolated(&self, source: &DataSource) -> bool {
+        source.driver == DbDriver::Jdbc
+            && (Self::non_password_snowflake(source).is_some()
+                || self
+                    .sources()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|stored| stored.id == source.id && Self::non_password_snowflake(stored).is_some()))
+    }
+
+    fn password_key(&self, source: &DataSource) -> String {
+        if self.jdbc_password_isolated(source) { secrets::jdbc_key(&source.id) } else { source.id.clone() }
+    }
+
     /// The connection settings of target `target` ([`DataSource::resolved`]), with
     /// its database for `<id>:<database>`.
     pub fn source(&self, target: &str) -> IdeResult<DataSource> {
@@ -497,13 +520,19 @@ impl DbManager {
 
     /// Saves the data source list; connections of removed or changed sources are closed.
     /// Global ones (`global`) go to the app-wide list, the others to the project's.
-    pub async fn save_sources(&self, sources: Vec<DataSource>) -> IdeResult<()> {
+    pub async fn save_sources(&self, mut sources: Vec<DataSource>) -> IdeResult<()> {
         if sources.iter().any(|s| s.global && s.plugin_owner.is_some()) {
             return Err(IdeError::invalid("plugin-owned data sources must stay project-scoped"));
         }
         let old = {
             let _guard = plugin::EDIT.lock();
             let old = self.sources().unwrap_or_default();
+            for source in sources.iter_mut().filter(|s| s.driver == DbDriver::Jdbc) {
+                // Retain the credential scope even when URL-only settings supplied the old authenticator.
+                if let Some(settings) = old.iter().find(|s| s.id == source.id).and_then(Self::non_password_snowflake) {
+                    source.snowflake = Some(settings);
+                }
+            }
             let (global, project): (Vec<_>, Vec<_>) = sources.iter().cloned().partition(|s| s.global);
             match &self.global {
                 // Rewritten only when it changes: other projects' windows edit the same file.
@@ -524,7 +553,8 @@ impl DbManager {
             match sources.iter().find(|s| s.id == o.id) {
                 Some(n) if *n == o => {}
                 gone_or_changed => {
-                    let keys = [o.id.clone(), secrets::ssh_key(&o.id), Self::sso_credential(&o.id)];
+                    let keys =
+                        [o.id.clone(), secrets::jdbc_key(&o.id), secrets::ssh_key(&o.id), Self::sso_credential(&o.id)];
                     match gone_or_changed {
                         None => {
                             self.catalogs.forget(&o.id);
@@ -590,7 +620,12 @@ impl DbManager {
     /// Remembers `password` for the session, and in the saved passwords when
     /// the data source saves passwords (`None` forgets it).
     pub async fn set_password(&self, id: &str, password: Option<String>, save: bool) -> IdeResult<()> {
-        self.remember(id, id.to_owned(), password, save).await
+        let source = self.sources()?.into_iter().find(|s| s.id == id);
+        let (store, key) = match source.as_ref() {
+            Some(source) => (self.store_of(source), self.password_key(source)),
+            None => (&self.saved_passwords, id.to_owned()),
+        };
+        self.remember(store, key, password, save).await
     }
 
     /// [`DbManager::set_password`] for the SSH password / key passphrase.
@@ -602,10 +637,10 @@ impl DbManager {
             self.ssh.set_secret(&c, secret, save);
             return Ok(());
         }
-        self.remember(id, secrets::ssh_key(id), secret, save).await
+        self.remember(self.saved_for(id), secrets::ssh_key(id), secret, save).await
     }
 
-    async fn remember(&self, id: &str, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
+    async fn remember(&self, store: &SecretStore, key: String, secret: Option<String>, save: bool) -> IdeResult<()> {
         match &secret {
             Some(p) => {
                 self.session_passwords.lock().insert(key.clone(), p.clone());
@@ -614,7 +649,6 @@ impl DbManager {
                 self.session_passwords.lock().remove(&key);
             }
         }
-        let store = self.saved_for(id);
         let result = match (secret, save) {
             (Some(p), true) => store.set(&key, &p),
             _ => {
@@ -640,7 +674,10 @@ impl DbManager {
     }
 
     async fn password(&self, source: &DataSource) -> Option<String> {
-        match self.secret(source, source.id.clone(), source.driver != DbDriver::Sqlite && source.save_password).await {
+        match self
+            .secret(source, self.password_key(source), source.driver != DbDriver::Sqlite && source.save_password)
+            .await
+        {
             Some(p) => Some(p),
             None => source.url_password(),
         }
@@ -1756,6 +1793,78 @@ mod tests {
             reopened.secret(&DataSource::default(), secrets::ssh_key("s1"), true).await.as_deref(),
             Some("hunter2-tunnel")
         );
+    }
+
+    #[tokio::test]
+    async fn switching_from_snowflake_key_pair_keeps_the_jdbc_password_separate() -> IdeResult<()> {
+        let tmp = tempfile::tempdir()?;
+        let db = manager(tmp.path()).with_global_sources(tmp.path().join("global"));
+        let native = DataSource {
+            id: "snowflake".into(),
+            name: "Snowflake".into(),
+            driver: DbDriver::Snowflake,
+            save_password: true,
+            url_only: true,
+            url: "jdbc:snowflake://example.invalid/?authenticator=SNOWFLAKE_JWT".into(),
+            ..Default::default()
+        };
+        db.save_sources(vec![native.clone()]).await?;
+        db.set_password(&native.id, Some("native-passphrase".into()), true).await?;
+        let jdbc = DataSource { driver: DbDriver::Jdbc, url: "jdbc:fixture:".into(), ..native.clone() };
+
+        // Test Connection can use the JDBC draft before the user saves it.
+        assert_eq!(db.password(&jdbc).await, None);
+        assert_eq!(db.password(&native).await.as_deref(), Some("native-passphrase"));
+
+        db.approve_jdbc_source(&jdbc)?;
+        db.save_sources(vec![jdbc.clone()]).await?;
+        assert_eq!(db.password(&db.source(&jdbc.id)?).await, None);
+        db.set_password(&jdbc.id, Some("jdbc-password".into()), true).await?;
+        let reopened = manager(tmp.path()).with_global_sources(tmp.path().join("global"));
+        let saved = reopened.source(&jdbc.id)?;
+        assert_eq!(reopened.password(&saved).await.as_deref(), Some("jdbc-password"));
+        let err = reopened.pool(&jdbc.id).await.err().expect("no JDBC profile installed");
+        assert!(err.message.contains("Select an installed JDBC driver profile"));
+
+        source::save(&reopened.root, std::slice::from_ref(&jdbc))?;
+        let err = reopened.pool(&jdbc.id).await.err().expect("edited settings need approval");
+        assert!(err.message.contains("Review this project's JDBC URL and properties"));
+        source::save(&reopened.root, std::slice::from_ref(&saved))?;
+
+        let global = DataSource { global: true, ..saved };
+        reopened.save_sources(vec![global.clone()]).await?;
+        assert_eq!(reopened.password(&reopened.source(&jdbc.id)?).await.as_deref(), Some("jdbc-password"));
+
+        let native = DataSource { global: true, ..native };
+        reopened.save_sources(vec![native.clone()]).await?;
+        assert_eq!(reopened.password(&native).await.as_deref(), Some("native-passphrase"));
+        reopened.save_sources(Vec::new()).await?;
+        assert_eq!(reopened.password(&native).await, None);
+        assert_eq!(reopened.password(&global).await, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn switching_from_snowflake_password_keeps_the_password() -> IdeResult<()> {
+        let tmp = tempfile::tempdir()?;
+        let db = manager(tmp.path());
+        let native = DataSource {
+            id: "snowflake".into(),
+            name: "Snowflake".into(),
+            driver: DbDriver::Snowflake,
+            save_password: true,
+            url_only: true,
+            url: "jdbc:snowflake://example.invalid/?authenticator=snowflake".into(),
+            ..Default::default()
+        };
+        db.save_sources(vec![native.clone()]).await?;
+        db.set_password(&native.id, Some("existing-password".into()), true).await?;
+        let jdbc = DataSource { driver: DbDriver::Jdbc, url: "jdbc:fixture:".into(), ..native };
+        assert_eq!(db.password(&jdbc).await.as_deref(), Some("existing-password"));
+        db.save_sources(vec![jdbc.clone()]).await?;
+        let reopened = manager(tmp.path());
+        assert_eq!(reopened.password(&reopened.source(&jdbc.id)?).await.as_deref(), Some("existing-password"));
+        Ok(())
     }
 
     #[tokio::test]

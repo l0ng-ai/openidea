@@ -148,7 +148,7 @@ impl DbManager {
     fn jdbc_approval(&self, source: &DataSource) -> IdeResult<(PathBuf, String)> {
         let registry = self.jdbc_registry()?;
         let key = serde_json::to_vec(&(&self.root, &source.id)).map_err(|e| IdeError::internal(e.to_string()))?;
-        let settings = serde_json::to_vec(&(
+        let mut settings = serde_json::to_vec(&(
             &source.jdbc_driver,
             &source.url,
             &source.user,
@@ -157,6 +157,9 @@ impl DbManager {
             &source.options,
         ))
         .map_err(|e| IdeError::internal(e.to_string()))?;
+        if self.jdbc_password_isolated(source) {
+            settings.extend_from_slice(b"\0jdbc-password");
+        }
         Ok((
             registry.with_file_name("jdbc-approvals").join(blake3::hash(&key).to_hex().as_str()),
             blake3::hash(&settings).to_hex().to_string(),
