@@ -2683,5 +2683,10 @@
   "Tokens of the last turn": "Tokens of the last turn",
   "in {count}": "in {count}",
   "cached {count}": "cached {count}",
-  "out {count}": "out {count}"
+  "out {count}": "out {count}",
+  "Open Build tool window": "Open Build tool window",
+  "Focus Build tool window": "Focus Build tool window",
+  "Only on errors": "Only on errors",
+  "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.": "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.",
+  "When Build opens, whether it takes keyboard focus from the editor.": "When Build opens, whether it takes keyboard focus from the editor."
 }

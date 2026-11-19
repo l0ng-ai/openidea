@@ -34,6 +34,8 @@ pub struct Settings {
     pub project_structure: ProjectStructureSettings,
     /// Version Control (Git, Commit, Confirmation, Issue Navigation).
     pub vcs: VcsSettings,
+    /// Build, Execution, Deployment › Compiler (Build tool window).
+    pub build: BuildSettings,
     /// Build, Execution, Deployment › Console.
     pub console: ConsoleSettings,
     pub debugger: DebuggerSettings,
@@ -508,6 +510,7 @@ impl Default for Settings {
             languages: LanguagesSettings::default(),
             project_structure: ProjectStructureSettings::default(),
             vcs: VcsSettings::default(),
+            build: BuildSettings::default(),
             console: ConsoleSettings::default(),
             debugger: DebuggerSettings::default(),
             run: RunSettings::default(),

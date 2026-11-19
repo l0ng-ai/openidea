@@ -9057,5 +9057,10 @@
   "Tokens of the last turn": "上一轮的令牌",
   "in {count}": "输入 {count}",
   "cached {count}": "缓存 {count}",
-  "out {count}": "输出 {count}"
+  "out {count}": "输出 {count}",
+  "Open Build tool window": "打开构建工具窗口",
+  "Focus Build tool window": "聚焦构建工具窗口",
+  "Only on errors": "仅在出错时",
+  "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.": "自动构建与手动构建均适用。运行/调试的启动前构建在失败前保持隐藏。",
+  "When Build opens, whether it takes keyboard focus from the editor.": "构建窗口打开时，是否从编辑器夺取键盘焦点。"
 }

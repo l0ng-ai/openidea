@@ -141,7 +141,47 @@ function TooltipDelayRow() {
   );
 }
 
+const BUILD_WINDOW_WHEN = [
+  { value: "always", label: "Always" },
+  { value: "onError", label: "Only on errors" },
+  { value: "never", label: "Never" },
+];
+
 export const EXECUTION_PAGES: PageSpec[] = [
+  {
+    id: "build.compiler",
+    title: "Compiler",
+    group: BUILD_GROUP,
+    order: 355,
+    projectScope: true,
+    keywords: [
+      "Build tool window",
+      "Open Build tool window",
+      "Focus Build tool window",
+      "automatic build",
+      "before launch",
+    ],
+    sections: [
+      {
+        options: [
+          {
+            kind: "select",
+            key: "build.openToolWindow",
+            label: "Open Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.",
+          },
+          {
+            kind: "select",
+            key: "build.focusToolWindow",
+            label: "Focus Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "When Build opens, whether it takes keyboard focus from the editor.",
+          },
+        ],
+      },
+    ],
+  },
   {
     id: "build.cmake",
     title: "CMake",
