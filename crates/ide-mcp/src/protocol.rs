@@ -166,16 +166,7 @@ impl Session<'_> {
             "capabilities": { "tools": { "listChanged": false } },
             "serverInfo": { "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
             "instructions": format!(
-                "Built-in OpenIDEA tools for {about}: they see the files and editors the IDE has open.\n\n\
-        These tools are scoped to the open project: its folder and the projects attached to it. Stay inside that \
-        scope unless the user explicitly asks otherwise:\n\
-        - Create, edit, move and delete only files inside the project.\n\
-        - Read the project and its dependencies (SDK and library sources); read anything else outside the project \
-        only after the user allows it.\n\
-        - Build, compile, run and test only the project's code (including examples and samples brought into the \
-        project), and run them inside the project; the caches build tools fill on their own are fine.\n\
-        - Do not use `run_command` or any other tool to run system commands, or commands and scripts of your own, \
-        that act on files outside the project."
+                "Built-in OpenIDEA tools for {about}: they see the files and editors the IDE has open."
             ),
         })
     }
