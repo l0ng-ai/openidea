@@ -127,6 +127,15 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
           {ex.request.method} {ex.request.url}
         </span>
       </div>
+      {r != null && (r.redirects?.length ?? 0) > 0 && (
+        <div className={styles.redirects}>
+          {r.redirects?.map((hop) => (
+            <div key={hop.location} className={styles.redirectHop} title={hop.location}>
+              {hop.status} {hop.statusText} → {hop.location}
+            </div>
+          ))}
+        </div>
+      )}
       <Tabs
         variant="compact"
         activeId={tab}
