@@ -11,6 +11,7 @@ import {
   List,
   MenuList,
   Popup,
+  Radio,
   Select,
   Spinner,
   SymbolBadge,
@@ -35,6 +36,7 @@ import { renderCode } from "./markdown";
 import { describeSummary } from "./workspaceEdit";
 import { useUsagesStatus } from "./navigation";
 import styles from "./Popups.module.css";
+import fieldsetStyles from "@/ui/DialogFieldset.module.css";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
@@ -681,7 +683,7 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
       open
       onClose={closePopup}
       title={popup.title}
-      width={380}
+      width={400}
       buttons={[
         {
           label: "Run",
@@ -695,33 +697,27 @@ function ReformatDialog({ popup }: { popup: Extract<LspPopup, { kind: "reformat"
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.reformatBody}>
-        <fieldset className={styles.reformatGroup}>
-          <legend className={styles.reformatLegend}>
+      <div className={fieldsetStyles.body}>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
             <T>Scope</T>
           </legend>
-          <label className={styles.reformatOption}>
-            <input
-              type="radio"
-              name="reformat-scope"
-              checked={!selectionOnly}
-              onChange={() => setSelectionOnly(false)}
-            />
-            <T>Whole file</T>
-          </label>
-          <label className={clsx(styles.reformatOption, !popup.hasSelection && styles.disabled)}>
-            <input
-              type="radio"
-              name="reformat-scope"
-              checked={selectionOnly}
-              disabled={!popup.hasSelection}
-              onChange={() => setSelectionOnly(true)}
-            />
-            <T>Selected text</T>
-          </label>
+          <Radio
+            name="reformat-scope"
+            checked={selectionOnly}
+            disabled={!popup.hasSelection}
+            onChange={() => setSelectionOnly(true)}
+            label="Selected text"
+          />
+          <Radio
+            name="reformat-scope"
+            checked={!selectionOnly}
+            onChange={() => setSelectionOnly(false)}
+            label="Whole file"
+          />
         </fieldset>
-        <fieldset className={styles.reformatGroup}>
-          <legend className={styles.reformatLegend}>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
             <T>Options</T>
           </legend>
           <Checkbox
