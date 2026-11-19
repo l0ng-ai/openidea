@@ -242,6 +242,9 @@ find_files                                   always             project_host bin
 find_files_named                             always             project_host bindings async
 find_symbols                                 always             project_host bindings async
 find_symbols_named                           always             project_host bindings async
+flutter_daemon_restart                       trusted            project_host bindings sync
+flutter_devices                              trusted            project_host bindings sync
+flutter_devices_refresh                      trusted            project_host bindings sync
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async

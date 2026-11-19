@@ -313,6 +313,10 @@
   height: 30px;
   border-radius: 6px;
 }
+.widgetDevice {
+  composes: widgetChooser;
+  max-width: 180px;
+}
 .widgetButton {
   width: 30px;
   height: 30px;

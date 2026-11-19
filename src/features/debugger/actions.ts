@@ -48,6 +48,7 @@ import { isTracing, useStreamTrace } from "./streams/streamStore";
 import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
+import { warnPinnedFlutterDevice } from "@/workbench/flutterDevices";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import { attachConfig } from "./attach";
 import {
@@ -387,6 +388,7 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
+  if (config.debugAdapter === "dart") warnPinnedFlutterDevice(config);
   const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()

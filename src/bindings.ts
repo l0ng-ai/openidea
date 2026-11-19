@@ -597,6 +597,15 @@ export const commands = {
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
 	/**  Index symbols named exactly one of `names` inside `within` (an agent task's folder). */
 	findSymbolsNamed: (names: string[], within: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols_named", { names, within })),
+	/**  Replaces the project's `flutter daemon`, after a failure or an SDK change. */
+	flutterDaemonRestart: () => typedError<FlutterDeviceList, IdeError>(__TAURI_INVOKE("flutter_daemon_restart")),
+	/**
+	 *  The project's Flutter devices, starting its `flutter daemon` on first use. Changes arrive as
+	 *  `IdeEvent::FlutterDevices`.
+	 */
+	flutterDevices: () => typedError<FlutterDeviceList, IdeError>(__TAURI_INVOKE("flutter_devices")),
+	/**  Looks at adb again, for Android devices Flutter doesn't report (awaiting authorization, offline). */
+	flutterDevicesRefresh: () => typedError<null, IdeError>(__TAURI_INVOKE("flutter_devices_refresh")),
 	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -6082,6 +6091,34 @@ export type FilesChanged = {
 	removed: string[],
 };
 
+/**  See [`FlutterDeviceList`]. */
+export type FlutterDaemonStatus = { kind: "stopped" } | 
+/**  Started; the first device discovery has not finished. */
+{ kind: "starting" } | { kind: "ready" } | 
+/**  No `flutter` executable on the search path. */
+{ kind: "notInstalled" } | 
+/**  The daemon could not start or exited: what it printed last. It is not restarted on its own. */
+{ kind: "failed"; message: string };
+
+/**  A target `flutter run -d <id>` can name, or an Android device adb sees but Flutter can't use yet. */
+export type FlutterDevice = {
+	id: string,
+	name: string,
+	/**  `android`, `ios`, `macos`, `web`, … */
+	platformType: string | null,
+	/**  `mobile`, `desktop` or `web`. */
+	category: string | null,
+	emulator: boolean,
+	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
+	unavailable: string | null,
+};
+
+/**  The project's Flutter devices, best default first. */
+export type FlutterDeviceList = {
+	status: FlutterDaemonStatus,
+	devices: FlutterDevice[],
+};
+
 export type FocusedEditor = {
 	path: IpcPath,
 	/**  Zero-based lines and UTF-16 columns, end exclusive. */
@@ -6851,6 +6888,8 @@ export type IdeEvent =
  *  from changed and it can be reloaded.
  */
 { type: "direnv"; root: IpcPath; status: DirenvStatus } | 
+/**  The project's `flutter daemon` changed state, or a device came or went. */
+{ type: "flutterDevices"; list: FlutterDeviceList } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
 /**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */

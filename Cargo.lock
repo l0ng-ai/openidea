@@ -4377,6 +4377,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-flutter"
+version = "0.1.48"
+dependencies = [
+ "ide-android",
+ "ide-core",
+ "parking_lot",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ide-fonts"
 version = "0.1.48"
 dependencies = [
@@ -4442,6 +4453,7 @@ dependencies = [
  "ide-db",
  "ide-docker",
  "ide-extension",
+ "ide-flutter",
  "ide-heap",
  "ide-http",
  "ide-index",

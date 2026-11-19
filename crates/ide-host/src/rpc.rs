@@ -185,6 +185,7 @@ pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
         IdeEvent::DbSourcesChanged
         | IdeEvent::ProjectTrustChanged { .. }
         | IdeEvent::Direnv { .. }
+        | IdeEvent::FlutterDevices { .. }
         | IdeEvent::FsChanged { .. }
         | IdeEvent::ExcludedDirsChanged { .. }
         | IdeEvent::DocPatched { .. }
