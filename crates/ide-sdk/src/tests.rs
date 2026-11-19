@@ -359,7 +359,7 @@ fn java_analyzer_gets_the_project_jdk_and_maven_local_repository() {
     s.languages.java.jdk = jdk.to_string_lossy().into_owned();
     s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
     let options = configured(&s).unwrap();
-    assert_eq!(options["jdkHome"], jdk.canonicalize().unwrap().to_string_lossy().as_ref());
+    assert_eq!(options["jdkHome"], dunce::canonicalize(&jdk).unwrap().to_string_lossy().as_ref());
     assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
     // A `jdkHome` in the server's own settings wins.
     s.language_servers.insert(
