@@ -2605,5 +2605,16 @@
   "e.g. --flavor dev --dart-define=KEY=value": "e.g. --flavor dev --dart-define=KEY=value",
   "Hot reload on save": "Hot reload on save",
   "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
-  "Hot reload on save failed: {0}": "Hot reload on save failed: {0}"
+  "Hot reload on save failed: {0}": "Hot reload on save failed: {0}",
+  "Update failed": "Update failed",
+  "Updating branches": "Updating branches",
+  "Updated: {names}": "Updated: {names}",
+  "Already up-to-date: {names}": "Already up-to-date: {names}",
+  "Not updated, cannot be fast-forwarded: {names}": "Not updated, cannot be fast-forwarded: {names}",
+  "Not updated, no tracked branch: {names}": "Not updated, no tracked branch: {names}",
+  "Failed to update {branch}: {message}": "Failed to update {branch}: {message}",
+  "Updated {n} branch": "Updated {n} branch",
+  "Updated {n} branches": "Updated {n} branches",
+  "No branches were updated": "No branches were updated",
+  "Selected branches are up-to-date": "Selected branches are up-to-date"
 }

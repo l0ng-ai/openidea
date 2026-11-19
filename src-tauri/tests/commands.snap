@@ -706,6 +706,7 @@ vcs_tags                                     always             project_host bin
 vcs_undo_commit                              trusted            project_host bindings async
 vcs_unshelve                                 trusted            project_host bindings async
 vcs_unstage                                  trusted            project_host bindings async
+vcs_update_branches                          trusted            project_host bindings async
 vcs_worktrees                                always             project_host bindings async
 vcs_write_patch                              always             project_host bindings async
 web_browsers                                 always             desktop      bindings async
