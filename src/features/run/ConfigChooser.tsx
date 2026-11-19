@@ -16,6 +16,7 @@ import {
   T,
   type MenuItem,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import type { RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useDebugRunSessions } from "@/workbench/contributions";
@@ -99,7 +100,7 @@ export function buildRows(
   return rows;
 }
 
-const rowHeight = (r: Row) => (r.type === "section" && !r.label ? SEPARATOR : ROW);
+const heightOf = (r: Row, rowHeight: number) => (r.type === "section" && !r.label ? SEPARATOR : rowHeight);
 
 let closedAt = 0;
 /** The chooser closed within the last moment (a click on its own anchor shouldn't reopen it). */
@@ -145,6 +146,7 @@ export function mnemonics(rows: readonly Row[]): Map<string, number> {
 
 function ConfigChooser() {
   const mode = useRun((s) => s.chooserMode);
+  const rowHeight = useRowHeight(ROW);
   const configs = useRun((s) => s.configs);
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
@@ -285,8 +287,8 @@ function ConfigChooser() {
   };
 
   const height = Math.min(
-    rows.reduce((sum, r) => sum + rowHeight(r), 0),
-    14 * ROW,
+    rows.reduce((sum, r) => sum + heightOf(r, rowHeight), 0),
+    14 * rowHeight,
   );
 
   // IDEA: a configuration's submenu lists its executors, then Edit and Pin.
@@ -366,7 +368,7 @@ function ConfigChooser() {
           onActiveChange={setActive}
           focusable={false}
           hoverSelects
-          rowHeight={ROW}
+          rowHeight={rowHeight}
           onActivate={(r) => activate(r)}
           renderItem={(r, { active: isActive }) => {
             if (r.type === "save") {

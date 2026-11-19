@@ -13,6 +13,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { loadSystemFonts, useSystemFontStore } from "@/platform/systemFonts";
 import { setDragRequiresAlt } from "@/ui";
+import { setCompactMode } from "@/ui/density";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { DEFAULT_SETTINGS, validateSettings, type ValidSettings } from "./model/schema";
 import type { BackgroundImageValid } from "./model/behaviorSchema";
@@ -45,6 +46,7 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   } else root.style.removeProperty("--font-ui");
 
   flag(root, "compact", a.compactMode);
+  setCompactMode(a.compactMode);
   flag(root, "contrastScrollbars", a.contrastScrollbars);
   flag(root, "redGreen", a.redGreenVision);
   flag(root, "toolWindowBg", a.differentToolWindowBackground, "different");

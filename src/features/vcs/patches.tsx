@@ -18,6 +18,7 @@ import { activeList, useChangelists } from "./changelists";
 import { currentRepoRoot, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
+import { useRowHeight } from "@/ui/density";
 
 export type PatchOrigin =
   | { kind: "changes"; files: FileStatus[] }
@@ -259,6 +260,7 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
 }
 
 function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: string; onClose: () => void }) {
+  const rowHeight = useRowHeight(22);
   const [repo] = useState(currentRepoRoot);
   const [files, setFiles] = useState<PatchFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -316,7 +318,7 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
           <List
             items={files}
             getKey={(f) => f.path}
-            rowHeight={22}
+            rowHeight={rowHeight}
             aria-label="Patch files"
             className={styles.boxList}
             empty={

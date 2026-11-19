@@ -37,6 +37,7 @@ import {
   type MenuItem,
   T,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { basename, dirname, openLocation } from "../common/open";
@@ -144,6 +145,7 @@ function displayDirectory(dir: string, root: string | null): string {
 
 function FindInFilesDialog() {
   const s = useFindPopup();
+  const rowHeight = useRowHeight(ROW);
   const txt = useTxTemplate();
   const project = useProject((p) => p.project);
   const root = project?.workspace?.projects[0] ?? (project?.workspace ? null : (project?.root ?? null));
@@ -591,7 +593,7 @@ function FindInFilesDialog() {
           openRow(r, e.shiftKey);
         }}
         focusable={false}
-        rowHeight={ROW}
+        rowHeight={rowHeight}
         aria-label="Matches"
         empty={
           query ? (
@@ -864,7 +866,7 @@ function FindInFilesDialog() {
         <div className={styles.split}>
           {rows.length ? (
             <SplitGroup orientation="vertical" id="find-popup-split" storageKey={FIND_POPUP_SPLIT_KEY}>
-              <SplitPanel id="results" minSize={ROW * 3} defaultSize="33%">
+              <SplitPanel id="results" minSize={rowHeight * 3} defaultSize="33%">
                 {resultsBox}
               </SplitPanel>
               <SplitHandle hairline={false} />
