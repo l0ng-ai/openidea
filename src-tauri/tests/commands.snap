@@ -722,6 +722,7 @@ window_group_close                           always             desktop      bin
 window_group_close_tabs                      always             desktop      bindings sync
 window_group_current                         always             desktop      bindings sync
 window_group_detach                          always             desktop      bindings async
+window_group_join                            always             desktop      bindings async
 window_group_merge                           always             desktop      bindings async
 window_group_reorder                         always             desktop      bindings async
 window_group_restore                         always             desktop      bindings async
