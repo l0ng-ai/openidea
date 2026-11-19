@@ -1,16 +1,9 @@
 .root {
   flex: 1;
   height: 100%;
+  min-width: 0;
   min-height: 0;
-  display: flex;
   background: var(--bg-app);
-}
-.sidebar {
-  flex: none;
-  width: 260px;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--border);
 }
 .header {
   flex: none;
@@ -18,13 +11,18 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 0 8px 0 12px;
+  padding: 0 var(--space-2) 0 var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 .title {
   flex: 1;
+  min-width: 0;
   color: var(--fg-emphasis);
-  font-weight: 500;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .list {
   flex: 1;
@@ -33,51 +31,41 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  width: 100%;
   gap: var(--space-0-5);
+  line-height: 1.2;
 }
-.time {
-  color: var(--fg-emphasis);
-}
-.label {
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.diff {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.message {
-  padding: 16px;
-  color: var(--fg-faint);
-  text-align: center;
-}
-.path,
-.deletedPath {
-  color: var(--fg);
-  font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.deletedPath {
-  color: var(--fg-muted);
-  text-decoration: line-through;
-}
-.labelRow {
+.primaryRow {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-  color: var(--fg-muted);
+  gap: var(--space-1-5);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
 }
-.labelName {
-  font-size: var(--fs-small);
-  font-weight: 500;
+.primary,
+.meta,
+.path,
+.deletedPath {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.meta,
+.path,
+.deletedPath {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.meta {
+  font-variant-numeric: tabular-nums;
+}
+.deletedPath {
+  text-decoration: line-through;
+}
+.message {
+  padding: var(--space-4);
+  color: var(--fg-faint);
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
