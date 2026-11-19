@@ -151,7 +151,12 @@ function updateBreadcrumbEdges(row: HTMLDivElement) {
   row.toggleAttribute("data-crumbs-after", row.scrollLeft + row.clientWidth < row.scrollWidth - 1);
 }
 
-function BreadcrumbStrip({ trail, children, ...props }: ComponentPropsWithoutRef<"nav"> & { trail: string }) {
+function BreadcrumbStrip({
+  trail,
+  activateOnDown = false,
+  children,
+  ...props
+}: ComponentPropsWithoutRef<"nav"> & { trail: string; activateOnDown?: boolean }) {
   const strip = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const row = strip.current;
@@ -181,7 +186,7 @@ function BreadcrumbStrip({ trail, children, ...props }: ComponentPropsWithoutRef
         else if (e.key === "ArrowRight") next = Math.min(buttons.length - 1, index + 1);
         else if (e.key === "Home") next = 0;
         else if (e.key === "End") next = buttons.length - 1;
-        else if (e.key === "ArrowDown" && buttons[index]?.hasAttribute("aria-haspopup")) {
+        else if (e.key === "ArrowDown" && activateOnDown) {
           e.preventDefault();
           e.stopPropagation();
           buttons[index]?.click();
@@ -215,6 +220,7 @@ function CrumbNav({ segments, className }: { segments: Crumb[]; className?: stri
   return (
     <BreadcrumbStrip
       trail={segments.map((s) => s.title).join("\n")}
+      activateOnDown
       className={className}
       aria-label={tx("Breadcrumbs")}
     >
