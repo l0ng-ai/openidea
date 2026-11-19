@@ -119,4 +119,36 @@ describe("editor diagnostics in a view", () => {
     view.destroy();
     setFileDiagnostics("/p/hidden.rs", "rust-analyzer", []);
   });
+
+  it("keeps a list where its text moved when another source updates", async () => {
+    const path = "/p/moved.php";
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "<?php\n$a = 1;",
+        extensions: [lspDoc.of({ doc: 1, path } as EditorDocContext), diagnosticsExtension()],
+      }),
+      parent: document.body,
+    });
+    // A checker of the saved file reports `$a` on line 1.
+    setFileDiagnostics(path, "phpstan", [d(1, 0, 2)]);
+    await Promise.resolve();
+    view.dispatch({ changes: { from: 6, insert: "// new\n" } });
+    // Another source updating places phpstan's item through the edit, not on the comment.
+    setFileDiagnostics(path, "intelephense", [d(0, 0, 1, "warning")]);
+    await Promise.resolve();
+    const placed = diagnosticsAt(view, 13).filter((p) => p.diagnostic.problem?.source === "phpstan");
+    expect(placed.map((p) => [p.from, p.to])).toEqual([[13, 15]]);
+    expect(diagnosticsAt(view, 6).filter((p) => p.diagnostic.problem?.source === "phpstan")).toEqual([]);
+    // A new list of the same source is read against the text it arrived for.
+    setFileDiagnostics(path, "phpstan", [d(2, 0, 2)]);
+    await Promise.resolve();
+    expect(
+      diagnosticsAt(view, 13)
+        .filter((p) => p.diagnostic.problem?.source === "phpstan")
+        .map((p) => [p.from, p.to]),
+    ).toEqual([[13, 15]]);
+    view.destroy();
+    setFileDiagnostics(path, "phpstan", []);
+    setFileDiagnostics(path, "intelephense", []);
+  });
 });
