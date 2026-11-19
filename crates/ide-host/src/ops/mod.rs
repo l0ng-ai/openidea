@@ -15,6 +15,7 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod flutter;
 pub mod fs;
 pub mod heap;
 pub mod history;
@@ -85,6 +86,7 @@ ide_command::domains!(
     doc_commands: crate::ops::doc::commands,
     docker: crate::ops::docker,
     env: crate::ops::env,
+    flutter: crate::ops::flutter,
     fs: crate::ops::fs,
     heap: crate::ops::heap,
     history: crate::ops::history,

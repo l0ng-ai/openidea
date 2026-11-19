@@ -2296,6 +2296,16 @@ fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
 }
 
 #[test]
+fn the_flutter_device_follows_the_tool_arguments() {
+    let mut arguments = json!({ "toolArgs": ["--flavor", "dev"] });
+    add_flutter_device(&mut arguments, json!("macos"));
+    assert_eq!(arguments["toolArgs"], json!(["--flavor", "dev", "-d", "macos"]));
+    let mut arguments = json!({});
+    add_flutter_device(&mut arguments, json!("chrome"));
+    assert_eq!(arguments["toolArgs"], json!(["-d", "chrome"]));
+}
+
+#[test]
 fn rdbg_runs_the_debuggee_after_its_options_with_the_configuration_environment() {
     let dir = tempfile::tempdir().unwrap();
     let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();

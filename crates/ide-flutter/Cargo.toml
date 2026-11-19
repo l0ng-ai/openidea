@@ -1,0 +1,15 @@
+[package]
+name = "ide-flutter"
+description = "Flutter devices, kept current by the `flutter daemon` protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-android = { path = "../ide-android" }
+ide-core.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

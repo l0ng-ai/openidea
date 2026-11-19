@@ -282,6 +282,7 @@ impl crate::Host {
                 self.environment.project_closed();
                 self.environment.direnv_closed(&project.root);
                 project.agents.shutdown();
+                project.flutter.stop();
                 self.processes.kill_project(&project.root);
                 project.notebooks.restrict().await;
                 let windows: Vec<_> = self

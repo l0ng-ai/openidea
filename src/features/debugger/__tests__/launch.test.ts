@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
+import { useFlutterDevices } from "@/workbench/flutterDevices";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
 
 const ipc = vi.hoisted(() => {
@@ -36,6 +37,74 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 afterEach(() => usePlatform.setState(originalPlatform));
+
+describe("Flutter device", () => {
+  const device = { platformType: null, category: "desktop", emulator: false, unavailable: null };
+  const flutter = (p: Partial<RunConfig> = {}) =>
+    rc({ kind: "flutter", command: "flutter", args: ["run", "-t", "lib/main.dart"], debugAdapter: "dart", ...p });
+
+  beforeEach(() =>
+    useFlutterDevices.setState({
+      preferred: "macos",
+      list: {
+        status: { kind: "ready" },
+        devices: [
+          { ...device, id: "chrome", name: "Chrome" },
+          { ...device, id: "macos", name: "macOS" },
+        ],
+      },
+    }),
+  );
+  afterEach(() => useFlutterDevices.setState({ preferred: null, list: null }));
+
+  it("debugs on the toolbar's device, through the backend's Flutter check", () => {
+    const launch = launchConfigFor(flutter({ args: ["run", "-t", "lib/app.dart", "--flavor", "dev"] }), "/p");
+    expect(launch?.program).toBe("/p/lib/app.dart");
+    expect(extra(launch)).toEqual({ toolArgs: ["--flavor", "dev"], __flutterDevice: "macos" });
+  });
+
+  it("takes the entry point from the target option, not from any argument ending in .dart", () => {
+    const debug = (...args: string[]) => launchConfigFor(flutter({ args: ["run", ...args] }), "/p");
+    expect(debug("--target=lib/app.dart")?.program).toBe("/p/lib/app.dart");
+    expect(debug("--target", "lib/app.dart")?.program).toBe("/p/lib/app.dart");
+    const define = debug("-t", "lib/main.dart", "--dart-define=CFG=dev.dart");
+    expect(define?.program).toBe("/p/lib/main.dart");
+    expect(extra(define).toolArgs).toEqual(["--dart-define=CFG=dev.dart"]);
+    expect(debug("--dart-define=CFG=dev.dart")?.program).toBe("/p/lib/main.dart");
+  });
+
+  it("keeps a file-scoped Dart configuration's last .dart argument as its entry point", () => {
+    const file = rc({ kind: "dart", command: "dart", args: ["run", "bin/tool.dart"], debugAdapter: "dart" });
+    expect(launchConfigFor(file, "/p")?.program).toBe("/p/bin/tool.dart");
+  });
+
+  it("reads the pinned device from every spelling of the option", () => {
+    const pinned = flutter({ args: ["run", "--device-id=chrome"] });
+    expect(extra(launchConfigFor(pinned, "/p"))).toEqual({ __flutterDevice: "chrome" });
+  });
+
+  it("prefers the device the configuration pins", () => {
+    const pinned = flutter({ args: ["run", "-t", "lib/main.dart", "-d", "chrome"] });
+    expect(extra(launchConfigFor(pinned, "/p"))).toEqual({ __flutterDevice: "chrome" });
+  });
+
+  it("falls back to a connected device when the chosen one is gone", () => {
+    useFlutterDevices.setState({ preferred: "R5C" });
+    expect(extra(launchConfigFor(flutter(), "/p")).__flutterDevice).toBe("chrome");
+  });
+
+  it("attaches on the pinned device, else the toolbar's", () => {
+    const attach = (params: Record<string, string>) =>
+      extra(launchConfigFor(rc({ debugAdapter: "dart", params: { request: "attach", ...params } }), "/p"));
+    expect(attach({}).toolArgs).toEqual(["-d", "macos"]);
+    expect(attach({ device: "chrome" }).toolArgs).toEqual(["-d", "chrome"]);
+  });
+
+  it("leaves the choice to flutter without a device list", () => {
+    useFlutterDevices.setState({ list: null });
+    expect(launchConfigFor(flutter(), "/p")?.extraJson).toBeNull();
+  });
+});
 
 describe("run config → launch config", () => {
   it("returns null without an adapter", () => {
