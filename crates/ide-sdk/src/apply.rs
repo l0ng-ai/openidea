@@ -1107,6 +1107,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
         cfg.command = custom.to_string_lossy().into_owned();
     }
+    // `java -jar` servers run on the project JDK when there is one, like JAR Application runs.
+    if cfg.command == "java"
+        && let Some(java) =
+            project_jdk(root, s).map(|jdk| crate::java::java_executable(&jdk.home)).filter(|j| j.is_file())
+    {
+        cfg.command = java.to_string_lossy().into_owned();
+    }
     let name = cfg.name.clone();
     let name = name.as_str();
 
@@ -1534,6 +1541,12 @@ pub fn server_launch_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     }
     if let Some(args) = &ls.args {
         cfg.args = args.clone();
+    }
+    // A server shipped as a runnable jar (groovy-language-server-all.jar) runs on `java -jar`;
+    // `configure_server` then picks the project JDK's `java`.
+    if Path::new(&cfg.command).extension().is_some_and(|e| e.eq_ignore_ascii_case("jar")) {
+        let jar = std::mem::replace(&mut cfg.command, "java".to_owned());
+        cfg.args.splice(0..0, ["-jar".to_owned(), jar]);
     }
 }
 

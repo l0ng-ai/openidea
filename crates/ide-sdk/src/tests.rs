@@ -1273,6 +1273,34 @@ fn language_server_settings_disable_add_and_override() {
 }
 
 #[test]
+fn a_server_path_to_a_jar_runs_with_java_jar() {
+    use crate::apply::server_launch_overrides;
+    use ide_core::settings::LanguageServerSettings;
+    let mut s = Settings::default();
+    let jar = "/opt/groovy/build/libs/groovy-language-server-all.JAR";
+    s.language_servers.insert(
+        "groovy-language-server".into(),
+        LanguageServerSettings { command: jar.into(), args: Some(vec!["--verbose".into()]), ..Default::default() },
+    );
+    let mut groovy = server("groovy-language-server");
+    server_launch_overrides(&mut groovy, &s);
+    assert_eq!(groovy.command, "java");
+    assert_eq!(groovy.args, ["-jar", jar, "--verbose"]);
+
+    // A project JDK is the one that runs it.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("jdk");
+    let java = crate::java::java_executable(&home);
+    std::fs::create_dir_all(java.parent().unwrap()).unwrap();
+    std::fs::write(&java, "").unwrap();
+    std::fs::write(home.join("release"), "JAVA_VERSION=\"21.0.2\"\n").unwrap();
+    s.languages.java.jdk = home.to_string_lossy().into_owned();
+    configure_server(&mut groovy, tmp.path(), tmp.path(), &s);
+    assert!(groovy.command.ends_with(&*Path::new("jdk").join(java.strip_prefix(&home).unwrap()).to_string_lossy()));
+    assert!(Path::new(&groovy.command).is_file(), "{}", groovy.command);
+}
+
+#[test]
 fn ruff_configuration_directory_resolves_files_and_validates_pyproject() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
