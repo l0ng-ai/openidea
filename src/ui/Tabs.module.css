@@ -15,12 +15,13 @@
 .editor {
   --tab-inline-padding: var(--space-2);
   height: var(--h-header);
+  font-size: var(--fs-chrome);
   padding: 0 4px;
 }
 .compact {
   /* Shrinks inside tool window headers so the overflow dropdown can take over. */
   flex: 0 1 auto;
-  height: 28px;
+  height: var(--h-tab);
 }
 .scroller {
   display: flex;
@@ -41,7 +42,7 @@
   align-items: stretch;
   height: calc(100% - 6px);
   min-height: 22px;
-  max-height: 28px;
+  max-height: var(--h-tab);
   border-radius: var(--radius-tab, 6px);
   color: var(--fg-strong);
   transition:

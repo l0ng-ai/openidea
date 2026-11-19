@@ -6,6 +6,7 @@
  */
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { HighlightedText, Icon, Input, List, Popup, fuzzyMatch, listNavigate } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { useTx } from "@/platform/i18n";
 import styles from "./common.module.css";
 
@@ -75,6 +76,7 @@ export function TargetBranchInput({
   remote: string | null;
 }) {
   const tx = useTx();
+  const rowHeight = useRowHeight(ROW_HEIGHT);
   const input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
   // No row is chosen until the user moves in the list: Enter keeps pushing the typed name.
@@ -139,7 +141,7 @@ export function TargetBranchInput({
             <span key={s.name}>{s.name}</span>
           ))}
         </div>
-        <div className={styles.targetListWrap} style={{ height: rows * ROW_HEIGHT + LIST_PADDING }}>
+        <div className={styles.targetListWrap} style={{ height: rows * rowHeight + LIST_PADDING }}>
           <List
             items={suggestions}
             getKey={(s) => s.name}
@@ -148,7 +150,7 @@ export function TargetBranchInput({
             onActivate={(s) => choose(s)}
             focusable={false}
             hoverSelects
-            rowHeight={ROW_HEIGHT}
+            rowHeight={rowHeight}
             aria-label={tx("Remote branches")}
             className={styles.targetList}
             empty={<span className={styles.hint}>{tx("No matching remote branches")}</span>}

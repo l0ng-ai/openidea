@@ -85,7 +85,6 @@ function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }
           onActivate={(r) => pick(r)}
           focusable={false}
           hoverSelects
-          rowHeight={24}
           className={styles.list}
           aria-label="Languages"
           empty={

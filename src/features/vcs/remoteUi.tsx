@@ -5,31 +5,19 @@ import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings, type UpdateMethod } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
-import {
-  Button,
-  Checkbox,
-  Dialog,
-  Input,
-  List,
-  Select,
-  Spinner,
-  SplitGroup,
-  SplitHandle,
-  SplitPanel,
-  T,
-  Tree,
-} from "@/ui";
+import { Button, Checkbox, Dialog, Input, List, Select, Spinner, T, Tree } from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { saveVcsSetting } from "./settingsUi";
 import { formatTime } from "./model";
 import { allRepos, lastRemoteFailure, runRemote, saveAll } from "./ops";
 import { PushChanges, pushChangesKey } from "./PushChanges";
-import { PushDiffSplit, usePushDiff } from "./PushDiff";
+import { PushReview, usePushDiff } from "./PushDiff";
 import { pushOperation, splitTracked, type PushChoice } from "./pushTarget";
 import { currentRepo, currentRepoRoot, loadBranches, refreshNow, repoName, useVcs } from "./store";
 import { stripRemotePrefix, TargetBranchInput } from "./TargetBranchInput";
 import styles from "./common.module.css";
+import { useRowHeight } from "@/ui/density";
 
 /** Update Project… scope: one repository (`null`: the selected one), else every repository. */
 export interface UpdateTarget {
@@ -245,10 +233,18 @@ interface PushNode {
   children?: PushNode[];
 }
 
-// A long outgoing list scrolls inside the dialog instead of growing it to the screen (IDEA: 800×450 centre panel).
 const PUSH_DIALOG_MAX_HEIGHT = 720;
-const PUSH_DIALOG_WIDTH = 960;
-const PUSH_SPLIT_KEY = "openidea.vcs.pushSides";
+const PUSH_DIALOG_WIDTH = 800;
+const PUSH_DIALOG_MIN_WIDTH = 420;
+
+function PushCommitSubject({ commit }: { commit: Commit }) {
+  const metadata = [commit.shortId, commit.author, formatTime(commit.timeMs)].filter(Boolean).join(" · ");
+  return (
+    <span className={styles.commitSubject} title={`${metadata}\n${commit.message.trimEnd() || commit.summary}`}>
+      {commit.summary}
+    </span>
+  );
+}
 
 interface MultiPushDialogProps {
   only?: string;
@@ -256,6 +252,7 @@ interface MultiPushDialogProps {
 }
 
 function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
+  const rowHeight = useRowHeight(22);
   const allRoots = useVcs((s) => s.roots);
   const roots = useMemo(() => (only === undefined ? allRoots : allRoots.filter((r) => r === only)), [allRoots, only]);
   const [repos, setRepos] = useState<RepoPush[] | null>(null);
@@ -410,15 +407,17 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
       title={only === undefined ? "Push Commits" : tx`Push Commits to ${repoName(only)}`}
       onClose={onClose}
       width={PUSH_DIALOG_WIDTH}
+      minWidth={PUSH_DIALOG_MIN_WIDTH}
+      minHeight={340}
       maxHeight={PUSH_DIALOG_MAX_HEIGHT}
       className={styles.pushDialog}
       resizable="both"
       footerStart={
-        <>
+        <div className={styles.pushOptions}>
           <Checkbox checked={force} onChange={setForce} label="Force (with lease)" />
           {hasHook && <Checkbox checked={runHooks} onChange={setRunHooks} label="Run Git hooks" />}
           {!retargeted && (
-            <>
+            <span className={styles.pushTagOptions}>
               <Checkbox checked={pushTags} onChange={setPushTags} label="Push tags:" />
               <Select<PushTags>
                 value={tagsMode}
@@ -430,9 +429,9 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
                   { value: "currentBranch", label: "Current Branch" },
                 ]}
               />
-            </>
+            </span>
           )}
-        </>
+        </div>
       }
       buttons={[
         {
@@ -445,107 +444,114 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <PushDiffSplit diff={diff} onClose={closeDiff}>
-        <SplitGroup orientation="horizontal" storageKey={PUSH_SPLIT_KEY} className={styles.pushSides}>
-          <SplitPanel id="commits" minSize="240px" defaultSize="50%" className={styles.pushSplitPanel}>
-            <div className={styles.pushTreeWrap}>
-              {error ? (
-                <div className={styles.error}>{error}</div>
-              ) : !repos ? (
-                <div className={styles.empty}>
-                  <Spinner size={14} />
-                </div>
-              ) : (
-                <Tree<PushNode>
-                  roots={nodes}
-                  getKey={(n) => n.key}
-                  getLabel={(n) => (n.commit ? n.commit.summary : repoName(n.repo.root))}
-                  getChildren={(n) => n.children}
-                  isExpandable={(n) => !!n.children?.length}
-                  expanded={expanded}
-                  onExpandedChange={(_next, node, open) =>
-                    setExpanded((e) => {
-                      const s = new Set(e);
-                      if (open) s.add(node.key);
-                      else s.delete(node.key);
-                      return s;
-                    })
-                  }
-                  selected={new Set(shown ? [shown.key] : [])}
-                  multiSelect={false}
-                  onSelectionChange={(_sel, lead) => setShown(lead)}
-                  rowHeight={22}
-                  aria-label="Outgoing commits"
-                  className={styles.boxList}
-                  empty={
-                    <span>
-                      <T>Everything is up to date</T>
-                    </span>
-                  }
-                  renderNode={(n) =>
-                    n.commit ? (
-                      <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
-                        <span className={styles.commitHash}>{n.commit.shortId}</span>
-                        <span className={styles.commitSubject}>{n.commit.summary}</span>
-                        <span className={styles.commitMeta}>{n.commit.author}</span>
-                        <span className={styles.commitMeta}>{formatTime(n.commit.timeMs)}</span>
-                      </span>
-                    ) : (
-                      <span
-                        className={styles.commitRow}
-                        data-idle={hasNothingToPush(n.repo) || undefined}
-                        style={{ flex: 1, padding: 0 }}
-                        // A row click toggles the checkbox, like before; only the chevron collapses.
-                        onClick={(e) => {
-                          if (only === undefined && !(e.target as HTMLElement | null)?.closest?.("label"))
-                            toggle(n.repo.root);
-                        }}
-                      >
-                        {only === undefined ? (
-                          <Checkbox
-                            checked={checked.has(n.repo.root)}
-                            onChange={() => toggle(n.repo.root)}
-                            label={repoName(n.repo.root)}
-                          />
-                        ) : (
-                          <span className={styles.commitSubject}>{repoName(n.repo.root)}</span>
-                        )}
-                        <span className={styles.commitMeta}>{n.repo.branch.head} →</span>
-                        <PushRowTarget
-                          name={repoName(n.repo.root)}
-                          remotes={remotesOf[n.repo.root] ?? []}
-                          remote={shownRemoteOf(n.repo)}
-                          onRemote={(remote) => edit(n.repo.root, { remote })}
-                          target={edits[n.repo.root]?.target ?? targetOf(n.repo)}
-                          onTarget={(target) => edit(n.repo.root, { target })}
-                          changed={pushOperation(choiceOf(n.repo, null)).op === "pushBranch"}
-                          onEnter={() => {
-                            if (picked.length) void push();
-                          }}
+      <PushReview
+        diff={diff}
+        onClose={closeDiff}
+        commits={
+          <div className={styles.pushTreeWrap}>
+            {error ? (
+              <div className={styles.error}>{error}</div>
+            ) : !repos ? (
+              <div className={styles.empty}>
+                <Spinner size={14} />
+              </div>
+            ) : (
+              <Tree<PushNode>
+                roots={nodes}
+                getKey={(n) => n.key}
+                getLabel={(n) => (n.commit ? n.commit.summary : repoName(n.repo.root))}
+                getChildren={(n) => n.children}
+                isExpandable={(n) => !!n.children?.length}
+                expanded={expanded}
+                onExpandedChange={(_next, node, open) =>
+                  setExpanded((e) => {
+                    const s = new Set(e);
+                    if (open) s.add(node.key);
+                    else s.delete(node.key);
+                    return s;
+                  })
+                }
+                selected={new Set(shown ? [shown.key] : [])}
+                multiSelect={false}
+                onSelectionChange={(_sel, lead) => setShown(lead)}
+                rowHeight={rowHeight}
+                aria-label="Outgoing commits"
+                className={styles.boxList}
+                empty={
+                  <span>
+                    <T>Everything is up to date</T>
+                  </span>
+                }
+                renderNode={(n) =>
+                  n.commit ? (
+                    <PushCommitSubject commit={n.commit} />
+                  ) : (
+                    <span
+                      className={styles.pushRepoRow}
+                      data-idle={hasNothingToPush(n.repo) || undefined}
+                      // A row click toggles the checkbox, like before; only the chevron collapses.
+                      onClick={(e) => {
+                        if (only === undefined && !(e.target as HTMLElement | null)?.closest?.("label"))
+                          toggle(n.repo.root);
+                      }}
+                    >
+                      {only === undefined ? (
+                        <Checkbox
+                          checked={checked.has(n.repo.root)}
+                          onChange={() => toggle(n.repo.root)}
+                          className={styles.pushRepoName}
+                          label={
+                            <span className={styles.pushRepoLabel} title={repoName(n.repo.root)}>
+                              {repoName(n.repo.root)}
+                            </span>
+                          }
                         />
-                        {!n.repo.branch.upstream && (
-                          <span className={styles.commitMeta}>{tx("new remote branch")}</span>
-                        )}
+                      ) : (
+                        <span className={styles.pushRepoLabel} title={repoName(n.repo.root)}>
+                          {repoName(n.repo.root)}
+                        </span>
+                      )}
+                      <span className={styles.pushSourceBranch} title={n.repo.branch.head ?? undefined}>
+                        {n.repo.branch.head}
                       </span>
-                    )
-                  }
-                />
-              )}
-            </div>
-          </SplitPanel>
-          <SplitHandle />
-          <SplitPanel id="changes" minSize="240px" className={styles.pushSplitPanel}>
-            {shownRepo && (
-              <PushChanges
-                key={pushChangesKey(shownRepo.root, shownCommits)}
-                repo={shownRepo.root}
-                commits={shownCommits}
-                onSelectFile={showDiff}
+                      <span className={styles.pushRowSeparator} aria-hidden>
+                        →
+                      </span>
+                      <PushRowTarget
+                        name={repoName(n.repo.root)}
+                        remotes={remotesOf[n.repo.root] ?? []}
+                        remote={shownRemoteOf(n.repo)}
+                        onRemote={(remote) => edit(n.repo.root, { remote })}
+                        target={edits[n.repo.root]?.target ?? targetOf(n.repo)}
+                        onTarget={(target) => edit(n.repo.root, { target })}
+                        changed={pushOperation(choiceOf(n.repo, null)).op === "pushBranch"}
+                        onEnter={() => {
+                          if (picked.length) void push();
+                        }}
+                      />
+                      {!n.repo.branch.upstream && (
+                        <span className={styles.pushSourceBranch} title={tx("new remote branch")}>
+                          {tx("new remote branch")}
+                        </span>
+                      )}
+                    </span>
+                  )
+                }
               />
             )}
-          </SplitPanel>
-        </SplitGroup>
-      </PushDiffSplit>
+          </div>
+        }
+        changes={
+          shownRepo && (
+            <PushChanges
+              key={pushChangesKey(shownRepo.root, shownCommits)}
+              repo={shownRepo.root}
+              commits={shownCommits}
+              onSelectFile={showDiff}
+            />
+          )
+        }
+      />
     </Dialog>
   );
 }
@@ -581,7 +587,11 @@ function PushRowTarget(props: {
           options={props.remotes.map((r) => ({ value: r, label: r }))}
         />
       ) : (
-        props.remote && <span className={styles.commitMeta}>{props.remote}</span>
+        props.remote && (
+          <span className={styles.pushRemoteName} title={props.remote}>
+            {props.remote}
+          </span>
+        )
       )}
       {props.remote && <span className={styles.pushRowSeparator}>/</span>}
       <Input
@@ -604,6 +614,7 @@ function PushRowTarget(props: {
 }
 
 function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClose: () => void }) {
+  const rowHeight = useRowHeight(22);
   const [repo] = useState(currentRepo);
   const [branch] = useState(() => useVcs.getState().branch);
   const [branches] = useState(() => useVcs.getState().branches);
@@ -737,18 +748,11 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
           getKey={(c) => c.id}
           activeIndex={shownCommit}
           onActiveChange={setShownCommit}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label="Outgoing commits"
           className={styles.boxList}
           empty={<span>{upstream ? tx("Everything is up to date") : tx("No commits")}</span>}
-          renderItem={(c) => (
-            <span className={styles.commitRow} style={{ flex: 1, padding: 0 }}>
-              <span className={styles.commitHash}>{c.shortId}</span>
-              <span className={styles.commitSubject}>{c.summary}</span>
-              <span className={styles.commitMeta}>{c.author}</span>
-              <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
-            </span>
-          )}
+          renderItem={(c) => <PushCommitSubject commit={c} />}
         />
       )}
     </div>
@@ -759,11 +763,13 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
       title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
       onClose={onClose}
       width={commits?.length ? PUSH_DIALOG_WIDTH : 620}
+      minWidth={PUSH_DIALOG_MIN_WIDTH}
+      minHeight={340}
       maxHeight={PUSH_DIALOG_MAX_HEIGHT}
       className={styles.pushDialog}
       resizable="both"
       footerStart={
-        <>
+        <div className={styles.pushOptions}>
           <span title={protectedTarget ? `Force push to protected branch '${target}' is prohibited` : undefined}>
             <Checkbox
               checked={force && !protectedTarget}
@@ -782,7 +788,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
             />
           )}
           {!explicit && !retarget && !remoteChanged && (
-            <>
+            <span className={styles.pushTagOptions}>
               <Checkbox checked={pushTags} onChange={setPushTags} label="Push tags:" />
               <Select<PushTags>
                 value={tagsMode}
@@ -794,9 +800,9 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
                   { value: "currentBranch", label: "Current Branch" },
                 ]}
               />
-            </>
+            </span>
           )}
-        </>
+        </div>
       }
       buttons={[
         {
@@ -809,45 +815,62 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        {!head
-          ? tx("HEAD is detached; check out a branch to push.")
-          : trackedBranch
-            ? `${head}${revision ? ` up to ${revision.slice(0, 8)}` : ""} → ${remote ?? trackedRemote ?? ""}/`
-            : revision
-              ? tx`${head} has no upstream: commits up to ${revision.slice(0, 8)} will be pushed as a new branch:`
-              : tx`${head} has no upstream: it will be pushed as a new branch and tracked:`}
-        {head && remotes.length > 1 && (
-          <Select<string>
-            value={remote ?? ""}
-            aria-label="Remote"
-            onChange={setRemote}
-            options={remotes.map((r) => ({ value: r, label: r }))}
-          />
-        )}
+      <div className={styles.pushTargetBar}>
+        <span className={styles.pushTargetSource}>
+          {!head
+            ? tx("HEAD is detached; check out a branch to push.")
+            : trackedBranch
+              ? `${head}${revision ? ` up to ${revision.slice(0, 8)}` : ""} →`
+              : revision
+                ? tx`${head} has no upstream: commits up to ${revision.slice(0, 8)} will be pushed as a new branch:`
+                : tx`${head} has no upstream: it will be pushed as a new branch and tracked:`}
+        </span>
         {head && (
-          <TargetBranchInput value={targetName} onChange={setTargetName} branches={remoteBranchNames} remote={remote} />
+          <div className={styles.pushTargetControls}>
+            {remotes.length > 1 ? (
+              <Select<string>
+                value={remote ?? ""}
+                aria-label="Remote"
+                onChange={setRemote}
+                options={remotes.map((r) => ({ value: r, label: r }))}
+              />
+            ) : (
+              remote && (
+                <span className={styles.pushRemoteName} title={remote}>
+                  {remote}
+                </span>
+              )
+            )}
+            {remote && (
+              <span className={styles.pushRowSeparator} aria-hidden>
+                /
+              </span>
+            )}
+            <TargetBranchInput
+              value={targetName}
+              onChange={setTargetName}
+              branches={remoteBranchNames}
+              remote={remote}
+            />
+            {retarget && !remoteBranchNames.includes(edited) && <span className={styles.hint}>{tx("New")}</span>}
+          </div>
         )}
-        {retarget && !remoteBranchNames.includes(edited) && <span className={styles.hint}> {tx("New")}</span>}
       </div>
       {commits?.length && !error ? (
-        <PushDiffSplit diff={diff} onClose={closeDiff}>
-          <SplitGroup orientation="horizontal" storageKey={PUSH_SPLIT_KEY} className={styles.pushSides}>
-            <SplitPanel id="commits" minSize="240px" defaultSize="50%" className={styles.pushSplitPanel}>
-              {commitList}
-            </SplitPanel>
-            <SplitHandle />
-            <SplitPanel id="changes" minSize="240px" className={styles.pushSplitPanel}>
-              <PushChanges
-                key={pushChangesKey(repo, shownCommits)}
-                repo={repo}
-                commits={shownCommits}
-                onShowAll={shownCommit >= 0 && commits.length > 1 ? () => setShownCommit(-1) : undefined}
-                onSelectFile={showDiff}
-              />
-            </SplitPanel>
-          </SplitGroup>
-        </PushDiffSplit>
+        <PushReview
+          diff={diff}
+          onClose={closeDiff}
+          commits={commitList}
+          changes={
+            <PushChanges
+              key={pushChangesKey(repo, shownCommits)}
+              repo={repo}
+              commits={shownCommits}
+              onShowAll={shownCommit >= 0 && commits.length > 1 ? () => setShownCommit(-1) : undefined}
+              onSelectFile={showDiff}
+            />
+          }
+        />
       ) : (
         commitList
       )}

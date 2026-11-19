@@ -112,6 +112,7 @@ import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { existsOnDisk, refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
+import { useRowHeight } from "@/ui/density";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -1381,6 +1382,7 @@ async function stashFileChanges(stash: StashEntry): Promise<LogChange[]> {
 }
 
 export function StashesPanel() {
+  const rowHeight = useRowHeight(22);
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
   const version = useVcs((s) => s.version);
@@ -1491,7 +1493,7 @@ export function StashesPanel() {
           loadChildren={loadFiles}
           selected={useMemo(() => new Set(selectedKey ? [selectedKey] : []), [selectedKey])}
           multiSelect={false}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label="Stashes"
           className={styles.stashList}
           empty={<span className={styles.empty}>{error ?? (loaded ? tx("No stashes") : tx("Loading…"))}</span>}

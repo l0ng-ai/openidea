@@ -38,9 +38,9 @@ import { useGivenTx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { startPointerDrag, type DragData } from "./pointerDrag";
 import { useTreeDirectoryContext } from "./treeDirectoryContext";
+import { useRowHeight } from "./density";
 import { useIconRowHeight } from "./iconAppearance";
 
-const DEFAULT_ROW_HEIGHT = 24;
 export type { TreeReorder } from "./treeReorder";
 
 export interface TreeRowState {
@@ -353,7 +353,8 @@ export function Tree<T>(props: TreeProps<T>) {
   const leadIndex = lead != null ? (indexOfKey.get(lead) ?? -1) : -1;
 
   const themedRowHeight = useIconRowHeight();
-  const rowHeight = fixedRowHeight ?? themedRowHeight ?? DEFAULT_ROW_HEIGHT;
+  const defaultRowHeight = useRowHeight();
+  const rowHeight = fixedRowHeight ?? themedRowHeight ?? defaultRowHeight;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
