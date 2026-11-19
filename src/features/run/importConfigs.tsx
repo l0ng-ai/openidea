@@ -46,6 +46,8 @@ export function skipReasonText(reason: SkipReason): string {
   switch (reason.kind) {
     case "nameTaken":
       return tx("A configuration with this name already exists");
+    case "sameAs":
+      return tx`Same as the existing configuration '${reason.existing}'`;
     case "unsupportedType":
       return tx`Type '${reason.type}' has no equivalent here`;
     case "unsupportedRequest":

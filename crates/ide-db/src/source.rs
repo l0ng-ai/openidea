@@ -23,12 +23,13 @@ pub enum DbDriver {
     /// Oracle Database (pure-Rust thin driver, no client library).
     Oracle,
     Snowflake,
+    Jdbc,
 }
 
 impl DbDriver {
     pub fn default_port(self) -> Option<u16> {
         match self {
-            DbDriver::Sqlite => None,
+            DbDriver::Sqlite | DbDriver::Jdbc => None,
             DbDriver::Postgres => Some(5432),
             DbDriver::Mysql => Some(3306),
             DbDriver::SqlServer => Some(1433),
@@ -191,6 +192,9 @@ pub struct DataSource {
     pub id: String,
     pub name: String,
     pub driver: DbDriver,
+    /// An app-wide driver profile id; classpaths never come from a project.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub jdbc_driver: String,
     pub host: String,
     pub port: Option<u16>,
     pub database: String,
@@ -237,6 +241,7 @@ impl Default for DataSource {
             id: String::new(),
             name: String::new(),
             driver: DbDriver::Sqlite,
+            jdbc_driver: String::new(),
             host: "localhost".into(),
             port: None,
             database: String::new(),
@@ -390,6 +395,12 @@ impl DataSource {
     /// database, user, SSL and driver properties come from the URL (properties
     /// of the Advanced tab still apply after the URL's).
     pub fn resolved(&self) -> IdeResult<DataSource> {
+        if self.driver == DbDriver::Jdbc {
+            if !self.url.starts_with("jdbc:") {
+                return Err(IdeError::invalid("Enter a JDBC URL starting with jdbc:"));
+            }
+            return Ok(self.clone());
+        }
         if !self.url_only {
             return Ok(self.clone());
         }
@@ -476,7 +487,7 @@ impl DataSource {
 
     /// The password written in the URL of a [`DataSource::url_only`] data source.
     pub fn url_password(&self) -> Option<String> {
-        if !self.url_only {
+        if self.driver == DbDriver::Jdbc || !self.url_only {
             return None;
         }
         parse_url(&self.url).ok()?.password
@@ -491,7 +502,11 @@ struct SourcesFile {
 
 /// The project's data sources.
 pub fn load(root: &Path) -> IdeResult<Vec<DataSource>> {
-    read(&project_dir::path(root, FILE))
+    let mut sources = read(&project_dir::path(root, FILE))?;
+    for source in &mut sources {
+        source.global = false;
+    }
+    Ok(sources)
 }
 
 /// Saves the project's data sources.

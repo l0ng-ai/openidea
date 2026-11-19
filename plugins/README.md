@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.12.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.13.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -425,6 +425,55 @@ are always available. Calling a gated function without its capability returns
 (Git Toolbox still shows the branch without `vcs.write`).
 
 ## 3. Writing code (Rust SDK)
+
+### API 1.14
+
+API 1.14.0 is in development on `main`. Use `engines.openidea = "^1.14"` and the
+matching SDK. Plugins for 1.13 and earlier keep working. New in 1.14:
+
+- **Hover-revealed line actions.** The optional `hover-actions` export
+  (world `plugin-hover-actions`, SDK `HoverActions`, registration
+  `register_plugin!(Plugin, hover_actions)`) contributes clickable actions at
+  the left edge of an editor line. Declare `kinds = ["hover-actions"]` under
+  `[[contributes.providers]]`. The host reveals an action while the pointer is
+  in the first four character columns of the editing area for any line in its
+  `start-line`/`end-line` range, anchors it to `line`, and never covers the
+  code text. The released `language-features` interfaces stay unchanged.
+
+Example:
+
+```rust
+#[derive(Default)]
+struct MyPlugin;
+impl openidea_plugin::HoverActions for MyPlugin {
+    fn hover_actions(&mut self, doc: &openidea_plugin::language_features::Document)
+        -> Vec<openidea_plugin::HoverAction>
+    {
+        vec![openidea_plugin::HoverAction {
+            line: 0,
+            start_line: 0,
+            end_line: 10,
+            icon: Some("run".into()),
+            label: "Call this method".into(),
+            tooltip: Some("Call this method".into()),
+            command: "call".into(),
+            argument: None,
+        }]
+    }
+}
+openidea_plugin::register_plugin!(MyPlugin, hover_actions);
+```
+
+### API 1.13
+
+API 1.13.0 is in development on `main`. Use `engines.openidea = "^1.13"` and the
+matching SDK. Plugins for 1.12 and earlier keep working. New in 1.13:
+
+- **Custom Search Everywhere categories.** `[[contributes.searchCategories]]`
+  adds a tab to the double-Shift dialog, and the optional `search-provider`
+  export (`search::SearchProvider`) answers its cancellable queries with project
+  locations or the plugin's own commands. The tabs stay out of All. See
+  _Custom Search Everywhere categories_.
 
 ### API 1.12
 
@@ -1567,6 +1616,7 @@ and register `register_plugin!(MyPlugin, language_features)`:
 | `implementation`      | `implementation(doc, at)`                        | Merged with LSP Go to Implementation, deduplicated by location.                                                                                                                                                                                                                                                                                                 |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with LSP Go to Type Declaration, deduplicated by location.                                                                                                                                                                                                                                                                                               |
 | `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. Icons accept the same names, aliases and declared marker SVG paths as line markers.                                                                                                           |
+| `hover-actions`       | `hover_actions(doc)`                             | Left-edge actions revealed by line-edge hover, with an anchor line and an inclusive trigger line range (API 1.14).                                                                                                                                                                                                                                              |
 
 The optional WIT interface is `language-features`, in worlds
 `plugin-language-features` / `editor-language-features`. Its own `document`
@@ -2926,7 +2976,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0 and 1.12.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0 and 1.13.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -3042,6 +3092,56 @@ Disabling, uninstalling, reloading or crashing a plugin withdraws its routes;
 idle instance reclamation keeps them cached. Closing a project withdraws its
 cache. Windows only receive routes for their current project. This API does not
 add an Endpoints tool window.
+
+### Custom Search Everywhere categories (API 1.13)
+
+Plugins can add their own tab to the double-Shift search dialog. Declare a stable
+local ID and a title (translated through the plugin catalog):
+
+```toml
+engines.openidea = "^1.13"
+
+[[contributes.searchCategories]]
+id = "routes"
+title = "Routes"
+```
+
+Implement `search::SearchProvider` and register with
+`register_plugin!(MyPlugin, search)` (combinable with `endpoints` and other
+optional exports). See the runnable [search fixture](../crates/ide-plugin/tests/fixtures/search).
+`search(category, query, limit, ctx)` gets the local category ID, the **unmodified**
+query (including slashes, spaces and `:line` suffixes), and the current project's
+invocation. Empty queries may return initial suggestions. Return `SearchPage`
+with at most `limit` items in relevance order and `has_more` for more results.
+The initial limit is 50; Show more raises it to at most 200. Queries are at most
+1024 UTF-8 bytes. Calls have a two-second background budget, including queueing,
+and cannot open prompts. Shared lazy startup may finish in the background after
+a request is cancelled; its results are not published. New queries, switching
+tabs and closing the dialog cancel the old request; late answers are ignored.
+
+Each `SearchItem` has a stable local `id`, a `title`, an optional `description`,
+and exactly one `SearchTarget`:
+
+- `Location`: a file inside the current trusted project, zero-based lines and
+  UTF-16 columns. Requires `project.read`; paths and ranges are checked against
+  the open buffer or disk, including symlink containment.
+- `Command { id, arg }`: the plugin's own local command declared in
+  `contributes.commands`. The command runs **only after selection**, with its
+  normal enablement, editor and project context. It may carry up to 16 KiB of
+  arguments. A command result can also be returned without a project open.
+
+The host rejects duplicate result IDs, invalid targets and whole batches over
+1 MiB of metadata or 16 MiB of declaration documents. Titles are 1–1024 bytes,
+descriptions at most 4096 bytes; neither may contain control characters.
+Categories use `(plugin ID, local category ID)` identity, so identical labels or
+local IDs from different plugins coexist. Titles are localized by the plugin's
+catalog. Disabling, uninstalling, reloading or failure withdraws the category and
+its in-flight results; the dialog returns to All if the selected tab disappears.
+
+Custom categories **do not contribute to All**. Existing `endpoints` providers
+continue to populate All, HTTP completion and gutter actions unchanged. A route
+plugin may implement both exports when it wants both entry points. Project file
+scope controls and built-in slash commands do not modify custom category queries.
 
 ### Notifications with commands
 

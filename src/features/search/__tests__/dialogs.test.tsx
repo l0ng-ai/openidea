@@ -13,6 +13,7 @@ const fakeDeps = (): SeDeps => ({
   findFiles: (...args) => findFiles(...args),
   findSymbols: (...args) => findSymbols(...args),
   settings: () => settings(),
+  categories: () => contributions.searchCategories(),
   searchText: async () => {},
   cancel: () => {},
   nextRequestId: () => 1,
@@ -539,6 +540,22 @@ describe("Recent Files multi-selection", () => {
     expect(useRecentPopup.getState().open).toBeNull();
   });
 
+  it("Delete edits the filter while it has text after the caret, else removes the file", async () => {
+    const remove = vi.spyOn(commands, "removeRecent").mockResolvedValue({ status: "ok", data: null });
+    const input = (await showFiles()) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "index" } });
+    const before = options().length;
+    input.setSelectionRange(0, 0);
+    fireEvent.keyDown(input, { key: "Delete" });
+    await tick();
+    expect(options()).toHaveLength(before);
+    expect(remove).not.toHaveBeenCalled();
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.keyDown(input, { key: "Delete" });
+    await tick();
+    expect(options()).toHaveLength(before - 1);
+  });
+
   it("starts a range at the initially selected previous file", async () => {
     vi.spyOn(contributions, "maybeEditorService").mockReturnValue({
       activePath: () => "/p/one/index.ts",
@@ -645,4 +662,53 @@ describe("Find in Files dialog", () => {
       useKeymap.setState({ preset: previous.preset });
     }
   });
+});
+
+it("restarts a custom query restored before its debounce expires", async () => {
+  let resolve!: (page: import("@/bindings").PluginSearchPage) => void;
+  const search = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    )
+    .mockResolvedValue({
+      items: [
+        {
+          id: "fresh",
+          title: "Fresh route",
+          description: null,
+          target: {
+            kind: "location",
+            value: {
+              path: "/p/routes.txt",
+              range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } },
+              uri: null,
+            },
+          },
+        },
+      ],
+      hasMore: false,
+    });
+  const remove = contributions.registerSearchCategory({
+    id: "plugin:test:routes",
+    title: "Routes",
+    search,
+    command: () => undefined,
+  });
+  render(<SearchEverywhereOverlay />);
+  act(() => showSearchEverywhere("plugin:test:routes", { query: "abc" }));
+  await tick();
+  expect(search).toHaveBeenCalledTimes(1);
+  const input = screen.getByRole("combobox");
+  fireEvent.change(input, { target: { value: "abcd" } });
+  fireEvent.change(input, { target: { value: "abc" } });
+  await tick();
+  expect(search).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("Fresh route")).toBeVisible();
+  await act(async () => resolve({ items: [], hasMore: false }));
+  expect(screen.getByText("Fresh route")).toBeVisible();
+  act(remove);
 });

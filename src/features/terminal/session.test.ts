@@ -39,7 +39,6 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
     onmessage: ((chunk: string) => void) | null = null;
   },
 }));
-
 const fileLink = (text: string): Extract<TerminalLink, { kind: "file" }> => {
   const [l] = findTerminalLinks(text);
   if (!l || l.kind !== "file") throw new Error(`not a file link: ${text}`);

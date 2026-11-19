@@ -3,7 +3,14 @@
  * changes about to be committed and writes their message. It runs as a short task that
  * is deleted once the message is in the commit field.
  */
-import type { AgentConfigChoice, AgentConfigOption, AgentEntry, AgentProvider, AgentTask } from "@/bindings";
+import type {
+  AgentConfigChoice,
+  AgentConfigOption,
+  AgentEntry,
+  AgentModelCatalog,
+  AgentProvider,
+  AgentTask,
+} from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
@@ -139,26 +146,72 @@ export function askingChoices(options: readonly AgentConfigOption[]): AgentConfi
 
 const choicesFor = (options: readonly AgentConfigOption[]) => [...modelChoice(options), ...askingChoices(options)];
 
+/** Settings › Version Control › Commit: the agent, model and thinking level to generate with; empty follows the agent. */
+export interface CommitAgentPreference {
+  agent: string;
+  agentModel: string;
+  agentEffort: string;
+}
+
+type ModelCatalog = Pick<AgentModelCatalog, "config" | "thoughtLevels">;
+
 /**
  * The agent that wrote the code: the one of the project's latest task, on the model it
- * ran with. Without a task, the one the New Task page has selected.
+ * ran with. Without a task, the one the New Task page has selected. An agent chosen in
+ * the settings replaces it, on the model and thinking level chosen there when it offers them.
  */
 export function pickAgent(
   tasks: Iterable<AgentTask>,
   providers: readonly AgentProvider[],
   draft: Draft,
+  preference?: CommitAgentPreference,
+  catalogs?: ReadonlyMap<string, ModelCatalog>,
 ): CommitAgent | null {
   const installed = providers.filter((p) => p.installed);
+  const chosen = preference?.agent ? installed.find((p) => p.id === preference.agent) : undefined;
+  const candidates = chosen ? [chosen] : installed;
   const latest = [...tasks]
-    .filter((t) => t.status !== "archived" && installed.some((p) => p.id === t.provider))
+    .filter((t) => t.status !== "archived" && candidates.some((p) => p.id === t.provider))
     .sort((a, b) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0))[0];
-  if (latest) return { provider: latest.provider, config: choicesFor(latest.config) };
-  const provider = installed.find((p) => p.id === draft.provider) ?? installed[0];
+  const provider = latest
+    ? installed.find((p) => p.id === latest.provider)!
+    : (chosen ?? installed.find((p) => p.id === draft.provider) ?? installed[0]);
   if (!provider) return null;
+  const options = latest
+    ? latest.config
+    : provider.id === draft.provider
+      ? draftConfig(provider, draft)
+      : provider.config;
+  if (!chosen || !preference || (!preference.agentModel && !preference.agentEffort)) {
+    return { provider: provider.id, config: choicesFor(options) };
+  }
   return {
     provider: provider.id,
-    config: choicesFor(provider.id === draft.provider ? draftConfig(provider, draft) : provider.config),
+    config: [...preferredModel(options, provider, preference, catalogs?.get(provider.id)), ...askingChoices(options)],
   };
+}
+
+/** The model and thinking level of `preference` that the agent offers, else the ones it would run with. */
+function preferredModel(
+  options: readonly AgentConfigOption[],
+  provider: AgentProvider,
+  preference: CommitAgentPreference,
+  catalog: ModelCatalog | undefined,
+): AgentConfigChoice[] {
+  const offered = (catalog?.config ?? provider.config).find((o) => o.category === "model");
+  const fallback = modelChoice(options);
+  const model =
+    offered && preference.agentModel && offered.values.some((v) => v.value === preference.agentModel)
+      ? { id: offered.id, value: preference.agentModel }
+      : fallback[0];
+  if (!model) return [];
+  const levels = (catalog?.thoughtLevels ?? provider.thoughtLevels)?.[model.value] ?? [];
+  const level = levels.find((o) => o.category === "thought_level");
+  const effort =
+    level && preference.agentEffort && level.values.some((v) => v.value === preference.agentEffort)
+      ? [{ id: level.id, value: preference.agentEffort }]
+      : [];
+  return [model, ...effort];
 }
 
 /** Resolves when the task's turn ends; rejects when it can't produce an answer. */
@@ -243,8 +296,9 @@ async function generate(): Promise<void> {
     notify({ level: "info", title: "No changes to describe", body: "Include changes in the commit first." });
     return;
   }
-  const { tasks, providers, draft } = useAgents.getState();
-  const agent = pickAgent(tasks.values(), providers, draft);
+  const { commit } = workflowSettings().vcs;
+  const { tasks, providers, draft, modelCatalogs } = useAgents.getState();
+  const agent = pickAgent(tasks.values(), providers, draft, commit, modelCatalogs);
   if (!agent) {
     notify({
       level: "warning",
@@ -255,7 +309,6 @@ async function generate(): Promise<void> {
     return;
   }
 
-  const { commit } = workflowSettings().vcs;
   const subjects = await recentSubjects(changes.roots[0]);
   const prompt = commitMessagePrompt(
     changes.patch,

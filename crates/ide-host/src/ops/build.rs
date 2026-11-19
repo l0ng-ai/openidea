@@ -245,6 +245,7 @@ pub async fn build_sync(
             return Err(IdeError::not_found("Build project is no longer linked"));
         }
         let mut profiles_changed = false;
+        let mut offline_changed = false;
         for scope in selected {
             if token.is_cancelled() {
                 return Err(IdeError::cancelled());
@@ -260,6 +261,10 @@ pub async fn build_sync(
                     p.sink.emit(IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
                 }
                 profiles_changed |= changed;
+                offline_changed |= ide_build::save_maven_offline(cache, offline).unwrap_or_else(|e| {
+                    tracing::warn!("Maven offline mode not saved: {e}");
+                    false
+                });
             }
             let env = current
                 .maven
@@ -306,12 +311,12 @@ pub async fn build_sync(
         let scopes = workspace::scopes(&p, &config)?;
         let model = workspace::load_scopes(&p.root, &scopes);
         let updates = workspace::update_files(&p.root, &scopes, &model, tool);
-        Ok::<_, IdeError>((model, profiles_changed, updates))
+        Ok::<_, IdeError>((model, profiles_changed, offline_changed, updates))
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    let (model, profiles_changed, updates) = result??;
+    let (model, profiles_changed, offline_changed, updates) = result??;
     if completion_token.is_cancelled() {
         return Err(IdeError::cancelled());
     }
@@ -336,8 +341,8 @@ pub async fn build_sync(
     let lsp = project.lsp.clone();
     let documents = project.documents.clone();
     tokio::spawn(async move {
-        if profiles_changed {
-            // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
+        if profiles_changed || offline_changed {
+            // jdtls takes the profiles and offline mode from its Maven settings (see `ide_sdk::maven_profiles`).
             lsp.reconfigure().await;
         }
         let first = updates.first().cloned();
@@ -815,7 +820,15 @@ pub async fn build_run(
             if compile::menu_up_to_date(&cache, &root, &model, file.as_deref(), &token) {
                 let started = std::time::Instant::now();
                 let plan = prepare_plan(
-                    compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
+                    compile::plan(
+                        &root,
+                        &model,
+                        kind,
+                        file.as_deref(),
+                        settings.cmake.profiles.as_deref(),
+                        None,
+                        &token,
+                    )?,
                     &root,
                     &settings,
                 );
@@ -853,7 +866,15 @@ pub async fn build_run(
                     if member == &root { cache.clone() } else { cache.join(crate::project::project_key(member)) };
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
                 let plan = prepare_plan(
-                    compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
+                    compile::plan(
+                        member,
+                        &model,
+                        kind,
+                        file.as_deref(),
+                        settings.cmake.profiles.as_deref(),
+                        None,
+                        &token,
+                    )?,
                     member,
                     &settings,
                 );
@@ -867,7 +888,15 @@ pub async fn build_run(
             plan
         } else {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
-            match compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref()) {
+            match compile::plan(
+                &root,
+                &model,
+                kind,
+                file.as_deref(),
+                settings.cmake.profiles.as_deref(),
+                Some(&cache),
+                &token,
+            ) {
                 Ok(plan) => prepare_plan(plan, &root, &settings),
                 // No build tool: a Java project builds from its Project Structure.
                 Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => {
@@ -882,6 +911,11 @@ pub async fn build_run(
         if result.success && single && kind == BuildKind::Build {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
             compile::record_menu_build(&cache, &root, &model, file.as_deref(), &token);
+            // Only a project build covers every changed module; after Build Module the
+            // others may still be stale.
+            if file.is_none() {
+                compile::record_module_build(&cache, &root, &model, &token);
+            }
         }
         for (path, items) in compile::diagnostics(&result.messages) {
             sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
@@ -1015,7 +1049,16 @@ mod build_tool_settings_tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(marker), source).unwrap();
             let plan = prepare_plan(
-                compile::plan(&dir, &Default::default(), BuildKind::Artifacts, None, None).unwrap(),
+                compile::plan(
+                    &dir,
+                    &Default::default(),
+                    BuildKind::Artifacts,
+                    None,
+                    None,
+                    None,
+                    &ide_core::CancellationToken::new(),
+                )
+                .unwrap(),
                 root,
                 &settings,
             );
@@ -1089,7 +1132,9 @@ mod build_tool_settings_tests {
             let expected = root.join(if runner.is_empty() { "project-jdk" } else { runner });
             let model = load(&root, &root.join("cache"), &settings);
             assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
-            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            let plan =
+                compile::plan(&root, &model, BuildKind::Build, None, None, None, &ide_core::CancellationToken::new())
+                    .unwrap();
             assert!(!plan.steps.is_empty());
             for step in plan.steps {
                 assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
@@ -1121,7 +1166,9 @@ mod build_tool_settings_tests {
             let expected = root.join(name);
             let model = load(&root, &root.join("cache"), &settings);
             assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
-            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            let plan =
+                compile::plan(&root, &model, BuildKind::Build, None, None, None, &ide_core::CancellationToken::new())
+                    .unwrap();
             assert!(!plan.steps.is_empty());
             for step in plan.steps {
                 assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());

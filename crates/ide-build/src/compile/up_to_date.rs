@@ -41,7 +41,7 @@ fn record_path(cache: &Path, root: &Path, file: Option<&Path>) -> PathBuf {
 /// Re-stamps files whose content changed without advancing mtime (git
 /// checkout, external sync): timestamp-incremental Maven would otherwise skip
 /// them as "unchanged" and the rebuild would compile nothing.
-fn restamp(root: &Path, edits: &[PathBuf]) {
+pub(super) fn restamp(root: &Path, edits: &[PathBuf]) {
     let now = std::time::SystemTime::now();
     for rel in edits {
         let path = root.join(rel);

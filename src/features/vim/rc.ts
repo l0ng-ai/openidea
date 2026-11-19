@@ -12,11 +12,13 @@ import { IDEA_ACTIONS } from "@/platform/ideaActions";
 export type MapMode = "normal" | "insert" | "visual" | "operatorPending" | undefined;
 
 export type RcCommand =
-  /** `append` marks `set name+=value`, the way a comma list option gains an item. */
-  | { kind: "set"; name: string; value: string | boolean; append?: boolean }
+  /** `op` is Vim's `+=` (append to a list, add to a number), `-=` (remove, subtract) or `^=` (prepend, multiply). */
+  | { kind: "set"; name: string; value: string | boolean; op?: SetOp }
   | { kind: "map"; mode: MapMode; noremap: boolean; lhs: string; rhs: string }
   /** A key mapped to one Ex command, e.g. `<Action>(ReformatCode)` → `action ReformatCode`. */
   | { kind: "mapEx"; mode: MapMode; lhs: string; ex: string };
+
+export type SetOp = "+=" | "-=" | "^=";
 
 export interface RcIgnored {
   /** The sourced file it came from, as written after `source`; absent for the rc file itself. */
@@ -113,9 +115,8 @@ const SUPPORTED_OPTIONS = new Set([
   "langmap",
   "lmap",
   "clipboard",
+  "cb",
 ]);
-/** Comma list options, the ones Vim's `+=` appends an item to (`set clipboard+=unnamed`). */
-const LIST_OPTIONS = new Set(["clipboard"]);
 const MAP_FLAGS = /^<(silent|unique|nowait|buffer|expr|script)>$/i;
 
 function leaderKeys(value: string): string {
@@ -196,11 +197,9 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
       if (!restWords.length) return ignore("set without options");
       for (const opt of restWords) {
         const eq = /^([a-zA-Z]+)([-+^]?)=(.*)$/.exec(opt);
-        // Vim only appends to comma list options; `-=` / `^=` are not implemented.
-        const append = eq?.[2] === "+" && LIST_OPTIONS.has(eq[1]!);
         let cmd: RcCommand | null = null;
         if (eq) {
-          if (!eq[2] || append) cmd = { kind: "set", name: eq[1]!, value: eq[3]!, ...(append ? { append: true } : {}) };
+          cmd = { kind: "set", name: eq[1]!, value: eq[3]!, ...(eq[2] ? { op: `${eq[2]}=` as SetOp } : {}) };
         } else if (/^[a-zA-Z]+$/.test(opt)) {
           const negated = !SUPPORTED_OPTIONS.has(opt) && opt.startsWith("no") && SUPPORTED_OPTIONS.has(opt.slice(2));
           cmd = { kind: "set", name: negated ? opt.slice(2) : opt, value: !negated };

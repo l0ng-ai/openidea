@@ -8,6 +8,7 @@ import { DEFAULT_REMOTE, validateRemote, type RemoteSettings } from "./remoteSet
 
 export type UpdateMethod = "merge" | "rebase";
 export type IncomingCheck = "auto" | "always" | "never";
+export type BuildToolWindowWhen = "always" | "onError" | "never";
 export type VcsConfirm = "ask" | "silently" | "never";
 export type PatchCreated = "ask" | "no" | "reveal";
 export type CursorShape = "block" | "underline" | "bar";
@@ -62,6 +63,12 @@ export interface CommitSettingsValid {
   doubleClickOpensDiff: boolean | null;
   /** Team conventions for Generate Commit Message with Agent, added to its prompt. */
   agentInstructions: string;
+  /** The agent Generate Commit Message with Agent uses; empty follows the latest task's agent. */
+  agent: string;
+  /** That agent's model for commit messages; empty keeps the model the agent would use. */
+  agentModel: string;
+  /** That model's thinking level for commit messages; empty keeps the agent's. */
+  agentEffort: string;
 }
 
 export interface VcsSettingsValid {
@@ -93,6 +100,11 @@ export interface LogLevelColorsValid {
   trace: string;
 }
 
+export interface BuildSettingsValid {
+  openToolWindow: BuildToolWindowWhen;
+  focusToolWindow: BuildToolWindowWhen;
+}
+
 export interface ConsoleSettingsValid {
   softWrap: boolean;
   overrideBuffer: boolean;
@@ -117,6 +129,7 @@ export interface DebuggerSettingsValid {
   valueTooltipDelay: number;
   skipLibraryCode: boolean;
   debugServerPage: boolean;
+  flutterHotReloadOnSave: boolean;
   python: { attachSubprocess: boolean; gevent: boolean };
 }
 
@@ -138,11 +151,24 @@ export interface ExternalDiffValid {
   parameters: string;
 }
 
+export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10";
+/** When a title the program sets (OSC 0/2) names the terminal tab, as IDEA's option. */
+export type TerminalAppTitle = "running" | "always" | "off";
+
+export const TERMINAL_MAX_FPS_OPTIONS: readonly { value: TerminalMaxFps; label: string }[] = [
+  { value: "unlimited", label: "Unlimited" },
+  { value: "60", label: "60 FPS" },
+  { value: "30", label: "30 FPS" },
+  { value: "15", label: "15 FPS" },
+  { value: "10", label: "10 FPS" },
+];
+
 export interface TerminalSettingsValid {
   startDirectory: string;
   env: Record<string, string>;
   shellPath: string;
   tabName: string;
+  appTitleAsTabName: TerminalAppTitle;
   audibleBell: boolean;
   closeOnExit: boolean;
   mouseReporting: boolean;
@@ -156,6 +182,11 @@ export interface TerminalSettingsValid {
   escapeToEditor: boolean;
   cursorShape: CursorShape;
   cursorBlink: boolean;
+  /**
+   * Cap how often PTY output is painted. `unlimited` writes every chunk;
+   * while the document is hidden a slower floor always applies (#4216).
+   */
+  maxFps: TerminalMaxFps;
   useEditorFont: boolean;
   fontFamily: string;
   fontSize: number;
@@ -197,6 +228,7 @@ export interface AgentRunSettingsValid {
 
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
+  build: BuildSettingsValid;
   console: ConsoleSettingsValid;
   debugger: DebuggerSettingsValid;
   run: RunSettingsValid;
@@ -281,6 +313,9 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       disabledPluginChecks: [],
       doubleClickOpensDiff: null,
       agentInstructions: "",
+      agent: "",
+      agentModel: "",
+      agentEffort: "",
     },
     confirmation: {
       onCreate: "ask",
@@ -292,6 +327,10 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     shelf: { removeApplied: false },
     issueNavigation: [],
     mappings: { excluded: [], added: [] },
+  },
+  build: {
+    openToolWindow: "always",
+    focusToolWindow: "never",
   },
   console: {
     softWrap: false,
@@ -329,6 +368,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     valueTooltipDelay: 700,
     skipLibraryCode: true,
     debugServerPage: false,
+    flutterHotReloadOnSave: true,
     python: { attachSubprocess: true, gevent: false },
   },
   run: {
@@ -344,6 +384,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     env: {},
     shellPath: "",
     tabName: "Local",
+    appTitleAsTabName: "running",
     audibleBell: true,
     closeOnExit: true,
     mouseReporting: true,
@@ -357,6 +398,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     escapeToEditor: false,
     cursorShape: "block",
     cursorBlink: true,
+    maxFps: "unlimited",
     useEditorFont: true,
     fontFamily: "JetBrains Mono",
     fontSize: 13,
@@ -443,6 +485,9 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
       doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
       agentInstructions: text(c.agentInstructions, d.commit.agentInstructions),
+      agent: text(c.agent, d.commit.agent),
+      agentModel: text(c.agentModel, d.commit.agentModel),
+      agentEffort: text(c.agentEffort, d.commit.agentEffort),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -462,6 +507,16 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       excluded: strings(obj(v.mappings).excluded, d.mappings.excluded),
       added: strings(obj(v.mappings).added, d.mappings.added),
     },
+  };
+}
+
+export function validateBuild(raw: unknown): BuildSettingsValid {
+  const d = DEFAULT_WORKFLOW.build;
+  const v = obj(raw);
+  const when = ["always", "onError", "never"] as const;
+  return {
+    openToolWindow: oneOf(v.openToolWindow, when, d.openToolWindow),
+    focusToolWindow: oneOf(v.focusToolWindow, when, d.focusToolWindow),
   };
 }
 
@@ -506,6 +561,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
     debugServerPage: bool(v.debugServerPage, d.debugServerPage),
+    flutterHotReloadOnSave: bool(v.flutterHotReloadOnSave, d.flutterHotReloadOnSave),
     python: {
       attachSubprocess: bool(py.attachSubprocess, d.python.attachSubprocess),
       gevent: bool(py.gevent, d.python.gevent),
@@ -551,6 +607,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     env,
     shellPath: text(v.shellPath, d.shellPath).trim(),
     tabName: nonEmpty(v.tabName, d.tabName),
+    appTitleAsTabName: oneOf(v.appTitleAsTabName, ["running", "always", "off"] as const, d.appTitleAsTabName),
     audibleBell: bool(v.audibleBell, d.audibleBell),
     closeOnExit: bool(v.closeOnExit, d.closeOnExit),
     mouseReporting: bool(v.mouseReporting, d.mouseReporting),
@@ -564,6 +621,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),
     cursorBlink: bool(v.cursorBlink, d.cursorBlink),
+    maxFps: oneOf(v.maxFps, ["unlimited", "60", "30", "15", "10"] as const, d.maxFps),
     useEditorFont: bool(v.useEditorFont, d.useEditorFont),
     fontFamily: nonEmpty(v.fontFamily, d.fontFamily),
     fontSize: num(v.fontSize, d.fontSize, WORKFLOW_LIMITS.terminalFontSize),
@@ -632,6 +690,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
     vcs: validateVcs(root.vcs),
+    build: validateBuild(root.build),
     console: validateConsole(root.console),
     debugger: validateDebugger(root.debugger),
     run: validateRun(root.run),

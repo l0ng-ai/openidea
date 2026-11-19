@@ -355,6 +355,24 @@ impl ClientHandler {
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
     }
 
+    fn publish_flutter_outline(&self, mgr: &LspManager, params: Value) {
+        let params: crate::flutter_outline::Params = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("{}: bad publishFlutterOutline: {e}", self.server.name);
+                return;
+            }
+        };
+        let Some(path) = uri_to_path(&params.uri) else { return };
+        if !self.server.is_live(self.generation) {
+            return;
+        }
+        let items = crate::flutter_outline::items(&mgr.conv(self.encoding()), &path, params.outline);
+        if mgr.set_flutter_outline(&path, &self.server, self.generation, items) {
+            mgr.sink().emit(IdeEvent::LspRefresh { server: self.server.id, kind: LspRefreshKind::FlutterOutline });
+        }
+    }
+
     /// Once per unresolved plugin, whether m2e marked a `pom.xml` or only logged it.
     fn build_plan_failure(&self, mgr: &LspManager, (plugin, body): (String, String)) {
         if mgr.first_message(&self.server.name, &format!("build plan: {plugin}")) {
@@ -562,6 +580,7 @@ impl Handler for ClientHandler {
                 }
             }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
+            "dart/textDocument/publishFlutterOutline" => self.publish_flutter_outline(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();

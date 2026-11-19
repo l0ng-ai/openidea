@@ -1,0 +1,18 @@
+id = "test.search"
+name = "Search fixture"
+version = "0.1.0"
+engines.openidea = "^1.14"
+wasm = "dist/plugin.wasm"
+capabilities.required = ["project.read"]
+
+[[contributes.searchCategories]]
+id = "routes"
+title = "Routes"
+
+[[contributes.searchCategories]]
+id = "requests"
+title = "Requests"
+
+[[contributes.commands]]
+id = "open"
+title = "Open request"

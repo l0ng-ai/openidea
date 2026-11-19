@@ -41,6 +41,8 @@ const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
 const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const EDITOR_SIZE: (f64, f64) = (1100.0, 720.0);
+const EDITOR_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -77,6 +79,24 @@ pub struct Launch {
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
+    /// Editor windows: the file to show (Open in New Window → lightweight aux editor).
+    #[serde(default)]
+    pub editor: Option<Box<EditorLaunch>>,
+}
+
+/// A file opened in a lightweight editor window, with optional caret / selection (0-based).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorLaunch {
+    pub path: ide_core::IpcPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
 
 /// Local files to compare with a deployment server (Sync with Deployed).
@@ -420,11 +440,13 @@ pub enum AuxKind {
     Settings,
     Comparison,
     Diff,
+    Editor,
     Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
+    const ALL: [AuxKind; 5] =
+        [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Editor, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
@@ -432,13 +454,14 @@ impl AuxKind {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
             AuxKind::Diff => "diff",
+            AuxKind::Editor => "editor",
             AuxKind::Deployment => "deployment",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        matches!(self, AuxKind::Comparison | AuxKind::Diff)
+        matches!(self, AuxKind::Comparison | AuxKind::Diff | AuxKind::Editor)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -462,6 +485,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_MIN_SIZE,
             AuxKind::Comparison => COMPARISON_MIN_SIZE,
             AuxKind::Diff => DIFF_MIN_SIZE,
+            AuxKind::Editor => EDITOR_MIN_SIZE,
             AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
         }
     }
@@ -471,6 +495,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_SIZE,
             AuxKind::Comparison => COMPARISON_SIZE,
             AuxKind::Diff => DIFF_SIZE,
+            AuxKind::Editor => EDITOR_SIZE,
             AuxKind::Deployment => DEPLOYMENT_SIZE,
         }
     }
@@ -792,7 +817,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
+        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1803,6 +1828,28 @@ pub fn open_diff_window(
     )
 }
 
+/// Opens a lightweight editor window for `editor.path` ("Open in New Window"), sharing the
+/// parent's project documents and language servers.
+pub fn open_editor_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    editor: EditorLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Editor,
+            title: "Editor",
+            size: AuxKind::Editor.default_size(),
+            min_size: AuxKind::Editor.min_size(),
+            launch: Launch { editor: Some(Box::new(editor)), ..Default::default() },
+            background,
+        },
+    )
+}
+
 /// Opens (or focuses and hands over to) the project window's Sync with Deployed window: local
 /// files next to their copies on a deployment server, like IDEA's.
 pub fn open_deployment_window(
@@ -2099,6 +2146,20 @@ fn fit_bounds(
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// A link in an embedded page that asks for a new window (Flutter DevTools' documentation links)
+/// opens in the system browser; the IDE itself never needs such a window.
+fn open_popup_in_browser<R: tauri::Runtime>(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<R> {
+    if matches!(url.scheme(), "http" | "https")
+        && let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+    {
+        tracing::warn!("cannot open {url}: {e}");
+    }
+    tauri::webview::NewWindowResponse::Deny
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
@@ -2749,14 +2810,24 @@ mod tests {
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
         assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
+        assert_eq!(auxiliary("editor-project-2-3"), Some((AuxKind::Editor, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
         assert_eq!(state_key("diff-main-3"), "diff");
+        assert_eq!(state_key("editor-main-3"), "editor");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = [
+            "comparison-main-0",
+            "diff-main-1",
+            "editor-main-2",
+            "project-2",
+            "main",
+            "settings-main",
+            "deployment-project-2",
+        ];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 

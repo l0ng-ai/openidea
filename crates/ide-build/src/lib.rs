@@ -25,7 +25,8 @@ pub use gradle_deps::{GradleDependency, GradleReport, gradle_dependencies, gradl
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
 pub use sbt::{SbtBuild, SbtProject};
 pub use sync::{
-    SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_gradle_model, sync_maven,
+    SyncOptions, SyncProgress, maven_offline, maven_profiles, save_maven_offline, save_maven_profiles, sync_gradle,
+    sync_gradle_model, sync_maven,
 };
 
 use serde::{Deserialize, Serialize};

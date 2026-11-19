@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
 import { CLEAR_COLOR, _setSchemeSource } from "@/platform/colorScheme";
 import { setLocale } from "@/platform/i18n";
@@ -9,6 +9,7 @@ import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings, stage, stagedValue, useSettingsDialog } from "../model/staging";
 import { PageContext } from "../components/context";
 import { COLOR_SCHEME_PAGES } from "../pages/editor/colorScheme";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 
 const mocks = vi.hoisted(() => ({
   open: vi.fn(),
@@ -40,6 +41,7 @@ const schemePage = (id: string) => {
   );
 };
 
+beforeAll(() => preloadBuiltinPage("editor.colorScheme"));
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.open.mockResolvedValue("/schemes/forest.icls");

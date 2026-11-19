@@ -16,6 +16,7 @@ import {
   Icon,
   IconButton,
   Menu,
+  Toolbar,
   Tree,
   showContextMenu,
   tooltipAttrs,
@@ -523,6 +524,7 @@ export function DatabaseView() {
             return color ? `var(--db-color-${color})` : undefined;
           }}
           speedSearchField
+          horizontalScroll
           renderNode={(n: Node, state) => {
             const i = icon(n);
             const d = detail(n);
@@ -611,7 +613,7 @@ function DatabaseToolbar() {
   const active = !!target && [...connected].some((t) => splitTarget(t).id === splitTarget(target).id);
   const button = { size: "small", iconSize: 16 } as const;
   return (
-    <div className={styles.dbToolbar} role="toolbar" aria-label={tx("Database actions")}>
+    <Toolbar className={styles.dbToolbar} aria-label="Database actions">
       <IconButton
         ref={plus}
         {...button}
@@ -648,7 +650,7 @@ function DatabaseToolbar() {
       >
         <T>DDL</T>
       </button>
-    </div>
+    </Toolbar>
   );
 }
 

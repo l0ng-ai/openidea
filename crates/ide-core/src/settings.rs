@@ -34,6 +34,8 @@ pub struct Settings {
     pub project_structure: ProjectStructureSettings,
     /// Version Control (Git, Commit, Confirmation, Issue Navigation).
     pub vcs: VcsSettings,
+    /// Build, Execution, Deployment › Compiler (Build tool window).
+    pub build: BuildSettings,
     /// Build, Execution, Deployment › Console.
     pub console: ConsoleSettings,
     pub debugger: DebuggerSettings,
@@ -50,6 +52,8 @@ pub struct Settings {
     /// Per language server, by name (`rust-analyzer`): launch and protocol
     /// options on top of the language definition, or a server defined here.
     pub language_servers: BTreeMap<String, LanguageServerSettings>,
+    /// Tools › Download sources: a mirror prefix for the release archives the installer fetches.
+    pub tool_downloads: ToolDownloadSettings,
     /// Editor › Inspections profiles.
     pub inspections: InspectionSettings,
     /// Editor › Natural Languages › Spelling.
@@ -361,6 +365,22 @@ impl Default for McpServerSettings {
     }
 }
 
+/// Tools › Download sources: a mirror the installer tries when `github.com` is slow or
+/// unreachable.
+///
+/// The mirror is a proxy prefix: the official URL is appended to it unchanged
+/// (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
+/// public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
+/// hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
+/// default, so every download stays on its official host until the user opts in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ToolDownloadSettings {
+    /// Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
+    /// every download on its official host.
+    pub github_mirror: String,
+}
+
 /// Absent profiles retain automatic discovery for existing projects.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -490,6 +510,7 @@ impl Default for Settings {
             languages: LanguagesSettings::default(),
             project_structure: ProjectStructureSettings::default(),
             vcs: VcsSettings::default(),
+            build: BuildSettings::default(),
             console: ConsoleSettings::default(),
             debugger: DebuggerSettings::default(),
             run: RunSettings::default(),
@@ -499,6 +520,7 @@ impl Default for Settings {
             external_tools: Vec::new(),
             tools: BTreeMap::new(),
             language_servers: BTreeMap::new(),
+            tool_downloads: ToolDownloadSettings::default(),
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),
@@ -1175,11 +1197,31 @@ pub struct ArduinoSettings {
 }
 
 /// Languages & Frameworks › Markdown. Like IDEA's, it is application-level only.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MarkdownSettings {
     /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
     pub preview_font_size: Option<u32>,
+    /// "Detect commands that can be run right from Markdown files": gutter run icons on
+    /// shell code blocks and on command lines in code blocks.
+    pub run_commands: bool,
+    /// Where those commands run; unset asks when the project and the file's folder differ.
+    pub command_directory: Option<MarkdownCommandDirectory>,
+}
+
+impl Default for MarkdownSettings {
+    fn default() -> Self {
+        Self { preview_font_size: None, run_commands: true, command_directory: None }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownCommandDirectory {
+    /// The project's root folder.
+    Project,
+    /// The Markdown file's parent folder.
+    File,
 }
 
 impl LanguagesSettings {
@@ -1384,6 +1426,8 @@ pub struct GoSettings {
     pub goroot: String,
     /// Empty = `go env GOPATH`.
     pub gopath: String,
+    /// Format with gofumpt, a stricter gofmt (gopls `gofumpt`).
+    pub gofumpt: bool,
     pub build_tags: GoBuildTags,
     pub modules: GoModules,
 }
@@ -1514,6 +1558,9 @@ pub struct MavenSettings {
     /// project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
     /// from a library class's Download Sources banner.
     pub download_sources: bool,
+    /// Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
+    /// dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
+    pub update_snapshots: bool,
 }
 
 impl MavenSettings {

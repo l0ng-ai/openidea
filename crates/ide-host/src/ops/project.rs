@@ -80,6 +80,13 @@ pub fn settings_get(host: &Host, window: &str) -> Settings {
     })
 }
 
+/// Defaults plus the global layer, without any project's values: what new
+/// projects (and projects without their own value) get.
+#[command(trust = always)]
+pub fn settings_get_global(host: &Host) -> Settings {
+    host.with_proxy_password(host.global_settings.effective())
+}
+
 /// The removed built-in theme id a settings file of this window still names, if any:
 /// `settings_get` reports the built-in that stands in for it, so the notice about
 /// a theme that moved to a plugin can address the installs it concerns.
@@ -96,13 +103,16 @@ pub fn settings_removed_theme(host: &Host, window: &str) -> Option<String> {
 /// re-reads its effective settings.
 #[command(trust = always, desktop_body = sync)]
 pub fn settings_set(
-    host: &Host,
+    host: &Arc<Host>,
     window: &str,
     scope: SettingsScope,
     key: String,
     value: String,
 ) -> IdeResult<Settings> {
     let applied = set_settings(host, window, scope, &key, &value)?;
+    if key == "mcpServer" || key.starts_with("mcpServer.") {
+        host.mcp.apply(host);
+    }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
     if let Some(root) = applied.roots_changed {
@@ -386,6 +396,7 @@ ide_command::domain!(
     project_trust_set,
     project_trust_status,
     settings_get,
+    settings_get_global,
     settings_removed_theme,
     settings_set,
 );

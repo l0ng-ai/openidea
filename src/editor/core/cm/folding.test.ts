@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { codeFolding, foldEffect, foldService, foldable, foldedRanges } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
+import { javascript } from "@codemirror/lang-javascript";
 import {
   backendFoldingChanged,
   backendFolds,
@@ -141,10 +142,17 @@ describe("foldsFromRanges", () => {
   it("folds a custom region from its start marker through its end marker", () => {
     const s = EditorState.create({
       doc: "class A {\n  //region Fields\n  int a;\n  //endregion\n}\n",
-      extensions: EditorState.languageData.of(() => [{ commentTokens: { line: "//" } }]),
+      extensions: [EditorState.languageData.of(() => [{ commentTokens: { line: "//" } }]), foldingExtension(false)],
     });
     const [f] = foldsFromRanges(s, [fold(1, 3)]);
     expect(f).toMatchObject({ from: s.doc.line(2).from + 2, to: s.doc.line(4).to, custom: true });
+    const view = new EditorView({
+      state: s.update({ effects: setBackendFolds.of([fold(1, 3)]) }).state,
+      parent: document.createElement("div"),
+    });
+    view.dispatch({ effects: foldEffect.of({ from: f!.from, to: f!.to }) });
+    expect(view.dom.querySelector(".cm-foldPlaceholder")?.textContent).toBe("Fields");
+    view.destroy();
   });
 
   it("keeps a brace line that follows a statement or comment", () => {
@@ -266,16 +274,149 @@ describe("fold placeholder chip", () => {
     view.destroy();
   });
 
-  it("a chip whose position is the fold's start line still expands", () => {
+  it("a chip starting inside a comment still expands", () => {
     const view = foldedView();
     const [f] = view.state.field(backendFolds);
-    // A docstring fold starts at the end of its header line: a chip resolved
-    // through the line block would land on that line and find no fold.
-    expect(view.state.doc.lineAt(f!.from).to).toBe(f!.from);
+    expect(view.state.doc.sliceString(f!.from, f!.from + 3)).toBe('"""');
     fold(view);
     const chip = view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder")!;
     chip.click();
     expect(folded(view)).toEqual([]);
+    view.destroy();
+  });
+
+  it("the chip swallows mousedown so a caret move cannot replace it before the click", () => {
+    const view = foldedView();
+    fold(view);
+    const chip = view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder")!;
+    // A mousedown must not reach the editor: CM turns it into a mouse selection
+    // that moves the caret, and the caret change re-runs the inline blame refresh,
+    // which rebuilds this line's DOM and detaches the chip between mousedown and
+    // click, so the browser drops the click. jsdom cannot reproduce the DOM
+    // replacement; this locks the handler contract.
+    let reachedEditor = false;
+    view.contentDOM.addEventListener("mousedown", () => (reachedEditor = true));
+    const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    chip.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(reachedEditor).toBe(false);
+    // The click still expands.
+    chip.click();
+    expect(folded(view)).toEqual([]);
+    view.destroy();
+  });
+});
+
+describe("comment placeholders", () => {
+  it("folds JavaScript documentation through the syntax fallback", () => {
+    const doc = "/**\n * Adds a user.\n * More detail.\n */\nfunction addUser() {}";
+    const view = new EditorView({
+      state: EditorState.create({ doc, extensions: [javascript(), foldingExtension(false)] }),
+      parent: document.createElement("div"),
+    });
+    const first = view.state.doc.line(1);
+    const range = foldable(view.state, first.from, first.to)!;
+    view.dispatch({ effects: foldEffect.of(range) });
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe("/** Adds a user. ...*/");
+    view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder")!.click();
+    expect(foldedRanges(view.state).size).toBe(0);
+    view.dispatch({ effects: setBackendFolds.of([{ start_line: 0, end_line: 3, kind: "comment" }]) });
+    view.dispatch({ effects: foldEffect.of(foldable(view.state, first.from, first.to)!) });
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe("/** Adds a user. ...*/");
+    view.destroy();
+  });
+
+  it.each([
+    ["/** Returns the visitor name.\n * This line is folded.\n */\nconst value = 1;", 2, "/**...*/"],
+    [
+      "/*\n * Ordinary block comment for comparison.\n * It is not a documentation comment.\n */\nconst value = 1;",
+      3,
+      "/* Ordinary block comment for comparison. ...*/",
+    ],
+  ])(
+    "folds JavaScript block comments like IDEA with the syntax fallback and backend range in %s",
+    (doc, endLine, expected) => {
+      const view = new EditorView({
+        state: EditorState.create({ doc, extensions: [javascript(), foldingExtension(false)] }),
+        parent: document.createElement("div"),
+      });
+      const first = view.state.doc.line(1);
+      view.dispatch({ effects: foldEffect.of(foldable(view.state, first.from, first.to)!) });
+      expect(view.dom.querySelector(".cm-line")?.textContent).toBe(expected);
+      view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder")!.click();
+      view.dispatch({ effects: setBackendFolds.of([{ start_line: 0, end_line: endLine, kind: "comment" }]) });
+      view.dispatch({ effects: foldEffect.of(foldable(view.state, first.from, first.to)!) });
+      expect(view.dom.querySelector(".cm-line")?.textContent).toBe(expected);
+      view.destroy();
+    },
+  );
+
+  function foldComment(doc: string, endLine: number) {
+    const state = EditorState.create({ doc, extensions: [foldingExtension(false)] }).update({
+      effects: setBackendFolds.of([{ start_line: 0, end_line: endLine, kind: "comment" }]),
+    }).state;
+    const view = new EditorView({ state, parent: document.createElement("div") });
+    const range = view.state.field(backendFolds)[0]!;
+    expect(foldable(view.state, view.state.doc.line(1).from, view.state.doc.line(1).to)).toEqual({
+      from: range.from,
+      to: range.to,
+    });
+    view.dispatch({ effects: foldEffect.of({ from: range.from, to: range.to }) });
+    return { view, range };
+  }
+
+  it.each([
+    ["/**\n * Adds a user.\n * More detail.\n */", 3, "/** Adds a user. ...*/"],
+    ["/** Saves.\n * More detail.\n */", 2, "/**...*/"],
+    ["/**ill-formed summary\n * More detail\n */", 2, "/**...*/"],
+    ["/**\n * Saves.\n */", 2, "/** Saves. */"],
+    ["/** Saves.\n *\n */", 2, "/**...*/"],
+    ["/**\n */", 1, "/***/"],
+    ["/*\n * Ordinary comment.\n * More detail.\n */", 3, "/* Ordinary comment. ...*/"],
+    ["/*\n * Single summary.\n */", 2, "/* Single summary. */"],
+    ["/**\n * 添加 😀 用户。\n * 更多说明。\n */", 3, "/** 添加 😀 用户。 ...*/"],
+    ["/**\n * Builds `User` data.\n * @return the result\n */", 3, "/** Builds `User` data. ...*/"],
+    [
+      "/**\n * @param {number} count total\n * @returns {string} label\n */",
+      3,
+      "/** @param {number} count total ...*/",
+    ],
+    ["/**\n * @param int $count total\n * @return string label\n */", 3, "/** @param int $count total ...*/"],
+    ["/**\n *\n * Late summary.\n */", 3, "/**...*/"],
+    ["/// Adds a user.\n/// More detail.", 1, "/// Adds a user. ..."],
+    ["///No space.\n///More detail.", 1, "///No space. ..."],
+    ["///\n/// Summary.\n///", 2, "/// Summary. ..."],
+    ["//! Module docs.\n//! More detail.", 1, "//! Module docs. ..."],
+    ['"""Module docs.\nMore detail.\n"""', 2, '"""Module docs. ..."""'],
+    ['@doc ~S"""\n  Function docs.\n  More detail.\n  """', 3, '@doc ~S""" Function docs. ..."""'],
+  ])("shows the source syntax and summary for %s", (doc, endLine, expected) => {
+    const { view } = foldComment(doc, endLine);
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe(expected);
+    view.dom.querySelector<HTMLElement>(".cm-foldPlaceholder")!.click();
+    expect(foldedRanges(view.state).size).toBe(0);
+    view.destroy();
+  });
+
+  it.each([
+    ["// Ordinary comment.\n// More detail.", 1, "// Ordinary comment.…"],
+    ["/// Docs.\n// Ordinary comment.", 1, "/// Docs.…"],
+  ])("keeps the existing placeholder for line comments in %s", (doc, endLine, expected) => {
+    const { view } = foldComment(doc, endLine);
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe(expected);
+    view.destroy();
+  });
+
+  it("preserves code following the closing marker", () => {
+    const { view, range } = foldComment("/**\n * First.\n * More detail.\n */ int value;", 3);
+    expect(view.state.doc.sliceString(range.to)).toBe(" int value;");
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe("/** First. ...*/ int value;");
+    view.destroy();
+  });
+
+  it("preserves indentation before a documentation comment", () => {
+    const { view, range } = foldComment("  /**\n   * Summary.\n   */\n  class A {}", 2);
+    expect(range.from).toBe(2);
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe("  /** Summary. */");
     view.destroy();
   });
 });

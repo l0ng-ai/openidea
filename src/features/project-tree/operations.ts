@@ -6,7 +6,13 @@ import { writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
 import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
-import { canRevealInFileManager, fileManagerName, fileManagerPath, revealInFileManager } from "@/platform/fileManager";
+import {
+  canRevealInFileManager,
+  fileManagerName,
+  fileManagerPath,
+  openWithSystemApp,
+  revealInFileManager,
+} from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { ask, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
@@ -894,6 +900,16 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
   } catch (e) {
     const fileManager = tx(fileManagerName());
     fail(tx`Cannot reveal in ${fileManager}`, e);
+  }
+}
+
+/** Opens each selected file with the application the OS associates with it. */
+export async function openWithAssociatedApp(nodes: ProjectNode[] = selectedNodes()) {
+  for (const file of nodes.filter((n) => !n.dir && !n.placeholder)) {
+    if (!(await openWithSystemApp(file.path))) {
+      notifications().notify({ level: "error", title: tx`Cannot open ${nameOf(file.path)} with its application` });
+      return;
+    }
   }
 }
 

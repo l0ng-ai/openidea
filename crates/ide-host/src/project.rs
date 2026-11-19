@@ -61,6 +61,10 @@ pub struct Project {
     pub agents: Arc<ide_agent::AgentManager>,
     /// Native notebooks and owned kernels, scoped to this project incarnation.
     pub notebooks: Arc<crate::notebook::NotebookService>,
+    /// Flutter's devices; its daemon starts when the UI first asks for them.
+    pub(crate) flutter: ide_flutter::FlutterDaemon,
+    /// Flutter DevTools; its server starts when the UI first asks for it.
+    pub(crate) devtools: ide_flutter::DevToolsServer,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
     pub(crate) watcher: Arc<Watcher>,
@@ -200,6 +204,7 @@ impl Host {
                     };
                     let profiles = ide_build::maven_profiles(&cache);
                     ide_sdk::maven_profiles::configure_jdtls(cfg, root, &effective, &profiles, &cache);
+                    ide_sdk::maven_profiles::configure_offline(cfg, ide_build::maven_offline(&cache));
                 }
                 ide_sdk::java::cap_java_home(cfg, &ide_sdk::java::installed_jdks());
                 if cfg.name == "jdtls" {
@@ -601,6 +606,8 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted,
+            flutter: ide_flutter::FlutterDaemon::new(root.clone(), sink.clone()),
+            devtools: ide_flutter::DevToolsServer::new(root.clone()),
             root,
             sink,
             languages,
@@ -731,6 +738,10 @@ impl Host {
         agents.set_mcp_servers_hook(Box::new(move || {
             crate::ops::agent::session_mcp_servers(&settings, &approvals, &secrets, &root)
         }));
+        {
+            let mcp_executable = self.mcp_executable.clone();
+            agents.set_mcp_executable_hook(Box::new(move || mcp_executable.read().clone()));
+        }
         (db, http_history, agents)
     }
 }
@@ -809,6 +820,8 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
+            flutter: ide_flutter::FlutterDaemon::new(dir.clone(), sink.clone()),
+            devtools: ide_flutter::DevToolsServer::new(dir.clone()),
             sink,
             languages,
             settings,

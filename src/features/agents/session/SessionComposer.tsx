@@ -18,7 +18,7 @@ import { useEffortFocus } from "../effortFocus";
 import { isBusy } from "../model";
 import { asksInCard, type PermissionEntry } from "../permission";
 import {
-  cancelTask,
+  stopTask,
   editQueued,
   refreshTaskModels,
   removeQueued,
@@ -173,10 +173,13 @@ export function SessionComposer({
     return task.config.map((o) => (o === model ? pickerModel : o));
   }, [task.config, model, candidateModels]);
   const [sending, setSending] = useState(false);
+  const configChange = useRef<{ loadingModel: boolean } | null>(null);
+  const [configuring, setConfiguring] = useState<typeof configChange.current>(null);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
   const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
+  const shellRunning = useAgents((s) => s.shellRunning.has(task.id));
   // ↑ recalls this conversation's messages, newest first.
   const history = useMemo(
     () => (entries ?? []).flatMap((e) => (e.type === "user" && e.text ? [e.text] : [])).reverse(),
@@ -190,7 +193,7 @@ export function SessionComposer({
     task.status === "running" &&
     (composer.images.length === 0 || !!task.capabilities.images);
   const send = (now: boolean) => {
-    if (!canSend(composer) || sending || task.status === "archived") return;
+    if (!canSend(composer) || sending || configChange.current || task.status === "archived") return;
     setSending(true);
     sendMessage(task.id, now && (whileRunning !== "steer" || steers))
       .catch((e: unknown) =>
@@ -202,14 +205,30 @@ export function SessionComposer({
       )
       .finally(() => setSending(false));
   };
-  const setOption = (id: string, value: string) =>
-    void setTaskConfig(task.id, id, value).catch((e: unknown) =>
-      notifications().notify({
-        level: "error",
-        title: "Couldn't change the setting",
-        body: String(e),
-      }),
-    );
+  const setOption = (id: string, value: string) => {
+    const changingModel = id === model?.id;
+    const loadingModel = changingModel && !model.values.some((v) => v.value === value);
+    const pendingModel = model?.current != null && model.current !== task.model;
+    const change = loadingModel || (changingModel && configChange.current) || pendingModel ? { loadingModel } : null;
+    if (change) {
+      configChange.current = change;
+      setConfiguring(change);
+    }
+    void setTaskConfig(task.id, id, value)
+      .catch((e: unknown) =>
+        notifications().notify({
+          level: "error",
+          title: "Couldn't change the setting",
+          body: String(e),
+        }),
+      )
+      .finally(() => {
+        if (change && configChange.current === change) {
+          configChange.current = null;
+          setConfiguring(null);
+        }
+      });
+  };
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
   const shown = useEditorShown();
   const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
@@ -268,6 +287,7 @@ export function SessionComposer({
                 canRefreshModels
                   ? {
                       refreshing: requestingModels || (catalog?.refreshing ?? false),
+                      loadingSettings: configuring?.loadingModel,
                       retryAtMs: catalog?.retryAtMs ?? null,
                       error: requestingModels ? null : (catalog?.error ?? null),
                       onOpen: () => void refreshTaskModels(task.id, false),
@@ -297,12 +317,12 @@ export function SessionComposer({
         }
         actions={
           <>
-            {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
+            {(busy || shellRunning) && <IconButton icon="stop" title="Stop" onClick={() => void stopTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}
               variant={busy ? "secondary" : "primary"}
-              disabled={!canSend(composer) || sending || task.status === "archived"}
+              disabled={!canSend(composer) || sending || configuring !== null || task.status === "archived"}
               onClick={() => send(false)}
             />
           </>

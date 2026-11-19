@@ -25,6 +25,7 @@ describe("languages settings", () => {
       python: { interpreter: " /usr/bin/python3 ", activateVirtualenv: "yes" },
       node: { packageManager: "pip" },
       rust: { checkCommand: "clippy", checkOnSave: false },
+      go: { gofumpt: true },
       typescript: { version: "" },
       java: {
         jdtlsVmArgs: " -Xmx2g ",
@@ -43,6 +44,9 @@ describe("languages settings", () => {
     expect(v.node.packageManager).toBe("");
     expect(v.rust.checkCommand).toBe("clippy");
     expect(v.rust.checkOnSave).toBe(false);
+    expect(v.go.gofumpt).toBe(true);
+    expect(DEFAULT_LANGUAGES.go.gofumpt).toBe(false);
+    expect(validateLanguages({ go: { gofumpt: "yes" } }).go.gofumpt).toBe(false);
     expect(v.typescript.version).toBe("bundled");
     expect(v.java.jdtlsVmArgs).toBe("-Xmx2g");
     expect(v.java.jdk).toBe("");
@@ -61,6 +65,7 @@ describe("languages settings", () => {
       activeProfiles: "",
       delegateBuild: false,
       downloadSources: false,
+      updateSnapshots: false,
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -73,6 +78,7 @@ describe("languages settings", () => {
     expect(validateLanguages({ java: { maven: { delegateBuild: true } } }).java.maven.delegateBuild).toBe(true);
     expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
     expect(validateLanguages({ java: { maven: { downloadSources: true } } }).java.maven.downloadSources).toBe(true);
+    expect(validateLanguages({ java: { maven: { updateSnapshots: true } } }).java.maven.updateSnapshots).toBe(true);
     const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
     expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
   });
@@ -206,9 +212,18 @@ describe("languages settings", () => {
   });
 
   it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
-    expect(validateLanguages({}).markdown).toEqual({ previewFontSize: null });
-    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown).toEqual({ previewFontSize: 72 });
-    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown).toEqual({ previewFontSize: null });
+    expect(validateLanguages({}).markdown.previewFontSize).toBeNull();
+    expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown.previewFontSize).toBe(72);
+    expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown.previewFontSize).toBeNull();
+  });
+
+  it("detects Markdown commands by default and asks for their folder until one is chosen", () => {
+    expect(validateLanguages({}).markdown).toMatchObject({ runCommands: true, commandDirectory: null });
+    expect(validateLanguages({ markdown: { runCommands: false, commandDirectory: "file" } }).markdown).toMatchObject({
+      runCommands: false,
+      commandDirectory: "file",
+    });
+    expect(validateLanguages({ markdown: { commandDirectory: "elsewhere" } }).markdown.commandDirectory).toBeNull();
   });
 
   it("keeps the Markdown page global, like IDEA's application-level setting", () => {

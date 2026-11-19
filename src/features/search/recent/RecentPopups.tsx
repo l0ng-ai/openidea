@@ -53,6 +53,13 @@ import { cycleSwitcher, hideRecentPopup, showRecentPopup, useRecentPopup } from 
 import styles from "./RecentPopups.module.css";
 import { tx } from "@/platform/i18n";
 
+/** Whether Delete in `target` (a filter field) has text to delete: a selection or text after the caret. */
+function textAfterCaret(target: EventTarget): boolean {
+  if (!(target instanceof HTMLInputElement)) return false;
+  const { selectionStart, selectionEnd, value } = target;
+  return selectionStart !== selectionEnd || (selectionEnd ?? value.length) < value.length;
+}
+
 export function RecentPopupsOverlay() {
   const open = useRecentPopup((s) => s.open);
   const session = useRecentPopup((s) => s.session);
@@ -267,8 +274,9 @@ function RecentFilesDialog() {
       cycleSwitcher(e.shiftKey ? -1 : 1);
       return;
     }
-    // In Recent Files Backspace edits the speed search text first.
-    if (e.key === "Delete" || (e.key === "Backspace" && !query)) {
+    // In Recent Files Backspace edits the speed search text first, and so does Delete while
+    // the filter has text after the caret.
+    if ((e.key === "Delete" && !textAfterCaret(e.target)) || (e.key === "Backspace" && !query)) {
       e.preventDefault();
       void removeSelected();
       return;
@@ -601,8 +609,9 @@ function RecentLocationsDialog() {
       open(items[active], e.shiftKey);
       return;
     }
-    // IDEA: Delete removes the selected place (Backspace too while there is no filter text).
-    if ((e.key === "Delete" || (e.key === "Backspace" && !query)) && items[active]) {
+    // IDEA: Delete removes the selected place (Backspace too while there is no filter text), unless
+    // the filter has text after the caret to delete.
+    if (((e.key === "Delete" && !textAfterCaret(e.target)) || (e.key === "Backspace" && !query)) && items[active]) {
       e.preventDefault();
       dismissLocation(items[active]!);
       return;

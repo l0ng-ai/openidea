@@ -39,6 +39,7 @@ export function GraphCell({
   interactive?: boolean;
 }) {
   const cy = ROW / 2;
+  const width = row.width * LANE;
   const draw = (s: GraphSegment, i: number, up: boolean) => {
     const fromX = x(s.fromX ?? s.from);
     const toX = x(s.toX ?? s.to);
@@ -112,7 +113,7 @@ export function GraphCell({
   return (
     <svg
       className={styles.graph}
-      width={row.width * LANE}
+      width={width}
       height={ROW}
       aria-label={tx("Commit graph")}
       onMouseLeave={() => onHover?.(null)}

@@ -690,7 +690,7 @@ mod tests {
         for (lang, servers) in [
             ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
-            ("java", vec!["jdtls", "kmp-lsp"]),
+            ("java", vec!["jdtls", "java-analyzer", "kmp-lsp"]),
             ("kotlin", vec!["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();

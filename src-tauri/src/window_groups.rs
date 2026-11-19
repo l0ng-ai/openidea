@@ -105,7 +105,6 @@ fn native_select(app: &AppHandle, group: &Group, to: &WebviewWindow) -> IdeResul
     crate::macos::sync_tab_group(members, &anchor, to).map_err(|e| IdeError::internal(e.to_string()))
 }
 
-#[cfg(target_os = "macos")]
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     state.groups.lock().join(anchor, new_window)?;

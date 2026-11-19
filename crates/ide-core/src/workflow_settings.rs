@@ -170,6 +170,12 @@ pub struct CommitSettings {
     pub double_click_opens_diff: Option<bool>,
     /// Team conventions for Generate Commit Message with Agent, added to its prompt.
     pub agent_instructions: String,
+    /// The coding agent Generate Commit Message with Agent uses; empty follows the latest task's agent.
+    pub agent: String,
+    /// That agent's model for commit messages; empty keeps the model the agent would use.
+    pub agent_model: String,
+    /// That model's thinking level for commit messages; empty keeps the agent's.
+    pub agent_effort: String,
 }
 
 impl Default for CommitSettings {
@@ -192,6 +198,9 @@ impl Default for CommitSettings {
             disabled_plugin_checks: Vec::new(),
             double_click_opens_diff: None,
             agent_instructions: String::new(),
+            agent: String::new(),
+            agent_model: String::new(),
+            agent_effort: String::new(),
         }
     }
 }
@@ -308,6 +317,23 @@ pub struct SqlResolutionScope {
     pub schema: String,
 }
 
+/// Build, Execution, Deployment › Compiler (Build tool window behaviour).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BuildSettings {
+    /// When to open the Build tool window: `always` | `onError` | `never`.
+    pub open_tool_window: String,
+    /// When to focus the Build tool window: `always` | `onError` | `never`.
+    pub focus_tool_window: String,
+}
+
+impl Default for BuildSettings {
+    fn default() -> Self {
+        // Builds open the tool window without taking focus.
+        Self { open_tool_window: "always".into(), focus_tool_window: "never".into() }
+    }
+}
+
 /// Build, Execution, Deployment › Console.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -367,6 +393,8 @@ pub struct DebuggerSettings {
     pub skip_library_code: bool,
     /// JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session.
     pub debug_server_page: bool,
+    /// Flutter: saving a Dart file of a running debug session hot reloads the app.
+    pub flutter_hot_reload_on_save: bool,
     pub python: PythonDebuggerSettings,
 }
 
@@ -387,6 +415,7 @@ impl Default for DebuggerSettings {
             value_tooltip_delay: 700,
             skip_library_code: true,
             debug_server_page: false,
+            flutter_hot_reload_on_save: true,
             python: PythonDebuggerSettings::default(),
         }
     }
@@ -445,6 +474,9 @@ pub struct TerminalSettings {
     /// Shell command line; empty = the login shell.
     pub shell_path: String,
     pub tab_name: String,
+    /// Title a program sets (OSC 0/2) as the tab's name: `running` (while a command runs),
+    /// `always`, or `off`.
+    pub app_title_as_tab_name: String,
     pub audible_bell: bool,
     pub close_on_exit: bool,
     pub mouse_reporting: bool,
@@ -460,6 +492,8 @@ pub struct TerminalSettings {
     /// `block` | `underline` | `bar`.
     pub cursor_shape: String,
     pub cursor_blink: bool,
+    /// Cap PTY→xterm paint rate: `unlimited` | `60` | `30` | `15` | `10`.
+    pub max_fps: String,
     pub use_editor_font: bool,
     pub font_family: String,
     pub font_size: f32,
@@ -478,6 +512,7 @@ impl Default for TerminalSettings {
             env: BTreeMap::new(),
             shell_path: String::new(),
             tab_name: "Local".into(),
+            app_title_as_tab_name: "running".into(),
             audible_bell: true,
             close_on_exit: true,
             mouse_reporting: true,
@@ -491,6 +526,7 @@ impl Default for TerminalSettings {
             escape_to_editor: false,
             cursor_shape: "block".into(),
             cursor_blink: true,
+            max_fps: "unlimited".into(),
             use_editor_font: true,
             font_family: "JetBrains Mono".into(),
             font_size: 13.0,

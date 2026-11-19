@@ -184,6 +184,34 @@ describe("Changes tree diffs follow the commit interface setting (#1863)", () =>
     act(() => fireEvent.doubleClick(row));
   };
 
+  it.each([
+    ["Changes", "modified"],
+    ["Unversioned Files", "untracked"],
+  ] as const)("opens the working files in the selected %s group with F4", async (group, kind) => {
+    modal(false);
+    useVcs.setState({
+      status: [
+        { ...file, unstaged: kind },
+        { ...file, path: "/p/src/b.ts", relPath: "src/b.ts", unstaged: kind },
+        { ...file, path: "/p/gone.ts", relPath: "gone.ts", unstaged: "deleted" },
+        { ...file, path: "/p/nested/", relPath: "nested/", unstaged: "untracked" },
+        { ...file, path: "/p/other.ts", relPath: "other.ts", unstaged: kind === "modified" ? "untracked" : "modified" },
+      ],
+    });
+    render(<ChangesTree mode="commit" />);
+
+    fireEvent.mouseDown(screen.getByText(group, { exact: true }), { button: 0 });
+    fireEvent.keyDown(screen.getByRole("tree", { name: "Changes" }), { key: "F4" });
+
+    await vi.waitFor(() =>
+      expect(openFile.mock.calls).toEqual([
+        ["/p/src/a.ts", { focus: false }],
+        ["/p/src/b.ts", { focus: true }],
+      ]),
+    );
+    expect(openInput).not.toHaveBeenCalled();
+  });
+
   it("opens the source file of a double-clicked file with the modal interface", async () => {
     render(<ChangesTree mode="local" />);
     await activate();

@@ -473,7 +473,25 @@ export function showManageRemotes() {
 }
 
 function RemotesDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
+  const [repo, setRepo] = useState(currentRepo);
+  return (
+    <Dialog
+      open
+      title="Git Remotes"
+      onClose={onClose}
+      width={560}
+      buttons={[{ label: "OK", role: "default", autoFocus: true, onClick: onClose }]}
+    >
+      <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={setRepo} />
+        {/* Keyed: picking another repository starts a fresh list, so answers for the previous one are dropped. */}
+        <RemotesList key={repo} repo={repo} />
+      </div>
+    </Dialog>
+  );
+}
+
+function RemotesList({ repo }: { repo: string | null }) {
   const [remotes, setRemotes] = useState<Remote[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -527,49 +545,35 @@ function RemotesDialog({ onClose }: { onClose: () => void }) {
   const current = remotes.find((r) => r.name === selected);
 
   return (
-    <Dialog
-      open
-      title="Git Remotes"
-      onClose={onClose}
-      width={560}
-      buttons={[{ label: "OK", role: "default", autoFocus: true, onClick: onClose }]}
-    >
-      <div className={styles.form}>
-        <div className={styles.manageBar} role="toolbar" aria-label={tx("Remotes")}>
-          <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
-          <IconButton
-            icon="minus"
-            title="Remove Remote"
-            size="small"
-            disabled={!current}
-            onClick={() => void remove()}
-          />
-          <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
-        </div>
-        <div className={styles.choiceList} role="listbox" aria-label={tx("Remotes")}>
-          {!remotes.length && (
-            <div className={styles.empty}>
-              <T>No remotes</T>
-            </div>
-          )}
-          {remotes.map((r) => (
-            <button
-              key={r.name}
-              type="button"
-              role="option"
-              aria-selected={r.name === selected}
-              className={clsx(styles.manageRow, r.name === selected && styles.manageRowSelected)}
-              onClick={() => setSelected(r.name)}
-              onDoubleClick={() => edit(r)}
-            >
-              <span className={styles.fileName}>{r.name}</span>
-              <span className={clsx(styles.fileDir, styles.mono)}>{r.url}</span>
-            </button>
-          ))}
-        </div>
-        {error && <div className={styles.error}>{error}</div>}
+    <>
+      <div className={styles.manageBar} role="toolbar" aria-label={tx("Remotes")}>
+        <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
+        <IconButton icon="minus" title="Remove Remote" size="small" disabled={!current} onClick={() => void remove()} />
+        <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
       </div>
-    </Dialog>
+      <div className={styles.choiceList} role="listbox" aria-label={tx("Remotes")}>
+        {!remotes.length && (
+          <div className={styles.empty}>
+            <T>No remotes</T>
+          </div>
+        )}
+        {remotes.map((r) => (
+          <button
+            key={r.name}
+            type="button"
+            role="option"
+            aria-selected={r.name === selected}
+            className={clsx(styles.manageRow, r.name === selected && styles.manageRowSelected)}
+            onClick={() => setSelected(r.name)}
+            onDoubleClick={() => edit(r)}
+          >
+            <span className={styles.fileName}>{r.name}</span>
+            <span className={clsx(styles.fileDir, styles.mono)}>{r.url}</span>
+          </button>
+        ))}
+      </div>
+      {error && <div className={styles.error}>{error}</div>}
+    </>
   );
 }
 

@@ -15,8 +15,8 @@ import { tx } from "@/platform/i18n";
 
 const RELOAD_DELAY = 250;
 
-export function WebEditor({ path, children }: { path: string; tabId: string; children: ReactNode }) {
-  const preview = useWebPreview((s) => !!s[path]);
+export function WebEditor({ path, tabId, children }: { path: string; tabId: string; children: ReactNode }) {
+  const preview = useWebPreview((s) => !!s[tabId]);
   const browsers = useBrowsers((s) => s.list);
   const ref = useRef<HTMLDivElement>(null);
   return (
@@ -30,7 +30,7 @@ export function WebEditor({ path, children }: { path: string; tabId: string; chi
               size="small"
               iconSize={16}
               action="web.togglePreview"
-              actionArg={path}
+              actionArg={tabId}
               pressed={preview}
               title="Built-in Preview"
             />

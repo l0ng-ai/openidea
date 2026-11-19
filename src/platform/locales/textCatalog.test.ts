@@ -93,6 +93,7 @@ const UNTRANSLATED = new Set<string>([
   // Product names
   "Cargo",
   "CMake",
+  "Flutter",
   "Prettier",
   "oxfmt",
   "Ruff",
@@ -157,6 +158,7 @@ const UNTRANSLATED = new Set<string>([
   "Eclipse Temurin",
   "EditorConfig",
   "Epytext",
+  "Flutter",
   "Git",
   "GitHub",
   "Go",

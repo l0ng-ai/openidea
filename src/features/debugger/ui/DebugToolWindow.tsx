@@ -16,6 +16,7 @@ import {
   SplitHandle,
   SplitPanel,
   Tabs,
+  Toolbar,
   showContextMenu,
   type MenuItem,
   type TabItem,
@@ -218,42 +219,43 @@ export function DebugToolWindow() {
 
   return (
     <div className={styles.root}>
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Debugger actions")}>
-        {/* IDEA's XDebugger.ToolWindow.TopToolbar3 (+ its "More" group), then the views. */}
-        <ToolButton action="debug.rerun" icon="rerun" />
-        <ToolButton action="debug.stop" icon="stop" tone="danger" />
-        <span className={styles.sep} aria-hidden />
-        <ToolButton action="debug.resume" icon="resume" />
-        <ToolButton action="debug.pause" icon="pause" />
-        <ToolButton action="debug.stepOver" icon="step-over" />
-        <ToolButton action="debug.stepInto" icon="step-into" />
-        <ToolButton action="debug.stepOut" icon="step-out" />
-        <span className={styles.sep} aria-hidden />
-        {rootOf(active).adapter === "dart" && (
-          <>
-            <ToolButton action="debug.hotReload" icon="hot-reload" />
-            <ToolButton action="debug.hotRestart" icon="refresh" />
-            <span className={styles.sep} aria-hidden />
-          </>
-        )}
-        <IconButton
-          icon="view-breakpoints"
-          action="debug.viewBreakpoints"
-          size="small"
-          iconSize={16}
-          className={styles.tool}
-        />
-        <IconButton
-          icon="mute-breakpoint"
-          title={muted ? "Unmute Breakpoints" : "Mute Breakpoints"}
-          pressed={muted}
-          size="small"
-          iconSize={16}
-          className={styles.tool}
-          onClick={() => setMuted(!muted)}
-        />
-        <MoreActions />
-        <span className={styles.sep} aria-hidden />
+      <div className={styles.toolbar}>
+        <Toolbar className={styles.actions} aria-label="Debugger actions">
+          <ToolButton action="debug.rerun" icon="rerun" />
+          <ToolButton action="debug.stop" icon="stop" tone="danger" />
+          <span className={styles.sep} aria-hidden />
+          <ToolButton action="debug.resume" icon="resume" />
+          <ToolButton action="debug.pause" icon="pause" />
+          <ToolButton action="debug.stepOver" icon="step-over" />
+          <ToolButton action="debug.stepInto" icon="step-into" />
+          <ToolButton action="debug.stepOut" icon="step-out" />
+          <span className={styles.sep} aria-hidden />
+          {rootOf(active).adapter === "dart" && (
+            <>
+              <ToolButton action="debug.hotReload" icon="hot-reload" />
+              <ToolButton action="debug.hotRestart" icon="refresh" />
+              {rootOf(active).vmServiceUri && <ToolButton action="debug.openDevTools" icon="external-link" />}
+              <span className={styles.sep} aria-hidden />
+            </>
+          )}
+          <IconButton
+            icon="view-breakpoints"
+            action="debug.viewBreakpoints"
+            size="small"
+            iconSize={16}
+            className={styles.tool}
+          />
+          <IconButton
+            icon="mute-breakpoint"
+            title={muted ? "Unmute Breakpoints" : "Mute Breakpoints"}
+            pressed={muted}
+            size="small"
+            iconSize={16}
+            className={styles.tool}
+            onClick={() => setMuted(!muted)}
+          />
+          <MoreActions />
+        </Toolbar>
         <div role="tablist" aria-label={tx("Debug views")} className={styles.tabs}>
           {(
             [

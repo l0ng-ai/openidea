@@ -66,21 +66,31 @@ beforeEach(() => {
 });
 
 describe("table editor capabilities", () => {
-  it("keeps ClickHouse rows read-only even when metadata marks a primary key", async () => {
-    await act(async () => {
-      render(<TableEditor input={tableInput("source", "default", "users")} />);
-    });
-    const cell = await screen.findByRole("gridcell", { name: "Ann" });
-    fireEvent.doubleClick(cell);
-    expect(screen.queryByRole("textbox", { name: "Edit name" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add Row" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
-    expect(screen.getByText("Use the query console to change ClickHouse data.")).toBeTruthy();
-    fireEvent.mouseDown(cell, { button: 0 });
-    fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "Changed" } });
-    expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
-    expect(backend.applyEdits).not.toHaveBeenCalled();
-  });
+  it.each(["clickhouse", "jdbc"] as const)(
+    "keeps %s rows read-only even when metadata marks a primary key",
+    async (driver) => {
+      backend.driver = driver;
+      await act(async () => {
+        render(<TableEditor input={tableInput("source", "default", "users")} />);
+      });
+      const cell = await screen.findByRole("gridcell", { name: "Ann" });
+      fireEvent.doubleClick(cell);
+      expect(screen.queryByRole("textbox", { name: "Edit name" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Add Row" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
+      expect(
+        screen.getByText(
+          driver === "jdbc"
+            ? "Use the query console to change JDBC data."
+            : "Use the query console to change ClickHouse data.",
+        ),
+      ).toBeTruthy();
+      fireEvent.mouseDown(cell, { button: 0 });
+      fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "Changed" } });
+      expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
+      expect(backend.applyEdits).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps keyed PostgreSQL rows editable", async () => {
     backend.driver = "postgres";

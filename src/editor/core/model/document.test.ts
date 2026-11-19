@@ -369,6 +369,28 @@ describe("DocumentManager + slots", () => {
     }
   });
 
+  it("drops the modified files kept without a tab when the project goes, but keeps untitled buffers", async () => {
+    const { backend, manager } = setup({ "/p/a.txt": "a\n" }, { files: { autoSave: false } });
+    try {
+      const a = await manager.acquire("/p/a.txt");
+      const slot = new EditorSlot(a, "t1", host);
+      backend.patch(a.doc, [{ from: 0, to: 0, insert: "changed " }]);
+      slot.dispose();
+      const untitled = manager.adopt(await backend.openUntitled(null));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(manager.byPath.get("/p/a.txt")).toBe(a);
+      manager.releaseProjectDocuments();
+      expect(a.closed).toBe(true);
+      expect(manager.byPath.has("/p/a.txt")).toBe(false);
+      expect(manager.byId.has(a.doc)).toBe(false);
+      expect(useDocMeta.getState()["/p/a.txt"]).toBeUndefined();
+      expect(manager.byPath.get(untitled.path)).toBe(untitled);
+      expect(await manager.acquire("/p/a.txt")).not.toBe(a);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("Save All rejects a failed document save after saving the remaining dirty documents", async () => {
     const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
     try {

@@ -26,6 +26,11 @@ process.stdin.on("data", (chunk) => {
     if (buffer.length < end + 4 + length) return;
     const request = JSON.parse(buffer.subarray(end + 4, end + 4 + length));
     buffer = buffer.subarray(end + 4 + length);
+    if (mode === "no-initialize" && request.method === "initialize") continue;
+    if (mode === "bad-header") {
+      process.stdout.write("Not-a-length: 0\r\n\r\n");
+      continue;
+    }
     const body = JSON.stringify({
       jsonrpc: "2.0",
       id: request.id,
