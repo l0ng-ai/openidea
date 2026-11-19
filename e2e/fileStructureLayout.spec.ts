@@ -45,7 +45,8 @@ test("File Structure keeps symbol filters readable at desktop and minimum window
     });
     expect(clipped).toEqual([]);
   }
-  expect((await dialog.boundingBox())!.width).toBeCloseTo(540, 0);
+  // The dialog scales in when it opens: wait for its settled width.
+  await expect.poll(async () => Math.round((await dialog.boundingBox())!.width)).toBe(540);
   const field = dialog.getByRole("treeitem", { name: "orderCount" });
   await expect(field).toBeVisible();
   await fields.uncheck();
