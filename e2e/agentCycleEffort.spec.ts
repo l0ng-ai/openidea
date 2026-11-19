@@ -219,11 +219,12 @@ function history(page: Page) {
 function modelButton(page: Page) {
   return page.getByRole("button", { name: "Model", exact: true }).filter({ visible: true });
 }
-function effortButton(page: Page) {
-  return page.getByRole("button", { name: "Reasoning", exact: true }).filter({ visible: true });
+/** The effort is shown on the model button, after the model's name. */
+function effortLabel(page: Page) {
+  return modelButton(page).locator("[class*='modelDetail']");
 }
 async function expectEffort(page: Page, name: string) {
-  await expect(effortButton(page)).toHaveText(name);
+  await expect(effortLabel(page)).toHaveText(name);
 }
 async function selected(box: Locator) {
   return box.evaluate((element) => {
@@ -364,8 +365,8 @@ test("Settings and effort popup exclude the agent shortcut", async ({ workbench:
   await expect(search).toBeFocused();
   await expect(search).toHaveValue("keymap");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
-  await effortButton(page).click();
-  const popup = page.getByRole("listbox", { name: "Reasoning", exact: true });
+  await modelButton(page).click();
+  const popup = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
   await expect(popup).toBeVisible();
   await page.keyboard.press("Alt+t");
   expect(await ipcCalls(page, "agent_set_config")).toEqual([]);
@@ -584,14 +585,16 @@ test("New Task discovers uncached model effort before the first prompt", async (
       .poll(async () => (await ipcCalls(page, "agent_refresh_models")).filter((call) => call.model === "swift"))
       .toEqual([{ provider: provider.id, force: false, model: "swift" }]);
     await expect(page.getByRole("status").filter({ hasText: "Loading model settings…" })).toBeVisible();
-    await expect(effortButton(page)).toHaveCount(0);
+    await expect(effortLabel(page)).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("model-settings-loading.png") });
     await page.evaluate(() => document.dispatchEvent(new Event("test:model-settings-ready")));
     await expectEffort(page, "Quick");
-    await effortButton(page).click();
-    await expect(page.getByRole("option", { name: "Quick", exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: "Thorough", exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: "Gentle", exact: true })).toHaveCount(0);
+    await modelButton(page).click();
+    const efforts = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
+    await expect(efforts.getByRole("radio", { name: "Quick", exact: true })).toBeVisible();
+    await expect(efforts.getByRole("radio", { name: "Thorough", exact: true })).toBeVisible();
+    await expect(efforts.getByRole("radio", { name: "Gentle", exact: true })).toHaveCount(0);
+    await page.keyboard.press("Escape");
     await expect(box(page)).toHaveText("Keep this first task unsent");
     await expectNoSubmission(page);
     expect(await ipcCalls(page, "agent_set_config")).toEqual([]);

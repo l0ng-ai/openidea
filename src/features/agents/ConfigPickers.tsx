@@ -256,6 +256,9 @@ function ConfigPicker({
   );
 }
 
+/** Effort levels that fit the popup's segmented control; more (Codex has six) get a dropdown. */
+const SEGMENTED_EFFORT_MAX = 4;
+
 /** The model button: a searchable model list, with effort, context size and model settings above it. */
 function ModelPicker({
   model,
@@ -321,7 +324,9 @@ function ModelPicker({
       >
         <span className={styles.chipValue}>{modelName}</span>
         {(effortLabel || contextLabel) && (
-          <span className={styles.chipDetail}>{[effortLabel, contextLabel].filter(Boolean).join(" · ")}</span>
+          <span className={clsx(styles.chipDetail, styles.modelDetail)}>
+            {[effortLabel, contextLabel].filter(Boolean).join(" · ")}
+          </span>
         )}
         <Icon name="chevron-down" size={14} className={styles.chipChevron} />
       </button>
@@ -344,16 +349,20 @@ function ModelPicker({
                 <span className={styles.quickLabel}>
                   <T>Effort Level</T>
                 </span>
-                <SegmentedControl
-                  ariaLabel={tx("Effort Level")}
-                  options={effort.values.map((v) => ({
-                    value: v.value,
-                    label: v.name,
-                    description: v.description ?? undefined,
-                  }))}
-                  value={effortValue ?? effort.values[0]!.value}
-                  onChange={(v) => onChange(effort.id, v)}
-                />
+                {effort.values.length <= SEGMENTED_EFFORT_MAX ? (
+                  <SegmentedControl
+                    ariaLabel={tx("Effort Level")}
+                    options={effort.values.map((v) => ({
+                      value: v.value,
+                      label: v.name,
+                      description: v.description ?? undefined,
+                    }))}
+                    value={effortValue ?? effort.values[0]!.value}
+                    onChange={(v) => onChange(effort.id, v)}
+                  />
+                ) : (
+                  <ConfigPicker option={effort} value={effortValue} onChange={onChange} framed />
+                )}
               </div>
             )}
             {contextOption && (

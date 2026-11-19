@@ -350,6 +350,30 @@ describe("model settings", () => {
     expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "xhigh");
   });
 
+  it("offers more effort levels than fit the segmented control as a dropdown", () => {
+    const onChange = vi.fn();
+    const config = copilotConfig().map((o) =>
+      o.category === "thought_level"
+        ? {
+            ...o,
+            values: ["Low", "Medium", "High", "Extra high", "Max", "Ultra"].map((name) =>
+              value(name.toLowerCase().replace(" ", "-"), name),
+            ),
+            current: "max",
+          }
+        : o,
+    );
+    render(<ConfigPickers config={config} onChange={onChange} />);
+    const model = screen.getByRole("button", { name: "Model" });
+    expect(model).toHaveTextContent("Max");
+    fireEvent.click(model);
+    const dialog = screen.getByRole("dialog", { name: "Model" });
+    expect(within(dialog).queryByRole("radiogroup", { name: "Effort Level" })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: /Reasoning Effort/ }));
+    fireEvent.click(screen.getByRole("option", { name: /Extra high/ }));
+    expect(onChange).toHaveBeenCalledWith("reasoning_effort", "extra-high");
+  });
+
   it("tucks Fast into the model popup", () => {
     const config = [
       ...copilotConfig().filter((o) => o.category !== "thought_level"),
