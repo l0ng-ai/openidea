@@ -163,7 +163,13 @@ fn run_with_env_capture(
     let encoding =
         ide_core::output_encoding::fix(program, args, env, |k| std::env::var(k).ok(), "UTF-8", cfg!(windows));
     let program = program_path(program, env, cwd);
-    let mut command = Command::new(&program);
+    let mut command = if ide_core::process::needs_sh(&program) {
+        let mut sh = Command::new("/bin/sh");
+        sh.arg(&program);
+        sh
+    } else {
+        Command::new(&program)
+    };
     command.args(args).current_dir(cwd).envs(env).envs(encoding.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     // Its own group: `mvnw` / `gradlew` start the JVM as a child, and cancelling kills both.
