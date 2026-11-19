@@ -26,12 +26,6 @@ pub(super) fn prepare_debug(config: &mut LaunchConfig, paths: &[PathBuf]) -> Ide
     if extra.as_ref().is_some_and(|e| e.get("debugServer").is_some()) {
         return Ok(());
     }
-    if cfg!(windows)
-        && let Some(extra) = extra.as_mut()
-    {
-        start_in_internal_console(extra);
-        config.extra_json = Some(extra.to_string());
-    }
     if let Some(env) = extra.as_mut().and_then(|e| e.get_mut("env")) {
         if env.is_null() {
             *env = serde_json::json!({});
@@ -52,28 +46,9 @@ pub(super) fn prepare_debug(config: &mut LaunchConfig, paths: &[PathBuf]) -> Ide
     Ok(())
 }
 
-/// On Windows debugpy's launcher never connects when it runs on the pseudo-terminal of
-/// `runInTerminal` (ConPTY), and the launch times out; started by debugpy itself it does. The
-/// program then can't read typed input, but it can be debugged.
-fn start_in_internal_console(extra: &mut serde_json::Value) {
-    if extra.get("console").and_then(|c| c.as_str()) == Some("integratedTerminal") {
-        extra["console"] = serde_json::json!("internalConsole");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn windows_debuggees_start_in_the_internal_console() {
-        let mut extra = serde_json::json!({"console": "integratedTerminal", "python": "python"});
-        start_in_internal_console(&mut extra);
-        assert_eq!(extra["console"], "internalConsole");
-        let mut external = serde_json::json!({"console": "externalTerminal"});
-        start_in_internal_console(&mut external);
-        assert_eq!(external["console"], "externalTerminal");
-    }
 
     #[test]
     fn debug_preserves_remote_paths_and_handles_null_env() {
