@@ -237,6 +237,7 @@ pub enum Pool {
     Mysql(ServerPool<MysqlManager>),
     SqlServer(Bb8Pool<MssqlConnectionManager>),
     Clickhouse(crate::clickhouse::ClickhousePool),
+    Jdbc(Box<crate::jdbc::JdbcPool>),
     Oracle(crate::oracle::OraclePool),
     Snowflake(crate::snowflake::SnowflakePool),
 }
@@ -729,6 +730,7 @@ impl Pool {
             Pool::Mysql(_) => DbDriver::Mysql,
             Pool::SqlServer(_) => DbDriver::SqlServer,
             Pool::Clickhouse(_) => DbDriver::Clickhouse,
+            Pool::Jdbc(_) => DbDriver::Jdbc,
             Pool::Oracle(_) => DbDriver::Oracle,
             Pool::Snowflake(_) => DbDriver::Snowflake,
         }
@@ -919,6 +921,7 @@ impl Pool {
                 conn.query("SELECT 1", &[]).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
                 Ok(Pool::SqlServer(pool))
             }
+            DbDriver::Jdbc => Err(IdeError::invalid("An installed JDBC driver profile is required")),
             DbDriver::Clickhouse => unreachable!(),
             DbDriver::Oracle | DbDriver::Snowflake => unreachable!(),
         }
@@ -928,6 +931,7 @@ impl Pool {
         match self {
             Pool::SqlServer(_) | Pool::Oracle(_) => {}
             Pool::Clickhouse(p) => p.close(),
+            Pool::Jdbc(p) => p.close().await,
             Pool::Snowflake(p) => p.close().await,
             Pool::Sqlite(p) => p.close().await,
             Pool::Postgres(p) => p.closed.store(true, Ordering::Relaxed),
@@ -940,6 +944,7 @@ impl Pool {
             Pool::SqlServer(_) => false,
             Pool::Oracle(p) => p.is_closed(),
             Pool::Clickhouse(p) => p.is_closed(),
+            Pool::Jdbc(p) => p.is_closed(),
             Pool::Snowflake(p) => p.is_closed(),
             Pool::Sqlite(p) => p.is_closed(),
             Pool::Postgres(p) => p.closed.load(Ordering::Relaxed),
@@ -949,6 +954,9 @@ impl Pool {
 
     /// Runs `sql` (no row limit beyond `max`), for introspection: cells are text (see [`Cells::Text`]).
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
+        if let Pool::Jdbc(p) = self {
+            return Ok(p.query(sql, 0, max, &CancellationToken::new()).await?.rows);
+        }
         if let Pool::Clickhouse(p) = self {
             return Ok(p.execute(sql, max, &CancellationToken::new()).await?.rows);
         }
@@ -976,6 +984,9 @@ impl Pool {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        if let Pool::Jdbc(p) = self {
+            return p.query(sql, skip, max_rows, cancel).await;
+        }
         if let Pool::Clickhouse(p) = self {
             return p.execute_from(sql, skip, max_rows, cancel).await;
         }
@@ -998,6 +1009,7 @@ impl Pool {
     /// row when flagged (table editor submits).
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
         match self {
+            Pool::Jdbc(_) => Err(IdeError::invalid("Custom JDBC table editing is unsupported")),
             Pool::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
             Pool::Snowflake(p) => p.transaction(statements).await,
             Pool::SqlServer(_) => {
@@ -1088,6 +1100,7 @@ pub enum Held {
 impl Held {
     pub async fn acquire(pool: &Pool) -> IdeResult<Self> {
         Ok(match pool {
+            Pool::Jdbc(_) => return Err(IdeError::invalid("Custom JDBC manual transactions are unsupported")),
             Pool::Sqlite(p) => Held::Sqlite(p.acquire().await.map_err(db_err)?),
             Pool::Postgres(p) => Held::Postgres(Box::new(p.get().await?)),
             Pool::Mysql(p) => Held::Mysql(Box::new(p.get().await?)),
@@ -1377,7 +1390,7 @@ pub fn begin_statement(driver: DbDriver) -> &'static str {
         DbDriver::Mysql => "START TRANSACTION",
         DbDriver::SqlServer => "BEGIN TRAN",
         DbDriver::Oracle => "", // opens implicitly with autocommit off
-        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse | DbDriver::Snowflake => "BEGIN",
+        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse | DbDriver::Snowflake | DbDriver::Jdbc => "BEGIN",
     }
 }
 

@@ -3,6 +3,7 @@
  * a WHERE filter, and pending cell edits / added / deleted rows submitted
  * together in one transaction. Tables without a primary key are read-only.
  */
+import { canModifyTable } from "./objects";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   call,
@@ -122,7 +123,7 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const pk = page?.details.columns.filter((c) => c.primaryKey).map((c) => c.name) ?? [];
   const fkColumns = new Set(page?.details.foreignKeys.flatMap((k) => k.columns) ?? []);
   const source = sourceById(ref.id);
-  const editable = pk.length > 0 && !source?.readOnly && source?.driver !== "clickhouse";
+  const editable = pk.length > 0 && !source?.readOnly && canModifyTable(source?.driver ?? "sqlite");
   const loaded = page?.result.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const gridColumns = useMemo(
@@ -414,11 +415,13 @@ export function TableEditor({ input }: { input: EditorInput }) {
       </div>
       {page && !editable && (
         <div className={styles.notice}>
-          {source?.driver === "clickhouse"
-            ? tx("Use the query console to change ClickHouse data.")
-            : pk.length
-              ? tx("Read-only data source.")
-              : tx("Read-only: the table has no primary key to identify rows.")}
+          {source?.driver === "jdbc"
+            ? tx("Use the query console to change JDBC data.")
+            : source?.driver === "clickhouse"
+              ? tx("Use the query console to change ClickHouse data.")
+              : pk.length
+                ? tx("Read-only data source.")
+                : tx("Read-only: the table has no primary key to identify rows.")}
         </div>
       )}
       {error ? (

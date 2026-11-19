@@ -3,7 +3,7 @@ title: "数据库"
 description: "连接 SQL 数据库、浏览架构、在查询控制台中执行查询，以及查看、编辑、导入和导出数据。"
 ---
 
-**数据库** 工具窗口可以连接 SQLite、PostgreSQL、MySQL/MariaDB、Microsoft SQL Server、Oracle、ClickHouse 和 Snowflake，以及兼容这些协议的数据库。驱动内置在 IDE 中，不需要下载 JDBC 驱动。
+**数据库** 工具窗口可以连接 SQLite、PostgreSQL、MySQL/MariaDB、Microsoft SQL Server、Oracle、ClickHouse 和 Snowflake，以及兼容这些协议的数据库。这些预设使用 IDE 内置的驱动，也可以选择本地安装的厂商 JDBC 驱动。
 
 通过 **工具 › 数据库** 或 **视图 › 工具窗口 › 数据库** 打开。**工具** 菜单中还有 **新建数据源…** 和 **Open Query Console**（打开查询控制台）。
 
@@ -22,6 +22,16 @@ description: "连接 SQL 数据库、浏览架构、在查询控制台中执行�
 | SQLite     | SQLite                                                                                       |
 
 预设会填好默认端口，必要时还会设置 SSL（例如 Redshift、Neon 和 Supabase 要求 SSL）。
+
+## 自定义 JDBC 驱动
+
+选择 **新建 › 数据源 › 自定义 JDBC**，然后选择 **管理驱动…**。为驱动配置命名，添加厂商提供的驱动 JAR 及依赖 JAR，填写完整的驱动类名和可选的 JDBC URL 模板。请仅导入可信来源的驱动。OpenIDEA 使用已安装的 Java 17 或更高版本运行时在单独的进程中加载驱动。 IDE 会读取 JAR 声明的驱动类，也支持手动输入完整类名。URL 模板支持 `{host}`、`{port}`、`{database}` 和 `{file}`，也可直接填写 JDBC URL。 URL 和高级属性会写入数据源配置，密码请填在密码栏，以使用系统凭据存储。“只读”选项会请求 JDBC 驱动建立只读连接。使用具备只读权限的数据库账号可强制限制写入。取消查询时，如果驱动停止了语句，会话及其临时表会保留。如果驱动在三秒内未响应，OpenIDEA 会关闭该会话。已提交的语句仍可能在服务器上完成。
+
+选择驱动配置，填写厂商的 JDBC URL，在 **用户**、**密码** 和 **高级** 中设置凭据和驱动属性。通过密码字段输入的密码可以保存到系统凭据库。在 Linux 上，保存密码需要正在运行的 Secret Service；也可以仅为当前会话输入密码。**测试连接** 显示数据库产品和版本。可以通过 JDBC 元数据浏览模式、表和列，在 SQL 控制台中查询或以自动提交方式更新数据。自定义驱动不支持厂商特有的 DDL、执行计划或表格编辑。
+
+文件数据库可使用绝对路径指定存储位置。相对路径以 OpenIDEA 应用数据目录下的持久化 `jdbc/files` 文件夹为起点。
+
+驱动配置可以跨项目复用。在 IDE 外更改项目数据源的 URL 或连接属性后，需要在数据源对话框中检查并保存设置，才能重新连接。
 
 ## 添加数据源
 
@@ -200,7 +210,7 @@ Oracle 的架构就是数据库用户；系统账户只在勾选 **显示内部�
 
 ## 暂不支持
 
-- MongoDB、Redis、BigQuery 等未列出的数据库，以及 JDBC 驱动。
+- MongoDB、Redis 和 BigQuery 的原生驱动。
 - SQL Server 的 `GO` 批处理分隔符。
 - “执行整个控制台”的操作（请选中后执行，或使用 **运行 SQL 脚本…**）。
 - 导出超出已加载页面的数据。

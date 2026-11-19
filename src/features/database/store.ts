@@ -523,6 +523,7 @@ const lastUsed = new Map<string, number>();
 function applyConnectDefaults(id: string) {
   if (
     sourceById(id)?.driver !== "clickhouse" &&
+    sourceById(id)?.driver !== "jdbc" &&
     sourceById(id)?.options?.transaction === "manual" &&
     !useDatabase.getState().manualCommit.has(id)
   )
@@ -1353,7 +1354,7 @@ async function explain(id: string, statement: SqlStatement, schema?: string): Pr
 /** Explain Plan: the plan of the statement at `from` (the first selected one) of console `path`. */
 export async function explainConsole(path: string, text: string, from: number, to: number): Promise<void> {
   const id = consoleSource(path);
-  if (!id) return;
+  if (!id || sourceById(id)?.driver === "jdbc") return;
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;
@@ -1530,7 +1531,7 @@ function setPending(id: string, pending: boolean) {
 
 /** Commits or rolls back the open transaction of a manual-commit data source. */
 export async function finishTransaction(id: string, commit: boolean): Promise<boolean> {
-  if (sourceById(id)?.driver === "clickhouse") return false;
+  if (sourceById(id)?.driver === "clickhouse" || sourceById(id)?.driver === "jdbc") return false;
   try {
     await call(commands.dbFinishTransaction(id, commit));
     log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
@@ -1562,7 +1563,7 @@ async function askEndTransaction(source: DataSource): Promise<boolean | null> {
  * whether to commit or roll them back.
  */
 export async function setManualCommit(id: string, manual: boolean): Promise<void> {
-  if (sourceById(id)?.driver === "clickhouse" && manual) return;
+  if (sourceById(id)?.driver === "jdbc" || (sourceById(id)?.driver === "clickhouse" && manual)) return;
   const st = useDatabase.getState();
   if (manual === st.manualCommit.has(id)) return;
   if (!manual && st.pendingTx.has(id)) {
