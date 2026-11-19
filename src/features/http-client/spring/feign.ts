@@ -1,7 +1,7 @@
 /** Source-only Feign relationships. Request generation's default GET is not a
  * server constraint: unconstrained controller mappings accept every method. */
 import { joinPaths } from "./endpoints";
-import { allClasses, parseSource, type Annotation, type Expr, type SourceFile, type Tok } from "./source";
+import { allClasses, parseSource, type Annotation, type Expr, type Method, type SourceFile, type Tok } from "./source";
 
 const WEB = "org.springframework.web.bind.annotation";
 const FEIGN = "org.springframework.cloud.openfeign.FeignClient";
@@ -19,19 +19,27 @@ export interface HttpShape {
   paths: string[];
   methods: string[];
 }
-export interface FeignMethod extends HttpShape {
+export interface MappedMethod extends HttpShape {
   name: string;
+  /** Whole declaration, including its annotations. */
   from: number;
   to: number;
   nameFrom: number;
+  nameTo: number;
+}
+export interface FeignMethod extends MappedMethod {
   /** Literal URL spans, excluding quotes, for modifier-click navigation. */
   links: { from: number; to: number }[];
   service: string | null;
 }
-export interface ControllerMethod extends HttpShape {
-  name: string;
-  from: number;
-  to: number;
+function declaration(owner: string, method: Method) {
+  return {
+    name: `${owner}.${method.name}`,
+    from: method.start,
+    to: method.end,
+    nameFrom: method.nameStart,
+    nameTo: method.nameStart + method.name.length,
+  };
 }
 
 function owned(a: Annotation, file: SourceFile, qualified: string): boolean {
@@ -156,10 +164,7 @@ export function feignMethods(text: string): FeignMethod[] {
         verbs = methods(annotation, file);
       if (!urls || !verbs) continue;
       result.push({
-        name: `${cls.name}.${method.name}`,
-        from: method.start,
-        to: method.end,
-        nameFrom: method.nameStart,
+        ...declaration(cls.name, method),
         paths: combine([prefix], urls.values),
         methods: verbs.map((v) => (v === "*" ? "GET" : v)),
         links: urls.links,
@@ -170,10 +175,10 @@ export function feignMethods(text: string): FeignMethod[] {
   return result;
 }
 
-export function controllerMethods(text: string, file?: SourceFile): ControllerMethod[] {
+export function controllerMethods(text: string, file?: SourceFile): MappedMethod[] {
   if (text.length > MAX_NAVIGATION_SOURCE || !text.includes("Controller")) return [];
   file ??= parseSource(text);
-  const result: ControllerMethod[] = [];
+  const result: MappedMethod[] = [];
   for (const cls of allClasses(file)) {
     if (
       !cls.annotations.some(
@@ -199,9 +204,7 @@ export function controllerMethods(text: string, file?: SourceFile): ControllerMe
         verbs = methods(annotation, file);
       if (!own || !verbs) continue;
       result.push({
-        name: `${cls.name}.${method.name}`,
-        from: method.nameStart,
-        to: method.nameStart + method.name.length,
+        ...declaration(cls.name, method),
         paths: combine(base.values, own.values),
         methods: verbs.includes("*")
           ? classMethods

@@ -36,8 +36,9 @@ import { registerSpringEndpointProvider } from "./spring/routeIndex";
 import {
   feignEditorExtension,
   feignMenuItems,
+  FIND_FEIGN_CLIENTS,
   GO_TO_FEIGN_ENDPOINT,
-  goToFeignEndpoint,
+  navigateFeign,
   registerFeignNavigation,
 } from "./spring/feignNavigation";
 
@@ -182,7 +183,16 @@ export function activate(): () => void {
         icon: "arrow-right",
         keywords: ["spring", "feign", "microservice", "endpoint"],
         when: SPRING_WHEN,
-        run: ({ arg }) => goToFeignEndpoint(arg),
+        run: ({ arg }) => navigateFeign("endpoint", arg),
+      },
+      {
+        id: FIND_FEIGN_CLIENTS,
+        title: "Find Feign Clients",
+        category: "Navigate",
+        icon: "search",
+        keywords: ["spring", "feign", "client", "endpoint", "caller"],
+        when: SPRING_WHEN,
+        run: ({ arg }) => navigateFeign("clients", arg),
       },
       {
         id: OPEN_ENDPOINT,
