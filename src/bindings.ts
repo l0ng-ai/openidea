@@ -8690,6 +8690,11 @@ export type NewAgentTask = {
 	base: string | null,
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`). */
 	mcpOverrides?: { [key in string]: boolean },
+	/**
+	 *  Creates the task without sending `prompt` (it only names the task): the composer's
+	 *  `!` command runs in it first.
+	 */
+	idle?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */

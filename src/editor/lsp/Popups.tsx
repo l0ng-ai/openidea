@@ -12,6 +12,7 @@ import {
   MenuList,
   Popup,
   Select,
+  Spinner,
   SymbolBadge,
   fileIconName,
   fuzzyMatch,
@@ -181,6 +182,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       >
         <div className={styles.listHeader}>
           <span className={styles.listTitle}>{popup.title}</span>
+          {popup.busy && <Spinner size={12} />}
           {query && <span className={styles.query}>{query}</span>}
           {popup.pin && (
             <IconButton
@@ -206,9 +208,15 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
             aria-label={popup.title}
             onActivate={(r) => activate(r.item)}
             empty={
-              <span className={styles.empty}>
-                <T>Nothing matches</T>
-              </span>
+              popup.busy ? (
+                <span className={styles.empty}>
+                  <T>Computing…</T>
+                </span>
+              ) : (
+                <span className={styles.empty}>
+                  <T>Nothing matches</T>
+                </span>
+              )
             }
             renderItem={({ item, match }) => {
               const n = popup.numbered && !query ? indexOf(item) + 1 : 0;

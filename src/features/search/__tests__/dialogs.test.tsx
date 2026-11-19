@@ -540,6 +540,22 @@ describe("Recent Files multi-selection", () => {
     expect(useRecentPopup.getState().open).toBeNull();
   });
 
+  it("Delete edits the filter while it has text after the caret, else removes the file", async () => {
+    const remove = vi.spyOn(commands, "removeRecent").mockResolvedValue({ status: "ok", data: null });
+    const input = (await showFiles()) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "index" } });
+    const before = options().length;
+    input.setSelectionRange(0, 0);
+    fireEvent.keyDown(input, { key: "Delete" });
+    await tick();
+    expect(options()).toHaveLength(before);
+    expect(remove).not.toHaveBeenCalled();
+    input.setSelectionRange(input.value.length, input.value.length);
+    fireEvent.keyDown(input, { key: "Delete" });
+    await tick();
+    expect(options()).toHaveLength(before - 1);
+  });
+
   it("starts a range at the initially selected previous file", async () => {
     vi.spyOn(contributions, "maybeEditorService").mockReturnValue({
       activePath: () => "/p/one/index.ts",

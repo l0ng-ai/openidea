@@ -359,7 +359,7 @@ fn java_analyzer_gets_the_project_jdk_and_maven_local_repository() {
     s.languages.java.jdk = jdk.to_string_lossy().into_owned();
     s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
     let options = configured(&s).unwrap();
-    assert_eq!(options["jdkHome"], jdk.canonicalize().unwrap().to_string_lossy().as_ref());
+    assert_eq!(options["jdkHome"], dunce::canonicalize(&jdk).unwrap().to_string_lossy().as_ref());
     assert_eq!(options["maven"]["localRepository"], repo.to_string_lossy().as_ref());
     // A `jdkHome` in the server's own settings wins.
     s.language_servers.insert(
@@ -409,16 +409,94 @@ fn jdtls_m2e_gets_effective_settings_with_local_repository() {
     assert!(text.contains("<mirror><id>m</id></mirror>"));
     assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
 
-    // User settings already declaring `<localRepository>`: passed through untouched.
-    std::fs::write(&settings, "<settings><localRepository>/user/repo</localRepository></settings>").unwrap();
+    // User settings already naming the configured repository: passed through untouched.
+    let own = format!("<settings><localRepository>{}</localRepository></settings>", repo.to_string_lossy());
+    std::fs::write(&settings, &own).unwrap();
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
     assert_eq!(user_settings(&cfg), Some(settings.clone()));
+
+    // Another repository: the configured one wins, as `-Dmaven.repo.local` does for `mvn`.
+    std::fs::write(&settings, "<settings>\n  <localRepository>/user/repo</localRepository><mirrors/></settings>")
+        .unwrap();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+    let text = std::fs::read_to_string(&derived).unwrap();
+    assert!(text.contains("<mirrors/>") && !text.contains("/user/repo"), "{text}");
+    assert_eq!(text.matches("<localRepository>").count(), 1, "{text}");
+
+    // Settings user settings unset: the configured repository has no settings file
+    // replacing `~/.m2/settings.xml` without its mirrors.
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(home.join(".m2")).unwrap();
+    std::fs::write(
+        home.join(".m2/settings.xml"),
+        "<settings><mirrors><mirror><id>corp</id></mirror></mirrors></settings>",
+    )
+    .unwrap();
+    let mut only_repo = Settings::default();
+    only_repo.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let file = crate::apply::maven_user_settings_for_m2e_in(tmp.path(), &only_repo, &home).unwrap();
+    let text = std::fs::read_to_string(file).unwrap();
+    assert!(text.contains("<mirror><id>corp</id></mirror>"), "{text}");
+    assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
+    // Neither a local repository nor user settings: `~/.m2/settings.xml` is m2e's own default.
+    assert_eq!(crate::apply::maven_user_settings_for_m2e_in(tmp.path(), &Settings::default(), &home), None);
 
     // Neither configured: no userSettings at all.
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
     assert_eq!(user_settings(&cfg), None);
+}
+
+#[test]
+fn local_repository_goes_into_every_shape_of_settings_xml() {
+    use crate::apply::with_local_repository;
+    let element = "<localRepository>/r&amp;d</localRepository>";
+    for (text, expected) in [
+        ("<settings>\n</settings>", format!("<settings>{element}\n</settings>")),
+        ("<settings><localRepository>/old</localRepository></settings>", format!("<settings>{element}</settings>")),
+        ("<settings><localRepository /></settings>", format!("<settings>{element}</settings>")),
+        (
+            "<settings xmlns=\"x\"><!-- <localRepository>/c</localRepository> --></settings>",
+            format!("<settings xmlns=\"x\">{element}<!-- <localRepository>/c</localRepository> --></settings>"),
+        ),
+        (
+            "<?xml version=\"1.0\"?>\n<!-- <settings> --><settings>\n  <localRepository>\n    /old\n  </localRepository>\n</settings>",
+            format!("<?xml version=\"1.0\"?>\n<!-- <settings> --><settings>\n  {element}\n</settings>"),
+        ),
+    ] {
+        assert_eq!(with_local_repository(text, "/r&d").as_deref(), Some(expected.as_str()), "{text}");
+    }
+    assert_eq!(with_local_repository("<settings/>", "/r"), None);
+}
+
+#[test]
+fn jdtls_m2e_reads_the_global_settings_of_the_maven_home() {
+    fn global_settings(cfg: &LanguageServerConfig) -> Option<String> {
+        let opts = serde_json::to_value(cfg.initialization_options.clone()?).ok()?;
+        opts.pointer("/settings/java/configuration/maven/globalSettings")?.as_str().map(Into::into)
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("apache-maven-3.9.9");
+    let mvn = home.join("bin").join(if cfg!(windows) { "mvn.cmd" } else { "mvn" });
+    std::fs::create_dir_all(mvn.parent().unwrap()).unwrap();
+    std::fs::write(&mvn, "").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.home = home.to_string_lossy().into_owned();
+    let configured = |s: &Settings| {
+        let mut cfg = server("jdtls");
+        configure_server(&mut cfg, tmp.path(), tmp.path(), s);
+        global_settings(&cfg)
+    };
+    // No `conf/settings.xml`: nothing to pass.
+    assert_eq!(configured(&s), None);
+    let conf = home.join("conf").join("settings.xml");
+    std::fs::create_dir_all(conf.parent().unwrap()).unwrap();
+    std::fs::write(&conf, "<settings><mirrors/></settings>").unwrap();
+    let expected = dunce::canonicalize(&conf).unwrap();
+    assert_eq!(configured(&s).map(std::path::PathBuf::from), Some(expected));
 }
 
 #[test]

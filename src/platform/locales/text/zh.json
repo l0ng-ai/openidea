@@ -238,6 +238,7 @@
   "Heap: {label}": "堆：{label}",
   "Writing the heap dump…": "正在写入堆转储…",
   "Linking objects…": "正在关联对象…",
+  "Computing…": "正在计算…",
   "Computing dominators…": "正在计算支配树…",
   "Computing retained sizes…": "正在计算保留大小…",
   "Finding paths to GC roots…": "正在查找到 GC 根的路径…",

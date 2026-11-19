@@ -479,6 +479,67 @@ test("diagnostics underline the range and ⌥⏎ applies the preferred quick fix
   expect(applied).toMatchObject({ action: { title: "Import 'com.acme.orders.model.Order'" } });
 });
 
+test("⌥⏎ opens the list before a slow server answers, then fills it", async ({ workbench: page }) => {
+  const editor = await openSample(page);
+  await page.evaluate(
+    ({ file, bad }) => {
+      const action = {
+        title: "Import 'com.acme.orders.model.Order'",
+        kind: "quickfix",
+        isPreferred: true,
+        disabledReason: null,
+        edit: {
+          files: [
+            {
+              kind: "edit",
+              path: file,
+              edits: [
+                {
+                  range: { start: { line: 4, col: 0 }, end: { line: 4, col: 0 } },
+                  new_text: "import com.acme.orders.model.Order\n",
+                },
+              ],
+            },
+          ],
+        },
+        command: null,
+        data: null,
+        server: "kotlin",
+      };
+      // The server's answer is held until the test releases it, so "the popup is up while the
+      // server is still thinking" is a fact and not a race against a timer.
+      window.__releaseActions = null;
+      window.__ipc.handlers.lsp_code_actions = () =>
+        new Promise((resolve) => {
+          window.__releaseActions = () => resolve([action]);
+        });
+      window.__ipc.handlers.lsp_execute_code_action = () => [];
+      window.__ipc.emit({
+        type: "diagnostics",
+        path: file,
+        source: "kotlin",
+        items: [
+          { range: bad, severity: "error", message: "Unresolved reference: Order", source: "kotlin", code: null },
+        ],
+      });
+    },
+    { file: FILE, bad: range(20, 19, 24) },
+  );
+  await caretAt(editor, page, "val order: Order", "Order ");
+  const popup = page.getByTestId("list-popup");
+  await page.keyboard.press("Alt+Enter");
+  await expect(popup).toBeVisible();
+  await expect(popup).toHaveAttribute("aria-busy", "true");
+  expect(await ipcCalls(page, "lsp_code_actions")).toHaveLength(1);
+  // Only now does the server answer.
+  await page.evaluate(() => window.__releaseActions?.());
+  const fix = page.getByRole("option", { name: /Import 'com\.acme\.orders\.model\.Order'/ });
+  await expect(fix).toBeVisible();
+  await expect(popup).not.toHaveAttribute("aria-busy", "true");
+  await fix.click();
+  await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
+});
+
 test("lazy plugin actions resolve only when invoked, never for their intention preview", async ({
   workbench: page,
 }) => {

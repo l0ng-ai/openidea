@@ -115,6 +115,8 @@ describe("commit template", () => {
       status: "ok",
       data: key === "commit.template" ? ".gitmessage" : null,
     }));
+    // The previous test's typed message is a saved draft of /p (#4423).
+    localStorage.clear();
     useCommit.setState({ message: "" });
   });
 

@@ -1421,6 +1421,32 @@ async fn shell_commands_show_in_the_conversation_and_go_with_the_next_message() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_idle_task_starts_no_turn_until_its_first_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("! echo first"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            idle: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!((task.status, task.title.as_str()), (AgentStatus::Ready, "! echo first"));
+
+    mgr.run_shell(&task.id, "echo first", ide_core::CancellationToken::new()).await.unwrap();
+    assert!(agent.prompts.lock().is_empty(), "an idle task starts no turn");
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let sent = agent.prompts.lock().last().cloned().unwrap();
+    assert!(sent.pointer("/0/text").and_then(Value::as_str).is_some_and(|t| t.contains("echo first")));
+    assert_eq!(sent.pointer("/1/text").and_then(Value::as_str), Some("again"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn send_now_interrupts_the_turn_when_steering_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent { session_steering: true, ..FakeAgent::default() });
@@ -4377,6 +4403,7 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
             isolation: Isolation::Local,
             base: None,
             mcp_overrides: BTreeMap::from([("slack".into(), false)]),
+            idle: false,
         })
         .await
         .unwrap();
@@ -4504,6 +4531,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             isolation: Isolation::Local,
             base: None,
             mcp_overrides: BTreeMap::new(),
+            idle: false,
         })
         .await
         .unwrap();
@@ -4528,6 +4556,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             isolation: Isolation::Local,
             base: None,
             mcp_overrides: BTreeMap::new(),
+            idle: false,
         })
         .await
         .unwrap();

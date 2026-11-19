@@ -917,27 +917,40 @@ export class DocumentManager {
       if (!handoff && model.getMeta().dirty && !isUntitledUri(model.path)) return;
       if (model.inUse()) return;
       await model.sync.whenIdle();
-      if (model.inUse()) return;
-      model.dispose();
-      this.byPath.delete(model.path);
-      this.byId.delete(model.doc);
-      useDocMeta.setState((s) => {
-        const next = { ...s };
-        delete next[model.path];
-        return next;
-      }, true);
-      useOutline.setState((s) => {
-        const next = { ...s };
-        delete next[model.path];
-        return next;
-      }, true);
-      _emitEditorEvent({ type: "docClosed", doc: model.doc, path: model.path });
+      if (model.inUse() || model.closed) return;
+      this.forget(model);
       try {
         await this.backend.close(model.doc);
       } catch (e) {
         console.warn(`doc_close ${model.path} failed`, e);
       }
     });
+  }
+
+  /**
+   * The project closed or another one replaced it: its backend documents are gone, including
+   * those kept open without a tab for their unsaved changes (the leave guard already saved or
+   * discarded them). Untitled buffers follow the window and stay.
+   */
+  releaseProjectDocuments() {
+    for (const model of [...this.byPath.values()]) if (!isUntitledUri(model.path)) this.forget(model);
+  }
+
+  private forget(model: DocModel) {
+    model.dispose();
+    this.byPath.delete(model.path);
+    this.byId.delete(model.doc);
+    useDocMeta.setState((s) => {
+      const next = { ...s };
+      delete next[model.path];
+      return next;
+    }, true);
+    useOutline.setState((s) => {
+      const next = { ...s };
+      delete next[model.path];
+      return next;
+    }, true);
+    _emitEditorEvent({ type: "docClosed", doc: model.doc, path: model.path });
   }
 
   applySettings() {
