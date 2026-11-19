@@ -237,7 +237,7 @@ exec "$2" daemon"#;
     cmd
 }
 
-// ponytail: no watcher on Windows, so a crashed IDE leaves the daemon; a Job Object would cover it.
+// No watcher on Windows, so a crashed IDE leaves the daemon; a Job Object would cover it.
 #[cfg(not(unix))]
 fn daemon_command(executable: &Path, _parent: u32) -> Command {
     let mut cmd = Command::new(executable);
