@@ -3,9 +3,11 @@
  * parameters, of the project's DevTools server.
  */
 import { create } from "zustand";
+import { setContext } from "@/platform/context";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { lazyComponent } from "@/ui";
 import { registerToolWindow } from "@/workbench/contributions";
-import { useFlutterDevices } from "@/workbench/flutterDevices";
 
 export interface DevToolsWindow {
   id: string;
@@ -92,15 +94,19 @@ export function refreshDevTools(id: string) {
 const view = (name: "FlutterDevToolsView" | "FlutterDevToolsTabs" | "FlutterDevToolsRefresh") =>
   lazyComponent(() => import("../ui/FlutterDevTools").then((m) => m[name]));
 
-/** Keeps the tool windows registered while the project is a Flutter one. */
+/** A Flutter project's `pubspec.yaml`, by the rule the run and debug backends use. */
+export const isFlutterPubspec = (text: string) => text.includes("sdk: flutter");
+
+/** Keeps the tool windows registered while the project's root `pubspec.yaml` depends on Flutter. */
 export function registerDevToolsWindows(): () => void {
   let dispose: (() => void)[] | null = null;
-  const remove = () => {
-    dispose?.forEach((d) => d());
-    dispose = null;
-  };
-  const sync = (root: string | null) => {
-    if (!root) return remove();
+  const sync = (flutter: boolean) => {
+    setContext("flutterDevTools", flutter);
+    if (!flutter) {
+      dispose?.forEach((d) => d());
+      dispose = null;
+      return;
+    }
     dispose ??= DEVTOOLS_WINDOWS.map((w, i) =>
       registerToolWindow({
         id: w.id,
@@ -114,12 +120,29 @@ export function registerDevToolsWindows(): () => void {
       }),
     );
   };
-  sync(useFlutterDevices.getState().root);
-  const off = useFlutterDevices.subscribe((s, prev) => {
-    if (s.root !== prev.root) sync(s.root);
+  let pubspec: string | null = null;
+  let check = 0;
+  const load = () => {
+    const root = useProject.getState().project?.root;
+    const seq = ++check;
+    pubspec = root ? `${root}/pubspec.yaml` : null;
+    if (!pubspec) return sync(false);
+    call(commands.fsReadText(pubspec)).then(
+      (text) => seq === check && sync(isFlutterPubspec(text)),
+      () => seq === check && sync(false),
+    );
+  };
+  load();
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project?.root !== prev.project?.root) load();
+  });
+  const offFs = onIdeEvent("fsChanged", (e) => {
+    if (pubspec && [...e.created, ...e.modified, ...e.removed].includes(pubspec)) load();
   });
   return () => {
-    off();
-    remove();
+    offProject();
+    offFs();
+    check++;
+    sync(false);
   };
 }

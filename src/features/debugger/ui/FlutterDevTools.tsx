@@ -97,28 +97,30 @@ function LatestApp({ server, window }: { server: string; window: DevToolsWindow 
 
 export function FlutterDevToolsView({ id }: { id: string }) {
   const tx = useTx();
+  // No request in a remote window: the server would start on the remote machine, out of reach.
+  const content = isRemoteWindow() ? (
+    <div className={styles.message}>{tx("Flutter DevTools isn't available in a remote project yet")}</div>
+  ) : (
+    <LocalView id={id} />
+  );
+  return <div className={styles.pane}>{content}</div>;
+}
+
+function LocalView({ id }: { id: string }) {
+  const tx = useTx();
   const window = DEVTOOLS_WINDOWS.find((w) => w.id === id)!;
   const refresh = useDevToolsRefresh((s) => s[id] ?? 0);
   const server = useDevToolsServer(refresh);
-  let content;
-  if (isRemoteWindow()) {
-    content = <div className={styles.message}>{tx("Flutter DevTools isn't available in a remote project yet")}</div>;
-  } else if (!server) {
-    content = <div className={styles.message}>{tx("Loading Flutter DevTools…")}</div>;
-  } else if ("error" in server) {
-    content = (
+  if (!server) return <div className={styles.message}>{tx("Loading Flutter DevTools…")}</div>;
+  if ("error" in server)
+    return (
       <div className={styles.message}>
         {tx("Flutter DevTools start-up failed")}: {server.error}
       </div>
     );
-  } else if (window.app === "each") {
-    content = <Inspector key={refresh} server={server.url} window={window} />;
-  } else if (window.app === "latest") {
-    content = <LatestApp key={refresh} server={server.url} window={window} />;
-  } else {
-    content = <Frame key={refresh} server={server.url} window={window} />;
-  }
-  return <div className={styles.pane}>{content}</div>;
+  if (window.app === "each") return <Inspector key={refresh} server={server.url} window={window} />;
+  if (window.app === "latest") return <LatestApp key={refresh} server={server.url} window={window} />;
+  return <Frame key={refresh} server={server.url} window={window} />;
 }
 
 /** One tab per running app, named after its device. */

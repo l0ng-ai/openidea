@@ -808,7 +808,7 @@ export function registerDebugActions(): () => void {
       category: "Debug",
       icon: "refresh",
       description: "Flutter: load the DevTools page again",
-      when: "flutterProject",
+      when: "flutterDevTools",
       run: (c) => {
         const id = c.arg;
         for (const w of DEVTOOLS_WINDOWS) if (!id || id === w.id) refreshDevTools(w.id);

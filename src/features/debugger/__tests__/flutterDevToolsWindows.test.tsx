@@ -2,11 +2,20 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const devtoolsUrl = vi.hoisted(() => vi.fn());
+const readText = vi.hoisted(() => vi.fn());
+const remote = vi.hoisted(() => ({ on: false }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
-  return { ...real, commands: { ...real.commands, flutterDevtoolsUrl: devtoolsUrl } };
+  return { ...real, commands: { ...real.commands, flutterDevtoolsUrl: devtoolsUrl, fsReadText: readText } };
 });
+vi.mock("@/platform/remote", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/remote")>()),
+  isRemoteWindow: () => remote.on,
+}));
 
+import { emitLocalIdeEvent } from "@/platform/ipc";
+import { getContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
 import { useContributions } from "@/workbench/contributions";
 import { useFlutterDevices } from "@/workbench/flutterDevices";
 import { DEVTOOLS_WINDOWS, devToolsUrl, refreshDevTools, registerDevToolsWindows } from "../flutter/devTools";
@@ -35,6 +44,7 @@ describe("Flutter DevTools windows", () => {
     devtoolsUrl.mockReset();
     devtoolsUrl.mockResolvedValue({ status: "ok", data: server });
     useDebug.setState({ sessions: {}, active: null });
+    remote.on = false;
   });
   afterEach(cleanup);
 
@@ -53,16 +63,40 @@ describe("Flutter DevTools windows", () => {
     expect(url.searchParams.has("uri")).toBe(false);
   });
 
-  it("exists only while the project is a Flutter one", () => {
+  it("exists in Flutter projects, run configurations or not", async () => {
     const ids = () => [...useContributions.getState().toolWindows.keys()];
-    useFlutterDevices.setState({ root: null });
+    const pubspecs: Record<string, string> = {
+      "/app/pubspec.yaml": "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n",
+      "/tool/pubspec.yaml": "name: tool\ndependencies:\n  args: ^2.0.0\n",
+    };
+    readText.mockImplementation(async (path: string) =>
+      path in pubspecs ? { status: "ok", data: pubspecs[path] } : { status: "error", error: { kind: "notFound" } },
+    );
+    useProject.setState({ project: { root: "/app" } as never });
     const dispose = registerDevToolsWindows();
-    expect(ids()).not.toContain("flutter-inspector");
-    useFlutterDevices.setState({ root: "/app" });
-    for (const w of DEVTOOLS_WINDOWS) expect(ids()).toContain(w.id);
-    useFlutterDevices.setState({ root: null });
-    expect(ids()).not.toContain("flutter-inspector");
+    await waitFor(() => expect(ids()).toEqual(expect.arrayContaining(DEVTOOLS_WINDOWS.map((w) => w.id))));
+    expect(getContext().flutterDevTools).toBe(true);
+
+    useProject.setState({ project: { root: "/tool" } as never });
+    await waitFor(() => expect(ids()).not.toContain("flutter-inspector"));
+    expect(getContext().flutterDevTools).toBe(false);
+
+    // Adding the SDK dependency later brings the windows.
+    pubspecs["/tool/pubspec.yaml"] += "  flutter:\n    sdk: flutter\n";
+    act(() => emitLocalIdeEvent({ type: "fsChanged", created: [], modified: ["/tool/pubspec.yaml"], removed: [] }));
+    await waitFor(() => expect(ids()).toContain("flutter-inspector"));
+
+    useProject.setState({ project: { root: "/empty" } as never });
+    await waitFor(() => expect(ids()).not.toContain("flutter-inspector"));
     dispose();
+    useProject.setState({ project: null });
+  });
+
+  it("starts no server for a remote window", async () => {
+    remote.on = true;
+    render(<FlutterDevToolsView id="flutter-inspector" />);
+    await screen.findByText("Flutter DevTools isn't available in a remote project yet");
+    expect(devtoolsUrl).not.toHaveBeenCalled();
   });
 
   it("gives the Inspector one page per running app", async () => {
