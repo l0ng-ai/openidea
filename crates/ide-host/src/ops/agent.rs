@@ -5,10 +5,10 @@ use crate::Host;
 use crate::agent_secrets::{AgentSecrets, Kept};
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
-    AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput,
-    ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput,
-    McpTransport, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentContextUsage,
+    AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
+    CustomAgentInput, ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer,
+    McpServerInput, McpTransport, NewAgentTask,
 };
 use ide_command::command;
 use ide_core::error::ErrorKind;
@@ -339,6 +339,13 @@ pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32)
 pub async fn agent_probe(host: &Host, window: &str, provider: String, refresh: bool) -> IdeResult<AgentProbe> {
     host.require_trust(window)?;
     host.project(window)?.agents.probe(&provider, refresh).await
+}
+
+/// Reads the running session's context categories without sending a prompt.
+#[command(trust = trusted)]
+pub async fn agent_context_usage(host: &Host, window: &str, task: String) -> IdeResult<AgentContextUsage> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.context_usage(&task).await
 }
 
 /// Stops the task's current turn, or with `subagent` only that subagent's work.
@@ -1067,6 +1074,7 @@ ide_command::domain!(
     agent_archive,
     agent_base_text,
     agent_cancel,
+    agent_context_usage,
     agent_changes,
     agent_commands,
     agent_create,

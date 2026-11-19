@@ -45,6 +45,8 @@ pub struct AgentCapabilities {
     pub steer: bool,
     /// It reports its background tasks and stops them one by one.
     pub background_tasks: bool,
+    /// The connected agent can report a breakdown of its context window.
+    pub context_usage: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -250,6 +252,24 @@ pub struct AgentUsage {
     // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
     #[serde(default)]
     pub cost: Option<Box<AgentCost>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentContextUsage {
+    pub categories: Vec<AgentContextCategory>,
+    pub total_tokens: u32,
+    pub max_tokens: u32,
+    pub model: String,
+    pub is_auto_compact_enabled: Option<bool>,
+    pub auto_compact_threshold: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct AgentContextCategory {
+    pub name: String,
+    pub tokens: u32,
+    pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

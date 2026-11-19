@@ -1530,6 +1530,18 @@ impl AgentManager {
         Ok(())
     }
 
+    pub async fn context_usage(&self, id: &str) -> IdeResult<AgentContextUsage> {
+        let task = self.task(id)?;
+        let live = task.live.lock().clone().ok_or_else(|| IdeError::unavailable("the agent session is offline"))?;
+        if !live.capabilities.context_usage {
+            return Err(IdeError::unavailable("this agent does not report context details"));
+        }
+        live.peer
+            .request("_openidea/context_usage", json!({ "sessionId": live.session }), None)
+            .await
+            .map_err(|error| IdeError::internal(task.describe(error)))
+    }
+
     /// Stops background task `background` of task `id`.
     pub async fn stop_background(&self, id: &str, background: &str) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -3820,6 +3832,7 @@ fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
         rollback: meta("/openidea/rollback"),
         steer: steer_method(init).is_some(),
         background_tasks: meta("/openidea/backgroundTasks"),
+        context_usage: meta("/openidea/contextUsage"),
     };
     (capabilities, init.prompt("embeddedContext"))
 }
