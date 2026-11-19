@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAction } from "@/platform/actions";
 import { installKeyboardDispatcher, registerKeyClaim, useKeymap } from "@/platform/keymap";
-import { conflictRows, handlerFor, movedToIde, VIM_EDITOR_ATTR, VIM_KEYS, vimKeyClaim } from "../conflicts";
+import {
+  conflictRows,
+  handlerFor,
+  modeAction,
+  modeMovedToIde,
+  movedToIde,
+  VIM_EDITOR_ATTR,
+  VIM_KEYS,
+  VIM_MODE_ATTR,
+  vimKeyClaim,
+} from "../conflicts";
 import { DEFAULT_VIM_SETTINGS, parseVimSettings, type VimSettings } from "../settings";
 
 describe("vim shortcut conflicts", () => {
@@ -39,6 +49,22 @@ describe("vim shortcut conflicts", () => {
     expect(row("Ctrl+D")).toMatchObject({ actions: ["run.debug"], current: "ide" });
     expect(row("Ctrl+W").actions).toEqual(["t.chord"]);
     expect(row("Ctrl+V").actions).toEqual([]);
+  });
+
+  it("refines Ctrl+V and Ctrl+C per Vim mode, keeping the normal-mode defaults", () => {
+    expect(handlerFor("Ctrl+V", {}, "insert")).toBe("ide");
+    expect(handlerFor("Ctrl+V", {}, "normal")).toBe("vim");
+    expect(handlerFor("Ctrl+V", {}, "visual")).toBe("vim");
+    expect(handlerFor("Ctrl+C", {}, "visual")).toBe("ide");
+    expect(modeAction("Ctrl+V", "insert")).toBe("edit.paste");
+    expect(modeAction("Shift+Insert", "insert")).toBe("edit.paste");
+    expect(modeAction("Ctrl+C", "visual")).toBe("edit.copy");
+    expect(modeAction("Ctrl+V", "normal")).toBeNull();
+    // The user's per-stroke handler still wins, as IdeaVim's sethandler does.
+    expect(handlerFor("Ctrl+V", { "Ctrl+V": "vim" }, "insert")).toBe("vim");
+    expect(modeMovedToIde("Ctrl+V", {}, "insert")).toBe(true);
+    expect(modeMovedToIde("Ctrl+V", { "Ctrl+V": "vim" }, "insert")).toBe(false);
+    expect(modeMovedToIde("Ctrl+C", {}, "normal")).toBe(false);
   });
 
   it("parses stored settings defensively", () => {
@@ -107,6 +133,26 @@ describe("keyboard dispatcher with Vim mode", () => {
     ctrlR(editor);
     await Promise.resolve();
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("claims mode-refined strokes so the editor can run their IDE action", () => {
+    const claim = vimKeyClaim(() => settings);
+    const at = (mode: string | null) => {
+      const el = editor.parentElement!;
+      if (mode) el.setAttribute(VIM_MODE_ATTR, mode);
+      else el.removeAttribute(VIM_MODE_ATTR);
+      return { target: editor } as unknown as KeyboardEvent;
+    };
+    expect(claim(at("normal"), "Ctrl+V")).toBe(true);
+    expect(claim(at("visual"), "Ctrl+V")).toBe(true);
+    // Claimed by the editor, which pastes instead of starting a Visual block.
+    expect(claim(at("insert"), "Ctrl+V")).toBe(true);
+    // Claimed by the editor, which copies and leaves Visual mode.
+    expect(claim(at("visual"), "Ctrl+C")).toBe(true);
+    // Insert-mode Ctrl+C stays Vim's (leave Insert mode).
+    expect(claim(at("insert"), "Ctrl+C")).toBe(false);
+    // No mode mirrored yet: the stroke's global handler decides.
+    expect(claim(at(null), "Ctrl+V")).toBe(true);
   });
 
   it("gives Escape to the IDE first by default, to Vim when configured", async () => {

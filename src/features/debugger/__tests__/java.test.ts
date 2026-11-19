@@ -4,6 +4,7 @@ import type { RunConfig } from "@/platform/ipc";
 const invoked: Array<[string, unknown[]]> = [];
 let shortenCommandLine: string | null = null;
 let kotlinFiles = false;
+let debugAdapter = "java-debug";
 const files: Record<string, string> = {};
 let missingTools: string[] = [];
 vi.mock("@/platform/ipc", async (orig) => {
@@ -50,6 +51,10 @@ vi.mock("@/platform/ipc", async (orig) => {
           hints: [],
         });
       },
+      javaDebugAdapter: (...a: unknown[]) => {
+        invoked.push(["javaDebugAdapter", a]);
+        return ok(debugAdapter);
+      },
       javaDebugServer: (...a: unknown[]) => {
         invoked.push(["javaDebugServer", a]);
         return ok(41234);
@@ -80,6 +85,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
     invoked.length = 0;
     shortenCommandLine = null;
     kotlinFiles = false;
+    debugAdapter = "java-debug";
   });
 
   it("launches Application configs with the resolved classpath on jdtls' debug server", async () => {
@@ -88,6 +94,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
     const l = await javaLaunchConfig(app, "/p");
     expect(invoked).toEqual([
       ["javaResolveLaunch", ["api", false, "automatic", expect.any(Number)]],
+      ["javaDebugAdapter", ["api"]],
       ["javaDebugServer", ["api"]],
     ]);
     expect(l).toMatchObject({ adapter: "java-debug", request: "launch", cwd: "/p/api", args: [], env: { A: "1" } });
@@ -174,6 +181,30 @@ describe("Java debugging (java-debug through jdtls)", () => {
     const l = await javaAttachConfig({ name: "mvn test", module: "api", hostName: "remote", port: 5005 }, "/p");
     expect(l.adapter).toBe("kotlin-debug-adapter");
     expect(JSON.parse(l.extraJson!)).toEqual({
+      projectRoot: "/p/api",
+      hostName: "remote",
+      port: 5005,
+      timeout: 30_000,
+    });
+    expect(invoked.some(([command]) => command === "javaDebugServer")).toBe(false);
+  });
+
+  it("debugs a module jdtls doesn't serve with java-analyzer's adapter", async () => {
+    debugAdapter = "java-analyzer";
+    const l = await javaLaunchConfig(app, "/p");
+    expect(l).toMatchObject({ adapter: "java-analyzer", request: "launch", cwd: "/p/api", env: { A: "1" } });
+    expect(JSON.parse(l.extraJson!)).toEqual({
+      projectRoot: "/p/api",
+      mainClass: "a.Main",
+      classPaths: ["/p/target/classes", "/m2/a.jar"],
+      modulePaths: [],
+      javaExec: "/jdk21/bin/java",
+      vmArgs: ["-Xmx1g"],
+      args: ["--port", "8081 x"],
+    });
+    const a = await javaAttachConfig({ name: "mvn test", module: "api", hostName: "remote", port: 5005 }, "/p");
+    expect(a).toMatchObject({ adapter: "java-analyzer", request: "attach", cwd: "/p/api" });
+    expect(JSON.parse(a.extraJson!)).toEqual({
       projectRoot: "/p/api",
       hostName: "remote",
       port: 5005,

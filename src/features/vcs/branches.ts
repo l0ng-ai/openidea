@@ -176,6 +176,23 @@ export function shortRemoteName(name: string): string {
   return i < 0 ? name : name.slice(i + 1);
 }
 
+/**
+ * The folders of local branch names, shallowest first (`feat/ui/login` contributes `feat/` and
+ * `feat/ui/`): what the New Branch dialog suggests while typing. Remote branches are left out.
+ */
+export function branchNamePrefixes(branches: readonly Branch[]): string[] {
+  const prefixes = new Map<string, number>();
+  for (const branch of branches) {
+    if (branch.remote) continue;
+    const name = branch.name;
+    let depth = 1;
+    for (let slash = name.indexOf("/"); slash !== -1; slash = name.indexOf("/", slash + 1)) {
+      prefixes.set(name.slice(0, slash + 1), depth++);
+    }
+  }
+  return [...prefixes.keys()].sort((a, b) => prefixes.get(a)! - prefixes.get(b)! || a.localeCompare(b));
+}
+
 export const MAX_RECENT = 5;
 
 /** Recently checked-out local branches other than the current one, newest first. */

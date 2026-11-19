@@ -39,6 +39,28 @@ function setup(overrides: Partial<SeDeps> = {}) {
 const fm = (rel: string) => ({ path: `/p/${rel}`, relPath: rel, score: 1, indices: [] });
 
 describe("SeController", () => {
+  it("filters recent actions when disabled actions are excluded", async () => {
+    const { c, last } = setup({
+      actions: () => [
+        { id: "blocked", title: "Blocked", run: () => {} },
+        { id: "available", title: "Available", run: () => {} },
+      ],
+      isEnabled: (a) => a.id === "available",
+      recentActions: () => ["blocked", "available"],
+    });
+    const recent = () => last().sections.get("recentActions")!.items;
+    c.run({ query: "", tab: "actions", includeNonProject: false, includeDisabled: false, extra: {} });
+    await flush();
+    expect(recent()).toMatchObject([{ id: "available", enabled: true }]);
+
+    c.run({ query: "", tab: "actions", includeNonProject: true, includeDisabled: true, extra: {} });
+    await flush();
+    expect(recent()).toMatchObject([
+      { id: "blocked", enabled: false },
+      { id: "available", enabled: true },
+    ]);
+  });
+
   it("streams each section independently", async () => {
     const files = deferred<ReturnType<typeof fm>[]>();
     const { c, last } = setup({
@@ -168,6 +190,28 @@ describe("SeController", () => {
     expect(item.kind === "file" && [item.line, item.col]).toEqual([41, 2]);
   });
 
+  // #4080: `:digits` is a location only where a result opens at it.
+  it.each([
+    ["http://localhost:8080", "http://localhost", 8079, null],
+    ["a:1", "a", 0, null],
+    ["key: 2", "key: 2", null, null],
+    ["10:30", "10", 29, null],
+    ["foo.ts:12:3", "foo.ts", 11, 2],
+  ])("%s: files look up %s, text search takes the query as typed", async (query, file, line, col) => {
+    const findFiles = vi.fn(async (_q: string, _limit: number) => [fm("x.ts")]);
+    const searchText = vi.fn(async (_r: number, _q: SearchQuery) => {});
+    const { c, last } = setup({ findFiles, searchText });
+    c.run({ query, tab: "all", includeNonProject: false, extra: {} });
+    await flush();
+    expect(findFiles.mock.calls.at(-1)![0]).toBe(file);
+    const item = last().sections.get("files")!.items[0]!;
+    expect(item.kind === "file" && [item.line ?? null, item.col ?? null]).toEqual([line, col]);
+    expect(searchText.mock.calls.at(-1)![1].pattern).toBe(query);
+    c.run({ query, tab: "text", includeNonProject: false, extra: {} });
+    await flush();
+    expect(searchText.mock.calls.at(-1)![1].pattern).toBe(query);
+  });
+
   it("shows recent files for an empty query", async () => {
     const { c, last } = setup({ recentFiles: async () => ["/p/a/B.kt", "/p/C.kt"] });
     c.run({ query: "", tab: "all", includeNonProject: false, extra: {} });
@@ -295,5 +339,84 @@ describe("Endpoints in the All tab", () => {
     // The All tab mixes its sections into one list; an endpoint has to be in it.
     const rows = buildRows(last().sections, { headers: false, mix: "/tg-tenant/deeplink/menu/search" });
     expect(rows.map((r) => (r.kind === "symbol" ? r.container : r.kind))).toContain("DeepLinkController.searchMenus");
+  });
+});
+
+describe("plugin search categories", () => {
+  const id = "plugin:sample:routes" as const;
+  const page = (title: string) => ({
+    items: [
+      {
+        id: "same",
+        title,
+        description: "Handler",
+        target: { kind: "command" as const, value: { id: "open", arg: "/files /users:42" } },
+      },
+    ],
+    hasMore: true,
+  });
+  const request = (query: string) => ({ query, tab: id, includeNonProject: false, extra: {} });
+  it("passes the raw query, preserves provider order, bounds show more and does not query custom categories in All", async () => {
+    const search = vi.fn(async () => page("Request"));
+    const category = {
+      id,
+      title: "Routes",
+      search,
+      command: (c: string) => ({ id: `plugin.sample.${c}`, title: "Open", run: vi.fn() }),
+    };
+    const { c, last } = setup({
+      categories: () => [category],
+      actions: () => [{ id: "plugin.sample.open", title: "Open", run: () => {} }],
+    });
+    c.run(request("/files /users:42"));
+    await flush();
+    expect(search).toHaveBeenLastCalledWith(1, "/files /users:42", 50);
+    const item = last().sections.get(id)!.items[0]!;
+    expect(item).toMatchObject({ key: `${id}:same`, enabled: true });
+    expect(buildRows(last().sections, { headers: false })).toHaveLength(2);
+    c.run({ ...request(""), extra: { [id]: 10000 } });
+    await flush();
+    expect(search).toHaveBeenLastCalledWith(2, "", 200);
+    expect(last().sections.get(id)!.hasMore).toBe(false);
+    c.run({ ...request("query"), tab: "all" });
+    await flush();
+    expect(search).toHaveBeenCalledTimes(2);
+  });
+  it("cancels superseded work, ignores late answers and withdraws removed providers", async () => {
+    const old = deferred<ReturnType<typeof page>>();
+    const search = vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue(page("New"));
+    let categories = [{ id, title: "Routes", search, command: (c: string) => ({ id: c, title: c, run: vi.fn() }) }];
+    const { c, deps, last } = setup({ categories: () => categories });
+    c.run(request("old"));
+    c.run(request("new"));
+    await flush();
+    expect(deps.cancel).toHaveBeenCalledWith(1);
+    old.resolve(page("Old"));
+    await flush();
+    expect(last().sections.get(id)!.items[0]).toMatchObject({ title: "New" });
+    categories = [];
+    c.invalidateCategories();
+    c.run(request("new"));
+    await flush();
+    expect(last().sections.has(id)).toBe(false);
+    c.dispose();
+  });
+  it("cancels close and tab switches and completes failed providers without hanging", async () => {
+    const search = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("bad provider"))
+      .mockReturnValue(new Promise(() => {}));
+    const { c, deps, last } = setup({
+      categories: () => [{ id, title: "Routes", search, command: (c) => ({ id: c, title: c, run: vi.fn() }) }],
+    });
+    c.run(request("bad"));
+    await flush();
+    expect(last().loading).toBe(false);
+    c.run(request("pending"));
+    c.run({ ...request("q"), tab: "files" });
+    expect(deps.cancel).toHaveBeenCalledWith(2);
+    c.run(request("pending"));
+    c.dispose();
+    expect(deps.cancel).toHaveBeenCalledWith(3);
   });
 });

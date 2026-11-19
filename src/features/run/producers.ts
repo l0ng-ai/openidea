@@ -438,6 +438,7 @@ function site(input: ContextInput): FileSite {
     ruby: ["ruby", "rake", "rspec"],
     php: ["php", "phpunit", "composer"],
     zig: ["zig", "zig-application"],
+    dart: ["flutter"],
   };
   const owner =
     inside && language
@@ -992,8 +993,27 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       return simple(lang, s, env, lang, () => [s.arg]);
     case "r":
       return simple(lang, s, env, "r", () => [s.arg]);
-    case "dart":
+    case "dart": {
+      // A file of a Flutter app runs as the app (`flutter run -t`), on the toolbar's device.
+      const app = s.inProject
+        ? allClosest(
+            input.configs.filter((c) => c.kind === "flutter"),
+            s.idPath,
+          )[0]
+        : undefined;
+      // A test file runs its tests (`flutter test` / `dart test`); `dart run` can't run Flutter code.
+      const test = /_test\.dart$/.test(s.file);
+      if (app && test)
+        return { name: s.file, scope: "file", config: fileConfig(s, "dart", app.command, ["test", s.arg]) };
+      if (app)
+        return {
+          name: s.file,
+          scope: "file",
+          config: fileConfig(s, "flutter", app.command, ["run", "-t", s.arg], "dart"),
+        };
+      if (test) return simple(lang, s, env, "dart", () => ["test", s.arg]);
       return simple(lang, s, env, "dart", () => ["run", s.arg], "dart");
+    }
     case "scala":
       return simple(lang, s, env, "scala-cli", () => ["run", s.arg]);
     case "kotlin":

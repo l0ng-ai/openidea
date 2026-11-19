@@ -7,6 +7,7 @@ pub mod agent_secrets;
 pub mod catalogue;
 pub mod data_dirs;
 pub mod diagnostics_store;
+mod direnv;
 pub mod environment;
 mod formatter;
 mod java_runtime;
@@ -58,7 +59,8 @@ pub struct HostConfig {
 }
 
 pub struct Host {
-    pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
+    pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
+    pub mcp: mcp::McpService,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     /// Every `Diagnostics` event the host ever emitted, per file and producer:
     /// the snapshot plugins read (`problems`), independent of windows and reports.
@@ -151,7 +153,8 @@ impl Host {
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
-            mcp_executable: RwLock::default(),
+            mcp_executable: Arc::default(),
+            mcp: Default::default(),
             diagnostics,
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
@@ -221,12 +224,12 @@ impl Host {
         }
     }
 
-    /// Associates the plugin runtime that executes this host's project operations.
-    /// Publishes only the executable of the running built-in MCP service.
+    /// Publishes the executable of the running built-in MCP service (`None` while it is off).
     pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
         *self.mcp_executable.write() = executable;
     }
 
+    /// Associates the plugin runtime that executes this host's project operations.
     pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
         *self.plugin_host.write() = Arc::downgrade(plugins);
     }
@@ -250,6 +253,16 @@ impl Host {
 
     pub fn require_trust(&self, window: &str) -> IdeResult<()> {
         self.project(window)?.require_trust()
+    }
+
+    /// [`Self::require_trust`] for IDE-wide toolchain work (SDK detection, tool installs) that
+    /// also runs from a window without a project, such as Settings opened from the Welcome
+    /// screen: there is no project there to trust.
+    pub fn require_trust_if_project(&self, window: &str) -> IdeResult<()> {
+        match self.project(window) {
+            Ok(project) => project.require_trust(),
+            Err(_) => Ok(()),
+        }
     }
 
     /// The window that owns what `window` starts.
@@ -318,6 +331,9 @@ impl Host {
         }
         if !project.light {
             self.environment.project_closed();
+            if self.windows_for_root(&project.root).is_empty() {
+                self.environment.direnv_closed(&project.root);
+            }
         }
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.stop();
@@ -327,6 +343,8 @@ impl Host {
         }
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
+        project.flutter.stop();
+        project.devtools.stop();
         project.notebooks.stop_admission();
         // What the closing window started goes with it — the builds and searches it
         // asked for, its runs, its shells and its debug sessions — and its language
@@ -445,6 +463,10 @@ impl Host {
     pub fn stop_processes_on_exit(&self) {
         self.processes.kill_all();
         self.terminals.kill_all();
+        for project in self.projects() {
+            project.flutter.kill();
+            project.devtools.kill();
+        }
     }
 
     /// Called before desktop exit, which may bypass document destructors.
@@ -466,6 +488,8 @@ impl Host {
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+            project.flutter.kill();
+            project.devtools.kill();
         }
         for project in &projects {
             project.plugin_diagnostics.close();

@@ -8,6 +8,7 @@ import { Button, Input, T, copyText } from "@/ui";
 import { Row } from "../components/Form";
 import { useSetting } from "../components/context";
 import { DEFAULT_MCP_ADDRESS, MCP_PORT_LIMITS } from "../model/schema";
+import { useSettingsDialog } from "../model/staging";
 import type { PageSpec } from "./spec";
 import styles from "./McpServer.module.css";
 
@@ -38,13 +39,18 @@ function useStatus(): [McpServerStatus | null, () => void] {
         () => undefined,
       );
     load();
-    // Turning the server on or off takes effect on Apply.
+    // Turning the server on or off takes effect on Apply. A remote host's server reports its
+    // settings changes to the project window only, so the end of Apply reloads too.
     const off = onIdeEvent("settingsChanged", (e) => {
       if (!e.key || e.key.startsWith("mcpServer")) load();
+    });
+    const offApplied = useSettingsDialog.subscribe((s, prev) => {
+      if (prev.saving && !s.saving) load();
     });
     return () => {
       live = false;
       off();
+      offApplied();
     };
   }, [root, loads]);
   return [status, () => setLoads((n) => n + 1)];
@@ -179,14 +185,16 @@ export const MCP_SERVER_PAGE: PageSpec = {
           key: "mcpServer.fixedPort",
           label: "Use a fixed port",
           hint: "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.",
-        },
-        {
-          kind: "number",
-          key: "mcpServer.port",
-          label: "Port",
-          ...MCP_PORT_LIMITS,
-          integer: true,
-          hint: "The fixed port, used while Use a fixed port is on.",
+          children: [
+            {
+              kind: "number",
+              key: "mcpServer.port",
+              label: "Port",
+              ...MCP_PORT_LIMITS,
+              integer: true,
+              hint: "The fixed port, used while Use a fixed port is on.",
+            },
+          ],
         },
         {
           kind: "toggle",

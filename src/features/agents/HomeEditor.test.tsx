@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AgentConfigOption, AgentProvider, NewAgentTask } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
@@ -77,26 +77,32 @@ beforeEach(() => {
   updateComposer(HOME, { text: "Check the project" });
 });
 
-const effortButton = () => screen.getByRole("button", { name: "Reasoning" });
+const modelButton = () => screen.getByRole("button", { name: "Model" });
 
 async function chooseModel(model: string) {
-  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  if (!screen.queryByRole("dialog", { name: "Model" })) fireEvent.click(modelButton());
   fireEvent.click(screen.getByRole("option", { name: model }));
   fireEvent.pointerDown(document.body);
 }
 
+async function chooseEffort(effort: string) {
+  if (!screen.queryByRole("dialog", { name: "Model" })) fireEvent.click(modelButton());
+  const group = screen.getByRole("radiogroup", { name: "Effort Level" });
+  fireEvent.click(within(group).getByRole("radio", { name: effort }));
+  fireEvent.keyDown(document, { key: "Escape" });
+}
+
 it("switches model-specific levels and restores each draft effort before starting", async () => {
   render(<HomeEditor />);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
-  expect(effortButton()).toHaveTextContent("high");
+  expect(modelButton()).toHaveTextContent("big");
+  expect(modelButton()).toHaveTextContent("high");
   await chooseModel("small");
-  expect(effortButton()).toHaveTextContent("minimal");
-  fireEvent.click(effortButton());
-  fireEvent.click(screen.getByRole("option", { name: "medium" }));
+  expect(modelButton()).toHaveTextContent("minimal");
+  await chooseEffort("medium");
   await chooseModel("big");
-  expect(effortButton()).toHaveTextContent("high");
+  expect(modelButton()).toHaveTextContent("high");
   await chooseModel("small");
-  expect(effortButton()).toHaveTextContent("medium");
+  expect(modelButton()).toHaveTextContent("medium");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([
@@ -124,11 +130,13 @@ it("uses GitHub Copilot's own defaults and preserves per-model context tier and 
   };
   useAgents.setState({ providers: [copilot], draft: savedDraft({ provider: "copilot", config: {} }) });
   render(<HomeEditor />);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gemini-4-carbondefault");
-  expect(effortButton()).toHaveTextContent("medium");
+  expect(modelButton()).toHaveTextContent("gemini-4-carbon");
+  expect(modelButton()).toHaveTextContent("medium");
+  expect(modelButton()).toHaveTextContent("default");
   await chooseModel("gpt-5.6-sol");
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gpt-5.6-soldefault");
-  expect(effortButton()).toHaveTextContent("medium");
+  expect(modelButton()).toHaveTextContent("gpt-5.6-sol");
+  expect(modelButton()).toHaveTextContent("medium");
+  expect(modelButton()).toHaveTextContent("default");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([
@@ -141,7 +149,7 @@ it("uses GitHub Copilot's own defaults and preserves per-model context tier and 
 it.each(["plain", "unknown"])("hides effort for %s models and sends no stale effort", async (model) => {
   render(<HomeEditor />);
   await chooseModel(model);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "dialog");
+  expect(modelButton()).toHaveAttribute("aria-haspopup", "dialog");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([{ id: "model", value: model }]);
@@ -162,7 +170,7 @@ it("ignores old provider-wide effort choices and refreshes unsupported per-model
     draft: savedDraft({ provider: "fake", config: { effort: "low" }, thoughtLevels: { big: { effort: "removed" } } }),
   });
   render(<HomeEditor />);
-  expect(effortButton()).toHaveTextContent("high");
+  expect(modelButton()).toHaveTextContent("high");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toContainEqual({ id: "effort", value: "high" });

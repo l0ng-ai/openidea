@@ -28,17 +28,22 @@ import styles from "./ReferenceChip.module.css";
 
 export { styles as chipStyles };
 
+const MAX_EXISTING = 4000;
 /** Whether a path names an existing file or folder, per path (the same files come up again and again). */
 const existing = new Map<string, Promise<boolean>>();
 export function fileExists(path: string): Promise<boolean> {
   let known = existing.get(path);
-  if (!known) {
-    known = call(commands.fsProbe(path)).then(
-      () => true,
-      () => false,
-    );
+  if (known) {
+    existing.delete(path);
     existing.set(path, known);
+    return known;
   }
+  known = call(commands.fsProbe(path)).then(
+    () => true,
+    () => false,
+  );
+  if (existing.size >= MAX_EXISTING) existing.delete(existing.keys().next().value!);
+  existing.set(path, known);
   return known;
 }
 

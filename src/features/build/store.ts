@@ -204,17 +204,20 @@ async function executeBuild(
   invoke: (previous: string[], onEvent: (e: BuildEvent) => void) => Promise<BuildResult>,
   cancel: () => void,
 ): Promise<BuildResult | null> {
+  const ownsBuild = () => useBuildRun.getState().request === request;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
+  if (!ownsBuild()) return null;
 
   let queue: BuildEvent[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   const flush = () => {
+    clearTimeout(timer);
     timer = undefined;
     const events = queue;
     queue = [];
-    if (useBuildRun.getState().request !== request || !events.length) return;
+    if (!ownsBuild() || !events.length) return;
     let s = useBuildRun.getState();
     for (const e of events) s = { ...s, ...applyBuildEvent(s, e) };
     useBuildRun.setState(s);
@@ -222,6 +225,7 @@ async function executeBuild(
       upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: s.message, fraction: null, done: false, cancel });
   };
   const onEvent = (e: BuildEvent) => {
+    if (!ownsBuild()) return;
     queue.push(e);
     timer ??= setTimeout(flush, 16);
   };
@@ -229,7 +233,7 @@ async function executeBuild(
   let result: BuildResult | null = null;
   try {
     result = await invoke(useBuildRun.getState().files, onEvent);
-    clearTimeout(timer);
+    if (!ownsBuild()) return null;
     flush();
     const status: BuildStatus = result.success ? "success" : "failed";
     useBuildRun.setState({
@@ -255,7 +259,7 @@ async function executeBuild(
     });
     if (!result.success) showFailure();
   } catch (e) {
-    clearTimeout(timer);
+    if (!ownsBuild()) return null;
     flush();
     if (isCancelled(e)) {
       useBuildRun.setState({ status: "cancelled", files: [], message: null });
@@ -278,13 +282,16 @@ async function executeBuild(
       showFailure();
     }
   } finally {
-    if (useBuildRun.getState().request === request) useBuildRun.setState({ request: null });
-    setContext(
-      BUILD_LAST_STATUS,
-      result?.success ? "success" : useBuildRun.getState().status === "cancelled" ? "cancelled" : "failed",
-    );
-    setContext(BUILD_RUNNING, false);
-    upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: null, fraction: 1, done: true });
+    clearTimeout(timer);
+    if (ownsBuild()) {
+      useBuildRun.setState({ request: null });
+      setContext(
+        BUILD_LAST_STATUS,
+        result?.success ? "success" : useBuildRun.getState().status === "cancelled" ? "cancelled" : "failed",
+      );
+      setContext(BUILD_RUNNING, false);
+      upsertTask({ id: BUILD_TASK_ID, title: taskTitle, message: null, fraction: 1, done: true });
+    }
   }
   return result;
 }

@@ -88,6 +88,7 @@ pub(crate) fn detect_with_profiles(
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
     detect_godot(root, &mut out);
+    detect_projects(root, &["pubspec.yaml"], detect_flutter, &mut out);
     crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
@@ -559,6 +560,23 @@ fn detect_maven(root: &Path, excluded_poms: &[PathBuf], out: &mut Vec<RunConfig>
             detect_maven_build(root, &dir, out);
         }
     }
+}
+
+/// Configurations of the Maven / Gradle builds in `dirs`: the builds a user linked explicitly,
+/// however deep below `root` or outside it (ids and working directory then absolute).
+pub(crate) fn detect_builds(root: &Path, dirs: &[PathBuf]) -> Vec<RunConfig> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        if dir.join("pom.xml").is_file() {
+            detect_maven_build(root, dir, &mut out);
+        }
+        if GRADLE_SETTINGS.iter().chain(GRADLE_BUILDS).any(|name| dir.join(name).is_file()) {
+            detect_gradle_build(root, dir, &mut out);
+        }
+    }
+    let mut seen = HashSet::new();
+    out.retain(|c| seen.insert(c.id.clone()));
+    out
 }
 
 fn detect_maven_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
@@ -1525,6 +1543,17 @@ fn detect_godot(root: &Path, out: &mut Vec<RunConfig>) {
             (format!("godot:project:{r}"), format!("Godot Project ({r})"), Some(rel.clone()))
         };
         out.push(config(id, name, "godot", "godot", &["--path", "."]).debug("godot").in_dir(cwd));
+    }
+}
+
+/// A Flutter app: depends on the SDK and has the conventional entry point (packages have none).
+fn detect_flutter(root: &Path, out: &mut Vec<RunConfig>) {
+    if root.join("lib/main.dart").is_file()
+        && read(&root.join("pubspec.yaml")).is_some_and(|pubspec| pubspec.contains("sdk: flutter"))
+    {
+        out.push(
+            config("flutter:run", "flutter run", "flutter", "flutter", &["run", "-t", "lib/main.dart"]).debug("dart"),
+        );
     }
 }
 

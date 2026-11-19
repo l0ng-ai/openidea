@@ -57,6 +57,7 @@ Composer 项目没有 `vendor/`，或已安装的包与 `composer.lock` 不一�
 
 - **PHPStan**：项目中有 `vendor/bin/phpstan` 时，保存的文件会交给它检查，结果显示为诊断。**PHPStan › 配置文件** 用于指定配置；留空则使用项目根目录下的 `phpstan.neon`、`phpstan.neon.dist` 或 `phpstan.dist.neon`。
 - **PHP-CS-Fixer**：当文件上层目录中有 `.php-cs-fixer.php` 或 `.php-cs-fixer.dist.php`，且项目有 `vendor/bin/php-cs-fixer` 时，**重新格式化代码**（`⌥⌘L` / `Ctrl+Alt+L`）改用 PHP-CS-Fixer，而不是语言服务器。
+- **对齐**：**设置 › 编辑器 › 代码样式 › PHP › 对齐** 提供与 PhpStorm 相同的 **对齐键值对**（多行数组中的 `=>`）和 **对齐连续赋值**（相邻行赋值语句中的 `=`），默认都关闭。它们在语言服务器或 PHP-CS-Fixer 格式化之后生效，保存时格式化也一样；格式化选区时只作用于选中的行。空行、注释行、其他语句或跨多行的值会开始新的一组，嵌套数组单独对齐。
 
 ## 运行与测试
 

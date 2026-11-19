@@ -7,6 +7,58 @@ import { logWarning } from "./highlight";
 import { fencedCodeMode, findLanguageDescription, loadSupport } from "./languages";
 
 describe("language modes", () => {
+  it("highlights Julia declarations, calls, types, macros and literals without semantic tokens", async () => {
+    const description = findLanguageDescription("Julia", "/tmp/palette.jl");
+    expect(description?.name).toBe("Julia");
+    const support = await loadSupport(description!);
+    const source = [
+      "struct Point end",
+      "function distance(p::Point)",
+      '  label = "point"',
+      "  norm(p)",
+      "  return 3, 3.5",
+      "end",
+      "@show distance(Point())",
+      "# comment",
+    ].join("\n");
+    const found: Array<[string, string]> = [];
+    highlightTree(
+      support!.language.parser.parse(source),
+      tagHighlighter([
+        { tag: t.keyword, class: "keyword" },
+        { tag: t.function(t.definition(t.variableName)), class: "function-definition" },
+        { tag: t.function(t.variableName), class: "function-call" },
+        { tag: t.definition(t.typeName), class: "type-definition" },
+        { tag: t.typeName, class: "type-reference" },
+        { tag: t.macroName, class: "macro" },
+        { tag: t.integer, class: "integer" },
+        { tag: t.float, class: "float" },
+        { tag: t.string, class: "string" },
+        { tag: t.lineComment, class: "comment" },
+      ]),
+      (from, to, style) => found.push([source.slice(from, to), style]),
+    );
+
+    expect(found).toEqual([
+      ["struct", "keyword"],
+      ["Point", "type-definition"],
+      ["end", "keyword"],
+      ["function", "keyword"],
+      ["distance", "function-definition"],
+      ["Point", "type-reference"],
+      ['"point"', "string"],
+      ["norm", "function-call"],
+      ["return", "keyword"],
+      ["3", "integer"],
+      ["3.5", "float"],
+      ["end", "keyword"],
+      ["@show", "macro"],
+      ["distance", "function-call"],
+      ["Point", "function-call"],
+      ["# comment", "comment"],
+    ]);
+  });
+
   it("distinguishes PHP classes, method declarations and fields for imported schemes", async () => {
     const support = await loadSupport(findLanguageDescription("PHP", "/tmp/palette.php")!);
     const source = "<?php class Palette extends BasePalette { var $name; function example() {} }";

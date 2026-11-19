@@ -633,6 +633,10 @@ pub struct NewAgentTask {
     /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
     #[serde(default)]
     pub mcp_overrides: BTreeMap<String, bool>,
+    /// Creates the task without sending `prompt` (it only names the task): the composer's
+    /// `!` command runs in it first.
+    #[serde(default)]
+    pub idle: bool,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
@@ -672,6 +676,8 @@ pub enum AgentChangesView {
     SinceStart,
     /// The uncommitted files against `HEAD`; commits made since the start stay.
     Group,
+    /// What the last turn changed, against the checkout as that turn started.
+    LastTurn,
 }
 
 /// A task's uncommitted files and the commits made since it started.

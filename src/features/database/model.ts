@@ -337,6 +337,20 @@ export function targetOf(id: string, database: string | null, current: string | 
 /** Key of the Database tree node of database `name` of data source `id`. */
 export const databaseKey = (id: string, name: string) => `${id}/@${name}`;
 
+/**
+ * `expanded` without the Database tree nodes that show what target `id` loaded (a data source
+ * id: the source and all its databases). Once that is forgotten, an expanded node would wait
+ * for children nothing loads until it is expanded again.
+ */
+export function collapseTarget(expanded: ReadonlySet<string>, id: string): Set<string> {
+  const { id: source, database } = splitTarget(id);
+  const under = (key: string, node: string) => key === node || key.startsWith(`${node}/`);
+  const shows = database
+    ? (key: string) => under(key, databaseKey(source, database)) || under(key, id)
+    : (key: string) => under(key, source) || key.startsWith(`${source}:`);
+  return new Set([...expanded].filter((key) => !shows(key)));
+}
+
 const SSL_MODES: Record<string, DbSslMode> = {
   disable: "disable",
   disabled: "disable",

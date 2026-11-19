@@ -19,6 +19,21 @@ export function nodeOutput(node: TestNode): string[] {
   return [...node.output, ...node.children.flatMap(nodeOutput)];
 }
 
+/** A test's duration, or the sum of its children's for a group. */
+export function nodeDuration(node: TestNode): number | undefined {
+  if (node.durationMs !== undefined) return node.durationMs;
+  let sum = 0;
+  let any = false;
+  for (const c of node.children) {
+    const d = nodeDuration(c);
+    if (d !== undefined) {
+      sum += d;
+      any = true;
+    }
+  }
+  return any ? sum : undefined;
+}
+
 export interface TestCounts {
   passed: number;
   failed: number;

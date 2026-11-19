@@ -314,6 +314,7 @@ export const lspTheme = EditorView.theme({
   // --- navigation ---------------------------------------------------------
   ".cm-lsp-link": {
     color: "var(--link)",
+    WebkitTextFillColor: "currentcolor",
     textDecoration: "underline",
     textUnderlineOffset: "2px",
     cursor: "pointer",
@@ -325,6 +326,12 @@ export const lspTheme = EditorView.theme({
     "--lsp-occurrence-bg": "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
   },
   ".cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  // Text fill, not `color`: it reaches the syntax and semantic spans nested inside, and with the
+  // variable unset the declaration drops, so they keep their own colours.
+  "span.cm-lsp-occurrence, .cm-lsp-occurrence-text": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
+  "span.cm-lsp-occurrence-write, .cm-lsp-occurrence-text-write": {
+    WebkitTextFillColor: "var(--fg-identifier-under-caret-write)",
+  },
   // First line of a highlight over several lines: from its start column to the right edge,
   // over the line's own background (the caret row's).
   ".cm-lsp-occurrence-tail": {

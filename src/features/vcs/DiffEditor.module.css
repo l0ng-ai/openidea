@@ -252,7 +252,7 @@
   background: var(--bg-app);
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
-  cursor: ew-resize;
+  cursor: col-resize;
   touch-action: none;
 }
 .host :global(.cm-diffDivider:hover) {

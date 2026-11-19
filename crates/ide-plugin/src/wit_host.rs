@@ -353,7 +353,7 @@ impl StoreData {
     /// their window; background and scheduled calls ask nobody, so only an
     /// already-allowed host connects there.
     fn ask_net(&mut self, host: &str) -> Result<Option<bool>, wit::Error> {
-        let client = self.net_interactive.then(|| self.invocation.client.clone()).flatten();
+        let client = self.user_invoked.then(|| self.invocation.client.clone()).flatten();
         let subject = self.subject.clone();
         let started = Instant::now();
         let answer = self.host.net_ask(&subject, client.as_deref(), host, &self.cancel.token());
@@ -506,6 +506,21 @@ impl ui::Host for StoreData {
             .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), None)
             .map_err(to_wit))
     }
+    fn set_console_rules(&mut self, rules: Vec<ui::ConsoleRule>) -> Fallible<()> {
+        let rules = rules
+            .into_iter()
+            .map(|r| crate::ConsoleRule {
+                pattern: r.pattern,
+                ignore_case: r.ignore_case,
+                foreground: r.foreground,
+                background: r.background,
+                styles: r.styles,
+                whole_line: r.whole_line,
+                enabled: r.enabled,
+            })
+            .collect();
+        Ok(self.host.console_rules(rules).map_err(to_wit))
+    }
     fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
         let valid_key =
             (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
@@ -542,6 +557,37 @@ impl ui::Host for StoreData {
         }
         let client = self.invocation.client.clone();
         Ok(self.host.copy_to_clipboard(client.as_deref(), clip(text, crate::runtime::MAX_TEXT)).map_err(to_wit))
+    }
+
+    fn read_clipboard(&mut self) -> Fallible<ui::ClipboardContent> {
+        if let Err(e) = self.require(Capability::ClipboardRead) {
+            return Ok(Err(e));
+        }
+        // Never unattended: not from an event handler, a web view message or a command
+        // another plugin ran through `command-runner` (its chain is not empty).
+        let client = match &self.invocation.client {
+            Some(client) if self.user_invoked && self.invocation.command_chain.is_empty() => client.clone(),
+            _ => {
+                let why = "clipboard.read (only in a command or view action the user ran)";
+                return Ok(Err(wit::Error::Denied(why.into())));
+            }
+        };
+        let started = Instant::now();
+        let content = self.host.read_clipboard(&client, &self.cancel.token());
+        // The window may ask the user first: the wait doesn't count against the call's budget.
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        let content = match content {
+            Ok(content) => content,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        let max = crate::runtime::MAX_CLIPBOARD_BYTES;
+        if content.text.as_ref().is_some_and(|t| t.len() > max) || content.image.as_ref().is_some_and(|i| i.len() > max)
+        {
+            return Ok(Err(wit::Error::Failed(format!("the clipboard holds more than {} MiB", max >> 20))));
+        }
+        Ok(Ok(ui::ClipboardContent { text: content.text, image: content.image }))
     }
 
     fn open_url(&mut self, url: String) -> Fallible<()> {
@@ -2137,6 +2183,18 @@ pub(crate) mod inlay_bindings {
 pub(crate) mod endpoints_bindings {
     wasmtime::component::bindgen!({
         world: "endpoints", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
+pub(crate) mod search_bindings {
+    wasmtime::component::bindgen!({
+        world: "search", path: "../../wit",
         with: {
             "openidea:plugin/types": super::bindings::openidea::plugin::types,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,

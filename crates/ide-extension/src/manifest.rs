@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.10.0";
+pub const ENGINE_VERSION: &str = "1.13.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -362,6 +362,9 @@ impl Manifest {
             }
             if matches!(cap, Capability::BuildRead) {
                 self.needs_api(&format!("capability `{cap}`"), 10)?;
+            }
+            if matches!(cap, Capability::ClipboardRead) {
+                self.needs_api(&format!("capability `{cap}`"), 11)?;
             }
             if matches!(cap, Capability::JavaAgent) {
                 return Err(
@@ -744,6 +747,14 @@ required = [\"lsp:phoxite\"]
         assert!(err(&format!("{}{caps}", BASE.replace("^1.2", "^1.9"))).contains("new in plugin API 1.10"));
         let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.10"))).unwrap();
         assert_eq!(m.capabilities.optional, [Capability::BuildRead]);
+    }
+
+    #[test]
+    fn the_clipboard_read_capability_needs_api_1_11() {
+        let caps = "[capabilities]\noptional = [\"clipboard.read\"]\n";
+        assert!(err(&format!("{}{caps}", BASE.replace("^1.2", "^1.10"))).contains("new in plugin API 1.11"));
+        let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.11"))).unwrap();
+        assert_eq!(m.capabilities.optional, [Capability::ClipboardRead]);
     }
 
     #[test]

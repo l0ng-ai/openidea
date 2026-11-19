@@ -1,0 +1,578 @@
+/**
+ * Build, Execution, Deployment › Run Targets: SSH hosts and Docker / Compose
+ * containers run configurations can run on (`RunConfig.target`). Consumed by
+ * `ide-run`, `ide-remote` and the run feature.
+ */
+import { usePluginRunTargets } from "@/platform/pluginRunTargets";
+import { useCallback, useEffect, useId, useState } from "react";
+import clsx from "clsx";
+import { call, commands, isTauri, type DockerConnection, type RemoteEntry } from "@/platform/ipc";
+import { useTx, tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
+import {
+  DEFAULT_RUN_TARGET,
+  newRemoteId,
+  type RunTargetKindValid,
+  type RunTargetValid,
+} from "@/platform/remoteSettings";
+import { Button, Checkbox, Dialog, Icon, IconButton, Input, T, type SelectOption } from "@/ui";
+import { Row, Section, Select } from "../components/Form";
+import { useSetting } from "../components/context";
+import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
+import { parentPath, splitList } from "./runTargetsPaths";
+import styles from "./Workflow.module.css";
+import own from "./RunTargets.module.css";
+
+const UNKNOWN_HOST = /^Unknown SSH host key/;
+const NEEDS_SECRET = /^SSH (password|key passphrase) required|passphrase required|^cannot decrypt SSH key/;
+
+function RemoteFolderDialog({
+  sshConfig,
+  initial,
+  onClose,
+  onChoose,
+}: {
+  sshConfig: string;
+  initial: string;
+  onClose: () => void;
+  onChoose: (path: string) => void;
+}) {
+  const tx = useTx();
+  const [path, setPath] = useState(initial || "~");
+  const [pathText, setPathText] = useState(initial || "~");
+  const [entries, setEntries] = useState<RemoteEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [secret, setSecret] = useState("");
+  // The listed folder; `path` may then switch to its absolute form without listing again.
+  const [request, setRequest] = useState(() => ({ path: initial || "~" }));
+
+  useEffect(() => {
+    let live = true;
+    call(commands.remoteList({ kind: "sftp", ssh: sshConfig }, request.path)).then(
+      (list) => {
+        if (!live) return;
+        setEntries(list.filter((e) => e.isDir).sort((a, b) => a.name.localeCompare(b.name)));
+        // `~` and relative paths become absolute once an entry tells where they are.
+        const absolute = list[0] ? parentPath(list[0].path) : null;
+        if (absolute && absolute !== request.path) {
+          setPath(absolute);
+          setPathText(absolute);
+        }
+      },
+      (e: unknown) => live && setError(e instanceof Error ? e.message : String(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, [sshConfig, request]);
+
+  const go = useCallback((next: string) => {
+    setEntries(null);
+    setError(null);
+    setSelected(null);
+    setPath(next);
+    setPathText(next);
+    setRequest({ path: next });
+  }, []);
+  const retry = () => go(path);
+  const trust = async () => {
+    try {
+      await call(commands.sshTrustHost(sshConfig));
+      retry();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const sendSecret = async () => {
+    await commands.sshSetSecret(sshConfig, secret, false);
+    setSecret("");
+    retry();
+  };
+  const parent = parentPath(path);
+  const chosen = selected ?? path;
+
+  return (
+    <Dialog
+      open
+      title="Select Folder on Target"
+      onClose={onClose}
+      width={520}
+      buttons={[
+        { label: "OK", role: "default", disabled: !!error, onClick: () => onChoose(chosen) },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <div className={own.browser}>
+        <div className={own.browserPath}>
+          <IconButton
+            icon="arrow-up"
+            size="small"
+            title="Parent Folder"
+            disabled={!parent}
+            onClick={() => parent && go(parent)}
+          />
+          <Input
+            mono
+            className={own.pathInput}
+            aria-label="Remote path"
+            value={pathText}
+            onChange={(e) => setPathText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && pathText.trim()) {
+                e.preventDefault();
+                go(pathText.trim());
+              }
+            }}
+          />
+          <IconButton icon="refresh" size="small" title="Refresh" onClick={retry} />
+        </div>
+        <div className={own.browserList} role="listbox" aria-label={tx("Remote folders")}>
+          {error ? (
+            <div className={own.browserError} role="alert">
+              <span>{error}</span>
+              {UNKNOWN_HOST.test(error) && (
+                <span>
+                  <Button size="small" onClick={() => void trust()}>
+                    Trust Host
+                  </Button>
+                </span>
+              )}
+              {NEEDS_SECRET.test(error) && (
+                <span className={own.browserAuth}>
+                  <Input
+                    type="password"
+                    aria-label="Password or passphrase"
+                    placeholder={tx("Password or passphrase")}
+                    value={secret}
+                    onChange={(e) => setSecret(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && void sendSecret()}
+                  />
+                  <Button size="small" onClick={() => void sendSecret()}>
+                    Connect
+                  </Button>
+                </span>
+              )}
+            </div>
+          ) : entries === null ? (
+            <div className={own.browserStatus}>
+              <T>Loading…</T>
+            </div>
+          ) : entries.length === 0 ? (
+            <div className={own.browserStatus}>
+              <T>No subfolders</T>
+            </div>
+          ) : (
+            entries.map((e) => (
+              <button
+                key={e.path}
+                type="button"
+                role="option"
+                aria-selected={selected === e.path}
+                className={clsx(own.browserRow, selected === e.path && own.browserRowSelected)}
+                onClick={() => setSelected(e.path)}
+                onDoubleClick={() => go(e.path)}
+              >
+                <Icon name="folder" size={14} />
+                <span>{e.name}</span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  const id = useId();
+  return (
+    <Row label={label} htmlFor={id} className={styles.alignedRow}>
+      <Input
+        id={id}
+        mono
+        className={styles.wide}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </Row>
+  );
+}
+
+function ProjectFolderField({ target, onChange }: { target: RunTargetValid; onChange: (v: string) => void }) {
+  const projectName = useProject((s) => s.project?.name ?? "project");
+  const [browsing, setBrowsing] = useState(false);
+  const id = useId();
+  return (
+    <Row
+      label="Project folder on target"
+      htmlFor={id}
+      className={styles.alignedRow}
+      hint="Files are uploaded here and the working directory is mapped into it."
+    >
+      <span className={own.pathField}>
+        <Input
+          id={id}
+          mono
+          className={styles.wide}
+          value={target.projectRoot}
+          placeholder={`~/${projectName}`}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <Button size="small" disabled={!target.sshConfig || !isTauri()} onClick={() => setBrowsing(true)}>
+          Browse…
+        </Button>
+      </span>
+      {browsing && (
+        <RemoteFolderDialog
+          sshConfig={target.sshConfig}
+          initial={target.projectRoot || "~"}
+          onClose={() => setBrowsing(false)}
+          onChoose={(path) => {
+            setBrowsing(false);
+            onChange(path);
+          }}
+        />
+      )}
+    </Row>
+  );
+}
+
+function ListField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  value: readonly string[];
+  onChange: (v: string[]) => void;
+  placeholder?: string;
+  hint?: string;
+}) {
+  const id = useId();
+  // Edited as text; the list is stored once the field loses focus.
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <Row label={label} htmlFor={id} className={styles.alignedRow} hint={hint}>
+      <Input
+        id={id}
+        mono
+        className={styles.wide}
+        value={draft ?? value.join(" ")}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== null) onChange(splitList(draft));
+          setDraft(null);
+        }}
+      />
+    </Row>
+  );
+}
+
+/** The Services tool window's Docker connections (app-wide `docker.json`). */
+function useDockerConnections(): DockerConnection[] {
+  const [connections, setConnections] = useState<DockerConnection[]>([]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let live = true;
+    call(commands.dockerSettings()).then(
+      (s) => live && setConnections(s.connections ?? []),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return connections;
+}
+
+function DockerConnectionSelect({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  const connections = useDockerConnections();
+  const options: SelectOption[] = [
+    { value: "", label: tx("Docker CLI default") },
+    ...connections.map((c) => ({ value: c.id, label: c.name })),
+  ];
+  if (value && connections.length && !connections.some((c) => c.id === value))
+    options.push({ value, label: tx`${value} (missing)` });
+  return <Select value={value} options={options} onChange={onChange} aria-label="Docker connection" />;
+}
+
+const KIND_OPTIONS: SelectOption[] = [
+  { value: "ssh", label: "SSH" },
+  { value: "docker", label: "Docker" },
+  { value: "compose", label: "Docker Compose" },
+];
+
+/** Image or service of a container target, for the list. */
+function containerSummary(t: RunTargetValid): string {
+  if (t.kind === "docker") return t.image;
+  if (t.kind === "compose") return t.service ? `compose:${t.service}` : "compose";
+  return "";
+}
+
+function ContainerFields({ target, update }: { target: RunTargetValid; update: (p: Partial<RunTargetValid>) => void }) {
+  const projectName = useProject((s) => s.project?.name ?? "project");
+  const compose = target.kind === "compose";
+  return (
+    <>
+      <Row
+        label="Docker connection"
+        className={styles.alignedRow}
+        hint="Only daemons on this machine can mount the project."
+      >
+        <DockerConnectionSelect
+          value={target.dockerConnection}
+          onChange={(dockerConnection) => update({ dockerConnection })}
+        />
+      </Row>
+      {compose ? (
+        <>
+          <ListField
+            label="Compose files"
+            value={target.composeFiles}
+            onChange={(composeFiles) => update({ composeFiles })}
+            placeholder="compose.yaml"
+            hint="Relative to the project; empty uses the project's default file."
+          />
+          <TextField label="Service" value={target.service} onChange={(service) => update({ service })} />
+        </>
+      ) : (
+        <TextField
+          label="Image"
+          value={target.image}
+          onChange={(image) => update({ image })}
+          placeholder="python:3.12"
+        />
+      )}
+      <Row
+        label="Container folder"
+        className={styles.alignedRow}
+        hint={
+          compose
+            ? "Empty: where the service mounts the project."
+            : "The project is mounted here; paths and the working directory are mapped into it."
+        }
+      >
+        <Input
+          mono
+          aria-label="Container folder"
+          className={styles.wide}
+          value={target.containerRoot}
+          placeholder={compose ? "" : `/workspaces/${projectName}`}
+          onChange={(e) => update({ containerRoot: e.target.value })}
+        />
+      </Row>
+      <ListField
+        label="Published ports"
+        value={target.ports}
+        onChange={(ports) => update({ ports })}
+        placeholder="8000:8000"
+      />
+      <TextField
+        label="Run options"
+        value={target.runOptions}
+        onChange={(runOptions) => update({ runOptions })}
+        placeholder="--network host"
+      />
+      <Checkbox
+        checked={target.imageUser}
+        onChange={(imageUser) => update({ imageUser })}
+        label="Run as the image's user, not the project folder's owner (Linux)"
+      />
+    </>
+  );
+}
+
+export function RunTargetsEditor() {
+  const plugins = usePluginRunTargets((s) => s.targets);
+  const [defaultTarget, setDefaultTarget] = useSetting<string>("run.defaultTarget");
+  const [raw, setTargets] = useSetting<RunTargetValid[] | undefined>("runTargets");
+  const targets = raw ?? [];
+  const allTargets = [...targets, ...plugins.map((t) => ({ id: t.id, name: `${t.target.name} (${t.pluginName})` }))];
+  const defaultOptions: SelectOption[] = [
+    { value: "", label: "Local machine" },
+    ...allTargets.map((t) => ({ value: t.id, label: t.name })),
+  ];
+  if (defaultTarget && !allTargets.some((t) => t.id === defaultTarget))
+    defaultOptions.push({ value: defaultTarget, label: tx`${defaultTarget} (missing)` });
+  const sshConfigs = useSshConfigs();
+  const [selected, setSelected] = useState<string | null>(targets[0]?.id ?? null);
+  const current = targets.find((t) => t.id === selected) ?? null;
+  const index = current ? targets.indexOf(current) : -1;
+  const sshName = (id: string) => {
+    const c = sshConfigs.find((x) => x.id === id);
+    return c ? c.name || c.host : id;
+  };
+
+  const update = (patch: Partial<RunTargetValid>) => {
+    if (!current) return;
+    setTargets(targets.map((t) => (t.id === current.id ? { ...t, ...patch } : t)));
+  };
+  const add = (base?: RunTargetValid) => {
+    const target: RunTargetValid = base
+      ? { ...base, id: newRemoteId("target"), name: `${base.name} (copy)` }
+      : {
+          ...DEFAULT_RUN_TARGET,
+          id: newRemoteId("target"),
+          name: `Target ${targets.length + 1}`,
+          sshConfig: sshConfigs[0]?.id ?? "",
+        };
+    setTargets([...targets, target]);
+    setSelected(target.id);
+  };
+  const remove = () => {
+    if (!current) return;
+    const rest = targets.filter((t) => t.id !== current.id);
+    setTargets(rest);
+    setSelected(rest[Math.min(index, rest.length - 1)]?.id ?? null);
+  };
+  const move = (d: -1 | 1) => {
+    const j = index + d;
+    if (index < 0 || j < 0 || j >= targets.length) return;
+    const next = [...targets];
+    [next[index], next[j]] = [next[j]!, next[index]!];
+    setTargets(next);
+  };
+
+  return (
+    <div className={styles.toolsLayout}>
+      <div className={styles.tableBox}>
+        <div className={styles.toolbar} role="toolbar" aria-label={tx("Run targets actions")}>
+          <IconButton icon="plus" title="Add" size="small" onClick={() => add()} />
+          <IconButton icon="minus" title="Remove" size="small" disabled={!current} onClick={remove} />
+          <IconButton
+            icon="copy"
+            title="Copy"
+            size="small"
+            disabled={!current}
+            onClick={() => current && add(current)}
+          />
+          <IconButton icon="arrow-up" title="Move Up" size="small" disabled={index <= 0} onClick={() => move(-1)} />
+          <IconButton
+            icon="arrow-down"
+            title="Move Down"
+            size="small"
+            disabled={index < 0 || index >= targets.length - 1}
+            onClick={() => move(1)}
+          />
+        </div>
+        <div className={styles.toolList} role="listbox" aria-label={tx("Run targets")}>
+          {targets.length === 0 && plugins.length === 0 && (
+            <div className={clsx(styles.toolRow, styles.empty)}>
+              <T>No run targets. Click + to add one.</T>
+            </div>
+          )}
+          {plugins.map((t) => (
+            <div key={t.id} className={styles.toolRow} role="option" aria-selected={false}>
+              <span className={styles.toolName}>{t.target.name}</span>
+              <span className={styles.toolGroup}>
+                {t.pluginName} · <T>Read-only</T>
+              </span>
+            </div>
+          ))}
+          {targets.map((t) => (
+            <div
+              key={t.id}
+              role="option"
+              aria-selected={t.id === selected}
+              className={clsx(styles.toolRow, t.id === selected && styles.toolRowSelected)}
+              onMouseDown={() => setSelected(t.id)}
+            >
+              <span className={styles.toolName} title={t.name || t.id}>
+                {t.name || t.id}
+              </span>
+              <span
+                className={styles.toolGroup}
+                title={t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
+              >
+                {t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <Section>
+        <Row label="Default run target">
+          <Select
+            value={defaultTarget ?? ""}
+            onChange={setDefaultTarget}
+            aria-label="Default run target"
+            options={defaultOptions}
+          />
+        </Row>
+      </Section>
+      {current && (
+        <Section title="Target Settings">
+          <TextField label="Name" value={current.name} onChange={(name) => update({ name })} />
+          <Row label="Type" className={styles.alignedRow}>
+            <Select
+              value={current.kind}
+              options={KIND_OPTIONS}
+              onChange={(kind) => update({ kind: kind as RunTargetKindValid })}
+              aria-label="Type"
+            />
+          </Row>
+          {current.kind === "ssh" ? (
+            <>
+              <Row label="SSH configuration" className={styles.alignedRow}>
+                <SshConfigSelect value={current.sshConfig} onChange={(sshConfig) => update({ sshConfig })} />
+              </Row>
+              <ProjectFolderField target={current} onChange={(projectRoot) => update({ projectRoot })} />
+              <Checkbox
+                checked={current.syncBeforeRun}
+                onChange={(syncBeforeRun) => update({ syncBeforeRun })}
+                label="Upload changed project files before each run"
+              />
+            </>
+          ) : (
+            <ContainerFields target={current} update={update} />
+          )}
+          <TextField
+            label="Python interpreter"
+            value={current.python}
+            onChange={(python) => update({ python })}
+            placeholder="python3"
+          />
+          <TextField
+            label="Node.js interpreter"
+            value={current.node}
+            onChange={(node) => update({ node })}
+            placeholder="node"
+          />
+          <TextField
+            label="Java executable"
+            value={current.java}
+            onChange={(java) => update({ java })}
+            placeholder="java"
+          />
+        </Section>
+      )}
+      <div className={styles.note}>
+        <T>
+          {
+            "Choose a target under “Run on” in a run configuration. Interpreters left empty are looked up on the target's PATH. SSH configurations are managed in Tools › SSH Configurations."
+          }
+        </T>{" "}
+        <T>
+          {
+            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine."
+          }
+        </T>
+      </div>
+    </div>
+  );
+}

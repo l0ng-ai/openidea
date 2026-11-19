@@ -5,7 +5,8 @@
  * the backend off the command thread, cancellable, one undoable step per file.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { editorsFor, whenSynced } from "@/editor/api";
+import { editorsFor, whenAllSynced, whenSynced } from "@/editor/api";
+import { tx } from "@/platform/i18n";
 import {
   call,
   commands,
@@ -56,15 +57,28 @@ export function pendingUsages(groups: readonly UsageGroup[], marks: ReplaceMarks
   });
 }
 
-/** Backend targets for `usages`, one per file in first-seen order, with explicit positions. */
-export function replaceTargets(usages: readonly Usage[]): ReplaceTarget[] {
+function positionsByFile(usages: readonly Usage[]): Map<string, Pos[]> {
   const byPath = new Map<string, Pos[]>();
   for (const u of usages) {
     let list = byPath.get(u.path);
     if (!list) byPath.set(u.path, (list = []));
     list.push({ line: u.line, col: u.col });
   }
-  return [...byPath].map(([path, only]) => ({ path, only }));
+  return byPath;
+}
+
+/** Backend targets for `usages`, one per file in first-seen order, with explicit positions. */
+export function replaceTargets(usages: readonly Usage[]): ReplaceTarget[] {
+  return [...positionsByFile(usages)].map(([path, only]) => ({ path, only }));
+}
+
+/**
+ * Targets for Replace All once the search hit its limit: the backend replaces every match in
+ * the scope (`allInScope`), skipping the usages among `groups` that are excluded or already replaced.
+ */
+export function skipTargets(groups: readonly UsageGroup[], marks: ReplaceMarks): ReplaceTarget[] {
+  const kept = usagesOf(groups).filter((u) => marks.excluded.has(usageKey(u)) || marks.done.has(usageKey(u)));
+  return [...positionsByFile(kept)].map(([path, skip]) => ({ path, skip }));
 }
 
 export interface ReplaceCounts {
@@ -81,6 +95,11 @@ export function confirmText(c: ReplaceCounts, pattern: string, replacement: stri
   const occ = `${c.usages} occurrence${c.usages === 1 ? "" : "s"}`;
   const files = `${c.files} file${c.files === 1 ? "" : "s"}`;
   return `Replace ${occ} of '${pattern}' with '${replacement}' in ${files}?`;
+}
+
+/** Confirmation for Replace All once the search hit its limit (the count shown is not the total). */
+export function confirmAllText(pattern: string, replacement: string): string {
+  return tx`Replace every occurrence of '${pattern}' with '${replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.`;
 }
 
 /** Toggles exclusion of every usage in `groups` (all excluded → include them again). */
@@ -127,6 +146,8 @@ export interface ReplaceRequest {
   replacement: string;
   preserveCase: boolean;
   targets: ReplaceTarget[];
+  /** Replace every match in the query's scope, not just `targets` (see `skipTargets`). */
+  allInScope?: boolean;
 }
 
 export interface ReplaceProgress {
@@ -137,8 +158,8 @@ export interface ReplaceProgress {
 }
 
 export interface ReplaceDeps {
-  /** Waits until open editors of `paths` pushed their local edits to the backend. */
-  synced(paths: readonly string[]): Promise<void>;
+  /** Waits until open editors of `paths` (`null`: of every file) pushed their local edits to the backend. */
+  synced(paths: readonly string[] | null): Promise<void>;
   start(request: RequestId, r: ReplaceRequest, onEvent: (e: ReplaceEvent) => void): Promise<void>;
   cancel(request: RequestId): void;
   nextRequestId(): RequestId;
@@ -147,12 +168,15 @@ export interface ReplaceDeps {
 export function ipcReplaceDeps(): ReplaceDeps {
   return {
     synced: async (paths) => {
+      if (!paths) return whenAllSynced();
       await Promise.all(paths.flatMap((p) => editorsFor(p).map((e) => whenSynced(e.view))));
     },
     start: async (request, r, onEvent) => {
       const channel = new Channel<ReplaceEvent>();
       channel.onmessage = onEvent;
-      await call(commands.replaceInFiles(request, r.query, r.replacement, r.preserveCase, r.targets, channel));
+      await call(
+        commands.replaceInFiles(request, r.query, r.replacement, r.preserveCase, r.targets, !!r.allInScope, channel),
+      );
     },
     cancel: (request) => void commands.cancelRequest(request).catch(() => {}),
     nextRequestId,
@@ -174,7 +198,7 @@ export function startReplace(
   const request = deps.nextRequestId();
   let cancelled = false;
   const result = (async () => {
-    await deps.synced(r.targets.map((t) => t.path));
+    await deps.synced(r.allInScope ? null : r.targets.map((t) => t.path));
     if (cancelled) return { files: 0, replacements: 0, failed: 0, cancelled: true, elapsedMs: 0 };
     const progress: ReplaceProgress = { done: 0, total: r.targets.length, replacements: 0, failures: [] };
     let summary: ReplaceSummary | null = null;
@@ -275,4 +299,10 @@ export function replacePreviewLines(before: string, edits: readonly TextEdit[]):
   }
   for (let l = next; l < lines.length; l++) out.push({ kind: "same", line: l, text: lines[l] ?? "" });
   return out;
+}
+
+/** Whether a match of `pattern` can span lines, so replacing it may remove line breaks. */
+export function mayMatchLineBreak(pattern: string, regex: boolean): boolean {
+  if (!regex) return pattern.includes("\n");
+  return /\n|\\[nrsSWD]|\[\^/.test(pattern);
 }

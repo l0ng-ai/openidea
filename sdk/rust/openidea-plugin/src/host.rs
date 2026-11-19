@@ -150,6 +150,22 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+        let rules: Vec<_> = rules
+            .iter()
+            .map(|r| wit::ui::ConsoleRule {
+                pattern: r.pattern.clone(),
+                ignore_case: r.ignore_case,
+                foreground: r.foreground.clone(),
+                background: r.background.clone(),
+                styles: r.styles.clone(),
+                whole_line: r.whole_line,
+                enabled: r.enabled,
+            })
+            .collect();
+        wit::ui::set_console_rules(&rules).map_err(error)
+    }
+
     pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
         let value = match value {
             ContextValue::Flag(b) => wit::ui::ContextValue::Flag(b),
@@ -165,6 +181,11 @@ mod imp {
 
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         wit::ui::copy_to_clipboard(text).map_err(error)
+    }
+
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        let content = wit::ui::read_clipboard().map_err(error)?;
+        Ok(ClipboardContent { text: content.text, image: content.image })
     }
 
     pub fn open_url(url: &str) -> Result<(), Error> {
@@ -1599,6 +1620,16 @@ pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
 }
 
+/// Replaces the plugin's console highlight rules (API 1.12); an empty list removes them.
+/// Every window applies them to the stdout and stderr lines of its Run and Debug consoles;
+/// the plugin never sees the output. The first enabled whole-line rule that matches styles
+/// the line instead of its log level colour; match-only rules style their matches on top, an
+/// earlier rule winning where they overlap. At most 100 rules; an invalid one fails the call
+/// and keeps the previous rules. They go away when the plugin stops. Needs no capability.
+pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+    imp::set_console_rules(rules)
+}
+
 /// Sets the plugin's context key that `when` clauses test as `plugin.<id>.<key>`, in
 /// the window the current command or event came from (every window when there is
 /// none): `set_context("connected", true)`. A window's value takes precedence over
@@ -1615,6 +1646,15 @@ pub fn remove_context(key: &str) {
 /// Copies `text` to the system clipboard. Needs `clipboard`.
 pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
     imp::copy_to_clipboard(text)
+}
+
+/// API 1.11: the clipboard's text and image (PNG bytes) on the user's machine; both `None`
+/// when it holds neither. Needs `clipboard.read`, and works only in a command the user ran
+/// or a view action from a window: event handlers, background work, web view messages
+/// and commands run through [`execute_command`] get `Error::Denied`. Text or an image over
+/// 16 MiB is `Error::Failed`. In a remote project the user confirms first (refused: `Denied`).
+pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+    imp::read_clipboard()
 }
 
 /// Opens an `http://` or `https://` URL in the user's default browser.

@@ -16,6 +16,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsUnstage: unstage.mockImplementation(() => ok(null)),
       vcsStage: stage.mockImplementation(() => ok(null)),
       vcsCommit: commit.mockImplementation(() => ok("commit1")),
+      vcsConfigGet: () => ok("configured"),
     },
   };
 });

@@ -8,24 +8,36 @@ import type { SymbolRef } from "./conversation";
 /** Index answers by the folder they were asked in, then by name. */
 const answers = new Map<string, Map<string, Promise<SymbolMatch[]>>>();
 const NAMES_PER_FOLDER = 2000;
+const MAX_FOLDERS = 16;
 
 /** The index's symbols named exactly each of `names` inside `within`; one request for the names not asked before. */
 export function lookupSymbols(within: string, names: Iterable<string>): Map<string, Promise<SymbolMatch[]>> {
-  const known = answers.get(within) ?? new Map<string, Promise<SymbolMatch[]>>();
+  let known = answers.get(within);
+  if (known) {
+    answers.delete(within);
+  } else {
+    if (answers.size >= MAX_FOLDERS) answers.delete(answers.keys().next().value!);
+    known = new Map<string, Promise<SymbolMatch[]>>();
+  }
   answers.set(within, known);
   const wanted = new Set(names);
-  const missing = [...wanted].filter((name) => !known.has(name));
+  const result = new Map<string, Promise<SymbolMatch[]>>();
+  const missing: string[] = [];
+  for (const name of wanted) {
+    const hit = known.get(name);
+    if (hit) result.set(name, hit);
+    else missing.push(name);
+  }
   if (missing.length) {
     const found = call(commands.findSymbolsNamed(missing, within)).catch(() => []);
     for (const name of missing) {
+      const promise = found.then((symbols) => symbols.filter((symbol) => symbol.name === name));
+      result.set(name, promise);
       if (known.size >= NAMES_PER_FOLDER) known.delete(known.keys().next().value!);
-      known.set(
-        name,
-        found.then((symbols) => symbols.filter((symbol) => symbol.name === name)),
-      );
+      known.set(name, promise);
     }
   }
-  return new Map([...wanted].map((name) => [name, known.get(name)!]));
+  return result;
 }
 
 /** Narrows `symbols` by each preference in turn, skipping one that would leave nothing. */

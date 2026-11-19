@@ -1,0 +1,34 @@
+package openidea:plugin@1.13.0;
+
+/// On-demand results for `[[contributes.searchCategories]]`. Optional, API 1.13.
+interface search-provider {
+    use types.{error, location};
+    use invocation.{invocation};
+
+    record search-command {
+        /// A command declared by this plugin, without the host's prefix.
+        id: string,
+        arg: option<string>,
+    }
+    variant search-target {
+        /// A valid UTF-16 range inside the current project.
+        location(location),
+        command(search-command),
+    }
+    record search-item {
+        /// Stable within this plugin's category and query results.
+        id: string,
+        title: string,
+        description: option<string>,
+        target: search-target,
+    }
+    record search-page {
+        items: list<search-item>,
+        has-more: bool,
+    }
+    /// The category's local manifest id, raw query (at most 1024 UTF-8 bytes),
+    /// and requested maximum (1–200). Preserve ranking in the returned list.
+    /// Empty queries may return initial suggestions. This is a background call:
+    /// no prompts or implicit commands. Superseded queries are cancelled by the host.
+    search: func(category: string, query: string, limit: u32, ctx: borrow<invocation>) -> result<search-page, error>;
+}

@@ -1,7 +1,8 @@
 /**
  * Icon set: JetBrains new-UI ("expui") icons from intellij-community / intellij-plugins
  * (Apache-2.0 / MIT, see THIRD_PARTY_LICENSES.md), vendored as-is under
- * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants. File types
+ * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants; `./expui/flutter/`
+ * holds the Flutter plugin's tool window icons (BSD-3-Clause). File types
  * whose JetBrains icons are not open source use OpenIDEA's own icons drawn in the same
  * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Project type
  * logos under `./brands/` come from Simple Icons (CC0-1.0; see THIRD_PARTY_LICENSES.md). Names are the
@@ -384,6 +385,7 @@ const ICONS = {
   "db-foreign-key": "openidea/database/foreignKey",
   "db-index": "openidea/database/index",
   "db-schema": "openidea/database/schema",
+  "db-database": "openidea/database/database",
   "db-console": "openidea/database/console",
   "db-matview": "openidea/database/matview",
   "db-routine": "openidea/database/routine",
@@ -451,6 +453,10 @@ const ICONS = {
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
   "toolwindow-logcat": "openidea/fileTypes/log",
+  "toolwindow-flutter-inspector": "flutter/inspector",
+  "toolwindow-flutter-devtools": "flutter/devTools",
+  "toolwindow-flutter-deep-links": "flutter/deepLinks",
+  "toolwindow-flutter-extensions": "flutter/extensions",
   "gutter-navigate": "general/autoscrollToSource",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",

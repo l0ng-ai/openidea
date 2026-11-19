@@ -1,4 +1,4 @@
-package openidea:plugin@1.10.0;
+package openidea:plugin@1.13.0;
 
 /// Writes to the IDE log, tagged with the plugin id.
 interface log {
@@ -34,6 +34,31 @@ interface ui {
         text(string),
     }
 
+    /// A highlight rule for Run and Debug console output (API 1.12).
+    record console-rule {
+        /// A regular expression (at most 512 bytes) in the syntax shared by
+        /// Rust's `regex` and JavaScript: no inline flags, named groups,
+        /// lookaround, backreferences, `\A`, `\z`, `\p`, POSIX classes or
+        /// repeated groups such as `(…)+`. A pattern that could take too long
+        /// on a long line is `invalid`. It sees the first 2000 characters of a line.
+        pattern: string,
+        ignore-case: bool,
+        /// A console palette colour: `black`, `red`, `green`, `yellow`,
+        /// `blue`, `magenta`, `cyan`, `white`, or one of them with `bright-`
+        /// (`bright-red`). The colour scheme's Console Colors decide how they
+        /// look. Unknown names are ignored.
+        foreground: option<string>,
+        /// A palette colour behind the text, as `foreground`.
+        background: option<string>,
+        /// Any of `bold`, `italic`, `underline`, `strikethrough`, `dim`.
+        /// Unknown names are ignored.
+        styles: list<string>,
+        /// Style the whole line instead of only the matched text.
+        whole-line: bool,
+        /// A disabled rule keeps its place in the list but never matches.
+        enabled: bool,
+    }
+
     /// A notification button that runs one of the plugin's commands.
     record notification-action {
         /// Up to 256 bytes, one line.
@@ -65,6 +90,17 @@ interface ui {
     set-window-status-item: func(id: string, item: status-item) -> result<_, error>;
     /// Removes this window's override, falling back to the global item.
     remove-window-status-item: func(id: string) -> result<_, error>;
+    /// Replaces the plugin's console highlight rules (API 1.12); an empty
+    /// list removes them. Every window applies them to the stdout and stderr
+    /// lines of its Run and Debug consoles; the plugin never sees the output.
+    /// The first enabled whole-line rule that matches a line styles it,
+    /// instead of the colour of its log level; each enabled match-only rule
+    /// styles its matches on top, an earlier rule winning where matches
+    /// overlap. A rule's colours and styles replace the program's own. Rules
+    /// of several plugins apply in plugin id order. At most 100 rules; an
+    /// invalid one fails the call and keeps the previous rules. They go
+    /// away when the plugin stops. Needs no capability.
+    set-console-rules: func(rules: list<console-rule>) -> result<_, error>;
     /// Sets the plugin's context key `key`, which `when` clauses test as
     /// `plugin.<id>.<key>`, in the window the current command or event came
     /// from (every window when there is none). A window's value takes
@@ -75,6 +111,21 @@ interface ui {
     remove-context: func(key: string);
     /// Copies `text` to the system clipboard. Requires `clipboard`.
     copy-to-clipboard: func(text: string) -> result<_, error>;
+    /// What `read-clipboard` found (API 1.11). Both `none`: the clipboard holds
+    /// neither text nor an image.
+    record clipboard-content {
+        text: option<string>,
+        /// An image (a screenshot), always as PNG bytes.
+        image: option<list<u8>>,
+    }
+    /// Reads the system clipboard of the user's machine (API 1.11). Requires
+    /// `clipboard.read`. Only in a command the user ran or a view action from
+    /// a window; anywhere else (event handlers, background and scheduled
+    /// work, web view messages, a command run through `command-runner`) it is
+    /// `denied`, so nothing reads the clipboard behind the user's back. Text
+    /// or an image over 16 MiB fails the call. In a remote project the user
+    /// confirms first; refusing is `denied`.
+    read-clipboard: func() -> result<clipboard-content, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.
     open-url: func(url: string) -> result<_, error>;
     /// Shows a list and waits for the chosen key, or `none` when dismissed.

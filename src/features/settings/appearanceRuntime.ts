@@ -9,6 +9,7 @@ import { executeAction, type Action } from "@/platform/actions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { uiFontFamily, uiIconFaces } from "@/platform/fonts";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { loadSystemFonts, useSystemFontStore } from "@/platform/systemFonts";
 import { setDragRequiresAlt } from "@/ui";
@@ -55,6 +56,7 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   root.dataset.aaIde = a.ideAntialiasing;
   root.dataset.aaEditor = a.editorAntialiasing;
   applyZoom(a.zoom, root);
+  applySmoothScrolling(a.smoothScrolling);
   applyBackgroundImage(a.backgroundImage, root);
 }
 
@@ -115,6 +117,15 @@ function applyZoom(percent: number, root: HTMLElement) {
       .catch((e) => console.warn("cannot set zoom", e));
   } else if (percent === 100) root.style.removeProperty("zoom");
   else root.style.setProperty("zoom", String(percent / 100));
+}
+
+let lastSmoothScrolling: boolean | undefined;
+
+/** WebKitGTK only smooth scrolling */
+function applySmoothScrolling(enabled: boolean) {
+  if (enabled === lastSmoothScrolling || !isTauri() || usePlatform.getState().os !== "linux") return;
+  lastSmoothScrolling = enabled;
+  call(commands.windowSetSmoothScrolling(enabled)).catch((e) => console.warn("cannot set smooth scrolling", e));
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +304,7 @@ export function installIdleSave(config: () => { enabled: boolean; seconds: numbe
  */
 export function installIconFont(root: HTMLElement = document.documentElement): () => void {
   let cancelled = false;
+  let idleId: number | undefined;
   const resolve = () =>
     void loadSystemFonts().then(() => {
       if (cancelled) return;
@@ -301,16 +313,16 @@ export function installIconFont(root: HTMLElement = document.documentElement): (
       const faces = uiIconFaces(installed);
       if (faces.length) root.style.setProperty("--font-icons", faces.join(", "));
     });
-  if (typeof requestIdleCallback === "function") {
-    const id = requestIdleCallback(resolve, { timeout: 5000 });
-    return () => {
-      cancelled = true;
-      cancelIdleCallback(id);
-    };
-  }
-  const timer = setTimeout(resolve, 200);
+  // Wait past initial startup IPC gaps before scheduling idle font enumeration;
+  // in Chromium/WebView2 `requestIdleCallback` otherwise fires at ~5 ms between startup IPCs.
+  const timer = setTimeout(() => {
+    if (cancelled) return;
+    if (typeof requestIdleCallback === "function") idleId = requestIdleCallback(resolve, { timeout: 5000 });
+    else resolve();
+  }, 500);
   return () => {
     cancelled = true;
     clearTimeout(timer);
+    if (idleId !== undefined && typeof cancelIdleCallback === "function") cancelIdleCallback(idleId);
   };
 }

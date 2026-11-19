@@ -20,6 +20,34 @@ pub struct VcsSettings {
     pub shelf: ShelfSettings,
     /// Issue Navigation: commit-message patterns turned into links.
     pub issue_navigation: Vec<IssueLink>,
+    /// Directory Mappings: repository roots added to or excluded from the detected ones.
+    pub mappings: VcsMappings,
+}
+
+/// Directory Mappings on top of repository detection. Paths are relative to the project
+/// root (`.` for the root itself) or absolute outside it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VcsMappings {
+    /// Detected repositories the IDE leaves alone: no Git or Commit integration, files stay.
+    pub excluded: Vec<String>,
+    /// Repository roots detection does not reach (outside the project, or deeper).
+    pub added: Vec<String>,
+}
+
+impl VcsMappings {
+    pub fn is_empty(&self) -> bool {
+        self.excluded.is_empty() && self.added.is_empty()
+    }
+
+    /// `path` resolved against `project_root`.
+    pub fn resolve(project_root: &std::path::Path, path: &str) -> std::path::PathBuf {
+        match path {
+            "" | "." => project_root.to_path_buf(),
+            p if std::path::Path::new(p).is_absolute() => p.into(),
+            p => project_root.join(p),
+        }
+    }
 }
 
 impl Default for VcsSettings {
@@ -34,6 +62,7 @@ impl Default for VcsSettings {
             confirmation: VcsConfirmationSettings::default(),
             shelf: ShelfSettings::default(),
             issue_navigation: Vec::new(),
+            mappings: VcsMappings::default(),
         }
     }
 }
@@ -77,6 +106,9 @@ pub struct GitSettings {
     /// The non-modal Commit tool window works on the index: Staged / Unstaged groups,
     /// stage and unstage instead of inclusion checkboxes, and no change lists.
     pub staging_area: bool,
+    /// Scan the working tree with `git status` (for file systems whose metadata only
+    /// the system git reads correctly) instead of in process.
+    pub cli_status: bool,
 }
 
 impl Default for GitSettings {
@@ -101,6 +133,7 @@ impl Default for GitSettings {
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
             staging_area: false,
+            cli_status: false,
         }
     }
 }
@@ -334,6 +367,8 @@ pub struct DebuggerSettings {
     pub skip_library_code: bool,
     /// JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session.
     pub debug_server_page: bool,
+    /// Flutter: saving a Dart file of a running debug session hot reloads the app.
+    pub flutter_hot_reload_on_save: bool,
     pub python: PythonDebuggerSettings,
 }
 
@@ -354,6 +389,7 @@ impl Default for DebuggerSettings {
             value_tooltip_delay: 700,
             skip_library_code: true,
             debug_server_page: false,
+            flutter_hot_reload_on_save: true,
             python: PythonDebuggerSettings::default(),
         }
     }
@@ -412,6 +448,9 @@ pub struct TerminalSettings {
     /// Shell command line; empty = the login shell.
     pub shell_path: String,
     pub tab_name: String,
+    /// Title a program sets (OSC 0/2) as the tab's name: `running` (while a command runs),
+    /// `always`, or `off`.
+    pub app_title_as_tab_name: String,
     pub audible_bell: bool,
     pub close_on_exit: bool,
     pub mouse_reporting: bool,
@@ -427,6 +466,8 @@ pub struct TerminalSettings {
     /// `block` | `underline` | `bar`.
     pub cursor_shape: String,
     pub cursor_blink: bool,
+    /// Cap PTY→xterm paint rate: `unlimited` | `60` | `30` | `15` | `10`.
+    pub max_fps: String,
     pub use_editor_font: bool,
     pub font_family: String,
     pub font_size: f32,
@@ -445,6 +486,7 @@ impl Default for TerminalSettings {
             env: BTreeMap::new(),
             shell_path: String::new(),
             tab_name: "Local".into(),
+            app_title_as_tab_name: "running".into(),
             audible_bell: true,
             close_on_exit: true,
             mouse_reporting: true,
@@ -458,6 +500,7 @@ impl Default for TerminalSettings {
             escape_to_editor: false,
             cursor_shape: "block".into(),
             cursor_blink: true,
+            max_fps: "unlimited".into(),
             use_editor_font: true,
             font_family: "JetBrains Mono".into(),
             font_size: 13.0,

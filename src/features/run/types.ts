@@ -21,12 +21,14 @@ import {
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
+import { flutterType } from "./flutterType";
 import { tomcatType } from "./tomcat";
 import { goBuildType, goTestType } from "./goTypes";
 
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
+import { pythonType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
 import { UNITY_CONFIG_KIND } from "./unity";
 
@@ -491,6 +493,8 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   gradle,
   maven,
   godot,
+  flutterType,
+  pythonType,
   pytest,
   rubyScriptType,
   rakeType,

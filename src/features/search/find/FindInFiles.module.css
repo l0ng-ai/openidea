@@ -1,5 +1,6 @@
 /* IDEA's Find in Files is a popup: Popup.background, not the dialog surface. */
 .dialog {
+  container-type: inline-size;
   max-height: calc(90vh - 12px);
   background: var(--bg-popup, var(--bg-elev));
   font-family: var(--font-ui);
@@ -25,11 +26,20 @@
   border-bottom: 1px solid var(--border-popup);
   color: var(--fg-subtle);
 }
+/* Title and count give way to the controls: they end in an ellipsis instead of wrapping. */
+.title,
+.count {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .title {
   color: var(--fg-strong);
   font-weight: 600;
 }
 .status {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
@@ -40,7 +50,16 @@
 .spacer {
   flex: 1;
 }
+/* The mask and the buttons; their own row once the popup is too narrow for one (as in Search Everywhere). */
+.tools {
+  display: contents;
+}
+.maskToggle {
+  flex: none;
+  white-space: nowrap;
+}
 .mask {
+  min-width: 0;
   display: flex;
   align-items: center;
   height: var(--h-control);
@@ -54,6 +73,7 @@
 }
 .maskInput {
   width: 120px;
+  min-width: 0;
   background: none;
   border: 0;
   outline: none;
@@ -253,4 +273,26 @@
   flex: none;
   color: var(--fg-faint);
   white-space: nowrap;
+}
+
+/* Narrower than the popup's own minimum width happens only when the window is smaller. */
+@container (max-width: 559px) {
+  .header {
+    flex-wrap: wrap;
+    row-gap: var(--space-1-5);
+    height: auto;
+    padding-block: 6px;
+  }
+  .spacer {
+    display: none;
+  }
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+  }
+  .mask {
+    margin-right: auto;
+  }
 }

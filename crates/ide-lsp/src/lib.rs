@@ -15,16 +15,19 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod flutter_outline;
 mod go_mod;
 mod go_scope;
 mod handler;
 mod injections;
 mod inspect;
+pub mod java_project;
 pub mod jdtls;
 mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod maven_placeholder;
 mod message_requests;
 mod notebook;
 mod phoxite;
@@ -129,6 +132,15 @@ struct DocState {
     notebook: Option<PathBuf>,
     /// When the servers last got new text (open or change): diagnostics published before are stale.
     changed: std::time::Instant,
+    flutter_outline: Option<FlutterOutline>,
+}
+
+/// The widget tree last published for a document, valid while that server instance runs.
+/// ponytail: positions lag edits until the server's next publish, which follows each analysis.
+struct FlutterOutline {
+    server: ide_core::ServerId,
+    generation: u64,
+    items: Vec<OutlineItem>,
 }
 
 impl DocState {
@@ -649,6 +661,11 @@ impl LspManager {
             .unwrap_or_else(|| self.project_root.clone())
     }
 
+    /// `path` as the project's roots spell it ([`ide_language::project_spelling`]).
+    fn in_project_spelling<'a>(&self, path: &'a Path) -> std::borrow::Cow<'a, Path> {
+        ide_language::project_spelling(path, |p| p.starts_with(self.project_root_for(p)))
+    }
+
     fn server_for(&self, cfg: &LanguageServerConfig, language: &LanguageId, path: &Path) -> Arc<Server> {
         let shared = is_local_jdtls(cfg).then(|| self.jdtls_workspace_state());
         let mut servers = self.servers.lock();
@@ -670,10 +687,25 @@ impl LspManager {
             })
         };
         if let Some(s) = servers.iter().find(|s| s.name == cfg.name && s.root == root) {
+            if !path.starts_with(&project) {
+                tracing::debug!(
+                    server = ?s.id,
+                    name = %s.name,
+                    root = %s.root.display(),
+                    "reusing language server for external file"
+                );
+            }
             s.add_language(language);
             return s.clone();
         }
         let server = Arc::new(Server::new(cfg.clone(), root, language.clone()));
+        tracing::debug!(
+            server = ?server.id,
+            name = %server.name,
+            root = %server.root.display(),
+            external = !path.starts_with(&project),
+            "created language server route"
+        );
         servers.push(server.clone());
         server
     }
@@ -684,6 +716,7 @@ impl LspManager {
     /// only files below one, and stands in for no other. One that a server before
     /// it `replaces` is left out while that server serves the file.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
+        let path = &*self.in_project_spelling(path);
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
         }
@@ -828,6 +861,9 @@ impl LspManager {
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
         let Some(cancel) = server.starting_status(generation, &self.sink) else { return };
+        // Includes settings/prepare, blocking-pool queueing, launch and initialize.
+        let started = std::time::Instant::now();
+        tracing::info!(server = ?server.id, generation, name = %server.name, "starting language server");
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
@@ -835,6 +871,9 @@ impl LspManager {
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
+            // The project's direnv environment (a Nix devshell) may hold the server and its
+            // toolchain: start once it has loaded.
+            ide_core::project_env::wait(&tail.root, &launch_cancel);
             if !me.execution_allowed.load(Ordering::Acquire) {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
@@ -946,8 +985,15 @@ impl LspManager {
         };
         let caps = match result {
             Ok(result) => {
+                tracing::info!(
+                    server = ?server.id,
+                    generation,
+                    name = %server.name,
+                    startup_to_initialize_ms = started.elapsed().as_millis() as u64,
+                    "language server initialized"
+                );
                 if let Some(info) = result.get("serverInfo") {
-                    tracing::info!("{} initialized: {info}", server.name);
+                    tracing::info!(server = ?server.id, generation, "{} initialized: {info}", server.name);
                 }
                 let mut caps_val = result.get("capabilities").cloned().unwrap_or_else(|| json!({}));
                 if server.name == arduino::SERVER {
@@ -1232,6 +1278,7 @@ impl LspManager {
             compose_detected,
             notebook: None,
             changed: std::time::Instant::now(),
+            flutter_outline: None,
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1799,8 +1846,11 @@ impl LspManager {
     /// the same class from its Java model instead, decompiled with method bodies and navigable.
     /// Its documents belong to jdtls ([`Self::virtual_document`] records it).
     async fn jdt_library_classes(&self, snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-        let jar_class = |l: &Location| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"));
-        if !locs.iter().any(jar_class)
+        let lib_class = |u: &str| {
+            (u.starts_with("jar:") && u.ends_with(".class"))
+                || (u.starts_with("jdt://contents/") && u.contains(".class"))
+        };
+        if !locs.iter().any(|l| l.uri.as_deref().is_some_and(lib_class))
             || !self.servers.lock().iter().any(|s| s.name == jdtls::SERVER && s.running().is_some())
         {
             return locs;
@@ -1808,27 +1858,54 @@ impl LspManager {
         let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
         let mut out = Vec::with_capacity(locs.len());
         for loc in locs {
-            let entry = loc.uri.as_deref().filter(|_| jar_class(&loc)).and_then(library_source::parse);
-            let Some(entry) = entry else {
+            let Some(original) = loc.uri.as_deref().filter(|u| lib_class(u)) else {
                 out.push(loc);
                 continue;
             };
-            // The Kotlin server may name the jar by another path than jdtls (its own copy of a
-            // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
-            // of that name.
-            let uri = match self.archive_class(entry.jar, entry.entry, true).await {
-                Ok(uri) => uri,
-                Err(e) => {
-                    tracing::info!("library class stays a stub: {}", e.message);
+            let jdt = original.starts_with("jdt:");
+            let uri = if !jdt {
+                let Some(entry) = library_source::parse(original) else {
                     out.push(loc);
                     continue;
+                };
+                // The Kotlin server may name the jar by another path than jdtls (its own copy of a
+                // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
+                // of that name.
+                match self.archive_class(entry.jar, entry.entry, true).await {
+                    Ok(uri) => uri,
+                    Err(e) => {
+                        tracing::info!("library class stays a stub: {}", e.message);
+                        out.push(loc);
+                        continue;
+                    }
                 }
+            } else {
+                original.to_owned()
             };
-            let range = match (&name, self.virtual_document(&uri).await) {
-                (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),
+            let doc = self.virtual_document(&uri).await.ok();
+            let range = match (&name, &doc) {
+                // jdtls' own class: its range is exact (overloads included) unless it maps a
+                // Lombok-generated member onto the annotation or class header, which doesn't
+                // name the member; only then look the declaration up in the source.
+                (Some(name), Some(doc)) if jdt => {
+                    let line = doc.text.lines().nth(loc.range.start.line as usize).unwrap_or_default();
+                    if library_source::identifier_at(line, loc.range.start.col) == Some(name.as_str()) {
+                        loc.range
+                    } else {
+                        Some(library_source::declaration_range(&doc.text, name))
+                            .filter(|r| *r != Range::default())
+                            .unwrap_or(loc.range)
+                    }
+                }
+                (Some(name), Some(doc)) => library_source::declaration_range(&doc.text, name),
+                _ if jdt => loc.range,
                 _ => Range::default(),
             };
-            out.push(Location { path: uri.clone().into(), range, uri: Some(uri) });
+            out.push(if jdt {
+                Location { range, ..loc }
+            } else {
+                Location { path: uri.clone().into(), range, uri: Some(uri) }
+            });
         }
         out
     }
@@ -2338,6 +2415,33 @@ impl LspManager {
             }
         }
         out.finish(None)
+    }
+
+    /// The document's widget tree, when its running Dart server published one.
+    pub fn flutter_outline(&self, doc: DocId) -> Option<Vec<OutlineItem>> {
+        let docs = self.docs.lock();
+        let d = docs.get(&doc)?;
+        let outline = d.flutter_outline.as_ref()?;
+        d.servers
+            .iter()
+            .any(|a| a.server.id == outline.server && a.server.is_live(outline.generation))
+            .then(|| outline.items.clone())
+    }
+
+    /// Records a published outline; whether what the open documents of `path` show changed.
+    fn set_flutter_outline(
+        &self,
+        path: &Path,
+        server: &Server,
+        generation: u64,
+        items: Option<Vec<OutlineItem>>,
+    ) -> bool {
+        let mut changed = false;
+        for d in self.docs.lock().values_mut().filter(|d| d.path == path) {
+            changed |= d.flutter_outline.is_some() || items.is_some();
+            d.flutter_outline = items.clone().map(|items| FlutterOutline { server: server.id, generation, items });
+        }
+        changed
     }
 
     pub async fn workspace_symbols(&self, query: &str, cancel: CancellationToken) -> IdeResult<Vec<WorkspaceSymbol>> {
@@ -2992,7 +3096,12 @@ impl LspManager {
         for s in servers {
             let Some(run) = s.running() else { continue };
             let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            // jdtls owns its annotation-processor output; javac's copy of those files is not an edit.
+            let jdtls = s.name == "jdtls";
             let send = |p: &PathBuf, change: Change| {
+                if jdtls && jdtls::is_processor_output(p) {
+                    return false;
+                }
                 change == Change::Deleted
                     || !open
                         .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))
@@ -4266,5 +4375,66 @@ mod code_action_tests {
         assert!(!source_actions_only(&kinds(&["quickfix"])));
         assert!(!source_actions_only(&kinds(&["source.organizeImports", "refactor"])));
         assert!(!source_actions_only(&kinds(&["sourcefoo"])));
+    }
+}
+
+#[cfg(test)]
+mod external_go_routing_tests {
+    use super::*;
+
+    fn manager(root: &Path) -> Arc<LspManager> {
+        LspManager::new(
+            root.to_owned(),
+            Arc::new(LanguageRegistry::load(None).unwrap()),
+            Arc::new(|_: ide_core::IdeEvent| {}),
+        )
+    }
+
+    fn route(manager: &LspManager, path: &Path) -> Arc<Server> {
+        let language = LanguageId::new("go");
+        let config = manager.languages.get(&language).unwrap();
+        manager.server_for(&config.language_servers[0], &language, path)
+    }
+
+    fn module(root: &Path, name: &str) -> PathBuf {
+        let root = root.join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("go.mod"), format!("module example.test/{name}\n")).unwrap();
+        root.join("main.go")
+    }
+
+    // Characterize the fallback, not a promise that this is the correct consumer
+    // context for a shared dependency. No gopls process is launched in these tests.
+    #[tokio::test]
+    async fn external_go_file_reuses_first_module_without_creating_another_server() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let b = module(workspace.path(), "b");
+        let dependency = cache.path().join("dependency.go");
+        for order in [[&a, &b], [&b, &a]] {
+            let manager = manager(workspace.path());
+            let first = route(&manager, order[0]);
+            let second = route(&manager, order[1]);
+            assert_ne!(first.id, second.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(route(&manager, &dependency).id, first.id);
+            assert_eq!(manager.servers.lock().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn external_go_file_restored_first_keeps_project_root_fallback() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let a = module(workspace.path(), "a");
+        let dependency = cache.path().join("dependency.go");
+        let manager = manager(workspace.path());
+        let restored = route(&manager, &dependency);
+        assert_eq!(restored.root, workspace.path());
+        let consumer = route(&manager, &a);
+        assert_ne!(restored.id, consumer.id);
+        assert_eq!(route(&manager, &dependency).id, restored.id);
+        assert_eq!(manager.servers.lock().len(), 2);
     }
 }

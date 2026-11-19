@@ -171,19 +171,21 @@ pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core
 }
 
 /// Whether a desktop shows an `event` notification of its server in the window. A server reports
-/// on its project; what this machine answers or owns itself (MCP approvals, app updates, window
-/// groups, its own connection to the server) never comes from it.
-pub fn client_accepts(event: &IdeEvent) -> bool {
+/// on its project; what this machine owns itself (app updates, window groups, its own connection
+/// to the server) never comes from it, and MCP UI requests are accepted only when this machine
+/// trusts the remote project (their answers route back to the server, never locally).
+pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
     match event {
-        IdeEvent::McpRequest { .. }
-        | IdeEvent::McpRequestClosed { .. }
-        | IdeEvent::WindowGroupsChanged
+        IdeEvent::WindowGroupsChanged
         | IdeEvent::WindowFullscreenChanged
         | IdeEvent::RemoteConnectionLost { .. }
         | IdeEvent::UpdateStatusChanged { .. }
         | IdeEvent::UpdateAvailable { .. } => false,
+        IdeEvent::McpRequest { .. } | IdeEvent::McpRequestClosed { .. } => trusted,
         IdeEvent::DbSourcesChanged
         | IdeEvent::ProjectTrustChanged { .. }
+        | IdeEvent::Direnv { .. }
+        | IdeEvent::FlutterDevices { .. }
         | IdeEvent::FsChanged { .. }
         | IdeEvent::ExcludedDirsChanged { .. }
         | IdeEvent::DocPatched { .. }
@@ -300,8 +302,21 @@ mod tests {
             date: None,
         };
         for event in [
-            IdeEvent::McpRequest { id: 1, request: confirm },
+            IdeEvent::McpRequest { id: 1, request: confirm.clone() },
             IdeEvent::McpRequestClosed { id: 1 },
+            IdeEvent::UpdateAvailable { update: update.clone() },
+            IdeEvent::UpdateStatusChanged {
+                status: ide_core::updates::UpdateStatus { last_checked: None, checking: true },
+            },
+            IdeEvent::WindowGroupsChanged,
+            IdeEvent::WindowFullscreenChanged,
+        ] {
+            assert!(!client_accepts(&event, false), "{event:?}");
+        }
+        // Even for a trusted remote project, desktop-owned events stay blocked while remote MCP prompts pass.
+        assert!(client_accepts(&IdeEvent::McpRequest { id: 1, request: confirm }, true));
+        assert!(client_accepts(&IdeEvent::McpRequestClosed { id: 1 }, true));
+        for event in [
             IdeEvent::UpdateAvailable { update },
             IdeEvent::UpdateStatusChanged {
                 status: ide_core::updates::UpdateStatus { last_checked: None, checking: true },
@@ -309,7 +324,7 @@ mod tests {
             IdeEvent::WindowGroupsChanged,
             IdeEvent::WindowFullscreenChanged,
         ] {
-            assert!(!client_accepts(&event), "{event:?}");
+            assert!(!client_accepts(&event, true), "{event:?}");
         }
     }
 
@@ -327,7 +342,8 @@ mod tests {
             IdeEvent::Askpass { id: 1, prompt: "Password".into(), kind: AskpassKind::Secret, remember: false },
             IdeEvent::ProjectTrustChanged { root: "/srv/app".into(), trusted: true },
         ] {
-            assert!(client_accepts(&event), "{event:?}");
+            assert!(client_accepts(&event, false), "{event:?}");
+            assert!(client_accepts(&event, true), "{event:?}");
         }
     }
 }
