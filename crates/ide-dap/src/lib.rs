@@ -420,6 +420,22 @@ fn add_flutter_device(arguments: &mut Value, device: Value) {
     }
 }
 
+/// The source a `navigate` tool event points at (1-based there). A `package:` location comes
+/// with the file the adapter resolved it to.
+fn flutter_navigation(body: &Value) -> Option<ide_core::event::DebugEvent> {
+    if body.get("kind")?.as_str()? != "navigate" {
+        return None;
+    }
+    let data = body.get("data")?;
+    let uri = data.get("resolvedFileUri").or_else(|| data.get("fileUri"))?.as_str()?;
+    let position = |key| data.get(key)?.as_u64().map(|n| n.saturating_sub(1) as u32);
+    Some(ide_core::event::DebugEvent::FlutterNavigate {
+        path: kotlin_lsp::source_path(uri)?.into(),
+        line: position("line")?,
+        column: position("column").unwrap_or(0),
+    })
+}
+
 fn no_session(s: DebugSessionId) -> IdeError {
     IdeError::not_found(format!("no debug session {}", s.0))
 }

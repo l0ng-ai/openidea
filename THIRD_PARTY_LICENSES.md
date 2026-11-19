@@ -62,12 +62,13 @@ At render time `src/ui/icons.tsx` may recolour monochrome icons to `currentColor
 
 ## Flutter plugin icons
 
-These icons of [flutter-intellij](https://github.com/flutter/flutter-intellij) are used under the
-BSD 3-Clause License:
+These icons of [flutter-intellij](https://github.com/flutter/flutter-intellij) (commit `d02813ad5890`) are used
+under the BSD 3-Clause License:
 
+- `src/ui/expui/flutter/*.svg`: the DevTools tool window icons, copied unmodified from
+  `resources/icons/expui/`.
 - `src/ui/expui/flutter/widget@2x.png` and `widget_private@2x.png`: the Flutter outline's widget
-  icons, `resources/icons/custom/class@2x.png` and `method@2x.png` (commit `d02813ad5890`),
-  renamed, content unmodified.
+  icons, `resources/icons/custom/class@2x.png` and `method@2x.png`, renamed, content unmodified.
 
 ```text
 Copyright 2016 The Chromium Authors. All rights reserved.

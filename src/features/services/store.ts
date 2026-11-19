@@ -163,14 +163,15 @@ export const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${M
 export async function saveConnection(c: DockerConnection): Promise<boolean> {
   await loadSettings();
   const s = useServices.getState().settings ?? { connections: [], registries: [] };
-  const exists = s.connections.some((x) => x.id === c.id);
+  const old = s.connections.find((x) => x.id === c.id)?.endpoint;
   const ok = await saveSettings({
     ...s,
-    connections: exists ? s.connections.map((x) => (x.id === c.id ? c : x)) : [...s.connections, c],
+    connections: old ? s.connections.map((x) => (x.id === c.id ? c : x)) : [...s.connections, c],
   });
   if (ok) {
     stopEvents(c.id);
     if (watchers > 0) void refresh(c.id);
+    if (old) closeEndpoint(c.id, old);
   }
   return ok;
 }
@@ -179,12 +180,14 @@ export async function removeConnection(id: string): Promise<void> {
   const s = useServices.getState().settings;
   if (!s) return;
   stopEvents(id);
+  const endpoint = endpointOf(id);
   if (await saveSettings({ ...s, connections: s.connections.filter((c) => c.id !== id) })) {
     useServices.setState((st) => {
       const conns = { ...st.conns };
       delete conns[id];
       return { conns };
     });
+    closeEndpoint(id, endpoint);
   }
 }
 
@@ -322,18 +325,44 @@ export function watch(): () => void {
 
 /**
  * Disconnect: stops talking to the connection's daemon (its event stream and polling; for an
- * SSH connection, the SSH sessions they open) until Connect. Not saved: a new session connects.
+ * SSH connection, its tunnel and SSH connection) until Connect. Not saved: a new session connects.
  */
 export function disconnectConnection(id: string): void {
   stopEvents(id);
   clearTimeout(debounces.get(id));
   again.delete(id);
   patchConn(id, { snapshot: null, error: null, loading: false, disconnected: true });
+  closeEndpoint(id, endpointOf(id));
 }
 
-export function connectConnection(id: string): Promise<void> {
+export async function connectConnection(id: string): Promise<void> {
   patchConn(id, { disconnected: false });
+  // A tunnel being closed would take this connection's next snapshot down with it.
+  await closing.get(id);
   return refresh(id);
+}
+
+/** The SSH configuration an endpoint tunnels through (as the backend keys its tunnels). */
+const sshConfig = (e: DockerEndpoint) => (e.kind === "ssh" ? e.config.trim() : null);
+
+const closing = new Map<string, Promise<void>>();
+
+/**
+ * Closes the SSH tunnel connection `id` used through `endpoint` (and its SSH connection, unless
+ * something else holds it) once no connected Docker connection goes through that configuration.
+ * Other endpoints keep nothing open.
+ */
+function closeEndpoint(id: string, endpoint: DockerEndpoint) {
+  const config = sshConfig(endpoint);
+  if (config === null || !isTauri()) return;
+  const done = (async () => {
+    // A snapshot in flight would open the tunnel again after it was closed.
+    await inflight.get(id);
+    if (connections().some((c) => !connectionState(c.id).disconnected && sshConfig(c.endpoint) === config)) return;
+    await call(commands.dockerDisconnect(endpoint)).catch(() => undefined);
+  })();
+  closing.set(id, done);
+  void done.finally(() => closing.get(id) === done && closing.delete(id));
 }
 
 // ---------------------------------------------------------------------------

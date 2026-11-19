@@ -811,7 +811,8 @@ impl AgentManager {
         Ok(task)
     }
 
-    /// Creates the task (and its worktree) and sends `req.prompt` as its first message.
+    /// Creates the task (and its worktree) and sends `req.prompt` as its first message, unless
+    /// `req.idle`.
     pub async fn create(&self, req: NewAgentTask) -> IdeResult<AgentTask> {
         let spec = self
             .shared
@@ -886,7 +887,7 @@ impl AgentManager {
             title,
             provider: spec.id.clone(),
             model: model_of(&config),
-            status: AgentStatus::Starting,
+            status: if req.idle { AgentStatus::Ready } else { AgentStatus::Starting },
             isolation: req.isolation,
             cwd: IpcPath(cwd),
             branch,
@@ -920,11 +921,13 @@ impl AgentManager {
             title_renamed: false,
         };
         let handle = Task::restore(file, self.shared.clone());
-        handle.state.lock().busy = true;
+        handle.state.lock().busy = !req.idle;
         self.tasks.write().insert(task.id.clone(), handle.clone());
         handle.emit_task();
         handle.persist();
-        self.shared.runtime.spawn(async move { handle.run(prompt).await });
+        if !req.idle {
+            self.shared.runtime.spawn(async move { handle.run(prompt).await });
+        }
         Ok(task)
     }
 
