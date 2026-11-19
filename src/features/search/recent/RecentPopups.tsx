@@ -1,9 +1,18 @@
 import { useFilePresentation } from "@/ui/filePresentation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { flushSync } from "react-dom";
 import clsx from "clsx";
 import { editorsFor, getNavigationHistory } from "@/editor/api";
 import { call, commands, type OutlineItem } from "@/platform/ipc";
+import { monoFontFamily } from "@/platform/fonts";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import {
@@ -451,12 +460,12 @@ function RecentFileRow({ item, current }: { item: RecentFileItem; current: boole
     <>
       <Icon name={item.editor?.icon ?? icon} size={16} className={styles.icon} />
       <span
-        className={clsx(styles.name, current && styles.current)}
+        className={clsx(styles.name, styles.fileName, current && styles.current)}
         style={deco.color ? { color: deco.color } : undefined}
       >
         <HighlightedText text={item.name} indices={item.indices} tone="strong" />
       </span>
-      <span className={styles.dir}>{item.dir}</span>
+      {item.dir && <span className={styles.dir}>{item.dir}</span>}
     </>
   );
 }
@@ -488,8 +497,6 @@ function withSnippets(list: RecentLocation[], recorded: readonly RecentLocation[
     return near ? { ...l, snippet: near.snippet, snippetStart: near.snippetStart } : l;
   });
 }
-
-const LOCATION_ROW = 78;
 
 function breadcrumbOf(outline: readonly OutlineItem[] | undefined, l: RecentLocation): string {
   return outline ? locationBreadcrumb(outlinePathAt(outline, { line: l.line, col: l.col })) : "";
@@ -528,11 +535,13 @@ function SnippetCode({
   lines,
   first,
   caret,
+  style,
 }: {
   path: string;
   lines: readonly string[];
   first: number;
   caret: number;
+  style: CSSProperties;
 }) {
   const language = useMemo(() => languageForPath(path), [path]);
   const text = lines.join("\n");
@@ -553,7 +562,7 @@ function SnippetCode({
   }, [key, language, text, tokens]);
   const segments = useMemo(() => lineSegments(lines, tokens ?? []), [lines, tokens]);
   return (
-    <pre className={styles.snippet}>
+    <pre className={styles.snippet} style={style}>
       {segments.map((segs, i) => (
         <div key={i} className={clsx(styles.snippetLine, first + i === caret && styles.caretLine)}>
           <span className={styles.lineNo}>{first + i + 1}</span>
@@ -581,6 +590,14 @@ function RecentLocationsDialog() {
   const recorded = useTracking((s) => s.locations);
   const dismissed = useTracking((s) => s.dismissed);
   const root = useProject((s) => s.project?.root ?? null);
+  const editor = useProject((s) => s.settings?.editor);
+  const lineHeight = Math.max(editor?.fontSize ?? 13, editor?.lineHeight ?? 22);
+  const rowHeight = 30 + 3 * lineHeight;
+  const snippetStyle: CSSProperties = {
+    fontFamily: monoFontFamily(editor?.fontFamily ?? undefined, editor?.fallbackFont, "var(--font-mono)"),
+    fontSize: editor?.fontSize ?? undefined,
+    lineHeight: `${lineHeight}px`,
+  };
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -659,6 +676,7 @@ function RecentLocationsDialog() {
       </header>
       <div className={styles.locations}>
         <List
+          key={rowHeight}
           items={items}
           getKey={(l) => `${l.path}:${l.line}:${l.time}`}
           activeIndex={active}
@@ -669,7 +687,7 @@ function RecentLocationsDialog() {
             open(l, e.shiftKey);
           }}
           focusable={false}
-          rowHeight={LOCATION_ROW}
+          rowHeight={rowHeight}
           aria-label="Recent locations"
           empty={<span>{changedOnly ? tx("No changed locations") : tx("No recent locations")}</span>}
           renderItem={(l) => (
@@ -677,7 +695,7 @@ function RecentLocationsDialog() {
               <div className={styles.locationHeader}>
                 <Icon name={fileIconName(basename(l.rel), l.rel)} size={14} className={styles.icon} />
                 <HighlightedText
-                  className={styles.locationName}
+                  className={clsx(styles.name, styles.locationName)}
                   text={basename(l.rel)}
                   indices={l.nameIndices}
                   tone="strong"
@@ -690,7 +708,13 @@ function RecentLocationsDialog() {
                 )}
                 <span className={styles.time}>{locationTime(l.time, now)}</span>
               </div>
-              <SnippetCode path={l.path} lines={dedent(l.snippet)} first={l.snippetStart} caret={l.line} />
+              <SnippetCode
+                path={l.path}
+                lines={dedent(l.snippet)}
+                first={l.snippetStart}
+                caret={l.line}
+                style={snippetStyle}
+              />
             </div>
           )}
         />

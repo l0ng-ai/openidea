@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { chromiumInstalled } from "../../perf/lib/lifecycle.ts";
 import { track } from "./measure.ts";
 
 let browser: Browser;
@@ -29,7 +30,7 @@ afterAll(async () => {
 
 const existingResult = () => document.querySelector("#result") !== null;
 
-describe("tracking the current action", () => {
+describe.skipIf(!chromiumInstalled(true))("tracking the current action", () => {
   it("rejects an action that declines to run even with an old result visible", async () => {
     await expect(
       track(page, { action: "unavailable", arg: null, first: existingResult, done: existingResult, timeoutMs: 1000 }),

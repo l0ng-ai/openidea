@@ -260,14 +260,14 @@ it("includes pending local edits and restored dirty buffers before backend dirty
   const uninstall = installCloseGuard(d);
   const spy = vi.spyOn(service, "maybeEditorService").mockReturnValue({ dirtyDocumentIds: () => [10, 11] } as never);
   try {
-    emitLocalIdeEvent({ type: "docDirty", doc: 11, dirty: true });
-    emitLocalIdeEvent({ type: "docDirty", doc: 12, dirty: true });
+    emitLocalIdeEvent({ type: "docDirty", doc: 11, dirty: true, version: 1 });
+    emitLocalIdeEvent({ type: "docDirty", doc: 12, dirty: true, version: 1 });
     expect(dirtyCount()).toBe(3);
     await expect(confirmLeave(d)).resolves.toBe(false);
     expect(asked[0]?.body).toContain("3");
   } finally {
-    emitLocalIdeEvent({ type: "docDirty", doc: 11, dirty: false });
-    emitLocalIdeEvent({ type: "docDirty", doc: 12, dirty: false });
+    emitLocalIdeEvent({ type: "docDirty", doc: 11, dirty: false, version: 1 });
+    emitLocalIdeEvent({ type: "docDirty", doc: 12, dirty: false, version: 1 });
     uninstall();
     spy.mockRestore();
   }

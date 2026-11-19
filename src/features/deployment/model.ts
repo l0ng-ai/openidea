@@ -16,24 +16,35 @@ export function pathsFromArg(arg: unknown): string[] | null {
 }
 
 /**
- * Files an action works on: the paths passed by a menu, else the project view
+ * Files an action works on: the paths passed by a menu, else the Commit / Local
+ * Changes selection while that window is focused, else the project view
  * selection when it had focus last, else the active editor's file. Paths
  * outside the project are dropped.
  */
 export function targetPaths(
   arg: unknown,
-  ctx: { part: FocusedPart; selection: readonly string[]; editorPath: string | null; projectRoot: string | null },
+  ctx: {
+    part: FocusedPart;
+    selection: readonly string[];
+    /** Absolute paths from the Commit/Local Changes tree while it has focus. */
+    changesSelection?: readonly string[];
+    editorPath: string | null;
+    projectRoot: string | null;
+  },
 ): string[] {
   const passed = pathsFromArg(arg);
+  const changes = ctx.changesSelection?.length ? [...ctx.changesSelection] : null;
   const picked = passed
     ? passed
-    : ctx.part === "project" && ctx.selection.length
-      ? [...ctx.selection]
-      : ctx.editorPath
-        ? [ctx.editorPath]
-        : ctx.selection.length && ctx.part !== "editor"
-          ? [...ctx.selection]
-          : [];
+    : changes
+      ? changes
+      : ctx.part === "project" && ctx.selection.length
+        ? [...ctx.selection]
+        : ctx.editorPath
+          ? [ctx.editorPath]
+          : ctx.selection.length && ctx.part !== "editor"
+            ? [...ctx.selection]
+            : [];
   const root = ctx.projectRoot;
   if (!root) return [];
   const inside = picked.filter((p) => p === root || p.startsWith(`${root}/`));

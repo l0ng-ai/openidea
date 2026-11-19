@@ -4363,7 +4363,6 @@
   "Edit the deployment servers and options": "Editar los servidores y opciones de despliegue",
   "Configuration…": "Configuración…",
   "No deployment server configured": "No hay ningún servidor de despliegue configurado",
-  "Select files in the Project view or open a file in the editor": "Seleccione archivos en la vista Proyecto o abra un archivo en el editor",
   "Upload to": "Subir a",
   "Download from": "Descargar de",
   "Sync with Deployed to": "Sincronizar con lo desplegado en",
@@ -6137,5 +6136,6 @@
   "Plugin update available": "Actualización de plugin disponible",
   "{length} plugin updates available": "{length} actualizaciones de plugins disponibles",
   "Updated {updated} plugins": "Se actualizaron {updated} plugins",
-  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "Esta versión está firmada con una clave diferente a la instalada y la clave anterior del editor no la avala. Continúe solo si sabe que el editor cambió de clave."
+  "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "Esta versión está firmada con una clave diferente a la instalada y la clave anterior del editor no la avala. Continúe solo si sabe que el editor cambió de clave.",
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Seleccione archivos en la vista Proyecto, la ventana de Confirmación, o abra un archivo en el editor"
 }

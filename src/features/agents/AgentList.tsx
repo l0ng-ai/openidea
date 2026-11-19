@@ -22,7 +22,7 @@ import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { isPerModelOption } from "./composerModel";
-import { providerIcon } from "./model";
+import { providerIcon, slugifyId } from "./model";
 import {
   DISTRIBUTION_LABEL,
   afterInstall,
@@ -619,14 +619,6 @@ function Details({
       )}
     </section>
   );
-}
-
-/** Suggests an agent-file id for a display name (`"My Agent!"` → `"my-agent"`). */
-function slugifyId(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 }
 
 /** Splits arguments on whitespace, honoring single and double quotes. */

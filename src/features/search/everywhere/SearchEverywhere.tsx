@@ -87,7 +87,6 @@ export function claimSearchKeys(input: () => HTMLElement | null): () => void {
   return registerKeyClaim((e) => e.target === input() && SEARCH_KEYS.has(e.key));
 }
 const ROW = 24;
-const MAX_LIST = 672;
 const MIN_LIST = 10 * ROW;
 const DEBOUNCE_MS = 60;
 
@@ -474,7 +473,7 @@ function SearchEverywhereDialog() {
 
   // While a query is typed the list keeps a minimum height so the popup doesn't jump with every keystroke.
   const minList = parsed.text.trim() && !listing ? MIN_LIST : 0;
-  const listHeight = Math.min(MAX_LIST, Math.max(minList, rows.length * ROW));
+  const listHeight = Math.max(minList, rows.length * ROW);
   const previewTarget = previewOf(activeRow);
   const emptyQuery = !parsed.text.trim();
   const showEmpty = !rows.length && snap && !snap.loading && (!emptyQuery || tab !== "all");
@@ -555,7 +554,7 @@ function SearchEverywhereDialog() {
     <Dialog
       open
       onClose={close}
-      width={760}
+      width={700}
       position="top"
       transparentBackdrop
       aria-label={tx("Search Everywhere")}

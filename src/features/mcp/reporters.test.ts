@@ -73,8 +73,13 @@ vi.mock("@/platform/ipc", () => ({
     mcpSetFocusedEditor: state.reportFocused,
   },
 }));
-vi.mock("@/workbench/contributions", () => ({ registerOverlay: () => () => {}, editorService: vi.fn() }));
+vi.mock("@/workbench/contributions", () => ({
+  registerOverlay: () => () => {},
+  registerStatusItem: () => () => {},
+  editorService: vi.fn(),
+}));
 vi.mock("./ConfirmDialog", () => ({ McpConfirmHost: () => null }));
+vi.mock("./BackgroundStatus", () => ({ BackgroundStatus: () => null }));
 const { activate } = await import("./index");
 
 describe("MCP editor reports", () => {
