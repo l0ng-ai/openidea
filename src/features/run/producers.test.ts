@@ -789,6 +789,16 @@ describe("project producers", () => {
       cwd: "app",
       debugAdapter: "dart",
     });
+    // Its tests run with `flutter test`, a Dart package's with `dart test`.
+    expect(run({ path: `${ROOT}/app/test/widget_test.dart`, root: ROOT, configs: flutter })).toMatchObject({
+      command: "flutter",
+      args: ["test", "test/widget_test.dart"],
+      cwd: "app",
+    });
+    expect(run({ path: `${ROOT}/tool/test/gen_test.dart`, root: ROOT, configs: flutter })).toMatchObject({
+      command: "/bin/dart",
+      args: ["test", "tool/test/gen_test.dart"],
+    });
     // Outside the app (a Dart package next to it): `dart run`.
     expect(run({ path: `${ROOT}/tool/gen.dart`, root: ROOT, configs: flutter })).toMatchObject({
       command: "/bin/dart",

@@ -1001,12 +1001,17 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
             s.idPath,
           )[0]
         : undefined;
+      // A test file runs its tests (`flutter test` / `dart test`); `dart run` can't run Flutter code.
+      const test = /_test\.dart$/.test(s.file);
+      if (app && test)
+        return { name: s.file, scope: "file", config: fileConfig(s, "dart", app.command, ["test", s.arg]) };
       if (app)
         return {
           name: s.file,
           scope: "file",
           config: fileConfig(s, "flutter", app.command, ["run", "-t", s.arg], "dart"),
         };
+      if (test) return simple(lang, s, env, "dart", () => ["test", s.arg]);
       return simple(lang, s, env, "dart", () => ["run", s.arg], "dart");
     }
     case "scala":
