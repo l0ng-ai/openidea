@@ -12,17 +12,19 @@
  *   pnpm perf -- --only typing --profile --unminified   CPU profile + top functions
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import type { Server } from "node:http";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
-import { chromium, type Browser } from "@playwright/test";
+import type { Browser, BrowserContext } from "@playwright/test";
 import { buildBundle, serveBundle } from "./lib/bundle.ts";
 import { Harness, type Metrics, type Scenario } from "./lib/harness.ts";
 import { topFunctions, type CpuProfile } from "./lib/profile.ts";
 import { installInPage } from "./lib/inpage.ts";
 import { countOption } from "./lib/options.ts";
 import { evaluate, loadBudgets, printReport, type ScenarioResult } from "./lib/report.ts";
-import { median } from "./lib/stats.ts";
+import { closeServer, DeadlineError, launchBrowser, withDeadline, type BrowserSession } from "./lib/lifecycle.ts";
+import { errorMessage, evidenceJson, metricErrors, summarizeTrials, type Trial } from "./lib/trials.ts";
 import { SCENARIOS } from "./scenarios.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -75,8 +77,8 @@ for (const key of Object.keys(budgets.ui)) {
 }
 const expected = [...(args.unminified ? [] : ["bundle"]), ...scenarios.map((s) => s.id)];
 
-function build() {
-  buildBundle(ROOT, DIST, args.unminified ? ["--minify", "false"] : []);
+async function build() {
+  await buildBundle(ROOT, DIST, args.unminified ? ["--minify", "false"] : []);
 }
 
 /** Initial-load JavaScript / CSS from the built index.html (gzip sizes). */
@@ -98,12 +100,18 @@ interface Capture {
 }
 
 async function runOnce(browser: Browser, url: string, scenario: Scenario, capture: Capture = {}): Promise<Metrics> {
-  const context = await browser.newContext({
-    baseURL: url,
-    viewport: { width: 1400, height: 900 },
-    deviceScaleFactor: 1,
-  });
-  try {
+  let context: BrowserContext | undefined;
+  let finished = false;
+  const execute = async () => {
+    context = await browser.newContext({
+      baseURL: url,
+      viewport: { width: 1400, height: 900 },
+      deviceScaleFactor: 1,
+    });
+    if (finished) {
+      await withDeadline(context.close(), 5000, "late context close");
+      throw new Error("trial already ended");
+    }
     await context.addInitScript(installInPage);
     const page = await context.newPage();
     const errors: string[] = [];
@@ -134,84 +142,153 @@ async function runOnce(browser: Browser, url: string, scenario: Scenario, captur
     }
     if (errors.length) throw new Error(`page errors: ${errors.join("; ")}`);
     return metrics;
+  };
+  try {
+    return await withDeadline(execute(), 5 * 60_000, `${scenario.id} trial`);
   } finally {
-    await context.close();
+    finished = true;
+    if (context) await withDeadline(context.close(), 5000, "context close");
   }
-}
-
-function aggregate(samples: Metrics[]): Metrics {
-  const keys = [...new Set(samples.flatMap((s) => Object.keys(s)))];
-  return Object.fromEntries(keys.map((k) => [k, median(samples.map((s) => s[k]!).filter(Number.isFinite))]));
 }
 
 async function main() {
   mkdirSync(join(OUT, "traces"), { recursive: true });
   mkdirSync(join(OUT, "profiles"), { recursive: true });
-  if (!args["no-build"]) build();
-  if (!existsSync(join(DIST, "index.html"))) throw new Error(`no build in ${DIST}; run without --no-build`);
-
-  const results: ScenarioResult[] = args.unminified
-    ? []
-    : [{ id: "bundle", title: "Initial bundle (gzip)", metrics: bundleMetrics() }];
-  const { server, url } = await serveBundle(DIST);
-  const browser = await chromium
-    .launch({
+  const results: ScenarioResult[] = [];
+  const trials: Record<string, Trial[]> = {};
+  const counts: Record<string, unknown> = {};
+  const infrastructure: string[] = [];
+  const baselineFile = join(OUT, `baseline-${cpu}x.json`);
+  let baseline: ScenarioResult[] | null = null;
+  let runtime: BrowserSession | undefined;
+  let server: Server | undefined;
+  let browserVersion = "not started";
+  let completed = false;
+  const meta = { date: new Date().toISOString(), cpu, runs, warmup, channel: args.channel };
+  const progress = () => {
+    writeFileSync(
+      join(OUT, "report.json"),
+      evidenceJson({ meta, status: "running", expected, results, trials, counts }),
+    );
+  };
+  progress();
+  writeFileSync(join(OUT, "report.md"), "# OpenIDEA performance report\n\nRun in progress; no passing verdict.\n");
+  try {
+    baseline = existsSync(baselineFile) ? (JSON.parse(readFileSync(baselineFile, "utf8")) as ScenarioResult[]) : null;
+    if (!args["no-build"]) await build();
+    if (!existsSync(join(DIST, "index.html"))) throw new Error(`no build in ${DIST}; run without --no-build`);
+    if (!args.unminified) results.push({ id: "bundle", title: "Initial bundle (gzip)", metrics: bundleMetrics() });
+    const serving = await serveBundle(DIST);
+    server = serving.server;
+    runtime = await launchBrowser({
       channel: args.channel === "chromium" ? undefined : args.channel,
       headless: !args.headed,
-      // Keep rAF / timers at full rate even when the window is not focused.
       args: [
         "--disable-renderer-backgrounding",
         "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
       ],
-    })
-    .catch((e: Error) => {
-      throw new Error(
-        `${e.message}\nInstall the browser with \`pnpm exec playwright install chromium\` or pass --channel msedge|chrome.`,
-      );
     });
-  try {
+    browserVersion = runtime.browser.version();
     for (const s of scenarios) {
       process.stdout.write(`${s.id.padEnd(14)} `);
-      const samples: Metrics[] = [];
-      try {
-        for (let i = 0; i < warmup + runs; i++) {
+      const attempts: Trial[] = (trials[s.id] = []);
+      const required = Object.keys(budgets.ui)
+        .filter((key) => key.startsWith(`${s.id}.`))
+        .map((key) => key.slice(s.id.length + 1));
+      for (let i = 0; i < warmup + runs; i++) {
+        const phase = i < warmup ? "warmup" : "measured";
+        const index = phase === "warmup" ? i + 1 : i - warmup + 1;
+        try {
           const last = i === warmup + runs - 1;
-          const m = await runOnce(browser, url, s, {
+          const metrics = await runOnce(runtime.browser, serving.url, s, {
             trace: args.trace && last ? join(OUT, "traces", `${s.id}.json`) : undefined,
             profile: args.profile && last ? join(OUT, "profiles", `${s.id}.cpuprofile`) : undefined,
           });
-          if (i >= warmup) samples.push(m);
-          process.stdout.write(i < warmup ? "w" : ".");
+          const errors = metricErrors(metrics, required);
+          attempts.push({
+            phase,
+            index,
+            status: errors.length ? "invalid" : "ok",
+            metrics,
+            error: errors.join("; ") || undefined,
+          });
+          process.stdout.write(errors.length ? "!" : phase === "warmup" ? "w" : ".");
+        } catch (error) {
+          attempts.push({
+            phase,
+            index,
+            status: error instanceof DeadlineError ? "timeout" : "error",
+            metrics: {},
+            error: errorMessage(error),
+          });
+          process.stdout.write(" failed");
+          progress();
+          break;
         }
-        results.push({ id: s.id, title: s.title, metrics: aggregate(samples) });
-        console.log();
-      } catch (e) {
-        console.log(" failed");
-        results.push({ id: s.id, title: s.title, metrics: {}, error: e instanceof Error ? e.message : String(e) });
+        progress();
+      }
+      const summary = summarizeTrials(attempts, runs);
+      counts[s.id] = summary.counts;
+      results.push({ id: s.id, title: s.title, metrics: summary.metrics, error: summary.error });
+      progress();
+      console.log();
+    }
+    completed = true;
+  } catch (error) {
+    infrastructure.push(errorMessage(error));
+  } finally {
+    if (runtime) {
+      try {
+        await runtime.close();
+      } catch (error) {
+        infrastructure.push(`browser cleanup: ${errorMessage(error)}`);
       }
     }
-  } finally {
-    await browser.close();
-    server.close();
+    if (server) {
+      try {
+        await closeServer(server);
+      } catch (error) {
+        infrastructure.push(`server cleanup: ${errorMessage(error)}`);
+      }
+    }
   }
-
-  const baselineFile = join(OUT, `baseline-${cpu}x.json`);
-  const baseline = existsSync(baselineFile)
-    ? (JSON.parse(readFileSync(baselineFile, "utf8")) as ScenarioResult[])
-    : null;
-  // Expectations were fixed before launch, independently of returned measurements.
   const report = evaluate(results, budgets.ui, baseline, {
     expected,
     enforceBudgets: cpu === 1,
     tolerance: budgets.regressionTolerance,
     floor: budgets.regressionFloor,
   });
-  const meta = { date: new Date().toISOString(), cpu, runs, channel: args.channel, browser: browser.version() };
-  writeFileSync(join(OUT, "report.json"), JSON.stringify({ meta, ...report }, null, 2));
-  writeFileSync(join(OUT, "report.md"), printReport(report, meta));
-  if (args["save-baseline"]) {
-    writeFileSync(baselineFile, JSON.stringify(results, null, 2));
+  for (const error of infrastructure) report.errors.push({ id: "infrastructure", error });
+  report.failures += infrastructure.length;
+  const finalMeta = { ...meta, browser: browserVersion };
+  writeFileSync(
+    join(OUT, "report.json"),
+    evidenceJson({
+      meta: finalMeta,
+      status: report.failures ? "failed" : "complete",
+      ...report,
+      expected,
+      results,
+      trials,
+      counts,
+      infrastructure,
+    }),
+  );
+  const trialTable = [
+    "",
+    "## Trials",
+    "",
+    "| Scenario | Valid / planned measured | Attempted measured | Valid / attempted warmup |",
+    "| --- | ---: | ---: | ---: |",
+    ...Object.entries(trials).map(([id, attempts]) => {
+      const c = summarizeTrials(attempts, runs).counts;
+      return `| ${id} | ${c.valid}/${c.planned} | ${c.attempted} | ${c.warmupValid}/${c.warmupAttempted} |`;
+    }),
+  ].join("\n");
+  writeFileSync(join(OUT, "report.md"), printReport(report, finalMeta) + trialTable + "\n");
+  if (args["save-baseline"] && completed) {
+    writeFileSync(baselineFile, evidenceJson(results));
     console.log(`Baseline saved to ${baselineFile}`);
   }
   const failed = report.failures > 0 || (args["fail-on-regression"] && report.regressions > 0);
