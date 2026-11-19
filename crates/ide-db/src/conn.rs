@@ -217,7 +217,8 @@ impl ManageConnection for MssqlConnectionManager {
         let row = client.simple_query("SELECT DB_NAME()").await?.into_row().await?;
         let default = row
             .and_then(|r| r.get::<&str, _>(0).map(str::to_owned))
-            .and_then(|db| crate::sql::use_schema(DbDriver::SqlServer, &db));
+            // Statements that `USE` another database must not move the pooled connection for good.
+            .map(|db| format!("USE {}", crate::sql::quote_ident(DbDriver::SqlServer, &db)));
         Ok(MssqlConnection(Some(client), Context::new(default)))
     }
 

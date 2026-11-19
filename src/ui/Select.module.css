@@ -159,6 +159,16 @@
   display: contents;
 }
 
+/* Tree rows: indentation plus room for the disclosure chevron. */
+.treeIndent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: none;
+  width: calc(var(--tree-depth) * 16px + 12px);
+  color: var(--fg-muted);
+}
+
 .rowAction {
   display: inline-flex;
   align-items: center;
