@@ -367,6 +367,8 @@ pub struct DebuggerSettings {
     pub skip_library_code: bool,
     /// JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session.
     pub debug_server_page: bool,
+    /// Flutter: saving a Dart file of a running debug session hot reloads the app.
+    pub flutter_hot_reload_on_save: bool,
     pub python: PythonDebuggerSettings,
 }
 
@@ -387,6 +389,7 @@ impl Default for DebuggerSettings {
             value_tooltip_delay: 700,
             skip_library_code: true,
             debug_server_page: false,
+            flutter_hot_reload_on_save: true,
             python: PythonDebuggerSettings::default(),
         }
     }

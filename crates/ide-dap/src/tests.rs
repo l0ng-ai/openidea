@@ -559,6 +559,10 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 }
             }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
+            "hotReload" => {
+                ok!(msg, Value::Null);
+                send!(json!({"type": "event", "event": "flutter.appStarted", "body": {}}));
+            }
             "redefineClasses" => {
                 send!(
                     json!({"type": "event", "event": "hotcodereplace", "body": {"changeType": "STARTING", "message": "Start hot code replacement procedure..."}})
@@ -1889,6 +1893,17 @@ async fn startup_sends_every_file_at_once_and_skips_files_with_nothing_enabled()
         h.manager.breakpoint_states(&off),
         [BreakpointState { line: 5, verified: false, message: Some("Disabled".into()) }]
     );
+}
+
+#[tokio::test]
+async fn hot_reload_sends_its_reason_and_reports_the_flutter_app() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.manager.hot_reload(id, HotReloadReason::Manual).await.unwrap();
+    h.manager.hot_reload(id, HotReloadReason::Save).await.unwrap();
+    let reasons: Vec<_> = requests(&h, "hotReload").iter().map(|args| args["reason"].clone()).collect();
+    assert_eq!(reasons, [json!("manual"), json!("save")]);
+    h.wait_event(|e| matches!(e, DebugEvent::FlutterAppStarted)).await;
 }
 
 #[tokio::test]

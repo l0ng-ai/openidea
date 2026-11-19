@@ -2600,5 +2600,8 @@
   "Device": "Device",
   "The device selected in the toolbar": "The device selected in the toolbar",
   "A device id pins this configuration to that device": "A device id pins this configuration to that device",
-  "e.g. --flavor dev --dart-define=KEY=value": "e.g. --flavor dev --dart-define=KEY=value"
+  "e.g. --flavor dev --dart-define=KEY=value": "e.g. --flavor dev --dart-define=KEY=value",
+  "Hot reload on save": "Hot reload on save",
+  "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
+  "Hot reload on save failed: {0}": "Hot reload on save failed: {0}"
 }

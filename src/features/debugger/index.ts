@@ -31,6 +31,7 @@ import { executionPoint } from "./editor/execution";
 import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
 import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
+import { installFlutterHotReloadOnSave } from "./flutterReload";
 import {
   activeSession,
   canTraceStream,
@@ -152,6 +153,7 @@ export function activate(): () => void {
       ],
     }),
     installSmartStepPicking(),
+    installFlutterHotReloadOnSave(),
     onIdeEvent("debug", (e) => {
       if (e.event.kind === "hotCodeReplace") onHotCodeReplace(e.session, e.event);
       else handleDebugEvent(e.session, e.event);

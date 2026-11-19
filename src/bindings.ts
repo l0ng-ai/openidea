@@ -386,7 +386,7 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("debug_heap_path", { snapshot, object })),
 	/**  Copies the snapshot's dump to `path`, replacing a file there. */
 	debugHeapSave: (snapshot: HeapSnapshotId, path: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_save", { snapshot, path })),
-	debugHotReload: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session })),
+	debugHotReload: (session: DebugSessionId, reason: HotReloadReason) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_reload", { session, reason })),
 	debugHotRestart: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_hot_restart", { session })),
 	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
 	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
@@ -4757,6 +4757,11 @@ export type DebugEvent =
  *  changed and can be reloaded), `STARTING`, `END`, `WARNING` or `ERROR`.
  */
 { kind: "hotCodeReplace"; changeType: string; message: string } | 
+/**
+ *  `flutter debug_adapter`'s `flutter.appStarted` event (launch and attach): the session is
+ *  a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
+ */
+{ kind: "flutterAppStarted" } | 
 /**  The session's capabilities changed after it started: fetch them again. */
 { kind: "capabilities" } | 
 /**
@@ -4795,6 +4800,8 @@ export type DebuggerSettings = {
 	skipLibraryCode?: boolean,
 	/**  JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session. */
 	debugServerPage?: boolean,
+	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
+	flutterHotReloadOnSave?: boolean,
 	python?: PythonDebuggerSettings,
 };
 
@@ -6798,6 +6805,9 @@ export type HistoryKind =
  *  for everything under `path` (the project root); has no content.
  */
 "label";
+
+/**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
+export type HotReloadReason = "manual" | "save";
 
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {

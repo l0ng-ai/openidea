@@ -81,6 +81,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "debugger.hideOnTermination",
   "debugger.variablesOnBreakpoint",
   "debugger.runToCursorInlay",
+  "debugger.flutterHotReloadOnSave",
   "debugger.inlineValues",
   "debugger.sortValues",
   "debugger.valueTooltip",

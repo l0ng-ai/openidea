@@ -8975,5 +8975,8 @@
   "Entry point": "入口文件",
   "The device selected in the toolbar": "工具栏中选择的设备",
   "A device id pins this configuration to that device": "填写设备 ID 后，此配置固定使用该设备",
-  "e.g. --flavor dev --dart-define=KEY=value": "例如 --flavor dev --dart-define=KEY=value"
+  "e.g. --flavor dev --dart-define=KEY=value": "例如 --flavor dev --dart-define=KEY=value",
+  "Hot reload on save": "保存时热重载",
+  "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.": "保存正在运行的 Flutter 调试会话里的 Dart 文件时重新加载应用，文件有错误时跳过。",
+  "Hot reload on save failed: {0}": "保存时热重载失败：{0}"
 }

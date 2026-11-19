@@ -275,6 +275,17 @@ export const EXECUTION_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "Flutter",
+        options: [
+          {
+            kind: "toggle",
+            key: "debugger.flutterHotReloadOnSave",
+            label: "Hot reload on save",
+            hint: "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
+          },
+        ],
+      },
+      {
         title: "Breakpoints",
         options: [
           {

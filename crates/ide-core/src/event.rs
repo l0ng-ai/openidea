@@ -367,6 +367,9 @@ pub enum DebugEvent {
         change_type: String,
         message: String,
     },
+    /// `flutter debug_adapter`'s `flutter.appStarted` event (launch and attach): the session is
+    /// a Flutter app that can take a hot reload now. The plain Dart adapter never sends it.
+    FlutterAppStarted,
     /// The session's capabilities changed after it started: fetch them again.
     Capabilities,
     /// The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,

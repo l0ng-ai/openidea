@@ -117,6 +117,7 @@ export interface DebuggerSettingsValid {
   valueTooltipDelay: number;
   skipLibraryCode: boolean;
   debugServerPage: boolean;
+  flutterHotReloadOnSave: boolean;
   python: { attachSubprocess: boolean; gevent: boolean };
 }
 
@@ -344,6 +345,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     valueTooltipDelay: 700,
     skipLibraryCode: true,
     debugServerPage: false,
+    flutterHotReloadOnSave: true,
     python: { attachSubprocess: true, gevent: false },
   },
   run: {
@@ -522,6 +524,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
     debugServerPage: bool(v.debugServerPage, d.debugServerPage),
+    flutterHotReloadOnSave: bool(v.flutterHotReloadOnSave, d.flutterHotReloadOnSave),
     python: {
       attachSubprocess: bool(py.attachSubprocess, d.python.attachSubprocess),
       gevent: bool(py.gevent, d.python.gevent),

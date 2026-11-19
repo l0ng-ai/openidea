@@ -280,6 +280,14 @@ pub struct SessionExceptionFilters {
     pub filters: Vec<ExceptionFilter>,
 }
 
+/// What triggered a hot reload; `flutter debug_adapter` takes it as `reason`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum HotReloadReason {
+    Manual,
+    Save,
+}
+
 /// A live session, as listed by [`DebugManager::sessions`].
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1661,8 +1669,8 @@ impl DebugManager {
 
     /// Flutter's DAP adapter: injects the changed sources into the running app.
     /// Not part of the DAP standard; adapters that do not know the request reject it.
-    pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {
-        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
+    pub async fn hot_reload(&self, s: DebugSessionId, reason: HotReloadReason) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": reason }), REQUEST_TIMEOUT).await?;
         Ok(())
     }
 
