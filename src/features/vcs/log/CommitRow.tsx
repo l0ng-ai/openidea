@@ -21,6 +21,7 @@ function CommitRowView({
   commit: c,
   fileHistoryTarget,
   graph,
+  maxGraphLanes,
   top,
   selected,
   head,
@@ -44,6 +45,7 @@ function CommitRowView({
   commit: Commit;
   fileHistoryTarget: string | null;
   graph: GraphRow | undefined;
+  maxGraphLanes: number;
   top: number;
   selected: boolean;
   head: boolean;
@@ -106,6 +108,7 @@ function CommitRowView({
       {graph && (
         <GraphCell
           row={graph}
+          maxLanes={maxGraphLanes}
           head={head}
           activeColor={hoverColor}
           highlighted={highlighted}

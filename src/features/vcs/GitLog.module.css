@@ -168,7 +168,7 @@
 .list {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden auto;
   outline: none;
   /* Rows coming and going while scrolling relay out the list alone, not the workbench. */
   contain: strict;
@@ -181,8 +181,8 @@
   height: 26px;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 0 8px;
+  gap: min(var(--space-2), 2%);
+  padding: 0 min(var(--space-2), 2%);
   white-space: nowrap;
   cursor: default;
   font-size: var(--fs-ui);
@@ -199,18 +199,18 @@
   background: var(--bg-app);
 }
 .columnCell {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   /* Keep the first glyph clear of the divider on this column's left edge.
      box-sizing: border-box keeps the width and boundary position unchanged. */
-  padding-inline-start: var(--space-2);
+  padding-inline-start: min(var(--space-2), 2%);
   /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
   position: relative;
 }
 .columnHeading {
   position: relative;
-  padding-inline-end: 6px;
   cursor: grab;
   touch-action: none;
 }
@@ -314,7 +314,7 @@
   --log-row-bg: var(--bg-tree-selected);
 }
 .colSubject {
-  flex: 1;
+  flex: 1 0 min(220px, 50%);
   min-width: 0;
   display: flex;
   align-items: center;
@@ -365,6 +365,8 @@
 }
 .graph {
   flex: none;
+  /* Leave room for the subject even when the graph has many lanes. */
+  max-width: calc((100% - min(120px, 50%)) * var(--log-graph-share));
   fill: none;
   stroke-width: 1.6;
   overflow: visible;
@@ -760,7 +762,8 @@
 }
 
 .colRepository {
-  flex: 0 0 100px;
+  flex: 0 1 100px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

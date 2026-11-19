@@ -1,5 +1,5 @@
 import { tx } from "@/platform/i18n";
-import { Fragment } from "react";
+import { Fragment, type CSSProperties } from "react";
 import styles from "../GitLog.module.css";
 import { laneColor, type GraphRow, type GraphSegment } from "../graph";
 import { LANE, ROW } from "./shared";
@@ -15,6 +15,7 @@ function seg(fromX: number, fromY: number, toX: number, toY: number) {
 
 export function GraphCell({
   row,
+  maxLanes = row.width,
   head,
   activeColor,
   highlighted,
@@ -27,6 +28,7 @@ export function GraphCell({
   interactive = true,
 }: {
   row: GraphRow;
+  maxLanes?: number;
   head?: boolean;
   activeColor?: string | null;
   highlighted?: ReadonlySet<string>;
@@ -39,6 +41,9 @@ export function GraphCell({
   interactive?: boolean;
 }) {
   const cy = ROW / 2;
+  const width = row.width * LANE;
+  // Use the same scale across rows so their edges still meet at row boundaries.
+  const widthShare = row.width / maxLanes;
   const draw = (s: GraphSegment, i: number, up: boolean) => {
     const fromX = x(s.fromX ?? s.from);
     const toX = x(s.toX ?? s.to);
@@ -112,8 +117,11 @@ export function GraphCell({
   return (
     <svg
       className={styles.graph}
-      width={row.width * LANE}
+      width={width}
       height={ROW}
+      viewBox={`0 0 ${width} ${ROW}`}
+      preserveAspectRatio="none"
+      style={{ "--log-graph-share": widthShare } as CSSProperties}
       aria-label={tx("Commit graph")}
       onMouseLeave={() => onHover?.(null)}
     >
