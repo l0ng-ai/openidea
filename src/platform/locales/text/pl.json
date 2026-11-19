@@ -2887,8 +2887,6 @@
   "Run a command, configuration or goal": "Uruchom polecenie, konfigurację lub cel",
   "Run Anything entries": "Wpisy funkcji 'Uruchom cokolwiek'",
   "Press Enter to run the command in the project directory": "Naciśnij Enter, aby uruchomić polecenie w katalogu projektu",
-  "Type a command": "Wpisz polecenie",
-  "Enter to run, Tab to complete. Other commands run in the project directory.": "Enter, aby uruchomić, Tab, aby uzupełnić. Inne polecenia uruchamiają się w katalogu projektu.",
   "Recent": "Niedawne",
   "Search types": "Szukaj typów",
   "Search configuration types": "Szukaj typów konfiguracji",
