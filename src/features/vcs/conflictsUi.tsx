@@ -15,6 +15,7 @@ import { executeAction } from "@/platform/actions";
 import { conflictedFiles, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
+import { useRowHeight } from "@/ui/density";
 
 /**
  * The stopped rebase / cherry-pick / revert whose conflicts are being resolved from the
@@ -64,6 +65,7 @@ export async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
 }
 
 function ConflictsDialog({ onClose }: { onClose: () => void }) {
+  const rowHeight = useRowHeight(22);
   const files = useVcs((s) => s.status).filter((f) => f.unstaged === "conflicted");
   const root = useVcs((s) => s.root) ?? "";
   const op = useVcs((s) => inProgress(s.branch?.operation));
@@ -141,7 +143,7 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
           getKey={(f) => f.path}
           activeIndex={Math.min(active, files.length - 1)}
           onActiveChange={setActive}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label="Conflicted files"
           className={styles.boxList}
           empty={

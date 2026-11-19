@@ -253,7 +253,6 @@ export function SelectListbox<V extends string = string>({
         onActivate={(o) => choose(o)}
         focusable={false}
         hoverSelects
-        rowHeight={24}
         aria-label={given(aria["aria-label"])}
         className={clsx(styles.list, listClassName)}
         renderItem={(o) => {

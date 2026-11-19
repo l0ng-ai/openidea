@@ -1,6 +1,7 @@
 import { useMemo, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { HighlightedText, Icon, List, Popup, SearchField, fuzzyMatch, listNavigate, T, type PopupAnchor } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { useRunConfigTypes, runConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import styles from "./Run.module.css";
 
@@ -59,6 +60,7 @@ export function AddConfigPopup({
   onClose: () => void;
 }) {
   const types = useRunConfigTypes((s) => s.types);
+  const rowHeight = useRowHeight(ROW);
   const [query, setQuery] = useState("");
   const rows = useMemo(() => typeRows(runConfigTypes(types), query), [types, query]);
   const isSection = (r: TypeRow) => r.kind === "group";
@@ -115,7 +117,7 @@ export function AddConfigPopup({
           variant="bare"
         />
       </div>
-      <div style={{ height: Math.max(ROW, Math.min(rows.length * ROW, 14 * ROW)) }}>
+      <div style={{ height: Math.max(rowHeight, Math.min(rows.length * rowHeight, 14 * rowHeight)) }}>
         <List<TypeRow>
           aria-label="Configuration types"
           className={styles.chooserList}
@@ -127,7 +129,7 @@ export function AddConfigPopup({
           onActiveChange={setActive}
           focusable={false}
           hoverSelects
-          rowHeight={ROW}
+          rowHeight={rowHeight}
           onActivate={(r) => pick(r)}
           empty={
             <span className={styles.chooserMuted}>

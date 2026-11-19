@@ -9,6 +9,7 @@ import {
   showContextMenu,
   useContextMenuStore,
   Spinner,
+  Toolbar,
   Tree,
   type MenuItem,
   type TreeHandle,
@@ -81,6 +82,41 @@ export function StatusIcon({ status }: { status: TestStatus | null }) {
     default:
       return <Icon name="test-pending" className={styles.testStatus} label="Pending" />;
   }
+}
+
+export function TestStatusBar({
+  results,
+  version,
+  running,
+}: {
+  results: TestResults;
+  version: number;
+  running: boolean;
+}) {
+  const counts = useMemo(() => results.counts(), [results, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const status = running
+    ? "running"
+    : counts.failed
+      ? "failed"
+      : counts.passed
+        ? "passed"
+        : counts.skipped
+          ? "skipped"
+          : null;
+  const duration = results.summary.durationMs;
+
+  return (
+    <div className={styles.testStatusBar} role="status">
+      <StatusIcon status={status} />
+      <span className={styles.testCounts}>
+        {counts.failed > 0 && <span className={styles.failed}>{tx`${counts.failed} failing`}</span>}
+        {counts.passed > 0 && <span>{tx`${counts.passed} passed`}</span>}
+        {counts.skipped > 0 && <span className={styles.skipped}>{tx`${counts.skipped} ignored`}</span>}
+        {counts.total === 0 && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
+      </span>
+      {duration !== undefined && <span className={styles.testTotalDuration}>{formatDuration(duration)}</span>}
+    </div>
+  );
 }
 
 const isFailedTest = (n: TestNode) => n.children.length === 0 && nodeStatus(n) === "failed";
@@ -163,6 +199,8 @@ export function TestTreeView({
     });
   const sortButton = useRef<HTMLButtonElement>(null);
   const [sortMenu, setSortMenu] = useState(false);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const [moreMenu, setMoreMenu] = useState(false);
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
   const [exporting, setExporting] = useState(false);
   const [selection, setSelection] = useState<Set<string>>(new Set());
@@ -226,7 +264,6 @@ export function TestTreeView({
     }
   };
 
-  const counts = useMemo(() => results.counts(), [results, version]); // eslint-disable-line react-hooks/exhaustive-deps
   // Like IDEA, Sort by Duration applies once the run has finished, so rows don't jump while tests report.
   const byDuration = sortByDuration && !running;
   const roots = useMemo(() => {
@@ -276,21 +313,9 @@ export function TestTreeView({
   const hasPrevFailed = findOccurrence(roots, selected, -1, treeModel) !== null;
   const hasNextFailed = findOccurrence(roots, selected, 1, treeModel) !== null;
 
-  const status = running ? "running" : counts.failed > 0 ? "failed" : counts.total > 0 ? "passed" : null;
-  const duration = results.summary.durationMs;
-
   return (
     <div className={styles.testPane}>
-      <div className={styles.testHeader}>
-        <StatusIcon status={status} />
-        <span className={styles.testCounts}>
-          {counts.failed > 0 && <span className={styles.failed}>{tx`${counts.failed} failing`}</span>}
-          {counts.passed > 0 && <span>{tx`${counts.passed} passed`}</span>}
-          {counts.skipped > 0 && <span className={styles.skipped}>{tx`${counts.skipped} ignored`}</span>}
-          {counts.total === 0 && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
-          {duration !== undefined && <span className={styles.skipped}>{formatDuration(duration)}</span>}
-        </span>
-        <span className={styles.spacer} />
+      <Toolbar className={styles.testToolbar} aria-label="Test results">
         <IconButton
           icon="test-show-passed"
           size="small"
@@ -332,14 +357,6 @@ export function TestTreeView({
           ]}
           onClose={() => setSortMenu(false)}
         />
-        <IconButton icon="expand-all" action="run.expandAllTests" size="small" iconSize={16} disabled={!hasSuites} />
-        <IconButton
-          icon="collapse-all"
-          action="run.collapseAllTests"
-          size="small"
-          iconSize={16}
-          disabled={!hasSuites}
-        />
         <IconButton
           icon="arrow-up"
           action="navigate.prevOccurrence"
@@ -357,14 +374,42 @@ export function TestTreeView({
           disabled={!hasNextFailed}
         />
         <IconButton
-          icon="export"
+          ref={moreButton}
+          icon="more-horizontal"
           size="small"
           iconSize={16}
-          title="Export Test Results…"
-          disabled={!canExport}
-          onClick={() => setExporting(true)}
+          title="More Actions"
+          aria-haspopup="menu"
+          aria-expanded={moreMenu}
+          onClick={() => setMoreMenu((open) => !open)}
         />
-      </div>
+        <Menu
+          open={moreMenu}
+          anchor={moreButton}
+          onClose={() => setMoreMenu(false)}
+          items={[
+            {
+              icon: "expand-all",
+              label: "Expand All",
+              disabled: !hasSuites,
+              run: () => void executeAction("run.expandAllTests"),
+            },
+            {
+              icon: "collapse-all",
+              label: "Collapse All",
+              disabled: !hasSuites,
+              run: () => void executeAction("run.collapseAllTests"),
+            },
+            { kind: "separator" },
+            {
+              icon: "export",
+              label: "Export Test Results…",
+              disabled: !canExport,
+              run: () => setExporting(true),
+            },
+          ]}
+        />
+      </Toolbar>
       {exporting && (
         <ExportTestResultsDialog results={results} name={name} cwd={cwd} onClose={() => setExporting(false)} />
       )}
@@ -396,7 +441,9 @@ export function TestTreeView({
           return (
             <span className={styles.testRow}>
               <StatusIcon status={s} />
-              <span className={clsx(styles.testName, s === "skipped" && styles.skipped)}>{n.name}</span>
+              <span className={clsx(styles.testName, s === "skipped" && styles.skipped)} title={n.name}>
+                {n.name}
+              </span>
               {d !== undefined && <span className={styles.testDuration}>{formatDuration(d)}</span>}
             </span>
           );

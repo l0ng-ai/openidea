@@ -261,6 +261,34 @@
   font-size: var(--fs-tiny);
   color: var(--fg-faint);
 }
+.symbolRename {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+}
+.renameContext,
+.symbolRenameNote {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.renameContext {
+  color: var(--fg-emphasis);
+}
+.symbolRename .renameField {
+  width: 100%;
+  height: max(var(--h-field), calc(var(--openidea-editor-font-size, var(--fs-code)) + var(--space-2)));
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--openidea-editor-font-size, var(--fs-code));
+}
+.symbolRenameNote {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
 
 /* Fits its content up to a cap; resized (`data-resized`), it keeps that size and the body scrolls. */
 .docPopup {
@@ -398,6 +426,36 @@
   flex-direction: column;
   overflow: hidden;
 }
+.renamePreview [data-dialog-body] {
+  display: block;
+  overflow: auto;
+}
+.previewContext {
+  padding: var(--space-2) 14px 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-emphasis);
+  font-size: var(--fs-ui);
+}
+.renamePreview .previewList {
+  overflow: visible;
+}
+.renamePreview .previewName {
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.renamePreview .previewOp {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.renamePreview .previewWarning {
+  overflow-wrap: anywhere;
+}
 .previewSummary {
   flex: none;
   padding: 10px 14px 6px;
@@ -468,6 +526,18 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
   color: var(--fg-editor);
+}
+.renamePreview .previewOccurrences .previewRow {
+  min-height: var(--h-row);
+  height: auto;
+  align-items: baseline;
+  padding-block: var(--space-1);
+}
+.renamePreview .previewCode {
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--openidea-editor-font-size, var(--fs-code));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .previewMatch {
   background: var(--bg-search-match);

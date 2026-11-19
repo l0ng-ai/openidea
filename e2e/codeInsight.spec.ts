@@ -427,6 +427,70 @@ test("Find Usages from the editor context menu lists every usage by file and ope
   ).toHaveAttribute("aria-selected", "true");
 });
 
+test("usage locations and preview stay readable as the available space changes", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1040, height: 760 });
+  const editor = await openSample(page);
+  await page.evaluate(
+    ({ file, other }) => {
+      const locations = [
+        { path: file, range: { start: { line: 16, col: 8 }, end: { line: 16, col: 15 } } },
+        { path: file, range: { start: { line: 20, col: 27 }, end: { line: 20, col: 34 } } },
+        { path: other, range: { start: { line: 0, col: 0 }, end: { line: 0, col: 7 } } },
+      ];
+      window.__ipc.handlers.lsp_references = () => ({
+        locations,
+        classified: [{ location: locations[2], kind: "code", text: "service.submit(order)" }],
+        incomplete: null,
+        librariesSkipped: true,
+      });
+    },
+    { file: FILE, other: `${ROOT}/domain/checkout/processing/calculations/PaymentProcessingService.kt` },
+  );
+  await caretAt(editor, page, "val order: Order", "service");
+  await page.keyboard.press("Meta+Alt+F7");
+  const popup = page.getByRole("dialog", { name: "Usages" });
+  const scope = popup.getByRole("button", { name: "Scope" });
+  const openWindow = popup.getByRole("button", { name: /^Open in Find Window/ });
+  await expect(popup.getByTestId("usage-row")).toHaveCount(3);
+  await popup.getByRole("button", { name: "Show Preview" }).click();
+  const code = popup.getByRole("region", { name: "Preview" });
+  await expect(code.locator(".cm-content")).toContainText("service.find(status");
+
+  await page.setViewportSize({ width: 480, height: 470 });
+  const within = async (child: Locator, parent: Locator) => {
+    const [c, p] = await Promise.all([child.boundingBox(), parent.boundingBox()]);
+    return (
+      !!c &&
+      !!p &&
+      c.x >= p.x - 1 &&
+      c.y >= p.y - 1 &&
+      c.x + c.width <= p.x + p.width + 1 &&
+      c.y + c.height <= p.y + p.height + 1
+    );
+  };
+  await expect.poll(() => within(scope, popup)).toBe(true);
+  await expect.poll(() => within(openWindow, popup)).toBe(true);
+  await expect.poll(() => within(code, popup)).toBe(true);
+  const results = popup.getByRole("listbox", { name: "Usages" });
+  await expect.poll(() => within(popup.getByTestId("usage-row").last(), results)).toBe(true);
+  const firstRow = popup.getByTestId("usage-row").first();
+  const file = firstRow.getByText("build.gradle.kts", { exact: true });
+  await expect(file).toBeVisible();
+  const [filename, snippet] = await Promise.all([file.boundingBox(), firstRow.locator("mark").boundingBox()]);
+  expect(filename!.x + filename!.width).toBeLessThan(snippet!.x);
+  await openWindow.click();
+
+  const tree = page.getByRole("tree", { name: "Usages" });
+  const target = tree.getByRole("treeitem", { name: /^17 service\.find\(status/ });
+  await target.click();
+  const preview = page.getByRole("region", { name: "Preview" });
+  await expect(preview).toContainText("service.find(status");
+  await expect.poll(async () => (await preview.boundingBox())!.y > (await tree.boundingBox())!.y).toBe(true);
+  await page.setViewportSize({ width: 1040, height: 760 });
+  await expect.poll(async () => (await preview.boundingBox())!.x > (await tree.boundingBox())!.x).toBe(true);
+  await expect(preview).toContainText("service.find(status");
+});
+
 test("⇧F6 renames in place and sends the server's edit to be applied", async ({ workbench: page }) => {
   const editor = await openSample(page);
   await page.evaluate(
@@ -496,6 +560,81 @@ test("indexed single-file rename previews all anchors and applies only after con
   await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
   const [apply] = await ipcCalls(page, "apply_workspace_edit");
   expect(apply.edit).toMatchObject({ preconditions: [{ path: FILE, hash: "indexed-snapshot" }] });
+});
+
+test("rename keeps the typed name, uses the editor font and shows long preview names in a narrow dialog", async ({
+  workbench: page,
+}) => {
+  const editor = await openSample(page);
+  await page.evaluate(
+    async ({ file, prepared }) => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+      useProject.setState({ settings: { ...base, editor: { ...base.editor, fontSize: 17 } } });
+      window.__ipc.handlers.lsp_prepare_rename = () => prepared;
+      window.__ipc.handlers.lsp_rename = (args) => ({
+        preview: true,
+        incomplete: null,
+        edit: {
+          files: [
+            {
+              kind: "edit",
+              path: file,
+              edits: [{ range: prepared, new_text: args.newName }],
+            },
+          ],
+        },
+      });
+      window.__ipc.handlers.apply_workspace_edit = () => null;
+    },
+    { file: FILE, prepared: range(20, 12, 17) },
+  );
+
+  await caretAt(editor, page, "val order: Order", "order");
+  await page.keyboard.press("Shift+F6");
+  await expect(page.getByText(/Press ⇧F6 to show dialog/)).toBeVisible();
+  const name = "checkoutOrderWithDeliveryInstructionsAndInventoryReservation";
+  await page.keyboard.insertText(name);
+  await page.keyboard.press("Shift+F6");
+  await page.setViewportSize({ width: 440, height: 520 });
+  const dialog = page.getByRole("dialog", { name: "Rename 'order'", exact: true });
+  const input = dialog.getByRole("textbox", { name: "New name" });
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue(name);
+  await expect(input).toHaveCSS("font-size", "17px");
+  const [label, field] = await Promise.all([
+    dialog.getByText("New name", { exact: true }).boundingBox(),
+    input.boundingBox(),
+  ]);
+  expect(label!.x + label!.width).toBeLessThan(field!.x);
+  const rename = dialog.getByRole("button", { name: "Rename", exact: true });
+
+  await input.fill("");
+  await expect(rename).toBeDisabled();
+  await input.press("Enter");
+  await expect(dialog).toBeVisible();
+  expect(await ipcCalls(page, "lsp_rename")).toHaveLength(0);
+  await input.fill(name);
+  await input.press("Enter");
+
+  const summary = `Rename 'order' to '${name}'`;
+  const preview = page.getByRole("dialog", { name: summary, exact: true });
+  const context = preview.getByText(summary, { exact: true });
+  await expect(context).toBeVisible();
+  const geometry = await context.evaluate((element) => ({
+    client: element.clientWidth,
+    content: element.scrollWidth,
+  }));
+  expect(geometry.content).toBeLessThanOrEqual(geometry.client + 1);
+  await expect(preview.getByText("1 occurrence in 1 file")).toBeVisible();
+  expect(await ipcCalls(page, "apply_workspace_edit")).toHaveLength(0);
+  await preview.getByRole("button", { name: "Do Refactor" }).click();
+  await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
 });
 
 test("intention previews fit narrow windows and wrap long code lines", async ({ workbench: page }) => {
