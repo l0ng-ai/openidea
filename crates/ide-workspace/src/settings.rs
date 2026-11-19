@@ -1188,10 +1188,24 @@ mod tests {
         let config = tmp.path().join("config");
         let project = tmp.path().join("project");
         std::fs::create_dir_all(project.join(".openidea")).unwrap();
-        std::fs::write(project.join(".openidea/settings.toml"), "[mcpServer]\nenabled = true\n").unwrap();
+        std::fs::write(
+            project.join(".openidea/settings.toml"),
+            "[mcpServer]\nenabled = true\nbackgroundProjects = \"trusted\"\n\
+             backgroundProjectPaths = [\"/projects/inventory\"]\nbackgroundIdleMinutes = 0\nbackgroundProjectLimit = 32\n",
+        )
+        .unwrap();
         let settings = SettingsStore::load(&config, Some(&project));
         assert!(!settings.effective().mcp_server.enabled);
+        assert_eq!(settings.effective().mcp_server, ide_core::settings::McpServerSettings::default());
         assert!(settings.set(SettingsScope::Project, "mcpServer.enabled", serde_json::json!(true)).is_err());
+        for (key, value) in [
+            ("backgroundProjects", serde_json::json!("trusted")),
+            ("backgroundProjectPaths", serde_json::json!(["/projects/inventory"])),
+            ("backgroundIdleMinutes", serde_json::json!(0)),
+            ("backgroundProjectLimit", serde_json::json!(32)),
+        ] {
+            assert!(settings.set(SettingsScope::Project, &format!("mcpServer.{key}"), value).is_err(), "{key}");
+        }
         assert!(
             settings
                 .set(SettingsScope::Global, "mcpServer.enabled", serde_json::json!(true))

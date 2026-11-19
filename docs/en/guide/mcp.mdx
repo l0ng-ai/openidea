@@ -77,7 +77,7 @@ The stdio configuration looks like this (the path is the one on your machine):
 
 Use the executable path from **Copy Stdio Config**; the macOS path above is only an example. On Windows it is `openidea.exe` in the installation (or portable) folder.
 
-OpenIDEA must be running with the project open for the tools to work. A client may name any folder inside an open project; the server picks the open project that contains it. HTTP clients name it with the `X-OpenIDEA-Project` header or the `?project=` query.
+OpenIDEA must be running for the tools to work, and the project must be open in a window or served as a [background project](#background-projects). A client may name any folder inside such a project; the server picks the project that contains it. HTTP clients name it with the `X-OpenIDEA-Project` header or the `?project=` query.
 
 While the server runs, OpenIDEA writes its port and token to `mcp/server.json` in its application data directory (readable only by you); the stdio bridge reads it from there.
 
@@ -126,17 +126,56 @@ As JetBrains IDEs do, the command runs on pipes, not a terminal: programs print 
 
 Plugins can add more tools; they appear in the same list. A plugin tool marked as destructive asks for confirmation the same way.
 
+## Background projects
+
+By default the server answers only for projects open in a window. **Serve without a window** lets it also answer for a folder that has no window: the first tool call for a path inside it opens the project, and OpenIDEA unloads it again after it has been idle for a while. The setting is under **Background projects** on **Settings › Agents › IDE MCP Server**. It is off by default.
+
+**Serve without a window** picks which folders are served:
+
+- **Off** (the default): only projects open in a window.
+- **Trusted projects**: trusted projects, trusted recent projects and repositories inside trusted locations, plus the folders in **Folders**. A folder under a root you restricted is not served.
+- **Listed projects**: only the folders in **Folders**.
+
+While the mode is **Off**, **Folders**, **Unload after** and **Project limit** are disabled.
+
+**Folders** is the list. **+** adds a folder through the folder chooser of this computer, or opens a new entry where you can type or paste a path; **−** removes the selected entry, and the edit button (or a double click) changes it. Entries are absolute paths, and a relative entry is ignored. Like the rest of the page, the list applies when you apply the settings. When a path is inside several listed folders, the innermost one is the project.
+
+In `settings.toml` the four options are `backgroundProjects` (`"off"`, `"trusted"` or `"listed"`), `backgroundProjectPaths`, `backgroundIdleMinutes` (0 to 1440) and `backgroundProjectLimit` (1 to 32) under `[mcpServer]`, in the global file only.
+
+When a project loads and unloads:
+
+- **It loads on the first tool call** for a path inside it. `initialize` and `tools/list` open nothing, so a client that only connects loads no project.
+- **A call in flight keeps it loaded**, and so does a run it started that is still alive.
+- **Idle projects unload.** After **Unload after** minutes without a request (30 by default) a project unloads. Set it to 0 to keep idle projects loaded.
+- **The limit.** **Project limit** (8 by default, 1 to 32) is the most projects loaded at once. At the limit, the project idle longest unloads to make room. When every loaded project is busy, the client's request is refused.
+- **Opening the folder in a window** unloads its background project, and the window takes over. A call that arrives while the window is still opening the folder is asked to retry.
+- **Changing what is served unloads at once.** Switching **Serve without a window** to **Off**, removing a folder from the list, revoking the trust that made a project served and turning the server off unload the affected projects without waiting for the idle time.
+- **Unloading stops the runs.** The **Unload** button, a change of the setting or the list, revoking trust and opening the folder in a window unload the project at once and stop the runs it started, without asking. Only the idle unload and the limit leave a project with a live run alone.
+- **Restarting OpenIDEA** starts with none loaded.
+
+**Open now** lists the loaded projects, each with what it is doing (answering a request, kept open by a run, or how long it has been idle and when it unloads) and an **Unload** button. Unloading does not wait for **Apply**. The project loads again on the next tool call that names it, if the setting still serves it.
+
+What trust decides: a trusted project works as one open in a window, with its language servers and the tools that write. A listed folder you have not trusted opens in Restricted Mode and gets only the read-only tools.
+
+A background project has no window, so some tools differ:
+
+- `run_command` and `open_file_in_editor` need a window.
+- `get_file_problems` and `get_project_problems` report what a window shows. In a background project they answer with an error that points to `check_files`.
+- `get_current_file` and `get_all_open_file_paths` also describe a window. In a background project they answer with an error that says the project needs a window.
+- `execute_run_configuration` and `build_project` work in a background project when **Run tools without confirmation (brave mode)** is on.
+
 ## Safety
 
 - **Untrusted projects** expose only the read-only tools. Tools that write files, rename, reformat, build or run need a project you have trusted.
 - **Running and building ask first.** `execute_run_configuration`, `build_project`, `run_command` and `http_run_request` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
 - Tools that write refuse paths outside the project.
+- **Background projects.** Anyone with the token can make the IDE load a project that **Serve without a window** serves, so the setting and the token decide who can open folders on this computer. Listed folders you have not trusted open in Restricted Mode and get only the read-only tools. Keep the list to folders you want agents to reach.
 
 ## Remote development
 
-In a remote window ([SSH](/en/guide/remote/ssh), WSL or [Dev Containers](/en/guide/remote/containers)), `openidea-server` runs its own MCP server on the remote host, configured independently in **Settings › Agents › IDE MCP Server** while that remote window is focused. Coding agents started inside the remote window connect to it automatically; external CLI clients on the remote host can use **Copy Stdio Config** (`~/.openidea/bin/openidea-server --mcp-stdio`) or **Copy HTTP Config**, and clients on your desktop can reach it by forwarding its port in the **Ports** tool window.
+In a remote window ([SSH](/en/guide/remote/ssh), WSL or [Dev Containers](/en/guide/remote/containers)), `openidea-server` runs its own MCP server on the remote host, configured independently in **Settings › Agents › IDE MCP Server** while that remote window is focused. Coding agents started inside the remote window connect to it automatically; external CLI clients on the remote host can use **Copy Stdio Config** (`~/.openidea/bin/openidea-server --mcp-stdio`) or **Copy HTTP Config**, and clients on your desktop can reach it by forwarding its port in the **Ports** tool window. The remote server serves only the project open in its window: [background projects](#background-projects) are served by OpenIDEA on your desktop, and the **Background projects** group is disabled in a remote window's Settings.
 
 ## Limits
 
-- The server serves only projects open in OpenIDEA. Closing the project's window makes its tools unavailable.
+- The server serves projects open in a window and, with **Serve without a window** on, the background projects it loads. A project that is neither is not served, and closing a project's window makes its tools unavailable unless the setting serves it. Background projects exist only while OpenIDEA runs.
 - Responses are plain JSON; the server does not stream over SSE.

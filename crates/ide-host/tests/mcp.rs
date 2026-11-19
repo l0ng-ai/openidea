@@ -1,5 +1,5 @@
 use ide_core::{CancellationToken, ChangeSet, Diagnostic, IdeEvent, Pos, Range, Severity, TextChange};
-use ide_host::mcp::{FileProblems, FocusedEditor, Registry};
+use ide_host::mcp::{BackgroundProjects, FileProblems, FocusedEditor, Registry};
 use ide_host::{Host, HostConfig};
 use ide_mcp::ToolRegistry;
 use serde_json::{Value, json};
@@ -83,12 +83,63 @@ impl Harness {
     async fn json(&self, name: &str, args: Value) -> Value {
         serde_json::from_str(&self.call(name, args).await).unwrap()
     }
+    fn set(&self, key: &str, value: Value) {
+        let key = format!("mcpServer.{key}");
+        self.host.global_settings.set(ide_workspace::SettingsScope::Global, &key, value).unwrap();
+    }
+    /// The folder `inventory` next to the open project, listed to be served without a window.
+    fn serve_inventory(&self) -> PathBuf {
+        let inventory = self.root.parent().unwrap().join("inventory");
+        std::fs::create_dir_all(inventory.join("src")).unwrap();
+        std::fs::write(inventory.join("src/stock.txt"), "forty crates\n").unwrap();
+        self.set("enabled", json!(true));
+        self.set("backgroundProjects", json!("listed"));
+        self.set("backgroundProjectPaths", json!([inventory]));
+        inventory
+    }
+    /// Roots of the projects loaded without a window.
+    fn background(&self) -> Vec<PathBuf> {
+        let loaded = self.host.mcp_background.snapshot(&self.host, std::time::Instant::now());
+        loaded.into_iter().map(|project| project.root.into_path_buf()).collect()
+    }
+    /// A tool call for the project at `root`: its text, or its error.
+    async fn call_at(&self, root: &Path, name: &str, args: Value) -> Result<String, String> {
+        let (host, root, name) = (self.host.clone(), root.to_owned(), name.to_owned());
+        let call = move || Registry::new(host).call(&root, &name, &args.to_string(), CancellationToken::new());
+        tokio::task::spawn_blocking(call).await.unwrap().map_err(|e| match e {
+            ide_mcp::ToolCallError::Failed(e) | ide_mcp::ToolCallError::UnknownTool(e) => e,
+        })
+    }
+    fn server(&self) -> (ide_mcp::McpServer, PathBuf) {
+        let discovery = ide_mcp::discovery_path(self.tmp.path());
+        let registry = Arc::new(Registry::new(self.host.clone()));
+        let runtime = tokio::runtime::Handle::current();
+        (ide_mcp::McpServer::start(registry, Some(discovery.clone()), &runtime).unwrap(), discovery)
+    }
 }
 impl Drop for Harness {
     fn drop(&mut self) {
         self.host.close_project("main");
         self.host.close_project("second");
+        for root in self.background() {
+            self.host.close_project(&BackgroundProjects::key(&root));
+        }
     }
+}
+
+/// What the stdio bridge started in `folder` answers to `requests`, by request id.
+async fn bridged(discovery: &Path, folder: &Path, requests: &[Value]) -> Vec<Value> {
+    let input: String = requests.iter().map(|request| format!("{request}\n")).collect();
+    let mut output = Vec::new();
+    ide_mcp::stdio::bridge(discovery, folder, input.as_bytes(), &mut output).await.unwrap();
+    let mut replies: Vec<Value> =
+        String::from_utf8(output).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    replies.sort_by_key(|reply| reply["id"].as_i64());
+    replies
+}
+
+fn rpc(id: u32, method: &str, params: Value) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1299,4 +1350,236 @@ async fn call_hierarchy_pages_are_sorted_and_scoped() {
     assert_eq!(names(&scoped), ["main"]);
     assert_eq!(scoped["total"], 1);
     assert_eq!(scoped["root"]["name"], "price", "the root is shown whatever the paths");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_without_a_window_is_opened_by_its_first_tool_call() {
+    let h = Harness::new();
+    let inventory = h.serve_inventory();
+    let (_server, discovery) = h.server();
+    let folder = inventory.join("src");
+    let replies =
+        bridged(&discovery, &folder, &[rpc(1, "initialize", json!({})), rpc(2, "tools/list", json!({}))]).await;
+    let instructions = replies[0]["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains(inventory.to_str().unwrap()), "{instructions}");
+    let tools = replies[1]["result"]["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|tool| tool["name"] == "read_file"), "{tools:?}");
+    assert!(tools.iter().all(|tool| tool["annotations"]["readOnlyHint"] == true), "nobody trusted the folder");
+    assert!(h.background().is_empty(), "initialize and tools/list open nothing");
+    assert_eq!(h.host.projects().len(), 1);
+
+    let read = rpc(3, "tools/call", json!({"name":"read_file","arguments":{"file_path":"src/stock.txt"}}));
+    let replies = bridged(&discovery, &folder, &[read]).await;
+    assert_eq!(replies[0]["result"]["content"][0]["text"], "L1: forty crates\nL2: ", "{replies:?}");
+    assert_eq!(h.background(), std::slice::from_ref(&inventory));
+    // Loaded, it is still no project of a window.
+    assert_eq!(Registry::new(h.host.clone()).projects(), std::slice::from_ref(&h.root));
+    assert!(h.host.project("main").is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_background_projects_off_a_folder_outside_the_open_projects_is_refused() {
+    let h = Harness::new();
+    let inventory = h.root.parent().unwrap().join("inventory");
+    std::fs::create_dir_all(&inventory).unwrap();
+    let (_server, discovery) = h.server();
+    let list = rpc(1, "tools/list", json!({}));
+    let read = rpc(2, "tools/call", json!({"name":"read_file","arguments":{"file_path":"a.txt"}}));
+    for reply in bridged(&discovery, &inventory, &[list, read]).await {
+        assert_eq!(reply["error"]["code"], -32001, "{reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("isn't served in the background"), "{message}");
+    }
+    assert!(h.background().is_empty());
+    assert_eq!(h.host.projects().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tools_of_a_background_project_are_the_same_before_and_after_it_opens() {
+    let h = Harness::new();
+    let inventory = h.serve_inventory();
+    let registry = Registry::new(h.host.clone());
+    let restricted = registry.tools(&inventory).unwrap();
+    assert!(!restricted.is_empty() && restricted.iter().all(|t| t.read_only && !t.destructive));
+    assert!(h.background().is_empty(), "listing opens nothing");
+    h.call_at(&inventory, "read_file", json!({"file_path":"src/stock.txt"})).await.unwrap();
+    assert_eq!(registry.tools(&inventory).unwrap(), restricted);
+
+    // Trusted, loaded or not, it has the tools that write and run as well.
+    h.host.set_project_trust(&inventory, true, false).await.unwrap();
+    let trusted = registry.tools(&inventory).unwrap();
+    assert!(trusted.iter().any(|t| t.name == "create_new_file" && !t.read_only));
+    assert!(h.host.mcp_background.detach(&h.host, &inventory, None));
+    assert_eq!(registry.tools(&inventory).unwrap(), trusted);
+    assert!(h.background().is_empty());
+    // The project in the window lists what it did before.
+    assert!(registry.tools(&h.root).unwrap().iter().all(|t| t.read_only));
+    // A folder nothing serves has no tools.
+    assert!(registry.tools(&inventory.join("src")).is_err());
+}
+
+/// POSTs `body` to the server without naming a project.
+async fn post(server: &ide_mcp::McpServer, body: &Value) -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (port, body) = (server.port(), body.to_string());
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        server.token(),
+        body.len()
+    );
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).await.unwrap();
+    serde_json::from_str(reply.split_once("\r\n\r\n").unwrap().1).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_open_in_a_window_answers_before_any_background_project() {
+    let h = Harness::new();
+    let inventory = h.serve_inventory();
+    // A listed folder inside the open project: the window's project answers for it.
+    h.set("backgroundProjectPaths", json!([inventory, h.root.join("src")]));
+    let (server, discovery) = h.server();
+    let inside = json!({"projectPath": h.root.join("src"), "file_path": "src/b.txt"});
+    let read = rpc(1, "tools/call", json!({"name":"read_file","arguments":inside.clone()}));
+    let replies = bridged(&discovery, &inventory, &[read]).await;
+    assert_eq!(replies[0]["result"]["content"][0]["text"], "L1: needle\nL2: ", "{replies:?}");
+    assert!(h.background().is_empty());
+
+    // With a background project loaded, a request that names no folder goes to the only window.
+    h.call_at(&inventory, "read_file", json!({"file_path":"src/stock.txt"})).await.unwrap();
+    assert_eq!(h.background(), std::slice::from_ref(&inventory));
+    let unnamed = rpc(2, "tools/call", json!({"name":"read_file","arguments":{"file_path":"src/b.txt"}}));
+    let reply = post(&server, &unnamed).await;
+    assert_eq!(reply["result"]["content"][0]["text"], "L1: needle\nL2: ", "{reply}");
+    // Nor does a background project loaded inside the window's project take its folder over.
+    let nested = h.root.join("src");
+    h.call_at(&nested, "read_file", json!({"file_path":"b.txt"})).await.unwrap();
+    assert_eq!(h.background(), [inventory.clone(), nested]);
+    let read = rpc(3, "tools/call", json!({"name":"read_file","arguments":inside}));
+    let replies = bridged(&discovery, &inventory, &[read]).await;
+    assert_eq!(replies[0]["result"]["content"][0]["text"], "L1: needle\nL2: ", "{replies:?}");
+    // A second window on another root is served as before.
+    let second = h.root.parent().unwrap().join("second");
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(second.join("unique.txt"), "second project").unwrap();
+    h.host.open_project("second", &second).unwrap();
+    let read = h.call_at(&second, "read_file", json!({"file_path":"unique.txt"})).await.unwrap();
+    assert_eq!(read, "L1: second project");
+    assert_eq!(h.background().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_fed_by_a_window_say_that_a_background_project_has_none() {
+    let h = Harness::new();
+    let inventory = h.serve_inventory();
+    for (tool, args, hint) in [
+        ("get_all_open_file_paths", json!({}), ""),
+        ("get_current_file", json!({}), ""),
+        ("get_file_problems", json!({"filePath":"src/stock.txt"}), " Use check_files for diagnostics."),
+        ("get_project_problems", json!({}), " Use check_files for diagnostics."),
+    ] {
+        let error = h.call_at(&inventory, tool, args).await.unwrap_err();
+        let root = inventory.display();
+        let expected = format!("{tool} needs the project open in a window: {root} is served in the background.{hint}");
+        assert_eq!(error, expected);
+    }
+    // `check_files` answers there, and the project in the window keeps its answers.
+    let checked = h.call_at(&inventory, "check_files", json!({"filePaths":["src/stock.txt"]})).await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&checked).unwrap()["files"][0]["status"], "untrusted", "{checked}");
+    assert_eq!(h.json("get_all_open_file_paths", json!({})).await["openFiles"], json!([]));
+    assert_eq!(h.json("get_current_file", json!({})).await, json!({}));
+    assert_eq!(h.json("get_project_problems", json!({})).await["files"], json!([]));
+    let problems = h.json("get_file_problems", json!({"filePath":"src/a.txt"})).await;
+    assert_eq!(problems["errors"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_that_ask_the_user_fail_closed_in_a_background_project() {
+    let h = Harness::new();
+    let inventory = h.serve_inventory();
+    h.host.trust.decide(&inventory, true, false).unwrap();
+    for (tool, args) in [
+        ("build_project", json!({})),
+        ("run_command", json!({"name":"check","command":"true"})),
+        ("open_file_in_editor", json!({"filePath":"src/stock.txt"})),
+    ] {
+        let error = h.call_at(&inventory, tool, args).await.unwrap_err();
+        assert!(error.contains("no project window"), "{tool}: {error}");
+    }
+    assert!(h.host.processes.list().is_empty());
+    // Running without confirmation does not give `run_command` or the editor a window.
+    h.set("runWithoutConfirmation", json!(true));
+    for (tool, args) in [
+        ("run_command", json!({"name":"check","command":"true"})),
+        ("open_file_in_editor", json!({"filePath":"src/stock.txt"})),
+    ] {
+        let error = h.call_at(&inventory, tool, args).await.unwrap_err();
+        assert!(error.contains("no project window"), "{tool}: {error}");
+    }
+    assert_eq!(h.background(), [inventory]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_or_failed_call_leaves_nothing_holding_the_project() {
+    let h = Harness::new();
+    let inventory = h.serve_inventory();
+    let (host, root, cancel) = (h.host.clone(), inventory.clone(), CancellationToken::new());
+    cancel.cancel();
+    let cancelled = tokio::task::spawn_blocking(move || {
+        Registry::new(host).call(&root, "read_file", r#"{"file_path":"src/stock.txt"}"#, cancel)
+    });
+    assert!(cancelled.await.unwrap().is_err());
+    assert!(h.call_at(&inventory, "read_file", json!({"file_path":"src/gone.txt"})).await.is_err());
+    assert!(h.call_at(&inventory, "no_such_tool", json!({})).await.is_err());
+    let loaded = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now());
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].kept_open_by, None);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_started_without_confirmation_works_in_a_background_project_and_holds_it() {
+    let h = Harness::new();
+    let inventory = h.serve_inventory();
+    h.host.trust.decide(&inventory, true, false).unwrap();
+    h.set("runWithoutConfirmation", json!(true));
+    let config = ide_run::RunConfig {
+        id: "serve".into(),
+        name: "serve stock".into(),
+        kind: "shell".into(),
+        command: "sleep 30".into(),
+        args: vec![],
+        cwd: None,
+        env: Default::default(),
+        detected: false,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    ide_run::save_user_configs(&inventory, &[config]).unwrap();
+    let call = h.call_at(&inventory, "execute_run_configuration", json!({"configurationName":"serve stock"}));
+    let observe = async {
+        let run = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if let Some(run) = h.host.processes.running_in(&inventory).pop() {
+                    break run;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the run starts");
+        // The call still waits for the run: it holds the project first, the run second.
+        let held = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now()).remove(0);
+        assert_eq!(held.kept_open_by, Some(ide_host::mcp::McpBackgroundHold::Request));
+        h.host.processes.stop(run.id).unwrap();
+    };
+    let (result, ()) = tokio::join!(call, observe);
+    let result: Value = serde_json::from_str(&result.unwrap()).unwrap();
+    assert!(result["exitCode"].is_number() || result["exitCode"].is_null(), "{result}");
+    let loaded = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now()).remove(0);
+    assert_eq!(loaded.kept_open_by, None, "the call is over and the run has exited");
 }
