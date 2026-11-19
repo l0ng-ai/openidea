@@ -1267,8 +1267,8 @@ export async function executeConsole(
     running: { ...s.running, [path]: request },
     executions: { ...s.executions, [path]: { startedAt: Date.now(), statements: statements.length } },
   }));
-  onStart?.(statements);
   try {
+    onStart?.(statements);
     // IDEA brings the results up as the run starts, showing it executing.
     if (!inEditorResults()) showServiceView(RESULTS_VIEW, false);
     const pageSize = useDatabase.getState().maxRows;
