@@ -451,6 +451,14 @@ html {
   color-scheme: dark;
 }
 
+/* The letter on the Flutter plugin's widget icons: one colour in every theme, as in the plugin. */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark-hc"],
+:root[data-color-theme] {
+  --flutter-widget-fg: #231f20;
+}
+
 /* RecentProject.ColorN.Avatar Start/End — identical in Islands Light and Dark. */
 :root,
 :root[data-theme="light"],

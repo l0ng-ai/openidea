@@ -239,7 +239,7 @@
 }
 .quickLabel {
   flex: none;
-  width: 52px;
+  width: 72px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
 }
@@ -401,9 +401,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The effort is in the model popup: the button keeps the model's name readable. */
-  .chipDetail {
+  /* Details give way to the names, except the model's effort and context: the model's
+     name truncates first, since they are only shown here. */
+  .chipDetail:not(.modelDetail) {
     display: none;
+  }
+  .modelDetail {
+    flex: none;
   }
   .inlineSetting {
     display: none;

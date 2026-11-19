@@ -170,8 +170,8 @@ Each launch opens a tab in the **Run** tool window (bottom). The toolbar has **R
 
 Two actions in Find Action (also linked from the dialog) import existing configurations:
 
-- **Import Run Configurations from .vscode/launch.json**: Python and Node.js launches and attaches, plus compounds. Fixed variables such as `${workspaceFolder}` and `${env:NAME}` are replaced; entries that use `${file}`, `${input:…}` or `${command:…}` are skipped.
-- **Import Run Configurations from JetBrains (.run, .idea)**: reads `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`. Python, Django, pytest, npm, Jest, Vitest, Node.js, Shell Script, Application, JAR Application, Spring Boot, Go and compound configurations are converted; other types are skipped.
+- **Import Run Configurations from .vscode/launch.json**: Python and Node.js launches and attaches, Dart launches (Flutter apps as Flutter configurations), plus compounds. Fixed variables such as `${workspaceFolder}` and `${env:NAME}` are replaced; entries that use `${file}`, `${input:…}` or `${command:…}` are skipped.
+- **Import Run Configurations from JetBrains (.run, .idea)**: reads `.run/*.run.xml`, `.idea/runConfigurations/*.xml` and `.idea/workspace.xml`. Python, Django, pytest, npm, Jest, Vitest, Node.js, Shell Script, Application, JAR Application, Spring Boot, Go, Flutter and compound configurations are converted; other types are skipped. An entry that runs the same command as an existing configuration, such as the detected `flutter run`, is skipped.
 
 A notification says how many were imported and why others were left out.
 

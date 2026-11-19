@@ -234,6 +234,8 @@ export interface LanguagesValid {
       delegateBuild: boolean;
       /** Download dependencies' `-sources.jar` when jdtls imports the project. */
       downloadSources: boolean;
+      /** Always update snapshots: `-U` on Maven runs, `java.maven.updateSnapshots` for jdtls. */
+      updateSnapshots: boolean;
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -324,6 +326,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       activeProfiles: "",
       delegateBuild: false,
       downloadSources: false,
+      updateSnapshots: false,
     },
   },
   markdown: { previewFontSize: null },
@@ -504,6 +507,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
         delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
         downloadSources: bool(maven.downloadSources, d.java.maven.downloadSources),
+        updateSnapshots: bool(maven.updateSnapshots, d.java.maven.updateSnapshots),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },

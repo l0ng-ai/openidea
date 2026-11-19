@@ -434,6 +434,7 @@ export class EditorController implements SlotHost {
             _setEditorSwitching(false);
           }
           for (const tab of carriedUntitled) void this.ensureSlot(tab.id);
+          this.manager.releaseProjectDocuments();
           this.closeSession = null;
           this.closeCommitted = false;
           this.preparedDocuments.clear();

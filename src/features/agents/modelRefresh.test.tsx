@@ -219,7 +219,7 @@ it("refreshes an existing chat's searchable model choices and switches through i
 
   expect(modelButton).toHaveTextContent("old");
   expect(screen.getByRole("option", { name: "session-only" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(modelButton).toHaveTextContent("low");
   expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("plan");
   expect(screen.getByText("Earlier message")).toBeVisible();
   expect(screen.queryByText("catalog-only")).not.toBeInTheDocument();
@@ -324,7 +324,7 @@ it("retains cached model and effort choices after a command failure and retries 
     draft: savedDraft({ provider: "first", config: { model: "big" }, thoughtLevels: { big: { effort: "low" } } }),
   });
   render(<HomeEditor />);
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("connection lost");
   fireEvent.click(screen.getByRole("option", { name: "small" }));
@@ -351,7 +351,7 @@ it("preserves a valid remembered model and effort when discovery changes the def
   render(<HomeEditor />);
   await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.getByRole("option", { name: "new" })).toBeVisible();
   fireEvent.keyDown(document, { key: "Escape" });
@@ -471,7 +471,7 @@ it("discovers an uncached model's own settings before its first task and restore
   fireEvent.click(screen.getByRole("option", { name: "small" }));
   await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("first", false, "small"));
   expect(screen.getByText("Loading model settings…")).toHaveAttribute("role", "status");
-  expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "Model" })).not.toBeInTheDocument();
   expect(backend.create).not.toHaveBeenCalled();
   await act(async () =>
     pending.resolve(
@@ -489,17 +489,16 @@ it("discovers an uncached model's own settings before its first task and restore
     ),
   );
   expect(screen.queryByText("Loading model settings…")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("medium");
-  fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
-  fireEvent.click(screen.getByRole("option", { name: "max" }));
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("medium");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  fireEvent.click(screen.getByRole("radio", { name: "max" }));
   expect(screen.getByRole("radio", { name: "long_context" })).toBeVisible();
   fireEvent.click(screen.getByRole("radio", { name: "long_context" }));
   fireEvent.click(screen.getByRole("option", { name: "big" }));
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("high");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("high");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: "small" }));
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("max");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("max");
   expect(backend.refresh).toHaveBeenCalledTimes(2);
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
@@ -549,7 +548,7 @@ it("waits for an unrelated lookup and discovers only the latest selected model",
       ok(catalog("first", { thoughtLevels: { latest: [option("effort", "thought_level", ["medium", "max"])] } })),
     ),
   );
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("medium");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("medium");
   expect(backend.refresh).toHaveBeenCalledTimes(2);
   expect(backend.create).not.toHaveBeenCalled();
 });
@@ -607,7 +606,7 @@ it("does not leak a delayed model's levels or failure into a newer selection", a
     ),
   );
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
-  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled();

@@ -1,5 +1,5 @@
 import { writeClipboardText } from "@/platform/clipboard";
-import { useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useMemo, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { call, commands, type RecentProject, type RecentProjectGroup } from "@/platform/ipc";
 import { revealInFileManager, showInFileManagerLabel } from "@/platform/fileManager";
@@ -17,7 +17,8 @@ import {
 } from "@/ui";
 import { promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
-import { projectColorVars, projectInitials } from "@/workbench/projectColor";
+import { projectInitials } from "@/workbench/projectColor";
+import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "@/workbench/tabColors";
 import {
   createGroup,
   filterRecent,
@@ -49,12 +50,23 @@ export async function askRemoveRecent(project: RecentProject, before?: () => voi
   if (ok) await removeRecent(project.path);
 }
 
-/** Rounded-square project avatar; same colour slot and initials as the title bar's project widget. */
-export function ProjectBadge({ name, className, missing }: { name: string; className?: string; missing?: boolean }) {
+/** Rounded-square project avatar; same colour and initials as the title bar's project widget. */
+export function ProjectBadge({
+  name,
+  path,
+  className,
+  missing,
+}: {
+  name: string;
+  path: string;
+  className?: string;
+  missing?: boolean;
+}) {
+  useSyncExternalStore(subscribeTabColors, tabColorsVersion);
   return (
     <span
       className={clsx(styles.tile, missing && styles.tileMissing, className)}
-      style={projectColorVars(name)}
+      style={tabColorVars(name, tabColorOverride(path))}
       aria-hidden
     >
       {projectInitials(name)}
@@ -198,7 +210,7 @@ function RecentRow({
   const when = relativeTime(m.project.openedAtMs);
   return (
     <div className={styles.recent} title={unavailableTitle(m.project)}>
-      <ProjectBadge name={m.project.name} missing={!!m.project.missing} />
+      <ProjectBadge name={m.project.name} path={m.project.path} missing={!!m.project.missing} />
       <span className={styles.recentText}>
         <span className={styles.recentTop}>
           <HighlightedText

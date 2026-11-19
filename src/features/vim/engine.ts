@@ -14,7 +14,7 @@ import { showStatusInfo } from "@/workbench/contributions";
 import { installClipboardHooks } from "./clipboard";
 import { modeAction, modeMovedToIde, movedToIde, VIM_EDITOR_ATTR, VIM_MODE_ATTR, vimModeOf } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
-import { resolveActionId, type RcCommand } from "./rc";
+import { resolveActionId, type RcCommand, type SetOp } from "./rc";
 import { useVimSettings } from "./settings";
 import { mapFunctionTextObjects } from "./textObjects";
 
@@ -147,12 +147,33 @@ const imeHandlers = EditorView.domEventHandlers({
   },
 });
 
-/** A keydown CodeMirror didn't drop reaches Vim the usual way (observers run even after Vim's). */
+/** The last keydown and whether it arrived outside Insert mode (see `vimKeyEcho`). */
+const lastKeydown = new WeakMap<EditorView, { event: KeyboardEvent; at: number; normal: boolean }>();
+const KEY_ECHO_WINDOW_MS = 100;
+
+/** A keydown CodeMirror didn't drop reaches Vim the usual way (observers run before Vim's handler). */
 const imeKeydown = EditorView.domEventObservers({
-  keydown(_e, view) {
+  keydown(e, view) {
     imeEnded.delete(view);
+    const vimState = getCM(view)?.state.vim;
+    lastKeydown.set(view, { event: e, at: Date.now(), normal: !!vimState && !vimState.insertMode });
   },
 });
+
+/**
+ * Text input echoing a key Vim already took outside Insert mode. Some macOS input methods
+ * (Doubao in its English mode) still insert a key's character after its keydown was handled
+ * and prevented, so `j` both moved and typed `j`, and `i` entered Insert mode and typed `i`.
+ * Any later keydown replaces the record, so a key typed in the new Insert mode stays text.
+ */
+function vimKeyEcho(view: EditorView, text: string): boolean {
+  const last = lastKeydown.get(view);
+  if (!last || view.composing) return false;
+  lastKeydown.delete(view);
+  return (
+    last.normal && last.event.defaultPrevented && last.event.key === text && Date.now() - last.at <= KEY_ECHO_WINDOW_MS
+  );
+}
 
 /**
  * The key typed right after a Normal-mode composition. On WebKit (macOS, and WebKitGTK on
@@ -187,7 +208,7 @@ function imeNextKey(view: EditorView, text: string): boolean {
 
 /** Let CodeMirror apply the composing text; it is removed when the IME ends. */
 const imeInput = EditorView.inputHandler.of((view, _from, _to, text) => {
-  if (imeNextKey(view, text)) return true;
+  if (imeNextKey(view, text) || vimKeyEcho(view, text)) return true;
   const composition = imeCompositions.get(view);
   if (!composition) return false;
   const cm = getCM(view);
@@ -361,12 +382,20 @@ const vimTheme = EditorView.theme({
     padding: "2px 10px",
     minHeight: "1.6em",
     alignItems: "center",
-    fontFamily: "var(--font-mono)",
-    fontSize: "var(--fs-code)",
+    // The command line is text like the code above it: same configured font and zoom.
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    fontVariantLigatures: "none",
     background: "var(--bg-elev)",
     color: "var(--fg)",
     borderTop: "1px solid var(--border)",
   },
+  // The package writes `font-family: monospace` inline on the span that holds the prefix
+  // and the input; only an important rule beats an inline declaration, and `inherit` then
+  // picks up the panel's font.
+  ".cm-vim-panel span": { fontFamily: "inherit !important" },
+  // Ligatures follow the editor's toggle, as the scroller's pair does.
+  "&.cm-openidea-ligatures .cm-vim-panel": { fontVariantLigatures: "normal" },
   ".cm-vim-panel input": { color: "var(--fg)", fontFamily: "inherit", fontSize: "inherit" },
 });
 
@@ -489,14 +518,26 @@ function firstKey(lhs: string): string {
   return /^<[^<>]+>|^./.exec(lhs)?.[0] ?? lhs;
 }
 
-/** `set clipboard+=unnamed`: the comma list option with `add` appended once. */
-function appendedOption(name: string, add: string): string {
+/**
+ * The value `set name{op}value` gives an option, as in Vim: numbers add, subtract or multiply;
+ * comma lists append an item once (`+=`), remove it (`-=`) or put it first (`^=`).
+ */
+function adjustedOption(name: string, op: SetOp, value: string): string | number {
   const current = Vim.getOption(name);
+  // A number option (rc values arrive as text, so `set x=100` stores "100").
+  if (typeof current === "number" || (typeof current === "string" && /^-?\d+$/.test(current))) {
+    if (!/^-?\d+$/.test(value)) throw new Error(`number required: ${value}`);
+    const [a, b] = [Number(current), Number(value)];
+    return op === "+=" ? a + b : op === "-=" ? a - b : a * b;
+  }
   const items = (typeof current === "string" ? current : "")
     .split(",")
     .map((v) => v.trim())
     .filter(Boolean);
-  return items.includes(add) ? items.join(",") : [...items, add].join(",");
+  const rest = items.filter((v) => v !== value);
+  if (op === "-=") return rest.join(",");
+  if (op === "^=") return (items.includes(value) ? items : [value, ...items]).join(",");
+  return (items.includes(value) ? items : [...items, value]).join(",");
 }
 
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
@@ -510,7 +551,7 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   for (const c of commands) {
     try {
       if (c.kind === "set") {
-        const err = Vim.setOption(c.name, c.append ? appendedOption(c.name, String(c.value)) : c.value);
+        const err = Vim.setOption(c.name, c.op ? adjustedOption(c.name, c.op, String(c.value)) : c.value);
         if (err) problems.push(`set ${c.name}: ${err.message}`);
       } else if (c.kind === "map") {
         if (c.noremap) Vim.noremap(c.lhs, c.rhs, c.mode as string);

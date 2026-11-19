@@ -4,15 +4,15 @@
 //! than one place is taken from the first, in that order.
 //!
 //! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script,
-//! Application, JAR Application, Spring Boot, Go Application / Go Test and compound configurations become the
+//! Application, JAR Application, Spring Boot, Go Application / Go Test, Flutter and compound configurations become the
 //! matching kinds; other types are skipped with their type.
 //! `$PROJECT_DIR$` (and `$MODULE_DIR$`, `$MODULE_WORKING_DIR$`, `$ContentRoot$`,
 //! `$ProjectFileDir$`, all the project directory here) and `$USER_HOME$` are replaced; another
 //! path variable skips the configuration.
 
 use super::{
-    Entry, Found, SkipReason, command_name, config, env_var, normalize, path_from, project_python, relative_to,
-    working_dir,
+    Entry, Found, SkipReason, command_name, config, dart_package, env_var, flutter_run, normalize, path_from,
+    project_python, relative_to, working_dir,
 };
 use crate::RunConfig;
 use ide_core::IdeResult;
@@ -168,6 +168,7 @@ const JAR_APPLICATION: &str = "JarApplication";
 const SPRING_BOOT: &str = "SpringBootApplicationConfigurationType";
 const GO_APPLICATION: &str = "GoApplicationRunConfiguration";
 const GO_TEST: &str = "GoTestRunConfiguration";
+const FLUTTER: &str = "FlutterRunConfigurationType";
 
 type Res<T> = Result<T, SkipReason>;
 
@@ -349,6 +350,7 @@ impl Cx<'_> {
             SPRING_BOOT => self.java_app(name, c, true, &mut ignored)?,
             GO_APPLICATION => self.go_config(name, c, false, &mut ignored)?,
             GO_TEST => self.go_config(name, c, true, &mut ignored)?,
+            FLUTTER => self.flutter(name, c, &mut ignored)?,
             COMPOUND => {
                 members = c.children_named("toRun").filter_map(|t| t.attr("name")).map(str::to_owned).collect();
                 config(name, "compound", String::new(), Vec::new(), None)
@@ -434,6 +436,32 @@ impl Cx<'_> {
         params.retain(|_, value| !value.is_empty());
         rc.extras.params = params;
         self.envs(c, &mut rc);
+        Ok(rc)
+    }
+
+    /// The Flutter plugin's configuration (its `SdkFields`): `flutter run` in the entry's package,
+    /// `additionalArgs` then `--flavor=<buildFlavor>` after the entry, as the plugin passes them.
+    fn flutter(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let Some(entry) = self.path(c.option("filePath"))? else {
+            return Err(SkipReason::NothingToRun);
+        };
+        let entry = normalize(&self.root.join(entry));
+        let Some((package, _)) = dart_package(self.root, &entry) else {
+            return Err(SkipReason::MissingFile { file: "pubspec.yaml".into() });
+        };
+        let mut extra = self.words(c.option("additionalArgs"))?;
+        extra.extend(self.text(c.option("buildFlavor"))?.map(|f| format!("--flavor={f}")));
+        let mut rc = flutter_run(name, self.root, &package, &entry, extra);
+        // `<option name="envs"><map><entry key=… value=…/></map></option>`.
+        let envs = c.children_named("option").filter(|o| o.attr("name") == Some("envs"));
+        for e in envs.flat_map(|o| o.children.iter()).flat_map(|m| m.children_named("entry")) {
+            if let Some(key) = e.attr("key").filter(|k| !k.is_empty()) {
+                rc.env.insert(key.to_owned(), e.attr("value").unwrap_or_default().to_owned());
+            }
+        }
+        if self.text(c.option("attachArgs"))?.is_some() {
+            ignored.push("attachArgs".into());
+        }
         Ok(rc)
     }
 

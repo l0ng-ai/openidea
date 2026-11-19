@@ -1535,6 +1535,9 @@ pub struct MavenSettings {
     /// project (jdtls `java.maven.downloadSources`). Off: sources are fetched on demand
     /// from a library class's Download Sources banner.
     pub download_sources: bool,
+    /// Always update snapshots (`-U`): Maven checks remote repositories for newer SNAPSHOT
+    /// dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
+    pub update_snapshots: bool,
 }
 
 impl MavenSettings {

@@ -564,6 +564,7 @@ export function MavenPage() {
   const [delegateBuild, setDelegateBuild] = useSetting<boolean>("languages.java.maven.delegateBuild");
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   const [downloadSources, setDownloadSources] = useSetting<boolean>("languages.java.maven.downloadSources");
+  const [updateSnapshots, setUpdateSnapshots] = useSetting<boolean>("languages.java.maven.updateSnapshots");
   const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
   const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
   const id = useId();
@@ -581,6 +582,12 @@ export function MavenPage() {
           checked={downloadSources}
           onChange={setDownloadSources}
           hint="The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only."
+        />
+        <Toggle
+          label="Always update snapshots"
+          checked={updateSnapshots}
+          onChange={setUpdateSnapshots}
+          hint="Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U)."
         />
         <SdkRow
           k="languages.java.maven.runnerJre"

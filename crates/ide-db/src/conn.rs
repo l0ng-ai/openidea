@@ -248,6 +248,17 @@ fn legacy_eof(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Protocol(msg) if msg.starts_with("OK_Packet too short"))
 }
 
+/// A TLS handshake that failed, e.g. with a server limited to TLS 1.0/1.1. SSL mode Prefer means
+/// TLS when it works, else a plain connection, as libpq's `sslmode=prefer` and MySQL clients'
+/// PREFERRED do; sqlx only goes plain when the server offers no TLS, so such errors are retried.
+fn tls_failed(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Tls(_) => true,
+        sqlx::Error::Io(io) => io.get_ref().is_some_and(|inner| inner.is::<rustls::Error>()),
+        _ => false,
+    }
+}
+
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
     match &e {
         sqlx::Error::Database(d) => {
@@ -832,9 +843,17 @@ impl Pool {
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
-                let manager = PgManager { options: opts, init: init.clone(), timeout };
+                let mut manager = PgManager { options: opts, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
-                let first = manager.connect().await.map_err(db_err)?;
+                let first = match manager.connect().await {
+                    Err(e) if source.ssl == DbSslMode::Prefer && tls_failed(&e) => {
+                        tracing::info!("TLS handshake failed, connecting without TLS (SSL mode Prefer): {e}");
+                        manager.options = manager.options.clone().ssl_mode(PgSslMode::Disable);
+                        manager.connect().await
+                    }
+                    first => first,
+                }
+                .map_err(db_err)?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
                 Ok(Pool::Postgres(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
@@ -883,14 +902,19 @@ impl Pool {
                 }
                 let mut manager = MysqlManager { options: opts, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
-                let first = match manager.connect().await {
-                    Err(e) if legacy_eof(&e) => {
-                        manager.options = manager.options.clone().deprecate_eof(false);
-                        manager.connect().await
+                let mut first = manager.connect().await;
+                if source.ssl == DbSslMode::Prefer && first.as_ref().is_err_and(tls_failed) {
+                    if let Err(e) = &first {
+                        tracing::info!("TLS handshake failed, connecting without TLS (SSL mode Prefer): {e}");
                     }
-                    first => first,
+                    manager.options = manager.options.clone().ssl_mode(MySqlSslMode::Disabled);
+                    first = manager.connect().await;
                 }
-                .map_err(db_err)?;
+                if first.as_ref().is_err_and(legacy_eof) {
+                    manager.options = manager.options.clone().deprecate_eof(false);
+                    first = manager.connect().await;
+                }
+                let first = first.map_err(db_err)?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
                 Ok(Pool::Mysql(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
@@ -1405,6 +1429,19 @@ fn statement_columns<S: sqlx::Statement>(s: &S) -> Vec<ResultColumn> {
 mod tests {
     use super::*;
     use crate::source::{DbOptions, DbProperty};
+
+    #[test]
+    fn prefer_retries_without_tls_only_after_a_failed_handshake() {
+        use std::io;
+        // What a server limited to old TLS versions gives: rustls's alert inside the I/O error.
+        let alert = rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure);
+        assert!(tls_failed(&sqlx::Error::Io(io::Error::new(io::ErrorKind::InvalidData, alert))));
+        assert!(tls_failed(&sqlx::Error::Tls("bad config".into())));
+        // Unreachable servers, protocol errors and wrong passwords keep their error.
+        assert!(!tls_failed(&sqlx::Error::Io(io::ErrorKind::ConnectionRefused.into())));
+        assert!(!tls_failed(&sqlx::Error::Io(io::Error::new(io::ErrorKind::InvalidData, "eof"))));
+        assert!(!tls_failed(&sqlx::Error::Protocol("OK_Packet too short".into())));
+    }
 
     fn sqlserver_debug(ssl: DbSslMode) -> String {
         let mut config = tiberius::Config::new();

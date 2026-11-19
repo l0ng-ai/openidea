@@ -50,6 +50,18 @@
   background: var(--bg-island);
   color: var(--fg);
 }
+/* Only a user-chosen colour tints the tab; the default keeps the plain surface. */
+.item[data-tinted] {
+  --tab-tint-mix: color-mix(in srgb, var(--project-color) 12%, transparent);
+  background: var(--tab-tint-mix);
+}
+.item[data-tinted]:hover {
+  background: linear-gradient(var(--bg-hover), var(--bg-hover)), var(--tab-tint-mix);
+}
+.selected[data-tinted],
+.selected[data-tinted]:hover {
+  background: color-mix(in srgb, var(--project-color) 25%, var(--bg-island));
+}
 .tab {
   display: flex;
   align-items: center;

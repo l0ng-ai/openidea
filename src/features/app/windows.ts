@@ -26,6 +26,7 @@ import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";
+import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
@@ -433,6 +434,25 @@ export function windowActions(): Action[] {
       run: async ({ arg }) => {
         const label = typeof arg === "string" ? arg : useWindowGroup.getState().tabs.find((tab) => tab.current)?.label;
         if (label) await call(commands.windowGroupDetach(label));
+      },
+    },
+    {
+      id: "window.setTabColor",
+      title: "Change Project Color…",
+      category: t("app.category.window"),
+      when: "windowGrouped",
+      run: ({ arg }) => {
+        const tabs = useWindowGroup.getState().tabs;
+        const label = typeof arg === "string" ? arg : tabs.find((tab) => tab.current)?.label;
+        const tab = tabs.find((t) => t.label === label);
+        if (!tab?.root) return;
+        const rect = document.querySelector(`[data-project-tab="${CSS.escape(tab.label)}"]`)?.getBoundingClientRect();
+        openTabColorPicker({
+          root: tab.root,
+          name: tab.name,
+          x: rect ? rect.left : window.innerWidth / 2 - 110,
+          y: rect ? rect.bottom : 64,
+        });
       },
     },
     {

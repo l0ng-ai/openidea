@@ -537,18 +537,21 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
     merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
 }
 
-/// Settings › Build Tools › Maven › Automatically download sources → jdtls
-/// `java.maven.downloadSources`.
+/// Settings › Build Tools › Maven › Automatically download sources and Always update
+/// snapshots → jdtls `java.maven.downloadSources` / `java.maven.updateSnapshots`.
 pub fn configure_maven_sources(cfg: &mut LanguageServerConfig, s: &Settings) {
     if cfg.name != "jdtls" {
         return;
     }
-    let download = s.languages.java.maven.download_sources;
-    merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"maven": {"downloadSources": download}}}));
+    let m = &s.languages.java.maven;
+    merge(
+        cfg.settings.get_or_insert_with(|| json!({})),
+        json!({"java": {"maven": {"downloadSources": m.download_sources, "updateSnapshots": m.update_snapshots}}}),
+    );
 }
 
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
-/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
+/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>`, `-P <profiles>` and `-U`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     let m = &s.languages.java.maven;
     let mut out = Vec::new();
@@ -566,6 +569,9 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     }
     if let Some(profiles) = non_empty(&m.active_profiles) {
         out.extend(["-P".to_owned(), profiles.to_owned()]);
+    }
+    if m.update_snapshots {
+        out.push("-U".to_owned());
     }
     out
 }
@@ -680,17 +686,50 @@ fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Inserts `<localRepository>` right after the `<settings>` open tag.
-fn inject_local_repository(settings_xml: &str, repo: &str) -> Option<String> {
-    let start = settings_xml.find("<settings")?;
-    let end = settings_xml[start..].find('>')? + start;
-    let mut out = String::with_capacity(settings_xml.len() + repo.len() + 40);
-    out.push_str(&settings_xml[..=end]);
-    out.push_str("<localRepository>");
-    out.push_str(&xml_escape(repo));
-    out.push_str("</localRepository>");
-    out.push_str(&settings_xml[end + 1..]);
-    Some(out)
+/// `settings_xml` with `<localRepository>` set to `repo`: an existing one is replaced, else
+/// one goes right after the `<settings>` open tag. `None` without a `<settings>` element.
+pub(crate) fn with_local_repository(settings_xml: &str, repo: &str) -> Option<String> {
+    use crate::maven_profiles::{find_tag, mask_comments};
+    let masked = mask_comments(settings_xml);
+    let element = format!("<localRepository>{}</localRepository>", xml_escape(repo));
+    if let Some(start) = find_tag(&masked, "<localRepository", 0) {
+        let open_end = start + masked[start..].find('>')?;
+        let end = if masked[..open_end].ends_with('/') {
+            open_end + 1
+        } else {
+            let close = open_end + masked[open_end..].find("</localRepository")?;
+            close + masked[close..].find('>')? + 1
+        };
+        return Some(format!("{}{element}{}", &settings_xml[..start], &settings_xml[end..]));
+    }
+    let start = find_tag(&masked, "<settings", 0)?;
+    let end = start + masked[start..].find('>')?;
+    if masked[..end].ends_with('/') {
+        return None;
+    }
+    Some(format!("{}{element}{}", &settings_xml[..=end], &settings_xml[end + 1..]))
+}
+
+/// The user settings m2e (the JDTLS Maven import) reads, as a file and its text: the
+/// configured `settings.xml`, else `~/.m2/settings.xml`, with the configured local
+/// repository as its `<localRepository>`. m2e reads mirrors, servers and the local
+/// repository from this file only, never from `-Dmaven.repo.local`, which is how the IDE's
+/// own `mvn` runs get the configured repository (#1739). The file is `None` when there is none.
+pub(crate) fn m2e_user_settings(root: &Path, s: &Settings, home: &Path) -> (Option<PathBuf>, String) {
+    let m = &s.languages.java.maven;
+    let file = setting_path(root, &m.user_settings)
+        .or_else(|| Some(home.join(".m2").join("settings.xml")).filter(|f| f.is_file()));
+    let text = file
+        .as_ref()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .unwrap_or_else(|| "<settings>\n</settings>\n".into());
+    match setting_path(root, &m.local_repository) {
+        Some(repo) => {
+            let merged = with_local_repository(&text, &repo.to_string_lossy());
+            (file, merged.unwrap_or(text))
+        }
+        None => (file, text),
+    }
 }
 
 fn write_m2e_settings(root: &Path, text: &str) -> Option<PathBuf> {
@@ -705,32 +744,36 @@ fn write_m2e_settings(root: &Path, text: &str) -> Option<PathBuf> {
     Some(file)
 }
 
-/// The user settings file m2e (the JDTLS Maven import) should read: the
-/// configured `settings.xml` when it already declares `<localRepository>`,
-/// else a derived copy under `<root>/.openidea/` with the configured local
-/// repository injected. m2e resolves the local repository from the settings
-/// XML, not from `-Dmaven.repo.local`, so without this the import downloads
-/// into `~/.m2/repository` even when the IDE's own `mvn` runs honor the
-/// configured path (#1739). `None` = m2e's default applies.
+/// The user settings file m2e should read (see [`m2e_user_settings`]): the configured
+/// `settings.xml` as it is when no local repository is configured or it already names that
+/// one, else a derived copy under `<root>/.openidea/`. `None` = m2e's default applies.
 pub fn maven_user_settings_for_m2e(root: &Path, s: &Settings) -> Option<PathBuf> {
+    maven_user_settings_for_m2e_in(root, s, &crate::home_dir().unwrap_or_default())
+}
+
+pub(crate) fn maven_user_settings_for_m2e_in(root: &Path, s: &Settings, home: &Path) -> Option<PathBuf> {
     let m = &s.languages.java.maven;
-    if let Some(file) = setting_path(root, &m.user_settings) {
-        let text = std::fs::read_to_string(&file).ok()?;
-        if crate::java::xml_value(&crate::lombok::strip_xml_comments(&text), "localRepository").is_some() {
-            return Some(file);
-        }
-        if let Some(repo) = setting_path(root, &m.local_repository) {
-            let merged = inject_local_repository(&text, &repo.to_string_lossy())?;
-            if let Some(derived) = write_m2e_settings(root, &merged) {
-                return Some(derived);
-            }
-        }
-        return Some(file);
+    let configured = setting_path(root, &m.user_settings);
+    setting_path(root, &m.local_repository)?;
+    let (file, text) = m2e_user_settings(root, s, home);
+    if file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).is_some_and(|original| original == text) {
+        return file;
     }
-    let repo = setting_path(root, &m.local_repository)?;
-    let minimal =
-        format!("<settings><localRepository>{}</localRepository></settings>", xml_escape(&repo.to_string_lossy()));
-    write_m2e_settings(root, &minimal)
+    write_m2e_settings(root, &text).or(configured)
+}
+
+/// `conf/settings.xml` of the Maven installation the IDE's `mvn` runs use (Settings ›
+/// Maven home, a version manager's pin, else `mvn` on `PATH`; none with a project wrapper):
+/// `mvn` reads its mirrors and repositories as global settings, m2e only when told to.
+pub fn maven_global_settings(root: &Path, s: &Settings) -> Option<PathBuf> {
+    let mvn = match maven_command(root, s) {
+        Some(mvn) => mvn,
+        None if root.join("mvnw").is_file() || root.join("mvnw.cmd").is_file() => return None,
+        None => crate::exec::which("mvn")?,
+    };
+    let mvn = dunce::canonicalize(&mvn).unwrap_or(mvn);
+    let file = mvn.parent()?.parent()?.join("conf").join("settings.xml");
+    file.is_file().then_some(file)
 }
 
 /// TypeScript `lib` directory for the selected version; `None` = the server's bundled one.
@@ -1070,6 +1113,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         }
         cfg.command = custom.to_string_lossy().into_owned();
     }
+    // `java -jar` servers run on the project JDK when there is one, like JAR Application runs.
+    if cfg.command == "java"
+        && let Some(java) =
+            project_jdk(root, s).map(|jdk| crate::java::java_executable(&jdk.home)).filter(|j| j.is_file())
+    {
+        cfg.command = java.to_string_lossy().into_owned();
+    }
     let name = cfg.name.clone();
     let name = name.as_str();
 
@@ -1230,6 +1280,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 json!({ "settings": { "java": { "configuration": { "maven": { "userSettings": file } } } } }),
             );
         }
+        if let Some(file) = maven_global_settings(root, s) {
+            let file = file.to_string_lossy();
+            merge_init_options(
+                cfg,
+                json!({ "settings": { "java": { "configuration": { "maven": { "globalSettings": file } } } } }),
+            );
+        }
         // The JVM system property is still forwarded for JVM-level consumers,
         // but it is the settings file above that m2e honors. A
         // `-Dmaven.repo.local` the user put in their own jdtls VM options wins.
@@ -1244,6 +1301,21 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
             if !taken {
                 cfg.args.push(format!("--jvm-arg={arg}"));
             }
+        }
+    }
+
+    if name == "java-analyzer" {
+        // Unset, java-analyzer finds a JDK and the Maven local repository the way Maven does;
+        // the server's own `initializationOptions` in settings are merged later and win.
+        let mut layer = serde_json::Map::new();
+        if let Some(jdk) = project_jdk(root, s) {
+            layer.insert("jdkHome".into(), json!(jdk.home.to_string_lossy()));
+        }
+        if let Some(repo) = maven_local_repository(root, s) {
+            layer.insert("maven".into(), json!({ "localRepository": repo.to_string_lossy() }));
+        }
+        if !layer.is_empty() {
+            merge_init_options(cfg, Value::Object(layer));
         }
     }
 
@@ -1405,6 +1477,23 @@ pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Se
     out
 }
 
+/// Built-in servers given an executable path in Settings › Language Servers, as
+/// (definition's command, path): they run that executable (see [`server_launch_overrides`]).
+pub fn server_command_paths<'a>(
+    servers: impl IntoIterator<Item = &'a LanguageServerConfig>,
+    root: &Path,
+    s: &Settings,
+) -> Vec<(String, PathBuf)> {
+    servers
+        .into_iter()
+        .filter_map(|server| {
+            let command = s.language_servers.get(&server.name)?.command.trim();
+            let path = command.contains(['/', '\\']).then(|| setting_path(root, command))??;
+            Some((server.command.clone(), path))
+        })
+        .collect()
+}
+
 /// Adds the servers defined in settings to the languages they serve (to list
 /// them with the tools); disabled ones stay so they can be turned back on.
 pub fn with_custom_servers(langs: &mut [LanguageConfig], s: &Settings) {
@@ -1458,6 +1547,12 @@ pub fn server_launch_overrides(cfg: &mut LanguageServerConfig, s: &Settings) {
     }
     if let Some(args) = &ls.args {
         cfg.args = args.clone();
+    }
+    // A server shipped as a runnable jar (groovy-language-server-all.jar) runs on `java -jar`;
+    // `configure_server` then picks the project JDK's `java`.
+    if Path::new(&cfg.command).extension().is_some_and(|e| e.eq_ignore_ascii_case("jar")) {
+        let jar = std::mem::replace(&mut cfg.command, "java".to_owned());
+        cfg.args.splice(0..0, ["-jar".to_owned(), jar]);
     }
 }
 
@@ -1557,6 +1652,9 @@ fn maven_option_flag(arg: &str) -> Option<&'static str> {
         if arg.starts_with(short) || arg == long || arg.starts_with(&format!("{long}=")) {
             return Some(short);
         }
+    }
+    if arg == "-U" || arg == "--update-snapshots" {
+        return Some("-U");
     }
     arg.starts_with("-Dmaven.repo.local=").then_some("-Dmaven.repo.local")
 }
@@ -2377,8 +2475,9 @@ mod maven_linkage_tests {
             Some(json!({"java": {"maven": {"downloadSources": false, "updateSnapshots": false}}}))
         );
         settings.languages.java.maven.download_sources = true;
+        settings.languages.java.maven.update_snapshots = true;
         configure_maven_sources(&mut cfg, &settings);
-        assert_eq!(cfg.settings.unwrap()["java"]["maven"]["downloadSources"], json!(true));
+        assert_eq!(cfg.settings.unwrap()["java"]["maven"], json!({"downloadSources": true, "updateSnapshots": true}));
 
         let mut other = custom_server("kotlin", &LanguageServerSettings::default());
         configure_maven_sources(&mut other, &settings);

@@ -63,6 +63,8 @@ export interface ViewOptions extends TreeOptions {
   showMembers: boolean;
   /** Show the location of each project root beside its name. */
   showRootPaths: boolean;
+  /** Rows wider than the pane scroll sideways; off clips long names (VS Code's horizontal scrolling). */
+  horizontalScroll: boolean;
 }
 
 export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
@@ -75,6 +77,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   previewTab: false,
   showMembers: false,
   showRootPaths: true,
+  horizontalScroll: true,
 };
 
 function storedOptions(): ViewOptions {
