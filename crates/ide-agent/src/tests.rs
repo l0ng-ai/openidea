@@ -1935,7 +1935,7 @@ async fn startup_warnings_survive_replay_and_restart_without_failing_the_task() 
     let handle = mgr.task(&task.id).unwrap();
     handle.replaying.store(true, Ordering::Release);
     handle.turn_started.store(false, Ordering::Release);
-    let client = Client { task: Arc::downgrade(&handle) };
+    let client = Client::new(&handle, None);
     client.on_notification(WARNING_NOTIFICATION, json!({"message": "Project MCP config is disabled until trusted."}));
     client.on_notification(WARNING_NOTIFICATION, json!({"message": "  "}));
     client.on_notification(WARNING_NOTIFICATION, json!({}));

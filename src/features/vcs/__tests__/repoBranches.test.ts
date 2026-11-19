@@ -5,6 +5,7 @@ import {
   buildMultiRepoRows,
   commonBranches,
   currentRepoFor,
+  preferredRepoRow,
   repoColorIndex,
   repoHeadLabel,
   widgetShowsRepo,
@@ -161,6 +162,16 @@ describe("buildMultiRepoRows", () => {
       "    main",
       "    dev",
     ]);
+  });
+
+  it("selects the best match while filtering: repositories, then common branches, then one repository's", () => {
+    const picked = (query: string) => {
+      const rows = buildMultiRepoRows({ ...input, expanded: new Map(), query });
+      return summary(rows)[preferredRepoRow(rows, query)]?.trim();
+    };
+    expect(picked("dev")).toBe("dev (current)");
+    expect(picked("deps")).toBe("repo ology-dependencies [dev] c2");
+    expect(picked("fix")).toBe("ology-gateway:gw-fix");
   });
 
   it("filters repositories and branches, expands every group and lists each repository's own matches", () => {
