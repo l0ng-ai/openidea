@@ -5,6 +5,8 @@
 
 pub mod agent_secrets;
 pub mod catalogue;
+#[cfg(unix)]
+pub mod daemon;
 pub mod data_dirs;
 pub mod diagnostics_store;
 mod direnv;
@@ -523,6 +525,25 @@ impl Host {
     pub fn clear_workspace_edit_history_on_exit(&self) {
         for project in self.projects() {
             project.documents.clear_workspace_edit_history();
+        }
+    }
+
+    /// Cleans up per-connection client state when a remote window disconnects from a
+    /// persistent daemon, leaving the project, index, language servers, terminals,
+    /// runs and agent sessions running.
+    pub fn client_disconnected(&self) {
+        let windows: Vec<String> = self.projects.read().keys().cloned().collect();
+        for window in &windows {
+            self.mcp_reports.forget_window(window);
+            self.mcp_requests.forget_window(window);
+            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+                self.cancel_request(request);
+            }
+        }
+        self.terminals.detach_output();
+        self.processes.detach_output();
+        for project in self.projects() {
+            project.documents.release_client_refs();
         }
     }
 

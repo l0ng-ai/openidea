@@ -2,7 +2,7 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { RemoteSession } from "@/platform/ipc";
 import { useRemote } from "@/platform/remote";
-import { BarButton, Icon, Spinner } from "@/ui";
+import { BarButton, Icon, showContextMenu, Spinner } from "@/ui";
 import styles from "./RemoteDev.module.css";
 
 const BADGE: Record<RemoteSession["target"]["kind"], string> = {
@@ -45,6 +45,16 @@ export function RemoteStatus() {
       tooltip={tx`Project runs on ${label}`}
       aria-label={label}
       onClick={() => void executeAction("remote.connect")}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        showContextMenu(e, [
+          { kind: "action", action: "remote.connect" },
+          { kind: "action", action: "remote.reloadEnvironment" },
+          { kind: "separator" },
+          { kind: "action", action: "remote.disconnect" },
+          { kind: "action", action: "remote.stopBackend" },
+        ]);
+      }}
     >
       {label}
     </BarButton>

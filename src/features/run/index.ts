@@ -7,6 +7,7 @@ import { executeAction, executeActionOrThrow, getAction, registerActions } from 
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { projectFolder, useProject } from "@/platform/project";
+import { parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { isSameOrInside } from "@/platform/paths";
 import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
@@ -914,12 +915,18 @@ export function activate(): () => void {
       if (s.sessions !== prev.sessions) trimAgentArchive();
     }),
     onWorkflowSettingsChange(() => agentRunSettings(), trimAgentArchive),
-    useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
-      resetRuns();
-      useStackTraces.setState({ tabs: [], dialog: null });
-      if (s.project) void loadConfigs();
-    }),
+    (() => {
+      let prevLocation = projectLocation(useProject.getState().project?.root);
+      return useProject.subscribe((s, prev) => {
+        const nextLocation = projectLocation(s.project?.root);
+        if (nextLocation === prevLocation && s.project?.trusted === prev.project?.trusted) return;
+        const wasRemote = !!prevLocation && parseRemoteLocation(prevLocation) !== null;
+        prevLocation = nextLocation;
+        resetRuns(!wasRemote);
+        useStackTraces.setState({ tabs: [], dialog: null });
+        if (s.project) void loadConfigs();
+      });
+    })(),
   ];
 
   setBeforeLaunchRunner(runBeforeLaunch);

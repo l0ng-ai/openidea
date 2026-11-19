@@ -1486,6 +1486,11 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	/**
+	 *  Stops the persistent `openidea-server` daemon for this window's remote project,
+	 *  terminating its terminals, runs, language servers and agent sessions, then disconnects.
+	 */
+	remoteStopBackend: () => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_backend")),
 	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
 	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
 	/**  Records the user's trust decision for the window's remote project on this machine. */
@@ -1514,6 +1519,11 @@ export const commands = {
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
 	runApplySettings: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_apply_settings", { configs })),
+	/**
+	 *  Reattaches to a running process `id` on this host, returning its buffered output
+	 *  and configuration while streaming subsequent chunks to `on_output`.
+	 */
+	runAttach: (id: RunId, onOutput: Channel<OutputChunk>) => typedError<RunAttach_Serialize, IdeError>(__TAURI_INVOKE("run_attach", { id, onOutput })),
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
@@ -1853,6 +1863,11 @@ export const commands = {
 	 *  already registered to another app. Empty everywhere but Windows.
 	 */
 	systemProbeHotkeys: (combos: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("system_probe_hotkeys", { combos })),
+	/**
+	 *  Reattaches to an existing terminal session `id`, returning its buffered output
+	 *  and streaming subsequent chunks to `on_output`.
+	 */
+	termAttach: (id: TerminalId, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalAttach, IdeError>(__TAURI_INVOKE("term_attach", { id, cols, rows, onOutput })),
 	/**  Installed shells for the Terminal's "New Predefined Session" menu. */
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Shell used when Settings › Terminal › Shell path is empty. */
@@ -1863,6 +1878,8 @@ export const commands = {
 	 */
 	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError>(__TAURI_INVOKE("term_is_busy", { id })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
+	/**  Live terminal sessions of this window, for reattaching after a reconnect. */
+	termList: () => __TAURI_INVOKE<TerminalSessionInfo[]>("term_list"),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	/**
 	 *  Async to stay off the main thread: forking the IDE (its whole address space)
@@ -11992,6 +12009,23 @@ export type RubySettings = {
 	interpreter?: string,
 };
 
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Deserialize = {
+	info: RunInfo,
+	config: RunConfig_Deserialize,
+	buffered: OutputChunk[],
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Serialize = {
+	info: RunInfo,
+	config: RunConfig_Serialize,
+	buffered: OutputChunk[],
+};
+
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
 
 export type RunConfig_Deserialize = {
@@ -13311,6 +13345,12 @@ export type TableSort = {
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
+/**  Snapshot and live binding returned when reattaching to an existing session. */
+export type TerminalAttach = {
+	session: TerminalSessionInfo,
+	buffered: string,
+};
+
 /**  TerminalExited data exchanged with the IDE. */
 export type TerminalExited = {
 	id: string,
@@ -13338,6 +13378,16 @@ export type TerminalOptions = {
 	rows: number,
 	/**  Make zsh / bash / fish report their working directory (OSC 7) at every prompt. */
 	shellIntegration?: boolean,
+};
+
+/**  Live terminal session state for reattaching across window reconnects. */
+export type TerminalSessionInfo = {
+	id: TerminalId,
+	title: string,
+	pid: number | null,
+	cwd: string,
+	appTitle: string | null,
+	commandRunning: boolean,
 };
 
 /**  Tools › Terminal. */

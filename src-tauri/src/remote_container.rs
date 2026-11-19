@@ -172,7 +172,7 @@ fn server_args(up: &Up, bin: &str) -> Vec<String> {
     ] {
         args.extend(["-e".to_owned(), var]);
     }
-    args.extend([up.container.clone(), bin.to_owned(), "--stdio".to_owned()]);
+    args.extend([up.container.clone(), bin.to_owned(), "--attach".to_owned(), up.folder.clone()]);
     args
 }
 
@@ -253,7 +253,8 @@ mod tests {
                 "OPENIDEA_LIFECYCLE_DONE=1",
                 ID,
                 "/home/vscode/.openidea/server/1/ab/openidea-server",
-                "--stdio",
+                "--attach",
+                "/workspaces/my app",
             ]
         );
     }

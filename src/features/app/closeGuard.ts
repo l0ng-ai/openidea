@@ -15,6 +15,7 @@
 import { IpcError, commands, isCancelled, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { workflowSettings } from "@/platform/workflowSettings";
 import {
   maybeEditorService,
@@ -268,7 +269,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       await commands.windowGroupCancelClose();
       return false;
     }
-    const confirmTerminate = workflowSettings().run.confirmTerminate;
+    // Remote processes keep running on the persistent `openidea-server` daemon when the window closes.
+    const confirmTerminate = !isRemoteWindow() && workflowSettings().run.confirmTerminate;
     const ok = await decideClose(
       {
         quitting: ctx.quitting,
@@ -285,8 +287,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
       return false;
     }
-    // The window is closing. Drop the tabs now so pagehide cannot write them back.
-    forgetTabs();
+    // The window is closing. Drop the tabs now (or flush the saved session before WebView teardown).
+    if (!forgetTabs()) maybeEditorService()?.flushSession?.();
     return true;
   } catch (e) {
     undoForget();
@@ -321,7 +323,7 @@ export async function confirmLeave(
   keepUntitled = true,
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
-  const confirmTerminate = workflowSettings().run.confirmTerminate;
+  const confirmTerminate = !isRemoteWindow() && workflowSettings().run.confirmTerminate;
   // Untitled buffers follow the window into another project: they are neither counted nor
   // saved then (the window keeps them open). Closing to Welcome drops them, so they count.
   const untitled = new Set(keepUntitled ? (maybeEditorService()?.untitledDirtyDocumentIds?.() ?? []) : []);

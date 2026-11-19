@@ -60,12 +60,70 @@ pub struct ChannelMessage {
     pub data: Value,
 }
 
+/// Holds the active client [`Peer`]: once for `--stdio` ([`OnceLock<Peer>`]) or
+/// rebound across client reconnects for a persistent daemon ([`PeerSlot`]).
+pub trait PeerHandle: Send + Sync + 'static {
+    fn current(&self) -> Option<Peer>;
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>);
+    fn clear(&self, generation: u64) -> bool;
+}
+
+impl PeerHandle for OnceLock<Peer> {
+    fn current(&self) -> Option<Peer> {
+        self.get().cloned()
+    }
+
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>) {
+        let _ = self.set(peer);
+        (1, None)
+    }
+
+    fn clear(&self, _: u64) -> bool {
+        true
+    }
+}
+
+/// Rebindable client connection slot for a persistent `openidea-server` daemon.
+#[derive(Default)]
+pub struct PeerSlot {
+    inner: parking_lot::RwLock<Option<(u64, Peer)>>,
+    seq: std::sync::atomic::AtomicU64,
+}
+
+impl PeerSlot {
+    pub fn has_client(&self) -> bool {
+        self.inner.read().is_some()
+    }
+}
+
+impl PeerHandle for PeerSlot {
+    fn current(&self) -> Option<Peer> {
+        self.inner.read().as_ref().map(|(_, p)| p.clone())
+    }
+
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>) {
+        let id = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let previous = self.inner.write().replace((id, peer)).map(|(_, p)| p);
+        (id, previous)
+    }
+
+    fn clear(&self, generation: u64) -> bool {
+        let mut guard = self.inner.write();
+        if guard.as_ref().is_some_and(|(id, _)| *id == generation) {
+            *guard = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// One `invoke`: its arguments and a way to stream values back.
 pub struct Call {
     pub host: Arc<Host>,
     pub window: String,
     pub args: Value,
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
 }
 
 impl Call {
@@ -91,7 +149,7 @@ impl Call {
             .ok_or_else(|| IdeError::invalid(format!("argument {name}: expected a channel")))?;
         let peer = self.peer.clone();
         Ok(Arc::new(move |data: T| {
-            let Some(peer) = peer.get() else { return };
+            let Some(peer) = peer.current() else { return };
             match serde_json::to_value(&data) {
                 Ok(data) => {
                     let _ = peer.notify("channel", ChannelMessage { id, data });
@@ -151,23 +209,58 @@ impl Dispatcher {
 
 /// Serves `host` over `reader` / `writer` until the client disconnects.
 /// `peer` must be the one whose events `host` sends ([`event_sink`]).
-pub async fn serve<R, W>(host: Arc<Host>, dispatcher: Dispatcher, peer: Arc<OnceLock<Peer>>, reader: R, writer: W)
+pub async fn serve<R, W, P>(host: Arc<Host>, dispatcher: Dispatcher, peer: Arc<P>, reader: R, writer: W)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    P: PeerHandle,
 {
-    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone() });
+    let slot: Arc<dyn PeerHandle> = peer;
+    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: slot.clone(), shutdown: None });
     let p = Peer::connect(reader, writer, handler);
-    let _ = peer.set(p.clone());
+    let (generation, previous) = slot.install(p.clone());
+    if let Some(old) = previous {
+        old.kill();
+    }
     p.closed().await;
-    // Reports belong to the disconnected desktop, even while the host shuts down.
-    for window in host.projects.read().keys() {
-        host.mcp_reports.forget_window(window);
+    if slot.clear(generation) {
+        // Reports belong to the disconnected desktop, even while the host shuts down.
+        for window in host.projects.read().keys() {
+            host.mcp_reports.forget_window(window);
+        }
+    }
+}
+
+/// Serves one client connection against a persistent daemon `host` without shutting `host`
+/// down on EOF. A `"shutdown"` RPC cancels `shutdown` after replying so the daemon exits cleanly.
+pub async fn serve_persistent<R, W>(
+    host: Arc<Host>,
+    dispatcher: Dispatcher,
+    peer: Arc<PeerSlot>,
+    shutdown: ide_core::CancellationToken,
+    reader: R,
+    writer: W,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let slot: Arc<dyn PeerHandle> = peer;
+    let handler =
+        Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: slot.clone(), shutdown: Some(shutdown) });
+    let p = Peer::connect(reader, writer, handler);
+    let (generation, previous) = slot.install(p.clone());
+    if let Some(old) = previous {
+        old.kill();
+        host.client_disconnected();
+    }
+    p.closed().await;
+    if slot.clear(generation) {
+        host.client_disconnected();
     }
 }
 
 /// Sends a window's events to the client as `event` notifications.
-pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core::SharedSink {
+pub fn event_sink<P: PeerHandle>(peer: Arc<P>, window: Option<String>) -> ide_core::SharedSink {
     Arc::new(PeerSink { peer, window })
 }
 
@@ -218,13 +311,13 @@ pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
 }
 
 struct PeerSink {
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
     window: Option<String>,
 }
 
 impl ide_core::EventSink for PeerSink {
     fn emit(&self, event: IdeEvent) {
-        if let Some(peer) = self.peer.get() {
+        if let Some(peer) = self.peer.current() {
             let _ = peer.notify("event", EventMessage { window: self.window.clone(), event });
         }
     }
@@ -233,7 +326,8 @@ impl ide_core::EventSink for PeerSink {
 struct ServerHandler {
     host: Arc<Host>,
     dispatcher: Dispatcher,
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
+    shutdown: Option<ide_core::CancellationToken>,
 }
 
 pub fn server_info() -> ServerInfo {
@@ -254,6 +348,7 @@ impl Handler for ServerHandler {
         match method {
             "initialize" => serde_json::to_value(server_info()).map_err(internal),
             "commands" => serde_json::to_value(self.dispatcher.commands()).map_err(internal),
+            "shutdown" => Ok(Value::Null),
             "invoke" => {
                 let call: Invoke =
                     serde_json::from_value(params).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
@@ -266,6 +361,14 @@ impl Handler for ServerHandler {
                 self.host.runtime.block_on(handler(c)).map_err(error_reply)
             }
             _ => Err((codes::METHOD_NOT_FOUND, format!("unknown method {method}"))),
+        }
+    }
+
+    fn after_response(&self, method: &str) {
+        if method == "shutdown"
+            && let Some(shutdown) = &self.shutdown
+        {
+            shutdown.cancel();
         }
     }
 }
