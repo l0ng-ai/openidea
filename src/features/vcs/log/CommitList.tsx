@@ -197,7 +197,6 @@ export function CommitList() {
       ),
     };
   }, [hoverColor, linear, displayedGraph, headKeys]);
-  const maxGraphLanes = useMemo(() => rows.reduce((max, row) => Math.max(max, row.width), 1), [rows]);
   const filterBranches = useGitLog((s) => s.filters.branches);
   const currentBranch = useVcs((s) => s.branch?.head ?? null);
   // Nothing to tell apart when the log is filtered to the current branch.
@@ -598,7 +597,6 @@ export function CommitList() {
                 commit={c}
                 fileHistoryTarget={fileHistoryTarget}
                 graph={rows[v.index]}
-                maxGraphLanes={maxGraphLanes}
                 top={v.start - ROW}
                 selected={selectedSet.has(commitKey(c))}
                 head={headKeys.has(commitKey(c))}

@@ -365,11 +365,12 @@
 }
 .graph {
   flex: none;
-  /* Leave room for the subject even when the graph has many lanes. */
-  max-width: calc((100% - min(120px, 50%)) * var(--log-graph-share));
+  /* Leave room for the subject when the graph has many lanes: the lanes past it are cut off, not squeezed. */
+  max-width: calc(100% - min(120px, 50%));
   fill: none;
   stroke-width: 1.6;
   overflow: visible;
+  clip-path: inset(-50% 0);
 }
 .refs {
   flex: 0 1 auto;
