@@ -335,6 +335,7 @@ export const lspTheme = EditorView.theme({
     boxShadow: "var(--shadow-popup)",
     whiteSpace: "pre-wrap",
   },
+  ".cm-lsp-hint-spinner": { display: "inline-flex", verticalAlign: "-2px", marginRight: "var(--space-2)" },
   // The hint is the tooltip element itself: beat the editor theme's `.cm-tooltip` width.
   ".cm-tooltip.cm-lsp-hint": { maxWidth: "min(480px, 100%)" },
   ".cm-lsp-hint-error": {

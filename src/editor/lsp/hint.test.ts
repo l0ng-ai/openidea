@@ -30,6 +30,7 @@ describe("pending hints", () => {
     vi.advanceTimersByTime(PENDING_HINT_DELAY_MS);
     expect(hint()).toBe("Waiting…");
     expect(document.querySelector<HTMLElement>(".cm-lsp-hint")?.dataset.pending).toBe("true");
+    expect(document.querySelector(".cm-lsp-hint .cm-lsp-hint-spinner svg")).not.toBeNull();
     done();
     expect(hint()).toBeNull();
   });
@@ -37,6 +38,7 @@ describe("pending hints", () => {
   it("marks only progress as pending", () => {
     showHint(view, "Done");
     expect(document.querySelector<HTMLElement>(".cm-lsp-hint")?.dataset.pending).toBeUndefined();
+    expect(document.querySelector(".cm-lsp-hint-spinner")).toBeNull();
   });
 
   it("puts what the hint answers in its data attributes", () => {
