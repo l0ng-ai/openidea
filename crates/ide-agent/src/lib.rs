@@ -141,7 +141,7 @@ struct Shared {
     paths: AgentPaths,
     runtime: tokio::runtime::Handle,
     connector: Connector,
-    sink: RwLock<Option<AgentSink>>,
+    sinks: RwLock<HashMap<String, AgentSink>>,
     security: RwLock<Option<SecurityHook>>,
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     known: Arc<Mutex<HashMap<String, Known>>>,
@@ -213,10 +213,12 @@ impl Shared {
     }
 
     fn emit(&self, event: AgentEvent) {
-        let sink = self.sink.read().clone();
-        if let Some(sink) = sink {
-            sink(event);
+        let mut sinks: Vec<_> = self.sinks.read().values().cloned().collect();
+        let Some(last) = sinks.pop() else { return };
+        for sink in sinks {
+            sink(event.clone());
         }
+        last(event);
     }
 
     /// The MCP servers passed to a session, and the names of the ones off for it.
@@ -561,7 +563,7 @@ impl AgentManager {
             paths,
             runtime,
             connector,
-            sink: RwLock::new(None),
+            sinks: RwLock::new(HashMap::new()),
             security: RwLock::new(None),
             new_task_approvals: RwLock::new(None),
             known,
@@ -604,10 +606,20 @@ impl AgentManager {
 
     /// Routes events to `sink` (replacing the previous subscriber); returns every task.
     pub fn subscribe(&self, sink: AgentSink) -> Vec<AgentTask> {
-        *self.shared.sink.write() = Some(sink);
+        self.subscribe_as("", sink)
+    }
+
+    /// Routes events to `sink` too, replacing only the sink `subscriber` (a view of the project) had.
+    pub fn subscribe_as(&self, subscriber: &str, sink: AgentSink) -> Vec<AgentTask> {
+        self.shared.sinks.write().insert(subscriber.to_owned(), sink);
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().snapshot()).collect();
         tasks.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
         tasks
+    }
+
+    /// A closed view releases its sink, never the task or its agent process.
+    pub fn unsubscribe(&self, subscriber: &str) {
+        self.shared.sinks.write().remove(subscriber);
     }
 
     /// Sets the callback used to read the active command execution security policy.
@@ -2000,7 +2012,7 @@ impl AgentManager {
             // What arrived after the last save (a subagent's late updates).
             task.persist();
         }
-        *self.shared.sink.write() = None;
+        self.shared.sinks.write().clear();
     }
 }
 
