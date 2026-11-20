@@ -112,7 +112,7 @@ The debugger adds attach-only types such as **Remote JVM Debug**, **Go Remote**,
 ### Common fields
 
 - **Run on**: the local machine, or an SSH host defined in **Settings › Build, Execution, Deployment › Run Targets**. Debugging is not available on run targets. See [SSH](/en/guide/remote/ssh).
-- **Working directory**: relative to the project root; empty means the project root.
+- **Working directory**: relative to the project root; empty means the project root. It may use the path macros `$PROJECT_DIR$`, `$ContentRoot$`, `$MODULE_DIR$`, `$MODULE_WORKING_DIR$` and `$USER_HOME$`, expanded when the configuration starts, so a shared configuration works on every machine.
 - **Environment variables**: `VAR=value` pairs separated by `;`. The list button opens the **Environment Variables** dialog, where **Include system environment variables** can be turned off.
 - **Debug adapter**: which debugger **Debug** uses for this configuration (for example `debugpy`, `js-debug`, `codelldb`, `delve`).
 

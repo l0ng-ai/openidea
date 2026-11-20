@@ -192,7 +192,13 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
   if (config.module != null) return config.module;
   const main = parseJavaArgs(config.args).mainClass;
   if (!main) return null;
-  const outer = main.split("$")[0]!;
+  const modules = await classModules(main);
+  return modules.length === 1 ? modules[0]! : null;
+}
+
+/** Module directories (as {@link jvmModuleDir}) of the project's sources declaring the class `binaryName`. */
+export async function classModules(binaryName: string): Promise<string[]> {
+  const outer = binaryName.split("$")[0]!;
   const simple = outer.slice(outer.lastIndexOf(".") + 1);
   const pkg = outer.slice(0, Math.max(0, outer.lastIndexOf(".")));
   const names = [`${simple}.java`, `${simple}.kt`, ...(simple.endsWith("Kt") ? [`${simple.slice(0, -2)}.kt`] : [])];
@@ -206,7 +212,7 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
     const sourcePackage = /^\s*package\s+([\w.]+)\s*[;\r\n]/m.exec(text)?.[1] ?? "";
     if (sourcePackage === pkg) modules.add(jvmModuleDir(file.relPath, configs));
   }
-  return modules.size === 1 ? [...modules][0]! : null;
+  return [...modules];
 }
 
 export async function resolveJavaModule(config: RunConfig): Promise<string> {

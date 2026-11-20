@@ -94,6 +94,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "run.pinTabs",
   "externalDiff",
   "vcs.showDirtyDirectories",
+  "vcs.diffAsEditorTab",
   "vcs.git.inlineBlame",
   "vcs.git.inlineBlameClickable",
   "vcs.git.showBranchInProjectView",

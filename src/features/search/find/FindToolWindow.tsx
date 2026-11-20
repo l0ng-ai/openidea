@@ -95,7 +95,7 @@ export function buildFindTree(files: readonly FileMatches[], groupByDirectory = 
       const first = m.ranges[0] ?? [0, 0];
       return {
         kind: "match",
-        key: `m:${f.path}:${m.line}`,
+        key: `m:${f.path}:${m.line}:${first[0] + m.textOffset}`,
         path: f.path,
         line: m.line,
         col: first[0] + m.textOffset,

@@ -4,7 +4,15 @@
  * history, `docs.ts`) and code.quickDefinition (⌥Space, definition source popup).
  */
 import { EditorSelection } from "@codemirror/state";
-import { closeHoverTooltips, hasHoverTooltips, hoverTooltip, ViewPlugin, type EditorView } from "@codemirror/view";
+import {
+  closeHoverTooltips,
+  hasHoverTooltips,
+  hoverTooltip,
+  repositionTooltips,
+  ViewPlugin,
+  type EditorView,
+  type TooltipView,
+} from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import {
   commands,
@@ -17,6 +25,7 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { diagnosticsAt, type PlacedDiagnostic, type EditorDiagnostic } from "./diagnostics";
 import { isEmptyMarkup, languageForPath } from "./markdown";
@@ -38,6 +47,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { CONTRIBUTED_HOVER, contributedAtAll, type ContributedHover } from "@/editor/api";
 import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
 import { languageSemantics } from "./semantic";
+import { tooltipBounds } from "@/editor/core/cm/setup";
 
 let hoverRequest: RequestId | null = null;
 
@@ -74,6 +84,26 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
   }
 }
 
+function diagnosticAction(label: string, shortcut: string | undefined, run: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "cm-lsp-link-button";
+  const text = document.createElement("span");
+  text.className = "cm-lsp-diag-action-label";
+  text.textContent = label;
+  button.appendChild(text);
+  if (shortcut) {
+    const keys = document.createElement("span");
+    keys.className = "cm-lsp-diag-shortcut";
+    keys.textContent = shortcut;
+    keys.setAttribute("aria-hidden", "true");
+    button.appendChild(keys);
+  }
+  button.addEventListener("mousedown", (e) => e.preventDefault());
+  button.addEventListener("click", run);
+  return button;
+}
+
 function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLElement {
   const box = document.createElement("div");
   box.className = "cm-lsp-hover-diagnostics";
@@ -91,58 +121,39 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
     msg.className = "cm-lsp-diag-message";
     msg.textContent = d.message;
     row.appendChild(msg);
-    const meta = document.createElement("div");
-    meta.className = "cm-lsp-diag-meta";
     if (d.source) {
       const src = document.createElement("span");
       src.className = "cm-lsp-diag-source";
       src.textContent = d.source;
-      meta.appendChild(src);
+      row.appendChild(src);
     }
-    const fix = document.createElement("button");
-    fix.type = "button";
-    fix.className = "cm-lsp-link-button";
-    const keys = shortcutLabel("code.showIntentions");
-    fix.textContent = keys ? `More actions… ${keys}` : "More actions…";
-    if (d.severity !== "hint") offerQuickFix(view, meta, fix, from, to, d);
-    fix.addEventListener("mousedown", (e) => e.preventDefault());
-    fix.addEventListener("click", () => {
+    const actions = document.createElement("div");
+    actions.className = "cm-lsp-diag-actions";
+    const more = diagnosticAction(tx("More actions…"), shortcutLabel("code.showIntentions"), () => {
       view.dispatch({ selection: EditorSelection.cursor(from) });
       view.focus();
       void executeAction("code.showIntentions");
     });
-    meta.appendChild(fix);
-    row.appendChild(meta);
+    actions.appendChild(more);
+    if (d.severity !== "hint") offerQuickFix(view, more, from, to, d);
+    row.appendChild(actions);
     box.appendChild(row);
   }
   return box;
 }
 
 /** IDEA's hover link to the problem's preferred quick fix, shown once the server named one. */
-function offerQuickFix(
-  view: EditorView,
-  meta: HTMLElement,
-  before: HTMLElement,
-  from: number,
-  to: number,
-  diagnostic: EditorDiagnostic,
-) {
+function offerQuickFix(view: EditorView, before: HTMLElement, from: number, to: number, diagnostic: EditorDiagnostic) {
   const doc = view.state.doc;
   void quickFixesAt(view, from, to, diagnostic.problem)
     .then(([action]) => {
       if (!action || view.state.doc !== doc || !before.isConnected) return;
-      const link = document.createElement("button");
-      link.type = "button";
-      link.className = "cm-lsp-link-button";
-      const keys = shortcutLabel("code.applyQuickFix");
-      link.textContent = keys ? `${action.title} ${keys}` : action.title;
-      link.addEventListener("mousedown", (e) => e.preventDefault());
-      link.addEventListener("click", () => {
+      const link = diagnosticAction(action.title, shortcutLabel("code.applyQuickFix"), () => {
         view.dispatch({ effects: closeHoverTooltips });
         view.focus();
         void applyCodeAction(view, action);
       });
-      meta.insertBefore(link, before);
+      before.before(link);
     })
     .catch(() => {});
 }
@@ -186,12 +197,26 @@ export async function hoverSource(view: EditorView, pos: number) {
     create: () => {
       const dom = document.createElement("div");
       dom.className = `cm-lsp-hover ${selectableText}`;
-      if (diags.length) dom.appendChild(renderDiagnostics(view, diags));
-      if (!entry) return { dom };
+      const tooltip: TooltipView = { dom };
+      if (diags.length) {
+        dom.appendChild(renderDiagnostics(view, diags));
+        const fit = ({ left, right }: { left: number; right: number }) => {
+          const width = `${Math.max(0, Math.floor(right - left) - 2)}px`;
+          if (dom.style.getPropertyValue("--cm-diagnostic-hover-width") === width) return false;
+          dom.style.setProperty("--cm-diagnostic-hover-width", width);
+          return true;
+        };
+        tooltip.mount = () => void fit(tooltipBounds(view));
+        tooltip.positioned = (space) => {
+          if (fit(space)) repositionTooltips(view);
+        };
+      }
+      if (!entry) return tooltip;
       // The same documentation view as F1's popup: links open in place, ← / →, Edit Source.
       dom.classList.add("cm-lsp-hover-doc");
       const doc = hoverDoc(entry, () => view.dispatch({ effects: closeHoverTooltips }));
-      return { dom, destroy: mountHoverDoc(dom.appendChild(document.createElement("div")), doc) };
+      tooltip.destroy = mountHoverDoc(dom.appendChild(document.createElement("div")), doc);
+      return tooltip;
     },
   };
 }

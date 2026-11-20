@@ -2,7 +2,7 @@
 
 use ide_core::event::{LspRefreshKind, ServerStatus};
 use ide_core::{
-    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
+    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, TaskId, WorkspaceEdit,
 };
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
@@ -1324,6 +1324,36 @@ async fn initialize_and_incremental_sync() {
     assert_eq!(infos[0].status, ServerStatus::Ready);
 }
 
+/// Pyright, told the client has workspace folders, asks for its configuration and loads the
+/// workspace only after a `workspace/didChangeConfiguration`: every server gets one at startup.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_server_hears_its_configuration_once_initialized() {
+    let cases = [
+        (None, None, json!({})),
+        (Some(json!({ "flag": true })), None, json!({ "flag": true })),
+        (
+            None,
+            Some(json!({ "python": { "pythonPath": "/venv/bin/python" } })),
+            json!({ "python": { "pythonPath": "/venv/bin/python" } }),
+        ),
+        (Some(json!({ "flag": true })), Some(json!({ "other": 2 })), json!({ "flag": true, "other": 2 })),
+    ];
+    for (init, settings, expected) in cases {
+        let h = harness_configured("mock", "mk", &[("pyright", incremental_caps())], |cfg| {
+            cfg.initialization_options = init.clone().map(|v| toml::Value::try_from(v).unwrap());
+            cfg.settings = settings.clone();
+        });
+        h.open("a.mk", "x");
+        h.wait_status("pyright", ServerStatus::Ready).await;
+        let s = h.launcher.state("pyright");
+        eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+        assert_eq!(s.notified("workspace/didChangeConfiguration"), vec![json!({ "settings": expected })]);
+        let order: Vec<String> = s.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+        let at = |m: &str| order.iter().position(|n| n == m).unwrap();
+        assert!(at("initialized") < at("workspace/didChangeConfiguration"));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn full_sync_and_desync_recovery() {
     let h = harness(&[("full", json!({ "textDocumentSync": 1 })), ("inc", json!({ "textDocumentSync": 2 }))]);
@@ -2152,6 +2182,51 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     );
 }
 
+/// A server that ignores `window/workDoneProgress/cancel` (Pyright waiting on a workspace
+/// that never loads) does not keep the task "Cancelling…": it ends after a grace period,
+/// once, and later reports on the token change nothing. A server that ends it in time ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_progress_the_server_never_ends_ends_on_its_own() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |token: &str, title: &str| json!({ "token": token, "value": { "kind": "begin", "title": title, "cancellable": true } });
+    let task_of = |title: &str| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, title: t, done: false, .. } if t == title => Some(*id),
+            _ => None,
+        })
+    };
+    let ends = |task: TaskId| {
+        h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Task { id, done: true, .. } if *id == task)).count()
+    };
+    peer.notify("$/progress", begin("ignored", "Finding references")).unwrap();
+    peer.notify("$/progress", begin("honoured", "Indexing")).unwrap();
+    eventually(|| task_of("Finding references").is_some() && task_of("Indexing").is_some()).await;
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let (ignored, honoured) = (task_of("Finding references").unwrap(), task_of("Indexing").unwrap());
+
+    assert!(ide_core::task::cancel(ignored));
+    assert!(ide_core::task::cancel(honoured));
+    eventually(|| s.notified("window/workDoneProgress/cancel").len() == 2).await;
+    peer.notify("$/progress", json!({ "token": "honoured", "value": { "kind": "end" } })).unwrap();
+    eventually(|| ends(honoured) == 1).await;
+    assert_eq!(ends(ignored), 0, "the server still has its grace period");
+
+    eventually(|| ends(ignored) == 1).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    // Late reports on the token reach no task.
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "report", "message": "late" } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "end" } })).unwrap();
+    peer.notify("$/progress", begin("after", "After")).unwrap();
+    eventually(|| task_of("After").is_some()).await;
+    assert_eq!(ends(ignored), 1);
+    assert_eq!(ends(honoured), 1);
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { message: Some(m), .. } if m == "late")));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -2650,7 +2725,16 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
         .await;
     assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
     let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
-    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(
+        methods,
+        [
+            "initialized",
+            "workspace/didChangeConfiguration",
+            "textDocument/didOpen",
+            "textDocument/didChange",
+            "textDocument/didSave"
+        ]
+    );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
@@ -2706,9 +2790,9 @@ async fn settings_changes_reach_servers_without_restarts() {
     let s = h.launcher.state("mock");
     *settings.lock() = Some(json!({ "nested": { "other": 2 } }));
     h.mgr.reconfigure().await;
-    eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+    eventually(|| s.notified("workspace/didChangeConfiguration").len() == 2).await;
     assert_eq!(
-        s.notified("workspace/didChangeConfiguration")[0],
+        s.notified("workspace/didChangeConfiguration")[1],
         json!({ "settings": { "flag": true, "nested": { "deep": 1, "other": 2 } } })
     );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);

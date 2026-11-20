@@ -12,15 +12,17 @@ import { methodAt } from "../breakpoints/symbols";
 import {
   activeSession,
   addWatch,
+  evaluate,
   removeAllWatches,
   removeWatch,
   revealFrame,
   sessionSupports,
   setVariableValue,
+  useDebug,
 } from "../state";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import { classifyValue, oneLine, shownValue, sortVariables } from "../values";
-import { valueText } from "../valueText";
+import { stringText, valueText } from "../valueText";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./VariablesView.module.css";
 
@@ -42,6 +44,8 @@ interface VarNode {
   depth0: boolean;
   /** variablesReference of the parent (0 when unknown). */
   container: number;
+  /** `value` is not computed yet; `reference` holds it as a single nameless variable. */
+  lazy: boolean;
 }
 
 function fromRoot(r: VarRoot): VarNode {
@@ -58,6 +62,7 @@ function fromRoot(r: VarRoot): VarNode {
         error: null,
         depth0: true,
         container: 0,
+        lazy: false,
       };
     case "var":
       return fromVariable(r.key, r.variable, r.container ?? 0, true);
@@ -73,6 +78,7 @@ function fromRoot(r: VarRoot): VarNode {
         error: r.error,
         depth0: true,
         container: 0,
+        lazy: !!r.variable?.lazy,
       };
   }
 }
@@ -89,6 +95,18 @@ function fromVariable(key: string, v: Variable, container: number, depth0 = fals
     error: null,
     depth0,
     container,
+    lazy: !!v.lazy,
+  };
+}
+
+function toVariable(n: VarNode): Variable {
+  return {
+    name: n.name,
+    value: n.value,
+    typeName: n.typeName,
+    variablesReference: n.reference,
+    evaluateName: n.evaluateName,
+    lazy: n.lazy,
   };
 }
 
@@ -104,6 +122,7 @@ function message(key: string, text: string): VarNode {
     error: null,
     depth0: false,
     container: 0,
+    lazy: false,
   };
 }
 
@@ -138,6 +157,37 @@ export class ValueChanges {
   }
 }
 
+/** Per stop (`gen`): loaded children by parent key, and lazy rows whose value was computed. */
+interface ViewCache {
+  gen: number;
+  map: Map<string, VarNode[]>;
+  resolved: Map<string, VarNode>;
+}
+
+const emptyCache = (gen: number): ViewCache => ({ gen, map: new Map(), resolved: new Map() });
+
+/** `c` for stop `gen` with `next` in place of the row of the same key. */
+function withResolved(c: ViewCache, gen: number, next: VarNode): ViewCache {
+  const base = c.gen === gen ? c : emptyCache(gen);
+  const map = new Map(base.map);
+  for (const [parent, list] of map)
+    if (list.some((n) => n.key === next.key))
+      map.set(
+        parent,
+        list.map((n) => (n.key === next.key ? next : n)),
+      );
+  return { gen, map, resolved: new Map(base.resolved).set(next.key, next) };
+}
+
+/** A lazy row with its value computed; a failure shows on the row. */
+function computeLazy(session: DebugSessionId, node: VarNode): Promise<VarNode> {
+  return call(commands.debugResolveVariable(session, toVariable(node))).then(
+    // Still lazy: the adapter gave no single value, so the row opens as an ordinary one.
+    (v) => ({ ...fromVariable(node.key, v, node.container, node.depth0), kind: node.kind, lazy: false }),
+    (e) => ({ ...node, lazy: false, reference: 0, error: e instanceof Error ? e.message : String(e) }),
+  );
+}
+
 const tracksChanges = (n: VarNode) => (n.kind === "var" || n.kind === "watch") && !n.error;
 
 /** Shared by every view: the variables pane remounts while the program runs between stops. */
@@ -168,13 +218,22 @@ export function VariablesView({
   className,
   ...aria
 }: VariablesViewProps) {
-  const [cache, setCache] = useState<{ gen: number; map: Map<string, VarNode[]> }>({ gen: generation, map: new Map() });
-  const children = cache.gen === generation ? cache.map : null;
+  const [cache, setCache] = useState<ViewCache>(() => emptyCache(generation));
+  const current = cache.gen === generation ? cache : null;
+  const children = current?.map ?? null;
+  const resolved = current?.resolved ?? null;
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(defaultExpanded));
   const loading = useRef(new Set<string>());
   const tree = useRef<TreeHandle>(null);
 
-  const nodes = useMemo(() => roots.map(fromRoot), [roots]);
+  const nodes = useMemo(
+    () =>
+      roots.map((r) => {
+        const n = fromRoot(r);
+        return resolved?.get(n.key) ?? n;
+      }),
+    [roots, resolved],
+  );
   const byKey = useMemo(() => {
     const m = new Map<string, VarNode>();
     const walk = (list: readonly VarNode[]) =>
@@ -200,32 +259,52 @@ export function VariablesView({
     if (autoFocus) tree.current?.focus();
   }, [autoFocus]);
 
+  const resolve = useCallback(
+    async (node: VarNode): Promise<VarNode> => {
+      if (session == null || !node.lazy) return node;
+      const next = await computeLazy(session, node);
+      setCache((c) => withResolved(c, generation, next));
+      return next;
+    },
+    [session, generation],
+  );
+
   const load = useCallback(
-    async (node: VarNode) => {
-      if (session == null || node.reference <= 0) return;
-      const tag = `${generation}:${node.key}`;
+    async (opened: VarNode) => {
+      if (session == null || opened.reference <= 0) return;
+      const { key } = opened;
+      const tag = `${generation}:${key}`;
       if (loading.current.has(tag)) return;
       loading.current.add(tag);
-      let list: VarNode[];
+      let list: VarNode[] = [];
+      let computed: VarNode | null = null;
       try {
-        const raw = await call(commands.debugVariables(session, node.reference));
-        const vars = workflowSettings().debugger.sortValues ? sortVariables(raw) : raw;
-        const seen = new Map<string, number>();
-        list = vars.map((v) => {
-          const n = (seen.get(v.name) ?? 0) + 1;
-          seen.set(v.name, n);
-          return fromVariable(`${node.key}/${v.name}${n > 1 ? `#${n}` : ""}`, v, node.reference);
-        });
-        if (!list.length) list = [message(`${node.key}/\u0000empty`, "No variables")];
+        // Opening a lazy row computes its value first: its own reference holds only that value.
+        if (opened.lazy) computed = await computeLazy(session, opened);
+        const node = computed ?? opened;
+        if (node.reference > 0) {
+          const raw = await call(commands.debugVariables(session, node.reference));
+          const vars = workflowSettings().debugger.sortValues ? sortVariables(raw) : raw;
+          const seen = new Map<string, number>();
+          list = vars.map((v) => {
+            const n = (seen.get(v.name) ?? 0) + 1;
+            seen.set(v.name, n);
+            return fromVariable(`${key}/${v.name}${n > 1 ? `#${n}` : ""}`, v, node.reference);
+          });
+          if (!list.length) list = [message(`${key}/\u0000empty`, "No variables")];
+        }
       } catch (e) {
-        list = [message(`${node.key}/\u0000error`, e instanceof Error ? e.message : String(e))];
+        list = [message(`${key}/\u0000error`, e instanceof Error ? e.message : String(e))];
       } finally {
         loading.current.delete(tag);
       }
       setCache((c) => {
-        const map = new Map(c.gen === generation ? c.map : []);
-        map.set(node.key, list);
-        return { gen: generation, map };
+        const base = computed
+          ? withResolved(c, generation, computed)
+          : c.gen === generation
+            ? c
+            : emptyCache(generation);
+        return { ...base, map: new Map(base.map).set(key, list) };
       });
     },
     [session, generation],
@@ -280,9 +359,17 @@ export function VariablesView({
   const canWatch = (n: VarNode) =>
     session != null && n.kind === "var" && n.container > 0 && sessionSupports("dataBreakpoints");
 
-  const copyValue = async (node: VarNode) => {
+  const copyValue = async (row: VarNode) => {
+    const node = await resolve(row);
     let text = node.value;
-    if (session != null && node.reference > 0) {
+    const paused = session != null ? useDebug.getState().sessions[session] : undefined;
+    if (paused?.status === "paused" && node.reference <= 0 && node.evaluateName) {
+      // A long string arrives cut short; evaluating it for the clipboard returns all of it.
+      text = await evaluate(node.evaluateName, "clipboard", paused).then(
+        (v) => v.value || text,
+        () => text,
+      );
+    } else if (session != null && node.reference > 0) {
       try {
         text = await valueText(node, (ref) => call(commands.debugVariables(session, ref)));
       } catch (e) {
@@ -379,19 +466,48 @@ export function VariablesView({
               }}
             />
           ) : (
-            <VarRow node={n} changed={isChanged(n)} onShowValue={setValuePopup} />
+            <VarRow node={n} changed={isChanged(n)} onShowValue={setValuePopup} onResolve={(n) => void resolve(n)} />
           )
         }
       />
-      {valuePopup && <ValueDialog node={valuePopup} onClose={() => setValuePopup(null)} />}
+      {valuePopup && <ValueDialog node={valuePopup} session={session} onClose={() => setValuePopup(null)} />}
     </div>
   );
 }
 
-function ValueDialog({ node, onClose }: { node: VarNode; onClose: () => void }) {
+/**
+ * View: the whole value in a popup that a click outside closes. Adapters cut long strings
+ * short in variables; the value is evaluated again as for copying (`clipboard`), which
+ * returns it in full, and a string shows as its text, line breaks included.
+ */
+function ValueDialog({
+  node,
+  session,
+  onClose,
+}: {
+  node: VarNode;
+  session: DebugSessionId | null;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(node.value);
+  useEffect(() => {
+    const s = session != null ? useDebug.getState().sessions[session] : undefined;
+    if (!s || s.status !== "paused" || !node.evaluateName || node.reference > 0) return;
+    let live = true;
+    evaluate(node.evaluateName, "clipboard", s).then(
+      (v) => live && v.value && setValue(v.value),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [node, session]);
+  const text = classifyValue(value, node.typeName) === "string" ? stringText(value) : value;
   return (
     <Dialog
       open
+      popup
+      dismissOnBackdrop
       onClose={onClose}
       title={`${node.name}${node.typeName ? ` {${node.typeName}}` : ""}`}
       width={720}
@@ -401,7 +517,7 @@ function ValueDialog({ node, onClose }: { node: VarNode; onClose: () => void }) 
       aria-label={formatMessage(tx("Value of {label}"), { label: node.name })}
     >
       <div className={styles.valuePopupContent}>
-        <pre className={styles.valuePopupValue}>{node.value}</pre>
+        <pre className={styles.valuePopupValue}>{text}</pre>
       </div>
     </Dialog>
   );
@@ -471,10 +587,12 @@ function VarRow({
   node,
   changed,
   onShowValue,
+  onResolve,
 }: {
   node: VarNode;
   changed: boolean;
   onShowValue: (node: VarNode) => void;
+  onResolve: (node: VarNode) => void;
 }) {
   const valueRef = useRef<HTMLSpanElement>(null);
   const [overflow, setOverflow] = useState(false);
@@ -537,7 +655,21 @@ function VarRow({
             <span ref={valueRef} className={clsx(styles.value, kind && styles[kind])} title={node.value}>
               {oneLine(shown.text)}
             </span>
-            {overflow && (
+            {node.lazy && (
+              <button
+                type="button"
+                className={styles.showValue}
+                title={tx("Compute the value")}
+                aria-label={tx("Compute the value")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onResolve(node);
+                }}
+              >
+                (…)
+              </button>
+            )}
+            {!node.lazy && overflow && (
               <button
                 type="button"
                 className={styles.showValue}

@@ -16,10 +16,10 @@ import { notifications } from "@/workbench/contributions";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { Button, Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, IconButton, Input, List, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, FormGroup, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
-import { useLabelMatch, useSetting } from "../components/context";
+import { useLabelMatch, useSearchQuery, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
   type Antialiasing,
@@ -36,6 +36,7 @@ import {
   type PresentationAssistantPosition,
   type PresentationAssistantSize,
 } from "../model/behaviorSchema";
+import { labelMatches } from "../model/pages";
 import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
@@ -825,59 +826,57 @@ const DISPLAY_OPTIONS: SelectOption<NotificationDisplay>[] = [
   { value: "none", label: "No popup" },
 ];
 
-function NotificationGroupsTable() {
+function NotificationGroups() {
   const [groups, setGroups] = useSetting<Record<string, NotificationGroupValid>>("notifications.groups");
-  const update = (id: string, patch: Partial<NotificationGroupValid>) => {
-    const next = { ...(groups[id] ?? { display: "balloon", log: true }), ...patch };
+  const query = useSearchQuery();
+  const [selection, setSelection] = useState({ query: "", index: 0 });
+  const matched = NOTIFICATION_GROUPS.findIndex((group) => labelMatches(group.title, query));
+  const index = matched >= 0 && query !== selection.query ? matched : selection.index;
+  const { id, title } = NOTIFICATION_GROUPS[index]!;
+  const value = groups[id] ?? { display: "balloon", log: true };
+  const update = (patch: Partial<NotificationGroupValid>) => {
+    const next = { ...value, ...patch };
     const all = { ...groups };
-    // Defaults are not stored.
     if (next.display === "balloon" && next.log) delete all[id];
     else all[id] = next;
     setGroups(all);
   };
+
   return (
-    <table className={styles.table} aria-label={tx("Notification groups")}>
-      <thead>
-        <tr>
-          <th>
-            <T>Group</T>
-          </th>
-          <th>
-            <T>Popup type</T>
-          </th>
-          <th>
-            <T>Show in tool window</T>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {NOTIFICATION_GROUPS.map((g) => {
-          const v = groups[g.id] ?? { display: "balloon", log: true };
-          return (
-            <tr key={g.id}>
-              <td>
-                <SearchLabel text={g.title} />
-              </td>
-              <td>
-                <Select<NotificationDisplay>
-                  value={v.display}
-                  options={DISPLAY_OPTIONS}
-                  onChange={(display) => update(g.id, { display })}
-                  aria-label={tx`${g.title} popup type`}
-                />
-              </td>
-              <td className={styles.center}>
-                <Checkbox
-                  checked={v.log}
-                  onChange={(log) => update(g.id, { log })}
-                  aria-label={tx`Show ${g.title} in tool window`}
-                />
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className={styles.notificationGroups}>
+      <List
+        className={styles.notificationList}
+        aria-label={tx("Notification groups")}
+        items={NOTIFICATION_GROUPS}
+        getKey={(group) => group.id}
+        activeIndex={index}
+        onActiveChange={(index) => setSelection({ query, index })}
+        renderItem={(group) => (
+          <span title={tx(group.title)} className={styles.notificationGroupLabel}>
+            <SearchLabel text={group.title} />
+          </span>
+        )}
+      />
+      <section className={styles.notificationDetails} aria-label={tx(title)}>
+        <h3 className={styles.notificationTitle}>
+          <SearchLabel text={title} />
+        </h3>
+        <Row label="Popup type" className={styles.notificationPopupRow}>
+          <Select<NotificationDisplay>
+            value={value.display}
+            options={DISPLAY_OPTIONS}
+            onChange={(display) => update({ display })}
+            aria-label={tx`${title} popup type`}
+          />
+        </Row>
+        <Checkbox
+          checked={value.log}
+          onChange={(log) => update({ log })}
+          label={<SearchLabel text="Show in tool window" />}
+          aria-label={tx`Show ${title} in tool window`}
+        />
+      </section>
+    </div>
   );
 }
 
@@ -1212,6 +1211,17 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "Groups",
+        options: [
+          {
+            kind: "custom",
+            label: "Popup type",
+            keywords: [...NOTIFICATION_GROUPS.map((g) => g.title), "Sticky balloon", "No popup", "Show in tool window"],
+            component: NotificationGroups,
+          },
+        ],
+      },
+      {
         title: "Terminal",
         options: [
           {
@@ -1233,17 +1243,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             max: 86_400,
             integer: true,
             unit: "seconds",
-          },
-        ],
-      },
-      {
-        title: "Groups",
-        options: [
-          {
-            kind: "custom",
-            label: "Popup type",
-            keywords: [...NOTIFICATION_GROUPS.map((g) => g.title), "Sticky balloon", "No popup", "Show in tool window"],
-            component: NotificationGroupsTable,
           },
         ],
       },

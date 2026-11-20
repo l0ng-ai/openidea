@@ -26,6 +26,7 @@ import {
   selectCommit,
   selectedCommits,
   selectGitTab,
+  setLogFilters,
   toggleCommitSelection,
   toggleRepository,
   useGitLog,
@@ -101,6 +102,34 @@ describe("multi-root Git log", () => {
     expect(commitFileDiffData(back, { path: "main.ts", oldPath: null, kind: "added" }).path).toBe(
       "/project/back/main.ts",
     );
+  });
+
+  it("keeps a recent commit behind an older incoming branch visible when clearing the repository filter", async () => {
+    const [busy, recent] = useVcs.getState().roots;
+    const data = {
+      [busy!]: Array.from({ length: PAGE + 5 }, (_, i) => commit(`activity-${i}`, 10_000 - i)),
+      [recent!]: [{ ...commit("incoming", 8_000), logMergeTimeMs: 11_000 }, commit("recent", 11_000)],
+    };
+    log.mockImplementation(async (repo: string, q: LogQuery) => ({
+      status: "ok",
+      data: data[repo]!.slice(q.skip, q.skip + q.limit),
+    }));
+    const ids = () => useGitLog.getState().commits.map((c) => c.id);
+    await reloadLog();
+    expect(ids().slice(0, 3)).toEqual(["incoming", "recent", "activity-0"]);
+
+    setLogFilters({ repositories: [recent!] });
+    await loadMore();
+    expect(ids()).toEqual(["incoming", "recent"]);
+
+    setLogFilters({ repositories: [] });
+    await loadMore();
+    expect(ids().slice(0, 3)).toEqual(["incoming", "recent", "activity-0"]);
+    const firstPage = ids();
+    await loadMore();
+    expect(ids().slice(0, PAGE)).toEqual(firstPage);
+    expect(ids()).toHaveLength(PAGE + 7);
+    expect(new Set(ids()).size).toBe(PAGE + 7);
   });
 
   it("pages each root by the number of its emitted commits, without gaps or duplicates", async () => {

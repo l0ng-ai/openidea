@@ -33,6 +33,10 @@ export const commands = {
 "group" | 
 /**  What the last turn changed, against the checkout as that turn started. */
 "lastTurn" | null) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task, view })),
+	/**  Installs the exact version offered if the selected installation still matches. */
+	agentCliUpdate: (provider: string, offer: AgentCliOffer, request: RequestId) => typedError<AgentCliUpdateResult, IdeError>(__TAURI_INVOKE("agent_cli_update", { provider, offer, request })),
+	/**  Checks the selected installation without modifying it. */
+	agentCliUpdateCheck: (provider: string, request: RequestId) => typedError<AgentCliUpdateResult, IdeError>(__TAURI_INVOKE("agent_cli_update_check", { provider, request })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
@@ -146,11 +150,16 @@ export const commands = {
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
-	/**  Streams the project's agent events to this window; returns every task. */
-	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
+	/**
+	 *  Streams the project's agent events to `subscriber`, one of the project's windows (a remote
+	 *  host sees them all as one `window`); returns every task.
+	 */
+	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>, subscriber: string) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent, subscriber })),
 	agentUnarchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unarchive", { task })),
 	/**  Drops a queued message and returns it (to edit it). */
 	agentUnqueue: (task: string, queued: string) => typedError<AgentQueued, IdeError>(__TAURI_INVOKE("agent_unqueue", { task, queued })),
+	/**  Stops the events of a window that closed. */
+	agentUnsubscribe: (subscriber: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unsubscribe", { subscriber })),
 	/**  Locate Duplicates over the files of `scope`. */
 	analysisLocateDuplicates: (request: RequestId, scope: SearchScope, options: DuplicateOptions) => typedError<DuplicatesReport, IdeError>(__TAURI_INVOKE("analysis_locate_duplicates", { request, scope, options })),
 	/**  Devices `adb` knows about, online ones first. */
@@ -365,9 +374,9 @@ export const commands = {
 	/**  Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16). */
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
-	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
+	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
 	/**  Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`. */
-	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
+	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
 	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
 	/**  Force Step Over: step over with every breakpoint suspended until the step ends. */
 	debugForceStepOver: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_force_step_over", { session, threadId })),
@@ -422,6 +431,7 @@ export const commands = {
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	debugResolveVariable: (session: DebugSessionId, variable: Variable_Deserialize) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_resolve_variable", { session, variable })),
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
@@ -437,7 +447,7 @@ export const commands = {
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
-	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
+	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
 	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
@@ -463,7 +473,7 @@ export const commands = {
 { kind: "finished" } | null, IdeError>(__TAURI_INVOKE("debug_stream_trace_abort", { session })),
 	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
 	debugUnityProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_unity_processes")),
-	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
+	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable_Serialize[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
 	dependencyVersions: (doc: DocId, offset: number | null, request: RequestId) => typedError<DependencyVersions[], IdeError>(__TAURI_INVOKE("dependency_versions", { doc, offset, request })),
 	deployCompare: (path: IpcPath, server: string | null, request: RequestId) => typedError<SyncEntry[], IdeError>(__TAURI_INVOKE("deploy_compare", { path, server, request })),
 	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
@@ -529,7 +539,7 @@ export const commands = {
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
-	 *  visibility), tree-sitter otherwise.
+	 *  visibility and type-alias kinds), tree-sitter otherwise.
 	 *  Tree-sitter answers come from the per-document tree cache (incremental
 	 *  re-parse); large documents get no syntax structure.
 	 */
@@ -1932,6 +1942,12 @@ export const commands = {
 	/**  Focuses the next / previous window (⌘` / ⇧⌘`). */
 	windowCycle: (forward: boolean) => __TAURI_INVOKE<void>("window_cycle", { forward }),
 	/**
+	 *  Drags `paths` (local files and folders) out of `window` while the primary mouse button is
+	 *  still down, so the app they are dropped on copies them (#2867). Resolves when the drag ends,
+	 *  with whether a target took the files.
+	 */
+	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
 	 *  Linux sets the urgency hint). A focused window is never flashed: the user is already
@@ -2199,6 +2215,18 @@ export type AgentChangesView =
 "group" | 
 /**  What the last turn changed, against the checkout as that turn started. */
 "lastTurn";
+
+export type AgentCliOffer = {
+	current: string,
+	latest: string,
+	prefix: string,
+};
+
+export type AgentCliUpdateResult = {
+	status: "available",
+} & AgentCliOffer | {
+	status: "permission",
+} & AgentCliOffer | ({ status: "current"; current: string }) & { code?: never } | ({ status: "channel"; current: string }) & { code?: never } | ({ status: "updated"; current: string }) & { code?: never } | ({ status: "unmanaged" }) & { code?: never; current?: never } | ({ status: "error"; code: string }) & { current?: never };
 
 export type AgentCommand = {
 	/**  Without the leading `/`. */
@@ -2556,6 +2584,8 @@ export type AgentProvider = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  The built-in command can be owned by a global npm package. */
+	canCheckCliUpdate?: boolean,
 	/**  Environment variables it starts with (from its agent file). */
 	env: { [key in string]: string },
 	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
@@ -3820,6 +3850,8 @@ export type Commit_Deserialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -3849,6 +3881,8 @@ export type Commit_Serialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -5611,21 +5645,34 @@ export type EditorGeneralSettings = {
 	richTextCopy?: boolean,
 };
 
-/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
 export type EditorLaunch = EditorLaunch_Serialize | EditorLaunch_Deserialize;
 
-/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
 export type EditorLaunch_Deserialize = {
-	path: IpcPath,
+	path?: IpcPath | null,
+	/**  The tab's editor input, as JSON. */
+	input?: string | null,
 	line?: number | null,
 	column?: number | null,
 	endLine?: number | null,
 	endColumn?: number | null,
 };
 
-/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
 export type EditorLaunch_Serialize = {
-	path: IpcPath,
+	path?: IpcPath | null,
+	/**  The tab's editor input, as JSON. */
+	input?: string | null,
 	line?: number | null,
 	column?: number | null,
 	endLine?: number | null,
@@ -6267,9 +6314,12 @@ export type FoldRange = {
 	kind: FoldKind,
 };
 
+export type FoldingOutlineVisibility = "hover" | "always";
+
 /**  Editor › General › Code Folding. */
 export type FoldingSettings = {
 	showOutline?: boolean,
+	outlineVisibility?: FoldingOutlineVisibility,
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
@@ -7079,6 +7129,8 @@ version: number } |
 { type: "docDiskConflict"; doc: DocId; path: string } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**  Files the edit renamed, as the edit named them: editors open on them follow. */
+moves: FileMove[]; 
 /**
  *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
  *  not announced as one.
@@ -8114,7 +8166,10 @@ export type LineMarkerInfo = {
 export type LineMatch = {
 	/**  0-based line. */
 	line: number,
-	/**  Line text, truncated around the match for very long lines. */
+	/**
+	 *  Line text, truncated around the matches for very long lines: such a line comes as one
+	 *  `LineMatch` per window, so the same `line` can repeat.
+	 */
 	text: string,
 	/**  UTF-16 column ranges within `text`. */
 	ranges: ([number, number])[],
@@ -12337,13 +12392,34 @@ export type UpdateStatus = {
 	checking: boolean,
 };
 
-export type Variable = {
+export type Variable = Variable_Serialize | Variable_Deserialize;
+
+export type Variable_Deserialize = {
 	name: string,
 	value: string,
 	typeName: string | null,
 	/**  > 0 when expandable. */
 	variablesReference: number,
 	evaluateName: string | null,
+	/**
+	 *  `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+	 *  `variables` returns for `variables_reference` holds the value and its children.
+	 */
+	lazy?: boolean,
+};
+
+export type Variable_Serialize = {
+	name: string,
+	value: string,
+	typeName: string | null,
+	/**  > 0 when expandable. */
+	variablesReference: number,
+	evaluateName: string | null,
+	/**
+	 *  `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+	 *  `variables` returns for `variables_reference` holds the value and its children.
+	 */
+	lazy?: boolean,
 };
 
 /**  Version Control › Confirmation. */
@@ -12385,6 +12461,8 @@ export type VcsRoot = {
 export type VcsSettings = {
 	/**  Colour folders that contain changed files (project tree, tabs). */
 	showDirtyDirectories?: boolean,
+	/**  Diffs the user opens show in an editor tab; off, in a separate window. */
+	diffAsEditorTab?: boolean,
 	/**  Stop file history (Show History) after `history_limit` commits. */
 	limitHistory?: boolean,
 	historyLimit?: number,

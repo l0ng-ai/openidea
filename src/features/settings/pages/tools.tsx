@@ -16,7 +16,7 @@ import {
   type ExternalToolValid,
 } from "@/platform/workflowSettings";
 import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from "@/ui";
-import { NumberInput, Row, SearchLabel, Section, Select, SettingSelect } from "../components/Form";
+import { NumberInput, Row, SearchLabel, Section, Select, SettingSelect, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
 import { MirrorPrefixRow } from "./DownloadSources";
@@ -344,40 +344,75 @@ function TerminalFont() {
 // ---------------------------------------------------------------------------
 // Actions on Save
 
-function ActionsOnSave() {
+const SAVE_ACTIONS = [
+  {
+    k: "editor.formatOnSave",
+    label: "Reformat code",
+    hint: "Formats the whole file with the language server's formatter.",
+  },
+  {
+    k: "actionsOnSave.optimizeImports",
+    label: "Optimize imports",
+    hint: "Runs the language server's Organize Imports action.",
+  },
+  {
+    k: "actionsOnSave.cleanup",
+    label: "Run code cleanup",
+    hint: "Applies the language server's fix-all action (source.fixAll).",
+  },
+];
+
+function SaveActionRow({ k, label, hint }: (typeof SAVE_ACTIONS)[number]) {
+  const [enabled, setEnabled] = useSetting<boolean>(k);
   return (
-    <>
-      <BoundToggle
-        k="editor.formatOnSave"
-        label="Reformat code"
-        hint="Formats the whole file with the language server's formatter."
-      />
-      <BoundToggle
-        k="actionsOnSave.optimizeImports"
-        label="Optimize imports"
-        hint="Runs the language server's Organize Imports action."
-      />
-      <BoundToggle
-        k="actionsOnSave.cleanup"
-        label="Run code cleanup"
-        hint="Applies the language server's fix-all action (source.fixAll)."
-      />
-    </>
+    <tr>
+      <td>
+        <Toggle label={label} hint={hint} checked={!!enabled} onChange={setEnabled} />
+      </td>
+      <td>
+        {enabled && (
+          <div className={styles.saveActivation}>
+            <T>Save or Save All</T>
+          </div>
+        )}
+      </td>
+    </tr>
   );
 }
 
-function ActionsOnSaveNote() {
+function ActionsOnSave() {
   return (
-    <div className={styles.note}>
-      <T>
-        {
-          "Actions run when a file is saved with Save (⌘S) or Save All. Trailing spaces and the final line break are configured in"
-        }
-      </T>{" "}
-      <PageLink page="editor.general">
-        <T>Editor › General</T>
-      </PageLink>
-      .
+    <div className={styles.saveActions}>
+      <div className={styles.tableBox}>
+        <table className={clsx(styles.table, styles.saveActionsTable)} aria-label={tx("Actions on Save")}>
+          <colgroup>
+            <col />
+            <col className={styles.saveActivationColumn} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">
+                <T>Action</T>
+              </th>
+              <th scope="col">
+                <T>Activated on</T>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {SAVE_ACTIONS.map((action) => (
+              <SaveActionRow key={action.k} {...action} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className={styles.note}>
+        <T>Trailing spaces and the final line break are configured in</T>{" "}
+        <PageLink page="editor.general">
+          <T>Editor › General</T>
+        </PageLink>
+        .
+      </div>
     </div>
   );
 }
@@ -657,21 +692,15 @@ export const TOOLS_PAGES: PageSpec[] = [
     group: TOOLS_GROUP,
     order: 601,
     projectScope: true,
-    keywords: ["save", "format on save", "reformat", "organize imports", "cleanup"],
-    sections: [
-      {
-        title: "Activate on Save",
-        options: [
-          {
-            kind: "custom",
-            label: "Reformat code",
-            keywords: ["Optimize imports", "Run code cleanup"],
-            component: ActionsOnSave,
-          },
-        ],
-      },
-      { options: [{ kind: "custom", label: "Save", component: ActionsOnSaveNote }] },
+    keywords: [
+      "save",
+      "format on save",
+      "reformat",
+      "organize imports",
+      "cleanup",
+      ...SAVE_ACTIONS.map((a) => a.label),
     ],
+    component: ActionsOnSave,
   },
   {
     id: "tools.externalDiff",

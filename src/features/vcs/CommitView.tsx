@@ -1002,7 +1002,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   />
                 )}
                 {label}
-                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.nodeCount}>{fileCount(n.files.length)}</span>}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>

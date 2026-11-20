@@ -1,6 +1,6 @@
 /**
- * Lightweight editor window (`editor-<parent>-<n>`): one project file in a window of its own
- * ("Open in New Window" without a second workbench).
+ * Lightweight editor window (`editor-<parent>-<n>`): one project file, or one tab of another
+ * editor kind, in a window of its own ("Open in New Window" without a second workbench).
  */
 import clsx from "clsx";
 import { create } from "zustand";
@@ -15,14 +15,14 @@ import { basename, useProject } from "@/platform/project";
 import { restoreRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { Spinner, T, isPopupOpen } from "@/ui";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, useContributions, type EditorInput } from "@/workbench/contributions";
 import { EditorArea } from "@/workbench/EditorArea";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme } from "@/workbench/theme";
 import { ask } from "@/workbench/messages";
-import { editorController } from "./controller";
+import { editorController, tabTitle } from "./controller";
 import type { DocModel } from "./model/document";
 import styles from "./EditorWindow.module.css";
 
@@ -71,7 +71,7 @@ async function settleUnsaved(models: DocModel[], project: string | null): Promis
   return answer.button === "save" || answer.button === "discard";
 }
 
-/** Loads the launch's file into this window's editor. */
+/** Loads the launch's file or tab into this window's editor. */
 export function activateEditorWindow(parent: string): () => void {
   let projectName: string | null = null;
   const native = getCurrentWindow();
@@ -131,14 +131,20 @@ export function activateEditorWindow(parent: string): () => void {
     try {
       await restoreRemote();
       const launch = (await commands.windowTakeLaunch())?.editor as EditorLaunch | null | undefined;
-      if (!launch?.path) throw new Error(tx("Missing editor request"));
-      path = launch.path;
+      let input = launch?.input ? (JSON.parse(launch.input) as EditorInput) : null;
+      path = launch?.path ?? input?.key ?? "";
+      if (!launch || !path) throw new Error(tx("Missing editor request"));
       const project = await commands.projectCurrent();
       if (!project) throw new Error(tx("The editor’s project is no longer open"));
       projectName = project.name;
-      // Settings only: restoring the project's editor session here would overwrite the main window's tabs.
-      useProject.setState({ settings: project.settings });
+      // Other editor kinds read the project; the controller leaves its saved tabs to the main window.
+      useProject.setState(input ? { project, settings: project.settings } : { settings: project.settings });
       setContext("projectOpen", true);
+      if (input) {
+        const prepare = useContributions.getState().editorKinds.get(input.kind)?.prepareWindowInput;
+        if (prepare) input = await prepare(input);
+      }
+      if (disposed) return;
       const selection =
         launch.line != null && launch.column != null
           ? {
@@ -147,9 +153,11 @@ export function activateEditorWindow(parent: string): () => void {
               ...(launch.endLine != null ? { endLine: launch.endLine, endCol: launch.endColumn ?? 0 } : {}),
             }
           : undefined;
-      await editorService().openFile(path, { focus: true, selection });
+      if (input) await editorService().openInput(input, { focus: true });
+      else await editorService().openFile(path, { focus: true, selection });
       useEditorWindow.setState({ path });
-      showCaption(`${project.name} — ${basename(path)}`);
+      const title = input ? tabTitle(input, useContributions.getState().editorKinds) : basename(path);
+      showCaption(`${project.name} — ${title}`);
       await reportReady(parent, { path, ok: true });
     } catch (error) {
       const message = String(error);
@@ -171,7 +179,7 @@ export function EditorWindow() {
   const ownTitleBar = usePlatform((s) => s.overlayTitleBar || s.framelessTitleBar);
   return (
     <main className={clsx(styles.window, os === "linux" && styles.edge)}>
-      {ownTitleBar && <TitleBar minimal dialog title={title} />}
+      {ownTitleBar && <TitleBar minimal title={title} />}
       {error ? (
         <div className={styles.error} role="alert">
           {error}

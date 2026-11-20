@@ -79,12 +79,13 @@ import {
   startPreparedSession,
   stopSession,
   stopAssociatedProcess,
+  stopTarget,
   useDebug,
   type DebugSession,
 } from "./state";
 import { focusedDebugView } from "./ui/focusedView";
 import { browseFocusedConsoleHistory } from "./ui/expressionHistory";
-import { expressionAt, valueHint } from "./editor/valueTooltip";
+import { expressionAt, showQuickValue } from "./editor/valueTooltip";
 import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
@@ -207,24 +208,37 @@ function evaluateSeed(view: EditorView | undefined = activeEditor()?.view, pos?:
   const { state } = view;
   const sel = state.selection.main;
   if (!sel.empty && (pos == null || (sel.from <= pos && pos <= sel.to))) return state.sliceDoc(sel.from, sel.to);
-  return expressionAt(view, pos ?? sel.head)?.text ?? "";
+  return expressionAt(view, pos ?? sel.head, { calls: true })?.text ?? "";
 }
 
 async function quickEvaluate(arg?: unknown) {
   const target = mouseEvaluateTarget(arg);
   const view = target?.view ?? activeEditor()?.view;
   if (!view) return;
-  const sel = view.state.selection.main;
-  const pos = target?.pos ?? sel.from;
+  const { doc, selection } = view.state;
+  const pos = target?.pos ?? selection.main.from;
   const expression = evaluateSeed(view, target?.pos).trim();
   if (!expression) return showHint(view, "Nothing to evaluate at the caret");
   const session = activeSession();
+  const stop = useDebug.getState().stopSeq;
+  const stillCurrent = () => {
+    const current = activeSession();
+    return (
+      view.dom.isConnected &&
+      view.state.doc === doc &&
+      view.state.selection.eq(selection) &&
+      current?.status === "paused" &&
+      current.id === session?.id &&
+      current.selectedFrame === session?.selectedFrame &&
+      useDebug.getState().stopSeq === stop
+    );
+  };
   try {
-    const value = await evaluate(expression, "hover", session);
-    if (!session) return;
-    showHint(view, () => valueHint(expression, value, session.id), { pos, timeout: 60_000 });
+    // Unlike a plain hover, an explicit Quick Evaluate may call methods (adapters refuse that for "hover").
+    const value = await evaluate(expression, "watch", session);
+    if (session && stillCurrent()) showQuickValue(view, pos, expression, value, session.id);
   } catch (e) {
-    showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
+    if (stillCurrent()) showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
   }
 }
 
@@ -560,9 +574,9 @@ export function registerDebugActions(): () => void {
       title: "Stop",
       category: "Debug",
       icon: "stop",
-      when: "debugSessionActive",
+      when: "debugCanStop",
       run: () => {
-        const s = activeSession() ?? Object.values(useDebug.getState().sessions).find(isLive);
+        const s = stopTarget();
         if (s) void stopSession(s.id);
       },
     },

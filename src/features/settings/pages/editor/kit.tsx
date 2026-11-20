@@ -7,7 +7,7 @@
  */
 import { createContext, useContext, useId, type ComponentType, type ReactNode } from "react";
 import clsx from "clsx";
-import { Checkbox, Input, type SelectOption } from "@/ui";
+import { Checkbox, Input, T, type SelectOption } from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { NumberInput, Row, SearchLabel, Section, Select } from "../../components/Form";
@@ -17,7 +17,8 @@ import styles from "./Editor.module.css";
 
 export type Inline =
   | { kind: "number"; key: string; min: number; max: number; unit?: string; suffix?: string }
-  | { kind: "select"; key: string; options: readonly SelectOption[]; suffix?: string };
+  | { kind: "select"; key: string; options: readonly SelectOption[]; suffix?: string }
+  | { kind: "text"; key: string; label: string; placeholder?: string; hint?: string };
 
 export type Item =
   | {
@@ -35,7 +36,14 @@ export type Item =
     }
   | { t: "number"; key: string; label: string; min: number; max: number; unit?: string; hint?: ReactNode }
   | { t: "select"; key: string; label: string; options: readonly SelectOption[]; hint?: ReactNode }
-  | { t: "radio"; key: string; label: string; options: readonly SelectOption[]; hint?: ReactNode }
+  | {
+      t: "radio";
+      key: string;
+      label: string;
+      options: readonly SelectOption[];
+      layout?: "stacked" | "options-only";
+      hint?: ReactNode;
+    }
   | { t: "text"; key: string; label: string; placeholder?: string; hint?: ReactNode; wide?: boolean }
   | { t: "grid"; columns: Item[][] }
   | { t: "custom"; label: string; keywords?: string[]; component: ComponentType }
@@ -65,11 +73,17 @@ function CheckItem({ item }: { item: Extract<Item, { t: "check" }> }) {
   const context = usePageContext();
   const [raw, set] = useSetting<boolean>(item.key);
   const checked = item.invert ? !raw : !!raw;
-  const matched = useLabelMatch(item.label);
+  const inlineText = item.inline?.kind === "text" ? item.inline : undefined;
+  const labelMatched = useLabelMatch(item.label);
+  const fieldMatched = useLabelMatch(inlineText?.label);
+  const matched = labelMatched || fieldMatched;
   const off = parentDisabled || !checked;
   return (
     <>
-      <div className={clsx(styles.check, matched && styles.matched)} data-search-match={matched || undefined}>
+      <div
+        className={clsx(styles.check, inlineText && styles.checkWithField, matched && styles.matched)}
+        data-search-match={matched || undefined}
+      >
         <Checkbox
           checked={checked}
           disabled={parentDisabled}
@@ -98,7 +112,30 @@ function CheckItem({ item }: { item: Extract<Item, { t: "check" }> }) {
 
 function InlineControl({ inline, label, disabled }: { inline: Inline; label: string; disabled: boolean }) {
   if (inline.kind === "number") return <InlineNumber inline={inline} label={label} disabled={disabled} />;
+  if (inline.kind === "text") return <InlineText inline={inline} disabled={disabled} />;
   return <InlineSelect inline={inline} label={label} disabled={disabled} />;
+}
+
+function InlineText({ inline, disabled }: { inline: Extract<Inline, { kind: "text" }>; disabled: boolean }) {
+  const [value, set] = useSetting<string>(inline.key);
+  const hintId = useId();
+  return (
+    <div className={styles.inlineField}>
+      <Input
+        aria-label={inline.label}
+        aria-describedby={inline.hint ? hintId : undefined}
+        disabled={disabled}
+        value={value}
+        placeholder={inline.placeholder}
+        onChange={(event) => set(event.target.value)}
+      />
+      {inline.hint && (
+        <div id={hintId} className={styles.inlineFieldHint}>
+          <T>{inline.hint}</T>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function InlineNumber({
@@ -201,13 +238,17 @@ function RadioItem({ item }: { item: Extract<Item, { t: "radio" }> }) {
   const name = useId();
   const matched = useLabelMatch(item.label);
   return (
-    <div className={clsx(styles.radioBlock, matched && styles.matched)} role="radiogroup" aria-label={item.label}>
-      {item.label && (
+    <div
+      className={clsx(styles.radioBlock, item.layout && styles.stackedRadioBlock, matched && styles.matched)}
+      role="radiogroup"
+      aria-label={tx(item.label)}
+    >
+      {item.label && item.layout !== "options-only" && (
         <div className={clsx(styles.radioLabel, disabled && styles.dim)}>
           <SearchLabel text={item.label} />:
         </div>
       )}
-      <div className={styles.radios}>
+      <div className={clsx(styles.radios, item.layout && styles.stackedRadios)}>
         {item.options.map((o) => (
           <label key={o.value} className={clsx(styles.radio, disabled && styles.dim)}>
             <input
@@ -302,6 +343,7 @@ export function itemLabels(items: readonly Item[]): string[] {
       if (it.t === "custom") out.push(...(it.keywords ?? []));
       if (it.t === "select" || it.t === "radio") out.push(...it.options.map((o) => o.label));
       if (it.t === "check" && it.inline?.kind === "select") out.push(...it.inline.options.map((o) => o.label));
+      if (it.t === "check" && it.inline?.kind === "text") out.push(it.inline.label);
       if (it.t === "check" && it.children) out.push(...itemLabels(it.children));
     }
   }

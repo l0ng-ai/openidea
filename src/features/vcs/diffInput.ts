@@ -209,7 +209,12 @@ export const opensDiffOnActivate = () => {
  * (`vcs.openDiff`, with review comments) call openDiff directly.
  */
 export async function openVcsDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  if (!vcsDiffInFront()) return openDiff(data, opts);
+  if (!vcsDiffInFront()) {
+    // Settings › Version Control › Confirmation: "Open diff as editor tab" off.
+    if (workflowSettings().vcs.diffAsEditorTab || combinedOf(data)) return openDiff(data, opts);
+    const { showDiffWindow } = await import("./DiffWindow");
+    return showDiffWindow(data, () => void openDiff(data, opts));
+  }
   const { openDiffDialog } = await import("./diffDialog");
   openDiffDialog(data);
 }

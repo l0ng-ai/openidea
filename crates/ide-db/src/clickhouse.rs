@@ -145,30 +145,38 @@ impl ClickhousePool {
         let cancel = CancellationToken::new();
         let initialize = async {
             if let Err(error) = pool.execute("SELECT 1", 1, &cancel).await {
-                if !rejects_driver_setting(&error) {
+                let Some(setting) = rejected_driver_setting(&error) else {
                     return Err(error);
-                }
+                };
                 if !use_http_session {
-                    return Err(IdeError::new(
-                        error.kind,
-                        format!(
-                            "{}; use_http_session=false requires per-request read-only and result-limit settings. Strict read-only fallback requires an HTTP session on one node or session affinity",
-                            error.message
-                        ),
-                    ));
-                }
-                // Retry only the connection probe. Keep relying on the server for write protection
-                // only after verifying strict read-only mode in this same session.
-                {
-                    let mut session = pool.0.session.lock().await;
-                    // Start the proof in a fresh session: the rejected probe may have left
-                    // its id on another replica without applying the configured database.
-                    session.id = Some(uuid::Uuid::new_v4().to_string());
-                    session.strict_read_only = true;
-                }
-                let result = pool.execute("SELECT getSetting('readonly')", 1, &cancel).await?;
-                if result.rows.first().and_then(|row| row.first()).and_then(Option::as_deref) != Some("1") {
-                    return Err(error);
+                    if setting == "readonly" {
+                        return Err(error);
+                    }
+                    if !source.read_only {
+                        return Err(IdeError::new(
+                            error.kind,
+                            format!(
+                                "{}; enable Read-only for independent queries on a strict read-only server",
+                                error.message
+                            ),
+                        ));
+                    }
+                    // Every request still sends readonly=1, regardless of which node answers.
+                    pool.0.session.lock().await.strict_read_only = true;
+                    pool.execute("SELECT 1", 1, &cancel).await?;
+                } else {
+                    // Only rely on the server's write protection after proving strict read-only
+                    // in this same named session.
+                    {
+                        let mut session = pool.0.session.lock().await;
+                        // The rejected probe may have opened a session on a different node.
+                        session.id = Some(uuid::Uuid::new_v4().to_string());
+                        session.strict_read_only = true;
+                    }
+                    let result = pool.execute("SELECT getSetting('readonly')", 1, &cancel).await?;
+                    if result.rows.first().and_then(|row| row.first()).and_then(Option::as_deref) != Some("1") {
+                        return Err(error);
+                    }
                 }
             }
             // The HTTP database parameter applies to one request. A named session needs
@@ -236,7 +244,7 @@ impl ClickhousePool {
         if !self.0.database.is_empty() && (session.id.is_none() || !session.initialized) {
             request = request.query(&[("database", &self.0.database)]);
         }
-        if self.0.read_only && !session.strict_read_only {
+        if self.0.read_only && (session.id.is_none() || !session.strict_read_only) {
             request = request.query(&[("readonly", "1")]);
         }
         request
@@ -324,7 +332,7 @@ impl ClickhousePool {
                 result
             }
             None => {
-                let killed = self.kill(&client, &query_id).await;
+                let killed = self.kill(&client, &query_id, &session).await;
                 match killed {
                     Ok(()) => Err(IdeError::cancelled()),
                     Err(error) => Err(IdeError::new(
@@ -336,15 +344,16 @@ impl ClickhousePool {
         }
     }
 
-    async fn kill(&self, client: &Client, query_id: &str) -> IdeResult<()> {
-        let response = client
+    async fn kill(&self, client: &Client, query_id: &str, session: &Session) -> IdeResult<()> {
+        let mut request = client
             .post(self.0.endpoint.clone())
             .basic_auth(&self.0.user, Some(&self.0.password))
-            .timeout(Duration::from_secs(3))
-            .body(format!("KILL QUERY WHERE query_id = '{query_id}' SYNC"))
-            .send()
-            .await
-            .map_err(http_error)?;
+            .timeout(Duration::from_secs(3));
+        if self.0.read_only && session.id.is_none() {
+            request = request.query(&[("readonly", "1")]);
+        }
+        let response =
+            request.body(format!("KILL QUERY WHERE query_id = '{query_id}' SYNC")).send().await.map_err(http_error)?;
         let status = response.status();
         let code = response
             .headers()
@@ -551,13 +560,14 @@ fn read_pem(path: &str, label: &str) -> IdeResult<Vec<u8>> {
         .map_err(|error| IdeError::new(ErrorKind::Io, format!("cannot read ClickHouse {label}: {error}")))
 }
 
-fn rejects_driver_setting(error: &IdeError) -> bool {
+fn rejected_driver_setting(error: &IdeError) -> Option<&str> {
     error
         .message
         .split_once(": ")
         .and_then(|(_, detail)| detail.strip_prefix("Code: 164. DB::Exception: Cannot modify '"))
         .and_then(|detail| detail.split_once("' setting in readonly mode"))
-        .is_some_and(|(name, _)| {
+        .map(|(name, _)| name)
+        .filter(|&name| {
             matches!(
                 name,
                 "output_format_json_quote_denormals" | "max_result_rows" | "result_overflow_mode" | "readonly"
@@ -953,19 +963,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stateless_connections_never_fall_back_to_session_readonly_proof() {
-        for read_only in [false, true] {
-            let (port, requests) = server(vec![(
+    async fn strict_stateless_connections_keep_readonly_on_every_request() {
+        let denied = "Code: 164. DB::Exception: Cannot modify 'max_result_rows' setting in readonly mode. (READONLY)";
+        let (port, requests) = server(vec![
+            ("500 Internal Server Error", "X-ClickHouse-Exception-Code: 164\r\n", denied),
+            ("200 OK", "", ONE),
+            (
                 "500 Internal Server Error",
                 "X-ClickHouse-Exception-Code: 164\r\n",
+                "Code: 164. DB::Exception: Cannot execute query in readonly mode. (READONLY)",
+            ),
+            ("200 OK", "", "[\"n\"]\n[\"UInt64\"]\n[0]\n[1]\n[2]\n"),
+        ])
+        .await;
+        let source = DataSource {
+            database: "fixture_database".into(),
+            read_only: true,
+            properties: vec![property("use_http_session", "false"), property("max_threads", "2")],
+            ..source(port)
+        };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let cancel = CancellationToken::new();
+        let write = "CREATE TABLE fixture_table (n UInt8) ENGINE=Memory";
+        assert!(pool.execute(write, 1, &cancel).await.unwrap_err().message.contains("Code: 164"));
+        let sql = "SELECT number AS n FROM numbers(3) LIMIT 3";
+        let result = pool.execute(sql, 1, &cancel).await.unwrap();
+        assert_eq!(result.rows, vec![vec![Some("0".into())]]);
+        assert!(result.has_more);
+        let requests = requests.await.unwrap();
+        assert!(requests[0].ends_with("SELECT 1"));
+        assert!(requests[1].ends_with("SELECT 1"));
+        assert!(requests[2].ends_with(write));
+        assert!(requests[3].ends_with(sql));
+        for (index, request) in requests.iter().enumerate() {
+            let url = request_url(request);
+            for name in ["session_id", "session_check", "session_timeout", "use_http_session"] {
+                assert_eq!(query_value(&url, name), None, "{name}");
+            }
+            assert_eq!(query_value(&url, "readonly").as_deref(), Some("1"));
+            assert_eq!(query_value(&url, "database").as_deref(), Some("fixture_database"));
+            assert_eq!(query_value(&url, "max_threads").as_deref(), Some("2"));
+            assert_eq!(query_value(&url, "max_result_rows").as_deref(), (index == 0).then_some("2"));
+            assert_eq!(query_value(&url, "result_overflow_mode").as_deref(), (index == 0).then_some("break"));
+            assert_eq!(query_value(&url, "output_format_json_quote_denormals").as_deref(), (index == 0).then_some("1"));
+        }
+    }
+
+    #[tokio::test]
+    async fn stateless_connections_require_readonly_and_only_relax_driver_result_settings() {
+        for (read_only, detail, body) in [
+            (
+                false,
+                "enable Read-only",
                 "Code: 164. DB::Exception: Cannot modify 'max_result_rows' setting in readonly mode. (READONLY)",
-            )])
-            .await;
+            ),
+            (
+                true,
+                "Cannot modify 'readonly'",
+                "Code: 164. DB::Exception: Cannot modify 'readonly' setting in readonly mode. (READONLY)",
+            ),
+            (
+                true,
+                "Cannot modify 'max_threads'",
+                "Code: 164. DB::Exception: Cannot modify 'max_threads' setting in readonly mode. (READONLY)",
+            ),
+        ] {
+            let (port, requests) =
+                server(vec![("500 Internal Server Error", "X-ClickHouse-Exception-Code: 164\r\n", body)]).await;
             let source =
                 DataSource { read_only, properties: vec![property("use_http_session", "false")], ..source(port) };
             let error = Pool::connect(&source, None, None).await.err().expect("stateless fallback must be rejected");
-            assert!(error.message.contains("Cannot modify 'max_result_rows'"));
-            assert!(error.message.contains("use_http_session=false requires per-request"));
+            assert!(error.message.contains(detail), "{}", error.message);
             let requests = requests.await.unwrap();
             assert_eq!(requests.len(), 1);
             assert!(requests[0].ends_with("SELECT 1"));
@@ -1041,7 +1109,7 @@ mod tests {
             let error = IdeError::invalid(format!(
                 "ClickHouse HTTP 500: Code: {code}. DB::Exception: Cannot modify '{setting}' setting in readonly mode. (READONLY)"
             ));
-            assert_eq!(rejects_driver_setting(&error), expected, "{setting}");
+            assert_eq!(rejected_driver_setting(&error).is_some(), expected, "{setting}");
         }
     }
 
@@ -1084,37 +1152,45 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_sends_kill_outside_the_busy_session() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (started, received) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(async move {
-            let (mut health, _) = listener.accept().await.unwrap();
-            read_request(&mut health).await;
-            reply(&mut health, "200 OK", "", ONE).await;
-            drop(health);
-            let (mut query, _) = listener.accept().await.unwrap();
-            let request = read_request(&mut query).await;
-            started.send(()).unwrap();
-            let (mut kill, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
-            let kill_request = read_request(&mut kill).await;
-            reply(&mut kill, "200 OK", "", "").await;
-            (request, kill_request)
-        });
-        let pool = Pool::connect(&source(port), None, None).await.unwrap();
-        let cancel = CancellationToken::new();
-        let query = pool.execute("SELECT sleep(30)", 1, &cancel);
-        let cancelled = async {
-            received.await.unwrap();
-            cancel.cancel();
-        };
-        let (result, ()) = tokio::join!(query, cancelled);
-        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
-        let (query, kill) = server.await.unwrap();
-        let target = query.lines().next().unwrap().split_whitespace().nth(1).unwrap();
-        let url = Url::parse(&format!("http://localhost{target}")).unwrap();
-        let query_id = url.query_pairs().find(|(k, _)| k == "query_id").unwrap().1.into_owned();
-        assert!(kill.ends_with(&format!("KILL QUERY WHERE query_id = '{query_id}' SYNC")));
-        assert!(!kill.contains("session_id="));
+        for stateless in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (started, received) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut health, _) = listener.accept().await.unwrap();
+                read_request(&mut health).await;
+                reply(&mut health, "200 OK", "", ONE).await;
+                drop(health);
+                let (mut query, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut query).await;
+                started.send(()).unwrap();
+                let (mut kill, _) =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+                let kill_request = read_request(&mut kill).await;
+                reply(&mut kill, "200 OK", "", "").await;
+                (request, kill_request)
+            });
+            let source = DataSource {
+                read_only: true,
+                properties: vec![property("use_http_session", if stateless { "false" } else { "true" })],
+                ..source(port)
+            };
+            let pool = Pool::connect(&source, None, None).await.unwrap();
+            let cancel = CancellationToken::new();
+            let query = pool.execute("SELECT sleep(30)", 1, &cancel);
+            let cancelled = async {
+                received.await.unwrap();
+                cancel.cancel();
+            };
+            let (result, ()) = tokio::join!(query, cancelled);
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+            let (query, kill) = server.await.unwrap();
+            let query_id = query_value(&request_url(&query), "query_id").unwrap();
+            assert!(kill.ends_with(&format!("KILL QUERY WHERE query_id = '{query_id}' SYNC")));
+            let url = request_url(&kill);
+            assert_eq!(query_value(&url, "session_id"), None);
+            assert_eq!(query_value(&url, "readonly").as_deref(), stateless.then_some("1"));
+        }
     }
 
     #[tokio::test]

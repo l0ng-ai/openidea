@@ -505,13 +505,29 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "scopes" => {
                 ok!(msg, json!({"scopes": [{"name": "Locals", "variablesReference": 100, "expensive": false}]}))
             }
-            "variables" => ok!(
-                msg,
-                json!({"variables": [
-                    {"name": "x", "value": "1", "type": "int", "variablesReference": 0},
-                    {"name": "req", "value": "{Req}", "type": "Req", "variablesReference": 101, "evaluateName": "req"},
-                ]})
-            ),
+            // 200 holds a lazy value (java-debug's toString(), js-debug's getters): asked for, its
+            // reference answers one nameless child with the value and the reference of its fields.
+            "variables" => match msg["arguments"]["variablesReference"].as_i64() {
+                Some(200) => ok!(
+                    msg,
+                    json!({"variables": [
+                        {"name": "order", "value": "Order@7", "type": "Order", "variablesReference": 201,
+                         "evaluateName": "order", "presentationHint": {"lazy": true}},
+                        {"name": "n", "value": "2", "type": "int", "variablesReference": 0, "presentationHint": {"lazy": false}},
+                    ]})
+                ),
+                Some(201) => ok!(
+                    msg,
+                    json!({"variables": [{"name": "", "value": "Order@7 \"Order(1)\"", "variablesReference": 202, "evaluateName": "order"}]})
+                ),
+                _ => ok!(
+                    msg,
+                    json!({"variables": [
+                        {"name": "x", "value": "1", "type": "int", "variablesReference": 0},
+                        {"name": "req", "value": "{Req}", "type": "Req", "variablesReference": 101, "evaluateName": "req"},
+                    ]})
+                ),
+            },
             "evaluate" => ok!(msg, json!({"result": "42", "type": "int", "variablesReference": 0})),
             "completions" => ok!(
                 msg,
@@ -2020,6 +2036,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
             transport: "tcp".into(),
             connect: Some(format!("127.0.0.1:{port}")),
             install_hint: Some("Open the project in the Godot editor".into()),
+            resolve_lazy_variables: false,
             pinned: None,
         }),
     };
@@ -2763,6 +2780,53 @@ async fn step_of_one_thread_keeps_the_others_suspended() {
     assert_eq!(session.suspended.ticket(), ticket + 1);
     h.manager.step_in_target(id, 7, 1).await.unwrap();
     assert!(!session.suspended.get());
+    // The UI stays on a thread that is still stopped only when told the step ran one thread.
+    for thread in [7, 8] {
+        let continued =
+            h.wait_event(|e| matches!(e, DebugEvent::Continued { thread_id, .. } if *thread_id == thread)).await;
+        assert!(matches!(continued, DebugEvent::Continued { all_threads_continued: false, .. }), "{continued:?}");
+    }
+}
+
+#[tokio::test]
+async fn lazy_variables_are_resolved_when_the_adapter_declares_them_safe() {
+    let h = harness(Script::default());
+    let id = h.start(java_config("launch")).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let vars = h.manager.variables(id, 200).await.unwrap();
+    let order = &vars[0];
+    assert_eq!(
+        (order.name.as_str(), order.value.as_str(), order.type_name.as_deref()),
+        ("order", "Order@7 \"Order(1)\"", Some("Order"))
+    );
+    assert_eq!((order.variables_reference, order.lazy), (202, false));
+    assert_eq!(order.evaluate_name.as_deref(), Some("order"));
+    assert_eq!((vars[1].name.as_str(), vars[1].lazy), ("n", false));
+}
+
+#[tokio::test]
+async fn lazy_variables_stay_lazy_for_other_adapters() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let vars = h.manager.variables(id, 200).await.unwrap();
+    assert_eq!((vars[0].value.as_str(), vars[0].variables_reference, vars[0].lazy), ("Order@7", 201, true));
+    assert_eq!(requests(&h, "variables").len(), 1, "nothing is computed until asked for");
+
+    let order = h.manager.resolve_variable(id, vars[0].clone()).await.unwrap();
+    assert_eq!((order.name.as_str(), order.value.as_str()), ("order", "Order@7 \"Order(1)\""));
+    assert_eq!((order.variables_reference, order.lazy), (202, false));
+    let n = h.manager.resolve_variable(id, vars[1].clone()).await.unwrap();
+    assert_eq!((n.value.as_str(), requests(&h, "variables").len()), ("2", 2), "only lazy values are computed");
+}
+
+#[test]
+fn java_debug_declares_its_lazy_variables_safe_to_resolve() {
+    let languages = LanguageRegistry::load(None).unwrap();
+    for registry in [&languages, &LanguageRegistry::from_configs(Vec::new())] {
+        assert!(adapter::find_config(registry, "java-debug").unwrap().resolve_lazy_variables);
+        assert!(!adapter::find_config(registry, "js-debug").unwrap().resolve_lazy_variables);
+    }
 }
 
 #[tokio::test]
