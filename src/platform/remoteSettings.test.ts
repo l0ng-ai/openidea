@@ -9,6 +9,8 @@ import {
   isRemoteWindow,
   localGlobalSettings,
   remoteRouting,
+  useRemote,
+  useRemoteProgress,
 } from "./remote";
 import { invoke as routedInvoke } from "./tauriCore";
 
@@ -62,6 +64,7 @@ beforeEach(() => {
 afterEach(() => {
   disableRemote();
   useProject.setState({ opening: false, settings: null });
+  useRemoteProgress.setState({ progress: null, location: null });
 });
 
 describe("remote client settings", () => {
@@ -204,6 +207,36 @@ describe("remote client settings", () => {
     );
     await connectRemote({ kind: "ssh", config: "test" }, "/remote");
     expect(useProject.getState().settings).toMatchObject({ keymap: "my-map", editor: { tabSize: 2, fontSize: 19 } });
+  });
+  it("does not disconnect a newer connect when an older one finishes", async () => {
+    disableRemote();
+    useRemoteProgress.setState({ progress: null, location: null });
+    let releaseFirst: (value: unknown) => void = () => {};
+    const first = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    let connects = 0;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd !== "remote_connect") return cmd === "remote_invoke" ? "null" : local;
+      connects += 1;
+      const root = connects === 1 ? "/home/me/old" : "/home/me/new";
+      const project = {
+        target: { kind: "wsl", distro: "Ubuntu" },
+        root,
+        host: "Ubuntu",
+        os: "linux",
+        commands: [...served],
+        project: { root, name: "app", displayName: "app", settings: remote },
+      };
+      return connects === 1 ? first.then(() => project) : project;
+    });
+    const older = connectRemote({ kind: "wsl", distro: "Ubuntu" }, "/home/me/old");
+    const newer = connectRemote({ kind: "wsl", distro: "Ubuntu" }, "/home/me/new");
+    await newer;
+    releaseFirst(undefined);
+    await expect(older).rejects.toMatchObject({ kind: "cancelled" });
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "remote_disconnect")).toHaveLength(0);
+    expect(useRemote.getState().session?.root).toBe("/home/me/new");
   });
   it("overlays the project snapshot used by the settings window", async () => {
     invoke.mockImplementation(async (cmd: string) =>

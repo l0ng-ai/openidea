@@ -3,10 +3,15 @@
  * Stepping), Python Debugger and Run/Debug. Consumed by the run and debugger
  * features (and `ide-run` for encoding / termination timeout).
  */
+import { useEffect } from "react";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
+import { useSettingsPageFocus } from "@/workbench/contributions";
+import { isTauri } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import type { SelectOption } from "@/ui";
 import { ColorSwatches, FormGroup, GlobListEditor, NumberInput, Row, Toggle } from "../components/Form";
-import { useSetting } from "../components/context";
+import { usePageContext, useSetting } from "../components/context";
+import { useSettingsDialog } from "../model/staging";
 import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
 import { Indented, ToggleNumber } from "./workflowControls";
@@ -53,6 +58,18 @@ function BufferRow() {
 
 function FoldPatterns() {
   const [patterns, set] = useSetting<string[]>("console.foldPatterns");
+  // Opened as `build.console#<text>` by the console's Fold Lines Like This: add it as a pattern.
+  const { focus, consume } = useSettingsPageFocus();
+  // With a project open, the Global list arrives after the dialog opens (until then it is the project's).
+  const { scope } = usePageContext();
+  const globalPending = useSettingsDialog((s) => s.globalBase === s.base);
+  const hasProject = useProject((s) => !!s.project);
+  const waiting = scope === "global" && globalPending && hasProject && isTauri();
+  useEffect(() => {
+    if (!focus || waiting) return;
+    consume();
+    if (!patterns.includes(focus)) set([...patterns, focus]);
+  }, [focus, consume, waiting, patterns, set]);
   return (
     <Row
       label="Fold console lines that contain"
