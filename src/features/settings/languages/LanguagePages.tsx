@@ -17,45 +17,51 @@ import { SdkField, tildify, useDetected, useJdtlsJdk } from "./components";
 import { isMavenThreadCount } from "./mavenThreads";
 import styles from "./Sdk.module.css";
 
-function PathInput({
-  k,
-  label,
-  placeholder,
-  hint,
-  title,
-  file,
-}: {
+interface PathFieldProps {
   k: string;
-  label: string;
   placeholder: string;
-  hint?: string;
   title: string;
+  id?: string;
+  "aria-label"?: string;
   /** Browse for a file instead of a directory. */
   file?: boolean;
-}) {
+}
+
+function PathField({ k, placeholder, title, id, file, ...aria }: PathFieldProps) {
   const [value, set] = useSetting<string>(k);
+  return (
+    <span className={styles.pathRow}>
+      <Input
+        id={id}
+        mono
+        className={styles.pathInput}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => set(e.target.value.trim())}
+        aria-label={aria["aria-label"]}
+      />
+      <IconButton
+        icon="folder-open"
+        size="small"
+        title="Browse…"
+        onClick={async () => {
+          const p = await choosePath({ directory: !file, title, defaultPath: value || undefined });
+          if (p) set(p);
+        }}
+      />
+    </span>
+  );
+}
+
+function PathInput({
+  label,
+  hint,
+  ...field
+}: Omit<PathFieldProps, "id" | "aria-label"> & { label: string; hint?: string }) {
   const id = useId();
   return (
     <Row label={label} htmlFor={id} hint={hint}>
-      <span className={styles.pathRow}>
-        <Input
-          id={id}
-          mono
-          className={styles.pathInput}
-          value={value}
-          placeholder={placeholder}
-          onChange={(e) => set(e.target.value.trim())}
-        />
-        <IconButton
-          icon="folder-open"
-          size="small"
-          title="Browse…"
-          onClick={async () => {
-            const p = await choosePath({ directory: !file, title, defaultPath: value || undefined });
-            if (p) set(p);
-          }}
-        />
-      </span>
+      <PathField {...field} id={id} />
     </Row>
   );
 }
@@ -499,9 +505,19 @@ export function JavaPage() {
 export function GradlePage() {
   const [distribution, setDistribution] = useSetting<string>("languages.java.gradle.distribution");
   const [runUsing, setRunUsing] = useSetting<string>("languages.java.gradle.runUsing");
+  const local = distribution === "local";
   return (
-    <div className={styles.page}>
+    <div className={styles.gradleSettings}>
       <Section>
+        <PathInput
+          k="languages.java.gradle.userHome"
+          label="Gradle user home"
+          placeholder="~/.gradle"
+          title="Select Gradle User Home Directory"
+          hint="Sets GRADLE_USER_HOME. Empty uses Gradle's default."
+        />
+      </Section>
+      <Section title="Build and Run">
         <Row
           label="Build and run using"
           hint="Gradle runs a main class as a JavaExec task on its source set's runtime classpath (Gradle's resource processing included). OpenIDEA launches it on the Java language server's classpath."
@@ -516,6 +532,36 @@ export function GradlePage() {
             ]}
           />
         </Row>
+      </Section>
+      <Section title="Gradle runtime">
+        <Row
+          label="Distribution"
+          hint={
+            local
+              ? "Uses bin/gradle (bin/gradle.bat on Windows) instead of the wrapper or pinned toolchain."
+              : "Uses the Gradle wrapper when present, otherwise the project-pinned mise/asdf Gradle, then Gradle on PATH."
+          }
+        >
+          <div className={styles.gradleDistribution}>
+            <Select
+              value={distribution}
+              onChange={setDistribution}
+              aria-label="Distribution"
+              options={[
+                { value: "wrapper", label: "Gradle wrapper" },
+                { value: "local", label: "Local installation" },
+              ]}
+            />
+            {local && (
+              <PathField
+                k="languages.java.gradle.home"
+                aria-label="Gradle home"
+                placeholder="Gradle installation directory"
+                title="Select Gradle Home Directory"
+              />
+            )}
+          </div>
+        </Row>
         <SdkRow
           k="languages.java.gradle.jvm"
           label="Gradle JVM"
@@ -525,36 +571,6 @@ export function GradlePage() {
           browseTitle="Select JDK Home Directory"
           aria-label="Gradle JVM"
           hint="JDK used for Gradle sync, tasks, run configurations and tests. An explicit JAVA_HOME in a run configuration takes precedence."
-        />
-        <Row
-          label="Distribution"
-          hint="Uses the Gradle wrapper when present, otherwise the project-pinned mise/asdf Gradle, then Gradle on PATH."
-        >
-          <Select
-            value={distribution}
-            onChange={setDistribution}
-            aria-label="Distribution"
-            options={[
-              { value: "wrapper", label: "Gradle wrapper" },
-              { value: "local", label: "Local installation" },
-            ]}
-          />
-        </Row>
-        {distribution === "local" && (
-          <PathInput
-            k="languages.java.gradle.home"
-            label="Gradle home"
-            placeholder="Gradle installation directory"
-            title="Select Gradle Home Directory"
-            hint="Uses bin/gradle (bin/gradle.bat on Windows) instead of the wrapper or pinned toolchain."
-          />
-        )}
-        <PathInput
-          k="languages.java.gradle.userHome"
-          label="Gradle user home"
-          placeholder="~/.gradle"
-          title="Select Gradle User Home Directory"
-          hint="Sets GRADLE_USER_HOME. Empty uses Gradle's default."
         />
       </Section>
     </div>

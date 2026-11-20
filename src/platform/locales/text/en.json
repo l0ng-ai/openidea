@@ -1,4 +1,6 @@
 {
+  "Build and Run": "Build and Run",
+  "Gradle runtime": "Gradle runtime",
   "Open diff as editor tab": "Open diff as editor tab",
   "When off, diffs you open (changes, history, Compare) show in a separate window.": "When off, diffs you open (changes, history, Compare) show in a separate window.",
   "On hover": "On hover",

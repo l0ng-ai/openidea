@@ -1,4 +1,6 @@
 {
+  "Build and Run": "构建和运行",
+  "Gradle runtime": "Gradle 运行环境",
   "Open diff as editor tab": "以编辑器标签页打开差异",
   "When off, diffs you open (changes, history, Compare) show in a separate window.": "关闭后，打开的差异（更改、历史记录、比较）会显示在单独的窗口中。",
   "On hover": "悬停时",
