@@ -1014,8 +1014,7 @@ impl AgentManager {
             pending_switch: None,
             before,
             saved,
-            // Turns across nested repositories record no files: their changes count against `before`.
-            touched: (req.isolation == Isolation::Local && !worktree::spans_repos(&task.cwd.0)).then(BTreeSet::new),
+            touched: (req.isolation == Isolation::Local).then(BTreeSet::new),
             turn: None,
             subagents: Vec::new(),
             pending_rollback: 0,
