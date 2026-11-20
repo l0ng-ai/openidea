@@ -666,12 +666,24 @@ test("dragging the Markdown split divider resizes and reflows editor and preview
   const box = (await handle.boundingBox())!;
   const startX = box.x + box.width / 2;
   const midY = box.y + box.height / 2;
+  const cursorAt = (x: number) =>
+    page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, { x, y: midY });
+
+  await page.mouse.move(startX + 40, midY);
+  await page.mouse.move(startX, midY);
+  expect(await cursorAt(startX)).toMatch(/resize$/);
+  await page.mouse.move(startX - 5, midY);
+  expect(await cursorAt(startX - 5)).not.toMatch(/resize$/);
 
   await page.mouse.move(startX, midY);
   await page.mouse.down();
   await page.mouse.move(startX - 180, midY, { steps: 6 });
   await expect(handle).toHaveAttribute("data-separator", "active");
+  const sourceX = (await editor.boundingBox())!.x + 60;
+  expect(await cursorAt(sourceX)).toMatch(/resize$/);
   await page.mouse.up();
+  await page.mouse.move(sourceX, midY);
+  expect(await cursorAt(sourceX)).toBe("text");
 
   await expect.poll(async () => (await editor.boundingBox())!.width).toBeLessThan(initialEditor - 150);
   await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview + 150);
