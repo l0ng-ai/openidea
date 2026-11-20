@@ -750,7 +750,8 @@ describe("single-file producers (scratches)", () => {
         ALL,
       )!;
       expect(tests.config).toMatchObject({ kind: "maven", isTest: true });
-      expect(tests.config!.args).toEqual(["test", "-Dtest=Test"]);
+      // A reactor module without `Test` must not fail the build before the module that has it.
+      expect(tests.config!.args).toEqual(["test", "-Dtest=Test", "-Dsurefire.failIfNoSpecifiedTests=false"]);
     });
   });
 

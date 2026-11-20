@@ -239,6 +239,36 @@ describe("editor Copy Path/Reference chooser", () => {
     ]);
   });
 
+  it("gives Open In contributions the selected lines", () => {
+    const contexts: MenuGroupContext[] = [];
+    disposers.push(
+      registerMenuGroup({
+        id: "test.openIn",
+        menus: ["openIn"],
+        items: (_menu, ctx) => {
+          contexts.push(ctx);
+          return [];
+        },
+      }),
+    );
+    const view = ctrl.activeSlot!.view!;
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    // The caret; a selection from the second line back into the first; one ending at the start of the second.
+    for (const selection of [
+      { anchor: documentText.indexOf("A {}") },
+      { anchor: documentText.indexOf("A {}"), head: 0 },
+      { anchor: 0, head: documentText.indexOf("class") },
+    ]) {
+      view.dispatch({ selection });
+      ctrl.onContextMenu(ctrl.activeSlot!, new MouseEvent("contextmenu"));
+    }
+    expect(contexts.map(({ paths, line, endLine }) => [paths, line, endLine])).toEqual([
+      [[path], 1, undefined],
+      [[path], 0, 1],
+      [[path], 0, undefined],
+    ]);
+  });
+
   it("adds the chooser to Copy / Paste Special", () => {
     vi.spyOn(ctrl.activeSlot!.view!, "posAtCoords").mockReturnValue(null);
     ctrl.onContextMenu(ctrl.activeSlot!, new MouseEvent("contextmenu"));

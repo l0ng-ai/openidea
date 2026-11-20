@@ -2,7 +2,8 @@ import { expect, stubDesktop, test } from "./fixtures";
 
 const amountName = "regionalSettlementAmountFromExternalProcessorBeforeRounding";
 const routingName = "settlementRoutingReferenceForCrossBorderReconciliation";
-const routingValue = "'APR-2026 / eu-west / batch-701 / settlement complete'";
+const routingText = "APR-2026 / eu-west / batch-701 / settlement complete";
+const routingValue = "'" + routingText + "'";
 
 test("keeps values and their full-value action readable in a narrow debugger", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 1220, height: 760 });
@@ -46,7 +47,7 @@ test("keeps values and their full-value action readable in a narrow debugger", a
   await expect(show).toBeInViewport({ ratio: 1 });
   await show.click();
   const dialog = page.getByRole("dialog", { name: `Value of ${routingName}` });
-  await expect(dialog.getByText(routingValue, { exact: true })).toBeVisible();
+  await expect(dialog.getByText(routingText, { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 

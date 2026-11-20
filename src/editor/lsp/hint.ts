@@ -7,6 +7,7 @@ import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
 import { Prec } from "@codemirror/state";
 import { txTemplate } from "@/platform/i18n";
+import { spinnerNode } from "@/ui/iconNode";
 
 interface Hint {
   pos: number;
@@ -48,6 +49,7 @@ const hintField = StateField.define<Hint | null>({
               Object.assign(dom.dataset, h.data);
               if (typeof h.content === "string") {
                 dom.textContent = txTemplate(h.content);
+                if (h.pending) dom.prepend(spinnerNode(12, "cm-lsp-hint-spinner"));
                 return { dom };
               }
               const built = h.content();

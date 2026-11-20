@@ -16,6 +16,7 @@ import {
   splitJvmArgs,
   vmOptionsField,
 } from "./jvmTypes";
+import { withMavenTests } from "./mavenTests";
 import { useRun } from "./store";
 
 type TestKind = "all" | "package" | "class" | "method" | "pattern";
@@ -42,8 +43,6 @@ export function junitCommandLine(
   if (!detected) return { command: "", args: [], cwd: null };
   const base = inGradleModule(detected, moduleDir(p));
   const maven = base.kind === "maven";
-  const select = (pattern: string): string[] =>
-    maven ? [`-Dtest=${pattern}`, "-Dsurefire.failIfNoSpecifiedTests=false"] : ["--tests", pattern];
   let args = [...base.args];
   const cls = p.className?.trim() ?? "";
   switch (kindOf(p)) {
@@ -58,7 +57,7 @@ export function junitCommandLine(
     }
     case "package": {
       const pkg = p.packageName?.trim();
-      if (pkg) args.push(...select(maven ? `${pkg}.**.*` : `${pkg}.*`));
+      if (pkg) args = maven ? withMavenTests(args, `${pkg}.**.*`) : [...args, "--tests", `${pkg}.*`];
       break;
     }
     case "pattern": {
@@ -66,7 +65,8 @@ export function junitCommandLine(
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      if (patterns.length) args.push(...(maven ? select(patterns.join(",")) : patterns.flatMap(select)));
+      if (patterns.length)
+        args = maven ? withMavenTests(args, patterns.join(",")) : [...args, ...patterns.flatMap((p) => ["--tests", p])];
       break;
     }
     case "all":

@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub struct VcsSettings {
     /// Colour folders that contain changed files (project tree, tabs).
     pub show_dirty_directories: bool,
+    /// Diffs the user opens show in an editor tab; off, in a separate window.
+    pub diff_as_editor_tab: bool,
     /// Stop file history (Show History) after `history_limit` commits.
     pub limit_history: bool,
     pub history_limit: u32,
@@ -55,6 +57,7 @@ impl Default for VcsSettings {
         Self {
             // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
             show_dirty_directories: false,
+            diff_as_editor_tab: true,
             limit_history: true,
             history_limit: 1000,
             git: GitSettings::default(),

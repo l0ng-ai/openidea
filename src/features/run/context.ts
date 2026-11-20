@@ -12,6 +12,7 @@ import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
 import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
+import { withMavenTests } from "./mavenTests";
 import { typeFor } from "./types";
 import { runTemplate } from "./runTemplates";
 import { appendScriptArgs } from "./scriptArgs";
@@ -284,7 +285,7 @@ export function testConfigFor(
       return derived(module, relPath, { args: [...module.args, "--tests", `*${stem(relPath)}`] });
     }
     case "maven":
-      return derived(base, relPath, { args: [...base.args, `-Dtest=${stem(relPath)}`] });
+      return derived(base, relPath, { args: withMavenTests(base.args, stem(relPath)) });
   }
   return base;
 }

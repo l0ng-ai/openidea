@@ -31,6 +31,7 @@ import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
+import { withMavenTests } from "./mavenTests";
 import { detectRunTargets, goFuzzConfig, targetConfig, targetLanguage, zigTargets, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
 
@@ -1319,11 +1320,7 @@ export function produceDirectory(input: ContextInput): Produced | null {
       const pkg = jvmPackage[2]!.replace(/\//g, ".");
       return base.kind === "gradle"
         ? make(moduleBase, `Tests in '${pkg}'`, [...moduleBase.args, "--tests", `${pkg}.*`])
-        : make(moduleBase, `Tests in '${pkg}'`, [
-            ...base.args,
-            `-Dtest=${pkg}.**.*`,
-            "-Dsurefire.failIfNoSpecifiedTests=false",
-          ]);
+        : make(moduleBase, `Tests in '${pkg}'`, withMavenTests(base.args, `${pkg}.**.*`));
     }
   }
   const js = closest(["npm", "bun", "deno"]);

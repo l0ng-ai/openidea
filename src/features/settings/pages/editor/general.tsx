@@ -449,20 +449,29 @@ const FOLDING = editorPage({
   order: 4,
   keywords: ["fold", "collapse"],
   sections: [
-    { items: [{ t: "check", key: `${P}.folding.showOutline`, label: "Show code folding outline" }] },
+    {
+      items: [
+        {
+          t: "check",
+          key: `${P}.folding.showOutline`,
+          label: "Show code folding outline",
+          inline: {
+            kind: "select",
+            key: `${P}.folding.outlineVisibility`,
+            options: [
+              { value: "hover", label: "On hover" },
+              { value: "always", label: "Always" },
+            ],
+          },
+        },
+      ],
+    },
     {
       title: "Fold by default:",
       items: [
-        {
-          t: "grid",
-          columns: [
-            [
-              { t: "check", key: `${P}.folding.fileHeader`, label: "File header" },
-              { t: "check", key: `${P}.folding.imports`, label: "Imports" },
-            ],
-            [{ t: "check", key: `${P}.folding.docComments`, label: "Documentation comments" }],
-          ],
-        },
+        { t: "check", key: `${P}.folding.fileHeader`, label: "File header" },
+        { t: "check", key: `${P}.folding.imports`, label: "Imports" },
+        { t: "check", key: `${P}.folding.docComments`, label: "Documentation comments" },
       ],
     },
   ],
