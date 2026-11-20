@@ -14,6 +14,7 @@ import java.util.logging.Logger;
 public class SelfTest {
     public static class Fixture implements Driver {
         private boolean readonly;
+        private boolean dropped;
         private int changes;
         private Path started;
 
@@ -29,6 +30,12 @@ public class SelfTest {
                 case "getDatabaseProductName" -> "Fixture";
                 case "getDatabaseProductVersion" -> "1";
                 case "getIdentifierQuoteString" -> "\"";
+                case "getSearchStringEscape" -> "\\";
+                case "getSchemas" -> rows(List.of(Map.of("TABLE_SCHEM", "app")));
+                case "getColumns" -> "app".equals(a[1]) && "%".equals(a[2]) ? rows(List.of(
+                    Map.of("TABLE_NAME", "orders", "COLUMN_NAME", "id", "TYPE_NAME", "INT", "NULLABLE", 0),
+                    Map.of("TABLE_NAME", "orders", "COLUMN_NAME", "note", "TYPE_NAME", "VARCHAR", "NULLABLE", 1,
+                        "COLUMN_DEF", "'none'"))) : rows(List.of());
                 default -> throw new SQLFeatureNotSupportedException();
             });
             return proxy(Connection.class, (p, m, a) -> switch (m.getName()) {
@@ -36,6 +43,21 @@ public class SelfTest {
                 case "getMetaData" -> meta;
                 case "close" -> null;
                 case "createStatement" -> statement();
+                case "isClosed" -> false;
+                case "isValid" -> !dropped;
+                case "getCatalog" -> null;
+                default -> throw new SQLFeatureNotSupportedException();
+            });
+        }
+
+        /** A forward-only result set over `data`, read by column label. */
+        static ResultSet rows(List<Map<String, Object>> data) {
+            int[] at = {-1};
+            return proxy(ResultSet.class, (p, m, a) -> switch (m.getName()) {
+                case "next" -> ++at[0] < data.size();
+                case "getString" -> (String) data.get(at[0]).get((String) a[0]);
+                case "getInt" -> (Integer) data.get(at[0]).getOrDefault((String) a[0], 0);
+                case "close" -> null;
                 default -> throw new SQLFeatureNotSupportedException();
             });
         }
@@ -53,6 +75,7 @@ public class SelfTest {
                         throw new SQLException("statement cancelled");
                     }
                     if (sql.equals("write") && readonly) throw new SQLException("read-only");
+                    if (sql.equals("drop")) { dropped = true; throw new SQLException("connection reset"); }
                     changes++;
                     yield false;
                 }
@@ -122,6 +145,15 @@ public class SelfTest {
             send(out, 5, "query", "after cancel", "0", "2");
             var result = reply(in);
             assert result[0] == 1 && result[result.length - 1] == 2;
+            send(out, 6, "valid");
+            assert new String(reply(in), StandardCharsets.UTF_8).contains("true");
+            send(out, 7, "query", "drop", "0", "2");
+            assert reply(in)[0] == 0;
+            send(out, 8, "valid");
+            assert new String(reply(in), StandardCharsets.UTF_8).contains("false");
+            send(out, 9, "schemaColumns", "app");
+            var columns = new String(reply(in), StandardCharsets.UTF_8);
+            assert columns.contains("orders") && columns.contains("note") && columns.contains("'none'") : columns;
         } finally {
             child.destroyForcibly().waitFor();
         }

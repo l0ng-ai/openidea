@@ -1,4 +1,4 @@
-import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -160,19 +160,39 @@ export function SessionComposer({
   const provider = useAgents((s) => s.providers.find((p) => p.id === task.provider));
   const catalog = useAgents((s) => s.modelCatalogs.get(task.provider));
   const requestingModels = useAgents((s) => s.modelRequests.has(task.provider));
+  const requestTarget = useAgents((s) => s.modelRequestTargets.get(task.provider));
   const model = task.config.find((o) => o.category === "model");
-  const canRefreshModels = task.status !== "archived" && !!model && !!provider?.installed && project?.trusted !== false;
-  const candidateModels = canRefreshModels
-    ? (catalog?.config ?? provider?.config)?.find((o) => o.category === "model")?.values
-    : undefined;
+  const catalogModel = (catalog?.config ?? provider?.config)?.find((o) => o.category === "model");
+  const canRefreshModels =
+    task.status !== "archived" &&
+    (!!model || !!task.model || !!catalogModel) &&
+    !!provider?.installed &&
+    project?.trusted !== false;
   const pickerConfig = useMemo(() => {
-    if (!model || !candidateModels?.length) return task.config;
+    if (!canRefreshModels) return task.config;
+    if (!model) {
+      const recovered: AgentConfigOption =
+        catalogModel === undefined
+          ? {
+              id: "model",
+              name: "Model",
+              description: null,
+              category: "model",
+              current: task.model,
+              values: [],
+              via: "option",
+            }
+          : { ...catalogModel, current: task.model ?? catalogModel.current };
+      return [...task.config, recovered];
+    }
+    const candidateModels = catalogModel?.values;
+    if (!candidateModels?.length) return task.config;
     const sessionModels = new Set(model.values.map((v) => v.value));
     const extra = candidateModels.filter((v) => !sessionModels.has(v.value));
     if (!extra.length) return task.config;
     const pickerModel = { ...model, values: [...model.values, ...extra] };
     return task.config.map((o) => (o === model ? pickerModel : o));
-  }, [task.config, model, candidateModels]);
+  }, [task.config, task.model, model, catalogModel, canRefreshModels]);
   const [sending, setSending] = useState(false);
   const configChange = useRef<{ loadingModel: boolean } | null>(null);
   const [configuring, setConfiguring] = useState<typeof configChange.current>(null);
@@ -206,16 +226,28 @@ export function SessionComposer({
       )
       .finally(() => setSending(false));
   };
-  const setOption = (id: string, value: string) => {
-    const changingModel = id === model?.id;
-    const loadingModel = changingModel && !model.values.some((v) => v.value === value);
+  const setOption = (id: string, value: string, forModel?: string) => {
+    const pickerModel = pickerConfig.find((o) => o.category === "model");
+    const changingModel = id === pickerModel?.id;
+    const loadingModel = !!forModel || (changingModel && !model?.values.some((v) => v.value === value));
     const pendingModel = model?.current != null && model.current !== task.model;
     const change = loadingModel || (changingModel && configChange.current) || pendingModel ? { loadingModel } : null;
     if (change) {
       configChange.current = change;
       setConfiguring(change);
     }
-    void setTaskConfig(task.id, id, value)
+    const apply = async () => {
+      if (forModel && pickerModel) {
+        await setTaskConfig(task.id, pickerModel.id, forModel);
+        // A later model choice supersedes both halves of this edit.
+        const latest = useAgents.getState().tasks.get(task.id);
+        const selected = latest?.config.find((o) => o.category === "model")?.current ?? latest?.model;
+        if (configChange.current !== change) return;
+        if (selected !== forModel) throw new Error(tx("The model changed before its setting could be applied."));
+      }
+      await setTaskConfig(task.id, id, value);
+    };
+    void apply()
       .catch((e: unknown) =>
         notifications().notify({
           level: "error",
@@ -294,6 +326,11 @@ export function SessionComposer({
                       error: requestingModels ? null : (catalog?.error ?? null),
                       onOpen: () => void refreshTaskModels(task.id, false),
                       onRefresh: () => void executeAction("agents.refreshModels", task.id),
+                      preview: {
+                        settingsFor: (id) => (catalog ?? provider)?.thoughtLevels?.[id],
+                        load: (id) => void refreshTaskModels(task.id, false, id),
+                        errorFor: (id) => (requestTarget === id ? catalog?.error : null),
+                      },
                     }
                   : undefined
               }

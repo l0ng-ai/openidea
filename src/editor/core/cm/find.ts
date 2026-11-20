@@ -17,12 +17,12 @@ import {
   type ChangeDesc,
   type EditorState,
   type Extension,
+  type SelectionRange,
 } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import {
   SearchQuery,
   findNext as cmFindNext,
-  findPrevious as cmFindPrevious,
   getSearchQuery,
   replaceAll as cmReplaceAll,
   replaceNext as cmReplaceNext,
@@ -240,15 +240,21 @@ export interface FindQueryOptions extends FindOptions {
   inChanges?: boolean;
 }
 
+/** The characters a regular expression treats as syntax (`-` only inside a class, which never opens here). */
+const REGEX_SYNTAX = /[\\^$.*+?()[\]{}|/]/g;
+
 export function makeQuery(o: FindQueryOptions) {
+  // CodeMirror compares a plain-text query one character at a time; the same text as an escaped
+  // regular expression runs on the engine's matcher, over 20× faster in a large file, so every
+  // keystroke in the bar stays responsive. Its replacement escapes `$` to stay literal too.
   return new SearchQuery({
-    search: o.search,
+    search: o.regexp ? o.search : o.search.replace(REGEX_SYNTAX, "\\$&"),
     // Plain-text search and replace are literal (`\n` is not a newline), as in IDEA.
     literal: !o.regexp,
     caseSensitive: o.caseSensitive,
     wholeWord: o.wholeWord,
-    regexp: o.regexp,
-    replace: o.replace,
+    regexp: true,
+    replace: o.regexp ? o.replace : o.replace.replaceAll("$", "$$$$"),
     test: testFor(o.context ?? "any", !!o.inChanges),
   });
 }
@@ -345,8 +351,28 @@ export function findNext(view: EditorView): boolean {
   return view.state.field(findScope, false) ? step(view, true) : cmFindNext(view);
 }
 
+/** The last match in `from`–`to` other than `skip`. */
+function lastMatch(state: EditorState, from: number, to: number, skip?: SelectionRange): Match | null {
+  const cursor = getSearchQuery(state).getCursor(state, from, to);
+  let last: Match | null = null;
+  for (let r = cursor.next(); !r.done; r = cursor.next())
+    if (!skip || r.value.from !== skip.from || r.value.to !== skip.to) last = r.value as Match;
+  return last;
+}
+
+/**
+ * The match before the selection, wrapping to the end. CodeMirror finds it by scanning ever larger
+ * chunks backwards, quadratic in the distance to the match; one forward pass is linear.
+ */
 export function findPrevious(view: EditorView): boolean {
-  return view.state.field(findScope, false) ? step(view, false) : cmFindPrevious(view);
+  const { state } = view;
+  if (state.field(findScope, false)) return step(view, false);
+  if (!getSearchQuery(state).valid) return false;
+  const main = state.selection.main;
+  const m = lastMatch(state, 0, main.from) ?? lastMatch(state, main.from, state.doc.length, main);
+  if (!m) return false;
+  selectMatch(view, m);
+  return true;
 }
 
 /** The text replacing `m`, keeping its case when `preserve` is set. */

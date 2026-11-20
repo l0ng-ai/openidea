@@ -3,12 +3,13 @@ import { useEffect, useState } from "react";
 import type { Commit } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
-import { Dialog, List, Spinner, Tabs, T, tooltipAttrs } from "@/ui";
+import { Dialog, List, Spinner, SplitGroup, SplitHandle, SplitPanel, T, tooltipAttrs } from "@/ui";
 import { openDialog } from "./dialogs";
 import { formatTime } from "./model";
 import { showCompareRevisions } from "./operations";
 import { currentRepo, useVcs } from "./store";
 import styles from "./common.module.css";
+import compareStyles from "./CompareBranches.module.css";
 import { tx } from "@/platform/i18n";
 import { useRowHeight } from "@/ui/density";
 
@@ -69,16 +70,18 @@ function RangeDialog(props: { title: string; from: string; to: string; repo: str
 
 function CommitList({
   commits,
-  error,
+  error = null,
+  rangeLabel,
   onClose,
 }: {
   commits: Commit[] | null;
-  error: string | null;
+  error?: string | null;
+  rangeLabel?: string;
   onClose: () => void;
 }) {
-  const rowHeight = useRowHeight(22);
+  const rowHeight = useRowHeight(rangeLabel ? 42 : 22);
   return (
-    <div className={styles.commitListBody}>
+    <div className={rangeLabel ? compareStyles.list : styles.commitListBody}>
       {error ? (
         <div className={styles.error} style={{ padding: 14 }}>
           {error}
@@ -92,7 +95,7 @@ function CommitList({
           items={commits}
           getKey={(c) => c.id}
           rowHeight={rowHeight}
-          aria-label="Commits"
+          aria-label={rangeLabel ?? "Commits"}
           className={styles.grow}
           empty={
             <span>
@@ -103,19 +106,46 @@ function CommitList({
             onClose();
             void executeAction("vcs.showCommit", c);
           }}
-          renderItem={(c) => (
-            <span className={styles.commitRow} style={{ flex: 1, minWidth: 0, padding: 0 }}>
-              <span className={styles.commitHash}>{c.shortId}</span>
-              <span className={styles.commitSubject} {...tooltipAttrs(c.message || c.summary, undefined, true)}>
-                {c.summary}
+          renderItem={(c) =>
+            rangeLabel ? (
+              <div className={compareStyles.commit}>
+                <span className={compareStyles.subject} {...tooltipAttrs(c.message || c.summary, undefined, true)}>
+                  {c.summary}
+                </span>
+                <div className={compareStyles.metadata}>
+                  <span className={styles.commitHash}>{c.shortId}</span>
+                  <span className={compareStyles.author}>{c.author}</span>
+                  <span className={compareStyles.date}>{formatTime(c.timeMs)}</span>
+                </div>
+              </div>
+            ) : (
+              <span className={styles.commitRow} style={{ flex: 1, minWidth: 0, padding: 0 }}>
+                <span className={styles.commitHash}>{c.shortId}</span>
+                <span className={styles.commitSubject} {...tooltipAttrs(c.message || c.summary, undefined, true)}>
+                  {c.summary}
+                </span>
+                <span className={styles.commitMeta}>{c.author}</span>
+                <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
               </span>
-              <span className={styles.commitMeta}>{c.author}</span>
-              <span className={styles.commitMeta}>{formatTime(c.timeMs)}</span>
-            </span>
-          )}
+            )
+          }
         />
       )}
     </div>
+  );
+}
+
+function CompareRange({ label, commits, onClose }: { label: string; commits: Commit[] | null; onClose: () => void }) {
+  return (
+    <SplitPanel defaultSize="50%" minSize="25%">
+      <div className={compareStyles.range}>
+        <div className={compareStyles.rangeHeader}>
+          <h3>{label}</h3>
+          {commits && <span className={compareStyles.count}>{commits.length}</span>}
+        </div>
+        <CommitList rangeLabel={label} commits={commits} onClose={onClose} />
+      </div>
+    </SplitPanel>
   );
 }
 
@@ -123,7 +153,6 @@ function CompareDialog({ branch, current, onClose }: { branch: string; current: 
   const [repo] = useState(currentRepo);
   const [data, setData] = useState<{ incoming: Commit[]; outgoing: Commit[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState("incoming");
   useEffect(() => {
     let alive = true;
     Promise.all([commitsBetween("HEAD", branch, repo), commitsBetween(branch, "HEAD", repo)])
@@ -134,17 +163,17 @@ function CompareDialog({ branch, current, onClose }: { branch: string; current: 
     return () => {
       alive = false;
     };
-  }, [branch]);
-  const list = data ? (tab === "incoming" ? data.incoming : data.outgoing) : [];
+  }, [branch, repo]);
   return (
     <Dialog
       open
       title={tx`Compare ${current} with ${branch}`}
       onClose={onClose}
-      width={640}
-      minWidth={420}
+      width={800}
+      minWidth={360}
+      minHeight={360}
       resizable="both"
-      className={styles.listDialog}
+      className={`${styles.listDialog} ${compareStyles.dialog}`}
       buttons={[
         {
           label: "Show Diff",
@@ -152,31 +181,31 @@ function CompareDialog({ branch, current, onClose }: { branch: string; current: 
           onClick: () => {
             onClose();
             // Whole-project diff: every file that differs between the branches.
-            showCompareRevisions(branch, "HEAD", branch, current);
+            showCompareRevisions(branch, "HEAD", branch, current, repo);
           },
         },
         { label: "Close", role: "cancel" },
       ]}
     >
-      <Tabs
-        variant="compact"
-        activeId={tab}
-        onSelect={setTab}
-        aria-label="Direction"
-        items={[
-          {
-            id: "incoming",
-            label: tx`In ${branch}, not in ${current}`,
-            trailing: data ? String(data.incoming.length) : undefined,
-          },
-          {
-            id: "outgoing",
-            label: tx`In ${current}, not in ${branch}`,
-            trailing: data ? String(data.outgoing.length) : undefined,
-          },
-        ]}
-      />
-      <CommitList commits={data ? list : null} error={error} onClose={onClose} />
+      {error ? (
+        <div className={`${styles.error} ${compareStyles.error}`} role="alert">
+          {error}
+        </div>
+      ) : (
+        <SplitGroup orientation="vertical" className={compareStyles.ranges}>
+          <CompareRange
+            label={tx`In ${branch}, not in ${current}`}
+            commits={data?.incoming ?? null}
+            onClose={onClose}
+          />
+          <SplitHandle aria-label={tx("Resize branch comparison panes")} />
+          <CompareRange
+            label={tx`In ${current}, not in ${branch}`}
+            commits={data?.outgoing ?? null}
+            onClose={onClose}
+          />
+        </SplitGroup>
+      )}
     </Dialog>
   );
 }

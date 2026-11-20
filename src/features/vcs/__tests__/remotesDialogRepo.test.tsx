@@ -57,7 +57,8 @@ const addRemote = async (name: string, url: string) => {
   fireEvent.click(screen.getAllByRole("button", { name: "OK" }).at(-1)!);
 };
 
-const options = () => screen.queryAllByRole("option").map((o) => o.textContent);
+const remotes = () => screen.getAllByRole("row").filter((row) => row.hasAttribute("aria-selected"));
+const remoteText = () => remotes().map((row) => row.textContent);
 
 it("offers no repository choice when the project has one repository", async () => {
   useVcs.setState({ roots: ["/p"], repo: null });
@@ -79,13 +80,13 @@ it("lists and edits the remotes of the repository picked in the dialog", async (
   render(<VcsDialogHost />);
   await act(() => showManageRemotes());
   expect(screen.getByRole("button", { name: "Repository" })).toHaveTextContent("a");
-  await waitFor(() => expect(options()).toEqual(["origingit@example.com:a.git"]));
+  await waitFor(() => expect(remoteText()).toEqual(["origingit@example.com:a.git"]));
 
   await pick("Repository", "b");
   expect(screen.getByRole("button", { name: "Repository" })).toHaveTextContent("b");
-  await waitFor(() => expect(options()).toEqual(["upstreamgit@example.com:b.git", "forkgit@example.com:me/b.git"]));
+  await waitFor(() => expect(remoteText()).toEqual(["upstreamgit@example.com:b.git", "forkgit@example.com:me/b.git"]));
   // The first remote of the picked repository is selected.
-  expect(screen.getByRole("option", { name: /upstream/ })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("row", { name: /upstream/ })).toHaveAttribute("aria-selected", "true");
 
   // "origin" exists only in a, so the name is free in b.
   await addRemote("origin", "git@example.com:b.git");
@@ -103,8 +104,8 @@ it("ignores the remotes of a repository that is no longer picked", async () => {
   await act(() => showManageRemotes());
 
   await pick("Repository", "b");
-  await waitFor(() => expect(options()).toHaveLength(2));
+  await waitFor(() => expect(remotes()).toHaveLength(2));
   // a's remotes arrive after b was picked: they must not replace b's.
   await act(async () => resolveA([remote("origin", "git@example.com:a.git")]));
-  expect(options()).toEqual(["upstreamgit@example.com:b.git", "forkgit@example.com:me/b.git"]);
+  expect(remoteText()).toEqual(["upstreamgit@example.com:b.git", "forkgit@example.com:me/b.git"]);
 });

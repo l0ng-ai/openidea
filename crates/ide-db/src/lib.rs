@@ -379,8 +379,8 @@ pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
         loop {
             tick.tick().await;
             let Some(p) = pool.upgrade().filter(|p| !p.is_closed()) else { break };
-            if let Err(e) = p.rows(p.ping_sql(), 1).await {
-                tracing::debug!("keep-alive: {}", e.message);
+            if let Err(e) = p.ping().await {
+                tracing::info!("keep-alive: {}", e.message);
             }
         }
     });
@@ -847,12 +847,12 @@ impl DbManager {
     }
 
     pub fn is_connected(&self, id: &str) -> bool {
-        self.pools.lock().contains_key(id)
+        self.pools.lock().get(id).is_some_and(|p| !p.is_closed())
     }
 
     /// Connected targets (data source ids, `<id>:<database>`).
     pub fn connected(&self) -> Vec<String> {
-        self.pools.lock().keys().cloned().collect()
+        self.pools.lock().iter().filter(|(_, p)| !p.is_closed()).map(|(id, _)| id.clone()).collect()
     }
 
     /// The pool of target `id`, connecting first if needed.
@@ -862,8 +862,13 @@ impl DbManager {
         if self.tunnels.lock().get(source_id).is_some_and(|t| t.is_closed()) {
             self.disconnect_source(source_id).await;
         }
-        if let Some(p) = self.pools.lock().get(id) {
-            return Ok(p.clone());
+        let cached = self.pools.lock().get(id).cloned();
+        if let Some(p) = cached {
+            if !p.is_closed() {
+                return Ok(p);
+            }
+            // The connection broke (a custom JDBC session whose TCP connection was dropped): reconnect.
+            self.disconnect(id).await;
         }
         let source = self.source(id)?;
         let password = self.password(&source).await;
@@ -917,7 +922,7 @@ impl DbManager {
 
     /// Disconnects every database of data source `id`.
     pub async fn disconnect_source(&self, id: &str) {
-        let targets: Vec<String> = self.connected().into_iter().filter(|t| split_target(t).0 == id).collect();
+        let targets: Vec<String> = self.pools.lock().keys().filter(|t| split_target(t).0 == id).cloned().collect();
         for t in targets {
             self.disconnect(&t).await;
         }

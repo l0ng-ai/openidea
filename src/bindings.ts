@@ -38,6 +38,8 @@ export const commands = {
 	 *  before a task exists (skills and custom commands on disk included).
 	 */
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
+	/**  Reads the running session's context categories without sending a prompt. */
+	agentContextUsage: (task: string) => typedError<AgentContextUsage, IdeError>(__TAURI_INVOKE("agent_context_usage", { task })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
 	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
@@ -533,6 +535,8 @@ export const commands = {
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
+	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	/**
@@ -960,8 +964,9 @@ export const commands = {
 	mavenExcludeDependency: (pom: string, dependency: ArtifactKey, exclusion: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_exclude_dependency", { pom, dependency, exclusion })),
 	/**
 	 *  The go-to-declaration target at `pos` of a Maven POM: the definition of the
-	 *  `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
-	 *  entry providing the dependency's / plugin's version, along the parent chain.
+	 *  `${property}` at the caret, the parent POM, or the dependency / plugin's own POM
+	 *  (a project module first, then the local repository). A dependency without a
+	 *  resolvable artifact POM falls back to its management entry.
 	 */
 	mavenGotoDeclaration: (pom: string, pos: Pos) => typedError<{
 	/**
@@ -975,6 +980,12 @@ export const commands = {
 	/**  The declaration as named for the user (`example.version`, `com.example:example-lib`). */
 	label: string,
 } | null, IdeError>(__TAURI_INVOKE("maven_goto_declaration", { pom, pos })),
+	/**
+	 *  Gutter targets of the unversioned dependencies and plugins in a Maven POM:
+	 *  the management declarations that actually supply their versions, including
+	 *  parent POMs and imported BOMs. Cancel with `cancel_request(request)`.
+	 */
+	mavenManagedDeclarations: (pom: string, request: RequestId) => typedError<PomManagedDeclaration[], IdeError>(__TAURI_INVOKE("maven_managed_declarations", { pom, request })),
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
 	/**
@@ -2144,6 +2155,8 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
+	/**  The connected agent can report a breakdown of its context window. */
+	contextUsage?: boolean,
 };
 
 /**
@@ -2247,6 +2260,21 @@ export type AgentConfigVia =
 "mode" | 
 /**  `session/set_model` (agents that report `models` instead of a model config option). */
 "model";
+
+export type AgentContextCategory = {
+	name: string,
+	tokens: number,
+	kind: string | null,
+};
+
+export type AgentContextUsage = {
+	categories: AgentContextCategory[],
+	totalTokens: number,
+	maxTokens: number,
+	model: string,
+	isAutoCompactEnabled: boolean | null,
+	autoCompactThreshold: number | null,
+};
 
 export type AgentCost = {
 	amount: number | null,
@@ -3770,6 +3798,8 @@ export type CommitSettings = {
 	agentModel?: string,
 	/**  That model's thinking level for commit messages; empty keeps the agent's. */
 	agentEffort?: string,
+	/**  Show the Generate Commit Message with Agent button above the commit message. */
+	agentButton?: boolean,
 };
 
 export type Commit_Deserialize = {
@@ -6448,6 +6478,8 @@ export type GitSettings = {
 	 */
 	inlineBlameClickable?: boolean,
 	showBranchInProjectView?: boolean,
+	/**  Branch operations from the branches popup act on every repository of the project. */
+	syncBranchOperations?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */
@@ -7024,6 +7056,11 @@ workspaceEdit?: boolean } |
 { type: "docDirty"; doc: DocId; dirty: boolean; 
 /**  Text version when this transition occurred, including when it was saved. */
 version: number } | 
+/**
+ *  An open document's file changed on disk while the buffer had unsaved changes. The buffer
+ *  keeps them (autosave leaves the file alone); the UI offers to load the disk version.
+ */
+{ type: "docDiskConflict"; doc: DocId; path: string } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
 /**
@@ -9750,6 +9787,16 @@ export type PomGotoKind =
 "managedPlugin" | 
 /**  The POM of the artifact itself: a project module's, else the local repository's. */
 "artifactPom";
+
+/**  A dependency or plugin whose version comes from a management declaration. */
+export type PomManagedDeclaration = {
+	/**  0-based line of the `<dependency>` or `<plugin>` declaration. */
+	line: number,
+	/**  The interpolated version the management entry provides, when it has one. */
+	version: string | null,
+	/**  The management entry, possibly in a parent POM or an imported BOM. */
+	target: PomGoto,
+};
 
 /**  A 0-based line / UTF-16 column position. */
 export type Pos = {

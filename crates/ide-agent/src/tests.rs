@@ -2334,6 +2334,56 @@ async fn idle_model_switches_discover_controls_and_no_control_models_without_ano
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn session_without_a_model_option_can_select_from_a_recovered_catalog() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.model_options.lock() = HashMap::from([
+        ("big".into(), effort_options(&["low", "high"], "high")),
+        ("small".into(), effort_options(&["minimal", "medium"], "minimal")),
+    ]);
+    let mgr = manager(tmp.path(), agent);
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude-acp".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let spec = mgr.shared.spec("claude-acp").unwrap();
+    let (_, flight) = mgr.shared.paths.catalogs.request(&mgr.shared, spec, true, None);
+    if let Some(mut ready) = flight {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !*ready.borrow_and_update() {
+                ready.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+    {
+        let task = mgr.task(&task.id).unwrap();
+        let mut state = task.state.lock();
+        state.task.config.retain(|option| option.category.as_deref() != Some("model"));
+        state.task.model = Some("stale-model".into());
+    }
+
+    mgr.set_config(&task.id, "model", "small".into()).await.unwrap();
+    let task = mgr.task(&task.id).unwrap();
+    {
+        let state = task.state.lock();
+        assert_eq!(state.task.model.as_deref(), Some("small"));
+        let model = state.task.config.iter().find(|option| option.category.as_deref() == Some("model")).unwrap();
+        assert_eq!(model.current.as_deref(), Some("small"));
+        assert!(model.values.iter().any(|value| value.value == "small"));
+    }
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn idle_model_discovery_failure_restores_the_previous_choice_without_claiming_no_controls() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());

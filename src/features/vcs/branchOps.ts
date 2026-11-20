@@ -5,6 +5,7 @@ import type { Branch, BranchInfo, BranchUpdateStatus, CheckoutOptions, Worktree 
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { openWorktree } from "./openWorktree";
 import { ask } from "@/workbench/messages";
 import { branchNamePrefixes, isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
 import { showCommitRange } from "./CompareBranches";
@@ -154,7 +155,7 @@ async function performCheckout(
           options = { ...options, ignoreOtherWorktrees: true };
           continue;
         }
-        if (r.button === "open") await executeAction("file.openProjectPath", path);
+        if (r.button === "open") await openWorktree(path);
         return false;
       }
     }
@@ -313,12 +314,14 @@ export async function renameBranch(branch: Branch) {
       },
     },
   );
-  if (ok !== undefined) {
-    try {
-      localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === name ? to : b))));
-    } catch {
-      // Recents are best effort.
-    }
+  if (ok !== undefined) renameRecent(name, to);
+}
+
+function renameRecent(from: string, to: string) {
+  try {
+    localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === from ? to : b))));
+  } catch {
+    // Recents are best effort.
   }
 }
 
@@ -594,7 +597,8 @@ export function branchUpdateSummary(results: readonly RepoBranchUpdate[]) {
 
 /** "in 3 repositories", or "in 2 of 3 repositories" when some were left out. */
 function inRepos(done: number, total: number): string {
-  return done === total ? `in ${total} repositories` : `in ${done} of ${total} repositories`;
+  if (done === total) return total === 1 ? "in 1 repository" : `in ${total} repositories`;
+  return `in ${done} of ${total} repositories`;
 }
 
 interface Rollback<T> {
@@ -610,13 +614,14 @@ const branchInfo = (root: string) => call(commands.vcsBranchInfo(root)).catch(()
  * error is reported by `step`), then reports how many repositories it was done in.
  * When it failed after succeeding in some repositories, offers to roll those back so
  * the repositories don't diverge (not when the failed one stopped on conflicts).
+ * Returns the number of repositories it stays done in (0 after a rollback).
  */
 async function eachRepo<T>(
   roots: readonly string[],
   step: (root: string) => Promise<T | undefined>,
   title: string,
   rollback?: Rollback<T>,
-) {
+): Promise<number> {
   const done: { root: string; result: T; before: BranchInfo }[] = [];
   let failed: string | null = null;
   for (const root of roots) {
@@ -647,11 +652,18 @@ async function eachRepo<T>(
         await runOp(tx`Rollback (${repo})`, () => rollback.run(d.root, d.result, d.before), { refresh: false });
       }
       await refreshNow();
-      return;
+      return 0;
     }
   }
   if (done.length)
     notifications().notify({ group: "vcs", level: "info", title: `${title} ${inRepos(done.length, roots.length)}` });
+  return done.length;
+}
+
+/** The repositories of `roots` whose current branch is not `name`. */
+function reposNotOn(name: string, roots: readonly string[]): string[] {
+  const { heads } = useVcs.getState();
+  return roots.filter((root) => heads[root]?.head !== name);
 }
 
 /** HEAD as a checkout target: the branch, or the commit on a detached HEAD. */
@@ -667,12 +679,18 @@ async function resetBack(root: string, before: BranchInfo) {
   if (before.headCommit && after) await call(commands.vcsRestoreHead(root, before.headCommit, after));
 }
 
-/** Checks out `name` (local, or remote: its local namesake) in every repository of `roots`. */
+/**
+ * Checks out `name` (local, or remote: its local namesake) in every repository of `roots`
+ * not already on it (with diverged branches, only the others move).
+ */
 export async function checkoutInRepos(name: string, roots: readonly string[]) {
-  const label = useVcs.getState().branches.some((b) => b.remote && b.name === name) ? shortRemoteName(name) : name;
-  const previous = useVcs.getState().branch?.head;
+  const elsewhere = reposNotOn(name, roots);
+  if (!elsewhere.length) return;
+  const { branches, branch } = useVcs.getState();
+  const label = branches.some((b) => b.remote && b.name === name) ? shortRemoteName(name) : name;
+  const previous = branch?.head;
   await eachRepo(
-    roots,
+    elsewhere,
     async (root) => ((await performCheckout(name, () => "", root, true)) ? true : undefined),
     `Checked out ${label}`,
     { undo: tx("check out the previous branch again"), run: (root, _, before) => checkoutBack(root, before) },
@@ -718,6 +736,41 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   );
 }
 
+/**
+ * Checkout and Rebase onto Current in every repository of `roots`: checks out `name`, then
+ * rebases it onto `current` (the branch they were all on); stops on conflicts.
+ */
+export async function checkoutAndRebaseInRepos(name: string, current: string, roots: readonly string[]) {
+  await saveAll();
+  await eachRepo(
+    roots,
+    async (root) => {
+      const before = await branchInfo(root);
+      if (!before || !(await performCheckout(name, () => "", root, true))) return undefined;
+      const tip = (await branchInfo(root))?.headCommit;
+      if (!tip) return undefined;
+      const done = await runOp(
+        tx`Rebase onto ${current} (${repoName(root)})`,
+        () => call(commands.vcsRebase(root, current)),
+        { refresh: false, errorActions: conflictActions, onError: openConflictsInstead },
+      );
+      if (done !== undefined) return { tip };
+      // A refused rebase leaves this repository on `name`; conflicts stay for the user to resolve.
+      if (!(await branchInfo(root))?.operation) await checkoutBack(root, before);
+      return undefined;
+    },
+    `Checked out ${name} and rebased onto ${current}`,
+    {
+      undo: tx`restore ${name} and check out the previous branch again`,
+      run: async (root, { tip }, before) => {
+        const after = (await branchInfo(root))?.headCommit;
+        if (after) await call(commands.vcsRestoreHead(root, tip, after));
+        await checkoutBack(root, before);
+      },
+    },
+  );
+}
+
 /** Merges `branch` into the current branch of every repository of `roots`; stops on conflicts. */
 export async function mergeInRepos(branch: string, roots: readonly string[]) {
   await saveAll();
@@ -750,17 +803,22 @@ export async function rebaseInRepos(branch: string, roots: readonly string[]) {
   );
 }
 
-/** Deletes local branch `name` in every repository of `roots`. */
+/**
+ * Deletes local branch `name` in every repository of `roots` where it is not checked out
+ * (git refuses those; with diverged branches it may be current in some of them).
+ */
 export async function deleteInRepos(name: string, roots: readonly string[]) {
+  const deletable = reposNotOn(name, roots);
+  if (!deletable.length) return;
   const ok = await confirmDialog({
     title: "Delete Branch",
-    message: tx`Delete branch '${name}' in ${roots.length} repositories? Unmerged commits are discarded.`,
+    message: tx`Delete branch '${name}' in ${deletable.length} repositories? Unmerged commits are discarded.`,
     okLabel: "Delete",
     danger: true,
   });
   if (!ok) return;
   await eachRepo(
-    roots,
+    deletable,
     (root) =>
       runOp(tx`Delete branch ${name} (${repoName(root)})`, () => call(commands.vcsDeleteBranch(root, name)), {
         refresh: false,
@@ -768,6 +826,41 @@ export async function deleteInRepos(name: string, roots: readonly string[]) {
     `Deleted branch ${name}`,
     { undo: tx`restore branch ${name}`, run: (root, deleted) => call(commands.vcsRestoreBranch(root, deleted)) },
   );
+}
+
+/** Renames local branch `name` in every repository of `roots`; `upstream`: some of them track a remote branch. */
+export async function renameInRepos(name: string, roots: readonly string[], upstream: boolean) {
+  const r = await promptText({
+    title: tx`Rename Branch ${name}`,
+    label: tx`New branch name (in ${roots.length} repositories):`,
+    initial: name,
+    mono: true,
+    okLabel: "Rename",
+    sanitize: cleanUpBranchNameOnTyping,
+    validate: (v) => (v.trim() === name ? "Enter a new name" : validateBranchName(v)),
+    checkbox: upstream ? { label: "Unset upstream branch", initial: false } : undefined,
+  });
+  if (!r) return;
+  const to = r.value.trim();
+  const renamed = await eachRepo(
+    roots,
+    (root) =>
+      runOp(
+        tx`Rename branch ${name} (${repoName(root)})`,
+        () => call(commands.vcsRenameBranch(root, name, to, false)),
+        { refresh: false },
+      ).then((done) => (done === undefined ? undefined : true)),
+    `Renamed branch ${name} to ${to}`,
+    { undo: tx`rename it back to ${name}`, run: (root) => call(commands.vcsRenameBranch(root, to, name, false)) },
+  );
+  if (!renamed) return;
+  renameRecent(name, to);
+  // The upstream goes once the rename is final: a rollback could not restore it.
+  if (upstream && r.checked && renamed === roots.length)
+    for (const root of roots)
+      await runOp(tx`Unset upstream of ${to} (${repoName(root)})`, () =>
+        call(commands.vcsRenameBranch(root, to, to, true)),
+      );
 }
 
 // --- favorites ---------------------------------------------------------------

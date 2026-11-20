@@ -301,7 +301,14 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("packageReference", "Identifiers › Package reference", [LD], "namespace"),
   syn("constant", "Identifiers › Constant", [LD], "constant", { defaultItalic: true }),
   syn("field", "Identifiers › Instance field", [LD], "property"),
-  { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
+  {
+    id: "staticSymbol",
+    name: "Identifiers › Static symbol",
+    path: [LD],
+    token: "static",
+    italicOnly: true,
+    defaultItalic: true,
+  },
   syn("functionDeclaration", "Identifiers › Function declaration", [LD], "function"),
   syn("functionCall", "Identifiers › Function call", [LD], "function-call"),
   syn("predefined", "Identifiers › Predefined symbol", [LD], "builtin"),
@@ -403,7 +410,10 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     ["separator", "Comma and semicolon", "separator"],
     ["scriptTag", "PHP tags", "processing-instruction"],
     ["staticField", "Static field", "static-property"],
-  ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
+  ].map(([id, name, token]) => ({
+    ...syn(`php.${id}`, name!, ["PHP"], token!, id === "staticField" ? { defaultItalic: true } : {}),
+    language: "PHP",
+  })),
 ];
 
 // --- scheme base values ------------------------------------------------------

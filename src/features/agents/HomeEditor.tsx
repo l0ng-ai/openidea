@@ -23,6 +23,7 @@ import {
   HOME,
   NO_COMMANDS,
   draftConfig,
+  draftModelSettings,
   refreshProviders,
   refreshModels,
   setDraftMcpOverrides,
@@ -99,7 +100,8 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
   const requestTarget = useAgents((s) => s.modelRequestTargets.get(provider?.id ?? ""));
   const { defaults, fitWindowWidth } = useAgentSettings();
-  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const providerDefaults = (provider && defaults[provider.id]) || {};
+  const config = draftConfig(provider, draft, providerDefaults);
   const model = config.find((o) => o.category === "model");
   const selectedModel = model?.current ?? null;
   const selectedModelRef = useRef(selectedModel);
@@ -229,7 +231,10 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
               <ConfigPickers
                 key={provider?.id}
                 config={config}
-                onChange={setDraftOption}
+                onChange={(option, value, forModel) => {
+                  if (forModel && model) setDraftOption(model.id, forModel);
+                  setDraftOption(option, value);
+                }}
                 modelRefresh={
                   provider?.installed
                     ? {
@@ -242,6 +247,16 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                             : null,
                         error: !requestingModels && currentModelRequest ? (catalog?.error ?? null) : null,
                         onRefresh: () => void executeAction("agents.refreshModels", null),
+                        preview: {
+                          settingsFor: (id) =>
+                            draftModelSettings(
+                              (catalog ?? provider).thoughtLevels?.[id],
+                              draft.thoughtLevels?.[id],
+                              providerDefaults,
+                            ),
+                          load: (id) => void refreshModels(provider.id, false, id),
+                          errorFor: (id) => (requestTarget === id ? catalog?.error : null),
+                        },
                       }
                     : undefined
                 }

@@ -1,5 +1,5 @@
 import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
@@ -49,7 +49,7 @@ async function writeClipboard(text: string) {
   }
 }
 
-/** IDEA's Environment Variables dialog: user variables, and the inherited system ones (read-only). */
+/** Edits user variables and shows the inherited system variables. */
 export function EnvDialog({
   env,
   includeSystemEnv,
@@ -65,6 +65,8 @@ export function EnvDialog({
   const [selected, setSelected] = useState<number | null>(null);
   const [include, setInclude] = useState(includeSystemEnv);
   const [system, setSystem] = useState<Array<[string, string]> | null>(() => (isTauri() ? null : []));
+  const lastName = useRef<HTMLInputElement>(null);
+  const focusAddedRow = useRef(false);
   const { error } = envFromRows(rows);
   const tx = useTx();
   const txTemplate = useTxTemplate();
@@ -81,11 +83,17 @@ export function EnvDialog({
     };
   }, []);
 
+  useLayoutEffect(() => {
+    if (!focusAddedRow.current) return;
+    focusAddedRow.current = false;
+    lastName.current?.focus();
+  }, [rows.length]);
+
   const set = (i: number, patch: Partial<EnvRow>) =>
     setRows((r) => r.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   const add = () => {
+    focusAddedRow.current = true;
     setRows((r) => [...r, { key: "", value: "" }]);
-    setSelected(rows.length);
   };
   const remove = () => {
     if (selected === null) return;
@@ -108,7 +116,10 @@ export function EnvDialog({
       title="Environment Variables"
       onClose={onClose}
       width={560}
-      footerStart={error && <span className={styles.footerError}>{txTemplate(error)}</span>}
+      resizable="both"
+      minWidth={360}
+      minHeight={340}
+      className={styles.envWindow}
       buttons={[
         {
           label: "OK",
@@ -165,24 +176,34 @@ export function EnvDialog({
                 className={clsx(styles.envGridRow, selected === i && styles.editItemSelected)}
                 onFocus={() => setSelected(i)}
               >
-                <Input
-                  mono
-                  variant="bare"
-                  aria-label={txTemplate(`Variable ${i + 1} name`)}
-                  value={r.key}
-                  onChange={(e) => set(i, { key: e.target.value })}
-                />
-                <Input
-                  mono
-                  variant="bare"
-                  aria-label={txTemplate(`Variable ${i + 1} value`)}
-                  value={r.value}
-                  onChange={(e) => set(i, { value: e.target.value })}
-                />
+                <div role="cell">
+                  <Input
+                    ref={i === rows.length - 1 ? lastName : undefined}
+                    mono
+                    variant="bare"
+                    aria-label={txTemplate(`Variable ${i + 1} name`)}
+                    value={r.key}
+                    onChange={(e) => set(i, { key: e.target.value })}
+                  />
+                </div>
+                <div role="cell">
+                  <Input
+                    mono
+                    variant="bare"
+                    aria-label={txTemplate(`Variable ${i + 1} value`)}
+                    value={r.value}
+                    onChange={(e) => set(i, { value: e.target.value })}
+                  />
+                </div>
               </div>
             ))}
           </div>
         </div>
+        {error && (
+          <span className={styles.envError} role="alert">
+            {txTemplate(error)}
+          </span>
+        )}
         <Checkbox checked={include} onChange={setInclude} label="Include system environment variables" />
         <div className={clsx(styles.envPanel, !include && styles.envDisabled)}>
           <div className={styles.editToolbar} role="toolbar" aria-label={tx("System environment variables")}>
@@ -216,8 +237,12 @@ export function EnvDialog({
                 className={clsx(styles.envGridRow, styles.envSystemRow, overridden.has(k) && styles.envOverridden)}
                 title={`${k}=${v}`}
               >
-                <span className={styles.envCell}>{k}</span>
-                <span className={styles.envCell}>{v}</span>
+                <span className={styles.envCell} role="cell">
+                  {k}
+                </span>
+                <span className={styles.envCell} role="cell">
+                  {v}
+                </span>
               </div>
             ))}
           </div>

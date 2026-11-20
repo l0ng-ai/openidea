@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FileStatus } from "@/bindings";
 import { activeEditor } from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
-import { Dialog, Icon, List, fileIconName, T } from "@/ui";
+import { Button, Dialog, Icon, List, fileIconName, T } from "@/ui";
 import { editorService, notifications } from "@/workbench/contributions";
 import { blockAt, parseConflicts, resolutionText, type Resolution } from "./conflicts";
 import { openDialog } from "./dialogs";
@@ -13,9 +13,8 @@ import { controlLabel, controlOperation, inProgress, operationTitle, type InProg
 import { runOp, writeFileText } from "./ops";
 import { executeAction } from "@/platform/actions";
 import { conflictedFiles, useVcs } from "./store";
-import styles from "./common.module.css";
+import styles from "./ConflictsDialog.module.css";
 import { tx } from "@/platform/i18n";
-import { useRowHeight } from "@/ui/density";
 
 /**
  * The stopped rebase / cherry-pick / revert whose conflicts are being resolved from the
@@ -65,7 +64,6 @@ export async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
 }
 
 function ConflictsDialog({ onClose }: { onClose: () => void }) {
-  const rowHeight = useRowHeight(22);
   const files = useVcs((s) => s.status).filter((f) => f.unstaged === "conflicted");
   const root = useVcs((s) => s.root) ?? "";
   const op = useVcs((s) => inProgress(s.branch?.operation));
@@ -86,6 +84,10 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
   const head = useVcs((s) => s.branch?.head ?? null);
   const [active, setActive] = useState(0);
   const current = files[Math.min(active, files.length - 1)];
+  const edit = (file: FileStatus) => {
+    onClose();
+    openMergeEditor(file.path);
+  };
   // Once everything is resolved the dialog concludes the stopped operation, as IDEA does.
   const conclude =
     op && !files.length
@@ -98,8 +100,11 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
       open
       title="Conflicts"
       onClose={dismiss}
-      width={600}
-      footerStart={<span className={styles.hint}>{op ? operationTitle(op, head) : ""}</span>}
+      className={styles.dialog}
+      width={680}
+      resizable="both"
+      minWidth={360}
+      minHeight={320}
       buttons={[
         ...(conclude
           ? [
@@ -114,58 +119,68 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
               },
             ]
           : []),
-        { label: "Accept Yours", disabled: !current, onClick: () => current && void acceptSide(current, "ours") },
-        { label: "Accept Theirs", disabled: !current, onClick: () => current && void acceptSide(current, "theirs") },
-        {
-          label: "Merge…",
-          role: conclude ? "extra" : "default",
-          autoFocus: !conclude,
-          disabled: !current,
-          onClick: () => {
-            if (!current) return;
-            onClose();
-            openMergeEditor(current.path);
-          },
-        },
         { label: "Close", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        {files.length
-          ? files.length === 1
-            ? tx`${files.length} file with conflicts`
-            : tx`${files.length} files with conflicts`
-          : tx("All conflicts resolved")}
-      </div>
-      <div style={{ height: 240, display: "flex", flexDirection: "column", padding: "0 14px 14px" }}>
-        <List
-          items={files}
-          getKey={(f) => f.path}
-          activeIndex={Math.min(active, files.length - 1)}
-          onActiveChange={setActive}
-          rowHeight={rowHeight}
-          aria-label="Conflicted files"
-          className={styles.boxList}
-          empty={
-            <span>
-              <T>No conflicts</T>
-            </span>
-          }
-          onActivate={(f, _i, e) => {
-            if (e.type === "click" && (e as unknown as MouseEvent).detail < 2) return;
-            onClose();
-            openMergeEditor(f.path);
-          }}
-          renderItem={(f) => (
-            <span className={styles.fileRow} style={{ flex: 1, padding: 0 }}>
-              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
-              <span className={styles.fileName} style={{ color: "var(--vcs-conflict)" }}>
-                {baseName(f.path)}
-              </span>
-              <span className={styles.fileDir}>{dirName(relTo(root, stripSlash(f.path)))}</span>
-            </span>
-          )}
-        />
+      <div className={styles.content}>
+        <div className={styles.summary}>
+          {op && <span>{operationTitle(op, head)}</span>}
+          <span className={styles.count} role="status">
+            {files.length
+              ? files.length === 1
+                ? tx`${files.length} file with conflicts`
+                : tx`${files.length} files with conflicts`
+              : tx("All conflicts resolved")}
+          </span>
+        </div>
+        <div className={styles.workspace}>
+          <div className={styles.listFrame}>
+            <div className={styles.listHeader} aria-hidden>
+              <T>Name</T>
+            </div>
+            <List
+              autoFocus={!!current}
+              items={files}
+              getKey={(f) => f.path}
+              activeIndex={Math.min(active, files.length - 1)}
+              onActiveChange={setActive}
+              aria-label={tx("Conflicted files")}
+              className={styles.list}
+              empty={<T>No conflicts</T>}
+              onActivate={(f, _i, e) => {
+                if (e.type === "click" && (e as unknown as MouseEvent).detail < 2) return;
+                edit(f);
+              }}
+              renderItem={(f) => {
+                const path = relTo(root, stripSlash(f.path));
+                const name = baseName(f.path);
+                const dir = dirName(path);
+                return (
+                  <span className={styles.row} title={path}>
+                    <Icon name={fileIconName(name, f.path)} size={16} />
+                    <span className={styles.fileName}>{name}</span>
+                    {dir && <span className={styles.fileDir}>{dir}</span>}
+                  </span>
+                );
+              }}
+            />
+          </div>
+          <div className={styles.actions} role="group" aria-label={tx("Conflict resolution")}>
+            <Button disabled={!current} onClick={() => current && void acceptSide(current, "ours")}>
+              Accept Yours
+            </Button>
+            <Button disabled={!current} onClick={() => current && void acceptSide(current, "theirs")}>
+              Accept Theirs
+            </Button>
+            <Button
+              variant={conclude ? "secondary" : "primary"}
+              disabled={!current}
+              onClick={() => current && edit(current)}
+            >
+              Merge…
+            </Button>
+          </div>
+        </div>
       </div>
     </Dialog>
   );

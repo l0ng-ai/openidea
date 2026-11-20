@@ -120,7 +120,67 @@
   opacity: 0.5;
 }
 
+.gutterIconList {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-1);
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-field);
+  font-size: var(--fs-ui);
+}
+.gutterIconRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-selection);
+}
+.gutterIconRow:has(input:enabled):hover {
+  background: var(--bg-hover);
+}
+.gutterIconPreview {
+  display: grid;
+  flex: 0 0 16px;
+  place-items: center;
+}
+.gutterIconRow:has(input:disabled) .gutterIconPreview {
+  opacity: 0.5;
+}
+.gutterIconRow .gutterIconChoice {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--h-list-row);
+  padding-block: var(--space-0-5);
+  overflow-wrap: anywhere;
+}
+.gutterSwatch {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--accent);
+}
+
 /* Font page */
+.fontPage {
+  height: 100%;
+  min-height: 240px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.fontSplit {
+  height: 100%;
+}
+.fontOptions {
+  container: font-options / inline-size;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
 .fontFamily {
   display: flex;
   align-items: center;
@@ -128,28 +188,50 @@
   gap: var(--space-2);
   min-width: 0;
 }
-.fontSelect {
+.fontSelect,
+.fontWeight {
   width: 240px;
   max-width: 100%;
 }
+@container font-options (max-width: 380px) {
+  .fontRow {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+    margin-bottom: var(--space-1);
+  }
+  .fontRow > label {
+    padding-top: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
 .previewTitle {
-  margin: 18px 0 6px;
-  color: var(--fg-strong);
+  flex: none;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
 }
 .previewArea {
+  flex: 1;
   font-weight: var(--fw-code);
   width: 100%;
-  min-height: 240px;
-  resize: vertical;
+  min-height: 0;
+  resize: none;
   box-sizing: border-box;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   border: none;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
   background: var(--bg-editor, var(--bg-island));
   color: var(--fg-editor, var(--fg));
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   outline: none;
+}
+.previewArea:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
 }
 
 /* Color Scheme page */
@@ -183,13 +265,38 @@
 }
 .schemeBody {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(220px, 260px);
-  gap: 14px;
-  min-height: 320px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 280px);
+  gap: var(--space-2);
+  height: 100%;
+  min-height: 0;
+  padding-bottom: var(--space-2);
+}
+.schemePage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 340px;
+  min-width: 0;
+}
+.schemeSplit {
+  flex: 1;
+}
+.schemePage > :not(.schemeSplit) {
+  flex: none;
+}
+.schemeExtraOptions {
+  margin-top: var(--space-4);
+}
+@container settings-content (max-width: 610px) {
+  .schemeBody {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(72px, 2fr) minmax(0, 3fr);
+  }
 }
 .attrTree {
-  max-height: 360px;
-  overflow: auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
   padding: 2px 0;
@@ -207,9 +314,9 @@
   box-shadow: inset 0 0 0 1px var(--border-strong);
   border-radius: var(--radius-small);
   padding: 10px;
-  align-self: start;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
-  max-height: 360px;
 }
 .attrEditor {
   display: flex;
@@ -219,6 +326,7 @@
 .attrRow {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   min-height: 28px;
 }
@@ -234,7 +342,7 @@
 }
 .swatchInput {
   flex: 1 1 90px;
-  min-width: 90px;
+  min-width: min(90px, 100%);
 }
 .colorBox {
   position: relative;
@@ -258,7 +366,9 @@
   font-size: var(--fs-small);
 }
 .schemePreview {
-  margin: 14px 0 0;
+  flex: 1;
+  min-height: 0;
+  margin: var(--space-2) 0 0;
   padding: 8px 0;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
@@ -269,7 +379,6 @@
   font-size: var(--fs-code);
   line-height: var(--lh-code);
   overflow: auto;
-  max-height: 260px;
 }
 .previewLine {
   display: flex;
@@ -298,12 +407,13 @@
 /* Git preview mirrors the two real surfaces: the editor inline blame widget and
    the project tree root branch suffix. Only the Git page uses these. */
 .gitPreview {
-  margin: 14px 0 0;
+  flex: 1;
+  min-height: 0;
+  margin: var(--space-2) 0 0;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
   background: var(--bg-editor, var(--bg-island));
   overflow: auto;
-  max-height: 260px;
 }
 .gitSection {
   padding: 8px 0;

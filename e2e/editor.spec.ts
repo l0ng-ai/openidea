@@ -55,6 +55,39 @@ test("⌘F opens the find bar and highlights matches; Escape returns to the edit
   await expect(editor.locator(".cm-content")).toBeFocused();
 });
 
+test("Go to Line keeps its label beside the selected coordinates and returns focus to the editor", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const content = editor.locator(".cm-content");
+  await content.focus();
+  await page.keyboard.press("Meta+l");
+  const dialog = page.getByRole("dialog", { name: "Go to Line:Column", exact: true });
+  const coordinates = dialog.getByRole("textbox", { name: "Line and column", exact: true });
+  await expect(coordinates).toBeFocused();
+  await expect(coordinates).toHaveValue("1:1");
+  expect(await coordinates.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([0, 3]);
+
+  await page.setViewportSize({ width: 360, height: 500 });
+  const label = dialog.getByText("Line and column", { exact: true });
+  await expect(label).toBeVisible();
+  const text = (await label.boundingBox())!;
+  const field = (await coordinates.boundingBox())!;
+  expect(text.x + text.width).toBeLessThan(field.x);
+  expect(Math.abs(text.y + text.height / 2 - field.y - field.height / 2)).toBeLessThan(2);
+  await expect(coordinates).toHaveCSS("font-size", await label.evaluate((el) => getComputedStyle(el).fontSize));
+
+  await coordinates.fill("0:2");
+  await expect(coordinates).toHaveAttribute("aria-invalid", "true");
+  await expect(dialog.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+  await coordinates.fill("6:8");
+  await coordinates.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(content).toBeFocused();
+  await page.setViewportSize({ width: 960, height: 600 });
+  await expect(page.getByRole("button", { name: "6:8", exact: true })).toBeVisible();
+});
+
 test("each file keeps its own find bar, query and caret", async ({ workbench: page }) => {
   const find = page.getByRole("textbox", { name: "Find" });
   const caret = page.getByRole("button", { name: /^\d+:\d+/ });
