@@ -37,49 +37,6 @@ export function isReserved(word: string, driver?: DbDriver): boolean {
 export const nameMatcher = (driver: DbDriver) => (a: string | null | undefined, b: string | null | undefined) =>
   !!a && !!b && (driver === "clickhouse" ? a === b : a.toLowerCase() === b.toLowerCase());
 
-/**
- * Drivers a `jdbc` URL scheme stands for, `scheme_driver` in `crates/ide-db/src/source.rs`
- * mirrored. A custom JDBC source carries `driver: "jdbc"`, which says nothing about how the
- * server folds identifiers; its URL does.
- */
-const JDBC_SCHEMES = new Map<string, DbDriver>([
-  ["postgres", "postgres"],
-  ["postgresql", "postgres"],
-  ["pgsql", "postgres"],
-  ["redshift", "postgres"],
-  ["cockroachdb", "postgres"],
-  ["cockroach", "postgres"],
-  ["yugabytedb", "postgres"],
-  ["timescaledb", "postgres"],
-  ["greenplum", "postgres"],
-  ["mysql", "mysql"],
-  ["mariadb", "mysql"],
-  ["tidb", "mysql"],
-  ["singlestore", "mysql"],
-  ["memsql", "mysql"],
-  ["oceanbase", "mysql"],
-  ["starrocks", "mysql"],
-  ["sqlserver", "sqlServer"],
-  ["mssql", "sqlServer"],
-  ["mssqlserver", "sqlServer"],
-  ["sqlite", "sqlite"],
-  ["sqlite3", "sqlite"],
-  ["clickhouse", "clickhouse"],
-  ["http", "clickhouse"],
-  ["https", "clickhouse"],
-  ["oracle", "oracle"],
-  ["oracledb", "oracle"],
-  ["snowflake", "snowflake"],
-]);
-
-/** The dialect a `jdbc` source's URL speaks: `jdbc:oracle:thin:@//db:1521/ORCL` → `oracle`. */
-export function jdbcDialect(url: string | null | undefined): DbDriver | null {
-  const rest = (url ?? "").trim().replace(/^jdbc:/i, "");
-  const colon = rest.indexOf(":");
-  const scheme = (colon < 0 ? rest : rest.slice(0, colon)).toLowerCase();
-  return JDBC_SCHEMES.get(scheme) ?? null;
-}
-
 /** Clause keywords: a word in this set ends a table alias or expression. */
 export const CLAUSE_WORDS = new Set(
   (

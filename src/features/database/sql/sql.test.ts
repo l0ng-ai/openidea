@@ -5,9 +5,10 @@ import type { DbCompletion, DbDriver } from "@/platform/ipc";
 import { analyze, templateContexts, valuesSlot } from "./analyze";
 import { aliasFor, quoteIdent, sqlCandidates, type SqlCandidate } from "./complete";
 import { identName, inLiteral, lex } from "./lexer";
-import { DATA_TYPES, jdbcDialect, statementStarters } from "./dialect";
+import { DATA_TYPES, statementStarters } from "./dialect";
 import { bindParams, findParams } from "./params";
 import { SqlResolver } from "./resolve";
+import { jdbcDialect } from "../vendors";
 
 const col = (name: string, dataType = "INTEGER", primaryKey = false, hasDefault = false) => ({
   name,

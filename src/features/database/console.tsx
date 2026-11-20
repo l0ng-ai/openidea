@@ -75,7 +75,6 @@ import {
   type SqlCandidate,
   type SqlCatalog,
 } from "./sql/complete";
-import { jdbcDialect } from "./sql/dialect";
 import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
@@ -113,6 +112,7 @@ const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
 import { formatElapsed } from "./resultView";
 import { SQL_LANGUAGE } from "./sqlLanguage";
+import { jdbcDialect } from "./vendors";
 export { SQL_LANGUAGE };
 const ROW_LIMITS = ["100", "500", "1000", "5000", "50000"];
 
