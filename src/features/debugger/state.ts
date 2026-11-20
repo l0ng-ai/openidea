@@ -29,6 +29,7 @@ import {
   maybeEditorService,
   notifications,
   runOutput,
+  SERVICES_WINDOW,
   toolWindowService,
   useDebugRunSessions,
 } from "@/workbench/contributions";
@@ -77,6 +78,8 @@ export interface DebugSession {
   process: RunId | null;
   /** Pinned tab (root sessions): once finished, a later session opens a new tab instead of taking its place. */
   pinned?: boolean;
+  /** Started in place from the Services tool window (root sessions): its stops show it there, not in the Debug window. */
+  inPlace?: boolean;
   status: SessionStatus;
   stoppedThread: number | null;
   stopReason: string | null;
@@ -720,6 +723,7 @@ export async function startPreparedSession(
         adapter: config.debugAdapter ?? "",
         runConfig: config,
         pinned,
+        inPlace: options.show === false,
       }),
     },
     console: { ...s.console, [id]: [] },
@@ -821,6 +825,7 @@ export async function startSession(
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
             pinned: preparation ? preparation.pinned : pinned,
+            inPlace: options.show === false,
             status: cur.status === "starting" ? "running" : cur.status,
           },
         },
@@ -984,13 +989,12 @@ export async function rerunSession(id: DebugSessionId, options: { show?: boolean
   if (!root.runConfig && !launch) return;
   if (isLive(root)) await stopSession(root.id);
   rerunOf = root.id;
+  // A session debugged in place from Services reruns there too.
+  const show = options.show ?? (root.inPlace ? false : undefined);
   try {
     if (root.runConfig)
-      await executeAction(
-        "run.debugConfig",
-        options.show === false ? { config: root.runConfig, show: false } : root.runConfig,
-      );
-    else await startSession(launch!, { show: options.show });
+      await executeAction("run.debugConfig", show === false ? { config: root.runConfig, show: false } : root.runConfig);
+    else await startSession(launch!, { show });
   } finally {
     rerunOf = null;
   }
@@ -1364,7 +1368,8 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       void loadFrames(id, event.threadId, !markTraceStop(id, event.threadId, s.stops + 1));
       const dbg = workflowSettings().debugger;
       try {
-        if (dbg.showOnBreakpoint) toolWindowService().show("debug");
+        // A session debugged in place from Services shows its debugger there (#4773).
+        if (dbg.showOnBreakpoint) toolWindowService().show(rootOf(s).inPlace ? SERVICES_WINDOW : "debug");
       } catch {
         // ignore
       }

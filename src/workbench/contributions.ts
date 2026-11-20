@@ -1980,7 +1980,9 @@ export const useDebugRunSessions = create<{
   sessions: DebugRunSession[];
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
-}>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+  /** The whole debugger of a session (Services shows it in place); `console` replaces its Console tab. */
+  View: ComponentType<{ sessionId: number; console?: ReactNode }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null, View: null }));
 
 /**
  * The Services tool window's badge: how many of its listed services are running.

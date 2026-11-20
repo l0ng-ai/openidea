@@ -1,6 +1,6 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
@@ -173,7 +173,35 @@ export function DebugTabs() {
   );
 }
 
+/**
+ * Services › a configuration being debugged: the same debugger as the Debug tool window, for
+ * that session (#4773). `console` replaces the Console tab, e.g. with the console of the run the
+ * debugger is attached to.
+ */
+export function DebugServiceView({ sessionId, console: consolePane }: { sessionId: number; console?: ReactNode }) {
+  const shown = useDebug((s) => {
+    const active = s.active != null ? s.sessions[s.active] : undefined;
+    return !!active && rootOf(active).id === sessionId;
+  });
+  useEffect(() => {
+    if (useDebug.getState().sessions[sessionId]) selectSession(sessionId);
+  }, [sessionId]);
+  // The toolbar acts on the active session: using this view makes its session the active one again.
+  const reselect = () => {
+    if (!shown && useDebug.getState().sessions[sessionId]) selectSession(sessionId);
+  };
+  return (
+    <div className={styles.serviceView} onPointerDownCapture={reselect} onFocusCapture={reselect}>
+      {shown && <DebugView consolePane={consolePane} />}
+    </div>
+  );
+}
+
 export function DebugToolWindow() {
+  return <DebugView />;
+}
+
+function DebugView({ consolePane }: { consolePane?: ReactNode }) {
   const tx = useTx();
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
@@ -314,7 +342,7 @@ export function DebugToolWindow() {
         ) : tab === "network" ? (
           <NetworkView key={active.id} session={active.id} />
         ) : (
-          <DebugConsole key={active.id} session={active} />
+          (consolePane ?? <DebugConsole key={active.id} session={active} />)
         )}
       </div>
     </div>
