@@ -649,15 +649,12 @@ mod tests {
         host.open_project(window, &root).unwrap();
         host.set_project_trust(&root, true, false).await.unwrap();
         let id = "test";
+        let file = root.join("test.sqlite");
+        std::fs::File::create(&file).unwrap();
         db_save_sources(
             &host,
             window,
-            vec![DataSource {
-                id: id.into(),
-                name: id.into(),
-                file: Some(root.join("test.sqlite").into()),
-                ..Default::default()
-            }],
+            vec![DataSource { id: id.into(), name: id.into(), file: Some(file.into()), ..Default::default() }],
         )
         .await
         .unwrap();
@@ -668,7 +665,7 @@ mod tests {
         let error = execute_statements(&host, window, request, id, statements, 0, 10, None, |event| match event {
             ExecutionEvent::Started { index: 0 } => Ok(()),
             ExecutionEvent::Completed { index: 0, outcome } => {
-                assert!(outcome.error.is_none());
+                assert!(outcome.error.is_none(), "{:?}", outcome.error);
                 Err(IdeError::internal("cannot report result"))
             }
             _ => panic!("the failed callback must stop execution"),

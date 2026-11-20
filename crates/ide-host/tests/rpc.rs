@@ -129,10 +129,12 @@ async fn serves_projects_files_documents_search_and_runs() {
     assert_eq!(current["name"], "demo");
 
     // A SQL batch sends each outcome precisely once before the request reply.
+    let file = project.join("test.sqlite");
+    std::fs::File::create(&file).unwrap();
     let source = ide_db::DataSource {
         id: "test-db".into(),
         name: "Test database".into(),
-        file: Some(project.join("test.sqlite").into()),
+        file: Some(file.into()),
         ..Default::default()
     };
     invoke(&peer, "db_save_sources", json!({ "sources": [source] })).await.unwrap();
