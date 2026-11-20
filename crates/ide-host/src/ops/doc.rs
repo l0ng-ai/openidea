@@ -70,6 +70,13 @@ pub async fn doc_save(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
     host.debugger.refresh_source_mirrors(host.owner_window(window)).await
 }
 
+/// Load Changes from Disk: discards the buffer's unsaved changes and reads its file again.
+#[command(trust = always)]
+pub async fn doc_reload_from_disk(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
+    let project = host.project(window)?;
+    host.blocking(move || project.documents.discard_and_reload(doc)).await
+}
+
 /// An automatic save: `false` (nothing written) when the file changed on disk after the
 /// buffer was edited, which only an explicit save overwrites.
 #[command(trust = always)]
@@ -120,6 +127,7 @@ ide_command::domain!(
     doc_edit,
     doc_open,
     doc_open_untitled,
+    doc_reload_from_disk,
     doc_save,
     doc_autosave,
     doc_save_all,
