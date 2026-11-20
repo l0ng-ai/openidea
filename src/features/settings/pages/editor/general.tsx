@@ -738,20 +738,41 @@ const SMART_KEYS = editorPage({
         { t: "check", key: `${P}.smartKeys.smartHome`, label: "Home moves caret to first non-whitespace character" },
         {
           t: "check",
-          key: `${P}.smartKeys.camelHumps`,
-          label: 'Use "CamelHumps" words',
-          hint: "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.",
-        },
-        {
-          t: "check",
           key: `${P}.smartKeys.pairBrackets`,
           label: "Insert paired brackets (), [], {}",
           hint: "Also pairs <> for generics where the syntax says a type starts.",
         },
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
+        {
+          t: "check",
+          key: `${P}.smartKeys.camelHumps`,
+          label: 'Use "CamelHumps" words',
+          hint: "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.",
+        },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
         { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
+      ],
+    },
+    {
+      title: "Enter",
+      items: [
+        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
+        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
+      ],
+    },
+    {
+      items: [
+        {
+          t: "select",
+          key: `${P}.smartKeys.backspaceUnindent`,
+          label: "Unindent on Backspace",
+          options: [
+            { value: "autoindent", label: "To proper indent position" },
+            { value: "nearest", label: "To nearest indent position" },
+            { value: "none", label: "Disabled" },
+          ],
+        },
         {
           t: "select",
           key: `${P}.smartKeys.reformatOnPaste`,
@@ -766,28 +787,6 @@ const SMART_KEYS = editorPage({
           t: "check",
           key: `${P}.smartKeys.escapeOnPaste`,
           label: "Escape text on paste in string literals",
-        },
-      ],
-    },
-    {
-      title: "Enter",
-      items: [
-        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
-        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
-      ],
-    },
-    {
-      title: "Backspace",
-      items: [
-        {
-          t: "select",
-          key: `${P}.smartKeys.backspaceUnindent`,
-          label: "Unindent",
-          options: [
-            { value: "autoindent", label: "To proper indent position" },
-            { value: "nearest", label: "To nearest indent position" },
-            { value: "none", label: "Disabled" },
-          ],
         },
       ],
     },
