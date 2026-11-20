@@ -153,7 +153,7 @@ fn edits_except(
     let mut caps = matcher.new_captures().map_err(|e| IdeError::internal(e.to_string()))?;
     let mut edits = Vec::new();
     let mut buf = Vec::new();
-    iter::for_each_captures(matcher, haystack, &mut caps, |caps| {
+    iter::for_each_captures(matcher, compiled.whole_word, haystack, &mut caps, |caps| {
         let Some(m) = caps.get(0) else { return };
         let start = lines.pos(m.start());
         if only.as_ref().is_some_and(|o| !o.contains(&start)) || skip.contains(&start) {

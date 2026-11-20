@@ -285,7 +285,9 @@ pub fn match_ranges(text: &str, query: &SearchQuery) -> IdeResult<Vec<(usize, us
     }
     let compiled = query::compile(query)?;
     let mut out = Vec::new();
-    iter::for_each_match(&compiled.matcher, text.as_bytes(), 0, |m| out.push((m.start(), m.end())));
+    iter::for_each_match(&compiled.matcher, compiled.whole_word, text.as_bytes(), 0, |m| {
+        out.push((m.start(), m.end()))
+    });
     Ok(out)
 }
 
@@ -308,7 +310,7 @@ pub fn replace_in_text(text: &str, query: &SearchQuery, replacement: &str) -> Id
     let mut out = Vec::with_capacity(text.len());
     let mut count = 0u32;
     let mut last = 0;
-    iter::for_each_captures(matcher, haystack, &mut caps, |caps| {
+    iter::for_each_captures(matcher, compiled.whole_word, haystack, &mut caps, |caps| {
         let Some(m) = caps.get(0) else { return };
         out.extend_from_slice(&haystack[last..m.start()]);
         last = m.end();

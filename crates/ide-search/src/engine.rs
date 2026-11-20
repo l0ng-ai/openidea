@@ -52,6 +52,7 @@ struct Control<'a> {
     matches: AtomicU32,
     files: AtomicU32,
     max: u32,
+    whole_word: bool,
 }
 
 impl Control<'_> {
@@ -131,6 +132,7 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
             matches: AtomicU32::new(0),
             files: AtomicU32::new(0),
             max: if req.max_matches == 0 { DEFAULT_MAX_MATCHES } else { req.max_matches },
+            whole_word: req.compiled.whole_word,
         },
     };
     let mut searcher_builder = SearcherBuilder::new();
@@ -488,7 +490,7 @@ impl Sink for FileSink<'_> {
         let mut found = std::mem::take(&mut self.found);
         let mut ranges = std::mem::take(&mut self.ranges);
         found.clear();
-        for_each_match(self.matcher, &buffer[..range.end], range.start, |mm| {
+        for_each_match(self.matcher, self.ctl.whole_word, &buffer[..range.end], range.start, |mm| {
             found.push((mm.start() - range.start, mm.end() - range.start));
         });
         if let Some((context, literals)) = self.context {
@@ -706,6 +708,7 @@ mod budget_tests {
             matches: AtomicU32::new(0),
             files: AtomicU32::new(0),
             max,
+            whole_word: false,
         }
     }
 
