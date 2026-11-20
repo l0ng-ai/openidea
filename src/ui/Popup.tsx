@@ -50,6 +50,7 @@ export interface PopupProps {
   style?: CSSProperties;
   role?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
   /** Keep Tab inside the popup. */
   trapFocus?: boolean;
   /** Focus on open: `true` = first `[data-autofocus]`/focusable/the popup itself; `false` = leave focus. */
@@ -260,6 +261,7 @@ function PopupInner({
       data-popup=""
       role={role}
       aria-label={aria["aria-label"]}
+      aria-describedby={aria["aria-describedby"]}
       tabIndex={-1}
       className={clsx(styles.popup, !unstyled && styles.surface, className)}
       data-positioned={isPositioned || undefined}
