@@ -312,7 +312,7 @@ impl Settings {
 }
 
 /// Parses `models.list` + optional `models.listTokenPriceUnits` into catalog entries,
-/// prepending `"auto"` when not already in the list.
+/// prepending `"auto"` when direct models are present or Copilot advertises an enabled Auto tier.
 pub(super) fn parse_catalog(list: &Value, price_units: Option<&Value>) -> Vec<ModelEntry> {
     let units = parse_price_units(price_units);
     let raw = list
@@ -322,7 +322,7 @@ pub(super) fn parse_catalog(list: &Value, price_units: Option<&Value>) -> Vec<Mo
         .map(Vec::as_slice)
         .unwrap_or_default();
     let mut out = Vec::new();
-    if !raw.iter().any(|m| str_of(m, "id") == Some("auto")) && !raw.is_empty() {
+    if !raw.iter().any(|m| str_of(m, "id") == Some("auto")) && (!raw.is_empty() || auto_model_available(list)) {
         out.push(ModelEntry {
             id: "auto".into(),
             name: "Auto".into(),
@@ -342,6 +342,18 @@ pub(super) fn parse_catalog(list: &Value, price_units: Option<&Value>) -> Vec<Mo
         }
     }
     out
+}
+
+fn auto_model_available(list: &Value) -> bool {
+    let Some(auto) = list.get("auto") else { return false };
+    if auto.get("enabled").or_else(|| auto.pointer("/status/enabled")).and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+    let Some(tiers) = auto.get("tiers").and_then(Value::as_array) else { return auto.is_object() };
+    tiers.is_empty()
+        || tiers.iter().any(|tier| {
+            tier.get("enabled").or_else(|| tier.pointer("/status/enabled")).and_then(Value::as_bool) != Some(false)
+        })
 }
 
 fn parse_model(m: &Value, units: &HashMap<String, PriceUnit>) -> Option<ModelEntry> {
