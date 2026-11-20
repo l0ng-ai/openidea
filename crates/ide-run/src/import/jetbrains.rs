@@ -1112,8 +1112,12 @@ fn module_count(root: &Path) -> usize {
 /// named after its `artifactId` (usually its folder), a Gradle one `<project>.<path>.<source set>`.
 fn module_dir(root: &Path, name: &str) -> Option<String> {
     let folder = |dir: &Path| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let exact = |dir: &Path| folder(dir) == name || pom_artifact(dir).is_some_and(|a| a == name);
-    if let Some(dir) = find_module(root, &exact) {
+    // A Maven module is named after its artifactId, so that match wins over a folder of the same
+    // name anywhere above it (a checkout folder named like a child module's artifactId).
+    if let Some(dir) = find_module(root, &|dir: &Path| pom_artifact(dir).is_some_and(|a| a == name)) {
+        return Some(dir);
+    }
+    if let Some(dir) = find_module(root, &|dir: &Path| folder(dir) == name) {
         return Some(dir);
     }
     let gradle = name.strip_suffix(".main").or_else(|| name.strip_suffix(".test")).unwrap_or(name);
