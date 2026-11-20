@@ -643,6 +643,11 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Use non-modal commit interface",
             hint: "When off, Local Changes and Stash are tabs of the Git tool window and Commit opens a dialog.",
           },
+          {
+            kind: "toggle",
+            key: "vcs.commit.includeChangesByDefault",
+            label: "Include changes in the commit by default",
+          },
           { kind: "toggle", key: "vcs.commit.clearInitialMessage", label: "Clear initial commit message" },
         ],
       },

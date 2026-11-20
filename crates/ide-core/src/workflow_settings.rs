@@ -151,6 +151,7 @@ pub struct CommitSettings {
     /// Commit from the Commit tool window; off = Local Changes in the Git tool
     /// window and a Commit dialog.
     pub non_modal: bool,
+    pub include_changes_by_default: bool,
     /// Start with an empty message instead of the last one / the changelist's.
     pub clear_initial_message: bool,
     pub analyze_code: bool,
@@ -190,6 +191,7 @@ impl Default for CommitSettings {
     fn default() -> Self {
         Self {
             non_modal: true,
+            include_changes_by_default: true,
             clear_initial_message: false,
             analyze_code: true,
             check_todo: true,

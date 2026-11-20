@@ -3906,6 +3906,7 @@ export type CommitSettings = {
 	 *  window and a Commit dialog.
 	 */
 	nonModal?: boolean,
+	includeChangesByDefault?: boolean,
 	/**  Start with an empty message instead of the last one / the changelist's. */
 	clearInitialMessage?: boolean,
 	analyzeCode?: boolean,
