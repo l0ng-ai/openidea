@@ -221,7 +221,6 @@ export function activate(): void | (() => void) {
       order: 5,
       component: lazyComponent(() => import("./find/FindToolWindow").then((m) => m.FindToolWindow)),
       headerContent: lazyComponent(() => import("./find/FindToolWindow").then((m) => m.FindTabs)),
-      headerActions: lazyComponent(() => import("./find/FindToolWindow").then((m) => m.FindToolWindowActions)),
       headerMenu: useFindHeaderMenu,
     }),
 
