@@ -1,3 +1,4 @@
+import clsx from "clsx";
 import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
@@ -34,7 +35,10 @@ import { useLogRepositories, useReadOnlyLog } from "./logHooks";
 
 // --- branches ---------------------------------------------------------------
 
-/** `total`: the repositories shown; a ref missing from some of them names those that have it. */
+/**
+ * `total`: the repositories shown; a ref missing from some of them names those that have it,
+ * last, so a narrow pane cuts that list off before the branch name or its markers.
+ */
 function branchDetail(n: BranchTreeNode, total: number): ReactNode {
   const b = n.branch;
   const repos =
@@ -51,8 +55,8 @@ function branchDetail(n: BranchTreeNode, total: number): ReactNode {
   if (!repos && !sync) return undefined;
   return (
     <>
-      {repos}
       {sync}
+      {repos}
     </>
   );
 }
@@ -408,7 +412,7 @@ export function BranchesPanel() {
             ) : undefined
           }
           aria-label="Branches"
-          className={styles.branchTree}
+          className={clsx(styles.branchTree, merged && styles.mergedBranchTree)}
         />
       </div>
     </div>

@@ -216,6 +216,13 @@ describe("Git Log branches pane with several repositories", () => {
     expect(screen.getByText("dev").closest("[data-row]")).not.toHaveTextContent("(");
   });
 
+  it("keeps the current marker ahead of the repository names, which may be cut off", async () => {
+    repoData.branches = { "/p/a": [b("main", { current: true }), b("dev")], "/p/b": [b("dev", { current: true })] };
+    render(<BranchesPanel />);
+    const row = (await screen.findByText("main")).closest("[data-row]")!;
+    expect(row.textContent).toMatch(/main.*current.*\(a\)/);
+  });
+
   it("Group by Repository switches to per-repository subtrees and is remembered", async () => {
     render(<BranchesPanel />);
     await screen.findByText("solo");

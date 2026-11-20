@@ -65,8 +65,12 @@
   flex: 1;
   min-height: 0;
 }
+/* Long repository lists shrink before the branch name. */
+.mergedBranchTree {
+  --tree-detail-flex-shrink: 1000;
+}
 .branchRepos {
-  margin-right: var(--space-1-5);
+  margin-left: var(--space-1-5);
   color: var(--fg-subtle);
 }
 .branchDetail {
