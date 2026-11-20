@@ -568,7 +568,8 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
         anchor={moreRef}
         placement="bottom-end"
         aria-label="Tab actions"
-        items={ctrl.tabMenu(paneId, tab)}
+        // Built when shown: every tab render (each open and switch) would otherwise assemble the whole menu.
+        items={open ? ctrl.tabMenu(paneId, tab) : []}
       />
     </div>
   );

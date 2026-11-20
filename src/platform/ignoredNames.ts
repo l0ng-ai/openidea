@@ -23,28 +23,40 @@ export const DEFAULT_IGNORED_NAMES: readonly string[] = [
   "desktop.ini",
 ];
 
-let cached: { names: readonly string[]; exact: Set<string>; wildcards: RegExp[] } | null = null;
+interface Compiled {
+  names: readonly string[];
+  exact: Set<string>;
+  suffixes: string[];
+  wildcards: RegExp | null;
+}
 
-function compile(names: readonly string[]) {
+let cached: Compiled | null = null;
+
+function compile(names: readonly string[]): Compiled {
   const exact = new Set<string>();
-  const wildcards: RegExp[] = [];
+  const suffixes: string[] = [];
+  const patterns: string[] = [];
   for (const raw of names) {
     const n = raw.trim();
     if (!n || n.includes("/")) continue;
     if (!/[*?]/.test(n)) exact.add(n);
+    // `*.pyc` (every default pattern): a suffix test, without a regex that retries `.*` at each position.
+    else if (/^\*[^*?]+$/.test(n)) suffixes.push(n.slice(1));
     else {
       const body = n
         .replace(/[.+^${}()|[\]\\]/g, "\\$&")
         .replace(/\*/g, ".*")
         .replace(/\?/g, ".");
-      wildcards.push(new RegExp(`^${body}$`, "s"));
+      patterns.push(body);
     }
   }
-  return { names, exact, wildcards };
+  // One alternation: a folder of thousands of entries tests each name once, not once per pattern.
+  const wildcards = patterns.length ? new RegExp(`^(?:${patterns.join("|")})$`, "s") : null;
+  return { names, exact, suffixes, wildcards };
 }
 
 export function isIgnoredName(name: string): boolean {
   const names = useProject.getState().settings?.files?.ignoredNames ?? DEFAULT_IGNORED_NAMES;
   const m = cached?.names === names ? cached : (cached = compile(names));
-  return m.exact.has(name) || m.wildcards.some((re) => re.test(name));
+  return m.exact.has(name) || m.suffixes.some((s) => name.endsWith(s)) || !!m.wildcards?.test(name);
 }
