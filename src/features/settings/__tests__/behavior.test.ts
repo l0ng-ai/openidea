@@ -200,4 +200,5 @@ describe("appearance & behavior settings", () => {
 
 it("loads an old attach setting as ask", () => {
   expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
+  expect(validateGeneralExtras({ openProjectIn: "tab" }).openProjectIn).toBe("tab");
 });

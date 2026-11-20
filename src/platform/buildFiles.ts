@@ -4,3 +4,8 @@ export function isGradleBuildInput(path: string): boolean {
     path,
   );
 }
+
+/** A project POM or a POM installed in the local Maven repository. */
+export function isMavenPom(path: string): boolean {
+  return /(^|[\\/])(?:pom\.xml|[^\\/]+\.pom)$/i.test(path);
+}

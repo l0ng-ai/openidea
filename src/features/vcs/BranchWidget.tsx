@@ -26,7 +26,14 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import type { PopupAnchor } from "@/ui/Popup";
-import { buildBranchRows, preferredBranchRow, withExpanded, type BranchRow, type PopupAction } from "./branches";
+import {
+  buildBranchRows,
+  preferredBranchRow,
+  scopedExpansion,
+  withExpanded,
+  type BranchRow,
+  type PopupAction,
+} from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
 import { loadFavoriteBranches, recentBranches, toggleFavoriteBranch, useFavoriteBranches } from "./branchOps";
@@ -262,12 +269,19 @@ function loadExpansion(root: string | null) {
   useExpansion.setState(next);
 }
 
-function useExpanded(kind: "single" | "multi") {
-  const expanded = useExpansion((s) => s[kind]);
+/**
+ * The expansion of one popup kind. `repo` scopes it to one repository's branches (a
+ * repository's submenu in a multi-repository project), so expanding a group there leaves
+ * the other repositories' submenus as they were.
+ */
+function useExpanded(kind: "single" | "multi", repo?: string) {
+  const all = useExpansion((s) => s[kind]);
+  const prefix = repo === undefined ? "" : `${repo}\u0000`;
+  const expanded = useMemo(() => scopedExpansion(all, prefix), [all, prefix]);
   const setOpen = (key: string, open: boolean) => {
     const s = useExpansion.getState();
-    if (s[kind].get(key) === open) return;
-    const next = { ...s, [kind]: withExpanded(s[kind], key, open) };
+    if (s[kind].get(prefix + key) === open) return;
+    const next = { ...s, [kind]: withExpanded(s[kind], prefix + key, open) };
     useExpansion.setState(next);
     if (!next.root) return;
     try {
@@ -459,7 +473,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const actions = useMemo(() => [...operationActions(op, conflicts), ...baseActions], [op, conflicts, baseActions]);
   const options = usePopupOptions();
-  const [expanded, setOpen] = useExpanded("single");
+  const [expanded, setOpen] = useExpanded("single", root);
   const rows = useMemo(
     () => buildBranchRows(branches, recent, query, actions, favorites, tags, { ...options, expanded }),
     [branches, recent, query, actions, favorites, tags, options, expanded],
