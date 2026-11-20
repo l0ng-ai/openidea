@@ -9094,5 +9094,7 @@
   "Remove All Watches": "移除所有监视",
   "GitHub account": "GitHub 账号",
   "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "留空则使用 GitHub CLI 当前登录的账号。OpenIDEA 在启动时获取令牌，不会保存它。",
-  "github-username": "GitHub 用户名"
+  "github-username": "GitHub 用户名",
+  "Managed version {version} in {location}": "版本 {version} 由 {location} 管理",
+  "Managed in {location}": "由 {location} 管理"
 }

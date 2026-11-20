@@ -2728,5 +2728,7 @@
   "Caret": "Caret",
   "Code Structure": "Code Structure",
   "Presentation": "Presentation",
-  "Code Assistance": "Code Assistance"
+  "Code Assistance": "Code Assistance",
+  "Managed version {version} in {location}": "Managed version {version} in {location}",
+  "Managed in {location}": "Managed in {location}"
 }

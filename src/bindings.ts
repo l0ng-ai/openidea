@@ -960,8 +960,9 @@ export const commands = {
 	mavenExcludeDependency: (pom: string, dependency: ArtifactKey, exclusion: ArtifactKey) => typedError<Location, IdeError>(__TAURI_INVOKE("maven_exclude_dependency", { pom, dependency, exclusion })),
 	/**
 	 *  The go-to-declaration target at `pos` of a Maven POM: the definition of the
-	 *  `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
-	 *  entry providing the dependency's / plugin's version, along the parent chain.
+	 *  `${property}` at the caret, the parent POM, or the dependency / plugin's own POM
+	 *  (a project module first, then the local repository). A dependency without a
+	 *  resolvable artifact POM falls back to its management entry.
 	 */
 	mavenGotoDeclaration: (pom: string, pos: Pos) => typedError<{
 	/**
@@ -975,6 +976,12 @@ export const commands = {
 	/**  The declaration as named for the user (`example.version`, `com.example:example-lib`). */
 	label: string,
 } | null, IdeError>(__TAURI_INVOKE("maven_goto_declaration", { pom, pos })),
+	/**
+	 *  Gutter targets of the unversioned dependencies and plugins in a Maven POM:
+	 *  the management declarations that actually supply their versions, including
+	 *  parent POMs and imported BOMs. Cancel with `cancel_request(request)`.
+	 */
+	mavenManagedDeclarations: (pom: string, request: RequestId) => typedError<PomManagedDeclaration[], IdeError>(__TAURI_INVOKE("maven_managed_declarations", { pom, request })),
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
 	/**
@@ -9750,6 +9757,16 @@ export type PomGotoKind =
 "managedPlugin" | 
 /**  The POM of the artifact itself: a project module's, else the local repository's. */
 "artifactPom";
+
+/**  A dependency or plugin whose version comes from a management declaration. */
+export type PomManagedDeclaration = {
+	/**  0-based line of the `<dependency>` or `<plugin>` declaration. */
+	line: number,
+	/**  The interpolated version the management entry provides, when it has one. */
+	version: string | null,
+	/**  The management entry, possibly in a parent POM or an imported BOM. */
+	target: PomGoto,
+};
 
 /**  A 0-based line / UTF-16 column position. */
 export type Pos = {
