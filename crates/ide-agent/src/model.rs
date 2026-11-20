@@ -711,6 +711,8 @@ pub struct AgentChange {
     pub removed: u32,
     /// Path before a rename; the left side of its diff reads this path.
     pub old_path: Option<String>,
+    /// The repository the file is in, when the task's project holds nested repositories.
+    pub repo: Option<IpcPath>,
 }
 
 /// A commit made while the task ran, with the files it changed against its first parent.

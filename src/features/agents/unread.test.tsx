@@ -287,8 +287,12 @@ describe("agent unread activity", () => {
         .set("two", [{ type: "agent", text: "Answer two" }])
         .set("open", [{ type: "agent", text: "Answer open" }]),
       changes: new Map(s.changes)
-        .set("one", [{ path: "a.ts", relPath: "a.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }])
-        .set("two", [{ path: "b.ts", relPath: "b.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }]),
+        .set("one", [
+          { path: "a.ts", relPath: "a.ts", oldPath: null, repo: null, kind: "modified", added: 1, removed: 0 },
+        ])
+        .set("two", [
+          { path: "b.ts", relPath: "b.ts", oldPath: null, repo: null, kind: "modified", added: 1, removed: 0 },
+        ]),
       groupedChanges: new Map(s.groupedChanges)
         .set("one", { uncommitted: [], commits: [] })
         .set("two", { uncommitted: [], commits: [] }),
@@ -513,6 +517,7 @@ describe("the diff of an agent change", () => {
     added: 1,
     removed: 1,
     oldPath: null,
+    repo: null,
   });
 
   it("lists the task's other changed files, so F7 moves on to the next one", async () => {
