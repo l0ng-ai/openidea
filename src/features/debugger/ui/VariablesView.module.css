@@ -175,8 +175,9 @@
 /* Expanded value hint in the editor. */
 .hint {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
-  width: 460px;
-  height: 260px;
+  min-height: 0;
+  padding-block: var(--space-1);
 }

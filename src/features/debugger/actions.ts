@@ -85,7 +85,7 @@ import {
 } from "./state";
 import { focusedDebugView } from "./ui/focusedView";
 import { browseFocusedConsoleHistory } from "./ui/expressionHistory";
-import { expressionAt, valueHint } from "./editor/valueTooltip";
+import { expressionAt, showQuickValue } from "./editor/valueTooltip";
 import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
@@ -215,17 +215,29 @@ async function quickEvaluate(arg?: unknown) {
   const target = mouseEvaluateTarget(arg);
   const view = target?.view ?? activeEditor()?.view;
   if (!view) return;
-  const sel = view.state.selection.main;
-  const pos = target?.pos ?? sel.from;
+  const { doc, selection } = view.state;
+  const pos = target?.pos ?? selection.main.from;
   const expression = evaluateSeed(view, target?.pos).trim();
   if (!expression) return showHint(view, "Nothing to evaluate at the caret");
   const session = activeSession();
+  const stop = useDebug.getState().stopSeq;
+  const stillCurrent = () => {
+    const current = activeSession();
+    return (
+      view.dom.isConnected &&
+      view.state.doc === doc &&
+      view.state.selection.eq(selection) &&
+      current?.status === "paused" &&
+      current.id === session?.id &&
+      current.selectedFrame === session?.selectedFrame &&
+      useDebug.getState().stopSeq === stop
+    );
+  };
   try {
     const value = await evaluate(expression, "hover", session);
-    if (!session) return;
-    showHint(view, () => valueHint(expression, value, session.id), { pos, timeout: 60_000 });
+    if (session && stillCurrent()) showQuickValue(view, pos, expression, value, session.id);
   } catch (e) {
-    showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
+    if (stillCurrent()) showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
   }
 }
 
