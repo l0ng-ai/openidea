@@ -2963,6 +2963,7 @@
   "Tests failed: {detail}": "测试失败：{detail}",
   "TODO comment": "TODO 注释",
   "TODO actions": "TODO 操作",
+  "Resize paste preview": "调整粘贴预览大小",
   "TODO filters": "TODO 筛选器",
   "TODO items": "TODO 项",
   "TODO items unavailable": "TODO 项不可用",
