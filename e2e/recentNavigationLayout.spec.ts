@@ -84,7 +84,8 @@ test("Recent Locations keeps all snippet lines visible when the editor font grow
   await expect(code).toHaveCSS("font-size", "19px");
   await expect(code).toHaveCSS("line-height", "30px");
   await expect(code).toHaveCSS("font-family", /"Fira Code".*"Maple Mono NF CN"/);
-  expect((await code.boundingBox())!.height).toBe(90);
+  // Three 30px lines; layout may land on a fractional pixel.
+  expect((await code.boundingBox())!.height).toBeCloseTo(90, 0);
 
   await page.setViewportSize({ width: 400, height: 500 });
   const filter = dialog.getByRole("textbox", { name: "Filter recent locations" });
