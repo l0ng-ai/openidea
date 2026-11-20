@@ -29,6 +29,20 @@ describe("markdown LaTeX math", () => {
     expect(paras[1]!.textContent).toBe("Prices: $5 and $10, or $5-$10, or $ 5 $, or $x$.");
   });
 
+  it("renders GitHub-style protected inline math without the backticks", () => {
+    const root = parseSafe("Prices $5 and $10, with **$`v_0`$** ($`\\theta`$) and $`\\text{price \\$10}`$.");
+    const formulas = [...root.querySelectorAll(".katex annotation")].map((el) => el.textContent);
+    expect(formulas).toEqual(["v_0", "\\theta", "\\text{price \\$10}"]);
+    expect(root.querySelector("strong .katex annotation")?.textContent).toBe("v_0");
+    expect(root.querySelector("p")?.textContent?.startsWith("Prices $5 and $10, with ")).toBe(true);
+  });
+
+  it("keeps an unfinished protected delimiter from swallowing a later formula", () => {
+    const root = parseSafe("Unfinished $`x` and $y$.");
+    expect(root.querySelector("p > code")?.textContent).toBe("x");
+    expect(root.querySelector(".katex annotation")?.textContent).toBe("y");
+  });
+
   it("prevents * and _ inside math from triggering emphasis while allowing emphasis around math", () => {
     const root = parseSafe("Formula $(a)_1 + (b)_2$ and $a * b$ and $c * d$, plus **$x^2$**.");
     expect(root.querySelector("em")).toBeNull();

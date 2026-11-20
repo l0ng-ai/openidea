@@ -10,7 +10,15 @@ import {
   updateBreakpoint,
   useBreakpoints,
 } from "../breakpoints/store";
-import { adoptSession, useExecutionPoint, useDebug, handleDebugEvent, type DebugSession } from "../state";
+import {
+  adoptSession,
+  selectSession,
+  stopTarget,
+  useExecutionPoint,
+  useDebug,
+  handleDebugEvent,
+  type DebugSession,
+} from "../state";
 import { getContext } from "@/platform/context";
 import styles from "../editor/editor.module.css";
 
@@ -312,6 +320,23 @@ describe("session events", () => {
     handleDebugEvent(77, { kind: "terminated" });
     expect(useDebug.getState().sessions[77]!.status).toBe("terminated");
     expect(getContext().debugSessionActive).toBe(false);
+  });
+
+  it("enables Stop for the selected session tab only (#4738)", () => {
+    adoptSession(80, { name: "server" });
+    adoptSession(81, { name: "client" });
+    selectSession(80);
+    expect(getContext().debugCanStop).toBe(true);
+    expect(stopTarget()?.id).toBe(80);
+    handleDebugEvent(81, { kind: "terminated" });
+    selectSession(81);
+    // The finished session's tab: Stop is off although the server still runs.
+    expect(getContext().debugSessionActive).toBe(true);
+    expect(getContext().debugCanStop).toBe(false);
+    expect(stopTarget()).toBeNull();
+    selectSession(80);
+    expect(getContext().debugCanStop).toBe(true);
+    handleDebugEvent(80, { kind: "terminated" });
   });
 
   it("ignores sessions this window did not start, but adopts children of its own", async () => {

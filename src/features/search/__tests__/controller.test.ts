@@ -180,6 +180,21 @@ describe("SeController", () => {
     ).not.toContain("f:/data/scratches/scratch_3.md");
   });
 
+  // #4079 follow-up: a plain Windows absolute path names an indexed file.
+  it("searches a pasted Windows absolute path as its project-relative path", async () => {
+    const findFiles = vi.fn(async () => [fm("pkg/service/Config.go")]);
+    const { c, last } = setup({ findFiles, root: () => "E:/work/sample" });
+    c.run({
+      query: String.raw`e:\work\sample\pkg\service\Config.go`,
+      tab: "files",
+      includeNonProject: false,
+      extra: {},
+    });
+    await flush();
+    expect(findFiles).toHaveBeenCalledWith("pkg/service/Config.go", expect.any(Number));
+    expect(last().sections.get("files")!.items[0]).toMatchObject({ key: "f:/p/pkg/service/Config.go" });
+  });
+
   it("parses File.kt:42 and opens files at the line", async () => {
     const findFiles = vi.fn(async () => [fm("File.kt")]);
     const { c, last } = setup({ findFiles });

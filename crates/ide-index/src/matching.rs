@@ -205,17 +205,49 @@ impl<'a> Recents<'a> {
     }
 }
 
-/// `Foo.kt:12:3` -> `Foo.kt`; `\` -> `/`; strips leading `./` and `/`.
-fn normalize_file_query(q: &str) -> String {
+/// `Foo.kt:12:3` -> `Foo.kt`; `\` -> `/`; a pasted absolute path under `root` -> its project-relative
+/// form; strips leading `./` and `/`.
+fn normalize_file_query(q: &str, root: Option<&Path>) -> String {
     let mut q = q.trim().replace('\\', "/");
+    // `\\?\C:\a` (verbatim) and `\\.\C:\a` name `C:/a`.
+    if let Some(rest) = verbatim_target(&q) {
+        q = rest.to_owned();
+    }
     while let Some((head, tail)) = q.rsplit_once(':')
         && !tail.is_empty()
         && tail.bytes().all(|b| b.is_ascii_digit())
     {
         q = head.to_owned();
     }
+    if let Some(root) = root
+        && let Some(rel) = strip_root(&q, root)
+    {
+        q = rel;
+    }
     let q = q.trim_start_matches("./").trim_start_matches('/');
     q.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Path a `\\?\` / `\\.\` verbatim prefix points at, for a `/`-separated path.
+fn verbatim_target(q: &str) -> Option<&str> {
+    q.strip_prefix("//?/").or_else(|| q.strip_prefix("//./"))
+}
+
+/// `q` (already `/`-separated) below `root`, without the separating slash. A drive-letter root
+/// compares like Windows, where case does not matter.
+fn strip_root(q: &str, root: &Path) -> Option<String> {
+    let root = root.to_string_lossy().replace('\\', "/");
+    let root = verbatim_target(&root).unwrap_or(&root);
+    let root = root.trim_end_matches('/');
+    let windows = root.as_bytes().get(1) == Some(&b':');
+    let head = q.get(..root.len())?;
+    if head != root && !(windows && head.eq_ignore_ascii_case(root)) {
+        return None;
+    }
+    match q.get(root.len()..)? {
+        "" => Some(String::new()),
+        tail => tail.strip_prefix('/').map(str::to_owned),
+    }
 }
 
 enum FileQuery {
@@ -223,11 +255,17 @@ enum FileQuery {
     Path { dir: Needle, name: Needle },
 }
 
-pub(crate) fn find_files(data: &IndexData, recents: &Recents, query: &str, limit: usize) -> Vec<FileMatch> {
+pub(crate) fn find_files(
+    data: &IndexData,
+    recents: &Recents,
+    query: &str,
+    root: Option<&Path>,
+    limit: usize,
+) -> Vec<FileMatch> {
     if limit == 0 {
         return Vec::new();
     }
-    let q = normalize_file_query(query);
+    let q = normalize_file_query(query, root);
     if q.is_empty() {
         return recents
             .paths
@@ -306,8 +344,8 @@ pub(crate) fn find_files(data: &IndexData, recents: &Recents, query: &str, limit
 
 /// Fuzzy folder search over the folders holding indexed files: folder-name matches beat
 /// path matches; `/` in the query matches the whole path. `rel_path` ends in `/`.
-pub(crate) fn find_dirs(data: &IndexData, query: &str, limit: usize) -> Vec<FileMatch> {
-    let q = normalize_file_query(query);
+pub(crate) fn find_dirs(data: &IndexData, query: &str, root: Option<&Path>, limit: usize) -> Vec<FileMatch> {
+    let q = normalize_file_query(query, root);
     if limit == 0 || q.is_empty() {
         return Vec::new();
     }
@@ -673,8 +711,18 @@ mod tests {
 
     #[test]
     fn normalizes_queries() {
-        assert_eq!(normalize_file_query(" ./src\\main.rs:12:4 "), "src/main.rs");
-        assert_eq!(normalize_file_query("/a b"), "ab");
+        let root = Path::new("E:/work/sample");
+        assert_eq!(normalize_file_query(" ./src\\main.rs:12:4 ", None), "src/main.rs");
+        assert_eq!(normalize_file_query("/a b", None), "ab");
+        // A pasted absolute path names an indexed file (#4079 follow-up).
+        assert_eq!(normalize_file_query(r"E:\work\sample\pkg\Config.go", Some(root)), "pkg/Config.go");
+        assert_eq!(normalize_file_query(r"e:/WORK/sample\pkg/Config.go", Some(root)), "pkg/Config.go");
+        assert_eq!(normalize_file_query(r"\\?\E:\work\sample\src\App.kt", Some(root)), "src/App.kt");
+        assert_eq!(normalize_file_query(r"E:\work\sample\pkg\Config.go:12:4", Some(root)), "pkg/Config.go");
+        // Outside the project, and a POSIX root, keep the path as given.
+        assert_eq!(normalize_file_query(r"E:\elsewhere\x.go", Some(root)), "E:/elsewhere/x.go");
+        assert_eq!(normalize_file_query("/home/me/Src/a.rs", Some(Path::new("/home/me/src"))), "home/me/Src/a.rs");
+        assert_eq!(normalize_file_query("/home/me/src/a.rs", Some(Path::new("/home/me/src"))), "a.rs");
         assert_eq!(split_symbol_query("Order.save"), (Some("Order"), "save"));
         assert_eq!(split_symbol_query("a::b::C::new"), (Some("C"), "new"));
         assert_eq!(split_symbol_query("save"), (None, "save"));

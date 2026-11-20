@@ -4156,6 +4156,8 @@ dependencies = [
  "ide-vcs",
  "ide-vfs",
  "parking_lot",
+ "rustix",
+ "semver",
  "serde",
  "serde_json",
  "specta",
@@ -4511,6 +4513,7 @@ dependencies = [
 name = "ide-http"
 version = "0.1.49"
 dependencies = [
+ "hyper-util",
  "ide-core",
  "ide-vfs",
  "parking_lot",

@@ -4,6 +4,7 @@
  * per-session `ConsoleModel`, batched per animation frame.
  */
 import { withRunTarget } from "@/platform/runTargetSelection";
+import { notifyCwdError, withExpandedCwd } from "./cwdMacros";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -847,6 +848,12 @@ async function startRunIn(
   options: StartRunOptions,
 ): Promise<RunSession | null> {
   config = withRunTarget(config);
+  try {
+    config = await withExpandedCwd(config);
+  } catch (e) {
+    notifyCwdError(config, e);
+    return null;
+  }
   if (!options.launch && isCMakeBuild(config)) {
     await buildCMake(config.id, options.show !== false);
     return null;

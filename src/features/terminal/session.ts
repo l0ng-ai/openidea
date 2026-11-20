@@ -339,7 +339,7 @@ export class TerminalSession {
       minimumContrastRatio: MIN_CONTRAST_RATIO,
       smoothScrollDuration: 0,
       // Same width as the IDE's scrollbars (global.css); the slider is styled there too (Terminal.module.css).
-      overviewRuler: { width: 10 },
+      scrollbar: { width: 10 },
       theme: readTerminalTheme(),
       linkHandler: LINK_HANDLER,
     });

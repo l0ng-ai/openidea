@@ -28,6 +28,7 @@ import { AgentsStatus } from "./AgentsStatus";
 import { activateSettingsPages } from "./settingsPages";
 import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
+import { diagnoseTestFailure, isTestFailure } from "./testFailure";
 import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
 import { clearAgentTabFontZoom } from "./fontZoom";
@@ -41,11 +42,14 @@ import {
   refreshProviders,
   refreshTaskModels,
   releaseClosedTaskCache,
+  trackPromptHistory,
   useAgents,
 } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
+import { activateTaskWindows, moveTaskToWindow, prepareTaskWindowInput, taskTabClosed } from "./taskWindows";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 
 export { activateSettingsPages } from "./settingsPages";
 
@@ -61,6 +65,9 @@ function trackAgentButtonSetting(): () => void {
   };
 }
 
+/** A lightweight editor window has agents only once it shows a conversation. */
+const agentsHere = () => !auxiliaryWindow() || useAgents.getState().loaded;
+
 export function activate(): () => void {
   const sync = (root: string | null | undefined) => {
     disconnect();
@@ -68,6 +75,8 @@ export function activate(): () => void {
   };
   sync(useProject.getState().project?.root);
   const disposers = [
+    activateTaskWindows(),
+    trackPromptHistory(),
     activateSettingsPages(),
     trackEditorCopies(),
     registerAgentContextSource({
@@ -142,10 +151,16 @@ export function activate(): () => void {
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
       onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
+      prepareWindowInput: prepareTaskWindowInput,
       onClose: (input) => {
         const task = (input.data as { task?: string } | undefined)?.task;
-        if (task) releaseClosedTaskCache(task);
+        if (!task) return;
+        releaseClosedTaskCache(task);
+        taskTabClosed(task);
       },
+      ...(auxiliaryWindow()
+        ? {}
+        : { openInWindow: (input) => moveTaskToWindow((input.data as { task: string }).task) }),
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
@@ -181,7 +196,7 @@ export function activate(): () => void {
       menus: ["editor", "projectView"],
       order: 80,
       items: (menu, { paths, dirs }) =>
-        paths.length && !paths.some(isVirtualUri)
+        paths.length && !paths.some(isVirtualUri) && agentsHere()
           ? [
               {
                 kind: "action",
@@ -192,6 +207,27 @@ export function activate(): () => void {
           : [],
     }),
     registerActions([
+      {
+        id: "agents.moveToNewWindow",
+        title: "Open in New Window",
+        category: "Agents",
+        when: "projectOpen",
+        enabled: ({ arg }) =>
+          !auxiliaryWindow() &&
+          (typeof arg === "string" ||
+            maybeEditorService()?.activeInput?.()?.kind === SESSION_KIND ||
+            !!useAgents.getState().docked),
+        run: async ({ arg }) => {
+          const input = maybeEditorService()?.activeInput?.();
+          const task =
+            typeof arg === "string"
+              ? arg
+              : input?.kind === SESSION_KIND
+                ? (input.data as { task: string }).task
+                : useAgents.getState().docked;
+          if (task) await moveTaskToWindow(task);
+        },
+      },
       ...taskActions,
       ...replyActions,
       {
@@ -302,9 +338,26 @@ export function activate(): () => void {
         icon: "toolwindow-agents",
         when: "projectOpen",
         keywords: ["agent", "chat", "context", "reference", "selection"],
+        enabled: agentsHere,
         run: ({ arg }) => {
           if (Array.isArray(arg)) sendPaths(arg.filter((p): p is string => typeof p === "string"));
           else sendSelection();
+        },
+      },
+      {
+        id: "agents.diagnoseTestFailure",
+        title: "Diagnose with Agent",
+        description:
+          "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.",
+        category: "Agents",
+        icon: "toolwindow-agents",
+        when: "projectOpen",
+        keywords: ["agent", "test", "failure", "diagnose", "explain", "fix"],
+        // Run from the test tree, which passes the failure.
+        hidden: true,
+        enabled: ({ arg }) => isTestFailure(arg),
+        run: ({ arg }) => {
+          if (isTestFailure(arg)) diagnoseTestFailure(arg);
         },
       },
       {

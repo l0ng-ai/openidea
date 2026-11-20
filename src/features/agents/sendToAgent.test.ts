@@ -4,6 +4,9 @@ import type { AgentTask, ProjectInfo } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { sendPaths, sendSelection } from "./references";
 import { HOME, composerDraft, useAgents } from "./store";
+import { installTaskWindowRouting } from "./taskWindowRouting";
+import type { ComposerDraft } from "./composerModel";
+import { diagnoseTestFailure } from "./testFailure";
 
 const mocks = vi.hoisted(() => ({ notify: vi.fn(), editor: null as unknown }));
 vi.mock("@/editor/api", async (original) => ({
@@ -51,6 +54,32 @@ beforeEach(() => {
 });
 
 describe("Send to Agent from the Project view", () => {
+  it("appends references and failed-test context to the draft being edited in another window", () => {
+    setup({ task: task(BACK, BACK, "local") });
+    useAgents.setState({ composers: new Map([["t", { text: "Stale parent draft", files: [], images: [] }]]) });
+    let remote: ComposerDraft = { text: "Typed in the child", files: [], images: [] };
+    const update = vi.fn((key: string, patch: Partial<ComposerDraft>) => {
+      if (key !== "t") return false;
+      remote = { ...remote, ...patch };
+      return true;
+    });
+    const stop = installTaskWindowRouting(() => true, undefined, {
+      read: (key) => (key === "t" ? remote : undefined),
+      update,
+    });
+    try {
+      expect(sendPaths([`${BACK}/pom.xml`])).toBe(true);
+      expect(remote.text).toBe("Typed in the child @pom.xml ");
+      expect(remote.files).toEqual([{ path: `${BACK}/pom.xml`, rel: "pom.xml" }]);
+      diagnoseTestFailure({ name: "example", output: ["Expected success"] });
+      expect(remote.text).toContain("Typed in the child @pom.xml\n\nThe test example failed.");
+      expect(update).toHaveBeenCalledTimes(2);
+      expect(useAgents.getState().composers.get("t")?.text).toBe("Stale parent draft");
+    } finally {
+      stop();
+    }
+  });
+
   it("single project: files and folders as before", () => {
     setup({});
     expect(sendPaths([`${BACK}/pom.xml`, `${BACK}/src/`])).toBe(true);

@@ -112,6 +112,7 @@ const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
 import { formatElapsed } from "./resultView";
 import { SQL_LANGUAGE } from "./sqlLanguage";
+import { jdbcDialect } from "./vendors";
 export { SQL_LANGUAGE };
 const ROW_LIMITS = ["100", "500", "1000", "5000", "50000"];
 
@@ -343,18 +344,20 @@ async function executeRange(view: EditorView, path: string, from: number, to: nu
   const token = ++nextExecution;
   const sent = view.state.doc;
   const start = (statements: readonly SqlStatement[]) => {
+    const st = view.state.field(runField, false);
     // The offsets are into the text sent; an edit since (while asking for parameters) leaves them unplaced.
-    if (view.state.doc !== sent) return;
+    if (!st || view.state.doc !== sent) return;
     const spans = statements.map((st) => ({ from: st.from, to: st.to }));
     const last = spans.at(-1);
     if (!last) return;
     const at = view.state.sliceDoc(last.to, last.to + 1) === ";" ? last.to + 1 : last.to;
     const executing = { token, sent: spans, spans, at, startedAt: Date.now() };
-    view.dispatch({ effects: setRun.of({ ...view.state.field(runField), executing }) });
+    view.dispatch({ effects: setRun.of({ ...st, executing }) });
   };
   try {
     const outcomes = await executeConsole(path, sent.toString(), from, to, start);
-    if (outcomes.length) markOutcomes(view, placed(view.state.field(runField).executing, token, outcomes));
+    const st = view.state.field(runField, false);
+    if (st && outcomes.length) markOutcomes(view, placed(st.executing, token, outcomes));
   } finally {
     const st = view.state.field(runField, false);
     if (st?.executing?.token === token) view.dispatch({ effects: setRun.of({ ...st, executing: null }) });
@@ -1067,6 +1070,9 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
     const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
     const driver: DbDriver = source?.driver ?? "sqlite";
+    // A custom JDBC source (`driver: "jdbc"`) says nothing about how its server folds
+    // identifiers; its URL does (`jdbc:oracle:thin:@…`). Quoting follows that dialect.
+    const dialect = driver === "jdbc" ? jdbcDialect(source?.url) : null;
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
     if (id && !model) void loadCompletion(id);
     // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
@@ -1089,6 +1095,7 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
       model: scoped,
       analysis,
       driver,
+      dialect,
       sourceName: source?.name ?? undefined,
       catalog: cataloged ? catalogOf(id) : undefined,
     });

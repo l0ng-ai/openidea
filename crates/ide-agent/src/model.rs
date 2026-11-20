@@ -614,6 +614,9 @@ pub struct AgentProvider {
     pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
+    /// The built-in command can be owned by a global npm package.
+    #[serde(default)]
+    pub can_check_cli_update: bool,
     /// Environment variables it starts with (from its agent file).
     pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.

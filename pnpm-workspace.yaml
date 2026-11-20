@@ -5,3 +5,4 @@ overrides:
   mermaid>katex: ^0.18.2
 patchedDependencies:
   "@codemirror/view": patches/@codemirror__view.patch
+  "@lezer/lr": patches/@lezer__lr.patch

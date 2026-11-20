@@ -472,6 +472,8 @@ impl Shared {
 
     fn full_scan(&self, found: Option<Vec<Found>>, guard: SystemTime) {
         self.scan(None, found, guard);
+        // Parsing every file churns through far more memory than the index keeps.
+        ide_core::memory::release_free_pages();
     }
 
     fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) -> Option<ScanCounts> {

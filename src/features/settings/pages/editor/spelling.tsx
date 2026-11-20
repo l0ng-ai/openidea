@@ -65,7 +65,7 @@ function SpellingPage() {
         <Row
           label="Dictionary files"
           stacked
-          hint="Plain-text word lists (one word per line) or Hunspell .dic files. Relative paths resolve against the project root, ~/ against the home folder."
+          hint="Plain-text word lists (one word per line) or Hunspell .dic files; a .dic with its .aff beside it also accepts the inflected forms and compounds its rules allow. Relative paths resolve against the project root, ~/ against the home folder."
         >
           <GlobListEditor
             aria-label="Custom dictionaries"

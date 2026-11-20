@@ -938,7 +938,18 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
         vars.insert("PYTHONUNBUFFERED".into(), "1".into());
     }
     vars.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    Ok(LaunchEnv { clear: !extras.include_system_env, vars })
+    let mut env = LaunchEnv { clear: !extras.include_system_env, vars };
+    // `npm.cmd` is found on the login-shell and Windows user PATH, then started by its
+    // full path. The script it runs (`node …`) only sees this process's PATH, which
+    // does not include that directory, so `node` is not recognized.
+    let cwd = resolve_cwd(root, config.cwd.as_deref());
+    if !env.clear && !env.vars.keys().any(|k| k.eq_ignore_ascii_case("PATH")) {
+        let path = crate::wrap::search_path_in(config, &cwd);
+        if let Some(text) = path.to_str().filter(|s| !s.is_empty()) {
+            env.vars.insert("PATH".into(), text.to_owned());
+        }
+    }
+    Ok(env)
 }
 
 /// What a run in the project at `root` inherits with "Include system environment variables"
@@ -1444,6 +1455,42 @@ mod tests {
         let mut binary = inv();
         sh_for_unexecutable(&mut binary);
         assert_eq!(binary.program, script);
+    }
+
+    fn bare_config(env: BTreeMap<String, String>) -> RunConfig {
+        RunConfig {
+            id: "c".into(),
+            name: "c".into(),
+            kind: "npm".into(),
+            command: "npm".into(),
+            args: vec!["run".into(), "start".into()],
+            cwd: None,
+            env,
+            detected: true,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_run_inherits_the_path_used_to_resolve_its_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = bare_config(BTreeMap::new());
+        let env = launch_env(dir.path(), &config).unwrap();
+        let path = env.vars.get("PATH").expect("child PATH");
+        let search = crate::wrap::search_path_in(&config, dir.path());
+        assert_eq!(path, search.to_str().unwrap());
+    }
+
+    #[test]
+    fn an_explicit_path_override_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = bare_config(BTreeMap::from([("Path".into(), r"C:\tools".into())]));
+        let env = launch_env(dir.path(), &config).unwrap();
+        assert_eq!(env.vars.get("Path").map(String::as_str), Some(r"C:\tools"));
+        assert_eq!(env.vars.keys().filter(|k| k.eq_ignore_ascii_case("PATH")).count(), 1);
     }
 
     #[test]

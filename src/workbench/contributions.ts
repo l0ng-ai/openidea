@@ -154,6 +154,13 @@ export interface EditorKindContribution {
   onClose?(input: EditorInput): void;
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
+  /**
+   * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
+   * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
+   */
+  openInWindow?(input: EditorInput): Promise<boolean>;
+  /** Loads and validates a lightweight window's input before it reports a successful handoff. */
+  prepareWindowInput?(input: EditorInput): Promise<EditorInput>;
   /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
   onTabClose?(tabId: string, input: EditorInput): void;
   /**
@@ -690,6 +697,11 @@ export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
+  /**
+   * Shows `input` in a lightweight window of this project instead (its kind must be registered
+   * there, see `editorWindowBoot`); resolves to the window's label once it is shown.
+   */
+  openInWindow?(input: EditorInput): Promise<string>;
   /** File › New File: an editable untitled buffer; Save asks for a path. */
   openUntitled?(options?: OpenOptions): Promise<void>;
   /** Path of the focused text editor, if any. */
@@ -1968,7 +1980,9 @@ export const useDebugRunSessions = create<{
   sessions: DebugRunSession[];
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
-}>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+  /** The whole debugger of a session (Services shows it in place); `console` replaces its Console tab. */
+  View: ComponentType<{ sessionId: number; console?: ReactNode }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null, View: null }));
 
 /**
  * The Services tool window's badge: how many of its listed services are running.

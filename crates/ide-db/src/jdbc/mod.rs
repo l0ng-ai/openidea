@@ -611,7 +611,13 @@ impl DbManager {
     pub(crate) async fn jdbc_completion(&self, id: &str, pool: &JdbcPool) -> IdeResult<crate::CompletionModel> {
         let mut tables = vec![];
         let mut column_count = 0;
-        let schemas = self.schemas(id).await?;
+        // Read the schemas the source's Schemas tab picks, like the database tree does. It also
+        // keeps large instances usable: an Oracle server exposes dozens of system schemas, and
+        // dumping the columns of all of them takes minutes, during which the bridge (a single
+        // Java process that runs one command at a time) executes none of the user's statements.
+        let introspection = self.source(id)?.introspection;
+        let schemas: Vec<String> =
+            self.schemas(id).await?.into_iter().filter(|s| introspection.shows_schema(s)).collect();
         for schema in &schemas {
             // Columns of the whole namespace in one call; a driver that refuses it still completes tables.
             let mut columns = if column_count < crate::MAX_META_ROWS {

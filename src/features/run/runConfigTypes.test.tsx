@@ -116,6 +116,27 @@ describe("configuration types", () => {
     expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ args: ["-Xmx1g", "-jar", "new.jar", "hello"] });
   });
 
+  it("inserts a path macro at the caret of the working directory (#4755)", () => {
+    const type = typeFor("jar-application")!;
+    const config = withParams(newConfigOfType(type, []), { jarPath: "app.jar" });
+    const change = vi.fn();
+    render(
+      <ConfigForm
+        config={{ ...config, cwd: "/web" }}
+        all={[]}
+        type={type}
+        errors={{}}
+        onChange={change}
+        modifyRequest={0}
+      />,
+    );
+    const field = screen.getByLabelText<HTMLInputElement>("Working directory");
+    field.setSelectionRange(0, 0);
+    fireEvent.click(screen.getByRole("button", { name: "Insert Macro…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /\$PROJECT_DIR\$/ }));
+    expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ cwd: "$PROJECT_DIR$/web" });
+  });
+
   it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
     const type = typeFor("application")!;
     const base = withParams(newConfigOfType(type, []), { ...newConfigOfType(type, []).params, mainClass: "a.Main" });

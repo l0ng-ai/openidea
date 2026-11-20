@@ -4,7 +4,7 @@ for (const [id, selector] of [
   ["general", "[class*='radios'] label"],
   ["notifications", "table tbody td:first-child"],
   ["keymap", "[class*='presetLabel']"],
-  ["editor.inspections", "[class*='profileRow'] > span:first-child"],
+  ["editor.inspections", "[class*='profileControls'] > span:first-child"],
   ["vcs.issueNavigation", "[class*='pageBody'] button:not([aria-label])"],
 ] as const) {
   test(`${id} keeps compact labels inside their controls`, async ({ workbench: page }) => {

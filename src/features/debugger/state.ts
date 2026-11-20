@@ -29,6 +29,7 @@ import {
   maybeEditorService,
   notifications,
   runOutput,
+  SERVICES_WINDOW,
   toolWindowService,
   useDebugRunSessions,
 } from "@/workbench/contributions";
@@ -77,6 +78,8 @@ export interface DebugSession {
   process: RunId | null;
   /** Pinned tab (root sessions): once finished, a later session opens a new tab instead of taking its place. */
   pinned?: boolean;
+  /** Started in place from the Services tool window (root sessions): its stops show it there, not in the Debug window. */
+  inPlace?: boolean;
   status: SessionStatus;
   stoppedThread: number | null;
   stopReason: string | null;
@@ -111,6 +114,8 @@ export interface ConsoleLine {
   text: string;
   /** `text` styled by its ANSI colours. */
   spans: Span[];
+  /** A carriage return ended the output so far: the next text replaces the line. */
+  cr?: boolean;
 }
 
 interface DebugState {
@@ -186,6 +191,12 @@ function ansiStream(session: DebugSessionId, category: string): AnsiStream {
   return stream;
 }
 
+/** Styled output, keeping a carriage return (and erase-line) for the console to overwrite its line. */
+function outputSpans(session: DebugSessionId, category: string, raw: string): Span[] {
+  const stream = ansiStream(session, category);
+  return stream.spans(stream.clean(raw).replace(/\r\n/g, "\n"));
+}
+
 // --- accessors ---------------------------------------------------------------
 
 export function activeSession(): DebugSession | null {
@@ -195,6 +206,13 @@ export function activeSession(): DebugSession | null {
 
 export function isLive(s: DebugSession | null | undefined): boolean {
   return !!s && s.status !== "terminated";
+}
+
+/** The session the Debug tool window's Stop acts on: the selected one while it runs (any live one when none is selected). */
+export function stopTarget(): DebugSession | null {
+  const s = activeSession();
+  if (s) return isLive(s) ? s : null;
+  return Object.values(useDebug.getState().sessions).find(isLive) ?? null;
 }
 
 /** Whether the session with this id is still there and running, as of now. */
@@ -405,6 +423,8 @@ export function publishContext() {
   });
   const anyLive = Object.values(useDebug.getState().sessions).some(isLive);
   setContext("debugSessionActive", anyLive);
+  // Stop acts on the selected session tab, so a finished one doesn't stop another session.
+  setContext("debugCanStop", !!stopTarget());
   setContext("debugSessionRunning", s?.status === "running");
   setContext("debugSessionPaused", s?.status === "paused");
   // Dart and Flutter sessions: Hot Reload / Hot Restart.
@@ -470,7 +490,7 @@ function unfollowProcessOutput(session: DebugSessionId) {
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
   flushConsoleOutput();
-  const spans = ansiStream(session, category).parse(raw);
+  const spans = outputSpans(session, category, raw);
   const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
   useDebug.setState((s) => {
@@ -513,7 +533,7 @@ function flushConsoleOutput() {
     const consoleBySession = { ...s.console };
     for (const { session, category, raw } of chunks) {
       if (!s.sessions[session]) continue;
-      const spans = ansiStream(session, category).parse(raw);
+      const spans = outputSpans(session, category, raw);
       const text = spans.map((sp) => sp.text).join("");
       if (!text) continue;
       printed.push([session, text]);
@@ -636,26 +656,36 @@ async function openServerPage(server: DebugSession, known: ServerPage, url: stri
   else void stopSession(page);
 }
 
-/** Split styled output at real line breaks, retaining partial lines across events. */
+/**
+ * Split styled output at real line breaks, retaining partial lines across events. As in the
+ * Run console, a carriage return makes the next text replace the line (progress bars).
+ */
 function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
   const last = lines.at(-1);
   let line =
     last && last.category === category && !last.text.endsWith("\n") ? { ...last, spans: [...last.spans] } : undefined;
   if (line) lines[lines.length - 1] = line;
   for (const span of spans) {
-    let start = 0;
-    while (start < span.text.length) {
-      const newline = span.text.indexOf("\n", start);
-      const end = newline < 0 ? span.text.length : newline + 1;
-      const text = span.text.slice(start, end);
+    for (const piece of span.text.split(/(\r|\n)/)) {
+      if (piece === "\r") {
+        if (line) line.cr = true;
+        continue;
+      }
+      if (!piece) continue;
       if (!line) {
         line = { id: ++lineSeq, category, text: "", spans: [] };
         lines.push(line);
       }
-      line.text += text;
-      line.spans = appendSpans(line.spans, [{ ...span, text }]);
-      if (newline >= 0) line = undefined;
-      start = end;
+      if (line.cr) {
+        line.cr = undefined;
+        if (piece !== "\n") {
+          line.text = "";
+          line.spans = [];
+        }
+      }
+      line.text += piece;
+      line.spans = appendSpans(line.spans, [{ ...span, text: piece }]);
+      if (piece === "\n") line = undefined;
     }
   }
 }
@@ -711,6 +741,7 @@ export async function startPreparedSession(
         adapter: config.debugAdapter ?? "",
         runConfig: config,
         pinned,
+        inPlace: options.show === false,
       }),
     },
     console: { ...s.console, [id]: [] },
@@ -812,6 +843,7 @@ export async function startSession(
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
             pinned: preparation ? preparation.pinned : pinned,
+            inPlace: options.show === false,
             status: cur.status === "starting" ? "running" : cur.status,
           },
         },
@@ -933,11 +965,21 @@ export function pinSession(id: DebugSessionId, pinned: boolean) {
   patch(id, { pinned });
 }
 
-/** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
+/**
+ * Forgets a session and its descendants (Node's `pnpm` → `pnpm.cjs` → `rspack.js`); a selected
+ * one passes the selection to the tab on its left.
+ */
 export function removeSession(id: DebugSessionId) {
   const st = useDebug.getState();
   const gone = new Set<DebugSessionId>([id]);
-  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+  for (let added = true; added;) {
+    added = false;
+    for (const s of Object.values(st.sessions))
+      if (s.parent != null && gone.has(s.parent) && !gone.has(s.id)) {
+        gone.add(s.id);
+        added = true;
+      }
+  }
 
   const order = Object.values(st.sessions).map((s) => s.id);
   const sessions: Record<number, DebugSession> = {};
@@ -975,13 +1017,12 @@ export async function rerunSession(id: DebugSessionId, options: { show?: boolean
   if (!root.runConfig && !launch) return;
   if (isLive(root)) await stopSession(root.id);
   rerunOf = root.id;
+  // A session debugged in place from Services reruns there too.
+  const show = options.show ?? (root.inPlace ? false : undefined);
   try {
     if (root.runConfig)
-      await executeAction(
-        "run.debugConfig",
-        options.show === false ? { config: root.runConfig, show: false } : root.runConfig,
-      );
-    else await startSession(launch!, { show: options.show });
+      await executeAction("run.debugConfig", show === false ? { config: root.runConfig, show: false } : root.runConfig);
+    else await startSession(launch!, { show });
   } finally {
     rerunOf = null;
   }
@@ -1355,7 +1396,8 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       void loadFrames(id, event.threadId, !markTraceStop(id, event.threadId, s.stops + 1));
       const dbg = workflowSettings().debugger;
       try {
-        if (dbg.showOnBreakpoint) toolWindowService().show("debug");
+        // A session debugged in place from Services shows its debugger there (#4773).
+        if (dbg.showOnBreakpoint) toolWindowService().show(rootOf(s).inPlace ? SERVICES_WINDOW : "debug");
       } catch {
         // ignore
       }

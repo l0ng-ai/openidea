@@ -39,11 +39,15 @@ function findClosingDelimiter(src: string, from: number, delim: string): number 
   return -1;
 }
 
+const PROTECTED_INLINE_DOLLAR = /^\$`([^`\r\n]+)`\$/;
+// Marked masks code spans as `[aaa]` before calling emStrongMask
+const MASKED_PROTECTED_INLINE_DOLLAR = /^\$\[(a+)\]\$/;
+
 /**
  * Matches inline `$...$` from index 0 using Pandoc-style guards so currency
  * like `$5 and $10` or `$5-$10` stays plain text while `$x$`, `设$x=1$`, etc. match.
  */
-function matchInlineDollar(src: string): { end: number; text: string } | null {
+function matchInlineDollar(src: string, protectedDollar: RegExp): { end: number; text: string } | null {
   if (src[0] !== "$" || src[1] === "$" || !src[1] || /\s/.test(src[1])) return null;
   for (let i = 1; i < src.length; i++) {
     const ch = src[i]!;
@@ -55,6 +59,7 @@ function matchInlineDollar(src: string): { end: number; text: string } | null {
       return null;
     }
     if (ch === "$") {
+      if (protectedDollar.test(src.slice(i))) return null;
       if (i <= 1 || /\s/.test(src[i - 1]!)) continue;
       const next = src[i + 1] ?? "";
       if (next === "$" || /\d/.test(next)) return null;
@@ -67,7 +72,10 @@ function matchInlineDollar(src: string): { end: number; text: string } | null {
 }
 
 /** Matches inline `$$...$$`, `$...$`, `\(...\)`, or `\[...\]` starting at index 0 of `src`. */
-function matchInlineMath(src: string): { raw: string; text: string; display: boolean } | null {
+function matchInlineMath(
+  src: string,
+  protectedDollar = PROTECTED_INLINE_DOLLAR,
+): { raw: string; text: string; display: boolean } | null {
   if (src.startsWith("$$")) {
     const close = findClosingDelimiter(src, 2, "$$");
     if (close > 2) {
@@ -77,7 +85,13 @@ function matchInlineMath(src: string): { raw: string; text: string; display: boo
     return null;
   }
   if (src[0] === "$") {
-    const m = matchInlineDollar(src);
+    const match = protectedDollar.exec(src);
+    if (match) {
+      const text = match[1]!;
+      return text.trim() ? { raw: match[0], text, display: false } : null;
+    }
+    if (src[1] === "`") return null;
+    const m = matchInlineDollar(src, protectedDollar);
     return m ? { raw: src.slice(0, m.end), text: m.text, display: false } : null;
   }
   if (src.startsWith("\\(")) {
@@ -123,7 +137,7 @@ function maskInlineMath(src: string): string {
       continue;
     }
     if (src[i] === "$" || (src[i] === "\\" && (src[i + 1] === "(" || src[i + 1] === "["))) {
-      const m = matchInlineMath(src.slice(i));
+      const m = matchInlineMath(src.slice(i), MASKED_PROTECTED_INLINE_DOLLAR);
       if (m) {
         out += m.raw.replace(/[^\r\n]/g, "a");
         i += m.raw.length;

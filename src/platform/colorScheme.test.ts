@@ -64,6 +64,22 @@ describe("color schemes", () => {
     }
   });
 
+  it("keeps an imported scheme's gutter on its editor background unless it sets its own", () => {
+    const customs = (gutter?: string) => ({
+      "custom-a": {
+        name: "A",
+        parent: "dark" as const,
+        attributes: { text: { background: "#2b2b2b" }, ...(gutter ? { gutter: { background: gutter } } : {}) },
+      },
+    });
+    expect(schemeCss("custom-a", undefined, document.documentElement, customs())).toContain(
+      "--bg-editor-gutter: #2b2b2b !important;",
+    );
+    expect(schemeCss("custom-a", undefined, document.documentElement, customs("#313335"))).toContain(
+      "--bg-editor-gutter: #313335 !important;",
+    );
+  });
+
   it("offers a Go scheme page and scopes its overrides to Go editors", () => {
     expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
     const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });

@@ -104,7 +104,8 @@ export interface TreeProps<T> {
 
   selected?: ReadonlySet<string>;
   defaultSelected?: Iterable<string>;
-  onSelectionChange?: (selected: Set<string>, lead: T | null) => void;
+  /** Context-menu selection can update the action target without navigating to it. */
+  onSelectionChange?: (selected: Set<string>, lead: T | null, reason?: "contextMenu") => void;
   multiSelect?: boolean;
 
   /** Enter / double-click on a leaf (or on nodes `activateExpandable` accepts). */
@@ -128,6 +129,8 @@ export interface TreeProps<T> {
   speedSearchField?: boolean;
   rowHeight?: number;
   indent?: number;
+  /** CSS length limiting the leading inset of deeply nested rows. */
+  maxRowInset?: string;
   className?: string;
   rowClassName?: (node: T) => string | undefined;
   /** CSS colour the row background is tinted with (File Colors). */
@@ -424,22 +427,23 @@ export function Tree<T>(props: TreeProps<T>) {
   };
 
   const commitSelection = useCallback(
-    (next: Set<string>, leadKey: string | null) => {
+    (next: Set<string>, leadKey: string | null, reason?: "contextMenu") => {
       if (!selectedControlled) setSelectedInner(next);
       setLead(leadKey);
       const leadRow = leadKey != null ? rows[indexOfKey.get(leadKey) ?? -1] : undefined;
-      props.onSelectionChange?.(next, leadRow?.node ?? null);
+      if (reason) props.onSelectionChange?.(next, leadRow?.node ?? null, reason);
+      else props.onSelectionChange?.(next, leadRow?.node ?? null);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, indexOfKey, selectedControlled, props.onSelectionChange],
   );
 
-  const selectIndex = (i: number, mode: "single" | "toggle" | "range" = "single") => {
+  const selectIndex = (i: number, mode: "single" | "toggle" | "range" = "single", reason?: "contextMenu") => {
     const row = rows[i];
     if (!row || row.loading) return;
     if (mode === "single" || !multiSelect) {
       setAnchor(row.key);
-      commitSelection(new Set([row.key]), row.key);
+      commitSelection(new Set([row.key]), row.key, reason);
     } else if (mode === "toggle") {
       const next = new Set(selected);
       if (next.has(row.key)) next.delete(row.key);
@@ -647,8 +651,8 @@ export function Tree<T>(props: TreeProps<T>) {
   };
 
   const onRowMouseDown = (e: MouseEvent, i: number) => {
-    if (e.button === 2) {
-      if (!selected.has(rows[i]!.key)) selectIndex(i);
+    if (e.button === 2 || (e.button === 0 && e.ctrlKey && isMacHost())) {
+      if (!selected.has(rows[i]!.key)) selectIndex(i, "single", "contextMenu");
       return;
     }
     if (e.button !== 0) return;
@@ -746,7 +750,10 @@ export function Tree<T>(props: TreeProps<T>) {
             // Settings › Appearance › "Use smaller indents in trees" sets `--tree-indent`
             // on the root; reading it here applies the setting to every tree at once,
             // instantly, and keeps chevrons and level alignment consistent with it.
-            const pad = (extra = 0) => `calc(${4 + extra}px + ${row.depth} * var(--tree-indent, ${indent}px))`;
+            const pad = (extra = 0) => {
+              const offset = `calc(${4 + extra}px + ${row.depth} * var(--tree-indent, ${indent}px))`;
+              return props.maxRowInset ? `min(${offset}, ${props.maxRowInset})` : offset;
+            };
             const style = { transform: `translateY(${v.start}px)`, height: v.size, paddingLeft: pad() };
             if (row.loading) {
               return (

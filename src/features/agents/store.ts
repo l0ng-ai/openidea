@@ -22,6 +22,8 @@ import type {
   RequestId,
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
+import { auxiliaryWindow, windowLabel } from "@/platform/auxWindow";
+import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraft } from "./taskWindowRouting";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
 import { basename, useProject } from "@/platform/project";
@@ -321,9 +323,14 @@ export function setDraftOption(id: string, value: string) {
   }
 }
 
-export const composerDraft = (key: string) => useAgents.getState().composers.get(key) ?? emptyDraft();
+export const composerDraft = (key: string) =>
+  taskWindowDraft(key) ?? useAgents.getState().composers.get(key) ?? emptyDraft();
 
 export function updateComposer(key: string, patch: Partial<ComposerDraft>) {
+  if (updateTaskWindowDraft(key, patch)) {
+    useAgents.setState({ lastComposer: key });
+    return;
+  }
   useAgents.setState((s) => ({
     composers: new Map(s.composers).set(key, {
       ...(s.composers.get(key) ?? emptyDraft()),
@@ -345,7 +352,7 @@ function clearSubmittedComposer(key: string, submitted: ComposerDraft, started: 
 /** Session tabs on screen; a task can be shown in more than one split. */
 const visible = new Map<string, number>();
 const windowFocused = () => document.visibilityState !== "hidden" && document.hasFocus();
-const viewing = (task: string) => visible.has(task) && windowFocused();
+const viewing = (task: string) => (visible.has(task) && windowFocused()) || taskWindowFocused(task);
 
 function setUnread(task: string, value: boolean) {
   const s = useAgents.getState();
@@ -527,7 +534,7 @@ export async function connect(): Promise<void> {
   let tasks: AgentTask[], providers: AgentProvider[];
   try {
     [tasks, providers] = await Promise.all([
-      call(commands.agentSubscribe(channel)),
+      call(commands.agentSubscribe(channel, windowLabel())),
       useProject.getState().project?.trusted === false
         ? Promise.resolve([] as AgentProvider[])
         : call(commands.agentProviders()),
@@ -778,7 +785,8 @@ function onEvent(e: AgentEvent) {
       unread.delete(e.id);
       // A deleted task leaves its group and the pinned area.
       const organize = pruneOrganize(s.organize, tasks.values());
-      if (organize !== s.organize) saveOrganize(s.organizeRoot, organize);
+      // The project window saves it: a lightweight window's copy may be older.
+      if (organize !== s.organize && !auxiliaryWindow()) saveOrganize(s.organizeRoot, organize);
       useAgents.setState({
         tasks,
         composers,
@@ -845,6 +853,8 @@ function onEvent(e: AgentEvent) {
 
 /** In-app balloon for an Attention event; OS delivery goes through the general balloon path. */
 function notifyAttention(taskId: string, reason: "finished" | "input" | "failed") {
+  // The project window remains responsible for task notifications.
+  if (auxiliaryWindow()) return;
   if (viewing(taskId) || quietTasks.has(taskId)) return;
   const task = useAgents.getState().tasks.get(taskId);
   const title = task?.title ?? "Agent";
@@ -1047,6 +1057,7 @@ export function useAgentCommands(
 }
 
 export function openTask(task: string) {
+  if (routeToWindow(task)) return;
   forgetClosed(task);
   if (useAgents.getState().sessionLocation === "toolWindow") {
     showDockedTask(task);
@@ -1150,6 +1161,7 @@ export async function closeAndNewTask() {
 
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
+  if (routeToWindow(null, prompt)) return;
   const project = useProject.getState().project;
   useAgents.setState({ lastComposer: HOME });
   if (project?.workspace) {
@@ -1358,6 +1370,15 @@ function remember(text: string) {
   const history = [text, ...useAgents.getState().history.filter((h) => h !== text)].slice(0, HISTORY_SIZE);
   useAgents.setState({ history });
   save(HISTORY_KEY, history);
+}
+
+/** Prompts sent from the project's other windows join this window's history. */
+export function trackPromptHistory(): () => void {
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === HISTORY_KEY) useAgents.setState({ history: load<string[]>(HISTORY_KEY, []) });
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
 }
 
 /** The `!` commands running per task, so Stop ends them. */
@@ -1600,6 +1621,18 @@ export interface ReferenceTarget {
  * how many were added; a path outside every project shows a notice.
  */
 export function addReferences(targets: readonly ReferenceTarget[]): number {
+  return appendToComposer((mentions) => mentions.join(" "), targets);
+}
+
+/**
+ * Appends text to the agent message typed last (a task's or New Task's) and opens it; nothing is
+ * sent. `compose` gets the `@` mentions of `targets` (those inside this window's projects, which
+ * also become chips). Returns how many targets were referenced.
+ */
+export function appendToComposer(
+  compose: (mentions: readonly string[]) => string,
+  targets: readonly ReferenceTarget[] = [],
+): number {
   const s = useAgents.getState();
   const key = activeComposerKey();
   const task = key === HOME ? null : s.tasks.get(key)!;
@@ -1623,9 +1656,14 @@ export function addReferences(targets: readonly ReferenceTarget[]): number {
   }
   if (files.length < targets.length)
     notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
-  if (!files.length) return 0;
-  const joined = mentions.join(" ");
-  const text = current.text && !/\s$/.test(current.text) ? `${current.text} ${joined} ` : `${current.text}${joined} `;
+  const joined = compose(mentions);
+  if (!joined) return 0;
+  // A block of several lines (a test failure) goes in a paragraph of its own.
+  const text = joined.includes("\n")
+    ? `${current.text.trimEnd() ? `${current.text.trimEnd()}\n\n` : ""}${joined}\n`
+    : current.text && !/\s$/.test(current.text)
+      ? `${current.text} ${joined} `
+      : `${current.text}${joined} `;
   updateComposer(key, { text, files: [...current.files, ...files] });
   if (task) openTask(task.id);
   else openHome();

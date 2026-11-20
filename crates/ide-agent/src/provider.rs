@@ -373,6 +373,7 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
         command_editable: reason.is_none(),
         command_read_only_reason: reason,
         installed: installed(&spec.command),
+        can_check_cli_update: spec.source == AgentSource::Builtin && crate::cli_update::package(&spec.id).is_some(),
         env: spec.env.iter().cloned().collect(),
         config: vec![],
         thought_levels: BTreeMap::new(),

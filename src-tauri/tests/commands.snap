@@ -6,6 +6,8 @@ agent_archive                                always             project_host bin
 agent_base_text                              trusted            project_host bindings async
 agent_cancel                                 always             project_host bindings sync
 agent_changes                                trusted            project_host bindings async
+agent_cli_update                             trusted            project_host bindings async
+agent_cli_update_check                       trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
 agent_context_usage                          trusted            project_host bindings async
 agent_create                                 trusted            project_host bindings async
@@ -49,6 +51,7 @@ agent_stop_background                        always             project_host bin
 agent_subscribe                              always             project_host bindings sync
 agent_unarchive                              always             project_host bindings sync
 agent_unqueue                                always             project_host bindings sync
+agent_unsubscribe                            always             project_host bindings sync
 analysis_locate_duplicates                   always             project_host bindings async
 android_devices                              trusted            desktop      bindings async
 android_logcat                               trusted            desktop      bindings async
@@ -512,6 +515,7 @@ remote_current                               always             desktop      bin
 remote_delete                                trusted            project_host bindings async
 remote_disconnect                            always             desktop      bindings sync
 remote_download_into                         trusted            project_host bindings async
+remote_download_local                        trusted            desktop      bindings async
 remote_forward_port                          trusted            desktop      bindings async
 remote_forwarded_ports                       trusted            desktop      bindings sync
 remote_import_local                          trusted            desktop      bindings async

@@ -6,13 +6,26 @@
 .content p {
   margin: 0;
 }
+.promptContent {
+  composes: content;
+  gap: var(--space-2);
+}
+.promptContent > .pathLine {
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.restrictedPreview {
+  color: var(--fg-secondary);
+}
 .pathLine {
   display: flex;
   min-width: 0;
   white-space: nowrap;
-}
-.content > .pathLine {
-  color: var(--fg-secondary);
 }
 .pathHead {
   min-width: 0;
@@ -26,15 +39,31 @@
   text-overflow: ellipsis;
 }
 .folderOption {
-  max-width: 100%;
+  align-items: flex-start;
+  width: 100%;
 }
 .folderLabel {
   display: flex;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 .folderPrefix {
-  flex: none;
+  overflow-wrap: anywhere;
+}
+.folderLabel > .pathLine {
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.trustDialog [data-dialog-footer] button {
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-button);
+  height: auto;
+  padding-block: var(--space-1);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .banner {
   display: flex;

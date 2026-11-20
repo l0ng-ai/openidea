@@ -5,10 +5,10 @@ use crate::Host;
 use crate::agent_secrets::{AgentSecrets, Kept};
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentContextUsage,
-    AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
-    CustomAgentInput, ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer,
-    McpServerInput, McpTransport, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCliOffer,
+    AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe,
+    AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpExternalSource,
+    McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput, McpTransport, NewAgentTask,
 };
 use ide_command::command;
 use ide_core::error::ErrorKind;
@@ -17,12 +17,28 @@ use ide_tools::InstallEvent;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-/// Streams the project's agent events to this window; returns every task.
+/// Streams the project's agent events to `subscriber`, one of the project's windows (a remote
+/// host sees them all as one `window`); returns every task.
 #[command(trust = always)]
-pub fn agent_subscribe(host: &Host, window: &str, on_event: Channel<AgentEvent>) -> IdeResult<Vec<AgentTask>> {
-    Ok(host.project(window)?.agents.subscribe(std::sync::Arc::new(move |e| {
-        let _ = on_event.send(e);
-    })))
+pub fn agent_subscribe(
+    host: &Host,
+    window: &str,
+    on_event: Channel<AgentEvent>,
+    subscriber: String,
+) -> IdeResult<Vec<AgentTask>> {
+    Ok(host.project(window)?.agents.subscribe_as(
+        &subscriber,
+        std::sync::Arc::new(move |e| {
+            let _ = on_event.send(e);
+        }),
+    ))
+}
+
+/// Stops the events of a window that closed.
+#[command(trust = always)]
+pub fn agent_unsubscribe(host: &Host, window: &str, subscriber: String) -> IdeResult<()> {
+    host.project(window)?.agents.unsubscribe(&subscriber);
+    Ok(())
 }
 
 #[command(trust = trusted)]
@@ -341,6 +357,50 @@ pub async fn agent_fork(host: &Host, window: &str, task: String, turns: Option<u
 pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
     host.require_trust(window)?;
     host.project(window)?.agents.rollback(&task, turns).await
+}
+
+/// Checks the selected installation without modifying it.
+#[command(trust = trusted)]
+pub async fn agent_cli_update_check(
+    host: &Host,
+    window: &str,
+    provider: String,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    cli_update(host, window, provider, None, request).await
+}
+
+/// Installs the exact version offered if the selected installation still matches.
+#[command(trust = trusted)]
+pub async fn agent_cli_update(
+    host: &Host,
+    window: &str,
+    provider: String,
+    offer: AgentCliOffer,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    cli_update(host, window, provider, Some(offer), request).await
+}
+
+async fn cli_update(
+    host: &Host,
+    window: &str,
+    provider: String,
+    offer: Option<AgentCliOffer>,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let installing = offer.as_ref().map(|_| Installing::begin(&provider)).transpose()?;
+    let cancel = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        let _installing = installing;
+        project.agents.cli_update(&provider, offer.as_ref(), &cancel)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    result?
 }
 
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
@@ -1086,6 +1146,8 @@ ide_command::domain!(
     agent_cancel,
     agent_context_usage,
     agent_changes,
+    agent_cli_update,
+    agent_cli_update_check,
     agent_commands,
     agent_create,
     agent_delete,
@@ -1125,4 +1187,5 @@ ide_command::domain!(
     agent_subscribe,
     agent_unarchive,
     agent_unqueue,
+    agent_unsubscribe,
 );

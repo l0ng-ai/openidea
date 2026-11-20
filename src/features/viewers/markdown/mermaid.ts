@@ -233,7 +233,12 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
   const out = document.createElement("div");
   out.className = OUTPUT_CLASS;
   if (result && "svg" in result) {
-    out.append(localSvg(reid(result.svg)));
+    const drawing = localSvg(reid(result.svg));
+    // WebKit paints relatively positioned MathML wrappers at the SVG origin
+    for (const label of drawing.querySelectorAll<HTMLElement>("foreignObject .katex:has(> math)")) {
+      label.style.position = "static";
+    }
+    out.append(drawing);
     block.setAttribute(RENDERED_ATTR, "ok");
   } else if (result) {
     out.setAttribute("role", "alert");
