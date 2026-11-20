@@ -59,18 +59,19 @@ for (const active of ["conversation", "file"] as const) {
       },
       { first, second },
     );
-    const firstTab = page.getByRole("tab", { name: first.title, exact: true });
+    const firstPanel = page.getByRole("tabpanel", { name: first.title, exact: true });
     const fileTab = page.getByRole("tab", { name: "README.md", exact: true });
-    await expect(firstTab).toHaveAttribute("aria-selected", "true");
+    await expect(firstPanel).toBeVisible();
     if (active === "file") await fileTab.click();
-    const current = active === "file" ? fileTab : firstTab;
+    const current =
+      active === "file" ? page.getByRole("tabpanel").filter({ has: page.locator(".cm-editor") }) : firstPanel;
     const target = page.getByRole("tree", { name: "Agent tasks" }).getByText(second.title, { exact: true });
     await target.click({ button: "right" });
     await expect(page.getByRole("menuitem", { name: "Rename…", exact: true })).toBeVisible();
-    await expect(current).toHaveAttribute("aria-selected", "true");
+    await expect(current).toBeVisible();
     await expect(page.getByRole("tab", { name: second.title, exact: true })).toHaveCount(0);
     await page.keyboard.press("Escape");
-    await expect(current).toHaveAttribute("aria-selected", "true");
+    await expect(current).toBeVisible();
     await expect
       .poll(() =>
         page.evaluate(async (id) => {
@@ -80,6 +81,6 @@ for (const active of ["conversation", "file"] as const) {
       )
       .toBe("Keep this unsent draft");
     await target.click();
-    await expect(page.getByRole("tab", { name: second.title, exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tabpanel", { name: second.title, exact: true })).toBeVisible();
   });
 }

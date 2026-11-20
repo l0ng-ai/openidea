@@ -121,7 +121,11 @@ function RecentFilesDialog() {
   const [paths, setPaths] = useState<string[] | null>(null);
   // Switcher: the open editor tabs (files and others), when the editor service lists them.
   const [tabs] = useState<OpenEditorTab[] | null>(() =>
-    switcher ? (maybeEditorService()?.openTabs?.() ?? null) : null,
+    switcher
+      ? (maybeEditorService()
+          ?.openTabs?.()
+          .filter((tab) => !useContributions.getState().editorKinds.get(tab.input.kind)?.tabless) ?? null)
+      : null,
   );
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
   const [query, setQuery] = useState("");

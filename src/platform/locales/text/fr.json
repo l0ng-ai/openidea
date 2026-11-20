@@ -4754,8 +4754,6 @@
   "Add to .git/info/exclude": "Ajouter à .git/info/exclude",
   "Delete Agent Tasks": "Supprimer les tâches d'agent",
   "Open Agent Task": "Ouvrir la tâche d'agent",
-  "Open Agent Task in Editor": "Ouvrir la tâche d'agent dans l'éditeur",
-  "Open Agent Task in Tool Window": "Ouvrir la tâche d'agent dans la fenêtre d'outil",
   "Archive Agent Tasks": "Archiver les tâches d'agent",
   "Delete {count} agent tasks? Their branches and files outside worktrees are kept.": "Supprimer {count} tâches d'agent ? Leurs branches et les fichiers hors worktrees sont conservés.",
   "Also remove their worktree folders": "Supprimer aussi leurs dossiers de worktree",
@@ -5336,10 +5334,7 @@
   "cannot copy overlapping paths": "impossible de copier des chemins qui se chevauchent",
   "cannot copy through a destination symlink": "impossible de copier via un lien symbolique de destination",
   "expected a relative comparison entry path": "chemin d'entrée de comparaison relatif attendu",
-  "Agent sessions": "Sessions d'agent",
   "Back to conversation": "Retour à la conversation",
-  "Chat in Tool Window": "Discussion dans la fenêtre d'outil",
-  "Chat in Editor": "Discussion dans l'éditeur",
   "Agent settings": "Paramètres de l'agent",
   "Describe a task…": "Décrivez une tâche…",
   "Formatting profile": "Profil de formatage",
@@ -5733,5 +5728,6 @@
   "Methods pulled up to an interface are declared abstract there.": "Les méthodes remontées dans une interface y sont déclarées abstraites.",
   "The file changed; open the dialog again": "Le fichier a changé ; rouvrez la boîte de dialogue",
   "Replace preview": "Aperçu du remplacement",
-  "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur"
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur",
+  "Agent sessions": "Sessions d'agent"
 }

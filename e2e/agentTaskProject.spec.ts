@@ -164,7 +164,7 @@ async function changeProject(page: Page, change: "A to B" | "A to B to A" | "reo
 
 async function expectCurrentProject(page: Page) {
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveText("Current project draft");
-  await expect(page.getByRole("tab", { name: "New Agent Task" })).toBeVisible();
+  await expect(page.getByRole("tabpanel", { name: "New Agent Task", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Task from project A" })).toHaveCount(0);
   await expect(page.getByText(/Local (operation|close) failed/)).toHaveCount(0);
   expect(
@@ -192,7 +192,7 @@ for (const kind of ["create", "fork"] as const) {
       await page.evaluate(() => document.dispatchEvent(new Event("test:task-complete")));
       await expect(page.locator("html")).toHaveAttribute("data-task-request", "settled");
       if (failure) await expect(page.getByText(/Local operation failed/).first()).toBeVisible();
-      else await expect(page.getByRole("tab", { name: "Task from project A" })).toBeVisible();
+      else await expect(page.getByRole("tabpanel", { name: "Task from project A", exact: true })).toBeVisible();
     });
   }
 }

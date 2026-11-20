@@ -4970,8 +4970,6 @@
   "Add to .git/info/exclude": ".git/info/exclude에 추가",
   "Delete Agent Tasks": "에이전트 작업 삭제",
   "Open Agent Task": "에이전트 작업 열기",
-  "Open Agent Task in Editor": "편집기에서 에이전트 작업 열기",
-  "Open Agent Task in Tool Window": "도구 창에서 에이전트 작업 열기",
   "Archive Agent Tasks": "에이전트 작업 보관",
   "Delete {count} agent tasks? Their branches and files outside worktrees are kept.": "에이전트 작업 {count}개를 삭제하시겠습니까? 해당 브랜치와 워크트리 외부의 파일은 유지됩니다.",
   "Also remove their worktree folders": "워크트리 폴더도 제거",
@@ -5577,10 +5575,7 @@
   "cannot copy overlapping paths": "겹치는 경로는 복사할 수 없습니다",
   "cannot copy through a destination symlink": "대상 심볼릭 링크를 통해 복사할 수 없습니다",
   "expected a relative comparison entry path": "상대 비교 항목 경로가 필요합니다",
-  "Agent sessions": "에이전트 세션",
   "Back to conversation": "대화로 돌아가기",
-  "Chat in Tool Window": "도구 창에서 채팅",
-  "Chat in Editor": "편집기에서 채팅",
   "Agent settings": "에이전트 설정",
   "Describe a task…": "작업을 설명하세요…",
   "Formatting profile": "서식 프로필",
@@ -6211,5 +6206,6 @@
   "The project is mounted here; paths and the working directory are mapped into it.": "프로젝트가 여기에 마운트되며, 경로와 작업 디렉터리가 이 위치로 매핑됩니다.",
   "Published ports": "게시된 포트",
   "Run as the image's user, not the project folder's owner (Linux)": "프로젝트 폴더 소유자가 아닌 이미지의 사용자로 실행(Linux)",
-  "Select files in the Project view, Commit tool window, or open a file in the editor": "프로젝트 뷰나 커밋 도구 창에서 파일을 선택하거나 편집기에서 파일을 여세요"
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "프로젝트 뷰나 커밋 도구 창에서 파일을 선택하거나 편집기에서 파일을 여세요",
+  "Agent sessions": "에이전트 세션"
 }

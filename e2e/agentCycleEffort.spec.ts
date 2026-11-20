@@ -2,7 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import type { AgentConfigOption, AgentEntry, AgentProvider, AgentTask } from "../src/bindings";
 import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
-type Placement = "editor" | "toolWindow";
+type Placement = "editor" | "pane";
 const effortId = "deliberation-budget";
 const modelId = "cortex";
 const draft = "draft keep this unsent";
@@ -322,7 +322,7 @@ for (const surface of ["new", "task"] as const) {
   });
 }
 
-for (const placement of ["editor", "toolWindow"] as const) {
+for (const placement of ["editor", "pane"] as const) {
   test(`${placement}: existing task cycles advertised values and wraps without editing, moving focus or scrolling`, async ({
     workbench: page,
   }) => {
@@ -429,7 +429,7 @@ test("Settings and effort popup exclude the agent shortcut", async ({ workbench:
 
 test("code editor and terminal do not mutate the previously focused docked agent", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
-  await seed(page, "toolWindow");
+  await seed(page, "pane");
   await box(page).fill(draft);
   await editor.locator(".cm-content").click();
   await page.keyboard.press("Alt+t");
@@ -455,7 +455,8 @@ test("hidden kept-alive editor tasks stay isolated", async ({ workbench: page })
   await box(page).fill("second draft");
   await page.keyboard.press("Alt+t");
   await expectEffort(page, "Balanced");
-  await page.getByRole("tab", { name: firstTask.title, exact: true }).click();
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await page.getByRole("tree", { name: "Agent tasks" }).getByText(firstTask.title, { exact: true }).click();
   await expectEffort(page, "Gentle");
   await expect(box(page)).toHaveText("first draft");
   await box(page).focus();
@@ -515,7 +516,7 @@ test("Find Action executes Cycle Agent Effort after closing its popup", async ({
 
 test("compact docked composer shows the cycled effort visibly", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 600, height: 800 });
-  await seed(page, "toolWindow");
+  await seed(page, "pane");
   await box(page).focus();
   await page.keyboard.press("Alt+t");
   await expect(page.getByText("Effort: Balanced", { exact: true }).filter({ visible: true })).toBeVisible();

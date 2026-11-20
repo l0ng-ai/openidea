@@ -155,6 +155,8 @@ export function isTextInput(input: EditorInput): input is EditorInput & { path: 
 }
 
 export const useTabs = create<TabsState>(() => initialTabsState());
+/** Recent custom editors retained for quick switching, including those managed outside the tab strip. */
+export const KEPT_KIND_EDITORS = 5;
 
 /** Session key of the LightEdit window: its tabs reopen the next time a window switches to LightEdit. */
 export const LIGHT_EDIT_SESSION = "<lightEdit>";
@@ -688,6 +690,7 @@ export class EditorController implements SlotHost {
     const kinds = useContributions.getState().editorKinds;
     for (const pane of Object.values(state.panes))
       pane.tabs = pane.tabs.map((tab) => {
+        if (kinds.get(tab.input.kind)?.tabless) return { ...tab, pinned: false, preview: false };
         const lifecycle = documentLifecycle(tab.input, kinds);
         return lifecycle && !lifecycle.allowPreview ? { ...tab, preview: false } : tab;
       });
@@ -1485,18 +1488,29 @@ export class EditorController implements SlotHost {
       const protect = (tab: Tab) =>
         busy.has(tab.input.key) || inputDirty(tab.input, kinds) === true || !!liveKeys?.has(tab.input.key);
       return this.removeGuarded(
-        (current) =>
-          current.panes[paneId]
-            ? enforceTabLimit(
-                current,
-                paneId,
-                prefs.tabLimit,
-                prefs.closingPolicy,
-                tabModified,
-                keep ?? current.panes[paneId]?.active ?? undefined,
-                protect,
-              )
-            : current,
+        (current) => {
+          if (!current.panes[paneId]) return current;
+          const visible = enforceTabLimit(
+            current,
+            paneId,
+            prefs.tabLimit,
+            prefs.closingPolicy,
+            tabModified,
+            keep ?? current.panes[paneId]?.active ?? undefined,
+            protect,
+            (tab) => !kinds.get(tab.input.kind)?.tabless,
+          );
+          return enforceTabLimit(
+            visible,
+            paneId,
+            KEPT_KIND_EDITORS,
+            "lru",
+            tabModified,
+            keep ?? visible.panes[paneId]?.active ?? undefined,
+            protect,
+            (tab) => !!kinds.get(tab.input.kind)?.tabless,
+          );
+        },
         { protect },
       );
     };
@@ -1768,28 +1782,30 @@ export class EditorController implements SlotHost {
   }
   closeOthers(paneId: string, tabId: string): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeOthers(s, paneId, tabId) : s), {
-      protect: (tab) => tab.pinned,
+      protect: (tab) => tab.pinned || !!useContributions.getState().editorKinds.get(tab.input.kind)?.tabless,
     });
   }
   closeAll(paneId: string, keepPinned = false): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeAll(s, paneId, keepPinned) : s), {
-      protect: (tab) => keepPinned && tab.pinned,
+      protect: (tab) =>
+        (keepPinned && tab.pinned) || !!useContributions.getState().editorKinds.get(tab.input.kind)?.tabless,
     });
   }
   closeToRight(paneId: string, tabId: string): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeToRight(s, paneId, tabId) : s), {
-      protect: (tab) => tab.pinned,
+      protect: (tab) => tab.pinned || !!useContributions.getState().editorKinds.get(tab.input.kind)?.tabless,
     });
   }
   closeToLeft(paneId: string, tabId: string): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeToLeft(s, paneId, tabId) : s), {
-      protect: (tab) => tab.pinned,
+      protect: (tab) => tab.pinned || !!useContributions.getState().editorKinds.get(tab.input.kind)?.tabless,
     });
   }
   /** Keeps tabs with unsaved changes or a VCS status (tabs shown as modified). */
   closeUnmodified(paneId: string): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeUnmodified(s, paneId, tabModified) : s), {
-      protect: (tab) => tab.pinned || tabModified(tab),
+      protect: (tab) =>
+        tab.pinned || tabModified(tab) || !!useContributions.getState().editorKinds.get(tab.input.kind)?.tabless,
     });
   }
   closeReadOnly(paneId: string): Promise<boolean> {
@@ -1899,7 +1915,8 @@ export class EditorController implements SlotHost {
     this.focus();
   }
   cycle(delta: number) {
-    this.apply((s) => cycleTab(s, delta));
+    const kinds = useContributions.getState().editorKinds;
+    this.apply((s) => cycleTab(s, delta, s.activePane, (tab) => !kinds.get(tab.input.kind)?.tabless));
     this.focus();
   }
   async reopenClosed(): Promise<void> {
@@ -2280,7 +2297,9 @@ export class EditorController implements SlotHost {
   /** Context menu of a tab (IDEA's EditorTabPopupMenu). */
   tabMenu(paneId: string, tab: Tab): MenuItem[] {
     const path = tab.input.kind === "virtual" ? undefined : tab.input.path;
-    const tabs = useTabs.getState().panes[paneId]?.tabs ?? [];
+    const tabs = (useTabs.getState().panes[paneId]?.tabs ?? []).filter(
+      (item) => !useContributions.getState().editorKinds.get(item.input.kind)?.tabless,
+    );
     const index = tabs.findIndex((t) => t.id === tab.id);
     const split = paneIds(useTabs.getState()).length > 1;
     const project = useProject.getState().project;
