@@ -14,6 +14,7 @@ import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form
 import { choosePath } from "@/platform/choosePath";
 import { usePageContext, useSetting } from "../components/context";
 import { SdkField, tildify, useDetected, useJdtlsJdk } from "./components";
+import { isMavenThreadCount } from "./mavenThreads";
 import styles from "./Sdk.module.css";
 
 function PathInput({
@@ -566,6 +567,7 @@ export function MavenPage() {
   const [downloadSources, setDownloadSources] = useSetting<boolean>("languages.java.maven.downloadSources");
   const [updateSnapshots, setUpdateSnapshots] = useSetting<boolean>("languages.java.maven.updateSnapshots");
   const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const threadsInvalid = !!threads?.trim() && !isMavenThreadCount(threads);
   const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
   const id = useId();
   return (
@@ -651,12 +653,24 @@ export function MavenPage() {
         <Row
           label="Thread count"
           htmlFor={id}
-          hint="Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+          hint={
+            threadsInvalid ? (
+              <span className={styles.error} role="alert">
+                <T>
+                  Not a thread count Maven accepts, so builds run serially. Use a number (4) or a core multiplier (2C,
+                  2.5C).
+                </T>
+              </span>
+            ) : (
+              "Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+            )
+          }
         >
           <span className={styles.pathRow}>
             <Input
               id={id}
               mono
+              invalid={threadsInvalid}
               className={styles.pathInput}
               value={threads}
               placeholder="4, 2C"
