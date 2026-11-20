@@ -198,6 +198,32 @@ describe("Spring mappings (Kotlin)", () => {
   });
 });
 
+describe("mapping conditions", () => {
+  it("keeps a value that has its own '='", () => {
+    const [controller] = springControllers(`package demo;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ReportController {
+    @GetMapping(path = "/report", headers = "Accept=text/plain;charset=UTF-8", params = "range=a=b")
+    public String report() { return ""; }
+
+    @PostMapping(path = "/upload", headers = {"Content-Type=multipart/form-data; boundary=xyz", "X-Token=YWJj=="})
+    public void upload() {}
+}
+`);
+    const [report, upload] = controller!.endpoints;
+    expect(report).toMatchObject({
+      query: [{ name: "range", value: "a=b" }],
+      headers: [{ name: "Accept", value: "text/plain;charset=UTF-8" }],
+    });
+    expect(upload!.headers).toEqual([
+      { name: "Content-Type", value: "multipart/form-data; boundary=xyz" },
+      { name: "X-Token", value: "YWJj==" },
+    ]);
+  });
+});
+
 describe("non-controllers", () => {
   it("ignores classes that are not controllers and files without any", () => {
     expect(springControllers('@Service class A { @GetMapping("/x") void a() {} }')).toEqual([]);

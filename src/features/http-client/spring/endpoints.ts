@@ -237,6 +237,12 @@ function annotation(p: Param, name: string): Annotation | undefined {
 const isMap = (type: string) =>
   /^(java\.util\.)?(Map|MultiValueMap|HttpHeaders|LinkedMultiValueMap|HashMap)\b/.test(type);
 
+/** `name=value` of a `params`/`headers` condition. Only the first "=" divides it: `Accept=text/plain;charset=UTF-8`. */
+function condition(cond: string): [name: string, value: string | undefined] {
+  const at = cond.indexOf("=");
+  return at < 0 ? [cond, undefined] : [cond.slice(0, at), cond.slice(at + 1)];
+}
+
 function endpoint(cls: ClassDecl, method: ClassDecl["methods"][number], c: Constants): Endpoint | null {
   const m = mapping(method.annotations);
   if (!m) return null;
@@ -267,12 +273,12 @@ function endpoint(cls: ClassDecl, method: ClassDecl["methods"][number], c: Const
   }
   // `params = "a=1"` / `headers = "X-Api=1"` narrow the mapping: the request must carry them.
   for (const cond of [...c.strings(classMapping?.args.get("params")), ...c.strings(m.ann.args.get("params"))]) {
-    const [name, value] = cond.split("=", 2);
+    const [name, value] = condition(cond);
     if (name && !cond.includes("!") && !query.some((q) => q.name === name.trim()))
       query.push({ name: name.trim(), value: value?.trim() ?? null });
   }
   for (const cond of [...c.strings(classMapping?.args.get("headers")), ...c.strings(m.ann.args.get("headers"))]) {
-    const [name, value] = cond.split("=", 2);
+    const [name, value] = condition(cond);
     if (name && !cond.includes("!") && value !== undefined) headers.push({ name: name.trim(), value: value.trim() });
   }
   const first = (key: string) =>
