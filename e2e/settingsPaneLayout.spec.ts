@@ -2,9 +2,9 @@ import { expect, test } from "./fixtures";
 
 for (const [id, selector] of [
   ["build.deployment", "[class*='layout'] > [class*='note']"],
-  ["editor.inspections", "[class*='split'] > [class*='details']"],
+  ["editor.inspections", "[class*='split'] section[class*='details']"],
   ["languages.servers", "[class*='body'] > [class*='language'][aria-label]"],
-  ["plugins", "[class*='body'] > [class*='details']"],
+  ["plugins", "[class*='body'] [class*='details'][aria-label]"],
   ["agents.list", "section[aria-label='Codex']"],
 ] as const) {
   test(`${id} keeps its details usable beside the list`, async ({ workbench: page }) => {
