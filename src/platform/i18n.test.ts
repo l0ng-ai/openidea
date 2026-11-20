@@ -88,6 +88,7 @@ describe("t / locales", () => {
     expect(resolveLocale("fr")).toBe("fr");
     expect(resolveLocale("fr-CA")).toBe("fr");
     expect(resolveLocale("pl_PL")).toBe("pl");
+    expect(resolveLocale("tr-TR")).toBe("tr");
     expect(resolveLocale("pl-PL")).toBe("pl");
     expect(resolveLocale("es-MX")).toBe("es");
     expect(resolveLocale("es_MX")).toBe("es");
@@ -218,6 +219,13 @@ describe("t / locales", () => {
     expect(t("common.cancel")).toBe("Anuluj");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 skrót");
     expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
+  });
+
+  it("loads the Turkish catalogs", async () => {
+    await setLocale("tr-TR");
+    expect(useI18n.getState().locale).toBe("tr");
+    expect(t("common.cancel")).toBe("İptal");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 kısayol");
   });
 
   it("loads the Spanish catalogs", async () => {
