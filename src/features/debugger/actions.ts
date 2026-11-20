@@ -79,6 +79,7 @@ import {
   startPreparedSession,
   stopSession,
   stopAssociatedProcess,
+  stopTarget,
   useDebug,
   type DebugSession,
 } from "./state";
@@ -560,9 +561,9 @@ export function registerDebugActions(): () => void {
       title: "Stop",
       category: "Debug",
       icon: "stop",
-      when: "debugSessionActive",
+      when: "debugCanStop",
       run: () => {
-        const s = activeSession() ?? Object.values(useDebug.getState().sessions).find(isLive);
+        const s = stopTarget();
         if (s) void stopSession(s.id);
       },
     },
