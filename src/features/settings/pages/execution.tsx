@@ -9,14 +9,13 @@ import { useSettingsPageFocus } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import type { SelectOption } from "@/ui";
-import { ColorSwatches, FormGroup, GlobListEditor, NumberInput, Row, Toggle } from "../components/Form";
+import { ColorSwatches, FormGroup, GlobListEditor, Row, SettingNumber, Toggle } from "../components/Form";
 import { usePageContext, useSetting } from "../components/context";
 import { useSettingsDialog } from "../model/staging";
 import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
-import { Indented, ToggleNumber } from "./workflowControls";
-import styles from "./Workflow.module.css";
-import { T } from "@/ui";
+import { ToggleNumber } from "./workflowControls";
+import dataViewStyles from "./DebuggerDataViews.module.css";
 
 const CMakeProfiles = lazyPage("build.cmake", () => import("./cmake").then((m) => m.CMakeProfiles));
 const GradlePage = lazyPage("build.gradle", () => import("../languages/LanguagePages").then((m) => m.GradlePage));
@@ -136,27 +135,22 @@ function LogLevelRow({ level, label }: { level: (typeof LOG_LEVELS)[number]["lev
   );
 }
 
-function TooltipDelayRow() {
-  const [enabled] = useSetting<boolean>("debugger.valueTooltip");
-  const [delay, setDelay] = useSetting<number>("debugger.valueTooltipDelay");
+const tooltipHint = "Hovering a variable while suspended evaluates it in the selected frame.";
+
+function ValueTooltipRow() {
+  const [enabled, setEnabled] = useSetting<boolean>("debugger.valueTooltip");
   return (
-    <Indented>
-      <Row label="Value tooltip delay (ms)">
-        <NumberInput
-          value={delay}
-          onChange={setDelay}
-          {...L.tooltipDelay}
-          integer
-          step={100}
-          aria-label="Value tooltip delay (ms)"
-        />
-        {!enabled && (
-          <span className={styles.note}>
-            <T>Value tooltips are off</T>
-          </span>
-        )}
-      </Row>
-    </Indented>
+    <div className={dataViewStyles.hover}>
+      <Toggle label="Show value tooltip on mouse hover" checked={enabled} onChange={setEnabled} hint={tooltipHint} />
+      <SettingNumber
+        k="debugger.valueTooltipDelay"
+        label="Value tooltip delay (ms)"
+        {...L.tooltipDelay}
+        integer
+        step={100}
+        disabled={!enabled}
+      />
+    </div>
   );
 }
 
@@ -378,12 +372,6 @@ export const EXECUTION_PAGES: PageSpec[] = [
     sections: [
       {
         options: [
-          {
-            kind: "toggle",
-            key: "debugger.inlineValues",
-            label: "Show values inline",
-            hint: "Values of local variables are shown after the lines that use them while suspended.",
-          },
           { kind: "toggle", key: "debugger.sortValues", label: "Sort values alphabetically" },
           {
             kind: "toggle",
@@ -391,14 +379,24 @@ export const EXECUTION_PAGES: PageSpec[] = [
             label: "Evaluate watches while the program runs",
             hint: "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
           },
+        ],
+      },
+      {
+        title: "Editor",
+        options: [
           {
             kind: "toggle",
-            key: "debugger.valueTooltip",
+            key: "debugger.inlineValues",
+            label: "Show values inline",
+            hint: "Values of local variables are shown after the lines that use them while suspended.",
+          },
+          {
+            kind: "custom",
             label: "Show value tooltip on mouse hover",
-            hint: "Hovering a variable while suspended evaluates it in the selected frame.",
+            keywords: ["Value tooltip delay (ms)", tooltipHint],
+            component: ValueTooltipRow,
           },
           { kind: "toggle", key: "debugger.valueTooltipOnSelection", label: "Show value tooltip on code selection" },
-          { kind: "custom", label: "Value tooltip delay (ms)", component: TooltipDelayRow },
         ],
       },
     ],

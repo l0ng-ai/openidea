@@ -2404,7 +2404,6 @@
   "VCS Operations…": "Operaciones de VCS…",
   "Value": "Valor",
   "Value tooltip delay (ms)": "Retraso de descripción emergente del valor (ms)",
-  "Value tooltips are off": "Las descripciones emergentes de valores están desactivadas",
   "Values are inserted as SQL: quote strings, e.g. 'abc'.": "Los valores se insertan como SQL: pon las cadenas entre comillas, p. ej., 'abc'.",
   "Values of local variables are shown after the lines that use them while suspended.": "Los valores de las variables locales se muestran después de las líneas que las usan mientras está en pausa.",
   "Variable": "Variable",

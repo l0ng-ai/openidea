@@ -2307,7 +2307,6 @@
   "VCS Operations…": "Opérations VCS…",
   "Value": "Valeur",
   "Value tooltip delay (ms)": "Délai de l'infobulle de valeur (ms)",
-  "Value tooltips are off": "Les infobulles de valeur sont désactivées",
   "Values are inserted as SQL: quote strings, e.g. 'abc'.": "Les valeurs sont insérées en SQL : mettez les chaînes entre guillemets, p. ex. 'abc'.",
   "Values of local variables are shown after the lines that use them while suspended.": "Les valeurs des variables locales s'affichent après les lignes qui les utilisent pendant une suspension.",
   "Variable": "Variable",

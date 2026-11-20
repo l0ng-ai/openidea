@@ -2455,7 +2455,6 @@
   "VCS Operations…": "VCS 작업…",
   "Value": "값",
   "Value tooltip delay (ms)": "값 툴팁 지연(ms)",
-  "Value tooltips are off": "값 툴팁이 꺼져 있습니다",
   "Values are inserted as SQL: quote strings, e.g. 'abc'.": "값은 SQL로 삽입됩니다. 문자열은 따옴표로 묶으세요(예: 'abc').",
   "Values of local variables are shown after the lines that use them while suspended.": "일시 중지 중에는 지역 변수의 값이 해당 변수를 사용하는 줄 뒤에 표시됩니다.",
   "Variable": "변수",
