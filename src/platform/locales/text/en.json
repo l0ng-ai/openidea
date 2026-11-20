@@ -467,6 +467,7 @@
   "Finder": "Finder",
   "Explorer": "Explorer",
   "Files": "Files",
+  "Advanced options": "Advanced options",
   "Files opened in associated applications": "Files opened in associated applications",
   "Files matching these patterns open in their system application instead of an editor.": "Files matching these patterns open in their system application instead of an editor.",
   "Show in Finder": "Show in Finder",

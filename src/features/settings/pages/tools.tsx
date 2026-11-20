@@ -16,7 +16,7 @@ import {
   type ExternalToolValid,
 } from "@/platform/workflowSettings";
 import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from "@/ui";
-import { NumberInput, Row, SearchLabel, Section, Select, SettingSelect, Toggle } from "../components/Form";
+import { FormGroup, NumberInput, Row, SearchLabel, Section, Select, SettingSelect, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
 import { MirrorPrefixRow } from "./DownloadSources";
@@ -451,21 +451,22 @@ function ToolField({
   onChange,
   macros,
   placeholder,
+  className,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   macros?: boolean;
   placeholder?: string;
+  className?: string;
 }) {
   const id = useId();
   return (
-    <Row label={label} htmlFor={id} className={styles.alignedRow}>
-      <span className={styles.macroField}>
+    <Row label={label} htmlFor={id} className={className}>
+      <span className={styles.toolField}>
         <Input
           id={id}
           mono={macros}
-          className={styles.wide}
           value={value}
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
@@ -486,6 +487,9 @@ function ExternalToolsEditor() {
   const [selected, setSelected] = useState<string | null>(tools[0]?.id ?? null);
   const current = tools.find((t) => t.id === selected) ?? null;
   const index = current ? tools.indexOf(current) : -1;
+  const advancedMatch = useLabelMatch("Advanced options");
+  const synchronizeMatch = useLabelMatch("Synchronize files after execution");
+  const consoleMatch = useLabelMatch("Open console for tool output");
 
   const update = (patch: Partial<ExternalToolValid>) => {
     if (!current) return;
@@ -564,50 +568,62 @@ function ExternalToolsEditor() {
         </div>
       </div>
       {current && (
-        <Section title="Tool Settings">
-          <ToolField label="Name" value={current.name} onChange={(name) => update({ name })} />
-          <ToolField
-            label="Group"
-            value={current.group}
-            onChange={(group) => update({ group })}
-            placeholder="External Tools"
-          />
-          <ToolField
-            label="Description"
-            value={current.description}
-            onChange={(description) => update({ description })}
-          />
-          <ToolField
-            label="Program"
-            value={current.program}
-            onChange={(program) => update({ program })}
-            macros
-            placeholder="e.g. /usr/bin/env"
-          />
-          <ToolField
-            label="Arguments"
-            value={current.arguments}
-            onChange={(args) => update({ arguments: args })}
-            macros
-          />
-          <ToolField
-            label="Working directory"
-            value={current.workingDirectory}
-            onChange={(workingDirectory) => update({ workingDirectory })}
-            macros
-            placeholder="$ProjectFileDir$"
-          />
-          <Checkbox
-            checked={current.synchronizeAfter}
-            onChange={(synchronizeAfter) => update({ synchronizeAfter })}
-            label="Synchronize files after execution"
-          />
-          <Checkbox
-            checked={current.openConsole}
-            onChange={(openConsole) => update({ openConsole })}
-            label="Open console for tool output"
-          />
-        </Section>
+        <>
+          <div className={styles.toolIdentity}>
+            <ToolField label="Name" value={current.name} onChange={(name) => update({ name })} />
+            <ToolField
+              label="Group"
+              value={current.group}
+              onChange={(group) => update({ group })}
+              placeholder="External Tools"
+            />
+            <ToolField
+              label="Description"
+              value={current.description}
+              onChange={(description) => update({ description })}
+              className={styles.toolDescription}
+            />
+          </div>
+          <Section title="Tool Settings">
+            <ToolField
+              label="Program"
+              value={current.program}
+              onChange={(program) => update({ program })}
+              macros
+              placeholder="e.g. /usr/bin/env"
+            />
+            <ToolField
+              label="Arguments"
+              value={current.arguments}
+              onChange={(args) => update({ arguments: args })}
+              macros
+            />
+            <ToolField
+              label="Working directory"
+              value={current.workingDirectory}
+              onChange={(workingDirectory) => update({ workingDirectory })}
+              macros
+              placeholder="$ProjectFileDir$"
+            />
+          </Section>
+          <details className={styles.toolOptions} open={advancedMatch || synchronizeMatch || consoleMatch || undefined}>
+            <summary>
+              <SearchLabel text="Advanced options" />
+            </summary>
+            <FormGroup indented>
+              <Toggle
+                checked={current.synchronizeAfter}
+                onChange={(synchronizeAfter) => update({ synchronizeAfter })}
+                label="Synchronize files after execution"
+              />
+              <Toggle
+                checked={current.openConsole}
+                onChange={(openConsole) => update({ openConsole })}
+                label="Open console for tool output"
+              />
+            </FormGroup>
+          </details>
+        </>
       )}
       <div className={styles.note}>
         <T>
@@ -850,7 +866,9 @@ export const TOOLS_PAGES: PageSpec[] = [
               "Arguments",
               "Working directory",
               "Insert Macro",
+              "Advanced options",
               "Synchronize files after execution",
+              "Open console for tool output",
             ],
             component: ExternalToolsEditor,
           },
