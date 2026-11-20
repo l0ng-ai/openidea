@@ -628,7 +628,7 @@ mod tests {
     use ide_db::DbDriver;
     use std::sync::Arc;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reporting_error_stops_the_batch_and_releases_the_request() {
         let temp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(temp.path()).unwrap();
@@ -681,7 +681,10 @@ mod tests {
         host.cancel_request(request);
         assert!(host.begin_request(request).is_cancelled());
 
-        let query = ide_db::split::split("SELECT 99 AS n UNION ALL SELECT count(*) FROM items", DbDriver::Sqlite);
+        let query = ide_db::split::split(
+            "SELECT 99 AS n UNION ALL SELECT count(*) FROM items ORDER BY n DESC",
+            DbDriver::Sqlite,
+        );
         let outcomes = db_execute(&host, window, RequestId(2), id.into(), query, 1, 10, None).await.unwrap();
         assert_eq!(outcomes[0].result.as_ref().unwrap().rows, vec![vec![Some("0".into())]]);
     }

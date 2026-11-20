@@ -1136,6 +1136,7 @@ async function run(
       // An older remote dispatcher rejects the missing command before it executes any SQL.
       if (
         !received &&
+        progress.current() &&
         isRemoteWindow() &&
         error instanceof IpcError &&
         error.kind === "protocol" &&
