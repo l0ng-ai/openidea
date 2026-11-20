@@ -410,7 +410,10 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     ["separator", "Comma and semicolon", "separator"],
     ["scriptTag", "PHP tags", "processing-instruction"],
     ["staticField", "Static field", "static-property"],
-  ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
+  ].map(([id, name, token]) => ({
+    ...syn(`php.${id}`, name!, ["PHP"], token!, id === "staticField" ? { defaultItalic: true } : {}),
+    language: "PHP",
+  })),
 ];
 
 // --- scheme base values ------------------------------------------------------
