@@ -559,6 +559,7 @@ export function Stream({
                     (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
                   }
                   data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+                  data-author={authorHeaders.has(row.index) || undefined}
                 >
                   {authorHeaders.has(row.index) && (
                     <div className={styles.agentAuthor}>
