@@ -24,6 +24,7 @@ import { CommitDetails } from "./log/CommitDetails";
 import { CommitList } from "./log/CommitList";
 import { FilterBar } from "./log/FilterBar";
 import { useLogRepositories, useReadOnlyLog } from "./log/logHooks";
+import { PANE_STYLE } from "./log/shared";
 import { LogIdContext } from "./logContext";
 import { invalidateLogDetails } from "./logDetails";
 import { useLogOptions } from "./logOptions";
@@ -223,13 +224,13 @@ export function LogView() {
     >
       {showBranches && (
         <>
-          <SplitPanel id="branches" defaultSize="18%" minSize="120px">
+          <SplitPanel id="branches" style={PANE_STYLE} defaultSize="18%" minSize="120px">
             <BranchesPanel />
           </SplitPanel>
           <SplitHandle />
         </>
       )}
-      <SplitPanel id="commits" defaultSize="54%" minSize="25%">
+      <SplitPanel id="commits" style={PANE_STYLE} defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
           <CommitList />
@@ -238,7 +239,7 @@ export function LogView() {
       {showDetails && (
         <>
           <SplitHandle />
-          <SplitPanel id="details" defaultSize="28%" minSize="15%">
+          <SplitPanel id="details" style={PANE_STYLE} defaultSize="28%" minSize="15%">
             <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
           </SplitPanel>
         </>
