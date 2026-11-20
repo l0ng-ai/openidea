@@ -7,6 +7,7 @@ import type { RunConfig } from "@/platform/ipc";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
 import { jvmTestConfig } from "./application";
 import { testBasesFor, testConfigFor } from "./context";
+import { inGradleModule } from "./gradleModuleTests";
 import {
   ROOT_MODULE,
   buildModuleOptions,
@@ -38,8 +39,9 @@ export function junitCommandLine(
   p: Readonly<Record<string, string>>,
   configs: RunConfig[],
 ): { command: string; args: string[]; cwd: string | null } {
-  const base = baseFor(p, configs);
-  if (!base) return { command: "", args: [], cwd: null };
+  const detected = baseFor(p, configs);
+  if (!detected) return { command: "", args: [], cwd: null };
+  const base = inGradleModule(detected, moduleDir(p));
   const maven = base.kind === "maven";
   let args = [...base.args];
   const cls = p.className?.trim() ?? "";
@@ -48,7 +50,7 @@ export function junitCommandLine(
     case "method": {
       if (!cls) break;
       const method = kindOf(p) === "method" ? p.methodName?.trim() || undefined : undefined;
-      const file = testConfigFor(inModule(p, `src/test/java/${cls.replace(/\./g, "/")}.java`), configs, base);
+      const file = testConfigFor(inModule(p, `src/test/java/${cls.replace(/\./g, "/")}.java`), configs, detected);
       const narrowed = file && jvmTestConfig(file, cls, method);
       if (narrowed) args = narrowed.args;
       break;

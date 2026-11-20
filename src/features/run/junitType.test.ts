@@ -63,6 +63,25 @@ describe("JUnit configurations", () => {
     expect(line({ testKind: "all", vmOptions: "-Xmx1g" }).args).toEqual([":api:test"]);
   });
 
+  it("run a subproject's tests with its own task when the build's test configuration is the root's", () => {
+    const root = [cfg({ id: "gradle:test", kind: "gradle", args: ["test"], isTest: true })];
+    const line = (p: Record<string, string>) => junitCommandLine({ module: "services/api", ...p }, root);
+    expect(line({ testKind: "method", className: "a.OrderTest", methodName: "ships" })).toEqual({
+      command: "./gradlew",
+      args: [":services:api:test", "--tests", "a.OrderTest.ships"],
+      cwd: null,
+    });
+    expect(line({ testKind: "class", className: "a.OrderTest" }).args).toEqual([
+      ":services:api:test",
+      "--tests",
+      "a.OrderTest",
+    ]);
+    expect(line({ testKind: "package", packageName: "a.b" }).args).toEqual([":services:api:test", "--tests", "a.b.*"]);
+    expect(line({ testKind: "pattern", pattern: "*IT" }).args).toEqual([":services:api:test", "--tests", "*IT"]);
+    expect(line({ testKind: "all" }).args).toEqual([":services:api:test"]);
+    expect(junitCommandLine({ module: ".", testKind: "all" }, root).args).toEqual(["test"]);
+  });
+
   it("run nothing without a Maven or Gradle build, and debug and report like build runs", () => {
     expect(junitCommandLine({ testKind: "all" }, []).command).toBe("");
     const line = junitCommandLine({ testKind: "class", className: "a.OrderTest" }, maven);

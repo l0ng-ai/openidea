@@ -191,6 +191,17 @@ describe("rerunFailedConfig", () => {
     expect(await rerunFailedConfig(cfg("zig", "zig", ["build", "test"]), [["tally", "subs"]])).toBeNull();
   });
 
+  it("gradle: reruns and tree selections of a subproject's run keep its test task", async () => {
+    const run = cfg("gradle", "./gradlew", [":services:api:test", "--tests", "com.a.FooTest"]);
+    expect((await rerunFailedConfig(run, [["com.a.FooTest", "bar()"]]))!.args).toEqual([
+      ":services:api:test",
+      "--tests",
+      "com.a.FooTest.bar",
+    ]);
+    const [selected] = await testsConfigs(run, [["com.a.FooTest", "baz"]], "FooTest.baz");
+    expect(selected!.args).toEqual([":services:api:test", "--tests", "com.a.FooTest.baz"]);
+  });
+
   it("gradle and maven filters", async () => {
     expect((await rerunFailedConfig(cfg("gradle", "./gradlew", ["test"]), [["com.a.FooTest", "bar()"]]))!.args).toEqual(
       ["test", "--tests", "com.a.FooTest.bar"],
