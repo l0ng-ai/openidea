@@ -188,6 +188,19 @@ async fn reads_unsaved_text_and_searches_the_overlay_with_a_limit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn every_match_of_a_long_line_is_found_once() {
+    let h = Harness::new();
+    std::fs::write(
+        h.root.join("src/min.js"),
+        format!("a=1;{}b='longneedle';{}longneedle\n", "x".repeat(2000), "y".repeat(2000)),
+    )
+    .unwrap();
+    let found = h.json("search_text", json!({"q":"longneedle","limit":20})).await;
+    let columns: Vec<_> = found["items"].as_array().unwrap().iter().map(|i| i["startColumn"].clone()).collect();
+    assert_eq!(columns, [json!(2008), json!(4020)], "{found}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn window_reports_supply_editor_selection_and_problems_then_disappear_on_close() {
     let h = Harness::new();
     let path = h.root.join("src/a.txt");

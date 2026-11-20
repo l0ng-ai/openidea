@@ -432,6 +432,41 @@ fn long_lines_are_truncated() {
 }
 
 #[test]
+fn every_match_of_a_long_line_is_reported_in_its_own_window() {
+    let long = format!("a='needle';{}b='needle';{}needle!\n", "x".repeat(2000), "y".repeat(2000));
+    let p = project(&[("min.js", long.as_bytes())]);
+    let (views, summary) = run(p.path(), &query("needle"));
+    assert_eq!(summary.matches, 3);
+    let lines = &views[0].matches;
+    assert_eq!(lines.len(), 3, "one window per far-apart match");
+    let line_utf16: Vec<u16> = long.trim_end().encode_utf16().collect();
+    let mut starts = Vec::new();
+    for m in lines {
+        assert_eq!(m.line, 0);
+        assert!(m.text.encode_utf16().count() <= 500);
+        let [(a, b)] = m.ranges[..] else { panic!("{:?}", m.ranges) };
+        let text: Vec<u16> = m.text.encode_utf16().collect();
+        assert_eq!(String::from_utf16(&text[a as usize..b as usize]).unwrap(), "needle");
+        let col = (m.text_offset + a) as usize;
+        assert_eq!(String::from_utf16(&line_utf16[col..col + 6]).unwrap(), "needle");
+        starts.push(ide_core::Pos::new(0, m.text_offset + a));
+    }
+    // The reported positions are the ones Replace takes: all of them are replaced.
+    let edits = ide_search::replacement_edits(&long, &query("needle"), "pin", false, Some(&starts)).unwrap();
+    assert_eq!(edits.len(), 3);
+    assert!(!ide_search::apply_edits(&long, &edits).contains("needle"));
+}
+
+#[test]
+fn match_limit_counts_every_match_of_a_long_line() {
+    let long = format!("needle{}needle{}needle\n", "x".repeat(1000), "y".repeat(1000));
+    let p = project(&[("min.js", long.as_bytes())]);
+    let (views, summary) = run(p.path(), &SearchQuery { max_matches: 2, ..query("needle") });
+    assert!(summary.limit_hit);
+    assert_eq!((summary.matches, total(&views)), (2, 2));
+}
+
+#[test]
 fn multi_line_matches() {
     let p = project(&[("a.rs", b"fn foo() {\n    bar();\n}\nfoo\nbar\n")]);
     let (views, summary) = run(p.path(), &regex(r"\{\n\s*bar"));

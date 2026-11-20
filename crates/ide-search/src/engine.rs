@@ -1,7 +1,7 @@
 //! Parallel walk + per-file search.
 
 use crate::iter::for_each_match;
-use crate::line::line_match;
+use crate::line::line_matches;
 use crate::mask::FileMask;
 use crate::pattern::ScopePattern;
 use crate::query::{Compiled, line_terminator};
@@ -521,7 +521,7 @@ impl Sink for FileSink<'_> {
             if !ranges.is_empty() {
                 self.count = self.count.saturating_add(u32::try_from(ranges.len()).unwrap_or(u32::MAX));
                 let line_no = u32::try_from(line_no).unwrap_or(u32::MAX);
-                self.lines.push(line_match(line_no, &block[line_start..content_end], &ranges));
+                line_matches(line_no, &block[line_start..content_end], &ranges, &mut self.lines);
             }
             line_start = line_end_incl;
             line_no += 1;

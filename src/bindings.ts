@@ -8163,7 +8163,10 @@ export type LineMarkerInfo = {
 export type LineMatch = {
 	/**  0-based line. */
 	line: number,
-	/**  Line text, truncated around the match for very long lines. */
+	/**
+	 *  Line text, truncated around the matches for very long lines: such a line comes as one
+	 *  `LineMatch` per window, so the same `line` can repeat.
+	 */
 	text: string,
 	/**  UTF-16 column ranges within `text`. */
 	ranges: ([number, number])[],
