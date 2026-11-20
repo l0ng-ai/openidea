@@ -60,6 +60,8 @@ export interface ConnectionState {
   error: string | null;
   /** Disconnected for this session: no snapshots, events or polling until Connect. */
   disconnected?: boolean;
+  /** Containers with a start / stop / … / remove in progress, by id: the operation. */
+  busy?: Record<string, ContainerOp | "remove">;
 }
 
 interface DockerState {
@@ -381,6 +383,38 @@ async function guarded(connId: string, title: string, run: () => Promise<unknown
   }
 }
 
+/** The operation in progress on any of `ids`, if one is. */
+export function busyOp(connId: string, ids: readonly string[], s = useServices.getState()) {
+  const busy = connectionState(connId, s).busy;
+  for (const id of ids) if (busy?.[id]) return busy[id];
+  return null;
+}
+
+/**
+ * Runs `op` on containers no other operation holds, marking them busy until the
+ * snapshot after it has loaded, so their actions stay disabled meanwhile.
+ */
+async function holding(connId: string, ids: string[], op: ContainerOp | "remove", run: () => Promise<boolean>) {
+  if (busyOp(connId, ids)) return false;
+  const mark = (on: boolean) =>
+    useServices.setState((s) => {
+      const busy = { ...connectionState(connId, s).busy };
+      for (const id of ids) {
+        if (on) busy[id] = op;
+        else delete busy[id];
+      }
+      return { conns: { ...s.conns, [connId]: { ...connectionState(connId, s), busy } } };
+    });
+  mark(true);
+  try {
+    const ok = await run();
+    await refresh(connId).catch(() => undefined);
+    return ok;
+  } finally {
+    mark(false);
+  }
+}
+
 export function containerOp(connId: string, ids: string[], op: ContainerOp): Promise<boolean> {
   const failure = {
     start: tx("Could not start container"),
@@ -390,7 +424,9 @@ export function containerOp(connId: string, ids: string[], op: ContainerOp): Pro
     unpause: tx("Could not unpause container"),
     kill: tx("Could not kill container"),
   }[op];
-  return guarded(connId, failure, () => call(commands.dockerContainerOp(endpointOf(connId), ids, op)));
+  return holding(connId, ids, op, () =>
+    guarded(connId, failure, () => call(commands.dockerContainerOp(endpointOf(connId), ids, op))),
+  );
 }
 
 export function removeObjects(connId: string, object: DockerObject, ids: string[], force: boolean): Promise<boolean> {
@@ -400,7 +436,8 @@ export function removeObjects(connId: string, object: DockerObject, ids: string[
     volume: tx("Could not remove volume"),
     network: tx("Could not remove network"),
   }[object];
-  return guarded(connId, failure, () => call(commands.dockerRemove(endpointOf(connId), object, ids, force)));
+  const run = () => guarded(connId, failure, () => call(commands.dockerRemove(endpointOf(connId), object, ids, force)));
+  return object === "container" ? holding(connId, ids, "remove", run) : run();
 }
 
 /** Runs a streaming operation, showing its latest output line in the view's banner. */
