@@ -47,7 +47,10 @@ vi.mock("@/platform/javaLaunch", async (original) => ({
   ...(await original<typeof import("@/platform/javaLaunch")>()),
   resolveJavaModule: async () => "app",
 }));
-vi.mock("./buildUpdate", () => ({ runUpdateBuild: mocks.runBuild }));
+vi.mock("./buildUpdate", async (original) => ({
+  ...(await original<typeof import("./buildUpdate")>()),
+  runUpdateBuild: mocks.runBuild,
+}));
 vi.mock("./tomcat", () => ({ buildTomcatArtifact: mocks.build, syncTomcatOutputs: mocks.sync }));
 vi.mock("./store", () => ({
   rerunConfig: (s: Pick<RunSession, "config">) => mocks.state.configs.find((c) => c.id === s.config.id) ?? s.config,
@@ -155,6 +158,27 @@ describe("Spring Boot application updates", () => {
     await updateTomcat(boot, "classes");
     expect(mocks.notify).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining("Restart the application") }),
+    );
+  });
+  it("names the compile errors when the update's Java build fails", async () => {
+    mocks.resolve.mockResolvedValueOnce({
+      status: "ok",
+      data: {
+        build: "withErrors",
+        classPaths: [],
+        pathListSeparator: ":",
+        errors: [{ path: "/p/app/src/A.java", line: 1, column: 1, message: "illegal character: '\\ufeff'" }],
+        errorCount: 1,
+        hints: [],
+      },
+    } as never);
+    await updateTomcat(boot, "classes");
+    expect(mocks.runBuild).not.toHaveBeenCalled();
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "error",
+        body: "Application update build failed\n/p/app/src/A.java:1:1: error: illegal character: '\\ufeff'",
+      }),
     );
   });
   it("never publishes resources after a failed build", async () => {
