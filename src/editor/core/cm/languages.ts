@@ -420,6 +420,9 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   this: t.keyword,
 };
 
+// @lezer/go leaves `default` uncoloured, unlike `case` and `switch`.
+const GO_TAGS: Parameters<typeof styleTags>[0] = { default: t.controlKeyword };
+
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
@@ -437,6 +440,7 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
     "MethodDeclaration/Name FunctionDefinition/Name": t.function(t.definition(t.variableName)),
     "PropertyDeclaration/VariableDeclarator/VariableName": t.definition(t.propertyName),
   },
+  Go: GO_TAGS,
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,
