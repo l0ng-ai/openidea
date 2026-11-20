@@ -102,13 +102,13 @@ importers:
         specifier: ^2
         version: 2.7.2
       '@xterm/addon-fit':
-        specifier: ^0.12.0-beta.334
+        specifier: 0.12.0-beta.334
         version: 0.12.0-beta.334(@xterm/xterm@6.1.0-beta.338)
       '@xterm/addon-search':
-        specifier: ^0.17.0-beta.332
+        specifier: 0.17.0-beta.332
         version: 0.17.0-beta.332(@xterm/xterm@6.1.0-beta.338)
       '@xterm/xterm':
-        specifier: ^6.1.0-beta.338
+        specifier: 6.1.0-beta.338
         version: 6.1.0-beta.338
       anser:
         specifier: ^2.3.5
