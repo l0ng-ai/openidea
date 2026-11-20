@@ -46,6 +46,7 @@ export type MenuItem =
       shortcut?: string;
       disabled?: boolean;
       checked?: boolean;
+      current?: boolean;
       danger?: boolean;
       run?: () => void;
       /** Run instead of `run` on ⌘-click (macOS) / Ctrl-click, e.g. "only this one" in a multi-choice filter. */
@@ -67,6 +68,7 @@ interface Resolved {
   shortcut?: string;
   disabled?: boolean;
   checked?: boolean;
+  current?: boolean;
   danger?: boolean;
   run?: () => void;
   runWithModifier?: () => void;
@@ -389,6 +391,7 @@ export function MenuList({
               type="button"
               role={r.checked !== undefined ? "menuitemcheckbox" : "menuitem"}
               aria-checked={r.checked}
+              aria-current={r.current || undefined}
               aria-disabled={r.disabled || undefined}
               aria-haspopup={hasSub ? "menu" : undefined}
               aria-expanded={hasSub ? openSub === i : undefined}

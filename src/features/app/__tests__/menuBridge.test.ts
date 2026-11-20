@@ -140,13 +140,17 @@ describe("menu state from the frontend", () => {
       registerToolWindow({ id: "zeta", title: "Terminal", icon: "terminal", anchor: "bottom", component: () => null }),
       registerToolWindow({ id: "alpha", title: "Problems", icon: "problems", anchor: "bottom", component: () => null }),
     ];
+    saveLayout("Focus");
     saveLayout("Review");
     const dyn = dynamicMenuItems();
     expect(dyn.toolWindows!.map((i) => [i.action, i.label])).toEqual([
       ["toolwindow.alpha", "Problems"],
       ["toolwindow.zeta", "Terminal"],
     ]);
-    expect(dyn.toolWindowLayouts).toEqual([{ action: "layout.restore", arg: "Review", label: "Review" }]);
+    expect(dyn.toolWindowLayouts).toEqual([
+      { action: "layout.restore", arg: "Focus", label: "Focus", checked: false },
+      { action: "layout.restore", arg: "Review", label: "Review", checked: true },
+    ]);
     expect(buildMenuConfig("macos").dynamic).toEqual(dyn);
     offs.forEach((d) => d());
     localStorage.clear();

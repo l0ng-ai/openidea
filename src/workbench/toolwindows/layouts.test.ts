@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getContext, setContext } from "@/platform/context";
 import { executeAction } from "@/platform/actions";
 import { registerToolWindow } from "../contributions";
+import * as inputDialogs from "../inputDialogs";
+import * as messages from "../messages";
 import { installToolWindowActions } from "./actions";
 import {
   _reloadLayouts,
@@ -139,5 +141,27 @@ describe("tool window layouts", () => {
     await executeAction("layout.restore", "Run");
     setContext("projectOpen", false);
     expect(isToolWindowVisible("terminal")).toBe(true);
+  });
+
+  it("renames and deletes the layout passed by its menu without opening the chooser", async () => {
+    saveLayout("Focus");
+    saveLayout("Review");
+    const choose = vi.spyOn(inputDialogs, "chooseItem").mockResolvedValue(null);
+    const prompt = vi.spyOn(inputDialogs, "promptInput").mockResolvedValue("Code review");
+    const confirm = vi.spyOn(messages, "confirm").mockResolvedValue(true);
+    try {
+      await executeAction("layout.rename", "Review");
+      expect(prompt).toHaveBeenCalledWith(expect.objectContaining({ initial: "Review" }));
+      expect(layoutNames()).toEqual(["Focus", "Code review"]);
+
+      await executeAction("layout.delete", "Code review");
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ message: "Delete the layout 'Code review'?" }));
+      expect(layoutNames()).toEqual(["Focus"]);
+      expect(choose).not.toHaveBeenCalled();
+    } finally {
+      choose.mockRestore();
+      prompt.mockRestore();
+      confirm.mockRestore();
+    }
   });
 });
