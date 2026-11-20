@@ -9139,5 +9139,12 @@
   "{name} changed on disk": "{name} 已在磁盘上更改",
   "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.": "该文件在 IDE 外被修改，而编辑器中还有未保存的更改。保存会保留编辑器中的版本并覆盖该文件。",
   "Load Changes from Disk": "从磁盘加载更改",
-  "Keep Editor Changes": "保留编辑器中的更改"
+  "Keep Editor Changes": "保留编辑器中的更改",
+  "Diagnose with Agent": "用智能体诊断",
+  "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.": "把失败测试的名称、源码位置、期望值与实际值和输出添加到最近编辑的智能体消息中，检查后再发送。",
+  "The test {name} failed. Help me find out why.": "测试 {name} 失败了，帮我找出原因。",
+  "Test source: {location}": "测试源码：{location}",
+  "Expected:": "期望：",
+  "Actual:": "实际：",
+  "… {more} more lines": "… 另有 {more} 行"
 }

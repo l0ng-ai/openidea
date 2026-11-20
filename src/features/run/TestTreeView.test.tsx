@@ -8,7 +8,10 @@ import { TestResults } from "./testing";
 import { TestTreeView } from "./TestTreeView";
 import { testTree } from "./testTree";
 
-const nav = vi.hoisted(() => ({ openTarget: vi.fn(async () => {}) }));
+const nav = vi.hoisted(() => ({
+  openTarget: vi.fn(async () => {}),
+  resolveTarget: vi.fn(async () => "/p/src/test/java/MathTest.java"),
+}));
 vi.mock("./navigate", () => nav);
 const actions = vi.hoisted(() => ({ executeAction: vi.fn(async () => {}) }));
 vi.mock("@/platform/actions", async (orig) => ({ ...(await orig<object>()), executeAction: actions.executeAction }));
@@ -95,6 +98,31 @@ describe("TestTreeView", () => {
       "diff.compareTexts",
       expect.objectContaining({ left: { text: "1", label: "Expected" }, right: { text: "2", label: "Actual" } }),
     );
+  });
+
+  it("context menu: Diagnose with Agent passes the selected failure to the agents action (#4716)", async () => {
+    // Offered only while the agents feature provides the action.
+    render(<Host />);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    expect(screen.queryByText("Diagnose with Agent")).toBeNull();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    onTestFinished(
+      registerActions([{ id: "agents.diagnoseTestFailure", title: "Diagnose with Agent", run: () => {} }]),
+    );
+    // A suite is not one test.
+    fireEvent.contextMenu(screen.getByText("MathTest"));
+    expect(screen.queryByText("Diagnose with Agent")).toBeNull();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    await act(async () => fireEvent.click(screen.getByText("Diagnose with Agent")));
+    expect(actions.executeAction).toHaveBeenCalledWith("agents.diagnoseTestFailure", {
+      name: "subs()",
+      path: "/p/src/test/java/MathTest.java",
+      line: 9,
+      expected: "1",
+      actual: "2",
+      output: ["org.opentest4j.AssertionFailedError: expected: <1> but was: <2>"],
+    });
   });
 
   it.each([true, false])(
