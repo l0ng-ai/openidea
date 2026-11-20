@@ -2776,5 +2776,12 @@
   "rename it back to {name}": "rename it back to {name}",
   "restore {name} and check out the previous branch again": "restore {name} and check out the previous branch again",
   "Unset upstream of {to} ({root})": "Unset upstream of {to} ({root})",
-  "Group by Repository": "Group by Repository"
+  "Group by Repository": "Group by Repository",
+  "Diagnose with Agent": "Diagnose with Agent",
+  "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.": "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.",
+  "The test {name} failed. Help me find out why.": "The test {name} failed. Help me find out why.",
+  "Test source: {location}": "Test source: {location}",
+  "Expected:": "Expected:",
+  "Actual:": "Actual:",
+  "… {more} more lines": "… {more} more lines"
 }

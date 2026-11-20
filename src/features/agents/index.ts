@@ -28,6 +28,7 @@ import { AgentsStatus } from "./AgentsStatus";
 import { activateSettingsPages } from "./settingsPages";
 import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
+import { diagnoseTestFailure, isTestFailure } from "./testFailure";
 import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
 import { clearAgentTabFontZoom } from "./fontZoom";
@@ -305,6 +306,22 @@ export function activate(): () => void {
         run: ({ arg }) => {
           if (Array.isArray(arg)) sendPaths(arg.filter((p): p is string => typeof p === "string"));
           else sendSelection();
+        },
+      },
+      {
+        id: "agents.diagnoseTestFailure",
+        title: "Diagnose with Agent",
+        description:
+          "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.",
+        category: "Agents",
+        icon: "toolwindow-agents",
+        when: "projectOpen",
+        keywords: ["agent", "test", "failure", "diagnose", "explain", "fix"],
+        // Run from the test tree, which passes the failure.
+        hidden: true,
+        enabled: ({ arg }) => isTestFailure(arg),
+        run: ({ arg }) => {
+          if (isTestFailure(arg)) diagnoseTestFailure(arg);
         },
       },
       {
