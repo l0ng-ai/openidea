@@ -57,6 +57,13 @@ describe("color schemes", () => {
     );
   });
 
+  it("reports the italic static symbols and PHP static fields the editor draws by default (#4493)", () => {
+    for (const scheme of ["dark", "light"]) {
+      expect(resolvedAttribute(scheme, "staticSymbol").italic).toBe(true);
+      expect(resolvedAttribute(scheme, "php.staticField").italic).toBe(true);
+    }
+  });
+
   it("offers a Go scheme page and scopes its overrides to Go editors", () => {
     expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
     const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });
