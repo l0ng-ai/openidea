@@ -2255,6 +2255,7 @@
   "Interface name:": "Interface name:",
   "Package for new interface:": "Package for new interface:",
   "Members to Form Interface": "Members to Form Interface",
+  "Member": "Member",
   "No interface name specified": "No interface name specified",
   "Interface name is not a valid identifier": "Interface name is not a valid identifier",
   "Interface name should differ from the class name": "Interface name should differ from the class name",
