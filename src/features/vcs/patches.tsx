@@ -17,8 +17,8 @@ import { FileChecklist, defaultChangeFiles, reportApply } from "./shelf";
 import { activeList, useChangelists } from "./changelists";
 import { currentRepoRoot, useVcs } from "./store";
 import styles from "./common.module.css";
-import { tx } from "@/platform/i18n";
-import { useRowHeight } from "@/ui/density";
+import { tx, useTx } from "@/platform/i18n";
+import previewStyles from "./ApplyPatch.module.css";
 
 export type PatchOrigin =
   | { kind: "changes"; files: FileStatus[] }
@@ -222,7 +222,7 @@ function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: 
 /** Apply Patch…: from a file (chooser), or the clipboard. */
 export async function showApplyPatch(from: "file" | "clipboard", path?: string) {
   let text: string | null;
-  let source = "Clipboard";
+  let sourcePath: string | null = null;
   try {
     if (from === "clipboard") {
       text = await readClipboardPlainText();
@@ -239,7 +239,7 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
         file = typeof picked === "string" ? picked : null;
       }
       if (!file) return;
-      source = baseName(file);
+      sourcePath = file;
       text = await call(commands.fsReadText(file));
     }
   } catch (e) {
@@ -256,11 +256,47 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
     return;
   }
   const patch = text;
-  openDialog((close) => <ApplyPatchDialog patch={patch} source={source} onClose={close} />);
+  openDialog((close) => <ApplyPatchDialog patch={patch} sourcePath={sourcePath} onClose={close} />);
 }
 
-function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: string; onClose: () => void }) {
-  const rowHeight = useRowHeight(22);
+function PatchFileRow({ file }: { file: PatchFile }) {
+  const t = useTx();
+  const name = baseName(file.path);
+  return (
+    <span
+      className={styles.fileTreeRow}
+      title={file.applies ? t("Applies cleanly") : t("Does not apply cleanly: a 3-way merge will be attempted")}
+    >
+      <Icon name={fileIconName(name, file.path)} size={14} />
+      <span className={previewStyles.filePath}>
+        <span
+          className={previewStyles.fileName}
+          style={{ color: KIND_COLOR[file.kind === "untracked" ? "added" : file.kind] }}
+          title={file.path}
+        >
+          {name}
+        </span>
+        <span className={styles.fileDir}>{file.oldPath ? t`from ${file.oldPath}` : dirName(file.path)}</span>
+      </span>
+      <span className={previewStyles.stats}>{file.binary ? t("binary") : `+${file.added} −${file.removed}`}</span>
+      <span className={previewStyles.fileStatus}>
+        {!file.applies && <Icon name="warning" size={14} label="Does not apply cleanly" />}
+      </span>
+    </span>
+  );
+}
+
+function ApplyPatchDialog({
+  patch,
+  sourcePath,
+  onClose,
+}: {
+  patch: string;
+  sourcePath: string | null;
+  onClose: () => void;
+}) {
+  const t = useTx();
+  const source = sourcePath ? baseName(sourcePath) : t("Clipboard");
   const [repo] = useState(currentRepoRoot);
   const [files, setFiles] = useState<PatchFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -274,12 +310,13 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
     return () => {
       alive = false;
     };
-  }, [patch]);
+  }, [patch, repo]);
+  const count = files?.length ?? 0;
   const failing = files?.filter((f) => !f.applies).length ?? 0;
   const run = async () => {
     onClose();
     await saveAll();
-    const outcome = await runOp(tx`Apply patch (${source})`, () => call(commands.vcsApplyPatch(repo, patch)), {
+    const outcome = await runOp(t`Apply patch (${source})`, () => call(commands.vcsApplyPatch(repo, patch)), {
       refresh: false,
     });
     if (outcome) await reportApply(outcome, "Patch applied");
@@ -287,71 +324,67 @@ function ApplyPatchDialog({ patch, source, onClose }: { patch: string; source: s
   return (
     <Dialog
       open
-      title={tx`Apply Patch: ${source}`}
+      title="Apply Patch"
+      aria-label={t`Apply Patch: ${source}`}
       onClose={onClose}
-      width={600}
-      footerStart={
-        files && failing > 0 ? (
-          <span className={styles.hint}>
-            {failing === 1
-              ? tx`${failing} file will be merged; conflicts open in the merge tool`
-              : tx`${failing} files will be merged; conflicts open in the merge tool`}
-          </span>
-        ) : undefined
-      }
+      width={660}
+      resizable="both"
+      minWidth={320}
+      className={previewStyles.dialog}
       buttons={[
-        { label: "OK", role: "default", autoFocus: true, disabled: !files?.length, onClick: () => void run() },
+        { label: "Apply", role: "default", autoFocus: true, disabled: !count, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        {files ? `${files.length} file${files.length === 1 ? "" : "s"} in the patch` : ""}
-      </div>
-      <div style={{ height: 280, display: "flex", flexDirection: "column", padding: "0 14px 14px" }}>
-        {error ? (
-          <div className={styles.error}>{error}</div>
-        ) : !files ? (
-          <div className={styles.empty}>
-            <Spinner size={14} />
+      <div className={previewStyles.preview}>
+        <div className={previewStyles.fields}>
+          <label className={previewStyles.field}>
+            <T>Patch source</T>
+            <Input readOnly value={sourcePath ?? source} title={sourcePath ?? undefined} />
+          </label>
+          {repo && (
+            <label className={previewStyles.field}>
+              <T>Repository</T>
+              <Input readOnly value={repo} title={repo} />
+            </label>
+          )}
+        </div>
+        <section className={previewStyles.files}>
+          <div className={previewStyles.filesHeader}>
+            <h2 className={previewStyles.heading}>
+              <T>Patch files</T>
+            </h2>
+            {files && <span className={previewStyles.stats}>{count === 1 ? t`${count} file` : t`${count} files`}</span>}
           </div>
-        ) : (
-          <List
-            items={files}
-            getKey={(f) => f.path}
-            rowHeight={rowHeight}
-            aria-label="Patch files"
-            className={styles.boxList}
-            empty={
+          {error ? (
+            <div className={previewStyles.error} role="alert">
+              {error}
+            </div>
+          ) : !files ? (
+            <div className={styles.empty}>
+              <Spinner size={14} />
+            </div>
+          ) : (
+            <List
+              items={files}
+              getKey={(f) => f.path}
+              aria-label="Patch files"
+              className={previewStyles.list}
+              empty={<T>No changes</T>}
+              renderItem={(file) => <PatchFileRow file={file} />}
+            />
+          )}
+          {failing > 0 && (
+            <div className={previewStyles.warning} role="status">
+              <Icon name="warning" size={14} />
               <span>
-                <T>No changes</T>
+                {failing === 1
+                  ? t`${failing} file will be merged; conflicts open in the merge tool`
+                  : t`${failing} files will be merged; conflicts open in the merge tool`}
               </span>
-            }
-            renderItem={(f) => (
-              <span
-                className={styles.fileRow}
-                style={{ flex: 1, padding: 0 }}
-                title={
-                  f.applies ? tx("Applies cleanly") : tx("Does not apply cleanly: a 3-way merge will be attempted")
-                }
-              >
-                <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
-                <span
-                  className={styles.fileName}
-                  style={{
-                    color:
-                      KIND_COLOR[f.kind === "untracked" ? "added" : f.kind === "conflicted" ? "conflicted" : f.kind],
-                  }}
-                >
-                  {baseName(f.path)}
-                </span>
-                <span className={styles.fileDir}>{f.oldPath ? tx`from ${f.oldPath}` : dirName(f.path)}</span>
-                <span className={styles.grow} />
-                <span className={styles.commitMeta}>{f.binary ? tx("binary") : `+${f.added} −${f.removed}`}</span>
-                {!f.applies && <Icon name="warning" size={14} label="Does not apply cleanly" />}
-              </span>
-            )}
-          />
-        )}
+            </div>
+          )}
+        </section>
       </div>
     </Dialog>
   );

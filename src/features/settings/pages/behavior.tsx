@@ -98,7 +98,14 @@ function ThemeRow() {
     showPicked(shown);
   };
   return (
-    <Row label="Theme">
+    <Row
+      label="Theme"
+      hint={
+        <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
+          <T>Get more themes</T>
+        </button>
+      }
+    >
       <Select<ConcreteTheme>
         value={shown}
         options={themeSelectOptions(choices, shown)}
@@ -108,11 +115,7 @@ function ThemeRow() {
         className={styles.themeSelect}
         disabled={sync}
       />
-      {/* As in IntelliJ IDEA: most themes are plugins, so point at the marketplace's. */}
-      <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
-        <T>Get more themes</T>
-      </button>
-      <span className={clsx(styles.inline, matched && styles.matched)}>
+      <span className={clsx(styles.themeSync, matched && styles.matched)}>
         <Checkbox
           checked={sync}
           onChange={(on) => {
@@ -141,7 +144,7 @@ function ThemeRow() {
         offset={4}
         aria-label="Preferred themes"
       >
-        <div className={styles.popupBody}>
+        <FormGroup className={styles.preferredThemes}>
           <Row label="Preferred theme for light OS mode">
             <Select<ConcreteTheme>
               value={light}
@@ -158,7 +161,7 @@ function ThemeRow() {
               aria-label="Preferred dark theme"
             />
           </Row>
-        </div>
+        </FormGroup>
       </Popup>
     </Row>
   );
@@ -260,53 +263,37 @@ function CustomFontRow() {
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
-  // Labels share one column (IDEA Appearance): the UI font, fallback and Size
-  // controls all start at the same x instead of drifting with flex wrapping.
   return (
     <div className={clsx(styles.customFontRow, matched && styles.matched)}>
       <span className={styles.fontCheck}>
         <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
       </span>
-      <span className={styles.fontControl}>
-        <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
-      </span>
+      <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
+      <div className={clsx(styles.fontSize, !on && styles.disabled)}>
+        <label htmlFor={`${id}-size`}>
+          <SearchLabel text="Size:" />
+        </label>
+        <NumberInput
+          id={`${id}-size`}
+          value={size}
+          onChange={setSize}
+          {...LIMITS.uiFontSize}
+          integer
+          disabled={!on}
+          aria-label="UI font size"
+        />
+      </div>
       <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
         <SearchLabel text="Fallback font:" />
       </label>
-      <span className={styles.fontControl}>
-        <FontPicker
-          id={`${id}-fallback`}
-          label="UI fallback font"
-          disabled={!on}
-          value={fallback}
-          onChange={setFallback}
-          allowEmpty
-        />
-      </span>
-      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
-        <SearchLabel text="Size:" />
-      </label>
-      <span className={styles.fontControl}>
-        {on ? (
-          <NumberInput
-            id={`${id}-size`}
-            value={size}
-            onChange={setSize}
-            {...LIMITS.uiFontSize}
-            integer
-            aria-label="UI font size"
-          />
-        ) : (
-          <Input
-            id={`${id}-size`}
-            className={styles.sizeInput}
-            value={String(size)}
-            disabled
-            aria-label="UI font size"
-            readOnly
-          />
-        )}
-      </span>
+      <FontPicker
+        id={`${id}-fallback`}
+        label="UI fallback font"
+        disabled={!on}
+        value={fallback}
+        onChange={setFallback}
+        allowEmpty
+      />
     </div>
   );
 }
@@ -919,6 +906,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           },
           { kind: "custom", label: "Accent color", keywords: ["accent colour", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },
+          {
+            kind: "custom",
+            label: "Use custom font",
+            keywords: ["UI font size", "Size", "font family", "fallback font"],
+            component: CustomFontRow,
+          },
         ],
       },
       {
@@ -936,12 +929,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         title: "Accessibility",
         options: [
           { kind: "custom", label: "Zoom", keywords: ["scale", "zoom ide"], component: ZoomRow },
-          {
-            kind: "custom",
-            label: "Use custom font",
-            keywords: ["UI font size", "Size", "font family", "fallback font"],
-            component: CustomFontRow,
-          },
           { kind: "toggle", key: "appearance.contrastScrollbars", label: "Use contrast scrollbars" },
           {
             kind: "toggle",

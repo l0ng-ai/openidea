@@ -13,6 +13,8 @@ export const REGISTRY_PAGE = "agents.list";
 export const AGENTS_GROUP = "Agents";
 /** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
 export const MCP_PAGE = "agents.mcpServers";
+/** Settings › Agents › Skills: every CLI's SKILL.md folders and their modes. */
+export const SKILLS_PAGE = "agents.skills";
 /** Settings › Agents › Command Permissions. */
 export const POLICY_PAGE = "agents.policy";
 

@@ -39,9 +39,10 @@ function findClosingDelimiter(src: string, from: number, delim: string): number 
   return -1;
 }
 
-const PROTECTED_INLINE_DOLLAR = /^\$`([^`\r\n]+)`\$/;
+// The first backtick run of the opening length ends the code span.
+const PROTECTED_INLINE_DOLLAR = /^\$(?<ticks>`+)(?!`)(?<tex>(?:[^`\r\n]|(?!\k<ticks>(?!`))`+(?!`))+)\k<ticks>\$/;
 // Marked masks code spans as `[aaa]` before calling emStrongMask
-const MASKED_PROTECTED_INLINE_DOLLAR = /^\$\[(a+)\]\$/;
+const MASKED_PROTECTED_INLINE_DOLLAR = /^\$\[(?<tex>a+)\]\$/;
 
 /**
  * Matches inline `$...$` from index 0 using Pandoc-style guards so currency
@@ -87,7 +88,7 @@ function matchInlineMath(
   if (src[0] === "$") {
     const match = protectedDollar.exec(src);
     if (match) {
-      const text = match[1]!;
+      const text = match.groups!.tex!;
       return text.trim() ? { raw: match[0], text, display: false } : null;
     }
     if (src[1] === "`") return null;
