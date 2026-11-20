@@ -141,14 +141,14 @@
 .pane :global(.xterm-decoration-container) {
   pointer-events: none;
 }
-.pane :global(.xterm .xterm-scrollable-element > .scrollbar > .slider) {
+.pane :global(.xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider) {
   box-sizing: border-box;
   border: 2px solid transparent;
   border-radius: 6px;
   background: var(--scrollbar-thumb) content-box;
 }
-.pane :global(.xterm .xterm-scrollable-element > .scrollbar > .slider:hover),
-.pane :global(.xterm .xterm-scrollable-element > .scrollbar > .slider.active) {
+.pane :global(.xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider:hover),
+.pane :global(.xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider.xterm-active) {
   background: var(--scrollbar-thumb-hover) content-box;
 }
 

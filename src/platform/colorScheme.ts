@@ -826,7 +826,10 @@ export function schemeCss(
       }
     // The editor surface follows the scheme, not the island colour of the UI theme.
     const bg = tokens.get("--bg-editor") ?? tokens.get("--bg-island");
-    if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", tokens.get("--bg-editor-gutter") ?? bg]);
+    // An imported scheme's gutter keeps its editor background unless it sets one of its own.
+    const custom = valid[id];
+    const gutter = custom ? (custom.attributes.gutter?.background ?? bg) : (tokens.get("--bg-editor-gutter") ?? bg);
+    if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", gutter ?? bg]);
   }
   decls.push(...overrideDeclarations(overrides?.[id]));
   const body = decls
