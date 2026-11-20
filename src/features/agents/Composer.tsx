@@ -14,6 +14,7 @@ import { EditorView, keymap, placeholder as placeholderText, type ViewUpdate } f
 import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, SymbolMatch, WhileRunning } from "@/bindings";
 import { useEditorRegistry, openEditorPaths } from "@/editor/api";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isDraggingOut } from "@/platform/dragOut";
 import { nativeDropPoint } from "@/platform/nativeDrop";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
@@ -875,6 +876,8 @@ export function Composer(props: ComposerProps) {
     void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
       getCurrentWebview()
         .onDragDropEvent((event) => {
+          // Project files dragged out of the window come back as an OS drop: not attachments.
+          if (isDraggingOut()) return;
           const p = event.payload;
           if (p.type === "enter" || p.type === "over") {
             setFileOver(inBox(p.position));
