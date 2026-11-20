@@ -29,6 +29,7 @@ const exchange: HttpExchange = {
     version: "HTTP/1.1",
     headers: [["content-type", "text/plain"]],
     contentType: "text/plain",
+    redirects: [],
     body: "alpha beta\nbeta gamma\nBeta",
     size: 26,
     truncated: false,
@@ -38,11 +39,11 @@ const exchange: HttpExchange = {
 };
 
 describe("HTTP response find", () => {
-  afterEach(() => useHttpClient.setState({ history: [], exchanges: {}, selected: null }));
+  afterEach(() => useHttpClient.setState({ history: [], exchanges: [], selected: null }));
 
   it("opens a find bar with ⌘F in the response and marks the matches", () => {
     Element.prototype.scrollIntoView ??= () => {};
-    useHttpClient.setState({ history: [exchange.entry], exchanges: { e1: exchange }, selected: "e1" });
+    useHttpClient.setState({ history: [exchange.entry], exchanges: [exchange], selected: "e1" });
     render(<HttpClientView />);
     const body = screen.getByLabelText("Response body");
     fireEvent.keyDown(body, { key: "f", metaKey: true, ctrlKey: true });

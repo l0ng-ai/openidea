@@ -193,7 +193,8 @@ describe("Rust trial lifecycle", () => {
 
   it("keeps legacy inspection useful and reports artifact dates", async () => {
     const root = fixture();
-    const date = new Date(Date.now() - 120_000);
+    // Whole seconds: file times don't keep every millisecond on all file systems.
+    const date = new Date(Math.floor((Date.now() - 120_000) / 1000) * 1000);
     artifacts(join(root, "target/criterion"), ["ide-text"], date);
     expect(await runRust({ root, packages: ["ide-text"], noRun: true })).toBe(0);
     const current = report(root);

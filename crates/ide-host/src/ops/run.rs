@@ -542,7 +542,8 @@ fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, local:
     if !ide_run::java_agent::applies(&config.kind) {
         return;
     }
-    let agents = ide_run::java_agent::current();
+    let java = std::path::Path::new(&config.command);
+    let agents = ide_run::java_agent::current_for(Some(java));
     let say = |text: &str| on_output(OutputChunk::System { text: format!("{text}\n") });
     if !local {
         if !agents.options.is_empty() {

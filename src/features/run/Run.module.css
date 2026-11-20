@@ -51,6 +51,10 @@
   min-width: 0;
 }
 
+.topToolbarSession {
+  flex-direction: column;
+}
+
 .toolbar {
   flex: none;
   width: 32px;
@@ -69,11 +73,35 @@
 .toolbar::-webkit-scrollbar {
   display: none;
 }
-.toolbarSep {
+.toolbarGroup {
+  display: flex;
+  flex: none;
+  flex-direction: inherit;
+  align-items: center;
+  gap: var(--space-0-5);
+  max-width: 100%;
+}
+.toolbarGroup + .toolbarGroup::before {
+  content: "";
   width: 16px;
   height: 1px;
   margin: 3px 0;
   background: var(--border-strong);
+}
+.topToolbarSession .toolbar {
+  width: auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
+  padding: var(--space-0-5) var(--space-1);
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+}
+.topToolbarSession .toolbarGroup {
+  flex-wrap: wrap;
+}
+.topToolbarSession .toolbarGroup::before {
+  display: none;
 }
 
 .sessionBody {
@@ -225,25 +253,43 @@
   flex-direction: column;
   height: 100%;
   min-width: 0;
-  border-right: 1px solid var(--border);
 }
-.testHeader {
+.testToolbar,
+.testStatusBar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  height: 28px;
-  padding: 0 4px 0 10px;
+  min-height: 28px;
   border-bottom: 1px solid var(--border);
+}
+.testToolbar {
+  gap: var(--space-0-5);
+  padding: var(--space-0-5) var(--space-1);
+}
+.testStatusBar {
+  gap: var(--space-0-5) var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
 }
 .testCounts {
+  flex: 1 1 auto;
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
+}
+.testStatus,
+.testTotalDuration {
+  flex: none;
+}
+.testTotalDuration {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
 }
 .testTree {
   flex: 1;
@@ -271,8 +317,11 @@
   flex: none;
   padding-right: 8px;
   color: var(--fg-subtle);
-  font-family: var(--font-mono);
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.testTree [aria-selected="true"] .testDuration {
+  color: var(--fg);
 }
 .testEmpty {
   padding: 12px;
@@ -310,17 +359,17 @@
   align-items: center;
   gap: var(--space-1);
   max-width: 260px;
-  height: 30px;
-  border-radius: 6px;
+  height: var(--h-toolbar-widget);
+  border-radius: var(--radius-toolbar-dropdown);
 }
 .widgetDevice {
   composes: widgetChooser;
   max-width: 180px;
 }
 .widgetButton {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
+  width: var(--titlebar-tool-button);
+  height: var(--titlebar-tool-button);
+  border-radius: var(--radius-toolbar-button);
 }
 .widgetLoading {
   display: inline-flex;
@@ -525,6 +574,7 @@
   flex: 1;
 }
 .editSidebar {
+  container: run-config-navigation / inline-size;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -567,6 +617,22 @@
 .editItemSelected:hover {
   background: var(--bg-selected-strong);
   color: var(--fg-strong);
+}
+.editTarget {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 25%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editItem .failed {
+  flex: none;
+}
+@container run-config-navigation (max-width: 220px) {
+  .editItem .chooserMuted {
+    display: none;
+  }
 }
 .editForm {
   flex: 1;
@@ -673,6 +739,7 @@
 }
 .editGroupName {
   color: var(--fg-strong);
+  font-weight: 600;
 }
 .editEmpty {
   flex: 1;
@@ -780,6 +847,29 @@
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
   outline: none;
+}
+.textareaWithButton {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.textareaWithButton > textarea {
+  flex: 1;
+  min-width: 0;
+}
+.textareaWithButton > button {
+  flex-shrink: 0;
+}
+/* One visual line per line of text: a long argument scrolls instead of wrapping. */
+.expandedTextarea {
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  box-sizing: border-box;
+  resize: none;
+  white-space: pre;
+  overflow: auto;
 }
 .textarea:focus {
   box-shadow: inset 0 0 0 1px var(--focus-ring);

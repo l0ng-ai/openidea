@@ -2,8 +2,9 @@
  * The documentation view with its history toolbar, as IDEA's one documentation
  * component: the F1 popup, the hover and the Documentation tool window show it.
  */
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import clsx from "clsx";
 import { useStore } from "zustand";
 import { IconButton, selectableText } from "@/ui";
@@ -23,7 +24,9 @@ import styles from "./Popups.module.css";
 
 export function DomContent({ build, className }: { build: () => HTMLElement; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  // Build the body before paint: the popup is measured as soon as it is created, so an empty first
+  // frame would be placed and then moved once the text appeared.
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const node = build();
@@ -113,6 +116,8 @@ function HoverDocView({ doc }: { doc: HoverDoc }) {
 /** Mounts a hover's documentation into its CodeMirror tooltip; returns its unmount. */
 export function mountHoverDoc(el: HTMLElement, doc: HoverDoc): () => void {
   const root = createRoot(el);
-  root.render(<HoverDocView doc={doc} />);
+  // Render before returning: CodeMirror measures the tooltip right after `create()`, so a popup
+  // that is still empty at that point is placed a second time when the text arrives.
+  flushSync(() => root.render(<HoverDocView doc={doc} />));
   return () => queueMicrotask(() => root.unmount());
 }

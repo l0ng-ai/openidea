@@ -129,6 +129,7 @@
 /* ---- Projects page ---------------------------------------------------- */
 
 .projects {
+  container: welcome-projects / inline-size;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -138,30 +139,51 @@
   flex: none;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  min-height: 76px;
-  margin-left: 14px;
-  padding: 12px 14px 12px 6px;
+  gap: var(--space-2);
+  margin: 0 var(--space-3);
+  padding: var(--space-3) var(--space-1);
   box-shadow: inset 0 -1px 0 var(--border);
 }
 .search {
-  flex: 1 1 160px;
+  flex: 1;
   min-width: 0;
 }
-/* Wraps in a narrow window, so no button is clipped. */
 .headerButtons {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: none;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-1);
+}
+.headerAction {
+  max-width: 146px;
+}
+.headerActionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@container welcome-projects (max-width: 600px) {
+  .headerAction {
+    width: var(--h-control);
+    padding: 0;
+  }
+  .headerActionLabel {
+    display: none;
+  }
+}
+@container welcome-projects (max-width: 218px) {
+  .header {
+    flex-wrap: wrap;
+  }
+  .search {
+    flex-basis: 100%;
+  }
 }
 .projectList {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px 16px 14px 24px;
+  padding: var(--space-2) var(--space-3) var(--space-3);
   outline: none;
 }
 .noMatches {
@@ -174,7 +196,7 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
-  padding: 8px 10px;
+  padding: var(--space-2);
   border-radius: var(--radius-popup);
   cursor: default;
 }
@@ -186,8 +208,11 @@
 .projectSelected:hover {
   background: color-mix(in srgb, var(--bg-list-selected) 70%, var(--bg-island));
 }
-.projectBadge {
-  margin-top: 1px;
+.tile.projectBadge {
+  width: 32px;
+  height: 32px;
+  margin-top: var(--space-0-5);
+  font-size: var(--fs-ui);
 }
 /* A project group: one line, folds its projects. */
 .group {
@@ -199,6 +224,7 @@
   flex: 1;
   min-width: 0;
   color: var(--fg-strong);
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -214,7 +240,8 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  line-height: 20px;
+  gap: var(--space-0-5);
+  line-height: 18px;
 }
 .projectName {
   color: var(--fg-strong);
@@ -224,6 +251,7 @@
 }
 .projectPath {
   color: var(--fg-muted);
+  font-size: var(--fs-small);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -234,6 +262,7 @@
   gap: var(--space-1-5);
   min-width: 0;
   color: var(--fg-muted);
+  font-size: var(--fs-small);
   --icon-color: var(--fg-muted);
 }
 .projectBranchName {

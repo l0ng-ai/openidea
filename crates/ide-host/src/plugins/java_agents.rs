@@ -1,10 +1,13 @@
-//! The `javaAgents` extension point (API 1.10): a Java agent the host loads into the
-//! JVM of Application, Spring Boot and JAR Application configurations.
+//! The `javaAgents` extension point (API 1.10; `vmOptions` / `jdk` in 1.14): a Java
+//! agent the host loads into the JVM of Application, Spring Boot and JAR Application
+//! configurations, with optional JVM flags.
 //!
 //! ```toml
 //! [[contributes.javaAgents]]
 //! path = "agent/openidea-spring-agent.jar"   # inside the package
 //! args = "optional-arguments"                # optional
+//! vmOptions = ["-XX:+AllowEnhancedClassRedefinition"]  # optional, API 1.14
+//! jdk = "jetbrains"                          # optional: only those VM options on JBR
 //! ```
 //!
 //! One agent per plugin. The declaration derives the optional high-risk `java.agent`
@@ -23,6 +26,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const POINT_ID: &str = "javaAgents";
 const MAX_ARGS: usize = 4096;
+const MAX_VM_OPTION: usize = 512;
+const MAX_VM_OPTIONS: usize = 32;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +35,10 @@ struct Decl {
     path: PathBuf,
     #[serde(default)]
     args: Option<String>,
+    #[serde(default, rename = "vmOptions")]
+    vm_options: Vec<String>,
+    #[serde(default)]
+    jdk: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +46,8 @@ pub(super) struct Agent {
     /// The jar, resolved inside the package.
     pub(super) jar: PathBuf,
     pub(super) args: Option<String>,
+    pub(super) vm_options: Vec<String>,
+    pub(super) jdk: Option<String>,
 }
 
 /// Agents of enabled plugins.
@@ -95,20 +106,65 @@ impl ExtensionPoint for JavaAgentsPoint {
         {
             return Err(format!("contributes.javaAgents: `args` must be one line of at most {MAX_ARGS} bytes"));
         }
-        let label = label(&d.path, args.as_deref());
+        let vm_options = validate_vm_options(&d.vm_options)?;
+        let jdk = validate_jdk(d.jdk)?;
+        if !vm_options.is_empty() || jdk.is_some() {
+            pkg.manifest.needs_api("contributes.javaAgents.vmOptions", 14)?;
+        }
+        let label = label(&d.path, args.as_deref(), &vm_options);
         let (store, plugin) = (self.store.clone(), pkg.id().to_owned());
-        let agent = Agent { jar, args };
+        let agent = Agent { jar, args, vm_options, jdk };
         Ok(Prepared::new(label, move || Ok(store.add(plugin, agent))).file(d.path).capability(Capability::JavaAgent))
     }
 }
 
-/// What Settings › Plugins shows: the jar's file name and its arguments, as `-javaagent:` takes them.
-fn label(path: &Path, args: Option<&str>) -> String {
+fn validate_vm_options(raw: &[String]) -> Result<Vec<String>, String> {
+    if raw.len() > MAX_VM_OPTIONS {
+        return Err(format!("contributes.javaAgents: at most {MAX_VM_OPTIONS} `vmOptions`"));
+    }
+    let mut out = Vec::with_capacity(raw.len());
+    for opt in raw {
+        let opt = opt.trim();
+        if opt.is_empty() {
+            continue;
+        }
+        if !opt.starts_with('-')
+            || opt.len() > MAX_VM_OPTION
+            || opt.contains(|c: char| c.is_control() || c.is_whitespace())
+        {
+            return Err(format!(
+                "contributes.javaAgents: each `vmOptions` entry must be one flag starting with `-` (at most {MAX_VM_OPTION} bytes, no spaces)"
+            ));
+        }
+        if !out.iter().any(|o: &String| o == opt) {
+            out.push(opt.to_owned());
+        }
+    }
+    Ok(out)
+}
+
+fn validate_jdk(jdk: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = jdk.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if raw != "jetbrains" {
+        return Err("contributes.javaAgents: `jdk` must be \"jetbrains\" when set".into());
+    }
+    Ok(Some(raw))
+}
+
+/// What Settings › Plugins shows: jar name, args, and any JVM options.
+fn label(path: &Path, args: Option<&str>, vm_options: &[String]) -> String {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    match args {
+    let mut out = match args {
         Some(args) => format!("{name}={args}"),
         None => name,
+    };
+    if !vm_options.is_empty() {
+        out.push(' ');
+        out.push_str(&vm_options.join(" "));
     }
+    out
 }
 
 /// The jar a package's declaration names, as an absolute path inside the package:
@@ -135,6 +191,16 @@ pub(super) fn declared_jar(manifest: &Manifest, dir: &Path) -> Option<PathBuf> {
     resolve(dir, &d.path).ok()
 }
 
+/// Declared `vmOptions` (for consent / Settings copy), if the package has a valid declaration.
+pub(super) fn declared_vm_options(manifest: &Manifest) -> Vec<String> {
+    let decl = manifest.declarations(POINT_ID).into_iter().next();
+    let Some(decl) = decl else { return Vec::new() };
+    let Ok(d) = decode::<Decl>(POINT_ID, decl) else {
+        return Vec::new();
+    };
+    validate_vm_options(&d.vm_options).unwrap_or_default()
+}
+
 type Pins = Arc<RwLock<HashMap<(String, String), ProgramPin>>>;
 
 /// [`JavaAgentSource`] over the agents and the hashes granted for them.
@@ -155,6 +221,8 @@ impl JavaAgentSource for PluginJavaAgents {
                 plugin: plugin.clone(),
                 jar: agent.jar.clone(),
                 args: agent.args.clone(),
+                vm_options: agent.vm_options.clone(),
+                jdk: agent.jdk.clone(),
                 approved_hash: pins.get(&(plugin.clone(), cap.clone())).map(|pin| pin.hash.clone()),
             })
             .collect()
@@ -167,6 +235,8 @@ mod tests {
 
     const MANIFEST: &str =
         "id = \"acme.spring\"\nname = \"Spring\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.10\"\n";
+    const MANIFEST_14: &str =
+        "id = \"acme.spring\"\nname = \"Spring\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.14\"\n";
 
     fn package(dir: &Path, manifest: &str) -> Package {
         std::fs::create_dir_all(dir.join("agent")).unwrap();
@@ -209,10 +279,31 @@ mod tests {
             (agents[0].plugin.as_str(), agents[0].args.as_deref(), agents[0].approved_hash.as_ref()),
             ("acme.spring", Some("port=0,trace"), None)
         );
+        assert!(agents[0].vm_options.is_empty());
         source.pins.write().insert(("acme.spring".into(), "java.agent".into()), ProgramPin::approve(&jar).unwrap());
         assert!(source.agents()[0].approved_hash.is_some());
         disposable.dispose();
         assert!(source.agents().is_empty(), "disabling the plugin drops its agent");
+    }
+
+    #[test]
+    fn parses_vm_options_and_jdk_gate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toml = format!(
+            "{MANIFEST_14}[[contributes.javaAgents]]\npath = \"agent/spring agent.jar\"\nvmOptions = [\"-XX:+AllowEnhancedClassRedefinition\"]\njdk = \"jetbrains\"\n"
+        );
+        let pkg = package(tmp.path(), &toml);
+        let prepared = prepare(&pkg).unwrap();
+        assert_eq!(prepared.label, "spring agent.jar -XX:+AllowEnhancedClassRedefinition");
+        assert_eq!(declared_vm_options(&pkg.manifest), ["-XX:+AllowEnhancedClassRedefinition"]);
+
+        let store: Arc<JavaAgents> = Arc::default();
+        let point = JavaAgentsPoint::new(store.clone());
+        let decl = pkg.manifest.declarations(POINT_ID).remove(0);
+        let _keep = (point.prepare(&pkg, decl).unwrap().commit)().unwrap();
+        let agent = store.for_plugin("acme.spring").unwrap();
+        assert_eq!(agent.vm_options, ["-XX:+AllowEnhancedClassRedefinition"]);
+        assert_eq!(agent.jdk.as_deref(), Some("jetbrains"));
     }
 
     #[test]
@@ -242,6 +333,33 @@ mod tests {
         );
         let old = format!("{}{}", MANIFEST.replace("^1.10", "^1.9"), agent("agent/spring agent.jar"));
         assert!(refused(7, &old).contains("new in plugin API 1.10"));
+        assert!(
+            refused(
+                9,
+                &format!(
+                    "{MANIFEST}[[contributes.javaAgents]]\npath = \"agent/spring agent.jar\"\nvmOptions = [\"-XX:+AllowEnhancedClassRedefinition\"]\n"
+                ),
+            )
+            .contains("new in plugin API 1.14")
+        );
+        assert!(
+            refused(
+                10,
+                &format!(
+                    "{MANIFEST_14}[[contributes.javaAgents]]\npath = \"agent/spring agent.jar\"\nvmOptions = [\"not-a-flag\"]\n"
+                ),
+            )
+            .contains("starting with `-`")
+        );
+        assert!(
+            refused(
+                11,
+                &format!(
+                    "{MANIFEST_14}[[contributes.javaAgents]]\npath = \"agent/spring agent.jar\"\njdk = \"temurin\"\n"
+                ),
+            )
+            .contains("jetbrains")
+        );
         #[cfg(unix)]
         {
             let dir = tmp.path().join("8");

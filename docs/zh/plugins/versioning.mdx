@@ -3,7 +3,7 @@ title: "API 版本与兼容"
 description: "engines.openidea、插件 API 从 1.0 到 1.13 的各个版本，以及让已发布插件在新 IDE 中继续加载的规则。"
 ---
 
-插件 API 只有一个版本号：[`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中 WIT 包的版本（`main` 上是 `openidea:plugin@1.13.0`）。宿主的引擎版本和 SDK 的 `API_VERSION` 始终与它一致，SDK 里也带着一份完全相同的 WIT 文件。
+插件 API 只有一个版本号：[`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中 WIT 包的版本（`main` 上是 `openidea:plugin@1.14.0`）。宿主的引擎版本和 SDK 的 `API_VERSION` 始终与它一致，SDK 里也带着一份完全相同的 WIT 文件。
 
 <Note>插件系统目前是预览版。下面的兼容规则适用于已发布的 1.x 版本；`main` 上尚未发布的内容在发布前仍可能变化。</Note>
 
@@ -24,7 +24,8 @@ description: "engines.openidea、插件 API 从 1.0 到 1.13 的各个版本，�
 | 1.10.0 | OpenIDEA 0.1.47 | `build.dependencies`：IDE 已解析的 Maven / Gradle 依赖图（`build.read`）                                                                                                                                                                                                                                                               |
 | 1.11.0 | `main` 上开发中 | `ui.read-clipboard`：在用户运行的命令中读取剪贴板的文本和图片（`clipboard.read`）                                                                                                                                                                                                                                                      |
 | 1.12.0 | `main` 上开发中 | `ui.set-console-rules`：Run/Debug 控制台输出的高亮规则（正则、调色板颜色、文本样式）                                                                                                                                                                                                                                                   |
-| 1.13.0 | `main` 上开发中 | 新增 `search-provider` 导出和 `searchCategories` 贡献点：可取消查询的全局搜索自定义分类                                                                                                                                                                                                                                                |
+| 1.13.0 | OpenIDEA 0.1.49 | 新增 `search-provider` 导出和 `searchCategories` 贡献点：可取消查询的全局搜索自定义分类                                                                                                                                                                                                                                                |
+| 1.14.0 | `main` 上开发中 | 可选 `hover-actions` 导出：行内侧 hover 显示的左侧操作，带锚定行和包含式触发行范围; `[[contributes.javaAgents]]` 的 `vmOptions` / `jdk`：在 `-javaagent:` 之前注入 JVM 参数（可选仅 JetBrains Runtime）；`ui.set-status-item-menu` / `set-window-status-item-menu`：状态栏项菜单                                                       |
 
 每个版本新增内容的完整列表见 [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md)。
 

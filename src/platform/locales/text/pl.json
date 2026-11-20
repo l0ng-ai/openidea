@@ -671,7 +671,6 @@
   "Detecting…": "Wykrywanie…",
   "Diff": "Różnice (Diff)",
   "Different tool window background": "Inne tło okien narzędziowych",
-  "Direction": "Kierunek",
   "Directory": "Katalog",
   "Staging State": "Stan poczekalni (Staging)",
   "Staged Changes": "Zmiany w poczekalni (Staged)",
@@ -2887,8 +2886,6 @@
   "Run a command, configuration or goal": "Uruchom polecenie, konfigurację lub cel",
   "Run Anything entries": "Wpisy funkcji 'Uruchom cokolwiek'",
   "Press Enter to run the command in the project directory": "Naciśnij Enter, aby uruchomić polecenie w katalogu projektu",
-  "Type a command": "Wpisz polecenie",
-  "Enter to run, Tab to complete. Other commands run in the project directory.": "Enter, aby uruchomić, Tab, aby uzupełnić. Inne polecenia uruchamiają się w katalogu projektu.",
   "Recent": "Niedawne",
   "Search types": "Szukaj typów",
   "Search configuration types": "Szukaj typów konfiguracji",
@@ -4316,7 +4313,6 @@
   "Edit the deployment servers and options": "Edytuj serwery wdrażania i opcje",
   "Configuration…": "Konfiguracja…",
   "No deployment server configured": "Brak skonfigurowanego serwera wdrażania",
-  "Select files in the Project view or open a file in the editor": "Wybierz pliki w widoku Projektu lub otwórz plik w edytorze",
   "Upload to": "Prześlij do",
   "Download from": "Pobierz z",
   "Sync with Deployed to": "Synchronizuj z wdrożeniem na",
@@ -5943,5 +5939,6 @@
   "Back to Changed Files": "Powrót do zmienionych plików",
   "Default (the module's JDK)": "Domyślnie (zestaw JDK modułu)",
   "Use classpath of module": "Użyj ścieżki klas modułu",
-  "Find by main class": "Znajdź według klasy głównej"
+  "Find by main class": "Znajdź według klasy głównej",
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Wybierz pliki w widoku Projektu, oknie Commit lub otwórz plik w edytorze"
 }

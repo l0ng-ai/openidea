@@ -1,5 +1,18 @@
 import { chromium, type Browser, type LaunchOptions } from "@playwright/test";
+import { existsSync } from "node:fs";
 import type { Server } from "node:http";
+
+/**
+ * Whether Playwright's Chromium is installed (`pnpm exec playwright install chromium`):
+ * `headless` launches use its headless shell, the `chromium` channel the full browser.
+ * Unit tests that drive a real browser skip without it, as in CI's Frontend job.
+ */
+export function chromiumInstalled(headless: boolean): boolean {
+  const full = chromium.executablePath();
+  if (!headless) return existsSync(full);
+  const build = /^(.*[\\/])chromium-(\d+)[\\/]/.exec(full);
+  return !!build && existsSync(`${build[1]}chromium_headless_shell-${build[2]}`);
+}
 
 export class DeadlineError extends Error {
   constructor(label: string, timeoutMs: number) {

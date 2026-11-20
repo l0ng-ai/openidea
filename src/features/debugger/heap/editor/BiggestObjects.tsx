@@ -6,6 +6,7 @@ import { formatBytes } from "../../memory/rows";
 import { useHeapQuery } from "./heapQuery";
 import { ObjectText } from "./ObjectText";
 import styles from "../HeapSnapshotEditor.module.css";
+import { useRowHeight } from "@/ui/density";
 
 const LIMIT = 100;
 
@@ -21,6 +22,7 @@ export function BiggestObjects({
   selected: number | null;
   onSelect: (object: HeapObjectRow) => void;
 }) {
+  const rowHeight = useRowHeight(22);
   const tx = useTx();
   const page = useHeapQuery(`${snapshot}:${cls.classIndex}`, () =>
     call(commands.debugHeapDominators(snapshot, null, cls.classIndex, 0, LIMIT)),
@@ -70,7 +72,7 @@ export function BiggestObjects({
             )}
             activeIndex={selected === null ? -1 : rows.findIndex((o) => o.object === selected)}
             onActiveChange={(i) => rows[i] && onSelect(rows[i])}
-            rowHeight={22}
+            rowHeight={rowHeight}
             tableBody={{ headerRows: 1 }}
           />
         </div>

@@ -37,7 +37,7 @@ export function RefLabels({
     <span className={clsx(styles.refs, left && styles.refsLeft)}>
       {labels.map((l) => (
         <span key={`${l.kind}:${l.title}`} className={clsx(styles.ref, REF_KIND_CLASS[l.kind])} title={l.title}>
-          {l.text}
+          {l.text && <span className={styles.refText}>{l.text}</span>}
         </span>
       ))}
     </span>

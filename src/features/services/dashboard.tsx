@@ -37,9 +37,21 @@ import {
   treeKey,
   type DockerTarget,
 } from "./model";
-import { canRemove, canRestart, canStart, canStop, execShell, remove, restart, showDetail, start, stop } from "./ops";
+import {
+  canRemove,
+  canRestart,
+  canStart,
+  canStop,
+  execShell,
+  remove,
+  restart,
+  showDetail,
+  start,
+  stop,
+  targetBusy,
+} from "./ops";
 import { openContainerLogInEditor } from "./logEditor";
-import { containerOp, endpointOf, errorMessage } from "./store";
+import { containerOp, endpointOf, errorMessage, useServices } from "./store";
 import { useServicesTree } from "./tree";
 import styles from "./Services.module.css";
 
@@ -658,6 +670,26 @@ function ContainerLinkChip({ conn, container }: { conn: string; container: Docke
 // ---------------------------------------------------------------------------
 // Container Dashboard & Processes View
 
+/** A dashboard action button that shows a spinner while its operation runs. */
+function OpButton({
+  busy,
+  disabled,
+  onClick,
+  children,
+}: {
+  busy: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  children: string;
+}) {
+  return (
+    <Button size="small" disabled={disabled} aria-busy={busy || undefined} onClick={onClick}>
+      {busy && <Spinner size={12} />}
+      <T>{children}</T>
+    </Button>
+  );
+}
+
 export function ContainerDashboard({
   conn,
   container,
@@ -674,6 +706,7 @@ export function ContainerDashboard({
     conn,
     node: { kind: "container", key: `container:${container.id}`, container },
   };
+  const busy = useServices((s) => targetBusy(target, s));
   const inspect = useMemo(() => parseContainerInspect(inspectText, container.ports), [inspectText, container.ports]);
   const ports = useMemo(() => inspect?.ports ?? parsePortMappings(container.ports), [inspect, container.ports]);
   const matchedImage = useMemo(() => findImageForContainer(snapshot, container), [snapshot, container]);
@@ -708,25 +741,33 @@ export function ContainerDashboard({
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
       <div className={styles.dashboardActions}>
-        <Button size="small" disabled={!canStart(target)} onClick={() => void start(target)}>
+        <OpButton busy={busy === "start"} disabled={!canStart(target)} onClick={() => void start(target)}>
           Start
-        </Button>
-        <Button size="small" disabled={!canStop(target)} onClick={() => void stop(target)}>
+        </OpButton>
+        <OpButton busy={busy === "stop"} disabled={!canStop(target)} onClick={() => void stop(target)}>
           Stop
-        </Button>
-        <Button size="small" disabled={!canRestart(target)} onClick={() => void restart(target)}>
+        </OpButton>
+        <OpButton busy={busy === "restart"} disabled={!canRestart(target)} onClick={() => void restart(target)}>
           Restart
-        </Button>
+        </OpButton>
         {container.state === "paused" ? (
-          <Button size="small" onClick={() => void containerOp(conn, [container.id], "unpause")}>
+          <OpButton
+            busy={busy === "unpause"}
+            disabled={!!busy}
+            onClick={() => void containerOp(conn, [container.id], "unpause")}
+          >
             Unpause
-          </Button>
+          </OpButton>
         ) : (
-          <Button size="small" disabled={!running} onClick={() => void containerOp(conn, [container.id], "pause")}>
+          <OpButton
+            busy={busy === "pause"}
+            disabled={!running || !!busy}
+            onClick={() => void containerOp(conn, [container.id], "pause")}
+          >
             Pause
-          </Button>
+          </OpButton>
         )}
-        <Button size="small" disabled={!running} onClick={() => execShell(target)}>
+        <Button size="small" disabled={!running || !!busy} onClick={() => execShell(target)}>
           Create Terminal
         </Button>
         <Button size="small" onClick={() => showDetail("log")}>
@@ -735,9 +776,9 @@ export function ContainerDashboard({
         <Button size="small" onClick={() => openContainerLogInEditor(conn, container)}>
           Open Log in Editor
         </Button>
-        <Button size="small" disabled={!canRemove(target)} onClick={() => void remove(target)}>
+        <OpButton busy={busy === "remove"} disabled={!canRemove(target)} onClick={() => void remove(target)}>
           Delete…
-        </Button>
+        </OpButton>
       </div>
 
       <SectionBanner>
@@ -1543,21 +1584,22 @@ export function ComposeProjectDashboard({
     conn,
     node: { kind: "compose", key: `compose:${project}`, project, containers },
   };
+  const busy = useServices((s) => targetBusy(target, s));
   const first = containers[0];
   const runningCount = containers.filter(isRunning).length;
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
       <div className={styles.dashboardActions}>
-        <Button size="small" disabled={!canStart(target)} onClick={() => void start(target)}>
+        <OpButton busy={busy === "start"} disabled={!canStart(target)} onClick={() => void start(target)}>
           Start
-        </Button>
-        <Button size="small" disabled={!canStop(target)} onClick={() => void stop(target)}>
+        </OpButton>
+        <OpButton busy={busy === "stop"} disabled={!canStop(target)} onClick={() => void stop(target)}>
           Stop
-        </Button>
-        <Button size="small" disabled={!canRestart(target)} onClick={() => void restart(target)}>
+        </OpButton>
+        <OpButton busy={busy === "restart"} disabled={!canRestart(target)} onClick={() => void restart(target)}>
           Restart
-        </Button>
+        </OpButton>
         <Button size="small" disabled={!canRemove(target)} onClick={() => void remove(target)}>
           Compose Down
         </Button>

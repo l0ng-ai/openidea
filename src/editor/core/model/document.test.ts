@@ -30,6 +30,14 @@ async function settle() {
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function setup(files: Record<string, string>, settings = {}) {
   _resetLanguages();
   const backend: MemoryBackend = createMemoryBackend(files);
@@ -215,6 +223,166 @@ describe("DocumentManager + slots", () => {
     await save;
     expect(backend.files.get("/p/a.txt")).toBe("keep   \nline x\n");
     expect(useDocMeta.getState()["/p/a.txt"]?.dirty).toBe(false);
+  });
+
+  it.each(["dirty before response", "dirty after response", "clean and dirty after response"] as const)(
+    "keeps a newer edit dirty with %s",
+    async (order) => {
+      const path = "/p/a.txt";
+      const { backend, manager } = setup({ [path]: "base\n" }, { files: { autoSave: false } });
+      const model = await manager.acquire(path);
+      const slot = new EditorSlot(model, "t1", host);
+      const events: Array<() => void> = [];
+      const originalOnDirty = backend.onDirty.bind(backend);
+      let deferDirty = false;
+      const onDirty = vi.spyOn(backend, "onDirty").mockImplementation((handler) =>
+        originalOnDirty((event) => {
+          if (deferDirty) events.push(() => handler(event));
+          else handler(event);
+        }),
+      );
+      manager.stop();
+      manager.start();
+      const response = deferred();
+      const originalSave = backend.save.bind(backend);
+      const save = vi.spyOn(backend, "save").mockImplementationOnce(async (doc) => {
+        await originalSave(doc);
+        await response.promise;
+      });
+      const transitions: boolean[] = [];
+      const unsubscribe = useDocMeta.subscribe((state, previous) => {
+        const dirty = state[path]?.dirty;
+        if (dirty !== undefined && dirty !== previous[path]?.dirty) transitions.push(dirty);
+      });
+      let pending: Promise<void> | undefined;
+      try {
+        slot.dispatchLocal({ changes: { from: 4, insert: " saved" } });
+        await model.sync.whenIdle();
+        expect(transitions).toEqual([true]);
+
+        deferDirty = order === "clean and dirty after response";
+        pending = model.save("explicit");
+        await vi.waitFor(() => expect(backend.files.get(path)).toBe("base saved\n"));
+        expect(await backend.snapshot(model.doc)).toMatchObject({ text: "base saved\n", dirty: false });
+
+        transitions.length = 0;
+        deferDirty = order !== "dirty before response";
+        slot.dispatchLocal({ changes: { from: 10, insert: " newer" } });
+        await model.sync.whenIdle();
+        expect(await backend.snapshot(model.doc)).toMatchObject({ text: "base saved newer\n", dirty: true });
+
+        response.resolve();
+        await pending;
+        expect(slot.currentState().doc.toString()).toBe("base saved newer\n");
+        expect(backend.files.get(path)).toBe("base saved\n");
+        expect(model.getMeta().dirty).toBe(true);
+        const deferredCount = order === "dirty before response" ? 0 : order === "dirty after response" ? 1 : 2;
+        expect(events).toHaveLength(deferredCount);
+        events.splice(0).forEach((deliver) => deliver());
+        expect(useDocMeta.getState()[path]?.dirty).toBe(true);
+        expect(transitions).not.toContain(false);
+
+        deferDirty = false;
+        await model.save("explicit");
+        expect(backend.files.get(path)).toBe("base saved newer\n");
+        expect(await backend.snapshot(model.doc)).toMatchObject({ text: "base saved newer\n", dirty: false });
+        expect(useDocMeta.getState()[path]?.dirty).toBe(false);
+        expect(transitions.at(-1)).toBe(false);
+      } finally {
+        response.resolve();
+        try {
+          await pending;
+        } finally {
+          unsubscribe();
+          save.mockRestore();
+          onDirty.mockRestore();
+          slot.dispose();
+          manager.releaseProjectDocuments();
+          manager.stop();
+        }
+      }
+    },
+  );
+
+  it("marks an unchanged buffer clean when its save succeeds", async () => {
+    const path = "/p/a.txt";
+    const { backend, manager } = setup({ [path]: "base\n" });
+    const model = await manager.acquire(path);
+    const slot = new EditorSlot(model, "t1", host);
+    const transitions: Array<{ dirty: boolean; persisted: string | undefined }> = [];
+    const unsubscribe = useDocMeta.subscribe((state, previous) => {
+      const dirty = state[path]?.dirty;
+      if (dirty !== undefined && dirty !== previous[path]?.dirty)
+        transitions.push({ dirty, persisted: backend.files.get(path) });
+    });
+    try {
+      slot.dispatchLocal({ changes: { from: 4, insert: " saved" } });
+      await model.save("explicit");
+      expect(slot.currentState().doc.toString()).toBe("base saved\n");
+      expect(await backend.snapshot(model.doc)).toMatchObject({ text: "base saved\n", dirty: false });
+      expect(transitions).toEqual([
+        { dirty: true, persisted: "base\n" },
+        { dirty: false, persisted: "base saved\n" },
+      ]);
+    } finally {
+      unsubscribe();
+      slot.dispose();
+      manager.releaseProjectDocuments();
+      manager.stop();
+    }
+  });
+
+  it("reconciles a save that includes an edit whose acknowledgement is still pending", async () => {
+    const path = "/p/a.txt";
+    const { backend, manager } = setup({ [path]: "base\n" }, { files: { autoSave: false } });
+    const model = await manager.acquire(path);
+    const slot = new EditorSlot(model, "t1", host);
+    const write = deferred();
+    const editReply = deferred();
+    const originalSave = backend.save.bind(backend);
+    const originalEdit = backend.edit.bind(backend);
+    const edit = vi.spyOn(backend, "edit");
+    const save = vi.spyOn(backend, "save").mockImplementationOnce(async (doc) => {
+      await write.promise;
+      await originalSave(doc);
+    });
+    let pending: Promise<void> | undefined;
+    try {
+      slot.dispatchLocal({ changes: { from: 4, insert: " first" } });
+      await model.sync.whenIdle();
+      pending = model.save("explicit");
+      await vi.waitFor(() => expect(save).toHaveBeenCalledWith(model.doc));
+
+      edit.mockImplementationOnce(async (...args) => {
+        const version = await originalEdit(...args);
+        await editReply.promise;
+        return version;
+      });
+      slot.dispatchLocal({ changes: { from: 10, insert: " second" } });
+      const synced = model.sync.whenIdle();
+      await vi.waitFor(async () => {
+        expect(await backend.snapshot(model.doc)).toMatchObject({ text: "base first second\n", dirty: true });
+      });
+      write.resolve();
+      await pending;
+      editReply.resolve();
+      await synced;
+      expect(slot.currentState().doc.toString()).toBe("base first second\n");
+      expect(backend.files.get(path)).toBe("base first second\n");
+      expect(useDocMeta.getState()[path]?.dirty).toBe(false);
+    } finally {
+      editReply.resolve();
+      write.resolve();
+      try {
+        await pending;
+      } finally {
+        edit.mockRestore();
+        save.mockRestore();
+        slot.dispose();
+        manager.releaseProjectDocuments();
+        manager.stop();
+      }
+    }
   });
 
   it.each(["explicit", "auto"] as const)(

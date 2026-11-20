@@ -6,7 +6,10 @@
 import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import type { FileMove } from "@/bindings";
-import { Checkbox, Dialog, Input, Spinner, T } from "@/ui";
+import { Checkbox, Dialog, IconButton, Input, Spinner, T } from "@/ui";
+import { choosePath } from "@/platform/choosePath";
+import { isTauri } from "@/platform/ipc";
+import { ipcPath } from "@/platform/paths";
 import { runFileRefactoring, type FileRefactorOptions } from "./fileRefactor";
 import {
   isSameOrInside,
@@ -253,31 +256,59 @@ function RenameDialog({ request }: { request: Extract<FileRefactorRequest, { kin
 
 /** Folder `typed` (absolute, or relative to the project root). */
 function resolveTarget(typed: string, root: string): string {
-  const t = typed.trim().replace(/\/+$/, "");
-  if (!t) return root;
-  return t.startsWith("/") || /^[A-Za-z]:[\\/]/.test(t) ? t : joinPath(root, t);
+  const value = ipcPath(typed.trim());
+  if (!value) return root;
+  const absolute = value.startsWith("/") || /^[A-Za-z]:\//.test(value);
+  const isRoot = /^(?:[A-Za-z]:)?\/+$/.test(value);
+  const path = value.replace(/\/+$/, isRoot ? "/" : "");
+  return absolute ? path : joinPath(root, path);
 }
 
 function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind: "move" }> }) {
   const root = useProjectTree((s) => s.root) ?? "";
   const [target, setTarget] = useState(request.target);
   const [options, setOptions] = useState(() => loadOptions("move"));
+  const [browsing, setBrowsing] = useState(false);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  const field = useRef<HTMLInputElement>(null);
   const { busy, run, cancel } = useSearch();
+  useEffect(() => {
+    const input = field.current;
+    const path = request.target.replace(/[\\/]+$/, "");
+    if (!input || !path || /^[A-Za-z]:$/.test(path)) return;
+    const start = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
+    input.setSelectionRange(start, path.length);
+    input.scrollLeft = input.scrollWidth;
+  }, [request.target]);
   const dest = resolveTarget(target, root);
   const moves: FileMove[] = request.paths
-    .filter((p) => parentOf(p) !== dest)
-    .map((p) => ({ from: p, to: joinPath(dest, nameOf(p)) }));
+    .map((from) => ({ from, to: joinPath(dest, nameOf(from)) }))
+    .filter((move) => move.from !== move.to);
   const error = request.paths.some((p) => isSameOrInside(dest, p))
-    ? "Cannot move a folder into itself"
+    ? tx("Cannot move a folder into itself")
     : !moves.length
-      ? "Already in this directory"
+      ? tx("Already in this directory")
       : null;
-  const subject =
-    request.paths.length === 1
-      ? `Move ${request.dir || useProjectTree.getState().listings.has(request.paths[0]!) ? "directory" : "file"} '${nameOf(request.paths[0]!)}'`
-      : `Move ${request.paths.length} items`;
+  const single = request.paths.length === 1 ? request.paths[0]! : null;
+  const subject = single
+    ? request.dir || useProjectTree.getState().listings.has(single)
+      ? tx`Move directory '${nameOf(single)}'`
+      : tx`Move file '${nameOf(single)}'`
+    : tx`Move ${request.paths.length} items`;
+  const browse = async () => {
+    setBrowsing(true);
+    setBrowseError(null);
+    try {
+      const picked = await choosePath({ directory: true, title: tx("Select Target Directory"), defaultPath: dest });
+      if (picked !== null) setTarget(ipcPath(picked));
+    } catch (e) {
+      setBrowseError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBrowsing(false);
+    }
+  };
   const submit = async () => {
-    if (busy || error) return;
+    if (busy || browsing || error) return;
     saveOptions("move", options);
     const status = await run(moves, options, "Move");
     if (status !== "done") return;
@@ -291,38 +322,59 @@ function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
       width={520}
       footerStart={busy ? <Busy /> : undefined}
       buttons={[
-        { label: "Refactor", role: "default", disabled: busy || !!error, onClick: () => void submit() },
+        { label: "Refactor", role: "default", disabled: busy || browsing || !!error, onClick: () => void submit() },
         { label: "Cancel", role: "cancel", onClick: cancel },
       ]}
     >
       <form
-        className={styles.form}
+        className={styles.moveForm}
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
         }}
       >
-        <div className={styles.subject}>{subject}</div>
-        <label className={styles.fieldLabel} htmlFor="file-move-target">
-          <T>To directory:</T>
-        </label>
-        <Input
-          id="file-move-target"
-          autoFocus
-          mono
-          value={target}
-          disabled={busy}
-          invalid={!!error}
-          aria-label="Target directory"
-          onChange={(e) => setTarget(e.target.value)}
-        />
-        <div className={styles.hint}>{relativeTo(root, dest) || (dest === root ? tx("Project root") : dest)}</div>
-        {error && (
-          <div className={styles.error} role="alert">
-            {error}
+        <div className={styles.moveSubject}>{subject}</div>
+        <div className={styles.moveDestination}>
+          <label className={styles.fieldLabel} htmlFor="file-move-target">
+            <T>To directory:</T>
+          </label>
+          <div className={styles.moveControls}>
+            <div className={styles.moveField}>
+              <Input
+                id="file-move-target"
+                ref={field}
+                data-autofocus
+                mono
+                value={target}
+                disabled={busy}
+                invalid={!!error}
+                aria-label="Target directory"
+                aria-describedby="file-move-preview"
+                onChange={(e) => {
+                  setBrowseError(null);
+                  setTarget(e.target.value);
+                }}
+              />
+              {isTauri() && (
+                <IconButton
+                  icon="folder-open"
+                  title={tx("Browse for target directory")}
+                  disabled={busy || browsing}
+                  onClick={() => void browse()}
+                />
+              )}
+            </div>
+            <div className={styles.movePath} id="file-move-preview" title={dest}>
+              {relativeTo(root, dest) || (dest === root ? tx("Project root") : dest)}
+            </div>
+            {(browseError ?? error) && (
+              <div className={styles.error} role="alert">
+                {browseError ?? error}
+              </div>
+            )}
+            <Options value={options} onChange={setOptions} move disabled={busy} />
           </div>
-        )}
-        <Options value={options} onChange={setOptions} move disabled={busy} />
+        </div>
       </form>
     </Dialog>
   );

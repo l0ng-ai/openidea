@@ -5,7 +5,7 @@
  * chosen one is in effect for the project (editor highlighting, Problems,
  * Inspect Code).
  */
-import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import {
   BUILTIN_INSPECTIONS,
@@ -34,6 +34,9 @@ import {
   Input,
   SearchField,
   Select,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   T,
   Tree,
   showContextMenu,
@@ -92,6 +95,19 @@ function expandableKeys(nodes: readonly InspectionNode[], out = new Set<string>(
 }
 
 export function InspectionsPage() {
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    if (!page) return;
+    const measure = () => setStacked(page.clientWidth < 560);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(page);
+    return () => observer.disconnect();
+  }, []);
+
   const hasProject = useProject((s) => !!s.project);
   const newProjects = useSettingsDialog((s) => s.newProjects);
   const projectAvailable = hasProject && !newProjects;
@@ -223,20 +239,22 @@ export function InspectionsPage() {
   };
 
   return (
-    <div className={styles.page}>
+    <div ref={pageRef} className={styles.page}>
       <div className={styles.profileRow}>
-        <span>
-          <T>Profile:</T>
-        </span>
-        <Select
-          className={styles.profileSelect}
-          aria-label="Inspection profile"
-          value={profileId}
-          options={profileOptions}
-          onChange={(v) => setChosen(v)}
-          disabled={profileOptions.length < 2}
-        />
-        <IconButton icon="settings" title="Profile Actions" onClick={gearMenu} />
+        <div className={styles.profileControls}>
+          <span>
+            <T>Profile:</T>
+          </span>
+          <Select
+            className={styles.profileSelect}
+            aria-label="Inspection profile"
+            value={profileId}
+            options={profileOptions}
+            onChange={(v) => setChosen(v)}
+            disabled={profileOptions.length < 2}
+          />
+          <IconButton icon="settings" title="Profile Actions" onClick={gearMenu} />
+        </div>
         <span className={styles.profileLevel}>
           <T>{location.level === "project" ? "Stored in Project" : "Stored in IDE"}</T>
         </span>
@@ -265,8 +283,16 @@ export function InspectionsPage() {
         />
       </div>
 
-      <div className={styles.split}>
-        <div
+      <SplitGroup
+        id="inspection-panes"
+        className={styles.split}
+        orientation={stacked ? "vertical" : "horizontal"}
+        storageKey="openidea.settings.inspections.layout"
+      >
+        <SplitPanel
+          id="inspection-tree"
+          defaultSize="50%"
+          minSize="35%"
           className={styles.treeWrap}
           onKeyDown={(e) => {
             // Space toggles the selected inspection, as in IDEA.
@@ -309,9 +335,12 @@ export function InspectionsPage() {
               </div>
             }
           />
-        </div>
-        <Details node={selected} overrides={overrides} onChange={setOverrides} />
-      </div>
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Resize inspection panes")} />
+        <SplitPanel id="inspection-details" defaultSize="50%" minSize="35%">
+          <Details node={selected} overrides={overrides} onChange={setOverrides} />
+        </SplitPanel>
+      </SplitGroup>
 
       {nameDialog && (
         <ProfileNameDialog
@@ -435,38 +464,50 @@ function Details({
   overrides: ProfileOverrides;
   onChange: (o: ProfileOverrides) => void;
 }) {
-  if (!node) {
-    return (
-      <div className={styles.details}>
-        <p className={styles.description}>
-          <T>Select an inspection to see its description and change its severity.</T>
-        </p>
-      </div>
-    );
-  }
-  const id = node.id;
+  const id = node?.id;
+  const description = (
+    <p className={styles.description}>
+      <T>{node?.description ?? "Select an inspection to see its description and change its severity."}</T>
+    </p>
+  );
   return (
-    <div className={styles.details}>
-      <p className={styles.description}>
-        <T>{node.description}</T>
-      </p>
-      {id && (
-        <div className={styles.severityRow}>
-          <span>
-            <T>Severity:</T>
-          </span>
-          <Select
-            className={styles.levelSelect}
-            aria-label="Severity"
-            value={overrides[id]?.severity ?? AS_REPORTED}
-            options={LEVEL_OPTIONS}
-            disabled={!isEnabled(overrides, id)}
-            onChange={(v) => onChange(setLevel(overrides, id, v === AS_REPORTED ? undefined : (v as InspectionLevel)))}
-          />
-        </div>
+    <section className={styles.details} aria-label={tx("Inspection details")}>
+      {node && (
+        <h3 className={styles.detailTitle}>
+          <T>{node.name}</T>
+        </h3>
       )}
-      {id && <InspectionOptions id={id} overrides={overrides} onChange={onChange} />}
-    </div>
+      {id ? (
+        <SplitGroup id="inspection-rule" className={styles.split} orientation="vertical">
+          <SplitPanel id="inspection-description" defaultSize="45%" minSize="25%">
+            <div className={styles.descriptionPane}>{description}</div>
+          </SplitPanel>
+          <SplitHandle aria-label={tx("Resize inspection description")} />
+          <SplitPanel id="inspection-options" defaultSize="55%" minSize="25%">
+            <div className={styles.optionsPane}>
+              <div className={styles.severityRow}>
+                <span>
+                  <T>Severity:</T>
+                </span>
+                <Select
+                  className={styles.levelSelect}
+                  aria-label="Severity"
+                  value={overrides[id]?.severity ?? AS_REPORTED}
+                  options={LEVEL_OPTIONS}
+                  disabled={!isEnabled(overrides, id)}
+                  onChange={(v) =>
+                    onChange(setLevel(overrides, id, v === AS_REPORTED ? undefined : (v as InspectionLevel)))
+                  }
+                />
+              </div>
+              <InspectionOptions id={id} overrides={overrides} onChange={onChange} />
+            </div>
+          </SplitPanel>
+        </SplitGroup>
+      ) : (
+        <div className={styles.descriptionPane}>{description}</div>
+      )}
+    </section>
   );
 }
 

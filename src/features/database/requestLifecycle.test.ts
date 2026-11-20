@@ -67,6 +67,7 @@ import {
   useDatabase,
   withConnection,
 } from "./store";
+import { provideToolWindowService } from "@/workbench/contributions";
 
 const initial = useDatabase.getState();
 const initialProject = useProject.getState();
@@ -129,6 +130,8 @@ function switchProject(project: ProjectInfo) {
 }
 
 beforeEach(() => {
+  // `showServiceView` reaches the real service, not the mocked accessor above.
+  provideToolWindowService({ show: ui.show } as never);
   vi.resetAllMocks();
   useProject.setState({ project: projectA });
   savedSources = [pg, other];

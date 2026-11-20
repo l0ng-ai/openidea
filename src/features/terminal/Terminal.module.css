@@ -27,12 +27,20 @@
 
 /* A tab group: its header (while split) over its tabs' terminals. */
 .group {
-  container: terminal-group / inline-size;
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+.output {
+  container: terminal-output / size;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .panels {
@@ -160,12 +168,12 @@
   border-bottom: 1px solid var(--border);
 }
 .findField {
-  flex: 0 1 360px;
+  flex: 1;
   min-width: 160px;
 }
 .findCount {
-  font-family: var(--font-mono);
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
   padding: 0 6px;
   white-space: nowrap;
@@ -174,11 +182,24 @@
 .findCountNone {
   color: var(--danger);
 }
-.findSpacer {
-  flex: 1;
+@container terminal-output (min-width: 500px) and (min-height: 160px) {
+  .find {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 6;
+    width: 500px;
+    border-left: 1px solid var(--border);
+  }
+  .find[data-match-covered] {
+    top: auto;
+    bottom: 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 0;
+  }
 }
 
-@container terminal-group (max-width: 360px) {
+@container terminal-output (max-width: 360px) {
   .find {
     display: grid;
     grid-template-columns: minmax(0, 1fr) repeat(3, var(--h-control-small));
@@ -186,8 +207,5 @@
   .findField {
     grid-column: 1 / -1;
     min-width: 0;
-  }
-  .findSpacer {
-    display: none;
   }
 }

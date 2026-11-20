@@ -32,7 +32,12 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     } else {
         None
     };
-    let agents = if is_jvm_launch(&config) { ide_run::java_agent::current() } else { Default::default() };
+    let java_exec = java_exec_path(&config);
+    let agents = if is_jvm_launch(&config) {
+        ide_run::java_agent::current_for(java_exec.as_deref())
+    } else {
+        Default::default()
+    };
     let config = add_java_agents(config, &agents.options);
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
@@ -209,6 +214,12 @@ fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port
 fn is_jvm_launch(config: &LaunchConfig) -> bool {
     config.request == "launch"
         && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER | ide_dap::adapter::JAVA_ANALYZER)
+}
+
+/// `javaExec` from the launch extras, for gating contributed `vmOptions` on JetBrains Runtime.
+fn java_exec_path(config: &LaunchConfig) -> Option<std::path::PathBuf> {
+    let extra: serde_json::Value = serde_json::from_str(config.extra_json.as_deref()?).ok()?;
+    extra.get("javaExec").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(std::path::PathBuf::from)
 }
 
 /// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:

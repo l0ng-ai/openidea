@@ -644,6 +644,11 @@ export const VCS_PAGES: PageSpec[] = [
         title: "Commit Message Generation",
         options: [
           {
+            kind: "toggle",
+            key: "vcs.commit.agentButton",
+            label: "Show the Generate Commit Message with Agent button",
+          },
+          {
             kind: "custom",
             label: "Agent",
             keywords: ["agent", "ai", "model", "effort", "thinking", "reasoning", "generate commit message"],

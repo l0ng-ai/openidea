@@ -1,7 +1,16 @@
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, T, Tabs } from "@/ui";
+import {
+  EmptyState,
+  IconButton,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  T,
+  Tabs,
+  useFrozenWhileWindowResizes,
+} from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { spanStyle } from "@/ui/ansi";
 import clsx from "clsx";
@@ -68,6 +77,10 @@ export function GitToolWindow() {
   const { shown } = useGitTabs();
   const available = useVcs((s) => s.available);
   const external = useGitLog((s) => s.logTabs.some((t) => t.id === s.tab && t.readOnly));
+  // The log's rows, graph and branch tree are too much for WebKit to relayout at every step of a
+  // window drag; they follow the window once it stops.
+  const root = useRef<HTMLDivElement>(null);
+  useFrozenWhileWindowResizes(root);
   if (!available && !external)
     return (
       <EmptyState title="Version control is not configured">
@@ -76,6 +89,7 @@ export function GitToolWindow() {
     );
   return (
     <div
+      ref={root}
       className={styles.root}
       role="tabpanel"
       id={`openidea-git-panel-${shown}`}

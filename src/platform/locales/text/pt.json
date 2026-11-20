@@ -671,7 +671,6 @@
   "Detecting…": "Detectando…",
   "Diff": "Diff",
   "Different tool window background": "Plano de fundo diferente para janelas de ferramentas",
-  "Direction": "Direção",
   "Directory": "Diretório",
   "Staging State": "Estado de staging",
   "Staged Changes": "Alterações no stage",
@@ -2888,8 +2887,6 @@
   "Run a command, configuration or goal": "Executar um comando, configuração ou meta",
   "Run Anything entries": "Entradas de Executar qualquer coisa",
   "Press Enter to run the command in the project directory": "Pressione Enter para executar o comando no diretório do projeto",
-  "Type a command": "Digite um comando",
-  "Enter to run, Tab to complete. Other commands run in the project directory.": "Enter para executar, Tab para completar. Outros comandos são executados no diretório do projeto.",
   "Recent": "Recentes",
   "Search types": "Pesquisar tipos",
   "Search configuration types": "Pesquisar tipos de configuração",
@@ -4329,7 +4326,6 @@
   "Edit the deployment servers and options": "Editar os servidores e opções de implantação",
   "Configuration…": "Configuração…",
   "No deployment server configured": "Nenhum servidor de implantação configurado",
-  "Select files in the Project view or open a file in the editor": "Selecione arquivos na visualização do projeto ou abra um arquivo no editor",
   "Upload to": "Fazer upload para",
   "Download from": "Fazer download de",
   "Sync with Deployed to": "Sincronizar com implantado em",
@@ -5957,5 +5953,6 @@
   "Back to Changed Files": "Voltar para Arquivos alterados",
   "Default (the module's JDK)": "Padrão (JDK do módulo)",
   "Use classpath of module": "Usar classpath do módulo",
-  "Find by main class": "Localizar por classe principal"
+  "Find by main class": "Localizar por classe principal",
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Selecione arquivos na visualização do projeto, na janela Commit, ou abra um arquivo no editor"
 }

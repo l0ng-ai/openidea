@@ -72,6 +72,9 @@ export async function endpointCompletion(context: CompletionContext): Promise<Co
   };
 }
 
+const REFRESH_DELAY = 300;
+const isPluginProvider = (id: string) => id.startsWith("plugin:");
+
 type Mark = { pos: number; endpoints: EndpointEntry[] };
 const setMarks = StateEffect.define<Mark[]>();
 const marks = StateField.define<Mark[]>({
@@ -112,18 +115,25 @@ export function endpointEditorExtension(ctx: EditorDocContext): Extension {
         destroyed = false;
         unsubscribe: () => void;
         projectUnsubscribe: () => void;
+        timer: ReturnType<typeof setTimeout> | undefined;
         constructor(readonly view: EditorView) {
           this.unsubscribe = onEndpointsChanged(() => this.refresh());
-          this.projectUnsubscribe = useProject.subscribe(() => this.refresh());
+          this.projectUnsubscribe = useProject.subscribe((state, previous) => {
+            if (state.project !== previous.project) this.refresh();
+          });
           this.refresh();
         }
         update(u: { docChanged: boolean }) {
-          if (u.docChanged) this.refresh();
+          if (!u.docChanged) return;
+          clearTimeout(this.timer);
+          this.timer = setTimeout(() => this.refresh(), REFRESH_DELAY);
         }
         refresh() {
+          clearTimeout(this.timer);
           const seq = ++this.seq;
           const root = useProject.getState().project?.root ?? null;
-          void searchEndpoints(root).then((entries) => {
+          // Only plugin endpoints get icons here; built-in providers (Spring) scan the project.
+          void searchEndpoints(root, isPluginProvider).then((entries) => {
             if (this.destroyed || seq !== this.seq) return;
             const byLine = new Map<number, EndpointEntry[]>();
             for (const e of entries) {
@@ -136,6 +146,7 @@ export function endpointEditorExtension(ctx: EditorDocContext): Extension {
         }
         destroy() {
           this.destroyed = true;
+          clearTimeout(this.timer);
           this.unsubscribe();
           this.projectUnsubscribe();
         }

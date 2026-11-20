@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { track } from "../lib/measure.ts";
 import { normalizePath, type EvalScenario, type Measured } from "../lib/scenario.ts";
 import type { Session } from "../lib/session.ts";
+import { renameFinished, renameResult, type RenameStep } from "../lib/renameObservation.ts";
+import type { Renamed } from "../../src/bindings.ts";
 
 const SRC = "src/main/java/com/example/orders";
 const TEST = "src/test/java/com/example/orders";
@@ -17,7 +19,7 @@ const LONG_TIMEOUT = 60_000;
 
 interface ProbeWindow {
   __openideaPerf: {
-    editorState(): { path: string; head: number; line: number; word: string } | null;
+    editorState(): { doc: number; path: string; head: number; line: number; col: number; word: string } | null;
     editorText(): string | null;
     setCursor(offset: number): void;
     insertAfter(after: string, text: string): number;
@@ -25,6 +27,8 @@ interface ProbeWindow {
     completionPending(): boolean;
     diagnostics(): Array<{ line: number; severity: string; message: string }>;
     lineAtY(y: number): number;
+    openFileForDiagnostics(path: string, source: string): Promise<number>;
+    diagnosticsPublished(generation: number): boolean;
   };
 }
 
@@ -373,10 +377,21 @@ function diagnosticsOnOpen(project: string, id: string, title: string, file: str
     async setup() {},
     async step(s): Promise<Measured> {
       const timing = await track(s.page, {
-        openFile: join(s.root, file),
-        arg: null,
-        first: () => !!document.querySelector(".cm-content .cm-line"),
-        done: () => true,
+        run: async (arg) => {
+          const w = window as unknown as ProbeWindow;
+          arg.generation = await w.__openideaPerf.openFileForDiagnostics(arg.path, "jdtls");
+        },
+        arg: { path: join(s.root, file), generation: 0 },
+        first: (arg) => {
+          const w = window as unknown as ProbeWindow;
+          return (
+            w.__openideaPerf.diagnosticsPublished(arg.generation) && !!document.querySelector(".cm-content .cm-line")
+          );
+        },
+        done: (arg) => {
+          const w = window as unknown as ProbeWindow;
+          return w.__openideaPerf.diagnosticsPublished(arg.generation);
+        },
         signature: problems,
         settleMs: 3000,
         timeoutMs: TIMEOUT,
@@ -514,12 +529,19 @@ function quickDoc(project: string, id: string, title: string, at: Place): EvalSc
   };
 }
 
-interface RenameAnswer {
-  edit: { files: Array<{ path?: string; edits?: Array<{ range: { start: { line: number } }; new_text: string }> }> };
-}
-
 /** Rename in place to `newName`, then ↵: every edit it makes (a preview is left unapplied). */
-function rename(project: string, id: string, title: string, at: Place, newName: string): EvalScenario {
+function rename(
+  project: string,
+  id: string,
+  title: string,
+  at: Place,
+  newName: string,
+  mode: RenameStep["mode"],
+): EvalScenario {
+  const prepared = new WeakMap<
+    Session,
+    { doc: number; path: string; pos: { line: number; col: number }; original: string }
+  >();
   return {
     id,
     title,
@@ -528,23 +550,39 @@ function rename(project: string, id: string, title: string, at: Place, newName: 
     conditions: ["warm"],
     async setup(s) {
       await reach(s, at);
+      const before = await s.page.evaluate(() => {
+        const w = window as unknown as ProbeWindow;
+        const state = w.__openideaPerf.editorState();
+        const original = w.__openideaPerf.editorText();
+        if (!state || original === null) throw new Error("no active editor before rename");
+        return { doc: state.doc, path: state.path, pos: { line: state.line, col: state.col }, original };
+      });
+      prepared.set(s, before);
       await s.keepText();
       await s.runAction("refactor.rename");
       await s.page.waitForSelector(".cm-lsp-inplace-primary", { timeout: TIMEOUT });
       await s.page.keyboard.type(newName);
     },
     async step(s): Promise<Measured> {
-      const answered = (newName: string) => {
-        if (document.querySelector('[data-testid="refactor-preview"]')) return true;
-        if (document.querySelector(".cm-lsp-hint:not([data-pending]):not(.cm-lsp-inplace-hint)")) return true;
-        return (
-          !document.querySelector(".cm-lsp-inplace") &&
-          !!(window as unknown as ProbeWindow).__openideaPerf.editorText()?.includes(newName)
-        );
+      const before = prepared.get(s);
+      if (!before) throw new Error("rename was not prepared");
+      const scope = s.renameObservations.begin({ doc: before.doc, pos: before.pos, newName });
+      const arg: RenameStep = {
+        scope,
+        root: s.root,
+        path: before.path,
+        original: before.original,
+        oldName: at.word,
+        newName,
+        mode,
+        answer: null,
       };
       const timing = await track(s.page, {
-        run: () =>
-          document.querySelector(".cm-content")?.dispatchEvent(
+        run: async (arg) => {
+          const w = window as unknown as { __openideaEvalRenameAnswer(scope: number): Promise<Renamed> };
+          const content = document.querySelector(".cm-content");
+          if (!content) throw new Error("no editor for rename");
+          content.dispatchEvent(
             new KeyboardEvent("keydown", {
               key: "Enter",
               code: "Enter",
@@ -552,25 +590,17 @@ function rename(project: string, id: string, title: string, at: Place, newName: 
               bubbles: true,
               cancelable: true,
             }),
-          ),
-        arg: newName,
-        first: answered,
-        done: answered,
+          );
+          arg.answer = await w.__openideaEvalRenameAnswer(arg.scope);
+        },
+        arg,
+        first: renameFinished,
+        done: renameFinished,
         timeoutMs: TIMEOUT,
       });
-      // The preview only counts per file: where the name lands is in the answer it shows. A server
-      // may merge nearby occurrences into one edit, so every line of its new text counts.
-      const answer = s.lastAnswer.get("lsp_rename") as RenameAnswer | undefined;
-      const changes = (answer?.edit.files ?? []).flatMap((f) =>
-        (f.edits ?? []).flatMap((e) =>
-          e.new_text
-            .split("\n")
-            .flatMap((l, i) =>
-              l.includes(newName) ? [`${normalizePath(s.root, f.path!)}:${e.range.start.line + i + 1}`] : [],
-            ),
-        ),
-      );
-      return { timing, results: { changes } };
+      const answer = s.renameObservations.completed(scope) as Renamed | null;
+      if (!answer) throw new Error("rename did not receive a current successful response");
+      return { timing, ...renameResult(s.root, answer, newName) };
     },
   };
 }
@@ -748,6 +778,7 @@ export const JAVA_SCENARIOS: EvalScenario[] = [
     "Rename: method used across files",
     { file: `${SRC}/Order.java`, line: "public long totalCents() {", word: "totalCents" },
     "orderTotalCents",
+    "preview",
   ),
   rename(
     APP,
@@ -755,6 +786,7 @@ export const JAVA_SCENARIOS: EvalScenario[] = [
     "Rename: local variable",
     { file: BOOK, line: "Order order = new Order(customer, product, quantity, unitPriceCents);", word: "order" },
     "placedOrder",
+    "applied",
   ),
 
   declaration(
@@ -837,5 +869,6 @@ export const JAVA_SCENARIOS: EvalScenario[] = [
     "Rename: entity method used across controllers and tests",
     { file: `${PET}/owner/Owner.java`, line: "public void addVisit(Integer petId, Visit visit) {", word: "addVisit" },
     "recordVisit",
+    "preview",
   ),
 ];

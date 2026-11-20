@@ -228,6 +228,7 @@ Declare any of these kinds with `engines.openidea = "^1.4"`, implement
 | `implementation`      | `implementation(doc, at)`                        | Merged with the server's implementations.                                                                                                                                                                                            |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with the server's type declarations.                                                                                                                                                                                          |
 | `gutter-actions`      | `gutter_actions(doc)`                            | Gutter buttons that run one of the plugin's declared commands, with an optional argument.                                                                                                                                            |
+| `hover-actions`       | `hover_actions(doc)`                             | Actions at the left edge of a line, revealed while the pointer is in the first four editing-area columns for any line in `start-line..=end-line`; the button is anchored to `line` and never covers text (API 1.14).                 |
 
 A code lens that offers a command, from the
 [Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)

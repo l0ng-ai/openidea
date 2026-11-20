@@ -79,7 +79,6 @@ function NewPopup({ at, items }: { at: { x: number; y: number }; items: MenuItem
         onActivate={(r) => pick(r)}
         focusable={false}
         hoverSelects
-        rowHeight={24}
         className={styles.list}
         aria-label="File types"
         empty={

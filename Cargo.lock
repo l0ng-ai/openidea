@@ -4660,6 +4660,7 @@ dependencies = [
 name = "ide-lsp"
 version = "0.1.49"
 dependencies = [
+ "criterion",
  "dunce",
  "encoding_rs",
  "futures",
@@ -4943,6 +4944,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "specta",
+ "tokio",
  "tracing",
 ]
 
@@ -5015,6 +5017,7 @@ dependencies = [
  "ignore",
  "notify",
  "parking_lot",
+ "rayon",
  "rustix",
  "serde",
  "serde_json",

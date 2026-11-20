@@ -6,13 +6,14 @@ import { commitKey, commitRepo } from "./multiRoot";
  * and patches (ids are bound in keymaps/intellij-macos.ts where IDEA binds them).
  */
 import type { Commit } from "@/bindings";
-import { setContext } from "@/platform/context";
+import { getContext, setContext } from "@/platform/context";
 import { call, commands } from "@/platform/ipc";
 import { notifications, toolWindowService } from "@/workbench/contributions";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { checkoutDetached, newBranch, rebaseOnto } from "./branchOps";
 import { openUrl } from "./issueLinks";
 import { commitWebUrl } from "./model";
+import { remoteWebSource } from "./remoteUrl";
 import {
   commitChangelist,
   deleteChangelist,
@@ -56,10 +57,12 @@ import {
   loadShelves,
   renameShelf,
   shelveChanges,
+  shelveSilently,
   shelfTarget,
   showShelf,
   showShelfDiff,
   unshelve,
+  unshelveSilently,
 } from "./shelf";
 import { currentRepo, focusRepo, useVcs } from "./store";
 
@@ -156,7 +159,7 @@ function withCommits(fn: (cs: Commit[]) => unknown, allowReadOnly = false) {
 async function openCommitInBrowser(c: Commit) {
   const upstream = useVcs.getState().branch?.upstream;
   const remote = upstream ? upstream.slice(0, upstream.indexOf("/")) : "origin";
-  const url = await call(commands.vcsConfigGet(currentRepo(), `remote.${remote}.url`)).catch(() => null);
+  const url = await remoteWebSource(currentRepo(), remote);
   const page = url ? commitWebUrl(url, c.id) : null;
   if (page) await openUrl(page);
   else notifications().notify({ group: "vcs", level: "warning", title: `No web URL for remote '${remote}'` });
@@ -621,6 +624,20 @@ export function registerHistoryActions(): () => void {
       when: VCS,
       run: ({ arg }) => shelveChanges(changePaths(arg)),
     },
+    {
+      id: "vcs.shelveSilently",
+      title: "Shelve Silently",
+      category: "Git",
+      icon: "shelve",
+      when: VCS,
+      keyWhen: "vcsAvailable && (activeToolWindow == commit || activeToolWindow == git) && !shelfFocus",
+      run: ({ arg }) => {
+        // The Changes tab's selection is stale while the Shelf or Stash tab is shown.
+        if (arg === undefined && getContext().activeToolWindow === "commit" && useCommit.getState().tab !== "changes")
+          return;
+        return shelveSilently(changePaths(arg));
+      },
+    },
     { id: "vcs.showShelf", title: "Show Shelf", category: "Git", icon: "shelve", when: VCS, run: showShelf },
     {
       id: "vcs.unshelve",
@@ -632,6 +649,19 @@ export function registerHistoryActions(): () => void {
         const target = shelfTarget(arg);
         if (target) unshelve(target.entry, target.path);
         else showShelf();
+      },
+    },
+    {
+      id: "vcs.unshelveSilently",
+      title: "Unshelve Silently",
+      category: "Git",
+      icon: "unshelve",
+      when: VCS,
+      keyWhen: "vcsAvailable && shelfFocus",
+      run: ({ arg }) => {
+        const target = shelfTarget(arg);
+        if (target) return unshelveSilently(target.entry, target.path);
+        showShelf();
       },
     },
     {

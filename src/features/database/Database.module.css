@@ -73,10 +73,11 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 0 6px;
+  padding: 0 var(--space-1);
   color: var(--fg-line-number);
   background: var(--bg-editor-gutter);
   border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   user-select: none;
 }
 .cell {
@@ -139,9 +140,10 @@
 .toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-0-5);
-  height: var(--h-header);
-  padding: 0 6px;
+  min-height: 32px;
+  padding: var(--space-0-5) var(--space-2);
   flex: none;
   border-bottom: 1px solid var(--border);
 }
@@ -151,6 +153,28 @@
 .fill {
   flex: 1;
   min-height: 0;
+}
+/* A console's request in flight; the previous result stays below it. */
+.executing {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.executingText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.executingTime {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 /* Gives way before the name does. */
 .treeDetail {
@@ -233,14 +257,16 @@
   flex-direction: column;
 }
 .dbToolbar {
-  height: 32px;
+  min-height: 32px;
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-0-5);
-  padding: 0 6px;
+  padding: var(--space-0-5) var(--space-2);
 }
 .dbToolbarSep {
+  flex: none;
   width: 1px;
   height: 16px;
   margin: 0 4px;
@@ -286,14 +312,21 @@
 .consoleBar {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  height: var(--h-header);
-  padding: 0 8px;
+  flex-wrap: wrap;
+  gap: var(--space-0-5);
+  min-height: 32px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--bg-editor);
   border-bottom: 1px solid var(--border);
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
+}
+.consoleSchema {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
 }
 
 /* Inline statement errors in consoles. */
@@ -307,9 +340,9 @@
 /* Table editor. */
 /* The table editor's WHERE | ORDER BY row (IDEA). */
 .filterBar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
   flex: none;
-  height: var(--h-header);
   border-bottom: 1px solid var(--border);
 }
 .filterField {
@@ -318,29 +351,26 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  white-space: nowrap;
 }
 .filterField + .filterField {
   border-left: 1px solid var(--border);
 }
-.filterField > input {
-  flex: 1;
-  min-width: 0;
+.filterField:focus-within {
+  box-shadow: inset 0 -1px var(--focus-ring);
 }
-.pager {
-  display: flex;
-  align-items: center;
-  gap: var(--space-0-5);
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-  white-space: nowrap;
+.filterField:has(input[aria-invalid="true"]) {
+  box-shadow: inset 0 -1px var(--danger);
 }
 .notice {
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--fs-small);
   color: var(--fg-secondary);
-  background: var(--bg-editor-banner);
+  background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
 }
 
@@ -427,6 +457,28 @@
   display: none;
 }
 /* Data source dialog. */
+.sourceLayout {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  height: clamp(220px, calc(100dvh - 150px), 560px);
+}
+.sourceLayout .form {
+  grid-template-columns: minmax(112px, 19%) minmax(0, 1fr);
+  align-content: start;
+  padding: var(--space-3) var(--space-4);
+}
+.sourceLayout .formLabel {
+  text-align: left;
+}
+.sourceLayout .formRow {
+  flex-wrap: wrap;
+}
+.sourceLayout .formRow > .fill {
+  flex: 1 1 160px;
+}
+.sourcePanel {
+  overflow: auto;
+}
 .formSection {
   grid-column: 1 / -1;
   display: flex;
@@ -549,10 +601,16 @@
   font-size: var(--fs-small);
 }
 .testResult {
-  grid-column: 1 / -1;
   font-size: var(--fs-small);
-  min-height: 16px;
-  word-break: break-word;
+  max-height: 25vh;
+  padding: var(--space-2) var(--space-4);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--border);
+}
+.testResult:empty {
+  padding: 0;
+  border: 0;
 }
 .ok {
   color: var(--success);
@@ -621,6 +679,12 @@
 }
 
 /* Console run feedback: timing after a statement, gutter check / error, error banner. */
+:global(.cm-openidea-db-executing) {
+  background: var(--accent-soft);
+}
+:global(.cm-openidea-db-elapsed) {
+  font-variant-numeric: tabular-nums;
+}
 :global(.cm-openidea-db-timing) {
   margin-left: 1.5em;
   color: var(--fg-muted);
@@ -737,16 +801,27 @@
 .modifyBody {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
+  gap: var(--space-2);
+  height: clamp(320px, 68vh, 560px);
+  padding: var(--space-4);
 }
 .modifyMain {
+  flex: 1;
   display: grid;
-  grid-template-columns: 260px 1fr;
-  height: 240px;
+  grid-template-columns: minmax(108px, 34%) minmax(0, 1fr);
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
   overflow: hidden;
+}
+.modifyBody > .previewBlock {
+  flex: 0 0 38%;
+  min-height: 0;
+}
+.modifyBody .sqlPreview {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
 }
 .modifyColumns {
   display: flex;
@@ -786,12 +861,16 @@
 }
 .modifyProps {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: minmax(0, 27%) minmax(0, 1fr);
   align-content: start;
   align-items: center;
   gap: var(--space-2) var(--space-3);
   padding: 12px;
   overflow: auto;
+}
+.modifyProps .formLabel {
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 .quickDoc {
   width: 460px;
@@ -830,9 +909,6 @@
   display: flex;
   height: 100%;
   min-height: 0;
-}
-.dataView > .fill {
-  min-width: 0;
 }
 .headerFilter {
   flex: none;
@@ -938,7 +1014,8 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  width: 320px;
+  width: clamp(160px, 38%, 300px);
+  max-width: 50%;
   min-height: 0;
   border-left: 1px solid var(--border);
 }
@@ -1165,28 +1242,41 @@
 
 /* Export / history / import dialogs. */
 .exportDialog {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
   gap: var(--space-4);
-  height: 420px;
-  padding: 14px;
+  height: min(440px, 65vh);
+  min-height: 340px;
+  padding: var(--space-4);
 }
 .exportOptions {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  width: 300px;
-  flex: none;
+}
+.exportOptions .formRow > input {
+  flex: 1;
 }
 .exportOptions .formLabel,
 .exportPreview .formLabel {
   text-align: left;
 }
 .exportPreview {
-  flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+@media (max-width: 620px) {
+  .exportDialog {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+  .exportPreviewText {
+    height: 200px;
+    flex: none;
+  }
 }
 .exportPreviewText,
 .historyPreview {
@@ -1368,6 +1458,7 @@
   flex: none;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-1);
   padding: 4px 8px;
   background: var(--bg-elev);
@@ -1375,8 +1466,8 @@
   font-size: var(--fs-ui);
 }
 .gridSearchField {
-  flex: 0 1 360px;
-  min-width: 160px;
+  flex: 0 1 320px;
+  min-width: min(100%, 160px);
 }
 .gridSearchCount {
   font-family: var(--font-mono);
@@ -1396,14 +1487,19 @@
   background: var(--bg-text-search-result-current);
 }
 
-/* IDEA's floating pager at the bottom of a result: |< < 1-500 of 501+ > >| and the page size. */
+.pagerDock {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  background: var(--bg-editor);
+}
 .resultPager {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 100%;
   gap: var(--space-0-5);
   padding: 2px 4px;
   border: 1px solid var(--border-popup, var(--border));

@@ -139,11 +139,14 @@ fn announce_available(app: &AppHandle) {
         return;
     }
     let state = app.state::<AppState>();
+    // Asking a window whether it is focused waits for the main thread, where
+    // `app_update_window_ready` takes `ready`: never hold the lock across it.
+    let focused = crate::windows::target_window(app);
+    let live = crate::windows::project_window_labels(app);
     let owner = {
         let mut ready = state.updates.ready.lock();
         ready.retain(|label| app.get_webview_window(label).is_some());
-        let focused = crate::windows::target_window(app);
-        ready_owner(focused.as_ref().map(|window| window.label()), &crate::windows::project_window_labels(app), &ready)
+        ready_owner(focused.as_ref().map(|window| window.label()), &live, &ready)
     };
     let Some(owner) = owner else { return };
     let update = {

@@ -1,7 +1,5 @@
 /**
- * Model, effort, mode and approvals controls for a composer's bottom row. The model button
- * opens a searchable model list (pinned models first) and keeps effort and context settings
- * together above it.
+ * Model and settings controls shared by the New Task and session composers.
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
@@ -78,6 +76,8 @@ function switchValues(option: AgentConfigOption): { on: string; off: string } | 
 const selected = (option: AgentConfigOption, value: string | null) =>
   option.values.find((v) => v.value === value) ?? null;
 
+type ChangeOption = (option: string, value: string, forModel?: string) => void;
+
 interface ModelRefresh {
   draft?: boolean;
   refreshing: boolean;
@@ -86,6 +86,12 @@ interface ModelRefresh {
   error: string | null;
   onOpen?: () => void;
   onRefresh: () => void;
+  preview?: {
+    /** Undefined until discovery; an empty array means the agent reported no settings. */
+    settingsFor: (model: string) => AgentConfigOption[] | undefined;
+    load: (model: string) => void;
+    errorFor: (model: string) => string | null | undefined;
+  };
 }
 
 export function ConfigPickers({
@@ -97,7 +103,7 @@ export function ConfigPickers({
   config: readonly AgentConfigOption[];
   /** Chosen values that override `current`, by option id. */
   values?: Record<string, string>;
-  onChange: (option: string, value: string) => void;
+  onChange: ChangeOption;
   modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
@@ -145,10 +151,9 @@ export function ConfigPickers({
             <ModelPicker
               model={o}
               modelValue={valueOf(o)}
-              modelConfigs={modelConfigs}
-              effort={tuckedEffort}
-              effortValue={tuckedEffort ? valueOf(tuckedEffort) : null}
-              valueOf={valueOf}
+              settings={(tuckedEffort ? [tuckedEffort, ...modelConfigs] : modelConfigs)
+                .filter((opt) => opt.values.length > 0)
+                .map((opt) => ({ ...opt, current: valueOf(opt) }))}
               onChange={onChange}
               modelRefresh={modelRefresh}
             />
@@ -257,181 +262,255 @@ function ConfigPicker({
 }
 
 /** Effort levels that fit the popup's segmented control; more (Codex has six) get a dropdown. */
-const SEGMENTED_EFFORT_MAX = 4;
+const SEGMENTED_EFFORT_MAX = 5;
 
-/** The model button: a searchable model list, with effort, context size and model settings above it. */
+function settingName(option: AgentConfigOption) {
+  return option.category === "thought_level"
+    ? "Effort Level"
+    : isContextOption(option.id)
+      ? "Context Size"
+      : option.name;
+}
+
+function settingValue(option: AgentConfigOption) {
+  return selected(option, option.current) ?? option.values[0];
+}
+
+function settingsSummary(options: AgentConfigOption[], tx: ReturnType<typeof useTx>) {
+  return options
+    .map((o) => {
+      const label = settingValue(o)?.name ?? tx("Default");
+      return o.category === "thought_level" || isContextOption(o.id) ? label : `${tx(o.name)}: ${label}`;
+    })
+    .join(" · ");
+}
+
 function ModelPicker({
   model,
   modelValue,
-  modelConfigs,
-  effort,
-  effortValue,
-  valueOf,
+  settings,
   onChange,
   modelRefresh,
 }: {
   model: AgentConfigOption;
   modelValue: string | null;
-  modelConfigs: AgentConfigOption[];
-  effort: AgentConfigOption | null;
-  effortValue: string | null;
-  valueOf: (o: AgentConfigOption) => string | null;
-  onChange: (option: string, value: string) => void;
+  settings: AgentConfigOption[];
+  onChange: ChangeOption;
   modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
-  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState<"models" | { model: string | null } | null>(null);
   const pinnedModels = useAgents((s) => s.pinnedModels);
-  const anchor = useRef<HTMLButtonElement>(null);
+  const anchor = useRef<HTMLSpanElement>(null);
   const selectedModel = selected(model, modelValue);
-  const unavailable = modelRefresh?.draft && modelValue !== null && !selectedModel;
+  const unavailable = !!modelRefresh && modelValue !== null && !selectedModel;
   const modelName = unavailable
     ? tx`${modelValue} (unavailable)`
     : (selectedModel?.name ?? (modelRefresh ? modelValue : null) ?? tx("Default"));
 
-  const contextOption = modelConfigs.find((o) => isContextOption(o.id) && o.values.length > 0);
-  const contextValue = contextOption ? valueOf(contextOption) : null;
-  const contextLabel = contextOption
-    ? ((selected(contextOption, contextValue) ?? contextOption.values[0])?.name ?? null)
-    : null;
-  const effortLabel = effort ? ((selected(effort, effortValue) ?? effort.values[0])?.name ?? null) : null;
-  const otherModelConfigs = modelConfigs.filter((o) => o !== contextOption);
-  const summary = [
-    effortLabel ? `${tx("Effort Level")}: ${effortLabel}` : null,
-    contextLabel ? `${tx("Context Size")}: ${contextLabel}` : null,
-    ...otherModelConfigs.map((o) => {
-      const current = selected(o, valueOf(o));
-      return current ? `${tx(o.name)}: ${current.name}` : null;
-    }),
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const summary = settingsSummary(settings, tx);
+  const settingsFor = (id: string | null) =>
+    id === modelValue ? settings : id ? modelRefresh?.preview?.settingsFor(id) : undefined;
+  const details = page && page !== "models" && (page.model === modelValue || selected(model, page.model)) ? page : null;
+  const inspectedModel = details ? selected(model, details.model) : null;
+  const openModels = () => {
+    modelRefresh?.onOpen?.();
+    setPage("models");
+  };
 
   return (
-    <>
+    <span ref={anchor} className={styles.modelControl}>
       <button
-        ref={anchor}
         type="button"
         className={styles.chip}
         aria-label={tx(model.name)}
         aria-haspopup="dialog"
-        aria-expanded={open}
-        title={`${tx(model.name)}: ${modelName}${summary ? ` · ${summary}` : ""}`}
-        onClick={() => {
-          if (!open) modelRefresh?.onOpen?.();
-          setOpen(!open);
-        }}
+        aria-expanded={!!page && !details}
+        title={`${tx(model.name)}: ${modelName}`}
+        onClick={() => (page && !details ? setPage(null) : openModels())}
       >
         <span className={styles.chipValue}>{modelName}</span>
-        {(effortLabel || contextLabel) && (
-          <span className={clsx(styles.chipDetail, styles.modelDetail)}>
-            {[effortLabel, contextLabel].filter(Boolean).join(" · ")}
-          </span>
-        )}
         <Icon name="chevron-down" size={14} className={styles.chipChevron} />
       </button>
+      {summary && !unavailable && (
+        <button
+          type="button"
+          className={clsx(styles.chip, styles.modelDetail)}
+          aria-label={tx`Model settings: ${summary}`}
+          title={tx`Configure ${modelName}…`}
+          aria-haspopup="dialog"
+          aria-expanded={!!details && details.model === modelValue}
+          onClick={() => setPage(details && details.model === modelValue ? null : { model: modelValue })}
+        >
+          <span className={styles.chipValue}>{summary}</span>
+        </button>
+      )}
       <Popup
-        open={open}
+        open={!!page}
         anchor={anchor}
-        onClose={() => setOpen(false)}
-        aria-label={tx("Model")}
+        onClose={() => setPage(null)}
+        aria-label={tx(details ? "Model settings" : "Model")}
         className={styles.modelEffortPopup}
       >
-        {unavailable && (
-          <p className={styles.catalogError} role="alert">
-            <T>Choose another model before starting.</T>
-          </p>
+        {details ? (
+          <ModelSettings
+            key={details.model}
+            id={details.model}
+            name={inspectedModel?.name ?? modelName}
+            settings={settingsFor(details.model)}
+            modelRefresh={modelRefresh}
+            onBack={openModels}
+            onChange={(option, value) => {
+              if (details.model && details.model !== modelValue) onChange(option, value, details.model);
+              else onChange(option, value);
+            }}
+          />
+        ) : (
+          <>
+            {unavailable && (
+              <p className={styles.catalogError} role="alert">
+                <T>Choose another model before starting.</T>
+              </p>
+            )}
+            {model.values.length > 0 || !modelRefresh ? (
+              <SelectListbox
+                aria-label={tx(model.name)}
+                value={modelValue}
+                options={configPickerOptions(model, pinnedModels, false)}
+                searchable
+                listClassName={styles.modelList}
+                onChoose={(v) => {
+                  onChange(model.id, v);
+                  setPage(null);
+                }}
+                renderAction={(opt) => {
+                  const raw = model.values.find((v) => v.value === opt.value);
+                  if (!raw) return null;
+                  const pinned = pinnedModels.includes(raw.value);
+                  const rowSettings = settingsFor(raw.value);
+                  const configurable = rowSettings
+                    ? rowSettings.some((o) => o.values.length > 0)
+                    : !!modelRefresh?.preview;
+                  return (
+                    <>
+                      <CostBadge category={raw.costCategory} />
+                      <button
+                        type="button"
+                        className={clsx(styles.modelRowConfigure, pinned && styles.pinnedButton)}
+                        aria-label={pinned ? tx("Unpin model") : tx("Pin model")}
+                        aria-pressed={pinned}
+                        title={pinned ? tx("Unpin model") : tx("Pin model")}
+                        onClick={() => togglePinnedModel(raw.value)}
+                      >
+                        <Icon name="pin" size={12} />
+                      </button>
+                      {configurable && (
+                        <button
+                          type="button"
+                          className={clsx(
+                            styles.modelRowConfigure,
+                            styles.modelRowSettings,
+                            raw.value === modelValue && styles.currentRowSettings,
+                          )}
+                          title={tx`Configure ${opt.label}…`}
+                          aria-label={tx`Configure ${opt.label}…`}
+                          aria-haspopup="dialog"
+                          onClick={() => setPage({ model: raw.value })}
+                        >
+                          {rowSettings && <span>{settingsSummary(rowSettings, tx)}</span>}
+                          <Icon name="chevron-right" size={14} />
+                        </button>
+                      )}
+                    </>
+                  );
+                }}
+              />
+            ) : (
+              <p className={styles.catalogNote} role="status">
+                {modelRefresh?.refreshing ? <T>Loading models…</T> : <T>No models reported by this agent.</T>}
+              </p>
+            )}
+            {modelRefresh && <ModelRefreshFooter key={modelRefresh.retryAtMs} {...modelRefresh} />}
+          </>
         )}
-        {(effort || contextOption || otherModelConfigs.length > 0) && (
-          <div className={styles.quickSettings}>
-            {effort && (
-              <div className={styles.quickRow}>
-                <span className={styles.quickLabel}>
-                  <T>Effort Level</T>
+      </Popup>
+    </span>
+  );
+}
+
+function ModelSettings({
+  id,
+  name,
+  settings,
+  modelRefresh,
+  onBack,
+  onChange,
+}: {
+  id: string | null;
+  name: string;
+  settings: AgentConfigOption[] | undefined;
+  modelRefresh?: ModelRefresh;
+  onBack: () => void;
+  onChange: ChangeOption;
+}) {
+  const tx = useTx();
+  const attempted = useRef(false);
+  const lookup = modelRefresh?.preview;
+  const refreshing = modelRefresh?.refreshing;
+  useEffect(() => {
+    if (!id || settings || !lookup || refreshing || attempted.current) return;
+    attempted.current = true;
+    lookup.load(id);
+  }, [id, settings, lookup, refreshing]);
+  const loading = modelRefresh?.loadingSettings || (!settings && refreshing);
+  const error = !settings && id && lookup?.errorFor(id);
+  return (
+    <div className={styles.quickSettings}>
+      <div className={styles.modelSettingsHeader}>
+        <IconButton autoFocus icon="arrow-left" title="Back to models" size="small" onClick={onBack} />
+        <strong>{name}</strong>
+      </div>
+      {loading ? (
+        <p role="status">
+          <T>Loading model settings…</T>
+        </p>
+      ) : error ? (
+        <p role="alert" className={styles.catalogError}>{tx`Could not refresh models: ${error}`}</p>
+      ) : !settings?.some((o) => o.values.length) ? (
+        <p role="status">
+          <T>No settings reported for this model.</T>
+        </p>
+      ) : (
+        settings
+          .filter((o) => o.values.length > 0)
+          .map((o) => {
+            const label = tx(settingName(o));
+            const segmented =
+              isContextOption(o.id) || (o.category === "thought_level" && o.values.length <= SEGMENTED_EFFORT_MAX);
+            return (
+              <div key={o.id} className={styles.quickRow}>
+                <span className={styles.quickLabel} title={o.description ?? undefined}>
+                  {label}
                 </span>
-                {effort.values.length <= SEGMENTED_EFFORT_MAX ? (
+                {segmented ? (
                   <SegmentedControl
-                    ariaLabel={tx("Effort Level")}
-                    options={effort.values.map((v) => ({
+                    ariaLabel={label}
+                    options={o.values.map((v) => ({
                       value: v.value,
                       label: v.name,
                       description: v.description ?? undefined,
                     }))}
-                    value={effortValue ?? effort.values[0]!.value}
-                    onChange={(v) => onChange(effort.id, v)}
+                    value={settingValue(o)!.value}
+                    onChange={(v) => onChange(o.id, v)}
                   />
                 ) : (
-                  <ConfigPicker option={effort} value={effortValue} onChange={onChange} framed />
+                  <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
                 )}
               </div>
-            )}
-            {contextOption && (
-              <div className={styles.quickRow}>
-                <span className={styles.quickLabel}>
-                  <T>Context Size</T>
-                </span>
-                <SegmentedControl
-                  ariaLabel={tx("Context Size")}
-                  options={contextOption.values.map((v) => ({
-                    value: v.value,
-                    label: v.name,
-                    description: v.description ?? undefined,
-                  }))}
-                  value={contextValue ?? contextOption.values[0]!.value}
-                  onChange={(v) => onChange(contextOption.id, v)}
-                />
-              </div>
-            )}
-            {otherModelConfigs.map((o) => (
-              <div key={o.id} className={styles.quickRow}>
-                <span className={styles.quickLabel} title={o.description ?? undefined}>
-                  {tx(o.name)}
-                </span>
-                <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} framed />
-              </div>
-            ))}
-          </div>
-        )}
-        {model.values.length > 0 || !modelRefresh ? (
-          <SelectListbox
-            aria-label={tx(model.name)}
-            value={modelValue}
-            options={configPickerOptions(model, pinnedModels, false)}
-            searchable
-            listClassName={styles.modelList}
-            onChoose={(v) => {
-              onChange(model.id, v);
-              setOpen(false);
-            }}
-            renderAction={(opt) => {
-              const raw = model.values.find((v) => v.value === opt.value);
-              if (!raw) return null;
-              const pinned = pinnedModels.includes(raw.value);
-              return (
-                <>
-                  <CostBadge category={raw.costCategory} />
-                  <button
-                    type="button"
-                    className={clsx(styles.modelRowConfigure, pinned && styles.pinnedButton)}
-                    aria-label={pinned ? tx("Unpin model") : tx("Pin model")}
-                    aria-pressed={pinned}
-                    title={pinned ? tx("Unpin model") : tx("Pin model")}
-                    onClick={() => togglePinnedModel(raw.value)}
-                  >
-                    <Icon name="pin" size={12} />
-                  </button>
-                </>
-              );
-            }}
-          />
-        ) : (
-          <p className={styles.catalogNote} role="status">
-            {modelRefresh?.refreshing ? <T>Loading models…</T> : <T>No models reported by this agent.</T>}
-          </p>
-        )}
-        {modelRefresh && <ModelRefreshFooter key={modelRefresh.retryAtMs} {...modelRefresh} />}
-      </Popup>
-    </>
+            );
+          })
+      )}
+    </div>
   );
 }
 

@@ -8,6 +8,7 @@ const workspaceUpdate = vi.fn();
 const projectCurrent = vi.fn();
 const windowOpenProject = vi.fn();
 const windowOpenFiles = vi.fn();
+const windowGroupJoin = vi.fn();
 const windowTakeLaunch = vi.fn();
 const windowCompleteLaunch = vi.fn();
 const wslResolve = vi.fn();
@@ -44,6 +45,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       projectCurrent: () => projectCurrent(),
       windowOpenProject: (...a: unknown[]) => windowOpenProject(...a),
       windowOpenFiles: (...a: unknown[]) => windowOpenFiles(...a),
+      windowGroupJoin: (...a: unknown[]) => windowGroupJoin(...a),
       windowTakeLaunch: () => windowTakeLaunch(),
       windowCompleteLaunch: () => windowCompleteLaunch(),
       wslResolve: (p: string) => wslResolve(p),
@@ -111,7 +113,8 @@ beforeEach(() => {
   workspaceAttach.mockReset();
   workspaceUpdate.mockReset();
   projectCurrent.mockReset();
-  for (const f of [windowOpenProject, windowOpenFiles, windowTakeLaunch, wslResolve]) f.mockReset();
+  for (const f of [windowOpenProject, windowOpenFiles, windowGroupJoin, windowTakeLaunch, wslResolve]) f.mockReset();
+  windowGroupJoin.mockResolvedValue(ok(null));
   windowTakeLaunch.mockResolvedValue(null);
   windowCompleteLaunch.mockReset().mockResolvedValue(ok(null));
   wslResolve.mockResolvedValue(null);
@@ -691,6 +694,37 @@ describe("Attach", () => {
     await openProjectWithPolicy("/p/b");
     expect(useProject.getState().project?.workspace?.projects).toEqual(["/p/a", "/p/b"]);
     expect(openProject).not.toHaveBeenCalled();
+  });
+});
+
+describe("Project tabs", () => {
+  it("opens the project in its own window and joins that window into this window's group", async () => {
+    useProject.setState(projectState("/p/a"));
+    vi.mocked(ask).mockResolvedValueOnce({ button: "tab", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "main-2" }));
+    await openProjectWithPolicy("/p/b", ["/p/b/file.txt"]);
+    expect(confirmProjectTrust).toHaveBeenCalledWith("/p/b", "local");
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", true, ["/p/b/file.txt"]);
+    expect(windowGroupJoin).toHaveBeenCalledWith("main-2");
+    // The new window opens its own files, and this window keeps its project.
+    expect(opened).toEqual([]);
+    expect(openProject).not.toHaveBeenCalled();
+    expect(confirmLeaveProject).not.toHaveBeenCalled();
+  });
+  it("groups the window that already has the project", async () => {
+    useProject.setState(projectState("/p/a"));
+    vi.mocked(ask).mockResolvedValueOnce({ button: "tab", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "focused", label: "main-3" }));
+    await openProjectWithPolicy("/p/b");
+    expect(windowGroupJoin).toHaveBeenCalledWith("main-3");
+  });
+  it("reports a window it could not group", async () => {
+    useProject.setState(projectState("/p/a"));
+    vi.mocked(ask).mockResolvedValueOnce({ button: "tab", checked: false });
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "main-2" }));
+    windowGroupJoin.mockRejectedValueOnce(new Error("Window closed"));
+    await openProjectWithPolicy("/p/b");
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "Window closed" }));
   });
 });
 

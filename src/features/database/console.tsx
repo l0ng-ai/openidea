@@ -23,6 +23,7 @@ import {
   Facet,
   Prec,
   RangeSet,
+  type Range,
   StateEffect,
   StateField,
   type Extension,
@@ -42,12 +43,29 @@ import {
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import type { EditorDocContext } from "@/editor/api";
-import { iconNode } from "@/ui/iconNode";
-import { call, commands, type DbDriver, type DbSessionContext, type DbStatementOutcome } from "@/platform/ipc";
+import { iconNode, spinnerNode } from "@/ui/iconNode";
+import {
+  call,
+  commands,
+  type DbDriver,
+  type DbSessionContext,
+  type DbStatementOutcome,
+  type SqlStatement,
+} from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
-import { IconButton, Select, lazyComponent } from "@/ui";
+import { Icon, IconButton, Select, Toolbar, lazyComponent } from "@/ui";
 import { useProject } from "@/platform/project";
-import { activeSchema, schemaSwitchable, sourceLabel, splitTarget, targetOf } from "./model";
+import {
+  activeSchema,
+  parseSchemaTreeValue,
+  schemaSwitchable,
+  schemaTreeRows,
+  schemaTreeValue,
+  sourceIcon,
+  sourceLabel,
+  splitTarget,
+  targetOf,
+} from "./model";
 import { loadSavedCatalog, offerIntrospection } from "./introspection";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
 import {
@@ -82,7 +100,6 @@ import {
   setConsoleSchema,
   setManualCommit,
   sourceById,
-  targetLabel,
   useDatabase,
 } from "./store";
 import styles from "./Database.module.css";
@@ -93,6 +110,7 @@ import type { ResultTab } from "./store";
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
+import { formatElapsed } from "./resultView";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 export { SQL_LANGUAGE };
 const ROW_LIMITS = ["100", "500", "1000", "5000", "50000"];
@@ -107,19 +125,40 @@ interface RunMark {
   ms: number | null;
 }
 
+/** The statements a running request submitted (a batch: all of them, in order). */
+interface Executing {
+  /** Tells this run from a later one on the same console. */
+  token: number;
+  /** The statements' offsets in the text sent. */
+  sent: readonly { from: number; to: number }[];
+  /** Where they are now. */
+  spans: readonly { from: number; to: number }[];
+  /** Where the elapsed time shows: after the last statement's `;`. */
+  at: number;
+  startedAt: number;
+}
+
 interface RunState {
   marks: readonly RunMark[];
   /** Message of the bottom error banner (`null`: hidden). */
   banner: string | null;
+  executing: Executing | null;
 }
 
 const setRun = StateEffect.define<RunState>();
 
 const runField = StateField.define<RunState>({
-  create: () => ({ marks: [], banner: null }),
+  create: () => ({ marks: [], banner: null, executing: null }),
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setRun)) return e.value;
     if (!tr.docChanged) return value;
+    // The request runs the text it was sent; edits only move where that shows.
+    const ex = value.executing;
+    const executing = ex && {
+      ...ex,
+      spans: ex.spans.map((r) => ({ from: tr.changes.mapPos(r.from, 1), to: tr.changes.mapPos(r.to, -1) })),
+      at: tr.changes.mapPos(ex.at),
+    };
     // Editing a statement drops its mark.
     const marks: RunMark[] = [];
     for (const m of value.marks) {
@@ -135,12 +174,18 @@ const runField = StateField.define<RunState>({
           timingAt: tr.changes.mapPos(m.timingAt),
         });
     }
-    return { ...value, marks };
+    return { ...value, marks, executing };
   },
   provide: (f) => [
     EditorView.decorations.from(f, (st) => {
       const ranges = [];
+      const ex = st.executing;
+      for (const r of ex?.spans ?? [])
+        if (r.from < r.to) ranges.push(Decoration.mark({ class: "cm-openidea-db-executing" }).range(r.from, r.to));
+      if (ex) ranges.push(Decoration.widget({ widget: new ElapsedWidget(ex.startedAt), side: 1 }).range(ex.at));
       for (const m of st.marks) {
+        // The new run takes the place of a statement's last outcome.
+        if (ex?.spans.some((r) => r.from <= m.to && m.from <= r.to)) continue;
         if (m.error)
           ranges.push(
             Decoration.mark({ class: "cm-openidea-db-error", attributes: { title: m.error } }).range(m.from, m.to),
@@ -164,8 +209,44 @@ class TimingWidget extends WidgetType {
   toDOM() {
     const span = document.createElement("span");
     span.className = "cm-openidea-db-timing";
-    span.textContent = this.ms < 1000 ? `${Math.round(this.ms)} ms` : `${(this.ms / 1000).toFixed(1)} s`;
+    span.textContent = formatElapsed(this.ms);
     return span;
+  }
+}
+
+/** The running time of the request, ticking until it ends. */
+class ElapsedWidget extends WidgetType {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  constructor(readonly startedAt: number) {
+    super();
+  }
+  eq(other: ElapsedWidget) {
+    return other.startedAt === this.startedAt;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-openidea-db-timing cm-openidea-db-elapsed";
+    const tick = () => {
+      const elapsed = formatElapsed(Date.now() - this.startedAt);
+      span.textContent = tx`Executing… ${elapsed}`;
+    };
+    tick();
+    this.timer = setInterval(tick, 100);
+    return span;
+  }
+  destroy() {
+    clearInterval(this.timer);
+  }
+}
+
+class ExecutingMarker extends GutterMarker {
+  eq(other: GutterMarker) {
+    return other instanceof ExecutingMarker;
+  }
+  toDOM() {
+    const el = spinnerNode(12, "cm-openidea-db-run-executing");
+    el.title = tx("Executing");
+    return el;
   }
 }
 
@@ -192,9 +273,12 @@ const runGutter = gutter({
   markers: (view) => {
     const st = view.state.field(runField);
     const doc = view.state.doc;
-    const ranges = st.marks
-      .filter((m) => m.from <= doc.length)
+    const ex = st.executing;
+    const ranges: Range<GutterMarker>[] = st.marks
+      .filter((m) => m.from <= doc.length && !ex?.spans.some((r) => r.from <= m.to && m.from <= r.to))
       .map((m) => new RunMarker(m.error).range(doc.lineAt(m.from).from));
+    const first = ex?.spans[0];
+    if (first && first.from <= doc.length) ranges.push(new ExecutingMarker().range(doc.lineAt(first.from).from));
     return RangeSet.of(ranges, true);
   },
 });
@@ -233,20 +317,59 @@ export function markOutcomes(view: EditorView, outcomes: readonly DbStatementOut
     }));
   const failed = outcomes.find((o) => o.error);
   const name = failed ? (sourceById(consoleSource(view.state.facet(consolePath)))?.name ?? "") : "";
-  view.dispatch({ effects: setRun.of({ marks, banner: failed ? `[${name}] ${failed.error}` : null }) });
+  view.dispatch({
+    effects: setRun.of({ ...view.state.field(runField), marks, banner: failed ? `[${name}] ${failed.error}` : null }),
+  });
+}
+
+let nextExecution = 0;
+
+/** `outcomes` at where their statements are now, when the text was edited while they ran. */
+function placed(
+  executing: Executing | null,
+  token: number,
+  outcomes: readonly DbStatementOutcome[],
+): readonly DbStatementOutcome[] {
+  if (executing?.token !== token) return outcomes;
+  return outcomes.map((o) => {
+    const i = executing.sent.findIndex((r) => r.from === o.statement.from && r.to === o.statement.to);
+    const now = executing.spans[i];
+    return now ? { ...o, statement: { ...o.statement, from: now.from, to: now.to } } : o;
+  });
+}
+
+/** Runs `from`–`to` of `view`, showing the submitted statements as executing until the request ends. */
+async function executeRange(view: EditorView, path: string, from: number, to: number) {
+  const token = ++nextExecution;
+  const sent = view.state.doc;
+  const start = (statements: readonly SqlStatement[]) => {
+    // The offsets are into the text sent; an edit since (while asking for parameters) leaves them unplaced.
+    if (view.state.doc !== sent) return;
+    const spans = statements.map((st) => ({ from: st.from, to: st.to }));
+    const last = spans.at(-1);
+    if (!last) return;
+    const at = view.state.sliceDoc(last.to, last.to + 1) === ";" ? last.to + 1 : last.to;
+    const executing = { token, sent: spans, spans, at, startedAt: Date.now() };
+    view.dispatch({ effects: setRun.of({ ...view.state.field(runField), executing }) });
+  };
+  try {
+    const outcomes = await executeConsole(path, sent.toString(), from, to, start);
+    if (outcomes.length) markOutcomes(view, placed(view.state.field(runField).executing, token, outcomes));
+  } finally {
+    const st = view.state.field(runField, false);
+    if (st?.executing?.token === token) view.dispatch({ effects: setRun.of({ ...st, executing: null }) });
+  }
 }
 
 /** Runs the statement at the caret (or the selected ones) of `view`. */
 export async function executeInView(view: EditorView, path: string) {
   const sel = view.state.selection.main;
-  const outcomes = await executeConsole(path, view.state.doc.toString(), sel.from, sel.to);
-  if (outcomes.length) markOutcomes(view, outcomes);
+  await executeRange(view, path, sel.from, sel.to);
 }
 
 /** Runs every statement of `view`, in order (stops at the first that fails). */
 export async function executeScriptInView(view: EditorView, path: string) {
-  const outcomes = await executeConsole(path, view.state.doc.toString(), 0, view.state.doc.length);
-  if (outcomes.length) markOutcomes(view, outcomes);
+  await executeRange(view, path, 0, view.state.doc.length);
 }
 
 /** Explain Plan of the statement at the caret (or the first selected one) of `view`. */
@@ -472,63 +595,49 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const maxRows = useDatabase((s) => s.maxRows);
   const manual = useDatabase((s) => !!bound && s.manualCommit.has(bound));
   const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
-  const databases = useDatabase((s) => s.databases);
   const inEditor = useProject((s) => inEditorResults(s.settings));
   // SQL resolution scopes in the settings can move the console to another data source.
   useProject((s) => s.settings);
   const boundId = bound ? splitTarget(bound).id : null;
-  const jdbc = sourceById(boundId)?.driver === "jdbc";
-  const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse" && !jdbc;
-  const sqlServer = sourceById(boundId)?.driver === "sqlServer";
-  const switchable = schemaSwitchable(sourceById(boundId)?.driver);
+  const driver = sources.find((s) => s.id === boundId)?.driver;
+  const jdbc = driver === "jdbc";
+  const supportsTransactions = driver !== "clickhouse" && !jdbc;
+  const switchable = schemaSwitchable(driver);
   // The console's active schema: its pick, else the connection's default (`completion.defaultSchema`).
   const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
   const defaultSchema = useDatabase((s) => (bound ? s.completion[bound]?.defaultSchema : undefined));
   const schemaList = useDatabase((s) => (bound ? s.schemas[bound] : undefined));
   const schema = activeSchema(pickedSchema, defaultSchema);
   useEffect(() => {
-    if (boundId && (sqlServer || listsDatabases(sourceById(boundId))) && !useDatabase.getState().databases[boundId])
+    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
       void loadDatabases(boundId);
-  }, [boundId, sqlServer]);
+  }, [boundId]);
+  // Loads the list again after a refresh drops it.
+  const schemasMissing = !schemaList;
   useEffect(() => {
-    if (bound && switchable && !sqlServer && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
-  }, [bound, switchable, sqlServer]);
+    if (bound && switchable && schemasMissing) void loadSchemas(bound);
+  }, [bound, switchable, schemasMissing]);
   const schemaOptions = useMemo(() => {
     if (!switchable) return [];
-    const databaseList = boundId ? databases[boundId] : undefined;
-    const names = sqlServer
-      ? databaseList?.status === "ok"
-        ? databaseList.value.names
-        : []
-      : schemaList?.status === "ok"
-        ? schemaList.value
-        : [];
-    const out = names.map((n) => ({ value: n, label: n }));
+    const names = schemaList?.status === "ok" ? schemaList.value : [];
+    const out = names.map((n) => ({ value: n, label: n, icon: "db-schema" }));
     // The connection's default is offered even before its schema list loads.
-    if (defaultSchema && !names.includes(defaultSchema)) out.unshift({ value: defaultSchema, label: defaultSchema });
+    if (defaultSchema && !names.includes(defaultSchema))
+      out.unshift({ value: defaultSchema, label: defaultSchema, icon: "db-schema" });
     return out;
-  }, [switchable, schemaList, defaultSchema, sqlServer, boundId, databases]);
-  const targets = useMemo(() => {
-    const out: Array<{ value: string; label: string; detail?: string; icon: string }> = [];
-    for (const s of sources) {
-      const id = s.id ?? "";
-      const dbs = databases[id];
-      const host = sourceLabel(s).slice((s.name ?? "").length + 1);
-      if (listsDatabases(s) && dbs?.status === "ok") {
-        for (const name of dbs.value.names)
-          out.push({
-            value: targetOf(id, name, dbs.value.current),
-            label: `${s.name ?? ""}: ${name}`,
-            detail: host,
-            icon: "database",
-          });
-      } else out.push({ value: id, label: s.name ?? "", detail: host, icon: "db-schema" });
-    }
-    // A console bound to a database whose list is not loaded yet still shows it.
-    if (bound && !out.some((o) => o.value === bound))
-      out.push({ value: bound, label: targetLabel(bound), icon: "database" });
-    return out;
-  }, [sources, databases, bound]);
+  }, [switchable, schemaList, defaultSchema]);
+  // IDEA's order: pick the data source, then a database and a schema in it.
+  const sourceOptions = useMemo(
+    () =>
+      sources.map((s) => ({
+        value: s.id ?? "",
+        label: s.name ?? "",
+        verbatim: true,
+        detail: sourceLabel(s).slice((s.name ?? "").length + 1),
+        icon: sourceIcon(s),
+      })),
+    [sources],
+  );
   useEffect(() => {
     if (!loaded) void loadSources();
   }, [loaded]);
@@ -536,7 +645,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
     if (bound) void loadCompletion(bound);
   }, [bound]);
   return (
-    <div className={styles.consoleBar}>
+    <Toolbar className={styles.consoleBar} aria-label="Query Console">
       <IconButton
         icon="run"
         title="Execute"
@@ -550,6 +659,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         disabled={!bound || running}
         onClick={() => void executeScriptInView(view, path)}
       />
+      <span className={styles.toolbarSeparator} />
+      <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
       {!jdbc && (
         <IconButton
           icon="db-plan"
@@ -559,42 +670,24 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         />
       )}
       <IconButton
-        icon="stop"
-        title="Cancel Running Statement"
-        disabled={!running}
-        onClick={() => cancelConsole(path)}
-      />
-      <span className={styles.toolbarSeparator} />
-      <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
-      <IconButton
         icon="db-in-editor-results"
         title="In-Editor Results"
         aria-pressed={inEditor}
         onClick={() => void setInEditorResults(!inEditor)}
       />
       <span className={styles.toolbarSeparator} />
-      <Select
-        variant="ghost"
-        aria-label="Row limit"
-        value={String(maxRows)}
-        options={ROW_LIMITS.map((v) => ({ value: v, label: tx`${Number(v).toLocaleString("en")} rows` }))}
-        onChange={(v) => useDatabase.setState({ maxRows: Number(v) })}
-      />
       {supportsTransactions && (
-        <>
-          <span className={styles.toolbarSeparator} />
-          <Select
-            variant="ghost"
-            aria-label="Transaction mode"
-            value={manual ? "manual" : "auto"}
-            options={[
-              { value: "auto", label: "Tx: Auto" },
-              { value: "manual", label: "Tx: Manual" },
-            ]}
-            onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
-            disabled={!bound}
-          />
-        </>
+        <Select
+          variant="ghost"
+          aria-label="Transaction mode"
+          value={manual ? "manual" : "auto"}
+          options={[
+            { value: "auto", label: "Tx: Auto" },
+            { value: "manual", label: "Tx: Manual" },
+          ]}
+          onChange={(v) => bound && void setManualCommit(bound, v === "manual")}
+          disabled={!bound}
+        />
       )}
       {supportsTransactions && manual && (
         <>
@@ -612,30 +705,134 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
           />
         </>
       )}
+      <IconButton
+        icon="stop"
+        title="Cancel Running Statement"
+        disabled={!running}
+        onClick={() => cancelConsole(path)}
+      />
+      <span className={styles.toolbarSeparator} />
+      <Select
+        variant="ghost"
+        aria-label="Row limit"
+        value={String(maxRows)}
+        options={ROW_LIMITS.map((v) => ({ value: v, label: tx`${Number(v).toLocaleString("en")} rows` }))}
+        onChange={(v) => useDatabase.setState({ maxRows: Number(v) })}
+      />
       <span className={styles.spacer} />
-      {bound && sourceById(boundId)?.driver === "snowflake" && <SnowflakeSession target={bound} idle={!running} />}
-      {switchable && (
-        <Select
-          variant="ghost"
-          aria-label={sqlServer ? "Database" : "Schema"}
-          value={schema || null}
-          placeholder="<schema>"
-          options={schemaOptions}
-          searchable={schemaOptions.length > 10}
-          onChange={(v) => setConsoleSchema(path, v)}
-          disabled={!bound}
-        />
-      )}
+      {bound && driver === "snowflake" && <SnowflakeSession target={bound} idle={!running} />}
       <Select
         variant="ghost"
         aria-label="Data source"
-        value={bound ?? null}
+        value={boundId}
         placeholder={sources.length ? "<data source>" : "None configured"}
-        options={targets}
-        onChange={(id) => bindConsole(path, id)}
+        options={sourceOptions}
+        searchable
+        onChange={(id) => id !== boundId && bindConsole(path, id)}
         disabled={!sources.length}
       />
-    </div>
+      {bound && boundId && switchable && listsDatabases(sourceById(boundId)) ? (
+        <DatabaseSchemaSwitcher path={path} bound={bound} sourceId={boundId} schema={schema} />
+      ) : (
+        switchable && (
+          <Select
+            variant="ghost"
+            aria-label="Schema"
+            value={schema || null}
+            placeholder="<schema>"
+            options={schemaOptions}
+            searchable
+            onChange={(v) => setConsoleSchema(path, v)}
+            disabled={!bound}
+          />
+        )
+      )}
+      {driver === "sqlite" && (
+        <span className={styles.consoleSchema} title={tx("Schema")}>
+          <Icon name="db-schema" size={14} />
+          {schema || "main"}
+        </span>
+      )}
+    </Toolbar>
+  );
+}
+
+/**
+ * The `database.schema` switcher of a data source that shows several databases (IDEA's): a tree of
+ * its databases, expanding to their schemas. Choosing a schema in another database moves the console there.
+ */
+function DatabaseSchemaSwitcher({
+  path,
+  bound,
+  sourceId,
+  schema,
+}: {
+  path: string;
+  bound: string;
+  sourceId: string;
+  schema: string;
+}) {
+  const listed = useDatabase((s) => s.databases[sourceId]);
+  const schemas = useDatabase((s) => s.schemas);
+  const read = useDatabase((s) => s.catalogs[sourceId]?.databases);
+  const current = listed?.status === "ok" ? listed.value.current : null;
+  const database = splitTarget(bound).database ?? current;
+  // The console's database starts expanded, again whenever the console moves to another one.
+  const [opened, setOpened] = useState<{ at: string | null; open: ReadonlySet<string> } | null>(null);
+  const expanded = useMemo(
+    () => (opened && opened.at === database ? opened.open : new Set(database ? [database] : [])),
+    [opened, database],
+  );
+  const targetFor = (name: string) => (name === database ? bound : targetOf(sourceId, name, current));
+  // Schemas of expanded databases that are not read yet, or were dropped by a refresh.
+  const missing = [...expanded]
+    .filter((name) => !read?.[name] && !schemas[targetFor(name)])
+    .map(targetFor)
+    .join("\n");
+  useEffect(() => {
+    for (const target of missing ? missing.split("\n") : []) void loadSchemas(target);
+  }, [missing]);
+  const rows = useMemo(() => {
+    const names = listed?.status === "ok" ? [...listed.value.names] : [];
+    // The console's database is offered even before the list loads.
+    if (database && !names.includes(database)) names.unshift(database);
+    return schemaTreeRows(names, expanded, (name) => {
+      const target = name === database ? bound : targetOf(sourceId, name, current);
+      const list = schemas[target];
+      if (list?.status === "ok") return list.value;
+      if (read?.[name]) return read[name].map((s) => s.name);
+      return list?.status === "error" ? { error: list.message } : undefined;
+    });
+  }, [listed, database, expanded, schemas, read, bound, sourceId, current]);
+  const value = database && schema ? schemaTreeValue(database, schema) : null;
+  return (
+    <Select
+      variant="ghost"
+      aria-label="Database and schema"
+      value={value}
+      placeholder="<schema>"
+      options={rows}
+      searchable
+      renderValue={() => (database ? (schema ? `${database}.${schema}` : database) : tx("<schema>"))}
+      keepOpen={(v) => parseSchemaTreeValue(v).schema === null}
+      onChange={(v) => {
+        const pick = parseSchemaTreeValue(v);
+        if (pick.schema === null) {
+          const next = new Set(expanded);
+          if (!next.delete(pick.database)) {
+            next.add(pick.database);
+            // Expanding again retries a database whose schemas could not be read.
+            const target = targetFor(pick.database);
+            if (useDatabase.getState().schemas[target]?.status === "error") void loadSchemas(target);
+          }
+          setOpened({ at: database, open: next });
+          return;
+        }
+        const target = targetFor(pick.database);
+        if (target !== bound) bindConsole(path, target);
+        setConsoleSchema(path, pick.schema);
+      }}
+    />
   );
 }
 

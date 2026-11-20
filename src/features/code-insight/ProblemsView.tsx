@@ -22,6 +22,7 @@ import {
   SplitHandle,
   SplitPanel,
   Tabs,
+  Toolbar,
   Tree,
   fileIconName,
   showContextMenu,
@@ -213,11 +214,11 @@ function useCurrentPath(): string | null {
   return currentProblemsPath(text, useSyncExternalStore(subscribeActiveInput, activeInput));
 }
 
-export function ProblemsHeaderActions() {
+function ProblemsToolbar() {
   const show = useProblemsView((s) => s.show);
   const toggle = useProblemsView((s) => s.toggle);
   return (
-    <>
+    <Toolbar aria-label="Problems actions" orientation="vertical" className={styles.toolbar}>
       <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" />
       <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" />
       <IconButton icon="error" title="Show Errors" size="small" pressed={show.error} onClick={() => toggle("error")} />
@@ -235,7 +236,7 @@ export function ProblemsHeaderActions() {
         pressed={show.info}
         onClick={() => toggle("info")}
       />
-    </>
+    </Toolbar>
   );
 }
 
@@ -337,33 +338,44 @@ export function ProblemsView() {
 
   const renderNode = (n: Node, state: TreeRowState) => {
     if (n.kind === "file") {
+      const name = basename(n.path);
+      const directory = relativeDir(root, n.path);
       const c = countSeverities(n.items);
-      const parts = [plural(c.error, "error"), plural(c.warning, "warning"), plural(c.info + c.hint, "info")].filter(
-        Boolean,
-      );
+      const counts = [plural(c.error, "error"), plural(c.warning, "warning"), plural(c.info + c.hint, "info")]
+        .filter(Boolean)
+        .join(", ");
       return (
         <span className={styles.row}>
-          <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
-          <span
-            className={clsx(styles.fileName, c.error > 0 && styles.fileError, state.selected && styles.selectedText)}
-          >
-            {basename(n.path)}
+          <Icon name={fileIconName(name, n.path)} size={16} className={styles.fileIcon} />
+          <span className={styles.fileLocation}>
+            <span
+              className={clsx(styles.fileName, c.error > 0 && styles.fileError, state.selected && styles.selectedText)}
+              title={name}
+            >
+              {name}
+            </span>
+            {directory && (
+              <span className={styles.directory} title={directory}>
+                {directory}
+              </span>
+            )}
           </span>
-          <span className={styles.muted}>{relativeDir(root, n.path)}</span>
-          <span className={styles.count}>{parts.join(", ")}</span>
+          <span className={styles.count} title={counts}>
+            {counts}
+          </span>
         </span>
       );
     }
     const d = n.d;
+    const source = d.source && (d.code ? `${d.source}(${d.code})` : d.source);
     return (
       <span className={styles.row} title={d.message}>
         <Icon name={SEVERITY_ICON[d.severity]} size={14} className={styles[`sev-${d.severity}`]} />
         <span className={clsx(styles.message, d.deprecated && styles.deprecated)}>{d.message.split("\n")[0]}</span>
         <span className={styles.position}>:{d.range.start.line + 1}</span>
-        {d.source && (
-          <span className={styles.source}>
-            {d.source}
-            {d.code ? `(${d.code})` : ""}
+        {source && (
+          <span className={styles.source} title={source}>
+            {source}
           </span>
         )}
       </span>
@@ -378,9 +390,10 @@ export function ProblemsView() {
     );
 
   const selected = target(lead);
-  const list = (
+  const treeView = (
     <Tree<Node>
       aria-label="Problems"
+      className={styles.tree}
       handleRef={tree}
       roots={roots}
       getKey={(n) => n.key}
@@ -428,13 +441,23 @@ export function ProblemsView() {
             run: () => copy(n),
           },
           ...inspectionMenu(n.kind === "diag" ? diagInspection(map, n.path, n.d) : null),
-          ...menuGroupItems("problems", { paths: [t.path], line: t.d.range.start.line, column: t.d.range.start.col }),
+          ...menuGroupItems("problems", {
+            paths: [t.path],
+            line: t.d.range.start.line,
+            column: t.d.range.start.col,
+          }),
         ]);
       }}
       activateExpandable={false}
       multiSelect={false}
       empty={empty}
     />
+  );
+  const list = (
+    <div className={styles.results}>
+      <ProblemsToolbar />
+      {treeView}
+    </div>
   );
 
   return (

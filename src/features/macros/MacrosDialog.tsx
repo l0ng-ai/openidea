@@ -86,7 +86,6 @@ function EditMacrosDialog({ onClose }: { onClose: () => void }) {
             getKey={(m) => m.name}
             activeIndex={Math.min(active, saved.length - 1)}
             onActiveChange={setActive}
-            rowHeight={24}
             className={styles.list}
             aria-label="Macros"
             empty={

@@ -29,7 +29,7 @@ describe("TodoView", () => {
     render(<TodoView />);
     expect(screen.getByText("a.ts")).toBeInTheDocument();
     expect(screen.getByText("2 items")).toBeInTheDocument();
-    expect(screen.getByText("(5, 4)")).toBeInTheDocument();
+    expect(screen.getByText("5")).toHaveAttribute("title", "(5, 4)");
     expect(screen.getByText(": wire it")).toBeInTheDocument();
     act(() => useTodoView.getState().toggleKeyword("FIXME"));
     expect(screen.getByText("1 item")).toBeInTheDocument();
@@ -135,7 +135,7 @@ describe("TodoView", () => {
     render(<TodoView />);
     // Select the file group so the preview has an item (trees select on mousedown).
     fireEvent.mouseDown(screen.getByText("a.ts").closest("[role=treeitem]")!);
-    await screen.findByText("(5, 4)");
+    await screen.findByText("5");
     // No editing switch: the preview is simply an editor, like IntelliJ's.
     expect(screen.queryByLabelText("Allow editing")).toBeNull();
     // No document attacher in tests: the editable pane degrades to its error

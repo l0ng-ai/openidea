@@ -199,6 +199,21 @@
   align-items: center;
   gap: var(--space-2);
 }
+.reformatSubject {
+  overflow-wrap: anywhere;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.reformatMask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.reformatMaskInput {
+  flex: 1 1 12ch;
+  min-width: 0;
+}
 .languageSelect {
   min-width: 180px;
 }

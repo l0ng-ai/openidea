@@ -781,6 +781,13 @@ impl ProcessManager {
         self.runs.lock().values().map(|e| e.info()).collect()
     }
 
+    /// The runs started for the project at `root` (that root exactly) that have not exited.
+    pub fn running_in(&self, root: &Path) -> Vec<RunInfo> {
+        let runs = self.runs.lock();
+        let live = runs.values().filter(|e| e.project_root == root && !e.exited.load(Ordering::Acquire));
+        live.map(|e| e.info()).collect()
+    }
+
     /// Kills every running process tree at once (shutting down).
     pub fn kill_project(&self, root: &Path) {
         for entry in self.runs.lock().values().filter(|e| e.project_root == root) {

@@ -13,13 +13,15 @@
 }
 /* Islands tabs: the selected tab is a rounded pill (tab-selected-bg / -border); no underline, no separators. */
 .editor {
+  --tab-inline-padding: var(--space-2);
   height: var(--h-header);
+  font-size: var(--fs-chrome);
   padding: 0 4px;
 }
 .compact {
   /* Shrinks inside tool window headers so the overflow dropdown can take over. */
   flex: 0 1 auto;
-  height: 28px;
+  height: var(--h-tab);
 }
 .scroller {
   display: flex;
@@ -40,7 +42,7 @@
   align-items: stretch;
   height: calc(100% - 6px);
   min-height: 22px;
-  max-height: 28px;
+  max-height: var(--h-tab);
   border-radius: var(--radius-tab, 6px);
   color: var(--fg-strong);
   transition:
@@ -76,7 +78,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  padding: 0 10px;
+  padding: 0 var(--tab-inline-padding, 10px);
   border-radius: inherit;
   white-space: nowrap;
   color: inherit;
@@ -207,6 +209,12 @@
 .wrap .tab {
   height: calc(var(--h-header) - 6px);
 }
+.editor.wrap .tab {
+  max-inline-size: 100%;
+}
+.editor.wrap .tabButton {
+  min-inline-size: 0;
+}
 
 /* Vertical strip (editor tabs placed left / right): a scrolling column of full-width tabs. */
 .vertical {
@@ -266,7 +274,38 @@
   margin: 0 0 0 4px;
 }
 .closeLeft .closable .tabButton {
-  padding: 0 10px 0 2px;
+  padding: 0 var(--tab-inline-padding, 10px) 0 2px;
+}
+
+/* Editor tabs in a row sit 4px apart; wrapped rows keep their row gap. */
+.editor:not(.vertical) .scroller {
+  column-gap: var(--space-1);
+}
+/* Every closable tab keeps a close slot at one edge (IDEA), cut to what the close glyph needs: 18px, a 2px
+   inset and the 16px button. The label side keeps the 8px inset, so the side doesn't change a tab's width. */
+.editor:not(.vertical) .closeSlot {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  width: auto;
+  margin: 0;
+}
+.editor:not(.vertical) .close {
+  width: 16px;
+}
+.editor:not(.vertical) .closeSlot .modified {
+  left: 5px;
+}
+.editor:not(.vertical, .closeLeft) .closable .tabButton {
+  padding-right: 18px;
+}
+.editor.closeLeft:not(.vertical) .closeSlot {
+  right: auto;
+  left: 2px;
+}
+.editor.closeLeft:not(.vertical) .closable .tabButton {
+  padding-left: 18px;
 }
 
 /* drag & drop: the dragged tab is an empty slot the other tabs make room for (IDEA) */

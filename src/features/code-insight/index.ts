@@ -15,7 +15,7 @@ import {
 import { getContext } from "@/platform/context";
 import { clearProblems, installProblemsEvents, problemsReport, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
-import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
+import { ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
 import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
 import { UsagesPopup } from "./UsagesPopup";
 import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsagesPopup } from "./usages";
@@ -79,7 +79,6 @@ export function activate(): () => void {
       order: 30,
       component: ProblemsView,
       headerContent: ProblemsTabs,
-      headerActions: ProblemsHeaderActions,
       headerMenu: useProblemsHeaderMenu,
       useBadge: useErrorBadge,
     }),

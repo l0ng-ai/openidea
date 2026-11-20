@@ -19,6 +19,33 @@ async function openChain(page: Page) {
   return toolbar;
 }
 
+test("a narrow diff keeps navigation, settings and the difference count visible", async ({ workbench: page }) => {
+  const toolbar = await openChain(page);
+  await page.setViewportSize({ width: 400, height: 600 });
+  const clipped = await toolbar.evaluate((bar) => {
+    const bounds = bar.getBoundingClientRect();
+    const items = [...bar.querySelectorAll("button, span")].filter(
+      (el) => el.matches("button") || el.textContent === "1 difference",
+    );
+    return items.flatMap((el) => {
+      const box = el.getBoundingClientRect();
+      if (el.matches("button") && !box.width) return [];
+      return !box.width ||
+        box.right > bounds.right + 1 ||
+        box.bottom > bounds.bottom + 1 ||
+        el.scrollWidth > el.clientWidth + 1
+        ? [el.getAttribute("aria-label") || el.textContent]
+        : [];
+    });
+  });
+  expect(clipped).toEqual([]);
+  await toolbar.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("menuitemcheckbox", { name: "Unified Viewer", exact: true }).click();
+  await expect(toolbar.locator("..").locator(".cm-editor")).toHaveCount(1);
+  await toolbar.getByRole("button", { name: "Next Difference", exact: true }).click();
+  await expect(toolbar).toContainText("1 of 1 differences");
+});
+
 test("maximizes a diff preview tab and restores its previous layout", async ({ workbench: page }) => {
   const toolbar = await openChain(page);
   const viewer = toolbar.locator("..");

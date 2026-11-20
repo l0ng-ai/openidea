@@ -99,6 +99,9 @@ impl AppState {
             runtime: tauri::async_runtime::handle().inner().clone(),
             project_environment: false,
         }));
+        let announce = global_sink.clone();
+        host.set_background_projects_observer(Arc::new(move || announce.emit(IdeEvent::McpBackgroundProjectsChanged)));
+        host.start_background_sweeper();
         Ok(Self {
             recent: RecentProjects::load(&config_dir),
             updates: Default::default(),
@@ -140,10 +143,11 @@ impl AppState {
 
     /// Opens `root` in `window` and records it in the recent projects.
     pub fn open_project(&self, window: &str, root: &Path) -> IdeResult<Arc<Project>> {
-        // A local project replaces a remote one in this window.
-        self.remote_dev.disconnect(window);
         let project = self.host.open_project(window, root)?;
         self.record_project(&project)?;
+        // Drop the remote connection only once the local project is actually open.
+        // A failed open leaves the window on the host it is still routing to.
+        self.remote_dev.disconnect(window);
         Ok(project)
     }
 
@@ -163,14 +167,16 @@ impl AppState {
 
     /// Opens `window` for editing the loose file `file` (LightEdit); not a recent project.
     pub fn open_light(&self, window: &str, file: &Path) -> IdeResult<Arc<Project>> {
+        let project = self.host.open_light(window, file)?;
         self.remote_dev.disconnect(window);
-        self.host.open_light(window, file)
+        Ok(project)
     }
 
     /// LightEdit without a file (File › New File from a welcome window).
     pub fn open_light_empty(&self, window: &str) -> IdeResult<Arc<Project>> {
+        let project = self.host.open_light_empty(window)?;
         self.remote_dev.disconnect(window);
-        self.host.open_light_empty(window)
+        Ok(project)
     }
 
     /// Called on the event-loop thread (window destruction, the `close_project`

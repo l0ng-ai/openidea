@@ -176,6 +176,8 @@ pub struct CommitSettings {
     pub agent_model: String,
     /// That model's thinking level for commit messages; empty keeps the agent's.
     pub agent_effort: String,
+    /// Show the Generate Commit Message with Agent button above the commit message.
+    pub agent_button: bool,
 }
 
 impl Default for CommitSettings {
@@ -201,6 +203,7 @@ impl Default for CommitSettings {
             agent: String::new(),
             agent_model: String::new(),
             agent_effort: String::new(),
+            agent_button: true,
         }
     }
 }
@@ -315,6 +318,23 @@ pub struct SqlResolutionScope {
     pub data_source: String,
     /// Schema unqualified names resolve in; empty for the data source's default.
     pub schema: String,
+}
+
+/// Build, Execution, Deployment › Compiler (Build tool window behaviour).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BuildSettings {
+    /// When to open the Build tool window: `always` | `onError` | `never`.
+    pub open_tool_window: String,
+    /// When to focus the Build tool window: `always` | `onError` | `never`.
+    pub focus_tool_window: String,
+}
+
+impl Default for BuildSettings {
+    fn default() -> Self {
+        // Builds open the tool window without taking focus.
+        Self { open_tool_window: "always".into(), focus_tool_window: "never".into() }
+    }
 }
 
 /// Build, Execution, Deployment › Console.

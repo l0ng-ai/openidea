@@ -24,7 +24,10 @@ describe("the Breakpoints dialog", () => {
   });
 
   const dialog = () => screen.getByRole("dialog", { name: "Breakpoints" });
-  const row = (name: string) => within(within(dialog()).getByLabelText("All breakpoints")).getByText(name);
+  const row = (location: string) =>
+    within(within(dialog()).getByRole("listbox", { name: "All breakpoints" })).getByRole("option", {
+      name: (name) => name.includes(`Enable breakpoint at ${location}`),
+    });
   const condition = () => within(dialog()).getByLabelText("Condition") as HTMLInputElement;
   /** A row's mouse click as the list sees it: mousedown selects, click (with its count) activates. */
   const clickRow = (name: string, detail: number) => {
@@ -37,8 +40,8 @@ describe("the Breakpoints dialog", () => {
     render(<DebuggerOverlays />);
     clickRow("main.py:7", 1);
     expect(openFile).not.toHaveBeenCalled();
-    // Its details show beside the list.
-    expect(within(dialog()).getAllByText("main.py:7")).toHaveLength(2);
+    expect(row("main.py:7").getAttribute("aria-selected")).toBe("true");
+    expect(condition().value).toBe("");
     clickRow("main.py:3", 2);
     expect(openFile).toHaveBeenCalledWith(path, { selection: { line: 2, col: 0 } });
   });

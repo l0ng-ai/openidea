@@ -79,7 +79,7 @@ use server::{Conn, Running, Server};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 use text::{DocText, Encoding};
 use types::*;
@@ -87,6 +87,21 @@ use types::*;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 const LONG_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn did_change_content(
+    sync: SyncKind,
+    in_sync: bool,
+    key: u8,
+    events: &HashMap<u8, Vec<Value>>,
+    full: &OnceLock<Value>,
+    text: &str,
+) -> Value {
+    if !in_sync || sync == SyncKind::Full {
+        full.get_or_init(|| json!([{ "text": text }])).clone()
+    } else {
+        Value::Array(events.get(&key).cloned().unwrap_or_default())
+    }
+}
 
 /// How long a server may take to answer `initialize`. Some import the whole
 /// build there (kotlin-lsp, jdtls on a large Gradle project) and need minutes
@@ -1366,18 +1381,14 @@ impl LspManager {
             tracing::warn!("lsp text copy of {} out of sync; resending full text", d.path.display());
             text.set(&full_text());
         }
-        let full = json!([{ "text": text.as_str() }]);
+        let full = OnceLock::new();
         for (server, run, sync, enc) in targets {
             let key = match enc {
                 Encoding::Utf8 => 8,
                 Encoding::Utf16 => 16,
                 Encoding::Utf32 => 32,
             };
-            let content = if !in_sync || sync == SyncKind::Full {
-                full.clone()
-            } else {
-                Value::Array(events.get(&key).cloned().unwrap_or_default())
-            };
+            let content = did_change_content(sync, in_sync, key, &events, &full, text.as_str());
             let params = json!({
                 "textDocument": { "uri": d.uri, "version": d.version },
                 "contentChanges": content,
@@ -4375,6 +4386,56 @@ mod code_action_tests {
         assert!(!source_actions_only(&kinds(&["quickfix"])));
         assert!(!source_actions_only(&kinds(&["source.organizeImports", "refactor"])));
         assert!(!source_actions_only(&kinds(&["sourcefoo"])));
+    }
+}
+
+#[cfg(test)]
+mod did_change_content_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_content_does_not_build_the_full_document() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::from([(
+            key,
+            vec![json!({
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "text": "x"
+            })],
+        )]);
+
+        let content = did_change_content(SyncKind::Incremental, true, key, &events, &full, "1 MB document");
+
+        assert_eq!(content, Value::Array(events[&key].clone()));
+        assert!(full.get().is_none(), "incremental sync must not materialize the full document");
+    }
+
+    #[test]
+    fn full_sync_reuses_the_full_document_payload() {
+        let full = OnceLock::new();
+        let key = 16;
+        let events = HashMap::new();
+
+        let first = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+        let second = did_change_content(SyncKind::Full, true, key, &events, &full, "whole document");
+
+        assert_eq!(first, json!([{ "text": "whole document" }]));
+        assert_eq!(second, first);
+        assert!(full.get().is_some());
+    }
+
+    #[test]
+    fn out_of_sync_incremental_change_sends_the_full_document() {
+        let full = OnceLock::new();
+        let events = HashMap::new();
+
+        let content = did_change_content(SyncKind::Incremental, false, 16, &events, &full, "whole document");
+
+        assert_eq!(content, json!([{ "text": "whole document" }]));
     }
 }
 

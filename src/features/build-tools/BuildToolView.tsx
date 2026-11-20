@@ -1,6 +1,6 @@
 /** The Maven and Gradle tool windows: toolbar, status banner and the project tree. */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import type { BuildTool, GradleModel, MavenModel, RunConfig } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
@@ -12,6 +12,7 @@ import {
   EmptyState,
   Icon,
   IconButton,
+  Menu,
   Spinner,
   Tree,
   showContextMenu,
@@ -125,25 +126,99 @@ function nodeProject(n: BuildNode): string | undefined {
   return undefined;
 }
 
+type ToolbarItem = Extract<MenuItem, { kind: "action" }> & { icon: string };
+
+function toolbarButton({ action, icon, checked, label }: ToolbarItem) {
+  return <IconButton key={action} action={action} icon={icon} title={label} size="small" pressed={checked} />;
+}
+
+function MoreActions({ items }: { items: MenuItem[] }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <IconButton
+        ref={anchor}
+        className={styles.toolbarMore}
+        icon="more"
+        title="More Actions"
+        size="small"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      />
+      <Menu
+        anchor={anchor}
+        open={open}
+        onClose={() => setOpen(false)}
+        placement="bottom-end"
+        aria-label={tx("More Actions")}
+        items={items}
+      />
+    </>
+  );
+}
+
+// Small buttons, separators, gaps and padding in the full toolbar.
+const FULL_TOOLBAR_WIDTH: Record<BuildTool, number> = { maven: 274, gradle: 230 };
+
 function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] }) {
+  const toolbar = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(false);
   const syncing = useBuild((s) => !!s.syncing[tool]);
-  const settings = useBuild((s) => s.settings);
+  const settings = useBuild((s) => s.settings[tool]);
   const model = useBuild((s) => s.model);
+  useLayoutEffect(() => {
+    const node = toolbar.current;
+    if (!node) return;
+    const measure = () => {
+      if (node.clientWidth > 0) setCompact(node.clientWidth < FULL_TOOLBAR_WIDTH[tool]);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [tool]);
   const config = model && nodeConfig(selection.filter(isRunnable), model);
   const runSelected = () => {
     if (config) runConfig(config, "run");
   };
   const maven = tool === "maven";
+  const projectActions: ToolbarItem[] = [
+    ...(maven ? [{ kind: "action" as const, action: "maven.generateSources", icon: "folder-generated-source" }] : []),
+    { kind: "action", action: maven ? "maven.addProjects" : "gradle.linkProjects", icon: "plus" },
+  ];
+  const buildActions: ToolbarItem[] = [
+    { kind: "action", action: `${tool}.toggleOffline`, icon: "build-offline", checked: settings.offline },
+    { kind: "action", action: `${tool}.analyzeDependencies`, icon: "build-dependencies" },
+    { kind: "action", action: `${tool}.toggleSkipTests`, icon: "skip-tests", checked: settings.skipTests },
+  ];
+  const treeActions: ToolbarItem[] = [
+    { kind: "action", action: `${tool}.expandAll`, icon: "expand-all" },
+    { kind: "action", action: `${tool}.collapseAll`, icon: "collapse-all" },
+    ...(maven
+      ? [{ kind: "action" as const, action: "maven.settings", icon: "settings", label: "Maven Settings…" }]
+      : []),
+  ];
   return (
-    <div className={styles.toolbar} role="toolbar" aria-label={maven ? "Maven actions" : "Gradle actions"}>
+    <div
+      ref={toolbar}
+      className={styles.toolbar}
+      role="toolbar"
+      aria-label={maven ? "Maven actions" : "Gradle actions"}
+    >
       {syncing ? (
         <IconButton icon="stop" size="small" iconSize={16} action={`${tool}.cancelReload`} />
       ) : (
         <IconButton icon="refresh" size="small" iconSize={16} action={`${tool}.reload`} />
       )}
-      {maven && <IconButton icon="folder-generated-source" size="small" iconSize={16} action="maven.generateSources" />}
-      <IconButton icon="plus" size="small" iconSize={16} action={maven ? "maven.addProjects" : "gradle.linkProjects"} />
-      <span className={styles.sep} />
+      {!compact && (
+        <>
+          {projectActions.map(toolbarButton)}
+          <span className={styles.sep} />
+        </>
+      )}
       <IconButton
         icon="run"
         size="small"
@@ -158,31 +233,16 @@ function Toolbar({ tool, selection }: { tool: BuildTool; selection: BuildNode[] 
         iconSize={16}
         action={maven ? "maven.executeGoal" : "gradle.executeTask"}
       />
-      <IconButton
-        icon="build-offline"
-        size="small"
-        iconSize={16}
-        action={`${tool}.toggleOffline`}
-        pressed={maven ? settings.maven.offline : settings.gradle.offline}
-      />
-      <IconButton
-        icon="build-dependencies"
-        size="small"
-        iconSize={16}
-        action={maven ? "maven.analyzeDependencies" : "gradle.analyzeDependencies"}
-      />
-      <IconButton
-        icon="skip-tests"
-        size="small"
-        iconSize={16}
-        action={`${tool}.toggleSkipTests`}
-        pressed={maven ? settings.maven.skipTests : settings.gradle.skipTests}
-      />
-      <span className={styles.sep} />
-      <IconButton icon="expand-all" size="small" iconSize={16} action={`${tool}.expandAll`} />
-      <IconButton icon="collapse-all" size="small" iconSize={16} action={`${tool}.collapseAll`} />
-      {maven && (
-        <IconButton icon="settings" size="small" iconSize={16} action="maven.settings" title="Maven Settings…" />
+      {compact ? (
+        <MoreActions
+          items={[...projectActions, { kind: "separator" }, ...buildActions, { kind: "separator" }, ...treeActions]}
+        />
+      ) : (
+        <>
+          {buildActions.map(toolbarButton)}
+          <span className={styles.sep} />
+          {treeActions.map(toolbarButton)}
+        </>
       )}
     </div>
   );

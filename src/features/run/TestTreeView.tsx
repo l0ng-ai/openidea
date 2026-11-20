@@ -5,9 +5,11 @@ import {
   findOccurrence,
   Icon,
   IconButton,
+  Menu,
   showContextMenu,
   useContextMenuStore,
   Spinner,
+  Toolbar,
   Tree,
   type MenuItem,
   type TreeHandle,
@@ -21,21 +23,28 @@ import { ExportTestResultsDialog } from "./ExportTestResultsDialog";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
-/** Test tree filters, kept across runs and restarts (IDEA hides passed tests by default). */
+/** Test tree filters and sorting, kept across runs and restarts (IDEA hides passed tests by default). */
 const FILTERS_KEY = "openidea.run.testFilters";
 
 interface TestFilters {
   showPassed: boolean;
   showIgnored: boolean;
+  sortAlphabetically: boolean;
+  sortByDuration: boolean;
 }
 
 export function loadTestFilters(): TestFilters {
   try {
     const raw = globalThis.localStorage?.getItem(FILTERS_KEY);
     const v = raw ? (JSON.parse(raw) as Partial<TestFilters>) : {};
-    return { showPassed: v.showPassed === true, showIgnored: v.showIgnored !== false };
+    return {
+      showPassed: v.showPassed === true,
+      showIgnored: v.showIgnored !== false,
+      sortAlphabetically: v.sortAlphabetically === true && v.sortByDuration !== true,
+      sortByDuration: v.sortByDuration === true,
+    };
   } catch {
-    return { showPassed: false, showIgnored: true };
+    return { showPassed: false, showIgnored: true, sortAlphabetically: false, sortByDuration: false };
   }
 }
 
@@ -75,6 +84,41 @@ export function StatusIcon({ status }: { status: TestStatus | null }) {
   }
 }
 
+export function TestStatusBar({
+  results,
+  version,
+  running,
+}: {
+  results: TestResults;
+  version: number;
+  running: boolean;
+}) {
+  const counts = useMemo(() => results.counts(), [results, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  const status = running
+    ? "running"
+    : counts.failed
+      ? "failed"
+      : counts.passed
+        ? "passed"
+        : counts.skipped
+          ? "skipped"
+          : null;
+  const duration = results.summary.durationMs;
+
+  return (
+    <div className={styles.testStatusBar} role="status">
+      <StatusIcon status={status} />
+      <span className={styles.testCounts}>
+        {counts.failed > 0 && <span className={styles.failed}>{tx`${counts.failed} failing`}</span>}
+        {counts.passed > 0 && <span>{tx`${counts.passed} passed`}</span>}
+        {counts.skipped > 0 && <span className={styles.skipped}>{tx`${counts.skipped} ignored`}</span>}
+        {counts.total === 0 && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
+      </span>
+      {duration !== undefined && <span className={styles.testTotalDuration}>{formatDuration(duration)}</span>}
+    </div>
+  );
+}
+
 const isFailedTest = (n: TestNode) => n.children.length === 0 && nodeStatus(n) === "failed";
 
 const treeModel = {
@@ -106,6 +150,17 @@ function filterTree(nodes: readonly TestNode[], keep: (n: TestNode) => boolean):
   return out;
 }
 
+/** IDEA's test tree sorts: by name (ignoring case, numbers by value), or slowest first with untimed nodes last. */
+const names = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const byName = (a: TestNode, b: TestNode) => names.compare(a.name, b.name);
+
+function sortTree(nodes: readonly TestNode[], byDuration: boolean): TestNode[] {
+  const sorted = nodes.map((n) => (n.children.length ? { ...n, children: sortTree(n.children, byDuration) } : n));
+  if (!byDuration) return sorted.sort(byName);
+  const duration = new Map(sorted.map((n) => [n, nodeDuration(n) ?? -1]));
+  return sorted.sort((a, b) => duration.get(b)! - duration.get(a)!);
+}
+
 export interface TestTreeViewProps {
   results: TestResults;
   version: number;
@@ -132,13 +187,20 @@ export function TestTreeView({
   canRunTests,
 }: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
-  const { showPassed, showIgnored } = filters;
+  const { showPassed, showIgnored, sortAlphabetically, sortByDuration } = filters;
   const toggle = (key: keyof TestFilters) =>
     setFilters((f) => {
       const next = { ...f, [key]: !f[key] };
+      // The sorts replace each other, as in IDEA.
+      if (key === "sortAlphabetically" && next.sortAlphabetically) next.sortByDuration = false;
+      if (key === "sortByDuration" && next.sortByDuration) next.sortAlphabetically = false;
       saveTestFilters(next);
       return next;
     });
+  const sortButton = useRef<HTMLButtonElement>(null);
+  const [sortMenu, setSortMenu] = useState(false);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const [moreMenu, setMoreMenu] = useState(false);
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
   const [exporting, setExporting] = useState(false);
   const [selection, setSelection] = useState<Set<string>>(new Set());
@@ -202,11 +264,13 @@ export function TestTreeView({
     }
   };
 
-  const counts = useMemo(() => results.counts(), [results, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Like IDEA, Sort by Duration applies once the run has finished, so rows don't jump while tests report.
+  const byDuration = sortByDuration && !running;
   const roots = useMemo(() => {
     const keep = (n: TestNode) => (showPassed || n.own !== "passed") && (showIgnored || n.own !== "skipped");
-    return showPassed && showIgnored ? [...results.roots] : filterTree(results.roots, keep);
-  }, [results, version, showPassed, showIgnored]); // eslint-disable-line react-hooks/exhaustive-deps
+    const shown = showPassed && showIgnored ? [...results.roots] : filterTree(results.roots, keep);
+    return byDuration || sortAlphabetically ? sortTree(shown, byDuration) : shown;
+  }, [results, version, showPassed, showIgnored, sortAlphabetically, byDuration]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Expand failed suites by default (IDEA reveals failures); the user's toggles win afterwards.
   const effectiveExpanded = useMemo(() => {
@@ -249,21 +313,9 @@ export function TestTreeView({
   const hasPrevFailed = findOccurrence(roots, selected, -1, treeModel) !== null;
   const hasNextFailed = findOccurrence(roots, selected, 1, treeModel) !== null;
 
-  const status = running ? "running" : counts.failed > 0 ? "failed" : counts.total > 0 ? "passed" : null;
-  const duration = results.summary.durationMs;
-
   return (
     <div className={styles.testPane}>
-      <div className={styles.testHeader}>
-        <StatusIcon status={status} />
-        <span className={styles.testCounts}>
-          {counts.failed > 0 && <span className={styles.failed}>{tx`${counts.failed} failing`}</span>}
-          {counts.passed > 0 && <span>{tx`${counts.passed} passed`}</span>}
-          {counts.skipped > 0 && <span className={styles.skipped}>{tx`${counts.skipped} ignored`}</span>}
-          {counts.total === 0 && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
-          {duration !== undefined && <span className={styles.skipped}>{formatDuration(duration)}</span>}
-        </span>
-        <span className={styles.spacer} />
+      <Toolbar className={styles.testToolbar} aria-label="Test results">
         <IconButton
           icon="test-show-passed"
           size="small"
@@ -280,13 +332,30 @@ export function TestTreeView({
           pressed={showIgnored}
           onClick={() => toggle("showIgnored")}
         />
-        <IconButton icon="expand-all" action="run.expandAllTests" size="small" iconSize={16} disabled={!hasSuites} />
         <IconButton
-          icon="collapse-all"
-          action="run.collapseAllTests"
+          ref={sortButton}
+          icon="test-sort"
           size="small"
           iconSize={16}
-          disabled={!hasSuites}
+          title="Sorting Options"
+          aria-haspopup="menu"
+          aria-expanded={sortMenu}
+          pressed={sortAlphabetically || sortByDuration}
+          onClick={() => setSortMenu((v) => !v)}
+        />
+        <Menu
+          open={sortMenu}
+          anchor={sortButton}
+          items={[
+            { label: "Sort Alphabetically", checked: sortAlphabetically, run: () => toggle("sortAlphabetically") },
+            {
+              label: "Sort by Duration",
+              checked: sortByDuration,
+              disabled: running,
+              run: () => toggle("sortByDuration"),
+            },
+          ]}
+          onClose={() => setSortMenu(false)}
         />
         <IconButton
           icon="arrow-up"
@@ -305,14 +374,42 @@ export function TestTreeView({
           disabled={!hasNextFailed}
         />
         <IconButton
-          icon="export"
+          ref={moreButton}
+          icon="more-horizontal"
           size="small"
           iconSize={16}
-          title="Export Test Results…"
-          disabled={!canExport}
-          onClick={() => setExporting(true)}
+          title="More Actions"
+          aria-haspopup="menu"
+          aria-expanded={moreMenu}
+          onClick={() => setMoreMenu((open) => !open)}
         />
-      </div>
+        <Menu
+          open={moreMenu}
+          anchor={moreButton}
+          onClose={() => setMoreMenu(false)}
+          items={[
+            {
+              icon: "expand-all",
+              label: "Expand All",
+              disabled: !hasSuites,
+              run: () => void executeAction("run.expandAllTests"),
+            },
+            {
+              icon: "collapse-all",
+              label: "Collapse All",
+              disabled: !hasSuites,
+              run: () => void executeAction("run.collapseAllTests"),
+            },
+            { kind: "separator" },
+            {
+              icon: "export",
+              label: "Export Test Results…",
+              disabled: !canExport,
+              run: () => setExporting(true),
+            },
+          ]}
+        />
+      </Toolbar>
       {exporting && (
         <ExportTestResultsDialog results={results} name={name} cwd={cwd} onClose={() => setExporting(false)} />
       )}
@@ -344,7 +441,9 @@ export function TestTreeView({
           return (
             <span className={styles.testRow}>
               <StatusIcon status={s} />
-              <span className={clsx(styles.testName, s === "skipped" && styles.skipped)}>{n.name}</span>
+              <span className={clsx(styles.testName, s === "skipped" && styles.skipped)} title={n.name}>
+                {n.name}
+              </span>
               {d !== undefined && <span className={styles.testDuration}>{formatDuration(d)}</span>}
             </span>
           );

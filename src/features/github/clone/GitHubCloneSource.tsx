@@ -18,6 +18,7 @@ import {
 import type { CloneSourceProps } from "@/workbench/contributions";
 import { openInBrowser } from "../data/local";
 import styles from "./GitHubCloneSource.module.css";
+import { useRowHeight } from "@/ui/density";
 
 type Row = { repo: GhAccountRepo; indices: number[] | null };
 
@@ -32,6 +33,7 @@ export function matchRepos(repos: readonly GhAccountRepo[], query: string): Row[
 }
 
 export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSourceProps) {
+  const rowHeight = useRowHeight(26);
   const [state, setState] = useState<GhAccountRepos | null>(null);
   const [query, setQuery] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -140,7 +142,7 @@ export function GitHubCloneSource({ url, onUrl, onClone, disabled }: CloneSource
           activeIndex={active}
           onActiveChange={pick}
           focusable={false}
-          rowHeight={26}
+          rowHeight={rowHeight}
           empty={
             <span className={styles.muted}>
               <T>{state.repos.length ? "No matching repositories" : "No repositories"}</T>

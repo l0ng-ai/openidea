@@ -276,6 +276,34 @@ impl PluginHost {
         }
         out
     }
+    /// Optional API 1.14 hover actions. Only plugins declaring the
+    /// `hover-actions` provider kind are asked; the released language-features
+    /// export remains unchanged.
+    pub fn language_hover_actions(&self, doc: &ProviderDocument) -> Vec<(String, HoverAction)> {
+        let mut out = Vec::new();
+        for (d, _bounds) in self.feature_documents(doc, None) {
+            let snapshot = d.clone();
+            let text = ide_text::Document::new(&snapshot.text);
+            let d = Arc::new(d);
+            let results = self
+                .document_calls(ProviderKind::HoverActions, &snapshot, move |rt, t| rt.language_hover_actions(&d, t));
+            for (p, items) in results {
+                let commands: std::collections::HashSet<_> =
+                    self.ui.items(super::COMMANDS, Some(p.id())).into_iter().map(|c| c.key).collect();
+                for i in items {
+                    let lines = text.line_count();
+                    let anchor_ok = i.line < lines;
+                    let range_ok = i.start_line <= i.end_line && i.end_line < lines;
+                    let contains_anchor = i.start_line <= i.line && i.line <= i.end_line;
+                    if anchor_ok && range_ok && contains_anchor && commands.contains(&i.command) {
+                        out.push((p.id().to_owned(), i));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn language_gutter_actions(&self, doc: &ProviderDocument) -> Vec<(String, GutterAction)> {
         let mut out = Vec::new();
         for (d, bounds) in self.feature_documents(doc, None) {

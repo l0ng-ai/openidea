@@ -225,6 +225,13 @@ A declared item shows before the code runs. From code:
 - `host::set_window_status_item(id, item)` (API 1.4) overrides it in the invoking window
   only; `remove_window_status_item(id)` falls back to the global item. Only valid from a
   command or event of a window.
+- `host::set_status_item_menu(id, item, &menu)` and `set_window_status_item_menu` (API 1.14)
+  give the item a menu: clicking the item opens it anchored to the item instead of running
+  `command`, and choosing an action runs its command with its argument in that window.
+  Entries are `StatusMenuEntry::action(label, command)` (with `.with_description(…)` for
+  secondary text such as a URL and `.with_argument(…)`), `Separator` and `Header(text)`, at
+  most 64. An action naming a command the plugin doesn't declare fails the call. A later
+  `set_status_item` drops the menu.
 
 ## Context keys from code
 

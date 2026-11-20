@@ -343,6 +343,11 @@
   min-height: 44px;
   padding: 6px 2px 5px;
 }
+/* IDEA compact: StripeToolbar.Button.*IconWithName.padding 4 → 3, text padding 6 → 4. */
+:global(:root[data-compact]) .stripeNamed {
+  min-height: 40px;
+  padding: 4px 2px 3px;
+}
 .stripeMore {
   height: var(--stripe-icon-button);
 }
@@ -440,6 +445,7 @@
   gap: var(--space-1-5);
   padding: 0 6px 0 8px;
   color: var(--fg-emphasis);
+  font-size: var(--fs-chrome);
 }
 .headerTabbed {
   border-bottom: 1px solid var(--border);

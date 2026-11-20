@@ -17,6 +17,7 @@ import {
   type TreeHandle,
   T,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import type { OutlineItem } from "@/platform/ipc";
 import { useShownLine } from "@/editor/api";
 import { badgeKind, basename, openLocation } from "../common/open";
@@ -364,6 +365,7 @@ const POPUP_ROW = 22;
 
 function FileStructureDialog() {
   useLiveOutline();
+  const rowHeight = useRowHeight(POPUP_ROW);
   const path = useOutline((s) => s.path);
   const items = useOutline((s) => s.items);
   const loading = useOutline((s) => s.loading);
@@ -466,12 +468,12 @@ function FileStructureDialog() {
     e.preventDefault();
   };
 
-  const height = Math.min(420, Math.max(1, visibleCount(filter.nodes, collapsed)) * POPUP_ROW + 8);
+  const height = Math.min(420, Math.max(1, visibleCount(filter.nodes, collapsed)) * rowHeight + 8);
   return (
     <Dialog
       open
       onClose={close}
-      width={460}
+      width={540}
       position="top"
       transparentBackdrop
       aria-label="File Structure"
@@ -553,7 +555,7 @@ function FileStructureDialog() {
           speedSearch={false}
           activateExpandable
           onActivate={(n) => choose(n)}
-          rowHeight={POPUP_ROW}
+          rowHeight={rowHeight}
           indent={16}
           empty={
             <span className={styles.popupEmpty}>

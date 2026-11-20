@@ -14,6 +14,7 @@ mod config;
 mod conversation;
 mod elicitation;
 mod external;
+pub mod hermes;
 pub mod mcp;
 mod model;
 mod native;
@@ -131,6 +132,7 @@ pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CopilotBinaryKey {
     command: String,
+    github_account: Option<String>,
     modified: Option<std::time::SystemTime>,
     len: Option<u64>,
 }
@@ -192,6 +194,7 @@ impl Shared {
         let metadata = std::fs::metadata(&executable).ok();
         CopilotBinaryKey {
             command: executable.to_string_lossy().into_owned(),
+            github_account: provider::copilot_github_account(&spec.env),
             modified: metadata.as_ref().and_then(|m| m.modified().ok()),
             len: metadata.as_ref().map(std::fs::Metadata::len),
         }
@@ -709,7 +712,8 @@ impl AgentManager {
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
     /// in the project: what the agent offered last time there, unadvertised builtins,
-    /// and, for Claude Code, skills and custom commands on disk it has not listed.
+    /// and, for Claude Code, skills and custom commands on disk it has not listed (for Hermes,
+    /// its profile's skills).
     pub async fn commands(&self, provider: &str, task: Option<&str>) -> IdeResult<Vec<AgentCommand>> {
         let (provider, offered, cwd) = match task {
             Some(id) => {
@@ -743,10 +747,18 @@ impl AgentManager {
                 offered.push(command);
             }
         }
+        let home = self.shared.paths.home_dir.clone();
+        if provider == "hermes" || provider.starts_with("hermes-") {
+            let found = blocking(move || {
+                let profile = hermes::root(home.as_deref()).and_then(|root| hermes::profile_home(&root, &provider));
+                Ok(profile.map(|p| skills::hermes(&p)).unwrap_or_default())
+            })
+            .await?;
+            return Ok(skills::merge(offered, found));
+        }
         if provider != "claude" && provider != "claude-acp" {
             return Ok(offered);
         }
-        let home = self.shared.paths.home_dir.clone();
         let found = blocking(move || Ok(skills::discover(&cwd, home.as_deref()))).await?;
         Ok(skills::merge(offered, found))
     }
@@ -832,6 +844,7 @@ impl AgentManager {
             retry: None,
             background: Box::default(),
             mcp_overrides: BTreeMap::new(),
+            stats: Box::default(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -949,6 +962,7 @@ impl AgentManager {
             retry: None,
             background: Box::default(),
             mcp_overrides: req.mcp_overrides,
+            stats: Box::default(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -1114,6 +1128,16 @@ impl AgentManager {
     /// Changes a session setting (model, mode…): right away when the agent runs, else when it next starts.
     pub async fn set_config(&self, id: &str, option: &str, value: String) -> IdeResult<()> {
         let task = self.task(id)?;
+        let provider = task.state.lock().task.provider.clone();
+        let discovered = self
+            .shared
+            .paths
+            .catalogs
+            .cached(&self.shared, &provider)
+            .config
+            .iter()
+            .find(|o| o.id == option && o.category.as_deref() == Some("model"))
+            .cloned();
         let (target, change) = {
             let mut s = task.state.lock();
             let busy = s.busy;
@@ -1134,17 +1158,19 @@ impl AgentManager {
                 task.emit_task();
                 return Ok(());
             }
-            let target = s
-                .task
-                .config
-                .iter()
-                .find(|o| o.id == option)
-                .ok_or_else(|| IdeError::not_found("no such setting"))?
-                .clone();
+            let session_target = s.task.config.iter().find(|o| o.id == option).cloned();
+            let recovered_model = session_target.is_none();
+            let target = match session_target {
+                Some(target) => target,
+                None if discovered.is_some() => discovered.unwrap(),
+                None => return Err(IdeError::not_found("no such setting")),
+            };
             if s.pending_model.is_some() && config::is_per_model_option(&target) {
                 return Err(IdeError::invalid("This setting is not available on the selected model"));
             }
-            if !target.values.iter().any(|v| v.value == value) {
+            if recovered_model {
+                (target, None)
+            } else if !target.values.iter().any(|v| v.value == value) {
                 if target.category.as_deref() != Some("model") {
                     return Err(IdeError::invalid(format!("{} has no value {value}", target.name)));
                 }
@@ -1316,6 +1342,7 @@ impl AgentManager {
                 resets_ms: None,
                 retry: None,
                 background: Box::default(),
+                stats: Box::default(),
                 ..s.task.clone()
             };
             TaskFile {
@@ -2665,7 +2692,13 @@ impl Task {
                 .await;
         }
         match result {
-            Ok(v) => Ok(v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_owned()),
+            Ok(v) => {
+                if let Some(tokens) = config::tokens_of(&v) {
+                    self.state.lock().task.stats.tokens = Some(tokens);
+                    self.emit_task();
+                }
+                Ok(v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_owned())
+            }
             Err(e) => Err(self.failure(e)),
         }
     }
@@ -2792,9 +2825,12 @@ impl Task {
         pending_model: Option<&PendingModel>,
     ) -> Result<Live, SessionOpenError> {
         let launch_cwd = cwd.to_path_buf();
-        let mut spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
-            .await
-            .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?;
+        let mut spec = tokio::task::spawn_blocking(move || {
+            spec.resolve_for_launch_with_copilot_env(&launch_cwd, provider::prefer_stored_copilot_auth())
+        })
+        .await
+        .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?
+        .map_err(|e| SessionOpenError { message: e, allow_acp_fallback: false })?;
         if spec.driver == provider::Driver::Acp && provider::is_copilot_provider(provider_id) {
             let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
             for name in self.shared.mcp_servers_off_for_session(provider_id, &mcp_overrides) {
@@ -3199,6 +3235,17 @@ impl Task {
             return;
         }
         if kind == "session_info_update" {
+            let depth = update.pointer("/_meta/hermes/sessionProvenance/compressionDepth").and_then(Value::as_u64);
+            if let Some(depth) = depth.and_then(|d| u32::try_from(d).ok()) {
+                let changed = {
+                    let mut s = self.state.lock();
+                    std::mem::replace(&mut s.task.stats.compressions, depth) != depth
+                };
+                if changed {
+                    self.persist();
+                    self.emit_task();
+                }
+            }
             // The agent's own title for the session replaces the first line of the prompt,
             // unless the user named the task.
             let title = update.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
@@ -4051,7 +4098,7 @@ fn entry_event(
     entry: &AgentEntry,
 ) -> AgentEvent {
     let text = match entry {
-        AgentEntry::Agent { text } | AgentEntry::Thought { text } => Some(text),
+        AgentEntry::Agent { text } | AgentEntry::Thought { text, .. } => Some(text),
         _ => None,
     };
     let Some(text) = text else {

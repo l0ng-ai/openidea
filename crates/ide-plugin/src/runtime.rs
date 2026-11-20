@@ -16,6 +16,7 @@ use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
+use crate::wit_host::hover_actions_bindings::exports::openidea::plugin::hover_actions as wit_hia;
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
 use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
@@ -57,7 +58,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.13";
+pub const API_VERSION: &str = "1.14";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -387,6 +388,11 @@ pub trait HostApi: Send + Sync {
     }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Checks a status item menu before it is set: its actions name commands the plugin declares.
+    fn check_status_menu(&self, menu: &[crate::StatusMenuEntry]) -> Result<(), HostError> {
+        let _ = menu;
+        Ok(())
+    }
     /// Sets or removes the status override in the invoking window.
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
         let _ = (client, id, item);
@@ -1049,6 +1055,7 @@ struct Exports {
     inlay: Option<wit_inlay::Guest>,
     endpoints: Option<wit_endpoints::Guest>,
     search: Option<wit_search::Guest>,
+    hover_actions: Option<wit_hia::Guest>,
     run_configurations: Option<wit_configs::Guest>,
     launch_configurations: Option<wit_launch::Guest>,
     test_results: Option<wit_tests::Guest>,
@@ -1190,6 +1197,7 @@ impl Runtime {
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let search_indices = wit_search::GuestIndices::new(&pre).ok();
+        let hover_actions_indices = wit_hia::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let launch_indices = wit_launch::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
@@ -1255,6 +1263,8 @@ impl Runtime {
             None => None,
         };
         let search = search_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let hover_actions =
+            hover_actions_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let endpoints = match endpoint_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
@@ -1278,6 +1288,7 @@ impl Runtime {
                 inlay,
                 endpoints,
                 search,
+                hover_actions,
                 run_configurations,
                 launch_configurations,
                 test_results,
@@ -2616,6 +2627,19 @@ fn gutter_action_from(v: wit_lf::GutterAction) -> crate::language_features::Gutt
         argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
     }
 }
+fn hover_action_from(v: wit_hia::HoverAction) -> crate::language_features::HoverAction {
+    crate::language_features::HoverAction {
+        line: v.line,
+        start_line: v.start_line,
+        end_line: v.end_line,
+        icon: v.icon.map(|v| crate::runtime::clip(v, 65536)),
+        label: crate::runtime::clip(v.label, 65536),
+        tooltip: v.tooltip.map(|v| crate::runtime::clip(v, 65536)),
+        command: crate::runtime::clip(v.command, 65536),
+        argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+
 fn parameter_label_from(v: wit_lf::ParameterLabel) -> crate::language_features::ParameterLabel {
     use crate::language_features::ParameterLabel as P;
     match v {
@@ -2844,6 +2868,30 @@ impl Runtime {
         let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
     }
+    pub fn has_hover_actions(&self) -> bool {
+        self.exports.hover_actions.is_some()
+    }
+
+    pub fn language_hover_actions(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::HoverAction>, CallError> {
+        if self.exports.hover_actions.is_none() {
+            return Err(CallError::missing_export("hover-actions"));
+        }
+        let d = wit_hia::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let result = self.call(Invocation::default(), timeout, |exports, store| {
+            exports.hover_actions.as_ref().expect("checked").call_hover_actions(store, &d)
+        })?;
+        Ok(result.into_iter().take(10_000).map(hover_action_from).collect())
+    }
+
     pub fn provide_injections(
         &mut self,
         doc: &ProviderDocument,

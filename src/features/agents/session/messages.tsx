@@ -99,6 +99,7 @@ export const Entry = memo(function Entry({
   turnCount,
   reply,
   time,
+  thoughtMs,
   working,
   onOpenSubagent,
   onDiagramDrawn,
@@ -111,6 +112,8 @@ export const Entry = memo(function Entry({
   reply?: ReplyTurn;
   /** When the turn this reply answered was asked and finished. */
   time?: ReplyTimes | null;
+  /** How long a finished thought took. */
+  thoughtMs?: number | null;
   working: boolean;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
@@ -131,7 +134,15 @@ export const Entry = memo(function Entry({
         />
       );
     case "thought":
-      return <ThoughtEntry task={task} text={entry.text} working={working} onDiagramDrawn={onDiagramDrawn} />;
+      return (
+        <ThoughtEntry
+          task={task}
+          text={entry.text}
+          took={thoughtMs ?? null}
+          working={working}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      );
     case "tool":
       return <ToolEntry task={task} entry={entry} />;
     case "plan":

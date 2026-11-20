@@ -10,6 +10,60 @@
   font-size: var(--fs-ui);
 }
 
+.moveForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.moveSubject {
+  color: var(--fg-emphasis);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.moveDestination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1) var(--space-2);
+}
+
+.moveDestination > .fieldLabel {
+  line-height: var(--h-field);
+}
+
+.moveControls {
+  display: flex;
+  flex: 1 1 244px;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.moveField {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.moveField input {
+  flex: 1 1 0;
+}
+
+.moveField button {
+  flex: none;
+}
+
+.movePath {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
 .fieldLabel {
   color: var(--fg);
   font-size: var(--fs-ui);

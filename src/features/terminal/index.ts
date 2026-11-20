@@ -200,6 +200,25 @@ export function activate(): () => void {
         },
       },
       {
+        id: "terminal.runLines",
+        title: "Run Lines in Terminal",
+        description: "Opens a shell tab and types `{ lines, name?, cwd? }` into it.",
+        category: "Terminal",
+        icon: "terminal",
+        when: "projectOpen",
+        hidden: true,
+        run: async ({ arg }) => {
+          const a = arg as { lines?: unknown; name?: unknown; cwd?: unknown } | undefined;
+          const lines = Array.isArray(a?.lines) ? a.lines.filter((x): x is string => typeof x === "string") : [];
+          const cwd = (typeof a?.cwd === "string" && a.cwd) || projectRoot();
+          if (!lines.length || !cwd) return;
+          const rt = await loadTerminalRuntime();
+          rt.newTabRunning(cwd, typeof a?.name === "string" && a.name ? a.name : undefined, lines);
+          toolWindowService().show(WINDOW, true);
+          focusActiveSoon();
+        },
+      },
+      {
         id: "terminal.runCommand",
         title: "Run Command in Terminal",
         description: "Opens a terminal tab running `{ program, args, name?, cwd? }` instead of the shell.",

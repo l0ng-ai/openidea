@@ -24,8 +24,16 @@ import {
   type MenuItem,
   T,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import type { PopupAnchor } from "@/ui/Popup";
-import { buildBranchRows, preferredBranchRow, withExpanded, type BranchRow, type PopupAction } from "./branches";
+import {
+  buildBranchRows,
+  preferredBranchRow,
+  scopedExpansion,
+  withExpanded,
+  type BranchRow,
+  type PopupAction,
+} from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
 import { loadFavoriteBranches, recentBranches, toggleFavoriteBranch, useFavoriteBranches } from "./branchOps";
@@ -261,12 +269,19 @@ function loadExpansion(root: string | null) {
   useExpansion.setState(next);
 }
 
-function useExpanded(kind: "single" | "multi") {
-  const expanded = useExpansion((s) => s[kind]);
+/**
+ * The expansion of one popup kind. `repo` scopes it to one repository's branches (a
+ * repository's submenu in a multi-repository project), so expanding a group there leaves
+ * the other repositories' submenus as they were.
+ */
+function useExpanded(kind: "single" | "multi", repo?: string) {
+  const all = useExpansion((s) => s[kind]);
+  const prefix = repo === undefined ? "" : `${repo}\u0000`;
+  const expanded = useMemo(() => scopedExpansion(all, prefix), [all, prefix]);
   const setOpen = (key: string, open: boolean) => {
     const s = useExpansion.getState();
-    if (s[kind].get(key) === open) return;
-    const next = { ...s, [kind]: withExpanded(s[kind], key, open) };
+    if (s[kind].get(prefix + key) === open) return;
+    const next = { ...s, [kind]: withExpanded(s[kind], prefix + key, open) };
     useExpansion.setState(next);
     if (!next.root) return;
     try {
@@ -352,13 +367,13 @@ const NO_BRANCHES: readonly Branch[] = [];
 const INDENT = 16;
 const ROW_HEIGHT = 24;
 const SEPARATOR_HEIGHT = 9;
-const listHeight = (rows: readonly { type: string; key: string }[]) =>
+const listHeight = (rows: readonly { type: string; key: string }[], rowHeight: number) =>
   Math.min(
     440,
     Math.max(
-      ROW_HEIGHT * 3,
+      rowHeight * 3,
       rows.reduce(
-        (h, r) => h + (r.type === "section" && r.key.startsWith("separator:") ? SEPARATOR_HEIGHT : ROW_HEIGHT),
+        (h, r) => h + (r.type === "section" && r.key.startsWith("separator:") ? SEPARATOR_HEIGHT : rowHeight),
         0,
       ),
     ),
@@ -422,6 +437,7 @@ interface BranchesPanelProps {
 
 /** Search, actions and the branches of one repository (the selected one, or `root`). */
 function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }: BranchesPanelProps) {
+  const rowHeight = useRowHeight(ROW_HEIGHT);
   const selected = useVcs((s) => s.repo);
   const live = root === undefined || selected === root;
   const storeBranches = useVcs((s) => s.branches);
@@ -457,7 +473,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const actions = useMemo(() => [...operationActions(op, conflicts), ...baseActions], [op, conflicts, baseActions]);
   const options = usePopupOptions();
-  const [expanded, setOpen] = useExpanded("single");
+  const [expanded, setOpen] = useExpanded("single", root);
   const rows = useMemo(
     () => buildBranchRows(branches, recent, query, actions, favorites, tags, { ...options, expanded }),
     [branches, recent, query, actions, favorites, tags, options, expanded],
@@ -555,7 +571,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
         {!root && <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />}
         {!root && <OptionsButton hasTags={tags.length > 0} />}
       </div>
-      <div ref={listRef} style={{ height: listHeight(rows) }} className={styles.listWrap}>
+      <div ref={listRef} style={{ height: listHeight(rows, rowHeight) }} className={styles.listWrap}>
         <List
           items={rows}
           getKey={(r) => r.key}
@@ -573,7 +589,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
           onActivate={(_r, i) => activate(i)}
           focusable={false}
           hoverSelects
-          rowHeight={ROW_HEIGHT}
+          rowHeight={rowHeight}
           aria-label="Branches"
           className={styles.list}
           empty={<span className={styles.empty}>{loaded ? tx("No matching branches") : tx("Loading…")}</span>}
@@ -618,6 +634,7 @@ function SubMenu({
  * (acting on all of them) or, when their branches differ, the current repository's.
  */
 function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => void; actions: readonly PopupAction[] }) {
+  const rowHeight = useRowHeight(ROW_HEIGHT);
   const roots = useVcs((s) => s.roots);
   const heads = useVcs((s) => s.heads);
   const operations = useVcs((s) => s.operations);
@@ -805,7 +822,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
         <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />
         <OptionsButton hasTags={tags.length > 0} />
       </div>
-      <div ref={listRef} style={{ height: listHeight(rows) }} className={styles.listWrap}>
+      <div ref={listRef} style={{ height: listHeight(rows, rowHeight) }} className={styles.listWrap}>
         <List
           items={rows}
           getKey={(r) => r.key}
@@ -823,7 +840,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
           onActivate={(_r, i) => activate(i)}
           focusable={false}
           hoverSelects
-          rowHeight={ROW_HEIGHT}
+          rowHeight={rowHeight}
           aria-label="Repositories and branches"
           className={styles.list}
           empty={
@@ -862,6 +879,11 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   );
 }
 
+function branchIndent(depth: number) {
+  // Leave room for the row controls while keeping each deeper level indented.
+  return depth ? { paddingInlineStart: `min(${depth * INDENT}px, ${(30 * depth) / (depth + 3)}%)` } : undefined;
+}
+
 function RepoRowView({ row, operation }: { row: RepoRow; operation?: string }) {
   switch (row.type) {
     case "action":
@@ -886,7 +908,7 @@ function RepoRowView({ row, operation }: { row: RepoRow; operation?: string }) {
       return <GroupRowView row={row} />;
     case "common":
       return (
-        <span className={styles.row} data-row-key={row.key} style={{ paddingLeft: row.depth * INDENT }}>
+        <span className={styles.row} data-row-key={row.key} style={branchIndent(row.depth)} title={row.branch.name}>
           <Icon
             name={row.branch.current ? "current-branch" : row.branch.favorite ? "star" : "branch"}
             size={14}
@@ -917,7 +939,7 @@ function GroupRowView({ row }: { row: { key: string; label: string; expanded: bo
     <span
       className={clsx(styles.row, row.depth === 0 && styles.groupRow)}
       data-row-key={row.key}
-      style={row.depth ? { paddingLeft: row.depth * INDENT } : undefined}
+      style={branchIndent(row.depth)}
       aria-expanded={row.expanded}
     >
       <Icon name={row.expanded ? "chevron-down" : "chevron-right"} size={12} className={styles.rowIcon} />
@@ -928,7 +950,7 @@ function GroupRowView({ row }: { row: { key: string; label: string; expanded: bo
 }
 
 function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "action" | "branch" | "tag" }> }) {
-  const indent = "depth" in row && row.depth ? { paddingLeft: row.depth * INDENT } : undefined;
+  const indent = "depth" in row ? branchIndent(row.depth) : undefined;
   if (row.type === "action") {
     const keys = shortcutLabel(row.action.id);
     return (
@@ -949,7 +971,7 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
   }
   if (row.type === "tag") {
     return (
-      <span className={styles.row} data-row-key={row.key} style={indent}>
+      <span className={styles.row} data-row-key={row.key} style={indent} title={row.tag}>
         <Icon name="tag" size={14} className={styles.rowIcon} />
         <HighlightedText
           className={clsx(styles.label, styles.branchName)}
@@ -964,7 +986,7 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
   if (row.type !== "branch") return null;
   const b = row.branch;
   return (
-    <span className={styles.row} data-row-key={row.key} style={indent}>
+    <span className={styles.row} data-row-key={row.key} style={indent} title={b.name}>
       {b.current ? (
         <Icon name="current-branch" size={14} className={clsx(styles.rowIcon, styles.currentIcon)} />
       ) : (
@@ -997,7 +1019,11 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
         </span>
       )}
       <BranchSync behind={b.behind} ahead={b.ahead} />
-      {!b.remote && b.upstream && <span className={styles.upstream}>{b.upstream}</span>}
+      {!b.remote && b.upstream && (
+        <span className={styles.upstream} title={b.upstream}>
+          {b.upstream}
+        </span>
+      )}
       <Icon name="chevron-right" size={10} className={styles.chevron} />
     </span>
   );

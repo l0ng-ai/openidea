@@ -1,3 +1,4 @@
+import type { DataSource_Deserialize, DbJdbcDriver } from "../src/bindings";
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
 test("configures a local JDBC profile and a source through mocked IPC", async ({ workbench: page }, info) => {
@@ -102,21 +103,25 @@ test("configures a local JDBC profile and a source through mocked IPC", async ({
   await source.getByLabel("Property value", { exact: true }).fill("true");
   await test.click();
   await expect(source.getByRole("status")).toHaveText("Succeeded: Mock JDBC database");
-  const [{ source: tested, password }] = await ipcCalls(page, "db_test");
-  expect(password).toBe("mock secret");
+  const [tested] = await ipcCalls(page, "db_test");
   expect(tested).toMatchObject({
-    driver: "jdbc",
-    url,
-    user: "example-user",
-    readOnly: true,
-    properties: [{ name: "ssl", value: "true" }],
+    password: "mock secret",
+    source: {
+      driver: "jdbc",
+      url,
+      user: "example-user",
+      readOnly: true,
+      properties: [{ name: "ssl", value: "true" }],
+    },
   });
   await source.getByRole("button", { name: "OK", exact: true }).click();
   await expect(source).not.toBeVisible();
-  const [{ sources }] = await ipcCalls(page, "db_save_sources");
-  const [saved] = sources as Record<string, unknown>[];
-  const [{ driver }] = await ipcCalls(page, "db_save_jdbc_driver");
+  const [save] = await ipcCalls(page, "db_save_sources");
+  const saved = (save?.sources as DataSource_Deserialize[] | undefined)?.[0];
+  const [profile] = await ipcCalls(page, "db_save_jdbc_driver");
+  const driver = profile?.driver as DbJdbcDriver | undefined;
+  if (!saved || !driver) throw new Error("Expected the JDBC source and driver to be saved");
   expect(saved.readOnly).toBe(true);
-  expect(saved.jdbcDriver).toBe((driver as Record<string, unknown>).id);
+  expect(saved.jdbcDriver).toBe(driver.id);
   for (const key of ["jars", "className", "classpath", "exec", "password"]) expect(saved).not.toHaveProperty(key);
 });

@@ -5,7 +5,7 @@
  * Record / Value / Aggregates side panel following the selection.
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
 import { Button, Checkbox, Icon, IconButton, Input, Popup, SearchField, Select, Tabs, T, type MenuItem } from "@/ui";
 import { EXPORT_FORMATS, exportData, type ExportData, type ExportFormat } from "./export";
@@ -99,6 +99,7 @@ export interface DataViewProps extends Pick<
   /** Rows from here on (the table editor's added rows) are never filtered or sorted. */
   fixedRows?: number;
   firstRowNumber?: number;
+  pager?: ReactNode;
   /** The side panel shown (`null`: hidden). */
   panel: DataPanel | null;
   onPanelChange: (panel: DataPanel | null) => void;
@@ -247,6 +248,7 @@ export function DataView(props: DataViewProps) {
             </div>
           )}
         </div>
+        {props.pager && <div className={styles.pagerDock}>{props.pager}</div>}
       </div>
       {filterAt && (
         <FilterPopup

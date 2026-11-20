@@ -3,15 +3,21 @@
  * the process. Processes are stubbed at the IPC layer; `crates/ide-run` covers spawning them.
  */
 import type { Page } from "@playwright/test";
+import type { RunConfig } from "../src/bindings";
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
 const RUN_ID = 7;
 
 /** One saved `npm run dev` configuration; `run_start` prints `output` and exits with `exit` unless null. */
-async function stubRun(page: Page, output: { kind: string; text: string }[], exit: number | null) {
+async function stubRun(
+  page: Page,
+  output: { kind: string; text: string }[],
+  exit: number | null,
+  overrides: Partial<RunConfig> = {},
+) {
   await stubDesktop(page);
   await page.evaluate(
-    async ({ output, exit, runId }) => {
+    async ({ output, exit, runId, overrides }) => {
       const config = {
         id: "npm:dev",
         name: "dev",
@@ -23,6 +29,7 @@ async function stubRun(page: Page, output: { kind: string; text: string }[], exi
         detected: false,
         isTest: false,
         debugAdapter: null,
+        ...overrides,
       };
       const h = window.__ipc.handlers;
       h.run_configs = () => [config];
@@ -43,7 +50,7 @@ async function stubRun(page: Page, output: { kind: string; text: string }[], exi
       await loadConfigs();
       selectConfig(config.id);
     },
-    { output, exit, runId: RUN_ID },
+    { output, exit, runId: RUN_ID, overrides },
   );
 }
 
@@ -79,6 +86,39 @@ test("⌘F2 stops a running process", async ({ workbench: page }) => {
   await expect.poll(() => ipcCalls(page, "run_stop")).toEqual([{ id: RUN_ID }]);
   await expect(run.getByRole("button", { name: "Stop" })).toBeDisabled();
   await expect(run.getByRole("tab", { name: "dev" })).toHaveAttribute("data-tooltip", /exit code 143$/);
+});
+
+test("a short Run pane has room for the full toolbar above the output", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 400, height: 500 });
+  const output = "Watching for changes…";
+  await stubRun(page, [{ kind: "stdout", text: `${output}\n` }], null);
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  await expect(run.getByText(output)).toBeVisible();
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const { setToolWindowSize } = await import(/* @vite-ignore */ path);
+    setToolWindowSize("bottom", 160);
+  });
+  const toolbar = run.getByRole("toolbar", { name: "Run actions" });
+  const clipped = await toolbar.evaluate((el) => {
+    const bar = el.getBoundingClientRect();
+    return Array.from(el.querySelectorAll("button")).flatMap((button) => {
+      const box = button.getBoundingClientRect();
+      return box.left < bar.left - 1 || box.right > bar.right + 1 || box.bottom > bar.bottom + 1
+        ? [button.getAttribute("aria-label")]
+        : [];
+    });
+  });
+  expect(clipped).toEqual([]);
+  await expect(toolbar).toHaveAttribute("aria-orientation", "horizontal");
+  const toolbarBox = (await toolbar.boundingBox())!;
+  const consoleBox = (await run.getByRole("log").boundingBox())!;
+  expect(consoleBox.y).toBeGreaterThanOrEqual(toolbarBox.y + toolbarBox.height - 1);
+  await toolbar.getByRole("button", { name: "Clear All" }).click();
+  await expect(run.getByText(output)).toBeHidden();
+  await toolbar.getByRole("button", { name: "Stop" }).click();
+  await expect.poll(() => ipcCalls(page, "run_stop")).toEqual([{ id: RUN_ID }]);
 });
 
 test("Go reruns keep each package's exact failures and the original configuration", async ({ workbench: page }) => {
@@ -142,6 +182,72 @@ test("Go reruns keep each package's exact failures and the original configuratio
     ["test", "-json", "./..."],
     ["test", "-json", "./..."],
   ]);
+});
+
+test("test results keep counts, actions and selected output visible as the pane narrows", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 1060, height: 740 });
+  const goPackage = "example.com/checkout";
+  const name = "TestCheckoutTotalsWithDiscountsAndPendingInventoryReservations";
+  const message = "expected subtotal 42, got 37";
+  const records = [
+    { Action: "run", Test: name },
+    { Action: "output", Test: name, Output: message + "\n" },
+    { Action: "fail", Test: name, Elapsed: 0.125 },
+    { Action: "pass", Test: "TestPayment", Elapsed: 0.02 },
+    { Action: "skip", Test: "TestDelayedShipping" },
+    { Action: "fail", Elapsed: 0.17 },
+  ];
+  await stubRun(
+    page,
+    records.map((record) => ({ kind: "stdout", text: JSON.stringify({ Package: goPackage, ...record }) + "\n" })),
+    1,
+    {
+      id: "go:checkout-tests",
+      name: "Checkout tests",
+      kind: "go",
+      command: "go",
+      args: ["test", "-json"],
+      isTest: true,
+    },
+  );
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const tree = run.getByRole("tree", { name: "Test results" });
+  const row = tree.getByRole("treeitem", { name: new RegExp(name) });
+  await row.click();
+  const output = run.getByRole("log");
+  await expect(output).toContainText(message);
+  await expect.poll(async () => (await output.boundingBox())!.x > (await tree.boundingBox())!.x).toBe(true);
+  await page.setViewportSize({ width: 540, height: 740 });
+  await expect
+    .poll(async () => {
+      const [list, console] = await Promise.all([tree.boundingBox(), output.boundingBox()]);
+      return !!list && !!console && console.y >= list.y + list.height - 1;
+    })
+    .toBe(true);
+  const summary = run.getByRole("status").filter({ hasText: "1 failing" });
+  for (const count of ["1 failing", "1 passed", "1 ignored"]) await expect(summary.getByText(count)).toBeVisible();
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  await expect(row.getByText("125 ms")).toBeVisible();
+  await expect(output).toContainText(message);
+  const toolbar = run.getByRole("toolbar", { name: "Test results" });
+  await toolbar.getByRole("button", { name: "More Actions" }).click();
+  await expect(page.getByRole("menuitem", { name: "Collapse All" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Export Test Results…" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  const divider = run.getByRole("separator");
+  const treeHeight = async () => (await tree.boundingBox())!.height;
+  const beforeResize = await treeHeight();
+  await divider.press("ArrowDown");
+  await expect.poll(treeHeight).toBeGreaterThan(beforeResize + 1);
+  const customizedHeight = await treeHeight();
+  await page.setViewportSize({ width: 1060, height: 740 });
+  await expect.poll(async () => (await output.boundingBox())!.x > (await tree.boundingBox())!.x).toBe(true);
+  await page.setViewportSize({ width: 540, height: 740 });
+  await expect.poll(async () => Math.abs((await treeHeight()) - customizedHeight)).toBeLessThan(2);
+  await expect(output).toContainText(message);
 });
 
 test("CMake builds the selected target in Build before starting only the application in Run", async ({

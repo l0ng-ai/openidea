@@ -279,17 +279,26 @@ export function draftConfig(
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
-      ...((catalog ?? provider)?.thoughtLevels?.[model] ?? []).map((o) => {
-        const choice = draft.thoughtLevels?.[model]?.[o.id] ?? defaults[o.id];
-        return {
-          ...o,
-          defaultValue: o.defaultValue ?? o.current,
-          current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
-        };
-      }),
+      ...(draftModelSettings((catalog ?? provider)?.thoughtLevels?.[model], draft.thoughtLevels?.[model], defaults) ??
+        []),
     );
   }
   return config;
+}
+
+export function draftModelSettings(
+  options: AgentConfigOption[] | undefined,
+  choices: Record<string, string> | undefined,
+  defaults: Record<string, string>,
+) {
+  return options?.map((o) => {
+    const choice = choices?.[o.id] ?? defaults[o.id];
+    return {
+      ...o,
+      defaultValue: o.defaultValue ?? o.current,
+      current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
+    };
+  });
 }
 
 export function setDraftOption(id: string, value: string) {
@@ -418,13 +427,13 @@ export async function refreshModels(
 }
 
 /** Discover switch candidates without using or updating the session's settings. */
-export async function refreshTaskModels(id: string, force = true): Promise<void> {
+export async function refreshTaskModels(id: string, force = true, model: string | null = null): Promise<void> {
   const { tasks, providers } = useAgents.getState();
   const task = tasks.get(id);
-  if (!task || task.status === "archived" || !task.config.some((o) => o.category === "model")) return;
+  if (!task || task.status === "archived" || (!task.model && !task.config.some((o) => o.category === "model"))) return;
   const provider = providers.find((p) => p.id === task.provider);
   if (!provider?.installed || useProject.getState().project?.trusted === false) return;
-  await refreshProviderModels(provider, force, null, null);
+  await refreshProviderModels(provider, force, model, null);
 }
 
 async function refreshProviderModels(

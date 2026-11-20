@@ -90,7 +90,10 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert!(result.has_more);
     assert_eq!(result.rows, vec![vec![Some("1".into()), None]]);
     assert_eq!(result.columns[1].name, "label");
-    assert_eq!(db.completion("test").await?.default_schema, "main");
+    let completion = db.completion("test").await?;
+    assert_eq!(completion.default_schema, "main");
+    let items = completion.tables.iter().find(|t| t.schema == "main" && t.name == "items").expect("items");
+    assert_eq!(items.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "label"]);
     db.execute("test", "create temporary table session_marker as select 42 as id", 1, &c).await?;
     let stop = CancellationToken::new();
     let (cancelled, ()) =
@@ -210,6 +213,39 @@ async fn unresponsive_driver_closes_before_reconnect() -> IdeResult<()> {
     assert!(result.unwrap_err().message.contains("Reconnect"));
     db.disconnect("test").await;
     assert_eq!(db.execute("test", "after reconnect", 1, &normal).await?.affected, Some(1.0));
+    db.disconnect("test").await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires JDBC_FIXTURE_JAR (java/jdbc-bridge/build.py --test --out fixture.jar) and Java 17+"]
+async fn a_lost_session_reconnects_on_the_next_statement() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let db = manager(tmp.path());
+    db.save_jdbc_driver(DbJdbcDriver {
+        id: "fixture".into(),
+        name: "Fixture".into(),
+        jars: vec![std::env::var("JDBC_FIXTURE_JAR").unwrap()],
+        class_name: "ai.openidea.jdbc.SelfTest$Fixture".into(),
+        url_template: String::new(),
+    })?;
+    let source = DataSource {
+        id: "test".into(),
+        name: "Fixture".into(),
+        driver: DbDriver::Jdbc,
+        global: true,
+        jdbc_driver: "fixture".into(),
+        url: "jdbc:fixture:".into(),
+        ..Default::default()
+    };
+    db.save_sources(vec![source]).await?;
+    let cancel = CancellationToken::new();
+    db.execute("test", "first", 1, &cancel).await?;
+    // The fixture's session reports itself invalid after "drop", like a connection a proxy reset.
+    assert!(db.execute("test", "drop", 1, &cancel).await.unwrap_err().message.contains("connection reset"));
+    assert!(!db.is_connected("test"), "a lost session is no longer listed as connected");
+    assert_eq!(db.execute("test", "after reconnect", 1, &cancel).await?.affected, Some(1.0));
+    assert!(db.is_connected("test"));
     db.disconnect("test").await;
     Ok(())
 }

@@ -100,6 +100,22 @@ pub struct GutterAction {
     pub command: String,
     pub argument: Option<String>,
 }
+/// An action rendered at the left edge of a line and revealed by hover.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HoverAction {
+    /// The line the button is drawn on; normally the declaration line.
+    pub line: u32,
+    /// First line whose leftmost strip reveals this action, inclusive.
+    pub start_line: u32,
+    /// Last line whose leftmost strip reveals this action, inclusive.
+    pub end_line: u32,
+    pub icon: Option<String>,
+    pub label: String,
+    pub tooltip: Option<String>,
+    pub command: String,
+    pub argument: Option<String>,
+}
 /// Injection data.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Branch, BranchInfo, ProjectInfo, Worktree } from "@/bindings";
 const mocks = vi.hoisted(() => ({
   prompt: vi.fn(),
@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   ask: vi.fn(),
   checkout: vi.fn(),
   executeAction: vi.fn(),
+  windowOpenRemote: vi.fn(),
 }));
 vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
@@ -41,12 +42,14 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsBranches: mocks.branches,
       vcsRenameBranch: mocks.rename,
       vcsCheckout: mocks.checkout,
+      windowOpenRemote: mocks.windowOpenRemote,
     },
   };
 });
 import { checkoutBranch, deleteBranch, deleteBranches, newBranch, newBranchInRepos, renameBranch } from "../branchOps";
 import { useVcs } from "../store";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 
 const branch = (head: string | null): BranchInfo => ({
   head,
@@ -385,4 +388,41 @@ it("refreshes tracking branches in the deletion repository without replacing the
   expect(notification.actions.map((a: { label: string }) => a.label)).not.toContain("Delete Tracked Branch");
   notification.actions.find((a: { label: string }) => a.label === "Restore").run();
   await vi.waitFor(() => expect(mocks.restoreBranch).toHaveBeenCalledWith("/p/back", expect.anything()));
+});
+
+afterEach(() => useRemote.setState({ session: null }));
+
+it.each(["focused", "failed"])("opens a checked-out SSH branch without retrying checkout: %s", async (outcome) => {
+  const target = { kind: "ssh", config: "connected-host" } as const;
+  const path = "/p/front feature";
+  useRemote.setState({ session: { target, root: "/p/front", host: "demo-linux", os: "linux", commands: [] } });
+  mocks.checkout.mockReset().mockResolvedValue(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path }));
+  mocks.ask.mockReset().mockResolvedValue({ button: "open" });
+  mocks.windowOpenRemote
+    .mockReset()
+    .mockResolvedValue(
+      outcome === "focused"
+        ? ok({ kind: "focused", label: "existing-window" })
+        : { status: "error", error: { kind: "unavailable", message: "SSH unavailable", detail: null } },
+    );
+  mocks.executeAction.mockClear();
+  mocks.notify.mockClear();
+  await checkoutBranch("feature/wt");
+  expect(mocks.windowOpenRemote).toHaveBeenCalledExactlyOnceWith(target, path, true);
+  expect(mocks.checkout).toHaveBeenCalledTimes(1);
+  expect(mocks.executeAction).not.toHaveBeenCalledWith("file.openProjectPath", expect.anything());
+  if (outcome === "failed") {
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "SSH unavailable" }));
+  }
+});
+
+it("keeps the local open action when another worktree holds the branch", async () => {
+  const path = "C:/src/project-worktree";
+  useRemote.setState({ session: null });
+  mocks.checkout.mockResolvedValue(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path }));
+  mocks.ask.mockResolvedValue({ button: "open" });
+  await checkoutBranch("feature/wt");
+  expect(mocks.executeAction).toHaveBeenCalledExactlyOnceWith("file.openProjectPath", path);
+  expect(mocks.windowOpenRemote).not.toHaveBeenCalled();
+  expect(mocks.checkout).toHaveBeenCalledTimes(1);
 });

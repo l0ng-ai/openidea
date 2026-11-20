@@ -71,6 +71,7 @@ import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
+import { markdownCommandGutter } from "./markdownCommands";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
 import { clearRuntimeCache } from "./runtimes";
@@ -485,6 +486,7 @@ export function activate(): () => void {
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
     registerEditorContribution({ id: "run.npmScripts", order: 58, extensions: npmGutter }),
+    registerEditorContribution({ id: "run.markdownCommands", order: 58, extensions: markdownCommandGutter }),
     registerEditorContribution({ id: "run.launchSettings", order: 58, extensions: launchSettingsGutter }),
     registerMenuGroup({
       id: "run.context",

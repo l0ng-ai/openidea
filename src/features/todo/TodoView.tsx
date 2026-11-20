@@ -19,6 +19,7 @@ import {
   SplitPanel,
   Spinner,
   Tabs,
+  Toolbar,
   Tree,
   fileIconName,
   type MenuItem,
@@ -291,14 +292,16 @@ function ItemText({ item }: { item: TodoItem }) {
   const kwLen = item.keyword.length;
   const color = colorFor(item.keyword);
   return (
-    <span className={styles.text} style={{ color }}>
-      <strong className={styles.keyword}>{item.text.slice(0, kwLen)}</strong>
+    <span className={styles.text}>
+      <strong className={styles.keyword} style={{ color }}>
+        {item.text.slice(0, kwLen)}
+      </strong>
       {item.text.slice(kwLen)}
     </span>
   );
 }
 
-export function TodoHeaderActions() {
+function TodoToolbar() {
   const settings = useTodoSettings();
   const hidden = useTodoView((s) => s.hidden);
   const toggleKeyword = useTodoView((s) => s.toggleKeyword);
@@ -316,7 +319,7 @@ export function TodoHeaderActions() {
     })),
   ];
   return (
-    <>
+    <Toolbar aria-label="TODO actions" orientation="vertical" className={styles.toolbar}>
       <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" />
       <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" />
       <IconButton
@@ -335,7 +338,7 @@ export function TodoHeaderActions() {
         onClick={() => updateTodoSettings({ caseSensitive: !settings.caseSensitive })}
       />
       <IconButton icon="refresh" size="small" title="Refresh" disabled={scanning} onClick={() => void scanProject()} />
-    </>
+    </Toolbar>
   );
 }
 
@@ -421,11 +424,20 @@ export function TodoView() {
   const renderNode = (n: Node, state: TreeRowState) => {
     if (n.kind === "file") {
       const name = basename(n.group.path);
+      const directory = relativeDir(root, n.group.path);
       return (
         <span className={styles.row}>
           <Icon name={fileIconName(name)} size={16} className={styles.fileIcon} />
-          <span className={clsx(styles.fileName, state.selected && styles.selectedText)}>{name}</span>
-          <span className={styles.muted}>{relativeDir(root, n.group.path)}</span>
+          <span className={styles.fileLocation}>
+            <span className={clsx(styles.fileName, state.selected && styles.selectedText)} title={name}>
+              {name}
+            </span>
+            {directory && (
+              <span className={styles.directory} title={directory}>
+                {directory}
+              </span>
+            )}
+          </span>
           <span className={styles.count}>
             {n.group.items.length === 1 ? tx`${n.group.items.length} item` : tx`${n.group.items.length} items`}
           </span>
@@ -434,8 +446,8 @@ export function TodoView() {
     }
     return (
       <span className={styles.row} title={n.item.text}>
-        <span className={styles.position}>
-          ({n.item.line + 1}, {n.item.col + 1})
+        <span className={styles.position} title={`(${n.item.line + 1}, ${n.item.col + 1})`}>
+          {n.item.line + 1}
         </span>
         <ItemText item={n.item} />
       </span>
@@ -469,18 +481,20 @@ export function TodoView() {
 
   return (
     <div className={styles.view}>
-      {tab === "project" && limitHit && (
-        <div className={styles.banner}>
-          <T>Too many matches; showing the first 10 000.</T>
-        </div>
-      )}
-      {tab === "scope" && <ScopeBar />}
-      {tab === "changes" && <ChangelistBar />}
-      <div className={styles.body}>
+      <TodoToolbar />
+      <div className={styles.content}>
+        {tab === "project" && limitHit && (
+          <div className={styles.banner}>
+            <T>Too many matches; showing the first 10 000.</T>
+          </div>
+        )}
+        {tab === "scope" && <ScopeBar />}
+        {tab === "changes" && <ChangelistBar />}
         <SplitGroup
           orientation="horizontal"
           id="todo-preview-split"
           storageKey={showPreview ? "openidea.todo.previewSplit" : undefined}
+          className={styles.body}
         >
           <SplitPanel id="items" minSize={160} className={styles.panel}>
             <Tree<Node>
@@ -519,7 +533,7 @@ export function TodoView() {
           {showPreview && (
             <>
               <SplitHandle />
-              <SplitPanel id="preview" minSize={160} defaultSize="45%" className={styles.panel}>
+              <SplitPanel id="preview" minSize={160} defaultSize="50%" className={styles.panel}>
                 <TodoPreview node={lead} />
               </SplitPanel>
             </>

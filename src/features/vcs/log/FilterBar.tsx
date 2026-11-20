@@ -293,55 +293,57 @@ export function FilterBar() {
 
   return (
     <div className={styles.filters} role="toolbar" aria-label={tx("Log filters")}>
-      {!showBranches && (
-        <IconButton icon="chevron-right" title="Show Branches" size="small" action="vcs.log.showBranches" />
-      )}
-      <SearchField
-        className={styles.textFilter}
-        value={text}
-        onChange={setText}
-        placeholder="Text or hash"
-        aria-label="Filter by message"
-        toggles={[
-          {
-            id: "regex",
-            icon: "regex",
-            title: "Regex",
-            pressed: filters.regex,
-            onToggle: (regex) => setLogFilters({ regex }),
-          },
-          {
-            id: "case",
-            icon: "case",
-            title: "Match Case",
-            pressed: filters.matchCase,
-            onToggle: (matchCase) => setLogFilters({ matchCase }),
-          },
-        ]}
-      />
-      <span ref={groupRef} className={styles.filterGroup}>
-        {logFilters.map((f, i) => (
-          <FilterButton key={f.label} {...f} hidden={i >= hiddenFrom} />
-        ))}
-      </span>
-      {hiddenFrom < logFilters.length && (
-        <IconButton
-          icon="chevron-right"
-          title="More Filters"
-          size="small"
-          aria-haspopup="menu"
-          onClick={(e) => {
-            const anchor = e.currentTarget;
-            menuBelow(
-              anchor,
-              logFilters.slice(hiddenFrom).map((f) => ({
-                label: f.value ? `${tx(f.label)}: ${f.value}` : f.label,
-                run: () => f.onOpen(anchor),
-              })),
-            );
-          }}
+      <div className={styles.filterControls}>
+        {!showBranches && (
+          <IconButton icon="chevron-right" title="Show Branches" size="small" action="vcs.log.showBranches" />
+        )}
+        <SearchField
+          className={styles.textFilter}
+          value={text}
+          onChange={setText}
+          placeholder="Text or hash"
+          aria-label="Filter by message"
+          toggles={[
+            {
+              id: "regex",
+              icon: "regex",
+              title: "Regex",
+              pressed: filters.regex,
+              onToggle: (regex) => setLogFilters({ regex }),
+            },
+            {
+              id: "case",
+              icon: "case",
+              title: "Match Case",
+              pressed: filters.matchCase,
+              onToggle: (matchCase) => setLogFilters({ matchCase }),
+            },
+          ]}
         />
-      )}
+        <span ref={groupRef} className={styles.filterGroup}>
+          {logFilters.map((f, i) => (
+            <FilterButton key={f.label} {...f} hidden={i >= hiddenFrom} />
+          ))}
+        </span>
+        {hiddenFrom < logFilters.length && (
+          <IconButton
+            icon="chevron-right"
+            title="More Filters"
+            size="small"
+            aria-haspopup="menu"
+            onClick={(e) => {
+              const anchor = e.currentTarget;
+              menuBelow(
+                anchor,
+                logFilters.slice(hiddenFrom).map((f) => ({
+                  label: f.value ? `${tx(f.label)}: ${f.value}` : f.label,
+                  run: () => f.onOpen(anchor),
+                })),
+              );
+            }}
+          />
+        )}
+      </div>
       {dropdown}
       {branchAnchor && (
         <BranchFilterPopup
@@ -356,88 +358,89 @@ export function FilterBar() {
           onSelectMany={() => void selectBranches()}
         />
       )}
-      <span className={styles.grow} />
-      <IconButton
-        icon="bookmark"
-        title="Bookmarked Commits"
-        size="small"
-        disabled={!Object.keys(bookmarks).length}
-        onClick={(e) =>
-          menuBelow(
-            e,
-            Object.entries(bookmarks).map(([key, summary]) => ({
-              label: summary,
-              run: () => {
-                const split = key.lastIndexOf("\0");
-                void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : undefined);
+      <div className={styles.filterActions}>
+        <IconButton
+          icon="bookmark"
+          title="Bookmarked Commits"
+          size="small"
+          disabled={!Object.keys(bookmarks).length}
+          onClick={(e) =>
+            menuBelow(
+              e,
+              Object.entries(bookmarks).map(([key, summary]) => ({
+                label: summary,
+                run: () => {
+                  const split = key.lastIndexOf("\0");
+                  void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : undefined);
+                },
+              })),
+            )
+          }
+        />
+        <IconButton
+          icon="plus"
+          title="Open Another Log Tab"
+          size="small"
+          onClick={(e) =>
+            menuBelow(e, [
+              {
+                label: "In Tool Window",
+                run: () => {
+                  openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`);
+                },
               },
-            })),
-          )
-        }
-      />
-      <IconButton
-        icon="plus"
-        title="Open Another Log Tab"
-        size="small"
-        onClick={(e) =>
-          menuBelow(e, [
-            {
-              label: "In Tool Window",
-              run: () => {
-                openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`);
+              {
+                label: "In Editor",
+                run: () => {
+                  openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`, "editor");
+                },
               },
-            },
-            {
-              label: "In Editor",
-              run: () => {
-                openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`, "editor");
-              },
-            },
-            { label: "External Repository…", run: openExternalLog },
-          ])
-        }
-      />
-      <IconButton
-        icon="clock"
-        title="Recent Filters"
-        size="small"
-        onClick={(e) =>
-          menuBelow(
-            e,
-            recentLogFilters().map((filters) => ({
-              label:
-                [
-                  filters.range,
-                  filters.branches.join(", "),
-                  filters.authors.join(", "),
-                  filters.text,
-                  filters.path,
-                  filters.paths?.join(", "),
-                  filters.date?.label,
-                ]
-                  .filter(Boolean)
-                  .join(" · ") || tx("All commits"),
-              run: () => setLogFilters(filters),
-            })),
-          )
-        }
-      />
-      <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog({ preserve: true })} />
-      <IconButton
-        icon="sort"
-        title="Graph Options"
-        size="small"
-        aria-haspopup="menu"
-        onClick={(e) => menuBelow(e, graphOptionsMenu(useLogOptions.getState()))}
-      />
-      <IconButton
-        icon="eye"
-        title="View Options"
-        size="small"
-        aria-haspopup="menu"
-        onClick={(e) => menuBelow(e, viewOptionsMenu(useLogOptions.getState()))}
-      />
-      <IconButton icon="search" title="Go to Hash/Branch/Tag" size="small" action="vcs.log.goToRef" />
+              { label: "External Repository…", run: openExternalLog },
+            ])
+          }
+        />
+        <IconButton
+          icon="clock"
+          title="Recent Filters"
+          size="small"
+          onClick={(e) =>
+            menuBelow(
+              e,
+              recentLogFilters().map((filters) => ({
+                label:
+                  [
+                    filters.range,
+                    filters.branches.join(", "),
+                    filters.authors.join(", "),
+                    filters.text,
+                    filters.path,
+                    filters.paths?.join(", "),
+                    filters.date?.label,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || tx("All commits"),
+                run: () => setLogFilters(filters),
+              })),
+            )
+          }
+        />
+        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog({ preserve: true })} />
+        <IconButton
+          icon="sort"
+          title="Graph Options"
+          size="small"
+          aria-haspopup="menu"
+          onClick={(e) => menuBelow(e, graphOptionsMenu(useLogOptions.getState()))}
+        />
+        <IconButton
+          icon="eye"
+          title="View Options"
+          size="small"
+          aria-haspopup="menu"
+          onClick={(e) => menuBelow(e, viewOptionsMenu(useLogOptions.getState()))}
+        />
+        <IconButton icon="search" title="Go to Hash/Branch/Tag" size="small" action="vcs.log.goToRef" />
+      </div>
     </div>
   );
 }

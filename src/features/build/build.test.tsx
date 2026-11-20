@@ -165,7 +165,10 @@ describe("build feature", () => {
     provideNotificationService({ notify: (n) => void notes.push(n) });
     fake = new FakeBackend();
     setBuildBackend(fake);
-    useProject.setState({ project: { root: "/p", name: "demo" } as never });
+    useProject.setState({
+      project: { root: "/p", name: "demo" } as never,
+      settings: { build: { openToolWindow: "always", focusToolWindow: "never" } } as never,
+    });
     setContext("projectOpen", true);
     dispose = activate();
   });
@@ -173,7 +176,7 @@ describe("build feature", () => {
   afterEach(() => {
     dispose();
     setBuildBackend(null);
-    useProject.setState({ project: null });
+    useProject.setState({ project: null, settings: null });
     setContext("projectOpen", false);
     setContext("run.cmakeBuild", null);
   });
@@ -303,6 +306,44 @@ describe("build feature", () => {
       "/p/src/A.java",
       expect.objectContaining({ focus: true, selection: { line: 11, col: 4 } }),
     );
+  });
+
+  it('keeps successful builds hidden when Open Build tool window is "Never"', async () => {
+    useProject.setState({
+      settings: { build: { openToolWindow: "never", focusToolWindow: "never" } } as never,
+    });
+    const run = startBuild("build");
+    await act(async () => {});
+    expect(show).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it('opens Build only on failure when Open is "Only on errors"', async () => {
+    useProject.setState({
+      settings: { build: { openToolWindow: "onError", focusToolWindow: "onError" } } as never,
+    });
+    const ok = startBuild("build");
+    await act(async () => {});
+    expect(show).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await ok;
+    });
+    expect(show).not.toHaveBeenCalled();
+
+    const failed = startBuild("build");
+    await act(async () => {});
+    expect(show).not.toHaveBeenCalled();
+    const messages = [err("/p/src/A.java", 3)];
+    await act(async () => {
+      fake.resolve(result(messages, false));
+      await failed;
+    });
+    expect(show).toHaveBeenCalledExactlyOnceWith("build", true);
   });
 
   it.each([

@@ -646,8 +646,8 @@ describe("rename wiring", () => {
     const view = editor("const x = 1;\nf({ x });", "typescript", 6);
     await startRename(view);
     const popup = useLspPopup.getState().popup;
-    expect(popup?.kind).toBe("rename");
-    if (popup?.kind !== "rename") return;
+    expect(popup?.kind).toBe("symbolRename");
+    if (popup?.kind !== "symbolRename") return;
     expect(popup.note).toContain("Based on syntax");
     popup.onSubmit("y");
     await vi.waitFor(() => expect(view.state.doc.toString()).toBe("const y = 1;\nf({ x: y });"));
@@ -661,7 +661,7 @@ describe("rename wiring", () => {
     const view = editor("const x = 1;\nx;\nvar x;", "typescript", 6);
     await startRename(view);
     const popup = useLspPopup.getState().popup;
-    if (popup?.kind !== "rename") throw new Error("no rename popup");
+    if (popup?.kind !== "symbolRename") throw new Error("no rename dialog");
     popup.onSubmit("y");
     await vi.waitFor(() => expect(useLspPopup.getState().popup?.kind).toBe("preview"));
     const preview = useLspPopup.getState().popup;
@@ -860,12 +860,12 @@ describe("rename wiring", () => {
     await startRename(view);
     expect(inplaceSession(view.state)?.oldName).toBe("x");
     await startRename(view);
-    expect(useLspPopup.getState().popup?.kind).toBe("rename");
+    expect(useLspPopup.getState().popup?.kind).toBe("symbolRename");
     if (finish === "cancel") closePopup();
     release({ status: "ok", data: r(0, 6, 7) });
     await older;
     expect(inplaceSession(view.state)).toBeNull();
-    expect(useLspPopup.getState().popup?.kind ?? null).toBe(finish === "dialog" ? "rename" : null);
+    expect(useLspPopup.getState().popup?.kind ?? null).toBe(finish === "dialog" ? "symbolRename" : null);
   });
 
   it.each(["text", "document"])("drops pending preparation when the editor %s changes", async (change) => {
@@ -938,7 +938,7 @@ describe("rename wiring", () => {
     );
     cmd.syntaxLocals.mockReturnValueOnce(ok(local({ references: [] })));
     await startRename(view);
-    expect(useLspPopup.getState().popup?.kind).toBe("rename");
+    expect(useLspPopup.getState().popup?.kind).toBe("symbolRename");
   });
 });
 

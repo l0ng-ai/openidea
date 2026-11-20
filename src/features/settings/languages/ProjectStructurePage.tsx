@@ -14,6 +14,9 @@ import {
   IconButton,
   Input,
   Select,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   Tree,
   folderIconName,
   showContextMenu,
@@ -1787,6 +1790,7 @@ function ArtifactsSection() {
 
 function SdksSection() {
   const byKind = useSdks((s) => s.byKind);
+  const homeId = useId();
   const [downloading, setDownloading] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string>("");
   const [projectJdk, setProjectJdk] = useProjectSetting<string>("languages.java.jdk");
@@ -1857,7 +1861,7 @@ function SdksSection() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.splitLayout}>
+      <div className={clsx(styles.splitLayout, styles.sdkLayout)}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
             <IconButton
@@ -1899,6 +1903,7 @@ function SdksSection() {
                 type="button"
                 role="option"
                 aria-selected={activeSdk?.key === r.key}
+                title={`${r.name}\n${tildify(r.path)}`}
                 className={clsx(styles.sideItem, activeSdk?.key === r.key && styles.sideItemActive)}
                 onClick={() => setSelectedKey(r.key)}
               >
@@ -1911,73 +1916,49 @@ function SdksSection() {
         </div>
 
         <div className={styles.detailPane}>
-          {activeSdk ? (
+          {activeSdk && (
             <Section title="SDK Details">
-              <div className={styles.psModuleHeader}>
-                <span className={styles.badge}>{activeSdk.kindLabel}</span>
-                <span className={styles.psModuleTitle}>{activeSdk.name}</span>
-                {activeSdk.version && <span className={styles.versionCell}>{activeSdk.version}</span>}
-                <span className={styles.spacer} />
-                {activeSdk.kind === "jdk" && (
-                  <Button
-                    size="small"
-                    variant="secondary"
-                    disabled={projectJdk === activeSdk.path}
-                    onClick={() => setProjectJdk(activeSdk.path)}
-                  >
-                    <T>Use as Project SDK</T>
-                  </Button>
-                )}
-              </div>
-              <Row label="SDK home path">
-                <Input readOnly value={tildify(activeSdk.path)} title={activeSdk.path} />
-              </Row>
+              <dl className={styles.sdkProperties}>
+                <dt>
+                  <T>Name</T>
+                </dt>
+                <dd className={styles.sdkName}>{activeSdk.name}</dd>
+                <dt>
+                  <T>Type</T>
+                </dt>
+                <dd>{activeSdk.kindLabel}</dd>
+                <dt>
+                  <T>Version</T>
+                </dt>
+                <dd className={styles.versionCell}>{activeSdk.version || "—"}</dd>
+                <dt>
+                  <label htmlFor={homeId}>
+                    <T>SDK home path</T>
+                  </label>
+                </dt>
+                <dd>
+                  <Input
+                    id={homeId}
+                    className={styles.sdkHome}
+                    readOnly
+                    value={tildify(activeSdk.path)}
+                    title={activeSdk.path}
+                  />
+                </dd>
+              </dl>
+              {activeSdk.kind === "jdk" && (
+                <Button
+                  className={styles.sdkAction}
+                  size="small"
+                  variant="secondary"
+                  disabled={projectJdk === activeSdk.path}
+                  onClick={() => setProjectJdk(activeSdk.path)}
+                >
+                  <T>Use as Project SDK</T>
+                </Button>
+              )}
             </Section>
-          ) : null}
-
-          <div className={styles.tablePanel}>
-            <div className={styles.tableScroll}>
-              <table className={styles.table}>
-                <thead>
-                  <tr>
-                    <th>
-                      <T>Type</T>
-                    </th>
-                    <th>
-                      <T>Name</T>
-                    </th>
-                    <th>
-                      <T>Version</T>
-                    </th>
-                    <th>
-                      <T>Home Path</T>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className={styles.empty}>
-                        <T>No SDK installations detected yet.</T>
-                      </td>
-                    </tr>
-                  )}
-                  {rows.map((r) => (
-                    <tr key={r.key} onClick={() => setSelectedKey(r.key)}>
-                      <td>
-                        <span className={styles.badge}>{r.kindLabel}</span>
-                      </td>
-                      <td>{r.name}</td>
-                      <td className={styles.versionCell}>{r.version || "—"}</td>
-                      <td className={styles.path} title={r.path}>
-                        {tildify(r.path)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          )}
         </div>
       </div>
       {downloading && (
@@ -2085,32 +2066,43 @@ function ProjectStructureDialogInner() {
     >
       <PageContext.Provider value={ctx}>
         <SettingsFormContext.Provider value={form}>
-          <div className={styles.psDialogLayout}>
-            <nav className={styles.psNavSidebar} aria-label={tx("Project Structure sections")} onKeyDown={onNavKeyDown}>
-              {NAV_GROUPS.map((group) => (
-                <div key={group.title} className={styles.psNavGroup}>
-                  <div className={styles.psNavGroupHeader}>
-                    <T>{group.title}</T>
+          <SplitGroup
+            id="project-structure-layout"
+            orientation="horizontal"
+            className={styles.psDialogLayout}
+            storageKey="openidea.projectStructure.layout"
+          >
+            <SplitPanel id="project-structure-sections" defaultSize="15%" minSize="152px" maxSize="45%">
+              <nav
+                className={styles.psNavSidebar}
+                aria-label={tx("Project Structure sections")}
+                onKeyDown={onNavKeyDown}
+              >
+                {NAV_GROUPS.map((group) => (
+                  <div key={group.title} className={styles.psNavGroup}>
+                    <div className={styles.psNavGroupHeader}>
+                      <T>{group.title}</T>
+                    </div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={clsx(styles.psNavItem, section === item.id && styles.psNavItemActive)}
+                        aria-current={section === item.id ? "page" : undefined}
+                        onClick={() => selectProjectStructureSection(item.id)}
+                      >
+                        <Icon name={item.icon} size={14} />
+                        <span>
+                          <T>{item.label}</T>
+                        </span>
+                      </button>
+                    ))}
                   </div>
-                  {group.items.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={clsx(styles.psNavItem, section === item.id && styles.psNavItemActive)}
-                      aria-current={section === item.id ? "page" : undefined}
-                      onClick={() => selectProjectStructureSection(item.id)}
-                    >
-                      <Icon name={item.icon} size={14} />
-                      <span>
-                        <T>{item.label}</T>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </nav>
-
-            <div className={styles.psDialogMain}>
+                ))}
+              </nav>
+            </SplitPanel>
+            <SplitHandle aria-label={tx("Project Structure sections")} />
+            <SplitPanel id="project-structure-details" className={styles.psDialogMain}>
               <div className={styles.psDialogHeader}>
                 <div className={styles.psDialogCrumbs}>
                   <span>
@@ -2136,8 +2128,8 @@ function ProjectStructureDialogInner() {
                 {section === "artifacts" && <ArtifactsSection />}
                 {section === "sdks" && <SdksSection />}
               </div>
-            </div>
-          </div>
+            </SplitPanel>
+          </SplitGroup>
         </SettingsFormContext.Provider>
       </PageContext.Provider>
     </Dialog>

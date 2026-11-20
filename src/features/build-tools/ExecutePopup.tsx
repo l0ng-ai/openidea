@@ -176,7 +176,6 @@ function ExecutePopup({ tool }: { tool: BuildTool }) {
           }}
           focusable={false}
           hoverSelects={false}
-          rowHeight={24}
           sectionHeight={28}
           className={styles.completions}
           aria-label="Completions"

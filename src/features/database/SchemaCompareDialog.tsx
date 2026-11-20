@@ -328,7 +328,12 @@ export function SchemaCompareDialog({ initial }: { initial: Side | null }) {
               />
             )}
           </div>
-          <CodePreview sql className={styles.preview} aria-label="Migration script" text={sql} />
+          <div className={styles.preview}>
+            <span className={styles.previewLabel}>
+              <T>Migration script</T>
+            </span>
+            <CodePreview sql aria-label="Migration script" text={sql} />
+          </div>
         </div>
       </div>
     </Dialog>

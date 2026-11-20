@@ -70,6 +70,28 @@ pub struct StatusItem {
     pub tooltip: Option<String>,
     /// One of the plugin's commands, run on click.
     pub command: Option<String>,
+    /// Opened on click instead of running `command` when not empty (API 1.14).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(optional)]
+    pub menu: Vec<StatusMenuEntry>,
+}
+
+/// An entry of a plugin status bar item's menu (API 1.14, `ui.set-status-item-menu`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StatusMenuEntry {
+    /// Runs one of the plugin's commands with `argument`.
+    #[serde(rename_all = "camelCase")]
+    Action {
+        label: String,
+        description: Option<String>,
+        command: String,
+        argument: Option<String>,
+    },
+    Separator,
+    Header {
+        label: String,
+    },
 }
 
 /// A plugin's highlight rule for Run and Debug console output (API 1.12, `ui.set-console-rules`).

@@ -16,6 +16,7 @@ import { prettyDate } from "../ui/prettyDate";
 import { commitDescription } from "./model";
 import { selectCommit, useCreatePr, type CreateChange } from "./store";
 import styles from "./Create.module.css";
+import { useRowHeight } from "@/ui/density";
 
 function Centered({ children, error }: { children: ReactNode; error?: boolean }) {
   return <div className={error ? `${styles.centered} ${styles.errorText}` : styles.centered}>{children}</div>;
@@ -170,6 +171,7 @@ function showDiff(all: readonly CreateChange[], first: CreateChange) {
 }
 
 function ChangesTree() {
+  const rowHeight = useRowHeight(22);
   const changes = useCreatePr((s) => s.changes);
   const files = changes?.state === "ok" ? changes.value : null;
   const roots = useMemo(() => (files ? buildFileTree(files, (f) => f.path) : []), [files]);
@@ -219,7 +221,7 @@ function ChangesTree() {
       selected={selection}
       onSelectionChange={setSelection}
       multiSelect
-      rowHeight={22}
+      rowHeight={rowHeight}
       aria-label="Changes"
       speedSearch
       onActivate={(n) => n.file && showDiff(ordered, n.file)}

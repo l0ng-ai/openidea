@@ -1,6 +1,6 @@
 import { lazyComponent } from "@/ui";
 import { registerSettingsPages } from "@/workbench/contributions";
-import { AGENTS_GROUP, MCP_PAGE, POLICY_PAGE, REGISTRY_PAGE, WORKING_STATUS_PAGE } from "./model";
+import { AGENTS_GROUP, MCP_PAGE, POLICY_PAGE, REGISTRY_PAGE } from "./model";
 
 /** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
@@ -13,15 +13,6 @@ export function activateSettingsPages(): () => void {
       order: 450,
       keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-    },
-    {
-      id: WORKING_STATUS_PAGE,
-      title: "Working Status",
-      group: AGENTS_GROUP,
-      // After Chat.
-      order: 465,
-      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
-      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
     },
     {
       id: MCP_PAGE,

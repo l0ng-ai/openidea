@@ -176,7 +176,9 @@ impl Call {
                     let r = ide_vfs::split_archive_path(&r).map_or(r.clone(), |(archive, _)| archive);
                     dunce::canonicalize(r).is_ok_and(|r| real.starts_with(r))
                 }) {
-                    return Err(IdeError::invalid("path is outside the project's content roots"));
+                    return Err(IdeError::invalid(
+                        "path is outside the project's content roots: ask the user before reading anything else outside the project",
+                    ));
                 }
                 Ok(entry.map_or_else(|| real.clone(), |entry| PathBuf::from(format!("{}!/{entry}", real.display()))))
             })
@@ -236,7 +238,7 @@ impl Tool {
                 destructive: false,
                 output_schema: None,
                 input_schema: json!({ "type": "object", "properties": {
-                    "projectPath": { "type": "string", "description": "Any directory inside an open project. Defaults to the connection's project (`?project=`) or the only open one." }
+                    "projectPath": { "type": "string", "description": "Any directory inside a project that is open in a window or served in the background. Defaults to the connection's project (`?project=`) or the only one open in a window." }
                 }, "required": [] }),
             },
             handler: Arc::new(move |call| Box::pin(handler(call))),
@@ -307,7 +309,9 @@ pub fn resolve_inside(root: &Path, raw: &str) -> IdeResult<PathBuf> {
     }
     let root = dunce::canonicalize(root)?;
     if !real.starts_with(&root) {
-        return Err(IdeError::invalid("path is outside the project"));
+        return Err(IdeError::invalid(
+            "path is outside the project: these tools change files inside it only; ask the user before touching anything outside it",
+        ));
     }
     if real
         .strip_prefix(&root)

@@ -1,6 +1,6 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
@@ -16,11 +16,13 @@ import {
   SplitHandle,
   SplitPanel,
   Tabs,
+  Toolbar,
   showContextMenu,
   type MenuItem,
   type TabItem,
   T,
 } from "@/ui";
+import { revealVertically } from "@/ui/Tabs";
 import { setMuted, useBreakpoints } from "../breakpoints/store";
 import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
@@ -218,43 +220,43 @@ export function DebugToolWindow() {
 
   return (
     <div className={styles.root}>
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Debugger actions")}>
-        {/* IDEA's XDebugger.ToolWindow.TopToolbar3 (+ its "More" group), then the views. */}
-        <ToolButton action="debug.rerun" icon="rerun" />
-        <ToolButton action="debug.stop" icon="stop" tone="danger" />
-        <span className={styles.sep} aria-hidden />
-        <ToolButton action="debug.resume" icon="resume" />
-        <ToolButton action="debug.pause" icon="pause" />
-        <ToolButton action="debug.stepOver" icon="step-over" />
-        <ToolButton action="debug.stepInto" icon="step-into" />
-        <ToolButton action="debug.stepOut" icon="step-out" />
-        <span className={styles.sep} aria-hidden />
-        {rootOf(active).adapter === "dart" && (
-          <>
-            <ToolButton action="debug.hotReload" icon="hot-reload" />
-            <ToolButton action="debug.hotRestart" icon="refresh" />
-            {rootOf(active).vmServiceUri && <ToolButton action="debug.openDevTools" icon="external-link" />}
-            <span className={styles.sep} aria-hidden />
-          </>
-        )}
-        <IconButton
-          icon="view-breakpoints"
-          action="debug.viewBreakpoints"
-          size="small"
-          iconSize={16}
-          className={styles.tool}
-        />
-        <IconButton
-          icon="mute-breakpoint"
-          title={muted ? "Unmute Breakpoints" : "Mute Breakpoints"}
-          pressed={muted}
-          size="small"
-          iconSize={16}
-          className={styles.tool}
-          onClick={() => setMuted(!muted)}
-        />
-        <MoreActions />
-        <span className={styles.sep} aria-hidden />
+      <div className={styles.toolbar}>
+        <Toolbar className={styles.actions} aria-label="Debugger actions">
+          <ToolButton action="debug.rerun" icon="rerun" />
+          <ToolButton action="debug.stop" icon="stop" tone="danger" />
+          <span className={styles.sep} aria-hidden />
+          <ToolButton action="debug.resume" icon="resume" />
+          <ToolButton action="debug.pause" icon="pause" />
+          <ToolButton action="debug.stepOver" icon="step-over" />
+          <ToolButton action="debug.stepInto" icon="step-into" />
+          <ToolButton action="debug.stepOut" icon="step-out" />
+          <span className={styles.sep} aria-hidden />
+          {rootOf(active).adapter === "dart" && (
+            <>
+              <ToolButton action="debug.hotReload" icon="hot-reload" />
+              <ToolButton action="debug.hotRestart" icon="refresh" />
+              {rootOf(active).vmServiceUri && <ToolButton action="debug.openDevTools" icon="external-link" />}
+              <span className={styles.sep} aria-hidden />
+            </>
+          )}
+          <IconButton
+            icon="view-breakpoints"
+            action="debug.viewBreakpoints"
+            size="small"
+            iconSize={16}
+            className={styles.tool}
+          />
+          <IconButton
+            icon="mute-breakpoint"
+            title={muted ? "Unmute Breakpoints" : "Mute Breakpoints"}
+            pressed={muted}
+            size="small"
+            iconSize={16}
+            className={styles.tool}
+            onClick={() => setMuted(!muted)}
+          />
+          <MoreActions />
+        </Toolbar>
         <div role="tablist" aria-label={tx("Debug views")} className={styles.tabs}>
           {(
             [
@@ -346,10 +348,15 @@ function ThreadsAndVariables({ session }: { session: DebugSession }) {
 function FramesPane({ session }: { session: DebugSession }) {
   const root = useProject((s) => s.project?.root ?? null);
   const [showAll, setShowAll] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
+  const selectedRow = useRef<HTMLButtonElement>(null);
   const items = useMemo(
     () => groupFrames(session.frames, root, session.selectedFrame, showAll),
     [session.frames, root, session.selectedFrame, showAll],
   );
+  useLayoutEffect(() => {
+    if (list.current && selectedRow.current) revealVertically(list.current, selectedRow.current);
+  }, [items]);
   const paused = session.status === "paused";
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -364,19 +371,24 @@ function FramesPane({ session }: { session: DebugSession }) {
   return (
     <div className={styles.frames}>
       {session.threads.length > 0 && (
-        <Select
-          value={session.selectedThread != null ? String(session.selectedThread) : null}
-          options={session.threads.map((t) => ({
-            value: String(t.id),
-            label: t.name,
-            detail: t.id === session.stoppedThread ? "suspended" : undefined,
-          }))}
-          onChange={(v) => void selectThread(session.id, +v)}
-          aria-label="Thread"
-          className={styles.threadSelect}
-        />
+        <div className={styles.threadHeader}>
+          <Select
+            value={session.selectedThread != null ? String(session.selectedThread) : null}
+            options={session.threads.map((t) => ({
+              value: String(t.id),
+              label: t.name,
+              verbatim: true,
+              detail: t.id === session.stoppedThread ? "suspended" : undefined,
+            }))}
+            onChange={(v) => void selectThread(session.id, +v)}
+            aria-label="Thread"
+            variant="ghost"
+            className={styles.threadSelect}
+          />
+        </div>
       )}
       <div
+        ref={list}
         className={styles.frameList}
         role="listbox"
         aria-label={tx("Frames")}
@@ -414,9 +426,11 @@ function FramesPane({ session }: { session: DebugSession }) {
           ) : (
             <button
               key={item.frame.id}
+              ref={item.frame.id === session.selectedFrame ? selectedRow : undefined}
               type="button"
               role="option"
               aria-selected={item.frame.id === session.selectedFrame}
+              title={item.frame.path ? `${frameLabel(item.frame)}, ${basename(item.frame.path)}` : item.frame.name}
               className={clsx(
                 styles.frame,
                 item.frame.id === session.selectedFrame && styles.frameSelected,
@@ -458,13 +472,15 @@ function FramesPane({ session }: { session: DebugSession }) {
               }}
             >
               <Icon name="method" size={16} className={styles.frameIcon} />
-              <span className={styles.frameName}>{item.frame.name}</span>
-              {item.frame.path && (
-                <span className={styles.frameFile}>
-                  , {basename(item.frame.path)}
-                  {item.frame.line >= 0 ? `:${item.frame.line + 1}` : ""}
+              <span className={styles.frameText}>
+                <span className={styles.frameLabel}>
+                  <span className={styles.frameName}>{item.frame.name}</span>
+                  {item.frame.path && item.frame.line >= 0 && (
+                    <span className={styles.frameLine}>:{item.frame.line + 1}</span>
+                  )}
                 </span>
-              )}
+                {item.frame.path && <span className={styles.frameFile}>, {basename(item.frame.path)}</span>}
+              </span>
             </button>
           ),
         )}

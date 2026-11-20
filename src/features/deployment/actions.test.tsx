@@ -46,6 +46,7 @@ vi.mock("@/platform/workflowSettings", () => ({
 vi.mock("@/workbench/contributions", () => ({
   notifications: () => ({ notify: mocks.notify }),
   projectViewSelection: () => [],
+  changesViewSelection: () => [],
   toolWindowService: vi.fn(),
 }));
 vi.mock("@/workbench/inputDialogs", () => ({ chooseItem: mocks.choose }));

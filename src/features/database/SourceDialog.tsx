@@ -1020,13 +1020,15 @@ export function SourceDialog({
             }
             onChange={(e) => setOptions({ timeZone: e.target.value })}
           />
-          <SecondsOption
-            label="Run keep-alive query each"
-            value={options.keepAliveSecs}
-            fallback={60}
-            onChange={(keepAliveSecs) => setOptions({ keepAliveSecs })}
-          />
         </>
+      )}
+      {!sqlite && (
+        <SecondsOption
+          label="Run keep-alive query each"
+          value={options.keepAliveSecs}
+          fallback={60}
+          onChange={(keepAliveSecs) => setOptions({ keepAliveSecs })}
+        />
       )}
       <SecondsOption
         label="Auto-disconnect after"
@@ -1404,7 +1406,7 @@ export function SourceDialog({
       open
       onClose={closeDialog}
       title={initial ? tx`Data Source: ${initial.name}` : "New Data Source"}
-      width={640}
+      width={760}
       footerStart={
         <Button onClick={() => void runTest()} disabled={busy || !valid}>
           <T>Test Connection</T>
@@ -1415,74 +1417,76 @@ export function SourceDialog({
         { label: "OK", role: "default", disabled: busy || !valid, onClick: () => void save() },
       ]}
     >
-      <div className={styles.form}>
-        <label className={styles.formLabel} htmlFor="db-name">
-          <T>Name:</T>
-        </label>
-        <div className={styles.formRow}>
-          <Input
-            id="db-name"
-            className={styles.fill}
-            value={s.name ?? ""}
-            placeholder={name}
-            onChange={(e) => set({ name: e.target.value })}
-          />
-          <span className={styles.formLabel}>
-            <T>Color:</T>
-          </span>
-          <Select
-            aria-label="Color"
-            className={styles.narrowSelect}
-            value={s.color ?? "none"}
-            options={COLORS}
-            onChange={(c) => set({ color: c === "none" ? null : c })}
-            renderValue={(o) => (
-              <span className={styles.colorValue}>
-                {o && o.value !== "none" && (
-                  <span className={styles.colorSwatch} style={{ background: colorVar(o.value as DbColor) }} />
-                )}
-                <T>{o?.label ?? "No color"}</T>
-              </span>
-            )}
-          />
-          {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
-          <span title={tx("Available in all projects")}>
-            <Checkbox
-              checked={!!s.global}
-              disabled={!!s.pluginOwner}
-              onChange={(global) => set({ global })}
-              label="Global"
+      <div className={styles.sourceLayout}>
+        <div className={styles.form}>
+          <label className={styles.formLabel} htmlFor="db-name">
+            <T>Name:</T>
+          </label>
+          <div className={styles.formRow}>
+            <Input
+              id="db-name"
+              className={styles.fill}
+              value={s.name ?? ""}
+              placeholder={name}
+              onChange={(e) => set({ name: e.target.value })}
             />
-          </span>
+            <span className={styles.formLabel}>
+              <T>Color:</T>
+            </span>
+            <Select
+              aria-label="Color"
+              className={styles.narrowSelect}
+              value={s.color ?? "none"}
+              options={COLORS}
+              onChange={(c) => set({ color: c === "none" ? null : c })}
+              renderValue={(o) => (
+                <span className={styles.colorValue}>
+                  {o && o.value !== "none" && (
+                    <span className={styles.colorSwatch} style={{ background: colorVar(o.value as DbColor) }} />
+                  )}
+                  <T>{o?.label ?? "No color"}</T>
+                </span>
+              )}
+            />
+            {/* IDEA's Make Global: stored with the IDE and listed in every project. */}
+            <span title={tx("Available in all projects")}>
+              <Checkbox
+                checked={!!s.global}
+                disabled={!!s.pluginOwner}
+                onChange={(global) => set({ global })}
+                label="Global"
+              />
+            </span>
+          </div>
+          <span />
+          {showComment ? (
+            <textarea
+              className={styles.textArea}
+              aria-label={tx("Comment")}
+              autoFocus={!s.comment}
+              rows={2}
+              value={s.comment ?? ""}
+              placeholder={tx("Comment")}
+              onChange={(e) => set({ comment: e.target.value })}
+            />
+          ) : (
+            <button type="button" className={styles.linkButton} onClick={() => setShowComment(true)}>
+              <T>Add comment</T>
+            </button>
+          )}
         </div>
-        <span />
-        {showComment ? (
-          <textarea
-            className={styles.textArea}
-            aria-label={tx("Comment")}
-            autoFocus={!s.comment}
-            rows={2}
-            value={s.comment ?? ""}
-            placeholder={tx("Comment")}
-            onChange={(e) => set({ comment: e.target.value })}
-          />
-        ) : (
-          <button type="button" className={styles.linkButton} onClick={() => setShowComment(true)}>
-            <T>Add comment</T>
-          </button>
-        )}
-      </div>
-      <Tabs
-        variant="compact"
-        className={styles.dialogTabs}
-        activeId={current}
-        onSelect={(id) => setTab(id as Tab)}
-        aria-label="Data source settings"
-        panelIdPrefix="db-source"
-        items={tabs}
-      />
-      <div className={styles.form} role="tabpanel" id={`db-source-panel-${current}`}>
-        {body[current]}
+        <Tabs
+          variant="compact"
+          className={styles.dialogTabs}
+          activeId={current}
+          onSelect={(id) => setTab(id as Tab)}
+          aria-label="Data source settings"
+          panelIdPrefix="db-source"
+          items={tabs}
+        />
+        <div className={`${styles.form} ${styles.sourcePanel}`} role="tabpanel" id={`db-source-panel-${current}`}>
+          {body[current]}
+        </div>
         <div className={`${styles.testResult} ${test?.ok ? styles.ok : styles.bad}`} role="status">
           {busy && !test ? tx("Connecting…") : test?.text}
           {test?.trust && (

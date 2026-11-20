@@ -10,19 +10,17 @@ const tooltipSurface = {
   color: "var(--fg)",
 };
 
-/**
- * Row metrics that put a label one icon column right of the popup's left edge. They live on the
- * popup as custom properties so every rule consuming them — including the popup's negative
- * offset below — changes together. The remaining 1px is tooltipSurface's border, shared with
- * the hover and signature tooltips.
- */
+const completionInsets = { edge: 4, padding: 6, icon: 16, gap: 6 };
+export const completionLabelOffset =
+  1 + completionInsets.edge + completionInsets.padding + completionInsets.icon + completionInsets.gap;
+
 const completionRowMetrics = {
   // Rows grow with the editor font size (lookup text uses the editor font, as typed text does).
   "--cm-completion-row": "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))",
-  "--cm-completion-edge": "4px",
-  "--cm-completion-inset": "6px",
-  "--cm-completion-icon": "16px",
-  "--cm-completion-gap": "6px",
+  "--cm-completion-edge": `${completionInsets.edge}px`,
+  "--cm-completion-inset": `${completionInsets.padding}px`,
+  "--cm-completion-icon": `${completionInsets.icon}px`,
+  "--cm-completion-gap": `${completionInsets.gap}px`,
 };
 
 const markdown = {
@@ -103,22 +101,19 @@ export const lspTheme = EditorView.theme({
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
-    // CodeMirror anchors the popup at the completed word's start. Pull it left by one row's
-    // leading inset so the labels, not the icon column, sit on the text. CodeMirror's horizontal
-    // clamp measures the border box (margins excluded), so this offset sits outside its math:
-    // near the right edge it leaves that much extra space, and a word starting within one inset
-    // of the viewport's left edge would let the popup clip there. The normal editor layout
-    // (gutter + project sidebar) keeps the word well clear of that edge.
-    marginLeft:
-      "calc(-1 * (1px + var(--cm-completion-edge) + var(--cm-completion-inset) + var(--cm-completion-icon) + var(--cm-completion-gap)))",
+    display: "flex",
+    flexDirection: "column",
+    width: "max-content",
+    maxWidth: "min(720px, var(--cm-completion-max-width, 100vw))",
     // No overflow clipping: CodeMirror nests the documentation pane in this box and
     // positions it outside it (see `positionCompletionInfo`). The footer rounds itself.
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
-    minWidth: "420px",
-    maxWidth: "min(720px, 80vw)",
+    minWidth: "0",
+    maxWidth: "100%",
+    height: "auto",
     maxHeight: "calc(var(--cm-completion-row) * 11 + 8px)",
     padding: "4px 0",
   },
@@ -153,9 +148,15 @@ export const lspTheme = EditorView.theme({
     alignItems: "center",
     justifyContent: "center",
   },
-  ".cm-lsp-completion .cm-completionLabel": { flex: "none", overflow: "hidden", textOverflow: "ellipsis" },
+  ".cm-lsp-completion .cm-completionLabel": {
+    flex: "0 1 auto",
+    minWidth: "0",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
   ".cm-lsp-completion .cm-completionDetail": {
     flex: "0 1 auto",
+    minWidth: "0",
     marginLeft: "0",
     fontStyle: "normal",
     color: "var(--fg-subtle)",
@@ -172,7 +173,8 @@ export const lspTheme = EditorView.theme({
     marginLeft: "calc(-1 * var(--cm-completion-gap))",
   },
   ".cm-lsp-completion .cm-lsp-type": {
-    flex: "1 0 auto",
+    flex: "0 1 auto",
+    minWidth: "0",
     maxWidth: "60%",
     marginLeft: "auto",
     paddingLeft: "16px",
@@ -188,18 +190,21 @@ export const lspTheme = EditorView.theme({
   },
   ".cm-lsp-completion-footer": {
     display: "flex",
+    flex: "none",
+    flexWrap: "wrap",
     alignItems: "center",
     padding: "5px 12px",
     backgroundColor: "var(--bg-popup-inline, var(--bg-elev))",
     color: "var(--fg-subtle)",
     fontFamily: "var(--font-ui)",
     fontSize: "var(--fs-small)",
-    whiteSpace: "nowrap",
-    gap: "12px",
+    gap: "var(--space-1) var(--space-3)",
     justifyContent: "space-between",
     borderRadius: "0 0 calc(var(--radius-popup) - 1px) calc(var(--radius-popup) - 1px)",
   },
   ".cm-lsp-completion-sort": {
+    flex: "none",
+    maxWidth: "100%",
     padding: "0",
     border: "none",
     background: "none",
@@ -265,28 +270,35 @@ export const lspTheme = EditorView.theme({
     cursor: "pointer",
   },
   ".cm-lsp-link-button:hover": { color: "var(--link-hover)", textDecoration: "underline" },
-  ".cm-lsp-signature": {
+  ".cm-tooltip.cm-lsp-signature": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
-    padding: "6px 10px",
-    maxWidth: "640px",
+    maxWidth: "min(640px, var(--cm-signature-width, 100%))",
+    maxHeight: "min(380px, 65vh)",
+    paddingBlock: "var(--space-0-5)",
+    overflow: "auto",
+    overscrollBehavior: "contain",
   },
-  ".cm-lsp-signature-row": { color: "var(--fg-subtle)", whiteSpace: "pre-wrap", lineHeight: "max(20px, 1.5em)" },
+  ".cm-lsp-signature-row": {
+    color: "var(--fg-secondary)",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+    lineHeight: "1.5",
+    padding: "var(--space-0-5) var(--space-2)",
+    paddingInlineStart: "calc(var(--space-2) + 2ch)",
+    textIndent: "-2ch",
+  },
   ".cm-lsp-signature-active": {
     color: "var(--fg-strong)",
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
-    margin: "0 -10px",
-    padding: "0 10px",
   },
   ".cm-lsp-signature-disabled": { opacity: "0.55" },
   ".cm-lsp-signature b": { fontWeight: "var(--fw-code-bold, 700)", color: "var(--fg-strong)" },
   ".cm-lsp-signature-doc": {
     borderTop: "1px solid var(--border-popup)",
-    marginTop: "6px",
-    paddingTop: "6px",
-    maxHeight: "160px",
-    overflow: "auto",
+    marginTop: "var(--space-1)",
+    padding: "var(--space-2)",
   },
   ".cm-tooltip:has(> .cm-lsp-hint)": { background: "none", border: "none", boxShadow: "none" },
   ".cm-lsp-hint": {

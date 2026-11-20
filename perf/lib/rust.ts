@@ -14,6 +14,7 @@ export const RUST_BENCHMARKS: Readonly<Record<string, readonly string[]>> = {
     "text/text_for_save_crlf_1mb",
     "text/diff_one_edit_5mb",
   ],
+  "ide-lsp": ["lsp/did_change_incremental_1mb"],
   "ide-language": [
     "syntax_2mb/outline_uncached",
     "syntax_2mb/folding_uncached",
@@ -53,6 +54,7 @@ export const RUST_BENCHMARKS: Readonly<Record<string, readonly string[]>> = {
 const OBSERVE_ONLY: Readonly<Record<string, true>> = {
   "syntax_2mb/outline_uncached": true,
   "syntax_2mb/folding_uncached": true,
+  "lsp/did_change_incremental_1mb": true,
   "index_100k/find_files/zzzz": true,
   "index_100k/find_symbols/renderView": true,
   "startup_20k/reopen_wait_idle": true,

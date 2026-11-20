@@ -1,6 +1,40 @@
 import type { Page } from "@playwright/test";
 import { expect, openFromTree, test } from "./fixtures";
 
+test("managed console tabs identify their data source and ordinary SQL tabs keep the file name", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const database = "/src/features/database/store.ts";
+    const workbench = "/src/workbench/contributions.ts";
+    const { useDatabase, bindConsole } = await import(database);
+    const { editorService } = await import(workbench);
+    const console = "/app-data/consoles/db/demo/console.sql";
+    useDatabase.setState({ loaded: true, sources: [{ id: "demo", name: "Shop Demo", driver: "sqlite" }] });
+    bindConsole(console, "demo");
+    bindConsole("/acme-api/console.sql", "demo");
+    await editorService().openFile("/acme-api/console.sql", { focus: true });
+    await editorService().openFile(console, { focus: true });
+  });
+
+  const consoleTab = page.getByRole("tab", { name: "console [Shop Demo]", exact: true });
+  await expect(consoleTab).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "console.sql", exact: true })).toBeVisible();
+  await expect(page.getByRole("toolbar", { name: "Query Console", exact: true })).toContainText("main");
+
+  await page.evaluate(async () => {
+    const path = "/src/features/database/store.ts";
+    const { useDatabase } = await import(path);
+    useDatabase.setState((state: { sources: Array<{ name: string }> }) => ({
+      sources: state.sources.map((source) => ({ ...source, name: "Shop QA" })),
+    }));
+  });
+  await expect(page.getByRole("tab", { name: "console [Shop QA]", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+});
+
 const edgeTitle = "Result 3 — a long query result at the edge of the Services pane";
 const bindings = { "alpha-console.sql": "alpha", "beta-console.sql": "beta" };
 
@@ -153,7 +187,7 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
 for (const [theme, label] of [
   ["solarized-light", "Solarized Light"],
   ["solarized-dark", "Solarized Dark"],
-]) {
+] as const) {
   test(`${label}: retains the inactive context-menu target's hover until dismissal without selecting it`, async ({
     workbench: page,
   }, info) => {

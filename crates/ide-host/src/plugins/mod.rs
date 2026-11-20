@@ -925,6 +925,7 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        annotate_java_agent_vm_options(&mut capabilities, m);
         capabilities.sort_by(|a, b| b.risk.cmp(&a.risk).then(a.id.cmp(&b.id)));
         let signer_changed = self.signer_changed(&m.id, src);
         let answered = |c: &CapabilityInfo| {
@@ -3085,6 +3086,7 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        annotate_java_agent_vm_options(&mut capabilities, m);
         // Hosts remembered through `net:ask` are grants of their own: listed
         // separately so the user can revoke them one by one.
         let net_hosts = grant
@@ -3118,6 +3120,8 @@ impl PluginHost {
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_else(|| agent.jar.display().to_string()),
                     args: agent.args,
+                    vm_options: agent.vm_options,
+                    jdk: agent.jdk,
                     approved,
                 }
             }),
@@ -3155,6 +3159,20 @@ fn agent_jar_grant(manifest: &Manifest, dir: &Path) -> Option<BinaryGrant> {
     let path = java_agents::declared_jar(manifest, dir)?;
     let hash = ledger::file_hash(&path).map_err(|e| tracing::info!("java.agent: {}: {e}", path.display())).ok()?;
     Some(BinaryGrant { path, hash })
+}
+
+/// Consent / Settings: surface exact contributed JVM flags on the `java.agent` permission.
+fn annotate_java_agent_vm_options(capabilities: &mut [CapabilityInfo], manifest: &Manifest) {
+    let opts = java_agents::declared_vm_options(manifest);
+    if opts.is_empty() {
+        return;
+    }
+    let flags = opts.join(" ");
+    for cap in capabilities.iter_mut() {
+        if cap.id == "java.agent" {
+            cap.description = format!("{}; JVM options: {flags}", cap.description);
+        }
+    }
 }
 
 fn request_for<'a>(subject: &Subject, m: &'a Manifest, hash: &'a str, declared: &[Capability]) -> Request<'a> {

@@ -1,15 +1,16 @@
 /** Status bar widgets of the active text editor (design footer). */
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, dirname, projectFolder, relativePath, useProject } from "@/platform/project";
 import type { LineEnding, OutlineItem } from "@/platform/ipc";
-import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
+import { BarButton, Icon, Menu, badgeKind, fileIconName, revealHorizontally } from "@/ui";
 import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
+import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
 import {
   gitRevisionOf,
   isUntitledUri,
@@ -145,15 +146,39 @@ function pathCrumbs(project: { root: string; name: string } | null, path: string
   return segments;
 }
 
-/** A row of crumbs; a segment with `nav` opens a popup of its children. */
-function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; className?: string; ariaLabel?: string }) {
-  const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
+function updateBreadcrumbEdges(row: HTMLDivElement) {
+  row.toggleAttribute("data-crumbs-before", row.scrollLeft > 1);
+  row.toggleAttribute("data-crumbs-after", row.scrollLeft + row.clientWidth < row.scrollWidth - 1);
+}
+
+function BreadcrumbStrip({
+  trail,
+  activateOnDown = false,
+  children,
+  ...props
+}: ComponentPropsWithoutRef<"nav"> & { trail: string; activateOnDown?: boolean }) {
+  const strip = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const row = strip.current;
+    if (!row) return;
+    const revealCurrent = () => {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && row.contains(focused)) revealHorizontally(row, focused);
+      else row.scrollLeft = row.scrollWidth;
+      updateBreadcrumbEdges(row);
+    };
+    revealCurrent();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(revealCurrent);
+    resize.observe(row);
+    return () => resize.disconnect();
+  }, [trail]);
   return (
     <nav
-      className={className}
-      aria-label={ariaLabel}
+      {...props}
       onKeyDown={(e) => {
-        const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+        if (e.altKey || e.ctrlKey || e.metaKey) return;
+        const buttons = [...(strip.current?.querySelectorAll("button") ?? [])];
         const index = buttons.indexOf(e.target as HTMLButtonElement);
         if (index < 0) return;
         let next: number;
@@ -161,7 +186,7 @@ function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; class
         else if (e.key === "ArrowRight") next = Math.min(buttons.length - 1, index + 1);
         else if (e.key === "Home") next = 0;
         else if (e.key === "End") next = buttons.length - 1;
-        else if (e.key === "ArrowDown") {
+        else if (e.key === "ArrowDown" && activateOnDown) {
           e.preventDefault();
           e.stopPropagation();
           buttons[index]?.click();
@@ -172,27 +197,61 @@ function CrumbNav({ segments, className, ariaLabel }: { segments: Crumb[]; class
         buttons[next]?.focus();
       }}
     >
-      {segments.map((s, i) => (
-        <Fragment key={i}>
-          {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
-          <BarButton
-            className={styles.crumbButton}
-            tooltip={s.title}
-            aria-haspopup={s.nav ? "listbox" : undefined}
-            onClick={(e) => {
-              const nav = s.nav;
-              const anchor = e.currentTarget;
-              if (nav) setPopup((p) => (p?.anchor === anchor ? null : { nav, anchor }));
-              else s.run?.();
-            }}
-          >
-            {s.icon && <Icon name={s.icon} size={16} className={styles.crumbIcon} />}
-            <span className={styles.crumbLabel}>{s.label}</span>
-          </BarButton>
-        </Fragment>
-      ))}
-      {popup && <NavChildrenPopup segment={popup.nav} anchor={popup.anchor} onClose={() => setPopup(null)} />}
+      <div
+        ref={strip}
+        className={styles.crumbStrip}
+        onScroll={(e) => updateBreadcrumbEdges(e.currentTarget)}
+        onWheel={(e) => {
+          if (e.shiftKey || e.ctrlKey || e.deltaX) return;
+          const row = e.currentTarget;
+          const scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? row.clientWidth : 1;
+          row.scrollLeft += e.deltaY * scale;
+        }}
+      >
+        {children}
+      </div>
     </nav>
+  );
+}
+
+/** A row of crumbs; a segment with `nav` opens a popup of its children. */
+function CrumbNav({ segments, className }: { segments: Crumb[]; className?: string }) {
+  const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
+  return (
+    <BreadcrumbStrip
+      trail={segments.map((s) => s.title).join("\n")}
+      activateOnDown
+      className={className}
+      aria-label={tx("Breadcrumbs")}
+    >
+      {segments.map((s, i) => {
+        const current = i === segments.length - 1;
+        const icon = s.nav?.kind === "dir" && !s.nav.root && !current ? undefined : s.icon;
+        return (
+          <Fragment key={i}>
+            {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
+            <BarButton
+              className={styles.crumbButton}
+              tooltip={s.title}
+              aria-current={current ? "location" : undefined}
+              aria-haspopup={s.nav ? "listbox" : undefined}
+              onClick={(e) => {
+                const nav = s.nav;
+                const anchor = e.currentTarget;
+                if (nav) setPopup((p) => (p?.anchor === anchor ? null : { nav, anchor }));
+                else s.run?.();
+              }}
+            >
+              {icon && (
+                <Icon name={icon} size={s.nav?.kind === "dir" && s.nav.root ? 12 : 16} className={styles.crumbIcon} />
+              )}
+              <span className={styles.crumbLabel}>{s.label}</span>
+            </BarButton>
+          </Fragment>
+        );
+      })}
+      {popup && <NavChildrenPopup segment={popup.nav} anchor={popup.anchor} onClose={() => setPopup(null)} />}
+    </BreadcrumbStrip>
   );
 }
 
@@ -241,7 +300,7 @@ export function Breadcrumbs({ className, inStatusBar = false }: { className?: st
     segments.push(projectCrumb(project ?? currentProject));
   }
   if (!segments.length) return null;
-  return <CrumbNav segments={segments} className={className ?? styles.status} ariaLabel={tx("Breadcrumbs")} />;
+  return <CrumbNav segments={segments} className={className ?? styles.status} />;
 }
 
 /** The status bar instance of the navigation bar; renders only for `statusBar`. */
@@ -262,7 +321,8 @@ export function CodeBreadcrumbs({
   tabId: string;
   position: "top" | "bottom";
 }) {
-  const prefs = useEditorPrefs().breadcrumbs;
+  const { breadcrumbs: prefs, fallbackFont } = useEditorPrefs();
+  const editorSettings = useProject((s) => s.settings?.editor);
   const language = useDocMeta((s) => s[path]?.language);
   const outline = useOutline((s) => s[path]);
   let chain = useCaretSymbols(path, outline);
@@ -278,29 +338,35 @@ export function CodeBreadcrumbs({
     !chain.length
   )
     return null;
+  const family = editorSettings?.fontFamily;
+  const fontFamily =
+    (family && family !== BUNDLED_MONO_FAMILY) || fallbackFont.trim()
+      ? monoFontFamily(family, fallbackFont, "var(--font-mono)")
+      : undefined;
+  const fontSize = editorSettings?.fontSize ?? undefined;
   return (
-    <nav
+    <BreadcrumbStrip
+      trail={JSON.stringify([path, fontFamily, fontSize, ...chain.map((item) => item.name)])}
+      style={{ fontFamily, fontSize }}
       className={clsx(styles.codeCrumbs, position === "top" ? styles.codeCrumbsTop : styles.codeCrumbsBottom)}
       aria-label={tx("Code breadcrumbs")}
     >
       {chain.map((item, i) => (
-        <Fragment key={i}>
-          {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
-          <BarButton
-            className={styles.crumbButton}
-            tooltip={item.detail ?? item.name}
-            onClick={() =>
-              void editorController().openFile(path, {
-                selection: { line: item.selection_range.start.line, col: item.selection_range.start.col },
-              })
-            }
-          >
-            <Icon name={`symbol-${badgeKind(item.kind)}`} size={14} className={styles.crumbIcon} />
-            <span className={styles.crumbLabel}>{item.name}</span>
-          </BarButton>
-        </Fragment>
+        <BarButton
+          key={i}
+          className={styles.crumbButton}
+          tooltip={item.detail ?? item.name}
+          aria-current={i === chain.length - 1 ? "location" : undefined}
+          onClick={() =>
+            void editorController().openFile(path, {
+              selection: { line: item.selection_range.start.line, col: item.selection_range.start.col },
+            })
+          }
+        >
+          <span className={styles.crumbLabel}>{item.name}</span>
+        </BarButton>
       ))}
-    </nav>
+    </BreadcrumbStrip>
   );
 }
 

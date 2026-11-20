@@ -25,7 +25,7 @@ import {
   type CompletionSource,
 } from "@codemirror/autocomplete";
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
-import { EditorView, ViewPlugin, keymap, type Rect, type ViewUpdate } from "@codemirror/view";
+import { EditorView, ViewPlugin, getTooltip, keymap, showTooltip, type Rect, type ViewUpdate } from "@codemirror/view";
 import {
   call,
   commands,
@@ -59,6 +59,8 @@ import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
 import { languageSemantics } from "./semantic";
 import { remoteChange } from "@/editor/api";
+import { tooltipBounds } from "@/editor/core/cm/setup";
+import { completionLabelOffset } from "./theme";
 
 interface RequestContext {
   doc: number;
@@ -983,36 +985,45 @@ function sortToggle(view: EditorView): HTMLElement {
   return button;
 }
 
-/** IDEA's advertiser bar under the list (one tip: "Press ↵ to insert, ⇥ to replace") and its Sort by Name toggle. */
-const completionFooter = ViewPlugin.fromClass(
+const completionPopup = ViewPlugin.fromClass(
   class {
     constructor(private view: EditorView) {}
     update(u: ViewUpdate) {
       if (completionStatus(u.state) !== "active") return;
       this.view.requestMeasure({
-        read: () => null,
-        write: () => {
-          const scope = this.view.dom.ownerDocument;
-          const tooltips = [
-            ...this.view.dom.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-            ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
-          ];
-          for (const t of tooltips) {
-            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
-            if (footer) {
-              // CodeMirror rebuilds the option list by appending a fresh <ul>,
-              // which would leave an existing footer above the list.
-              const list = t.querySelector(":scope > ul");
-              if (list && list.nextElementSibling !== footer) list.after(footer);
-              continue;
-            }
+        key: this,
+        read: () => {
+          const { left, right } = tooltipBounds(this.view);
+          return {
+            width: `${Math.max(0, Math.floor(right - left))}px`,
+            fontSize: getComputedStyle(this.view.contentDOM).fontSize,
+          };
+        },
+        write: ({ width, fontSize }) => {
+          const popup = this.view.state
+            .facet(showTooltip)
+            .map((tooltip) => tooltip && getTooltip(this.view, tooltip))
+            .find((tooltip) => tooltip?.dom.classList.contains("cm-lsp-completion"));
+          if (!popup) return;
+          // Apply the label alignment inside CodeMirror's viewport clamp.
+          popup.offset = { x: -completionLabelOffset, y: 0 };
+          const t = popup.dom;
+          if (t.style.getPropertyValue("--cm-completion-max-width") !== width)
+            t.style.setProperty("--cm-completion-max-width", width);
+          // The body-level tooltip does not inherit the editor's temporary font zoom.
+          if (t.style.getPropertyValue("--openidea-editor-font-size") !== fontSize)
+            t.style.setProperty("--openidea-editor-font-size", fontSize);
+          let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+          if (!footer) {
             footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
             footer.append(tip, sortToggle(this.view));
-            t.appendChild(footer);
           }
+          // CodeMirror appends a fresh list when the candidates change.
+          const list = t.querySelector(":scope > ul");
+          if (list && list.nextElementSibling !== footer) list.after(footer);
         },
       });
     }
@@ -1067,7 +1078,7 @@ export function completionExtension() {
       tooltipClass: () => "cm-lsp-completion",
       positionInfo: positionCompletionInfo,
     }),
-    completionFooter,
+    completionPopup,
     lookupTracker,
     serverInsertAt,
     caretAfterServerInsert,

@@ -1,7 +1,7 @@
 use super::page::{OFFSET, Page};
 use super::search::{PathScope, paths_param};
 use super::tool::{Call, Output, Param, ParamType, Tool};
-use ide_core::{Diagnostic, IdeResult, Severity};
+use ide_core::{Diagnostic, IdeError, IdeResult, Severity};
 use serde_json::{Map, Value, json};
 
 /// Problems `get_project_problems` lists by default.
@@ -51,7 +51,28 @@ Lines and UTF-16 columns are 1-based.",
     ]
 }
 
+/// Editors and the Problems view are reported by a window: a project served in the
+/// background has none, and says so instead of answering as if nothing were open.
+fn reported_by_a_window(call: &Call) -> IdeResult<()> {
+    if !super::BackgroundProjects::is_key(call.window()) {
+        return Ok(());
+    }
+    let (tool, root) = (&call.tool, call.root().display());
+    Err(IdeError::unavailable(format!(
+        "{tool} needs the project open in a window: {root} is served in the background."
+    )))
+}
+
+/// [`reported_by_a_window`] for the Problems view, which `check_files` stands in for.
+fn problems_reported_by_a_window(call: &Call) -> IdeResult<()> {
+    reported_by_a_window(call).map_err(|mut error| {
+        error.message.push_str(" Use check_files for diagnostics.");
+        error
+    })
+}
+
 async fn open_editors(call: Call) -> IdeResult<Output> {
+    reported_by_a_window(&call)?;
     let paths = PathScope::of(&call)?;
     let windows = call.host.mcp_windows(call.root());
     let open = call.host.mcp_reports.editors(&windows);
@@ -63,6 +84,7 @@ async fn open_editors(call: Call) -> IdeResult<Output> {
 }
 
 async fn current_file(call: Call) -> IdeResult<Output> {
+    reported_by_a_window(&call)?;
     let editor = call.host.mcp_reports.focused(call.window());
     Output::json(match editor {
         None => json!({}),
@@ -85,6 +107,7 @@ pub(super) fn problem(d: Diagnostic, text: &str) -> Value {
 }
 
 async fn file_problems(call: Call) -> IdeResult<Output> {
+    problems_reported_by_a_window(&call)?;
     let path = call.resolve_readable(&call.str("filePath")?).await?;
     let errors_only = call.flag("errorsOnly", true)?;
     let files = call.host.mcp_reports.problems(&call.host.mcp_windows(call.root()));
@@ -101,6 +124,7 @@ async fn file_problems(call: Call) -> IdeResult<Output> {
 }
 
 async fn project_problems(call: Call) -> IdeResult<Output> {
+    problems_reported_by_a_window(&call)?;
     let page = Page::of(&call, PROBLEMS_LIMIT)?;
     let errors_only = call.flag("errorsOnly", true)?;
     let paths = PathScope::of(&call)?;

@@ -6,7 +6,7 @@ for (const [id, selector] of [
   ["languages.servers", "[class*='body'] > [class*='language'][aria-label]"],
   ["plugins", "[class*='body'] > [class*='details']"],
   ["agents.list", "section[aria-label='Codex']"],
-]) {
+] as const) {
   test(`${id} keeps its details usable beside the list`, async ({ workbench: page }) => {
     await page.keyboard.press("Meta+,");
     const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
@@ -95,4 +95,27 @@ test("Project Structure keeps every details pane usable in a compact window", as
     await expect(details).toBeAttached();
     expect((await details.boundingBox())!.width).toBeGreaterThan(200);
   }
+});
+
+test("Project Structure starts with compact navigation and remembers the divider", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+;");
+  const dialog = page.getByRole("dialog", { name: "Project Structure", exact: true });
+  const sections = dialog.getByRole("navigation", { name: "Project Structure sections" });
+  const handle = dialog.getByRole("separator", { name: "Project Structure sections" });
+  await expect(handle).toBeVisible();
+  const width = async () => (await sections.boundingBox())!.width;
+  const initial = await width();
+  const layout = (await dialog.getByTestId("project-structure-layout").boundingBox())!.width;
+  expect(initial / layout).toBeCloseTo(0.15, 2);
+
+  await handle.press("ArrowRight");
+  await expect.poll(width).toBeGreaterThan(initial + 10);
+  const resized = await width();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await page.keyboard.press("Meta+;");
+  await expect(handle).toBeVisible();
+  await expect.poll(width).toBeCloseTo(resized, 0);
+  await sections.getByRole("button", { name: "Modules", exact: true }).click();
+  await expect(sections.getByRole("button", { name: "Modules", exact: true })).toHaveAttribute("aria-current", "page");
 });

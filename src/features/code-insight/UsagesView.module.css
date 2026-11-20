@@ -25,15 +25,15 @@
   background: var(--border);
 }
 .summary {
-  height: 26px;
+  min-height: 26px;
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
-  padding: 0 10px;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-1-5);
+  padding: var(--space-0-5) 10px;
   font-size: var(--fs-ui);
   color: var(--fg-subtle);
-  white-space: nowrap;
 }
 .groupLabel {
   color: var(--fg);
@@ -42,12 +42,13 @@
   color: var(--danger);
 }
 .link {
-  flex: none;
+  max-width: 100%;
   border: none;
   background: none;
   padding: 0;
   font: inherit;
   color: var(--link);
+  text-align: left;
   cursor: pointer;
 }
 .link:hover {
@@ -81,9 +82,18 @@
   flex: none;
 }
 .file {
+  flex: none;
+  max-width: 56%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg);
 }
-.muted,
+.directory {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
 .count {
   flex: none;
   color: var(--fg-subtle);
@@ -101,7 +111,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-code);
   color: var(--fg);
 }
 .match {
@@ -134,4 +144,19 @@
 .panel > * {
   flex: 1;
   min-height: 0;
+}
+.splitFrame {
+  display: flex;
+  min-width: 0;
+}
+.sourcePreview {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: 1.45;
+}
+.sourcePreview .sourceText[role="region"] {
+  font: inherit;
+  font-weight: var(--fw-code);
 }

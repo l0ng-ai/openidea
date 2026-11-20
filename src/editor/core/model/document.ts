@@ -28,7 +28,7 @@ import {
 } from "@/editor/api";
 import { isUntitledUri, isVirtualUri } from "@/platform/virtualDocs";
 import { DocSync, type Scheduler, frameScheduler } from "../sync/DocSync";
-import type { DocBackend, LanguageInfo } from "../backend";
+import type { DocBackend, DocDirtyEvent, LanguageInfo } from "../backend";
 import {
   findLanguageDescription,
   languageInfo,
@@ -261,6 +261,7 @@ export class DocModel {
   handoffRelease = false;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private saving: Promise<void> = Promise.resolve();
+  private backendDirty: DocDirtyEvent | null = null;
   private meta: DocMeta;
 
   constructor(
@@ -321,6 +322,7 @@ export class DocModel {
             changes: eventChanges,
           });
         },
+        onSynced: () => this.applyBackendClean(),
         onDiscarded: (reason) => {
           logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
           manager.notify({
@@ -343,6 +345,26 @@ export class DocModel {
   setMeta(patch: Partial<DocMeta>) {
     this.meta = { ...this.meta, ...patch };
     if (!this.closed) useDocMeta.setState({ [this.path]: this.meta });
+  }
+
+  onBackendDirty(event: DocDirtyEvent) {
+    if (this.backendDirty && event.version < this.backendDirty.version) return;
+    this.backendDirty = event;
+    if (event.dirty) {
+      if (!this.meta.dirty) this.setMeta({ dirty: true });
+    } else this.applyBackendClean();
+  }
+
+  private applyBackendClean() {
+    const event = this.backendDirty;
+    if (event && !event.dirty) this.markClean(event.version);
+  }
+
+  private markClean(version: number) {
+    // A clean event can arrive before an edit acknowledgement or after a newer edit.
+    if (!this.meta.dirty || !this.sync.idle || this.sync.serverVersion !== version) return;
+    this.modified.clear();
+    this.setMeta({ dirty: false });
   }
 
   ctx(): EditorDocContext {
@@ -713,16 +735,20 @@ export class DocModel {
         // an explicit save asks for one (Save As re-points the buffer, or stays
         // dirty on Cancel).
         if (reason === "auto") return;
-        if (await this.manager.saveAs(this)) this.modified.clear();
+        await this.manager.saveAs(this);
         return;
       }
       const backend = this.manager.backend;
+      const version = this.sync.serverVersion;
+      const observedDirty = this.backendDirty;
       // Autosave never overwrites external changes made after the buffer was edited.
       if (reason === "auto" && backend.autosave) {
         if (!(await backend.autosave(this.doc))) return;
       } else await backend.save(this.doc);
-      this.modified.clear();
-      this.setMeta({ dirty: false });
+      // The reply does not identify what was saved. It only confirms the version
+      // we sent if the buffer and the observed backend dirty state haven't moved on.
+      if (this.backendDirty === observedDirty && (!observedDirty || observedDirty.version <= version))
+        this.markClean(version);
       _emitEditorEvent({ type: "docSaved", doc: this.doc, path: this.path });
     };
     this.saving = this.saving.then(run, run);
@@ -732,6 +758,7 @@ export class DocModel {
   /** Save As turned this untitled buffer into the file `info` points at. */
   retarget(info: DocumentInfo) {
     const old = this.path;
+    if (!this.backendDirty?.dirty || this.backendDirty.version < info.version) this.markClean(info.version);
     this.path = info.path;
     this.info = languageInfo(info.language);
     this.editorconfig = info.editorconfig ?? null;
@@ -743,7 +770,6 @@ export class DocModel {
       hasBom: info.hasBom,
       lineEnding: info.lineEnding,
       canReloadEncoding: info.canReloadEncoding,
-      dirty: false,
     };
     useDocMeta.setState((s) => {
       const next = { ...s };
@@ -803,13 +829,7 @@ export class DocumentManager {
       this.workspaceHistory.start(),
       this.backend.onPatched((e) => this.byId.get(e.doc)?.sync.remote(e)),
       this.backend.onLanguage?.((e) => this.byId.get(e.doc)?.setLanguage(e.language, e.uiMode)) ?? (() => {}),
-      this.backend.onDirty((e) => {
-        const m = this.byId.get(e.doc);
-        if (m && m.getMeta().dirty !== e.dirty) {
-          m.setMeta({ dirty: e.dirty });
-          if (!e.dirty) m.modified.clear();
-        }
-      }),
+      this.backend.onDirty((e) => this.byId.get(e.doc)?.onBackendDirty(e)),
     );
     let prev = useEditorRegistry.getState().contributions;
     this.disposers.push(

@@ -21,6 +21,25 @@ async function searchFiles(page: Page) {
   return dialog;
 }
 
+test("the popup leaves room around results with or without the preview", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1200, height: 900 });
+  const dialog = await searchFiles(page);
+  const preview = dialog.getByRole("region", { name: "Preview", exact: true });
+  const footer = dialog.locator("footer");
+  const expectPopupSize = async () => {
+    const { width, height } = (await dialog.boundingBox())!;
+    expect(width).toBeCloseTo(700, 0);
+    expect(height).toBeCloseTo(600, 0);
+    await expect(footer).toBeInViewport({ ratio: 1 });
+  };
+
+  await expect(preview).toBeVisible();
+  await expectPopupSize();
+  await dialog.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(preview).toBeHidden();
+  await expectPopupSize();
+});
+
 for (const count of [1, 2, 24]) {
   test(`without the preview the results list shows its rows (${count} results)`, async ({ workbench: page }) => {
     await stubDesktop(page);

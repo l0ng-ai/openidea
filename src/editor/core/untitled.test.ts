@@ -101,6 +101,40 @@ describe("untitled editor input", () => {
     expect(JSON.stringify(session)).not.toContain("untitled:");
   });
 
+  it("keeps edits made after a Save As write dirty when retargeting the tab", async () => {
+    await ctrl!.openUntitled({ focus: false });
+    const slot = ctrl!.slotFor(activeTab().id)!;
+    const model = await editActive("draft");
+    const path = "/p/saved.txt";
+    vi.mocked(save).mockResolvedValue(path);
+    let release!: () => void;
+    const response = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const originalSaveAs = backend.saveAs.bind(backend);
+    const saveAs = vi.spyOn(backend, "saveAs").mockImplementationOnce(async (...args) => {
+      const info = await originalSaveAs(...args);
+      await response;
+      return info;
+    });
+    const pending = model.save("explicit");
+    try {
+      await vi.waitFor(() => expect(backend.files.get(path)).toBe("draft\n"));
+      slot.dispatchLocal({ changes: { from: 5, insert: " newer" } });
+      await model.sync.whenIdle();
+      release();
+      await pending;
+      expect(activeTab().input.path).toBe(path);
+      expect(slot.currentState().doc.toString()).toBe("draft newer\n");
+      expect(backend.files.get(path)).toBe("draft\n");
+      expect(await backend.snapshot(model.doc)).toMatchObject({ text: "draft newer\n", dirty: true });
+      expect(useDocMeta.getState()[path]?.dirty).toBe(true);
+    } finally {
+      release();
+      await pending.finally(() => saveAs.mockRestore());
+    }
+  });
+
   it("offers the registered languages as save-as types", async () => {
     await ctrl!.openUntitled({ focus: false });
     const slot = ctrl!.slotFor(activeTab().id)!;

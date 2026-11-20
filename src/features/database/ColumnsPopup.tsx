@@ -7,6 +7,7 @@ import { Icon, Input, List, Popup, listNavigate } from "@/ui";
 import { tx } from "@/platform/i18n";
 import type { GridColumn } from "./Grid";
 import styles from "./Database.module.css";
+import { useRowHeight } from "@/ui/density";
 
 export function filterColumns(columns: readonly GridColumn[], query: string): number[] {
   const q = query.trim().toLowerCase();
@@ -24,6 +25,7 @@ export function ColumnsPopup(props: {
   onPick: (col: number) => void;
   onClose: () => void;
 }) {
+  const rowHeight = useRowHeight(22);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const shown = filterColumns(props.columns, query);
@@ -72,7 +74,7 @@ export function ColumnsPopup(props: {
         onActivate={(_, i) => pick(i)}
         focusable={false}
         hoverSelects
-        rowHeight={22}
+        rowHeight={rowHeight}
         aria-label={tx("Columns")}
         className={styles.columnsList}
         empty={<span>{tx("No matching columns")}</span>}

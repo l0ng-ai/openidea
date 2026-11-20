@@ -19,6 +19,7 @@ import { call, commands, type GutterAction, type Injection } from "@/platform/ip
 import { gutterIconMarkup } from "@/ui/icons";
 import { resolveMarkerIcon, onMarkerIconsChanged } from "./markerIcons";
 import { markerIcon } from "./lineMarkerGutter";
+import { hoverActionLayer, type HoverActionLayer, type PlacedHoverAction } from "./hoverActions";
 import styles from "@/editor/navigation/LineMarkers.module.css";
 
 export async function injectedHighlights(state: EditorState, injections: readonly Injection[]): Promise<DecorationSet> {
@@ -119,7 +120,9 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
           generation = 0;
           skipped = false;
           off: () => void;
+          hover: HoverActionLayer;
           constructor() {
+            this.hover = hoverActionLayer(view, ctx);
             const a = onNavigationProvidersChanged(() => this.schedule());
             const b = onMarkerIconsChanged(() => this.schedule());
             this.off = () => {
@@ -142,6 +145,12 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
             try {
               const result = await pluginVisuals(view, ctx);
               const deco = await injectedHighlights(view.state, result.injections);
+              const hover = await Promise.all(
+                (result.hoverActions ?? []).map(async ([plugin, a]) => ({
+                  plugin,
+                  action: { ...a, icon: await resolveMarkerIcon(plugin, a.icon) },
+                })),
+              );
               const placed = await Promise.all(
                 result.gutterActions
                   .filter(([, a]) => a.line < text.lines)
@@ -154,6 +163,7 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
               this.skipped = !view.dom.isConnected;
               if (this.skipped) return;
               view.dispatch({ effects: [setHighlight.of(deco), setActions.of(placed)] });
+              this.hover.set(hover as PlacedHoverAction[]);
             } catch (error) {
               console.debug("[plugin language visuals]", error);
             }
@@ -162,6 +172,7 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
             this.generation++;
             clearTimeout(this.timer);
             this.off();
+            this.hover.destroy();
           }
         })(),
     ),

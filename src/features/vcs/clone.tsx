@@ -130,6 +130,8 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
   const [error, setError] = useState<string | null>(null);
   const request = useRef<number | null>(null);
   const urlField = useRef<HTMLDivElement>(null);
+  const layout = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(false);
   const [recentUrls] = useState(readRecentUrls);
   const sources = cloneSourceList(useCloneSources((s) => s.sources));
   const source = sources.find((s) => s.id === sourceId);
@@ -140,6 +142,17 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
     return () => {
       alive = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const el = layout.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect.width;
+      if (width) setCompact(width < 580);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
 
   const dir = customDir ?? joinPath(parent, cloneDirName(url));
@@ -231,7 +244,7 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
         { label: "Cancel", role: "cancel", onClick: cancel },
       ]}
     >
-      <div className={styles.layout}>
+      <div ref={layout} className={styles.layout} data-compact={compact || undefined}>
         <aside className={styles.sidebar} aria-label={tx("Clone source")}>
           {[{ id: "url", label: "Repository URL", icon: "branch" }, ...sources].map((s) => (
             <button
@@ -243,7 +256,7 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
               disabled={busy}
               onClick={() => setSourceId(s.id)}
             >
-              <Icon name={s.icon} size={22} />
+              <Icon name={s.icon} size={16} />
               <span className={styles.sourceName}>
                 <T>{s.label}</T>
               </span>
@@ -264,11 +277,12 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
             </div>
           ) : (
             <>
-              <div className={styles.versionRow}>
-                <label id="vcs-clone-version-label">
+              <div className={styles.fieldRow}>
+                <label htmlFor="vcs-clone-version">
                   <T>Version control:</T>
                 </label>
                 <Select
+                  id="vcs-clone-version"
                   aria-label="Version control"
                   className={styles.versionSelect}
                   value="git"
@@ -337,19 +351,21 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
               onChange={setShallow}
               label={<T>Shallow clone with a history truncated to</T>}
             />
-            <Input
-              aria-label="Clone depth"
-              className={styles.depthInput}
-              type="number"
-              inputMode="numeric"
-              min={1}
-              step={1}
-              value={depthInput}
-              disabled={busy || !shallow}
-              invalid={shallow && depth === null}
-              onChange={(e) => setDepthInput(e.target.value)}
-            />
-            <T>commits</T>
+            <div className={styles.depthGroup}>
+              <Input
+                aria-label="Clone depth"
+                className={styles.depthInput}
+                type="number"
+                inputMode="numeric"
+                min={1}
+                step={1}
+                value={depthInput}
+                disabled={busy || !shallow}
+                invalid={shallow && depth === null}
+                onChange={(e) => setDepthInput(e.target.value)}
+              />
+              <T>commits</T>
+            </div>
           </div>
 
           <div className={styles.feedback}>

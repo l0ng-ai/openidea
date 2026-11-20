@@ -38,7 +38,7 @@ import {
   DB_TOOL_WINDOW,
   RESULTS_VIEW,
   consoleSource,
-  consoleTints,
+  consoleDecorations,
   inEditorResults,
   setInEditorResults,
   loadSources,
@@ -157,13 +157,14 @@ export function activate(): () => void {
         manualCommit: new Set(),
         pendingTx: new Set(),
         running: {},
+        executions: {},
         dialog: null,
         newMenuOpen: false,
       });
     }),
-    // Consoles of coloured data sources get a tinted tab.
     useDatabase.subscribe((s, prev) => {
-      if (s.consoles !== prev.consoles || s.sources !== prev.sources) setFileDecorations("database", consoleTints(s));
+      if (s.consoles !== prev.consoles || s.sources !== prev.sources)
+        setFileDecorations("database", consoleDecorations(s));
     }),
     () => setFileDecorations("database", new Map()),
     watchIdleConnections(),

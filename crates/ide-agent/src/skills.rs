@@ -1,6 +1,7 @@
 //! Claude Code's slash commands on disk, for completion before (or without) a session:
 //! skills (`.claude/skills/<dir>/SKILL.md`) and custom commands (`.claude/commands/**/*.md`)
-//! of the working directory and every directory above it, then the user's `~/.claude`.
+//! of the working directory and every directory above it, then the user's `~/.claude`; and
+//! the skills of a Hermes profile (`<profile>/skills`).
 
 use crate::{AgentCommand, AgentCommandSource};
 use std::collections::HashSet;
@@ -32,6 +33,19 @@ pub(crate) fn discover(cwd: &Path, home: Option<&Path>) -> Vec<AgentCommand> {
         add(in_dir(&home.join(".claude")));
     }
     out
+}
+
+/// The skills of a Hermes profile: `<profile>/skills/<skill>` and `<profile>/skills/<category>/<skill>`;
+/// the first of a name wins.
+pub(crate) fn hermes(profile: &Path) -> Vec<AgentCommand> {
+    let root = profile.join("skills");
+    let mut found = skills(&root);
+    for category in sorted(&root).into_iter().filter(|p| !p.join("SKILL.md").exists()) {
+        found.extend(skills(&category));
+    }
+    let mut seen = HashSet::new();
+    found.retain(|c| seen.insert(c.name.clone()));
+    found
 }
 
 /// `first` (the agent's own list) plus the commands of `more` it lacks.
@@ -253,6 +267,24 @@ mod tests {
         assert_eq!(
             (by("review").description.as_str(), by("review").hint.as_deref()),
             ("Review a pull request", Some("<pr>"))
+        );
+    }
+
+    #[test]
+    fn hermes_skills_flat_and_in_categories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = tmp.path();
+        assert!(hermes(profile).is_empty());
+        for dir in ["skills/plan", "skills/dev/review", "skills/dev/plan", "skills/empty"] {
+            std::fs::create_dir_all(profile.join(dir)).unwrap();
+        }
+        for dir in ["skills/plan", "skills/dev/review", "skills/dev/plan"] {
+            std::fs::write(profile.join(dir).join("SKILL.md"), "---\ndescription: d\n---\n").unwrap();
+        }
+        let names: Vec<_> = hermes(profile).into_iter().map(|c| (c.name, c.source)).collect();
+        assert_eq!(
+            names,
+            [("plan".to_owned(), AgentCommandSource::Skill), ("review".to_owned(), AgentCommandSource::Skill)]
         );
     }
 

@@ -236,10 +236,9 @@ fn classpath(
     }
     args.extend(["dependency:build-classpath", output_arg.as_str(), scope_arg.as_str(), "-q"]);
     let top_dir = subdir(root, &target.top.dir);
-    let status = ProcCommand::new(&target.top.command)
-        .args(&args)
-        .envs(&target.top.env)
-        .current_dir(&top_dir)
+    let mut command = ProcCommand::new(&target.top.command);
+    command.args(&args).envs(&target.top.env).current_dir(&top_dir);
+    let status = ide_core::process::prepare(&mut command)
         .output()
         .map_err(|e| IdeError::internal(format!("cannot resolve the compile classpath: {e}")))?;
     if !status.status.success() {

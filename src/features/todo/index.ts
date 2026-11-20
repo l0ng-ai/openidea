@@ -4,7 +4,7 @@ import { registerEditorContribution } from "@/editor/api";
 import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
 import { hasIcon } from "@/ui";
 import { activateSettingsPages } from "./settingsPages";
-import { TodoHeaderActions, TodoTabs, TodoView, useTodoBadge, useTodoHeaderMenu, useTodoView } from "./TodoView";
+import { TodoTabs, TodoView, useTodoBadge, useTodoHeaderMenu, useTodoView } from "./TodoView";
 import { todoEditorExtension } from "./highlight";
 import { installTodoIndex, scanProject, syncTodoSettingsFromStorage } from "./store";
 
@@ -21,7 +21,6 @@ export function activate(): () => void {
       order: 40,
       component: TodoView,
       headerContent: TodoTabs,
-      headerActions: TodoHeaderActions,
       headerMenu: useTodoHeaderMenu,
       useBadge: useTodoBadge,
     }),

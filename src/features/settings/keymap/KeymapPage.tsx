@@ -373,26 +373,27 @@ export function KeymapPage() {
   return (
     <div className={styles.page}>
       <div className={styles.presetRow}>
-        <span className={styles.presetLabel}>
-          <SearchLabel text="Keymap:" />
-        </span>
-        <Select
-          value={selectedId}
-          aria-label="Keymap"
-          className={styles.presetSelect}
-          options={keymapOptions}
-          onChange={selectKeymap}
-        />
-        <IconButton
-          ref={gearRef}
-          icon="settings"
-          title="Show Scheme Actions"
-          onClick={() => {
-            const r = gearRef.current?.getBoundingClientRect();
-            showContextMenu(r ? { x: r.left, y: r.bottom + 2 } : { x: 0, y: 0 }, gearMenu());
-          }}
-        />
-        <span className={styles.spacer} />
+        <div className={styles.presetGroup}>
+          <span className={styles.presetLabel}>
+            <SearchLabel text="Keymap:" />
+          </span>
+          <Select
+            value={selectedId}
+            aria-label="Keymap"
+            className={styles.presetSelect}
+            options={keymapOptions}
+            onChange={selectKeymap}
+          />
+          <IconButton
+            ref={gearRef}
+            icon="settings"
+            title="Show Scheme Actions"
+            onClick={() => {
+              const r = gearRef.current?.getBoundingClientRect();
+              showContextMenu(r ? { x: r.left, y: r.bottom + 2 } : { x: 0, y: 0 }, gearMenu());
+            }}
+          />
+        </div>
         {overrideCount > 0 && (
           <span className={styles.modifiedNote}>
             {overrideCount === 1 ? tx`${overrideCount} modified action` : tx`${overrideCount} modified actions`}
@@ -401,68 +402,71 @@ export function KeymapPage() {
       </div>
 
       <div className={styles.toolbar}>
-        {byShortcut ? (
-          <div className={styles.shortcutFilter}>
-            <Icon name="keyboard" size={14} className={styles.leading} />
-            <StrokeRecorder
-              autoFocus
-              chord
-              value={shortcut}
-              onChange={setShortcut}
-              placeholder="Press a shortcut to find actions"
-              aria-label="Find actions by shortcut"
-              className={styles.filterRecorder}
-            />
-            {shortcut && (
-              <IconButton icon="close" title="Clear" size="small" iconSize={12} onClick={() => setShortcut("")} />
-            )}
-          </div>
-        ) : (
-          <SearchField
-            className={styles.search}
-            value={query}
-            onChange={setQuery}
-            placeholder="Search actions"
-            aria-label="Search actions"
+        <div className={styles.treeActions}>
+          <IconButton icon="expand-all" title="Expand All" onClick={() => setCollapsed(new Set())} />
+          <IconButton icon="collapse-all" title="Collapse All" onClick={() => setCollapsed(new Set(allGroups))} />
+          <IconButton
+            icon="plus"
+            title="Add Keyboard Shortcut"
+            disabled={!leadAction}
+            onClick={() => {
+              if (!leadAction) return;
+              setRecordMouse(false);
+              setRecordFor(leadAction);
+            }}
           />
-        )}
-        <IconButton
-          icon="keyboard"
-          title="Find Actions by Shortcut"
-          pressed={byShortcut}
-          onClick={() => {
-            setByShortcut((v) => !v);
-            setShortcut("");
-          }}
-        />
-        <IconButton
-          icon="filter"
-          title="Clear Filtering"
-          disabled={!filtering}
-          onClick={() => {
-            setQuery("");
-            setShortcut("");
-          }}
-        />
-        <span className={styles.toolbarSep} aria-hidden />
-        <IconButton icon="expand-all" title="Expand All" onClick={() => setCollapsed(new Set())} />
-        <IconButton icon="collapse-all" title="Collapse All" onClick={() => setCollapsed(new Set(allGroups))} />
-        <span className={styles.spacer} />
-        <IconButton
-          icon="plus"
-          title="Add Keyboard Shortcut"
-          disabled={!leadAction}
-          onClick={() => {
-            if (!leadAction) return;
-            setRecordMouse(false);
-            setRecordFor(leadAction);
-          }}
-        />
+        </div>
+        <div className={styles.filterGroup}>
+          {byShortcut ? (
+            <div className={styles.shortcutFilter}>
+              <Icon name="keyboard" size={14} className={styles.leading} />
+              <StrokeRecorder
+                autoFocus
+                chord
+                value={shortcut}
+                onChange={setShortcut}
+                placeholder="Press a shortcut to find actions"
+                aria-label="Find actions by shortcut"
+                className={styles.filterRecorder}
+              />
+              {shortcut && (
+                <IconButton icon="close" title="Clear" size="small" iconSize={12} onClick={() => setShortcut("")} />
+              )}
+            </div>
+          ) : (
+            <SearchField
+              className={styles.search}
+              value={query}
+              onChange={setQuery}
+              placeholder="Search actions"
+              aria-label="Search actions"
+            />
+          )}
+          <IconButton
+            icon="keyboard"
+            title="Find Actions by Shortcut"
+            pressed={byShortcut}
+            onClick={() => {
+              setByShortcut((v) => !v);
+              setShortcut("");
+            }}
+          />
+          <IconButton
+            icon="filter"
+            title="Clear Filtering"
+            disabled={!filtering}
+            onClick={() => {
+              setQuery("");
+              setShortcut("");
+            }}
+          />
+        </div>
       </div>
 
       <div className={styles.treeWrap}>
         <Tree<KNode>
           aria-label="Actions"
+          horizontalScroll
           roots={roots}
           getKey={(n) => n.key}
           getLabel={(n) => (n.kind === "group" ? n.name : n.action.title)}
@@ -507,7 +511,7 @@ export function KeymapPage() {
                 <span className={styles.catName}>{n.name}</span>
               </span>
             ) : (
-              <span className={styles.actionRow}>
+              <span className={styles.actionRow} title={n.action.title}>
                 <span className={styles.actionIcon}>{n.action.icon && <Icon name={n.action.icon} size={14} />}</span>
                 <HighlightedText
                   className={clsx(styles.actionTitle, n.modified && styles.modified)}
@@ -517,7 +521,7 @@ export function KeymapPage() {
                 />
                 <span className={styles.bindings}>
                   {n.bindings.map((b) => (
-                    <Kbd key={b} binding={b} className={styles.kbd} />
+                    <Kbd key={b} binding={b} />
                   ))}
                 </span>
               </span>

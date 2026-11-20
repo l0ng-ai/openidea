@@ -10,12 +10,12 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   min-width: 0;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   font-size: var(--fs-ui);
   white-space: pre;
   color: var(--fg);
@@ -23,8 +23,19 @@
 }
 
 .name {
-  flex: none;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg);
+}
+
+.evalName {
+  flex: 0 1 auto;
+  max-width: 45%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .varName {
@@ -33,7 +44,6 @@
 
 .nodeIcon {
   flex: none;
-  margin-right: 1px;
 }
 
 .eq {
@@ -41,15 +51,28 @@
   color: var(--fg-subtle);
 }
 
+.valueGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: min(8ch, 45%);
+  flex: 1 1 0;
+}
+
 .value {
   min-width: 0;
   flex: 1 1 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: var(--font-mono);
 }
 
 .showValue {
-  flex: none;
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 0;
   border: 0;
   background: none;
@@ -104,6 +127,7 @@
 
 .type {
   min-width: 0;
+  max-width: 25%;
   flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -128,7 +152,7 @@
 
 .editInput {
   flex: 1;
-  min-width: 80px;
+  min-width: min(80px, 40%);
   height: 18px;
   padding: 0 4px;
   font: inherit;

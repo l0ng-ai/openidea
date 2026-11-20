@@ -16,6 +16,8 @@ import {
   type MouseEvent,
 } from "react";
 import clsx from "clsx";
+import { useShallow } from "zustand/react/shallow";
+import { basename } from "@/platform/project";
 import { call, commands, type DbPlanNode, type DbQueryResult } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { setContext } from "@/platform/context";
@@ -35,7 +37,7 @@ import {
   resolveTarget,
   type EditBlockReason,
 } from "./resultEditing";
-import { pageWindow } from "./resultView";
+import { formatElapsed, pageWindow } from "./resultView";
 import { resultTabMenu } from "./resultTabActions";
 import { analyze } from "./sql/analyze";
 import { nameMatcher } from "./sql/dialect";
@@ -55,6 +57,7 @@ import {
   rerunResult,
   useDatabase,
   withConnection,
+  type ConsoleExecution,
   type OutputLine,
   type ResultTab,
 } from "./store";
@@ -271,8 +274,8 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const editability = useMemo(() => resultEditability(text, driver), [text, driver]);
   const model = useDatabase((s) => s.completion[tab.sourceId]) ?? null;
   const target = useMemo(
-    () => (editability.kind === "editable" ? resolveTarget(editability, model, tab.schema, driver) : null),
-    [editability, model, tab.schema, driver],
+    () => (editability.kind === "editable" ? resolveTarget(editability, model, tab.schema) : null),
+    [editability, model, tab.schema],
   );
   const detailsId = target ? detailsKey(tab.sourceId, target.schema ?? "", target.table) : null;
   const details = useDatabase((s) => (detailsId ? s.details[detailsId] : undefined));
@@ -577,7 +580,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               {notice}
             </div>
           )}
-          <div className={clsx(styles.fill, styles.gridHost)}>
+          <div className={styles.fill}>
             <DataView
               columns={gridColumns}
               rowCount={rowCount}
@@ -590,6 +593,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
               firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
+              pager={<Pager tab={busy ? { ...tab, busy: true } : tab} />}
               aria-label={tab.title}
               rowState={(row) => (row >= loaded ? "inserted" : edits.deletes.has(row) ? "deleted" : null)}
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
@@ -611,7 +615,6 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
                   : []
               }
             />
-            <Pager tab={busy ? { ...tab, busy: true } : tab} />
           </div>
         </>
       )}
@@ -744,8 +747,40 @@ function PinButton({ tab }: { tab: ResultTab }) {
   );
 }
 
+/** The most recently started console request, while it runs. */
+function useLatestExecution(): [string, ConsoleExecution] | undefined {
+  return useDatabase(
+    useShallow((s) => {
+      let latest: [string, ConsoleExecution] | undefined;
+      for (const entry of Object.entries(s.executions))
+        if (!latest || entry[1].startedAt > latest[1].startedAt) latest = entry;
+      return latest;
+    }),
+  );
+}
+
+function ExecutingBar({ path, execution }: { path: string; execution: ConsoleExecution }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(timer);
+  }, [execution.startedAt]);
+  const name = basename(path);
+  const count = execution.statements;
+  return (
+    <div className={styles.executing} role="status">
+      <Spinner size={12} label={tx("Executing")} />
+      <span className={styles.executingText} title={path}>
+        {count > 1 ? tx`Executing ${count} statements in ${name}…` : tx`Executing in ${name}…`}
+      </span>
+      <span className={styles.executingTime}>{formatElapsed(Math.max(0, now - execution.startedAt))}</span>
+    </div>
+  );
+}
+
 export function ResultsView() {
   const results = useDatabase((s) => s.results);
+  const execution = useLatestExecution();
   const active = useDatabase((s) => s.activeResult);
   const hasOutput = useDatabase((s) => s.output.length > 0);
   const root = useRef<HTMLDivElement>(null);
@@ -772,6 +807,8 @@ export function ResultsView() {
       owner: e.currentTarget,
     });
   };
+  const executing = execution && <ExecutingBar path={execution[0]} execution={execution[1]} />;
+  if (!results.length && !hasOutput && executing) return <div className={styles.view}>{executing}</div>;
   if (!results.length && !hasOutput)
     return (
       <EmptyState title="No results">
@@ -817,7 +854,7 @@ export function ResultsView() {
             ...results.map((r) => ({
               id: String(r.id),
               label: r.title,
-              icon: r.plan ? "db-plan" : "database",
+              icon: r.plan ? "db-plan" : "db-table",
               closable: true,
               pinned: r.pinned,
               tooltip: r.outcome.statement.text,
@@ -825,6 +862,7 @@ export function ResultsView() {
           ]}
         />
       </ToolWindowContentTabs>
+      {executing}
       <div
         ref={panel}
         className={styles.fill}

@@ -28,6 +28,7 @@ import { compareFilesData, displayPath } from "./compareData";
 import type { DirectoryCompareData } from "./directoryCompareKind";
 import { formatSize, formatTime } from "./model";
 import styles from "./DirectoryCompare.module.css";
+import { useRowHeight } from "@/ui/density";
 
 const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
 
@@ -153,6 +154,7 @@ function Side({ entry, side, folder }: { entry: DirectoryCompareEntry; side: "le
 }
 
 export function DirectoryCompare({ left, right }: { left: string; right: string }) {
+  const rowHeight = useRowHeight(22);
   const t = useTx();
   const [entries, setEntries] = useState<DirectoryCompareEntry[]>([]);
   const [current, setCurrent] = useState<DirectoryCompareEntry | null>(null);
@@ -338,8 +340,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
         onActivate={(r, _i, e) => {
           if ("entry" in r && e.type === "keydown") open(r.entry);
         }}
-        rowHeight={22}
-        sectionHeight={24}
+        rowHeight={rowHeight}
         tableBody={{ headerRows: 1 }}
         empty={
           !busy && !cancelled && !error ? (

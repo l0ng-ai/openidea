@@ -63,6 +63,44 @@ const result = (page: Page) => page.getByRole("region", { name: "Result" });
 const text = async (pane: Locator) => (await pane.locator(".cm-content").innerText()).replace(/​/g, "");
 const status = (page: Page) => page.locator("#merge-host [class*=status]").first();
 
+test("merge controls and pane titles fit while resizing the result", async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 600 });
+  await mountMerge(page);
+  const host = page.locator("#merge-host");
+  for (const name of ["Accept Yours", "Accept Theirs", "Cancel", "Apply"])
+    await expect(host.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(status(page)).toHaveText("3 changes left, 2 conflicts");
+  await expect(status(page)).toBeInViewport({ ratio: 1 });
+
+  const ours = page.getByRole("region", { name: "Your version" });
+  await expect(ours.getByText("Your version", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Their version" }).getByText("Their version", { exact: true }),
+  ).toBeVisible();
+  await ours.locator(".cm-merge-accept").nth(1).focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => text(result(page))).toContain("\nmine\n");
+
+  await page.setViewportSize({ width: 980, height: 660 });
+  const resultWidth = async () => (await result(page).boundingBox())!.width;
+  const initial = await resultWidth();
+  const left = host.getByRole("separator", { name: "Resize left merge pane" });
+  await left.press("ArrowLeft");
+  await expect.poll(resultWidth).toBeGreaterThan(initial + 1);
+
+  const right = host.getByRole("separator", { name: "Resize right merge pane" });
+  const grip = (await right.boundingBox())!;
+  const withLeftResized = await resultWidth();
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + grip.width / 2 + 36, grip.y + grip.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(resultWidth).toBeGreaterThan(withLeftResized + 20);
+  await expect(result(page).getByText("Result", { exact: true })).toBeVisible();
+  await expect(ours.getByText("Changes from main", { exact: true })).toBeVisible();
+  await expect.poll(() => text(result(page))).toContain("\nmine\n");
+});
+
 /** Capture the save boundary, keeping real editor state, dialogs and Apply behavior. */
 async function captureWrites(page: Page) {
   await page.evaluate(async () => {

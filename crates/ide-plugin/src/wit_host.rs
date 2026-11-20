@@ -72,6 +72,46 @@ pub(crate) mod syntax_bindings {
     });
 }
 
+/// The optional `hover-actions` export, bound on its own when present.
+pub(crate) mod hover_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-hover-actions",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
+        },
+    });
+}
+
 /// The optional `providers` export.
 pub(crate) mod providers_bindings {
     wasmtime::component::bindgen!({
@@ -387,6 +427,22 @@ impl StoreData {
         self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
     }
 
+    /// A status item with its checked menu (`ui.set-status-item-menu`).
+    fn status_item_with_menu(
+        &self,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Result<StatusItem, wit::Error> {
+        let menu = status_menu(menu)?;
+        self.host.check_status_menu(&menu).map_err(to_wit)?;
+        Ok(StatusItem {
+            text: clip(item.text, MAX_STATUS_TEXT),
+            tooltip: item.tooltip.map(|t| clip(t, 1024)),
+            command: item.command.map(|c| clip(c, 128)),
+            menu,
+        })
+    }
+
     fn require_window(&self) -> Result<(), wit::Error> {
         self.require_interactive()?;
         if self.invocation.client.is_none() {
@@ -402,6 +458,47 @@ impl StoreData {
         }
         Err(wit::Error::Invalid("can only ask the user from a command or event".into()))
     }
+}
+
+/// Checks a status item's menu (`ui.set-status-item-menu`); the host checks that its commands are declared.
+fn status_menu(entries: Vec<ui::StatusMenuEntry>) -> Result<Vec<crate::StatusMenuEntry>, wit::Error> {
+    const MAX_ENTRIES: usize = 64;
+    if entries.len() > MAX_ENTRIES {
+        return Err(wit::Error::Invalid(format!("a status item menu has at most {MAX_ENTRIES} entries")));
+    }
+    let line = |text: &str, what: &str| {
+        if text.trim().is_empty() || text.len() > 256 || text.chars().any(char::is_control) {
+            Err(wit::Error::Invalid(format!("invalid menu {what} {text:?}")))
+        } else {
+            Ok(())
+        }
+    };
+    let mut checked = Vec::with_capacity(entries.len());
+    for entry in entries {
+        checked.push(match entry {
+            ui::StatusMenuEntry::Action(a) => {
+                line(&a.label, "label")?;
+                if let Some(description) = &a.description {
+                    line(description, "description")?;
+                }
+                if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                    return Err(wit::Error::Invalid("a menu argument is limited to 64 KiB".into()));
+                }
+                crate::StatusMenuEntry::Action {
+                    label: a.label,
+                    description: a.description,
+                    command: a.command,
+                    argument: a.argument,
+                }
+            }
+            ui::StatusMenuEntry::Separator => crate::StatusMenuEntry::Separator,
+            ui::StatusMenuEntry::Header(label) => {
+                line(&label, "header")?;
+                crate::StatusMenuEntry::Header { label }
+            }
+        });
+    }
+    Ok(checked)
 }
 
 /// Checks `ui.notify` buttons; the host checks that their commands are declared.
@@ -473,6 +570,7 @@ impl ui::Host for StoreData {
             text: clip(item.text, MAX_STATUS_TEXT),
             tooltip: item.tooltip.map(|t| clip(t, 1024)),
             command: item.command.map(|c| clip(c, 128)),
+            menu: Vec::new(),
         };
         self.host.status_item(&clip(id, 64), Some(item));
         Ok(())
@@ -491,6 +589,38 @@ impl ui::Host for StoreData {
             text: clip(item.text, MAX_STATUS_TEXT),
             tooltip: item.tooltip.map(|t| clip(t, 1024)),
             command: item.command.map(|c| clip(c, 128)),
+            menu: Vec::new(),
+        };
+        Ok(self
+            .host
+            .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), Some(item))
+            .map_err(to_wit))
+    }
+    fn set_status_item_menu(
+        &mut self,
+        id: String,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Fallible<()> {
+        let item = match self.status_item_with_menu(item, menu) {
+            Ok(item) => item,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.host.status_item(&clip(id, 64), Some(item));
+        Ok(Ok(()))
+    }
+    fn set_window_status_item_menu(
+        &mut self,
+        id: String,
+        item: ui::StatusItem,
+        menu: Vec<ui::StatusMenuEntry>,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let item = match self.status_item_with_menu(item, menu) {
+            Ok(item) => item,
+            Err(e) => return Ok(Err(e)),
         };
         Ok(self
             .host

@@ -177,6 +177,7 @@ pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core
 pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
     match event {
         IdeEvent::WindowGroupsChanged
+        | IdeEvent::McpBackgroundProjectsChanged
         | IdeEvent::WindowFullscreenChanged
         | IdeEvent::RemoteConnectionLost { .. }
         | IdeEvent::UpdateStatusChanged { .. }
@@ -190,6 +191,7 @@ pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
         | IdeEvent::ExcludedDirsChanged { .. }
         | IdeEvent::DocPatched { .. }
         | IdeEvent::DocDirty { .. }
+        | IdeEvent::DocDiskConflict { .. }
         | IdeEvent::WorkspaceEditApplied { .. }
         | IdeEvent::DocLanguage { .. }
         | IdeEvent::Diagnostics { .. }
@@ -323,6 +325,7 @@ mod tests {
             },
             IdeEvent::WindowGroupsChanged,
             IdeEvent::WindowFullscreenChanged,
+            IdeEvent::McpBackgroundProjectsChanged,
         ] {
             assert!(!client_accepts(&event, true), "{event:?}");
         }

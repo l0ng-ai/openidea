@@ -26,6 +26,20 @@
   gap: var(--space-0-5);
   padding: 0 6px;
 }
+.changesToolbar {
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+  padding-block: var(--space-0-5);
+}
+.changesTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0-5);
+  max-width: 100%;
+}
 .sep {
   width: 1px;
   height: 16px;
@@ -106,13 +120,12 @@
 }
 .commitBar {
   flex: none;
-  height: 32px;
+  min-height: 32px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1);
-  padding: 0 6px 0 12px;
-  white-space: nowrap;
-  overflow: hidden;
+  gap: var(--space-0-5) var(--space-1);
+  padding: var(--space-0-5) 6px var(--space-0-5) 12px;
 }
 .grow {
   flex: 1;
@@ -121,6 +134,7 @@
   color: var(--fg-faint);
   font-family: var(--font-mono);
   font-size: var(--fs-tiny);
+  white-space: nowrap;
 }
 .lineLenWarn {
   color: var(--warning);
@@ -136,8 +150,6 @@
   border-top: 1px solid var(--border);
   outline: none;
   color: var(--fg-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
   line-height: var(--lh-code);
   -webkit-user-select: text;
   user-select: text;
@@ -164,7 +176,6 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  /* A narrow panel moves Commit and Push… to its own row rather than cutting its label. */
   flex-wrap: wrap;
   padding: 8px 6px 10px 10px;
   white-space: nowrap;
@@ -175,10 +186,14 @@
 .commitActions > .pushButton {
   flex: 0 1 auto;
   min-width: 0;
+  min-height: var(--h-button, 28px);
+  height: auto;
+  padding: var(--space-1) var(--space-3);
+  line-height: 1.3;
 }
 .pushButton > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .stashList {
   flex: 1;

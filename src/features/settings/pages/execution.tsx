@@ -3,10 +3,15 @@
  * Stepping), Python Debugger and Run/Debug. Consumed by the run and debugger
  * features (and `ide-run` for encoding / termination timeout).
  */
+import { useEffect } from "react";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
+import { useSettingsPageFocus } from "@/workbench/contributions";
+import { isTauri } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import type { SelectOption } from "@/ui";
 import { ColorSwatches, FormGroup, GlobListEditor, NumberInput, Row, Toggle } from "../components/Form";
-import { useSetting } from "../components/context";
+import { usePageContext, useSetting } from "../components/context";
+import { useSettingsDialog } from "../model/staging";
 import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
 import { Indented, ToggleNumber } from "./workflowControls";
@@ -53,6 +58,18 @@ function BufferRow() {
 
 function FoldPatterns() {
   const [patterns, set] = useSetting<string[]>("console.foldPatterns");
+  // Opened as `build.console#<text>` by the console's Fold Lines Like This: add it as a pattern.
+  const { focus, consume } = useSettingsPageFocus();
+  // With a project open, the Global list arrives after the dialog opens (until then it is the project's).
+  const { scope } = usePageContext();
+  const globalPending = useSettingsDialog((s) => s.globalBase === s.base);
+  const hasProject = useProject((s) => !!s.project);
+  const waiting = scope === "global" && globalPending && hasProject && isTauri();
+  useEffect(() => {
+    if (!focus || waiting) return;
+    consume();
+    if (!patterns.includes(focus)) set([...patterns, focus]);
+  }, [focus, consume, waiting, patterns, set]);
   return (
     <Row
       label="Fold console lines that contain"
@@ -141,7 +158,47 @@ function TooltipDelayRow() {
   );
 }
 
+const BUILD_WINDOW_WHEN = [
+  { value: "always", label: "Always" },
+  { value: "onError", label: "Only on errors" },
+  { value: "never", label: "Never" },
+];
+
 export const EXECUTION_PAGES: PageSpec[] = [
+  {
+    id: "build.compiler",
+    title: "Compiler",
+    group: BUILD_GROUP,
+    order: 355,
+    projectScope: true,
+    keywords: [
+      "Build tool window",
+      "Open Build tool window",
+      "Focus Build tool window",
+      "automatic build",
+      "before launch",
+    ],
+    sections: [
+      {
+        options: [
+          {
+            kind: "select",
+            key: "build.openToolWindow",
+            label: "Open Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.",
+          },
+          {
+            kind: "select",
+            key: "build.focusToolWindow",
+            label: "Focus Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "When Build opens, whether it takes keyboard focus from the editor.",
+          },
+        ],
+      },
+    ],
+  },
   {
     id: "build.cmake",
     title: "CMake",

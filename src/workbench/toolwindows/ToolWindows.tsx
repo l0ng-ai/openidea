@@ -28,6 +28,7 @@ import {
   tooltipAttrs,
   type MenuItem,
 } from "@/ui";
+import { useChromeIconSize } from "@/ui/density";
 import { FOCUSABLE } from "@/ui/popupState";
 import { TabStripRegistry } from "@/ui/Tabs";
 import {
@@ -441,6 +442,7 @@ function StripeButton({
   side: "left" | "right";
   showName: boolean;
 }) {
+  const iconSize = useChromeIconSize();
   const shortcut = shortcutLabel(`toolwindow.${tw.id}`);
   const dragged = useStripeDrag((s) => s.id === tw.id);
   return (
@@ -469,7 +471,7 @@ function StripeButton({
       {...tooltipAttrs(toolWindowTitle(tw), shortcut, true)}
     >
       <span className={styles.stripeIcon}>
-        <Icon name={tw.icon} size={20} />
+        <Icon name={tw.icon} size={iconSize} />
         {tw.useBadge && <StripeBadge useBadge={tw.useBadge} />}
       </span>
       {showName && (
@@ -483,6 +485,7 @@ function StripeButton({
 
 /** Stripe "…": tool windows without a stripe button; opening one adds its button (IDEA). */
 function StripeMore({ windows }: { windows: ToolWindowContribution[] }) {
+  const iconSize = useChromeIconSize();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const items = useMemo<MenuItem[]>(
@@ -512,7 +515,7 @@ function StripeMore({ windows }: { windows: ToolWindowContribution[] }) {
         data-tooltip-stripe="left"
         {...tooltipAttrs("More Tool Windows")}
       >
-        <Icon name="more-horizontal" size={20} />
+        <Icon name="more-horizontal" size={iconSize} />
       </button>
       <Menu
         open={open}
