@@ -3293,7 +3293,6 @@
   "Accepted in every project.": "모든 프로젝트에서 허용됩니다.",
   "Custom dictionaries": "사용자 지정 사전",
   "Dictionary files": "사전 파일",
-  "Plain-text word lists (one word per line) or Hunspell .dic files. Relative paths resolve against the project root, ~/ against the home folder.": "일반 텍스트 단어 목록(한 줄에 한 단어) 또는 Hunspell .dic 파일. 상대 경로는 프로젝트 루트를, ~/는 홈 폴더를 기준으로 해결됩니다.",
   "No custom dictionaries": "사용자 지정 사전 없음",
   "Dictionary path": "사전 경로",
   "Natural Languages": "자연어",

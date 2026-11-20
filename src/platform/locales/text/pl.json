@@ -3216,7 +3216,6 @@
   "Accepted in every project.": "Akceptowane we wszystkich projektach.",
   "Custom dictionaries": "Własne słowniki",
   "Dictionary files": "Pliki słowników",
-  "Plain-text word lists (one word per line) or Hunspell .dic files. Relative paths resolve against the project root, ~/ against the home folder.": "Listy słów w zwykłym tekście (jednosłowne w wierszu) lub pliki .dic Hunspell. Ścieżki względne są rozwiązywane względem katalogu głównego projektu, a ~/ względem folderu domowego.",
   "No custom dictionaries": "Brak własnych słowników",
   "Dictionary path": "Ścieżka słownika",
   "Natural Languages": "Języki naturalne",

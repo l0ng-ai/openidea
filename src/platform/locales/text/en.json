@@ -1,4 +1,5 @@
 {
+  "Plain-text word lists (one word per line) or Hunspell .dic files; a .dic with its .aff beside it also accepts the inflected forms and compounds its rules allow. Relative paths resolve against the project root, ~/ against the home folder.": "Plain-text word lists (one word per line) or Hunspell .dic files; a .dic with its .aff beside it also accepts the inflected forms and compounds its rules allow. Relative paths resolve against the project root, ~/ against the home folder.",
   "Trust Folder": "Trust Folder",
   "No files selected": "No files selected",
   "{added} added": "{added} added",

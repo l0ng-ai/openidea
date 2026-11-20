@@ -3217,7 +3217,6 @@
   "Accepted in every project.": "Aceitas em todos os projetos.",
   "Custom dictionaries": "Dicionários personalizados",
   "Dictionary files": "Arquivos de dicionário",
-  "Plain-text word lists (one word per line) or Hunspell .dic files. Relative paths resolve against the project root, ~/ against the home folder.": "Listas de palavras em texto simples (uma palavra por linha) ou arquivos .dic do Hunspell. Caminhos relativos são resolvidos em relação à raiz do projeto, ~/ em relação à pasta pessoal.",
   "No custom dictionaries": "Nenhum dicionário personalizado",
   "Dictionary path": "Caminho do dicionário",
   "Natural Languages": "Idiomas naturais",
