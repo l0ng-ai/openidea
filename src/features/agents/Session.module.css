@@ -1069,16 +1069,6 @@
   color: var(--fg-muted);
 }
 
-/* Announced to screen readers, not shown: the fact behind a playful status. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
 .retrying {
   color: var(--warning);
 }
