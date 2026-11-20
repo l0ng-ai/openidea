@@ -161,7 +161,7 @@ async fn light_notebooks_open_without_interpreter_detection_or_execution() {
     assert!(ops::notebook::notebook_save(&host, "main", notebook.id.clone()).await.is_ok());
     let error = ops::sdk::sdk_detect(&host, "main", ide_sdk::SdkKind::Python).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));
-    assert!(ops::sdk::sdk_python_effective(&host, "main", None).is_err());
+    assert!(ops::sdk::sdk_python_effective(&host, "main", None).await.is_err());
     assert!(ops::sdk::sdk_locate_tools(&host, "main", vec!["prettier".into()], Some(root)).await.is_err());
     let error = ops::notebook::notebook_restart(&host, "main", notebook.id.clone()).await.unwrap_err();
     assert!(error.message.contains("Restricted Mode"));
