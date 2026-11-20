@@ -790,15 +790,19 @@ function DateFormatRows() {
         onChange={(v) => set({ overrideSystem: v })}
       />
       <Indented>
-        <Row label="Date format" htmlFor={id} hint="Placeholders: yyyy, yy, MMMM, MMM, MM, M, dd, d">
+        <Row label="Date format" htmlFor={id} disabled={!f.overrideSystem}>
           <Input
             id={id}
             className={styles.patternInput}
+            aria-describedby={`${id}-help`}
             mono
             disabled={!f.overrideSystem}
             value={f.pattern}
             onChange={(e) => e.target.value.trim() && set({ pattern: e.target.value })}
           />
+          <span id={`${id}-help`} className={styles.patternHint}>
+            <T>Placeholders: yyyy, yy, MMMM, MMM, MM, M, dd, d</T>
+          </span>
         </Row>
         <Toggle
           label="Use 24-hour time format"
@@ -806,6 +810,11 @@ function DateFormatRows() {
           disabled={!f.overrideSystem}
           onChange={(v) => set({ use24Hour: v })}
         />
+        <Row label="Preview" htmlFor={`${id}-preview`}>
+          <output id={`${id}-preview`} className={styles.preview}>
+            {formatTimestamp(now - 2 * 3_600_000, now, f)} · {formatTimestamp(now - 3 * 86_400_000, now, f)}
+          </output>
+        </Row>
       </Indented>
       <Toggle
         label="Use pretty formatting"
@@ -813,11 +822,6 @@ function DateFormatRows() {
         checked={f.pretty}
         onChange={(v) => set({ pretty: v })}
       />
-      <Row label="Preview">
-        <span className={styles.preview}>
-          {formatTimestamp(now - 2 * 3_600_000, now, f)} · {formatTimestamp(now - 3 * 86_400_000, now, f)}
-        </span>
-      </Row>
     </>
   );
 }
