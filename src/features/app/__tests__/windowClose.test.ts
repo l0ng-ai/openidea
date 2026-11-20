@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ipc from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import * as services from "@/workbench/contributions";
-import { installCloseGuard, type CloseDeps } from "../closeGuard";
+import type { MessageRequest as PromptRequest } from "@/workbench/messages";
+import { installCloseGuard, quitApp, type CloseDeps } from "../closeGuard";
 
 const native = vi.hoisted(() => ({
   close: undefined as ((event: { preventDefault: () => void }) => Promise<void>) | undefined,
+  order: [] as string[],
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getAllWindows: async () => [],
@@ -16,6 +18,9 @@ vi.mock("@tauri-apps/api/window", () => ({
       native.close = callback;
       return () => {};
     },
+    unminimize: async () => void native.order.push("unminimize"),
+    show: async () => void native.order.push("show"),
+    setFocus: async () => void native.order.push("setFocus"),
   }),
 }));
 
@@ -139,5 +144,84 @@ describe("native window close", () => {
     expect(forget).toHaveBeenCalledOnce();
     expect(keep).toHaveBeenCalledOnce();
     expect(deps.onSaveFailed).toHaveBeenCalledOnce();
+  });
+});
+
+// A quit can start outside the window (Dock, logout, another window): its prompts are drawn
+// inside the window, so it has to come forward before asking.
+describe("quitting from outside the window", () => {
+  function recordingDeps(button: string) {
+    const asked: PromptRequest[] = [];
+    const d: CloseDeps = {
+      ...deps,
+      ask: async (r: PromptRequest) => {
+        native.order.push("ask");
+        asked.push(r);
+        return { button, checked: false };
+      },
+    };
+    return { d, asked };
+  }
+
+  beforeEach(() => {
+    native.order = [];
+    vi.spyOn(ipc.commands, "appQuit").mockResolvedValue(undefined);
+  });
+
+  it("raises the window before asking to confirm the quit", async () => {
+    useProject.setState({
+      project: { root: "/project", name: "project" },
+      lightEdit: false,
+      settings: { general: { confirmExit: true } },
+    } as never);
+    const { d, asked } = recordingDeps("exit");
+    await quitApp(d);
+    expect(asked).toHaveLength(1);
+    expect(native.order).toEqual(["unminimize", "show", "setFocus", "ask"]);
+    expect(ipc.commands.appQuit).toHaveBeenCalledOnce();
+  });
+
+  it("does not touch the window when the confirmation is off", async () => {
+    useProject.setState({
+      project: { root: "/project", name: "project" },
+      lightEdit: false,
+      settings: { general: { confirmExit: false } },
+    } as never);
+    const { d } = recordingDeps("exit");
+    await quitApp(d);
+    expect(native.order).toEqual([]);
+    expect(ipc.commands.appQuit).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a window with nothing to ask where it is while the app quits", async () => {
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: true, windows: 2 });
+    deps.runningProcesses = async () => [];
+    const { d, asked } = recordingDeps("cancel");
+    useProject.setState({
+      project: { root: "/project", name: "project" },
+      lightEdit: false,
+      settings: { general: {} },
+    } as never);
+    uninstall = installCloseGuard(d);
+    await vi.waitFor(() => expect(native.close).toBeDefined());
+    await native.close!({ preventDefault: vi.fn() });
+    expect(asked).toEqual([]);
+    expect(native.order).toEqual([]);
+  });
+
+  it("raises each window before the prompts a quit makes it show", async () => {
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: true, windows: 2 });
+    deps.runningProcesses = async () => ["server.js"];
+    const { d } = recordingDeps("cancel");
+    useProject.setState({
+      project: { root: "/project", name: "project" },
+      lightEdit: false,
+      settings: { general: {} },
+    } as never);
+    uninstall = installCloseGuard(d);
+    await vi.waitFor(() => expect(native.close).toBeDefined());
+    await native.close!({ preventDefault: vi.fn() });
+    expect(native.order.slice(0, 4)).toEqual(["unminimize", "show", "setFocus", "ask"]);
+    expect(ipc.commands.appCancelQuit).toHaveBeenCalledOnce();
   });
 });

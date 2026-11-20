@@ -3,7 +3,8 @@ import { invertedEffects, isolateHistory, redo, undo } from "@codemirror/command
 import { EditorState, Prec, StateEffect, type Transaction, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { _emitWorkspaceEditHistory, _provideWorkspaceHistory, isExternalChange } from "@/editor/api";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { editorsFollowAppliedMoves, reversedMoves, withEditorsFollowing } from "@/editor/fileMoves";
+import { call, commands, onIdeEvent, type FileMove } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
 interface Marker {
@@ -20,7 +21,7 @@ export interface WorkspaceHistoryTarget {
 
 export class WorkspaceHistory {
   private targets = new Set<WorkspaceHistoryTarget>();
-  private records = new Map<number, { paths: string[]; undone: boolean }>();
+  private records = new Map<number, { paths: string[]; moves: FileMove[]; undone: boolean }>();
   private project = useProject.getState().project;
   private busy = false;
   private moving = false;
@@ -31,7 +32,7 @@ export class WorkspaceHistory {
   ) {}
 
   start(): () => void {
-    const stop = onIdeEvent("workspaceEditApplied", ({ id, paths }) => {
+    const stop = onIdeEvent("workspaceEditApplied", ({ id, paths, moves }) => {
       if (this.project !== useProject.getState().project) {
         this.records.clear();
         this.project = useProject.getState().project;
@@ -43,9 +44,11 @@ export class WorkspaceHistory {
           record.paths.some((path) => this.affects(paths, path) || paths.some((root) => root.startsWith(`${path}/`)))
         )
           this.records.delete(key);
-      this.records.set(id, { paths, undone: false });
+      this.records.set(id, { paths, moves, undone: false });
       while (this.records.size > 20) this.records.delete(this.records.keys().next().value!);
       for (const target of this.targets) if (this.affects(paths, target.path)) this.mark(target, id);
+      // Now, before the file watcher reports the old paths gone and their tabs close.
+      void editorsFollowAppliedMoves(moves);
     });
     const unprovide = _provideWorkspaceHistory((id, redo) => this.run(id, redo));
     return () => {
@@ -154,14 +157,21 @@ export class WorkspaceHistory {
       for (const target of targets)
         if (!this.step(target, id, forward))
           throw new Error("Undo newer editor changes before undoing this refactoring");
-      await call(forward ? commands.redoWorkspaceEdit(id) : commands.undoWorkspaceEdit(id));
-      await this.synced();
-      for (const target of targets) {
-        if (!this.targets.has(target)) continue;
-        const tr = this.step(target, id, forward);
-        if (tr) target.dispatch(tr);
-      }
-      record.undone = !forward;
+      await withEditorsFollowing(
+        async () => {
+          await call(forward ? commands.redoWorkspaceEdit(id) : commands.undoWorkspaceEdit(id));
+          await this.synced();
+          for (const target of targets) {
+            if (!this.targets.has(target)) continue;
+            const tr = this.step(target, id, forward);
+            if (tr) target.dispatch(tr);
+          }
+          // Editors reopened at moved paths build their history from the record: settle it first.
+          record.undone = !forward;
+        },
+        () => (forward ? record.moves : reversedMoves(record.moves)),
+        { save: false },
+      );
       _emitWorkspaceEditHistory({ id, undone: record.undone });
     } catch (error) {
       // A refused backend restore must leave the initiating editor's history intact.

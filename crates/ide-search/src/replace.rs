@@ -3,7 +3,7 @@
 //! (the document layer in the app, so open editors update and each file is one
 //! undoable step).
 
-use crate::{SearchQuery, iter, query};
+use crate::{LiteralRange, Literals, SearchContext, SearchQuery, iter, query};
 use grep_matcher::{Captures, Matcher};
 use ide_core::{CancellationToken, IdeError, IdeResult, Pos, Range, TextEdit};
 use serde::{Deserialize, Serialize};
@@ -128,10 +128,11 @@ pub fn replacement_edits(
     preserve: bool,
     only: Option<&[Pos]>,
 ) -> IdeResult<Vec<TextEdit>> {
-    edits_except(text, query, replacement, preserve, only, None)
+    edits_except(text, query, replacement, preserve, only, None, None)
 }
 
-/// [`replacement_edits`] leaving out the matches that start at `skip`.
+/// [`replacement_edits`] leaving out the matches that start at `skip` and, given the text's
+/// comments and string literals, those outside the query's [`crate::SearchContext`].
 fn edits_except(
     text: &str,
     query: &SearchQuery,
@@ -139,6 +140,7 @@ fn edits_except(
     preserve: bool,
     only: Option<&[Pos]>,
     skip: Option<&[Pos]>,
+    literals: Option<&[LiteralRange]>,
 ) -> IdeResult<Vec<TextEdit>> {
     if query.pattern.is_empty() {
         return Ok(Vec::new());
@@ -153,10 +155,13 @@ fn edits_except(
     let mut caps = matcher.new_captures().map_err(|e| IdeError::internal(e.to_string()))?;
     let mut edits = Vec::new();
     let mut buf = Vec::new();
-    iter::for_each_captures(matcher, haystack, &mut caps, |caps| {
+    iter::for_each_captures(matcher, compiled.whole_word, haystack, &mut caps, |caps| {
         let Some(m) = caps.get(0) else { return };
         let start = lines.pos(m.start());
-        if only.as_ref().is_some_and(|o| !o.contains(&start)) || skip.contains(&start) {
+        if only.as_ref().is_some_and(|o| !o.contains(&start))
+            || skip.contains(&start)
+            || literals.is_some_and(|l| !query.context.keeps(l, m.start()))
+        {
             return;
         }
         let mut new_text = if query.is_regex {
@@ -227,6 +232,23 @@ pub fn replace_files(
     cancel: &CancellationToken,
     on_event: &dyn Fn(ReplaceEvent),
 ) -> IdeResult<ReplaceSummary> {
+    replace_files_in_context(host, query, replacement, preserve, targets, None, cancel, on_event)
+}
+
+/// [`replace_files`] honouring [`SearchQuery::context`] with the comments and string literals
+/// `literals` finds, as [`crate::search_in_context`] does; without it every match is plain code.
+#[allow(clippy::too_many_arguments)]
+pub fn replace_files_in_context(
+    host: &dyn ReplaceHost,
+    query: &SearchQuery,
+    replacement: &str,
+    preserve: bool,
+    targets: &[ReplaceTarget],
+    literals: Option<Literals<'_>>,
+    cancel: &CancellationToken,
+    on_event: &dyn Fn(ReplaceEvent),
+) -> IdeResult<ReplaceSummary> {
+    let literals = literals.filter(|_| query.context != SearchContext::Any);
     // Fail fast on an invalid pattern instead of once per file.
     if !query.pattern.is_empty() {
         query::compile(query)?;
@@ -244,8 +266,14 @@ pub fn replace_files(
         if only.is_some_and(|o| o.is_empty()) {
             continue;
         }
-        let result =
-            host.edit_file(&target.path, &mut |text| edits_except(text, query, replacement, preserve, only, skip));
+        let result = host.edit_file(&target.path, &mut |text| {
+            let found = match literals.map(|l| l(&target.path, text)) {
+                // No syntax tree: nothing is in a comment or string, as in the search.
+                Some(None) if query.context.needs_literals() => return Ok(Vec::new()),
+                found => found.map(Option::unwrap_or_default),
+            };
+            edits_except(text, query, replacement, preserve, only, skip, found.as_deref())
+        });
         match result {
             Ok(n) => {
                 if n > 0 {

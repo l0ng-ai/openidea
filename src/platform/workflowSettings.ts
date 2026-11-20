@@ -45,6 +45,7 @@ export interface GitSettingsValid {
 
 export interface CommitSettingsValid {
   nonModal: boolean;
+  includeChangesByDefault: boolean;
   clearInitialMessage: boolean;
   analyzeCode: boolean;
   checkTodo: boolean;
@@ -304,6 +305,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     commit: {
       nonModal: true,
+      includeChangesByDefault: true,
       clearInitialMessage: false,
       analyzeCode: true,
       checkTodo: true,
@@ -479,6 +481,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
+      includeChangesByDefault: bool(c.includeChangesByDefault, d.commit.includeChangesByDefault),
       clearInitialMessage: bool(c.clearInitialMessage, d.commit.clearInitialMessage),
       analyzeCode: bool(c.analyzeCode, d.commit.analyzeCode),
       checkTodo: bool(c.checkTodo, d.commit.checkTodo),
