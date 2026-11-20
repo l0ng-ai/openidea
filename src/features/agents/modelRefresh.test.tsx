@@ -202,7 +202,8 @@ it("refreshes an existing chat's searchable model choices and switches through i
   const modelButton = screen.getByRole("button", { name: "Model" });
   fireEvent.click(modelButton);
   expect(await screen.findByRole("alert")).toHaveTextContent("discovery offline");
-  expect(screen.getByRole("option", { name: "session-only" })).toBeVisible();
+  expect(screen.queryByRole("option", { name: "session-only" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: /^old/ })).toBeVisible();
   expect(screen.getByRole("option", { name: "second-cached" })).toBeVisible();
   expect(backend.refresh.mock.calls).toEqual([["second", false, null]]);
   expect(screen.queryByRole("option", { name: "big" })).not.toBeInTheDocument();
@@ -219,7 +220,8 @@ it("refreshes an existing chat's searchable model choices and switches through i
   await act(async () => pending.resolve(ok(fresh)));
 
   expect(modelButton).toHaveTextContent("old");
-  expect(screen.getByRole("option", { name: "session-only" })).toBeVisible();
+  expect(screen.queryByRole("option", { name: "session-only" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "fresh" })).toBeVisible();
   expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("low");
   expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("plan");
   expect(screen.getByText("Earlier message")).toBeVisible();

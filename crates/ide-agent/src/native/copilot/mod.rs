@@ -372,6 +372,24 @@ fn error(code: i64, message: impl Into<String>) -> ResponseError {
     ResponseError { code, message: message.into(), data: None }
 }
 
+/// Adds the session's staged skills to a `session.create`/`session.resume` request:
+/// `skillDirectories` (the farm's `copilot` tree) and `disabledSkills` (the off and
+/// slash-only ones; Copilot invokes skills with the model only, so a slash-only skill has
+/// no other switch here).
+fn apply_skills(params: &Value, req: &mut Value) {
+    let skills = params.pointer("/_meta/openidea/skills");
+    if let Some(dirs) = skills.and_then(|s| s.get("copilotSkillDirectories")).and_then(Value::as_array)
+        && !dirs.is_empty()
+    {
+        req["skillDirectories"] = json!(dirs.iter().filter_map(Value::as_str).collect::<Vec<_>>());
+    }
+    if let Some(disabled) = skills.and_then(|s| s.get("copilotDisabledSkills")).and_then(Value::as_array)
+        && !disabled.is_empty()
+    {
+        req["disabledSkills"] = json!(disabled.iter().filter_map(Value::as_str).collect::<Vec<_>>());
+    }
+}
+
 fn invalid(message: impl Into<String>) -> ResponseError {
     error(codes::INVALID_PARAMS, message)
 }
@@ -496,6 +514,7 @@ impl CopilotShim {
         if let Some(disabled) = translate::wire_disabled_mcp_servers(params) {
             req["disabledMcpServers"] = disabled;
         }
+        apply_skills(params, &mut req);
 
         let created = self.call("session.create", req).await?;
         let session_id = created
@@ -546,6 +565,7 @@ impl CopilotShim {
         if let Some(disabled) = translate::wire_disabled_mcp_servers(params) {
             req["disabledMcpServers"] = disabled;
         }
+        apply_skills(params, &mut req);
 
         let resumed = self.call("session.resume", req).await?;
         if let Ok(current) = self.call("session.model.getCurrent", json!({ "sessionId": session_id })).await {

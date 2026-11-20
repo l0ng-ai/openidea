@@ -245,6 +245,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     newTaskApprovals: "bypass",
     defaults: {},
     mcpServers: {},
+    skills: {},
   },
   mcpServer: {
     enabled: false,
@@ -310,6 +311,15 @@ function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(agents.length ? { agents } : {}),
     };
+  }
+  return out;
+}
+
+function agentSkillPolicies(v: unknown): Required<AgentSettings>["skills"] {
+  const out: Required<AgentSettings>["skills"] = {};
+  for (const [name, raw] of Object.entries(obj(v))) {
+    if (!name.trim()) continue;
+    out[name] = { mode: oneOf(obj(raw).mode, ["auto", "slashOnly", "off"] as const, "auto") };
   }
   return out;
 }
@@ -448,6 +458,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       newTaskApprovals: oneOf(agents.newTaskApprovals, ["bypass", "ask"] as const, d.agents.newTaskApprovals),
       defaults: agentDefaults(agents.defaults),
       mcpServers: agentMcpServers(agents.mcpServers),
+      skills: agentSkillPolicies(agents.skills),
     },
     mcpServer: {
       enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),

@@ -37,6 +37,17 @@ describe("markdown LaTeX math", () => {
     expect(root.querySelector("p")?.textContent?.startsWith("Prices $5 and $10, with ")).toBe(true);
   });
 
+  it("leaves separate code spans inside dollar signs as code", () => {
+    const root = parseSafe("($`x` `y`$)");
+    expect(root.querySelector("p")?.innerHTML).toBe("($<code>x</code> <code>y</code>$)");
+  });
+
+  it("matches a longer backtick delimiter around math inside emphasis", () => {
+    const root = parseSafe("**($``x` + y``$)**");
+    expect(root.querySelector("strong .katex annotation")?.textContent).toBe("x` + y");
+    expect(root.querySelector("code")).toBeNull();
+  });
+
   it("keeps an unfinished protected delimiter from swallowing a later formula", () => {
     const root = parseSafe("Unfinished $`x` and $y$.");
     expect(root.querySelector("p > code")?.textContent).toBe("x");
