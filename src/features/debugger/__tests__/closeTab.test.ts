@@ -7,6 +7,20 @@ vi.mock("@/workbench/contributions", async (orig) => ({
 }));
 import { adoptSession, closeSessionTab, useDebug } from "../state";
 
+it("closes a session's child and grandchild sessions with it (#4280)", async () => {
+  // js-debug: `pnpm run dev` → pnpm.cjs → rspack.js.
+  adoptSession(10, { adapter: "js-debug", name: "pnpm run dev" });
+  adoptSession(11, { adapter: "js-debug", name: "pnpm.cjs", parent: 10 });
+  adoptSession(12, { adapter: "js-debug", name: "rspack.js", parent: 11 });
+  adoptSession(13, { adapter: "js-debug", name: "other" });
+  for (const id of [10, 11, 12, 13])
+    useDebug.setState((s) => ({ sessions: { ...s.sessions, [id]: { ...s.sessions[id]!, status: "terminated" } } }));
+  expect(await closeSessionTab(10)).toBe(true);
+  expect(Object.keys(useDebug.getState().sessions)).toEqual(["13"]);
+  expect(await closeSessionTab(13)).toBe(true);
+  hide.mockClear();
+});
+
 it("hides the Debug tool window once its last session tab is closed", async () => {
   adoptSession(1, { adapter: "delve" });
   adoptSession(2, { adapter: "delve" });

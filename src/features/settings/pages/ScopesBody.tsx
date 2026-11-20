@@ -2,13 +2,13 @@
  * Appearance & Behavior › Scopes (named file sets) and › File Colors (a background
  * colour per scope in the project view and on editor tabs). Both are project settings.
  */
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { FILE_COLOR_NAMES, fileColorCss, validateFileColors, type FileColorEntry } from "@/platform/fileColors";
 import { tx } from "@/platform/i18n";
 import { BUILTIN_SCOPES, scopeError, validateScopes, type NamedScope } from "@/platform/scopes";
 import { IconButton, Input, List, T, type SelectOption } from "@/ui";
-import { ColorSwatches, Row, Section, Select } from "../components/Form";
+import { ColorSwatches, Row, Section, Select, SettingToggle } from "../components/Form";
 import { useSetting } from "../components/context";
 import styles from "./Workflow.module.css";
 import own from "./Scopes.module.css";
@@ -196,6 +196,9 @@ export function FileColorsEditor() {
   const current = colors[index];
   const set = (next: FileColorEntry[]) => setRaw({ ...settings, colors: next });
   const update = (patch: Partial<FileColorEntry>) => set(colors.map((c, i) => (i === index ? { ...c, ...patch } : c)));
+  const revealRow = useCallback((row: HTMLTableRowElement | null) => {
+    row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, []);
 
   const scopeNames = [...BUILTIN_SCOPES, ...validateScopes(rawScopes).map((s) => s.name)];
   const scopeOptions: SelectOption[] = scopeNames.map((n) => ({ value: n, label: n }));
@@ -204,7 +207,12 @@ export function FileColorsEditor() {
   const presets = FILE_COLOR_NAMES.map((n) => ({ value: n, label: colorLabel(n), css: fileColorCss(n) }));
 
   return (
-    <div className={styles.toolsLayout}>
+    <div className={own.fileColorsLayout}>
+      <div className={own.colorOptions}>
+        <SettingToggle k="fileColors.enabled" label="Enable file colors" />
+        <SettingToggle k="fileColors.editorTabs" label="Use in editor tabs" disabled={!settings.enabled} />
+        <SettingToggle k="fileColors.projectView" label="Use in project view" disabled={!settings.enabled} />
+      </div>
       <div className={styles.tableBox}>
         <ListToolbar
           label="File colors actions"
@@ -224,32 +232,55 @@ export function FileColorsEditor() {
             }
           }}
         />
-        <div className={styles.toolList} role="listbox" aria-label={tx("File colors")}>
-          {colors.length === 0 && (
-            <div className={clsx(styles.toolRow, styles.empty)}>
-              <T>No file colors. Click + to add one.</T>
-            </div>
-          )}
-          {colors.map((c, i) => (
-            <div
-              key={i}
-              role="option"
-              aria-selected={i === index}
-              className={clsx(styles.toolRow, i === index && styles.toolRowSelected)}
-              onMouseDown={() => setSelected(i)}
-            >
-              <span className={styles.toolName}>{tx(c.scope)}</span>
-              <span className={own.color}>
-                <span className={own.swatch} style={{ background: fileColorCss(c.color) }} aria-hidden />
-                {tx(colorLabel(c.color))}
-              </span>
-            </div>
-          ))}
+        <div className={own.colorRows}>
+          <table className={styles.table} aria-label={tx("File colors")}>
+            <colgroup>
+              <col />
+              <col className={own.colorColumn} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">
+                  <T>Scope</T>
+                </th>
+                <th scope="col">
+                  <T>Color</T>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {colors.length === 0 && (
+                <tr className={own.emptyColorRow}>
+                  <td colSpan={2} className={styles.empty}>
+                    <T>No file colors. Click + to add one.</T>
+                  </td>
+                </tr>
+              )}
+              {colors.map((c, i) => (
+                <tr
+                  key={i}
+                  ref={i === index ? revealRow : undefined}
+                  className={clsx(i === index && styles.selectedRow)}
+                  onClick={() => setSelected(i)}
+                >
+                  <td>
+                    <button type="button" className={own.scopeButton} title={tx(c.scope)} aria-pressed={i === index}>
+                      {tx(c.scope)}
+                    </button>
+                  </td>
+                  <td title={tx(colorLabel(c.color))}>
+                    <span className={own.swatch} style={{ background: fileColorCss(c.color) }} aria-hidden />
+                    {tx(colorLabel(c.color))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
       {current && (
         <Section title="File Color">
-          <Row label="Scope" className={styles.alignedRow}>
+          <Row label="Scope">
             <Select
               value={current.scope}
               options={scopeOptions}
@@ -257,7 +288,7 @@ export function FileColorsEditor() {
               aria-label="Scope"
             />
           </Row>
-          <Row label="Color" className={styles.alignedRow}>
+          <Row label="Color" className={own.colorDetail}>
             <ColorSwatches
               value={current.color}
               presets={presets}

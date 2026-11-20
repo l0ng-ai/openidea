@@ -4,12 +4,15 @@
  * direct interpreter invocation for main files. Best effort, IDEA-style.
  */
 import type { RunConfig } from "@/platform/ipc";
+import { jvmModuleDir } from "@/platform/javaLaunch";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { inGradleModule } from "./gradleModuleTests";
 import { systemPython } from "./pythonTypes";
 import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
 import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
+import { withMavenTests } from "./mavenTests";
 import { typeFor } from "./types";
 import { runTemplate } from "./runTemplates";
 import { appendScriptArgs } from "./scriptArgs";
@@ -276,10 +279,13 @@ export function testConfigFor(
       const m = /(?:^|\/)tests\/([^/]+)\.rs$/.exec(relPath);
       return m ? derived(base, relPath, { args: [...base.args, "--test", m[1]!] }) : base;
     }
-    case "gradle":
-      return derived(base, relPath, { args: [...base.args, "--tests", `*${stem(relPath)}`] });
+    case "gradle": {
+      // Class and method runs narrow this file configuration, so they inherit its subproject task.
+      const module = inGradleModule(base, jvmModuleDir(relPath, configs));
+      return derived(module, relPath, { args: [...module.args, "--tests", `*${stem(relPath)}`] });
+    }
     case "maven":
-      return derived(base, relPath, { args: [...base.args, `-Dtest=${stem(relPath)}`] });
+      return derived(base, relPath, { args: withMavenTests(base.args, stem(relPath)) });
   }
   return base;
 }

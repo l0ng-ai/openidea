@@ -3,6 +3,7 @@ import { EditorSelection, EditorState, type Extension } from "@codemirror/state"
 import { EditorView } from "@codemirror/view";
 import { history, redo, undo } from "@codemirror/commands";
 import { html } from "@codemirror/lang-html";
+import { javascript } from "@codemirror/lang-javascript";
 import { linkedTags } from "./linkedTags";
 import { prefsExtension } from "./prefs";
 import { angular } from "./angular";
@@ -221,6 +222,53 @@ describe("linked html tags", () => {
     }
   });
 
+  describe("in JSX / TSX", () => {
+    const tsx = (text: string) => makeWith([javascript({ jsx: true, typescript: true }), linkedTags, history()], text);
+
+    it("renames the closing tag while the opening one is typed, and back", () => {
+      const v = tsx('const a = <div| className="x">hi</div>;');
+      type(v, "s");
+      expect(show(v)).toBe('const a = <divs| className="x">hi</divs>;');
+      const w = tsx("const a = <Foo>hi</Fo|o>;");
+      type(w, "x");
+      expect(show(w)).toBe("const a = <Foxo>hi</Fox|o>;");
+    });
+
+    it("renames member and namespaced names as a whole", () => {
+      const v = tsx("const a = <Foo.Bar|>x</Foo.Bar>;");
+      type(v, "z");
+      expect(v.state.doc.toString()).toBe("const a = <Foo.Barz>x</Foo.Barz>;");
+      const w = tsx("const a = <|Foo.Bar>x</Foo.Bar>;");
+      type(w, "My");
+      expect(w.state.doc.toString()).toBe("const a = <MyFoo.Bar>x</MyFoo.Bar>;");
+    });
+
+    it("follows the element's own closing tag through nested same-name elements", () => {
+      const v = tsx("const a = <div|><div></div></div>;");
+      type(v, "x");
+      expect(v.state.doc.toString()).toBe("const a = <divx><div></div></divx>;");
+    });
+
+    it("leaves fragments, self-closing tags and attributes alone", () => {
+      const v = tsx("const a = <Foo| />;");
+      type(v, "x");
+      expect(v.state.doc.toString()).toBe("const a = <Foox />;");
+      const w = tsx("const a = <div |>x</div>;");
+      type(w, "a");
+      expect(w.state.doc.toString()).toBe("const a = <div a>x</div>;");
+      const f = tsx("const a = <|>x</>;");
+      type(f, "p");
+      expect(f.state.doc.toString()).toBe("const a = <p>x</>;");
+    });
+
+    it("undoes both tags in one step", () => {
+      const v = tsx("const a = <div|></div>;");
+      type(v, "x");
+      expect(undo(v)).toBe(true);
+      expect(v.state.doc.toString()).toBe("const a = <div></div>;");
+    });
+  });
+
   describe("the smart key gates the filter", () => {
     /** The real wiring: prefsExtension attaches the filter for the document's language. */
     const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
@@ -253,6 +301,28 @@ describe("linked html tags", () => {
         const v = prefs(language);
         type(v, "s");
         expect(v.state.doc.toString()).toBe("<divs></divs>");
+      }
+    });
+
+    it("links tags for JSX / TSX", () => {
+      for (const language of ["typescriptreact", "javascriptreact"]) {
+        const v = makeWith(
+          [
+            javascript({ jsx: true, typescript: language === "typescriptreact" }),
+            prefsExtension({
+              prefs: validateEditorExtras({ smartKeys: {} }),
+              path: "",
+              softWrap: false,
+              showWhitespace: false,
+              hardWrapAt: 120,
+              readOnly: false,
+              language,
+            }),
+          ],
+          "const a = <div|></div>;",
+        );
+        type(v, "s");
+        expect(v.state.doc.toString()).toBe("const a = <divs></divs>;");
       }
     });
 

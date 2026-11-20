@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub struct VcsSettings {
     /// Colour folders that contain changed files (project tree, tabs).
     pub show_dirty_directories: bool,
+    /// Diffs the user opens show in an editor tab; off, in a separate window.
+    pub diff_as_editor_tab: bool,
     /// Stop file history (Show History) after `history_limit` commits.
     pub limit_history: bool,
     pub history_limit: u32,
@@ -55,6 +57,7 @@ impl Default for VcsSettings {
         Self {
             // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
             show_dirty_directories: false,
+            diff_as_editor_tab: true,
             limit_history: true,
             history_limit: 1000,
             git: GitSettings::default(),
@@ -148,6 +151,7 @@ pub struct CommitSettings {
     /// Commit from the Commit tool window; off = Local Changes in the Git tool
     /// window and a Commit dialog.
     pub non_modal: bool,
+    pub include_changes_by_default: bool,
     /// Start with an empty message instead of the last one / the changelist's.
     pub clear_initial_message: bool,
     pub analyze_code: bool,
@@ -187,6 +191,7 @@ impl Default for CommitSettings {
     fn default() -> Self {
         Self {
             non_modal: true,
+            include_changes_by_default: true,
             clear_initial_message: false,
             analyze_code: true,
             check_todo: true,

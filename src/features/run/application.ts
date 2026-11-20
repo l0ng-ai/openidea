@@ -8,6 +8,7 @@ import { CLASSPATH, TEST_CLASSPATH, jvmModuleDir } from "@/platform/javaLaunch";
 import { isTestPath, rootFor } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { simpleClassName } from "./jvmTargets";
+import { withMavenTests } from "./mavenTests";
 
 export { jvmModuleDir } from "@/platform/javaLaunch";
 
@@ -49,7 +50,7 @@ export function applicationConfig(
 /**
  * Narrows a Maven / Gradle test configuration to a class (`method` unset) or
  * one method: Surefire `-Dtest=Class#method`, Gradle `--tests Class.method`.
- * `fileConfig` is the file-level configuration whose last argument is the file filter.
+ * `fileConfig` is the file-level configuration; for Gradle its last argument is the file filter.
  */
 export function jvmTestConfig(fileConfig: RunConfig, className: string, method: string | undefined): RunConfig | null {
   const args = fileConfig.args.slice(0, -1);
@@ -63,7 +64,7 @@ export function jvmTestConfig(fileConfig: RunConfig, className: string, method: 
         id,
         name,
         env: { ...fileConfig.env },
-        args: [...args, `-Dtest=${className}${method ? `#${method}` : ""}`, "-Dsurefire.failIfNoSpecifiedTests=false"],
+        args: withMavenTests(fileConfig.args, `${className}${method ? `#${method}` : ""}`),
       };
     case "gradle":
       return {

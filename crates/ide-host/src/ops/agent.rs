@@ -5,10 +5,11 @@ use crate::Host;
 use crate::agent_secrets::{AgentSecrets, Kept};
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentContextUsage,
-    AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCliOffer,
+    AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe,
+    AgentPrompt, AgentProvider, AgentQueued, AgentSkillMode, AgentSkillPolicy, AgentSkillState, AgentTask,
     CustomAgentInput, ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer,
-    McpServerInput, McpTransport, NewAgentTask,
+    McpServerInput, McpTransport, NewAgentTask, SkillsPolicy,
 };
 use ide_command::command;
 use ide_core::error::ErrorKind;
@@ -357,6 +358,50 @@ pub async fn agent_fork(host: &Host, window: &str, task: String, turns: Option<u
 pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
     host.require_trust(window)?;
     host.project(window)?.agents.rollback(&task, turns).await
+}
+
+/// Checks the selected installation without modifying it.
+#[command(trust = trusted)]
+pub async fn agent_cli_update_check(
+    host: &Host,
+    window: &str,
+    provider: String,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    cli_update(host, window, provider, None, request).await
+}
+
+/// Installs the exact version offered if the selected installation still matches.
+#[command(trust = trusted)]
+pub async fn agent_cli_update(
+    host: &Host,
+    window: &str,
+    provider: String,
+    offer: AgentCliOffer,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    cli_update(host, window, provider, Some(offer), request).await
+}
+
+async fn cli_update(
+    host: &Host,
+    window: &str,
+    provider: String,
+    offer: Option<AgentCliOffer>,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let installing = offer.as_ref().map(|_| Installing::begin(&provider)).transpose()?;
+    let cancel = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        let _installing = installing;
+        project.agents.cli_update(&provider, offer.as_ref(), &cancel)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    result?
 }
 
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
@@ -984,6 +1029,148 @@ pub fn agent_set_mcp_overrides(
     host.project(window)?.agents.set_mcp_overrides(&task, overrides)
 }
 
+/// Updates per-session skill modes on `task`.
+#[command(trust = always)]
+pub fn agent_set_skill_overrides(
+    host: &Host,
+    window: &str,
+    task: String,
+    overrides: std::collections::BTreeMap<String, AgentSkillMode>,
+) -> IdeResult<AgentTask> {
+    host.project(window)?.agents.set_skill_overrides(&task, overrides)
+}
+
+/// Every skill discovered in the project and the user's folders, with the mode a session
+/// of this project runs it with (without any session's own overrides).
+#[command(trust = always)]
+pub async fn agent_skills_list(host: &Host, window: &str) -> IdeResult<Vec<AgentSkillState>> {
+    let project = host.project(window)?;
+    let root = project.root.clone();
+    let (policy, home) = (skills_policy(&project), dirs::home_dir());
+    tokio::task::spawn_blocking(move || {
+        Ok(ide_agent::skills::resolve(
+            ide_agent::skills::discover_skills(&root, home.as_deref()),
+            None,
+            &policy.workspace,
+            &policy.user,
+            policy.workspace_trusted,
+        ))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
+/// updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
+#[command(trust = always)]
+pub fn agent_skills_set_mode(
+    host: &Host,
+    window: &str,
+    name: String,
+    scope: McpScope,
+    mode: AgentSkillMode,
+) -> IdeResult<Vec<AgentSkillState>> {
+    let name = name.trim().to_owned();
+    if name.is_empty() {
+        return Err(IdeError::invalid("a skill needs a name"));
+    }
+    let project = host.project(window).ok().filter(|p| !p.light);
+    let (mut user, mut workspace) = skills_maps(host, project.as_ref());
+    match scope {
+        McpScope::User => {
+            let changed = if mode == AgentSkillMode::Auto {
+                user.remove(&name).is_some()
+            } else {
+                user.insert(name, AgentSkillPolicy { mode }).map(|p| p.mode) != Some(mode)
+            };
+            if changed {
+                persist_skills_map(host, None, scope, &user)?;
+            }
+        }
+        McpScope::Workspace => {
+            let map =
+                workspace.as_mut().ok_or_else(|| IdeError::invalid("Open a project to configure workspace skills"))?;
+            let changed = if mode == AgentSkillMode::Auto {
+                map.remove(&name).is_some()
+            } else {
+                map.insert(name, AgentSkillPolicy { mode }).map(|p| p.mode) != Some(mode)
+            };
+            if changed {
+                let map = map.clone();
+                persist_skills_map(host, project.as_ref(), scope, &map)?;
+            }
+        }
+    }
+    match project {
+        Some(project) => {
+            let root = project.root.clone();
+            let policy = skills_policy(&project);
+            let home = dirs::home_dir();
+            Ok(ide_agent::skills::resolve(
+                ide_agent::skills::discover_skills(&root, home.as_deref()),
+                None,
+                &policy.workspace,
+                &policy.user,
+                policy.workspace_trusted,
+            ))
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The user's and the workspace's skill policies (`[agents.skills.<name>]`).
+fn skills_maps(
+    host: &Host,
+    project: Option<&std::sync::Arc<crate::Project>>,
+) -> (std::collections::BTreeMap<String, AgentSkillPolicy>, Option<std::collections::BTreeMap<String, AgentSkillPolicy>>)
+{
+    let user = host.global_settings.effective().agents.skills.clone();
+    let workspace =
+        project.map(|p| p.settings.layer(ide_workspace::settings::SettingsScope::Project).agents.skills.clone());
+    (user, workspace)
+}
+
+/// Saves `map` into its scope's settings and tells the windows.
+fn persist_skills_map(
+    host: &Host,
+    project: Option<&std::sync::Arc<crate::Project>>,
+    scope: McpScope,
+    map: &std::collections::BTreeMap<String, AgentSkillPolicy>,
+) -> IdeResult<()> {
+    let value = if map.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(map).map_err(|e| IdeError::invalid(e.to_string()))?
+    };
+    let event = IdeEvent::SettingsChanged { key: "agents.skills".into() };
+    match scope {
+        McpScope::User => {
+            host.global_settings.set(ide_workspace::settings::SettingsScope::Global, "agents.skills", value)?;
+            for p in host.projects() {
+                p.settings.reload();
+                p.agents.notify_mcp_servers_changed();
+                p.sink.emit(event.clone());
+            }
+        }
+        McpScope::Workspace => {
+            let p = project.ok_or_else(|| IdeError::invalid("Open a project to configure workspace skills"))?;
+            p.settings.set(ide_workspace::settings::SettingsScope::Project, "agents.skills", value)?;
+            p.agents.notify_mcp_servers_changed();
+            p.sink.emit(event);
+        }
+    }
+    Ok(())
+}
+
+/// The skill policies a session of `project` resolves against.
+fn skills_policy(project: &crate::Project) -> SkillsPolicy {
+    SkillsPolicy {
+        user: project.settings.layer(ide_workspace::settings::SettingsScope::Global).agents.skills.clone(),
+        workspace: project.settings.layer(ide_workspace::settings::SettingsScope::Project).agents.skills.clone(),
+        workspace_trusted: project.trusted.load(std::sync::atomic::Ordering::Acquire),
+    }
+}
+
 fn validate_project_root(root: &std::path::Path, requested: Option<&std::path::Path>) -> IdeResult<std::path::PathBuf> {
     let Some(requested) = requested else {
         return Ok(root.to_path_buf());
@@ -1102,6 +1289,8 @@ ide_command::domain!(
     agent_cancel,
     agent_context_usage,
     agent_changes,
+    agent_cli_update,
+    agent_cli_update_check,
     agent_commands,
     agent_create,
     agent_delete,
@@ -1137,6 +1326,9 @@ ide_command::domain!(
     agent_set_config,
     agent_set_env,
     agent_set_mcp_overrides,
+    agent_set_skill_overrides,
+    agent_skills_list,
+    agent_skills_set_mode,
     agent_stop_background,
     agent_subscribe,
     agent_unarchive,

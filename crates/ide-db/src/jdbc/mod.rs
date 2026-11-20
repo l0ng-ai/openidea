@@ -303,7 +303,9 @@ async fn read_frame(output: &mut (impl AsyncRead + Unpin)) -> IdeResult<Vec<u8>>
 const CANCEL_GRACE: Duration = Duration::from_secs(3);
 
 fn cancel_timeout() -> IdeError {
-    IdeError::invalid("The JDBC driver did not stop in time. The session was closed. Reconnect to continue.")
+    IdeError::invalid(
+        "Cancellation timed out and the JDBC session was closed. Check the statement's status on the server before running it again. The next query will try to reconnect.",
+    )
 }
 
 async fn exchange(

@@ -1265,7 +1265,6 @@ interface GitPreviewSuffixSeg {
   attr: string;
   icon?: "vcs-outgoing" | "vcs-incoming";
   label?: string;
-  strike?: boolean;
 }
 
 /** The Git page shows the two real surfaces instead of a code sample: the editor
@@ -1286,29 +1285,35 @@ function GitPreview({
       {text}
     </span>
   );
-  // Mirrors rootSyncSuffix: branch, "/" separator, then ahead/behind counts or a struck zero.
+  // Mirrors rootSyncSuffix for clean repositories
   const suffixOf = (root: GitPreviewRoot): GitPreviewSuffixSeg[] => {
     const { branch, branchAttr, upstream, ahead, behind } = root;
     const head: GitPreviewSuffixSeg = { text: branch, attr: branchAttr };
-    if (!upstream) return [head];
     const counts: GitPreviewSuffixSeg[] = [];
-    if (ahead)
+    if (upstream && ahead)
       counts.push({
         text: String(ahead),
         attr: "gitBranchChanged",
         icon: "vcs-outgoing",
         label: tx`${ahead} outgoing commits`,
       });
-    if (behind)
+    if (upstream && behind)
       counts.push({
         text: String(behind),
         attr: "gitBranchChanged",
         icon: "vcs-incoming",
         label: tx`${behind} incoming commits`,
       });
-    if (!counts.length)
-      counts.push({ text: "0", attr: "gitHeadTags", strike: true, label: tx`Up to date with ${upstream}` });
-    return [head, { text: "/", attr: "gitHeadTags" }, ...counts];
+    return [
+      head,
+      ...counts,
+      {
+        text: "/",
+        attr: "gitHeadTags",
+        label: upstream && !counts.length ? tx`Up to date with ${upstream}` : undefined,
+      },
+      { text: "∅", attr: "gitHeadTags", label: tx("No local changes") },
+    ];
   };
   return (
     <div className={styles.gitPreview} style={vars} aria-label={tx("Color scheme preview")}>
@@ -1366,7 +1371,7 @@ function GitPreview({
                       title={s.label}
                       onClick={() => click(s.attr)}
                     >
-                      {s.strike ? <s>{s.text}</s> : s.text}
+                      {s.text}
                       {s.icon && <Icon name={s.icon} size={12} />}
                     </span>
                   ))}

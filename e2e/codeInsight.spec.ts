@@ -60,7 +60,21 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await page.keyboard.type("order.");
+  await page.keyboard.type("order");
+  const firstPlacement = await page.evaluateHandle(() => {
+    const sample: { labelX?: number } = {};
+    const observer = new MutationObserver(() => {
+      const label = document.querySelector(
+        ":is(.cm-tooltip-above, .cm-tooltip-below).cm-lsp-completion .cm-completionLabel",
+      );
+      if (!label) return;
+      sample.labelX = label.getBoundingClientRect().left;
+      observer.disconnect();
+    });
+    observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    return sample;
+  });
+  await page.keyboard.type(".");
   await page.keyboard.press("Control+Space");
   const popup = page.locator(".cm-tooltip-autocomplete");
   await expect(popup.getByText("total", { exact: true })).toBeVisible();
@@ -83,6 +97,8 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   });
   const label = await method.locator(".cm-completionLabel").boundingBox();
   // Subpixel rounding differs per platform/font; a mis-set inset is a whole icon column off.
+  const firstLabelX = await firstPlacement.evaluate((sample) => sample.labelX!);
+  expect(Math.abs(firstLabelX - wordStart)).toBeLessThanOrEqual(2);
   expect(Math.abs(label!.x - wordStart)).toBeLessThanOrEqual(2);
   const zoomedSize = await editor.locator(".cm-content").evaluate(async (content) => {
     const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";

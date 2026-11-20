@@ -19,6 +19,7 @@ describe("agent chat settings", () => {
       newTaskApprovals: "bypass",
       defaults: {},
       mcpServers: {},
+      skills: {},
     });
     const stored = validateSettings({
       agents: { showUsageLimits: false, showCost: true, showWorkTime: "no", fitWindowWidth: true },

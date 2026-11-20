@@ -84,6 +84,28 @@ fn incoming_order_groups_the_merged_branch_before_the_main_parent() {
 }
 
 #[test]
+fn an_older_incoming_tip_uses_the_later_commit_time_when_merging_repo_pages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"], None);
+    let base = commit(dir, "base.txt", "base", 1000);
+    let recent = commit(dir, "recent.txt", "recent", 4000);
+    git(dir, &["checkout", "-qb", "incoming", &base], None);
+    let incoming = commit(dir, "incoming.txt", "incoming", 2000);
+    git(dir, &["checkout", "-q", "main"], None);
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let query = LogQuery { summary_only: true, order: LogOrder::Standard, limit: 1, ..Default::default() };
+
+    let first = repo.log(&query).unwrap();
+    assert_eq!(first[0].id, incoming);
+    assert_eq!(first[0].commit_time_ms, 2_000_000.0);
+    assert_eq!(first[0].log_merge_time_ms, Some(4_000_000.0));
+    let next = repo.log(&LogQuery { skip: 1, ..query }).unwrap();
+    assert_eq!(next[0].id, recent);
+    assert_eq!(next[0].log_merge_time_ms, None);
+}
+
+#[test]
 fn no_merges_links_children_to_the_merge_parents() {
     let h = history();
     let out = log(&h, LogQuery { no_merges: true, ..Default::default() });

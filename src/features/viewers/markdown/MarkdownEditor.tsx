@@ -56,6 +56,7 @@ import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
 import { wheelZoomStep } from "@/platform/wheelZoom";
+import { attachPanZoom } from "../panZoom";
 
 /** Loaded local images by absolute path (data URLs), shared by all previews. */
 const imageCache = new Map<string, Promise<string>>();
@@ -75,6 +76,18 @@ function imageUrl(path: string): Promise<string> {
 function openExternal(url: string) {
   if (isTauri()) void import("@tauri-apps/plugin-opener").then((m) => m.openUrl(url)).catch(() => {});
   else window.open(url, "_blank", "noopener");
+}
+
+/** Wrapper that gives each preview image its own ⌘/Ctrl+wheel pan/zoom, like a Mermaid diagram. */
+const IMAGE_ZOOM = "image-zoom";
+
+function attachImagePanZoom(img: HTMLImageElement): void {
+  if (img.closest(`.${IMAGE_ZOOM}`)) return;
+  const box = document.createElement("span");
+  box.className = IMAGE_ZOOM;
+  img.replaceWith(box);
+  box.append(img);
+  attachPanZoom(box);
 }
 
 const SPLIT_STORAGE_KEY = "openidea.markdown.split";
@@ -119,6 +132,7 @@ export function MarkdownEditor({
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <SplitGroup
         orientation="horizontal"
+        disableCursor
         className={styles.group}
         storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
       >
@@ -214,15 +228,17 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const root = ref.current;
     if (!root) return;
     let live = true;
+    const size = (img: HTMLImageElement, intrinsic?: { w: number; h: number } | null) =>
+      applyImageZoomWidth(img, intrinsic, img.closest<HTMLElement>(`.${IMAGE_ZOOM}`) ?? img);
     const bindImageUrl = (img: HTMLImageElement, url: string, asyncLoad: boolean) => {
       const svgSize = svgDataUrlSize(url);
-      if (svgSize && applyImageZoomWidth(img, svgSize) && asyncLoad) {
+      if (svgSize && size(img, svgSize) && asyncLoad) {
         setDiagramsDrawn((n) => n + 1);
       }
       img.onload = () => {
         if (!live) return;
         if (!img.hasAttribute("data-natural-width") && img.naturalWidth > 0 && img.naturalHeight > 0) {
-          if (applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight })) {
+          if (size(img, { w: img.naturalWidth, h: img.naturalHeight })) {
             setDiagramsDrawn((n) => n + 1);
           }
         } else if (asyncLoad) {
@@ -231,12 +247,13 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       };
       img.src = url;
       if (!img.hasAttribute("data-natural-width") && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
-        applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight });
+        size(img, { w: img.naturalWidth, h: img.naturalHeight });
       }
     };
     const imgs = [...root.querySelectorAll<HTMLImageElement>("img[data-src]")];
     imgs.forEach((img) => {
-      applyImageZoomWidth(img);
+      attachImagePanZoom(img);
+      size(img);
       const src = img.dataset.src ?? "";
       if (/^data:image\//i.test(src)) {
         bindImageUrl(img, src, false);
@@ -447,7 +464,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       if (!editorPrefs().general.wheelZoom) return;
       const zoom = wheelZoomStep(e);
       if (zoom === null) return;
-      if ((e.target as Element | null)?.closest?.('.mermaid-output[data-zoomed="true"]')) return;
+      // a zoomed-in diagram or image keeps the wheel for its own zoom
+      if ((e.target as Element | null)?.closest?.('[data-zoomed="true"]')) return;
       e.preventDefault();
       e.stopPropagation();
       if (zoom) stepMarkdownPreviewFontZoom(path, root, zoom);

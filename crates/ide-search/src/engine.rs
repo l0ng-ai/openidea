@@ -1,13 +1,12 @@
 //! Parallel walk + per-file search.
 
 use crate::iter::for_each_match;
-use crate::line::line_match;
+use crate::line::line_matches;
 use crate::mask::FileMask;
 use crate::pattern::ScopePattern;
 use crate::query::{Compiled, line_terminator};
 use crate::{
-    FileMatches, LineMatch, LiteralKind, LiteralRange, Literals, PathFilter, SearchContext, SearchScope, SearchSummary,
-    TextSource,
+    FileMatches, LineMatch, LiteralRange, Literals, PathFilter, SearchContext, SearchScope, SearchSummary, TextSource,
 };
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
@@ -52,6 +51,7 @@ struct Control<'a> {
     matches: AtomicU32,
     files: AtomicU32,
     max: u32,
+    whole_word: bool,
 }
 
 impl Control<'_> {
@@ -131,6 +131,7 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
             matches: AtomicU32::new(0),
             files: AtomicU32::new(0),
             max: if req.max_matches == 0 { DEFAULT_MAX_MATCHES } else { req.max_matches },
+            whole_word: req.compiled.whole_word,
         },
     };
     let mut searcher_builder = SearcherBuilder::new();
@@ -462,12 +463,6 @@ impl<'a> FileSink<'a> {
     }
 }
 
-/// Kind of the comment or string literal containing byte `pos` (`literals` sorted).
-fn literal_at(literals: &[LiteralRange], pos: usize) -> Option<LiteralKind> {
-    let i = literals.partition_point(|l| l.start <= pos);
-    literals[..i].last().filter(|l| pos < l.end).map(|l| l.kind)
-}
-
 impl Sink for FileSink<'_> {
     type Error = io::Error;
 
@@ -488,12 +483,12 @@ impl Sink for FileSink<'_> {
         let mut found = std::mem::take(&mut self.found);
         let mut ranges = std::mem::take(&mut self.ranges);
         found.clear();
-        for_each_match(self.matcher, &buffer[..range.end], range.start, |mm| {
+        for_each_match(self.matcher, self.ctl.whole_word, &buffer[..range.end], range.start, |mm| {
             found.push((mm.start() - range.start, mm.end() - range.start));
         });
         if let Some((context, literals)) = self.context {
             let block_start = usize::try_from(m.absolute_byte_offset()).unwrap_or(usize::MAX);
-            found.retain(|&(a, _)| context.accepts(literal_at(literals, block_start.saturating_add(a))));
+            found.retain(|&(a, _)| context.keeps(literals, block_start.saturating_add(a)));
         }
 
         let mut next = found.iter().copied().peekable();
@@ -521,7 +516,7 @@ impl Sink for FileSink<'_> {
             if !ranges.is_empty() {
                 self.count = self.count.saturating_add(u32::try_from(ranges.len()).unwrap_or(u32::MAX));
                 let line_no = u32::try_from(line_no).unwrap_or(u32::MAX);
-                self.lines.push(line_match(line_no, &block[line_start..content_end], &ranges));
+                line_matches(line_no, &block[line_start..content_end], &ranges, &mut self.lines);
             }
             line_start = line_end_incl;
             line_no += 1;
@@ -706,6 +701,7 @@ mod budget_tests {
             matches: AtomicU32::new(0),
             files: AtomicU32::new(0),
             max,
+            whole_word: false,
         }
     }
 

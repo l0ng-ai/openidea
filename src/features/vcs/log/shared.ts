@@ -1,12 +1,18 @@
 import type { Commit } from "@/bindings";
 import { type MenuItem } from "@/ui";
-import { type ReactNode } from "react";
+import { type CSSProperties, type ReactNode } from "react";
 import { type LogOptions } from "../logOptions";
 import { updateLogOptions } from "../logStore";
 
 export const ROW = 26;
 
 export const LANE = 14;
+
+/**
+ * Style for the log's split panels. Their panes scroll themselves; the panel's own
+ * `overflow: auto` showed a scrollbar for sub-pixel overflow while a split was dragged.
+ */
+export const PANE_STYLE: CSSProperties = { overflow: "hidden" };
 
 export interface LogColumn {
   id: string;

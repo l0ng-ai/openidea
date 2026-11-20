@@ -3,7 +3,7 @@
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
 import { formatBinding, isMacHost, macStroke, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import {
   useCallback,
@@ -536,7 +536,11 @@ function useCommitChecks() {
 export function useIncludedCount(): number {
   const status = useVcs((s) => s.status);
   const checks = useCommitChecks();
-  return useMemo(() => planCommit(status, checks).included.length, [status, checks]);
+  const includeByDefault = useWorkflowSettings((s) => s.vcs.commit.includeChangesByDefault);
+  return useMemo(
+    () => planCommit(status, checks, includeByDefault).included.length,
+    [status, checks, includeByDefault],
+  );
 }
 
 /**
@@ -641,6 +645,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const changelists = useChangelists((s) => s.state);
   const lists = staging ? undefined : changelists;
   const checks = useCommitChecks();
+  const includeByDefault = useWorkflowSettings((s) => s.vcs.commit.includeChangesByDefault);
   const checkboxes = mode !== "local" && !staging;
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // IDEA starts with Unversioned Files collapsed.
@@ -755,10 +760,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     const files = filesOf(nodes);
     const { status: st, root: r } = useVcs.getState();
     const cur = withListDefaults(st, r ?? "", useChangelists.getState().state, useCommit.getState().checks);
-    const agg = aggregateCheck(files, cur);
+    const includeByDefault = workflowSettings().vcs.commit.includeChangesByDefault;
+    const agg = aggregateCheck(files, cur, includeByDefault);
     const target = agg.on === files.length && !agg.indeterminate ? "none" : "all";
     const next = new Map(cur);
-    for (const f of files) next.set(f.path, files.length === 1 ? toggledCheck(checkOf(f, cur)) : target);
+    for (const f of files)
+      next.set(f.path, files.length === 1 ? toggledCheck(checkOf(f, cur, includeByDefault)) : target);
     useCommit.setState({ checks: next });
   }, []);
 
@@ -934,7 +941,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             </span>
           }
           renderNode={(n, st) => {
-            const agg = aggregateCheck(n.files, checks);
+            const agg = aggregateCheck(n.files, checks, includeByDefault);
             const label = (
               <span
                 className={clsx(
@@ -1002,7 +1009,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   />
                 )}
                 {label}
-                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.nodeCount}>{fileCount(n.files.length)}</span>}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
@@ -1323,7 +1330,7 @@ function CommitPanel({ included }: { included: number }) {
 
   return (
     <div className={styles.commit}>
-      <CommitMessageField included={included} runner={runner} />
+      <CommitMessageField included={included} runner={runner} autoFocus />
       <div className={styles.commitActions}>
         <Button variant="primary" disabled={!canCommit} onClick={() => void runner.run(false)} title="⌘↩">
           <T>{commitLabel(amend, checkProblems.length > 0, commitAll)}</T>

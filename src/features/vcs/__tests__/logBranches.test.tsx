@@ -193,7 +193,7 @@ describe("Git Log branches pane", () => {
 
 describe("Git Log branches pane with several repositories", () => {
   const aBranches = [b("main", { current: true }), b("dev"), b("solo")];
-  const bBranches = [b("main"), b("dev", { current: true })];
+  const bBranches = [b("main"), b("dev", { current: true }), b("other")];
   beforeEach(() => {
     localStorage.removeItem("openidea.vcs.branchesPane.groupByRepository");
     repoData.branches = { "/p/a": aBranches, "/p/b": bBranches };
@@ -216,6 +216,25 @@ describe("Git Log branches pane with several repositories", () => {
     expect(screen.getByText("dev").closest("[data-row]")).not.toHaveTextContent("(");
   });
 
+  it("shows only branches of the repository selected by Paths", async () => {
+    render(<BranchesPanel />);
+    expect(await screen.findByText("solo")).toBeInTheDocument();
+    expect(screen.getByText("other")).toBeInTheDocument();
+
+    act(() => useGitLog.setState({ filters: { ...emptyFilters(), paths: ["/p/b"] } }));
+    expect(screen.queryByText("solo")).toBeNull();
+    expect(screen.getByText("other")).toBeInTheDocument();
+    expect(screen.getByText("dev").closest("[data-row]")).toHaveTextContent("current");
+
+    act(() => useGitLog.setState({ filters: { ...emptyFilters(), repositories: ["/p/a"] } }));
+    expect(screen.getByText("solo")).toBeInTheDocument();
+    expect(screen.queryByText("other")).toBeNull();
+
+    act(() => useGitLog.setState({ filters: emptyFilters() }));
+    expect(screen.getByText("solo")).toBeInTheDocument();
+    expect(screen.getByText("other")).toBeInTheDocument();
+  });
+
   it("keeps the current marker ahead of the repository names, which may be cut off", async () => {
     repoData.branches = { "/p/a": [b("main", { current: true }), b("dev")], "/p/b": [b("dev", { current: true })] };
     render(<BranchesPanel />);
@@ -232,12 +251,12 @@ describe("Git Log branches pane with several repositories", () => {
     expect(localStorage.getItem("openidea.vcs.branchesPane.groupByRepository")).toBe("true");
   });
 
-  it("double click filters the log to the repositories that have the branch", async () => {
+  it("double click filters the log to the repositories that have the branch within the visible scope", async () => {
     render(<BranchesPanel />);
     fireEvent.doubleClick(await screen.findByText("solo"));
     expect(useGitLog.getState().filters).toMatchObject({ branches: ["solo"], repositories: ["/p/a"] });
     fireEvent.doubleClick(screen.getByText("dev"));
-    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], repositories: [] });
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], repositories: ["/p/a"] });
   });
 
   it("a branch in several repositories gets the common menu", async () => {

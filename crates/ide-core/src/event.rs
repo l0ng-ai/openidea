@@ -102,6 +102,8 @@ pub enum IdeEvent {
     WorkspaceEditApplied {
         id: u32,
         paths: Vec<crate::IpcPath>,
+        /// Files the edit renamed, as the edit named them: editors open on them follow.
+        moves: Vec<crate::FileMove>,
         /// Made by an agent through the MCP server's tools: undoable like a refactoring, but
         /// not announced as one.
         by_agent: bool,

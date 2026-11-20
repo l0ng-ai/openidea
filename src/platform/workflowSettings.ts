@@ -45,6 +45,7 @@ export interface GitSettingsValid {
 
 export interface CommitSettingsValid {
   nonModal: boolean;
+  includeChangesByDefault: boolean;
   clearInitialMessage: boolean;
   analyzeCode: boolean;
   checkTodo: boolean;
@@ -76,6 +77,8 @@ export interface CommitSettingsValid {
 
 export interface VcsSettingsValid {
   showDirtyDirectories: boolean;
+  /** Off: diffs the user opens show in a separate window. */
+  diffAsEditorTab: boolean;
   limitHistory: boolean;
   historyLimit: number;
   git: GitSettingsValid;
@@ -274,6 +277,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   vcs: {
     // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
     showDirtyDirectories: false,
+    diffAsEditorTab: true,
     limitHistory: true,
     historyLimit: 1000,
     git: {
@@ -301,6 +305,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     commit: {
       nonModal: true,
+      includeChangesByDefault: true,
       clearInitialMessage: false,
       analyzeCode: true,
       checkTodo: true,
@@ -448,6 +453,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
   const confirm = ["ask", "silently", "never"] as const;
   return {
     showDirtyDirectories: bool(v.showDirtyDirectories, d.showDirtyDirectories),
+    diffAsEditorTab: bool(v.diffAsEditorTab, d.diffAsEditorTab),
     limitHistory: bool(v.limitHistory, d.limitHistory),
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
@@ -475,6 +481,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
+      includeChangesByDefault: bool(c.includeChangesByDefault, d.commit.includeChangesByDefault),
       clearInitialMessage: bool(c.clearInitialMessage, d.commit.clearInitialMessage),
       analyzeCode: bool(c.analyzeCode, d.commit.analyzeCode),
       checkTodo: bool(c.checkTodo, d.commit.checkTodo),

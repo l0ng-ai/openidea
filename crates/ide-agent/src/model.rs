@@ -110,6 +110,9 @@ pub struct AgentTask {
     /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_overrides: BTreeMap<String, bool>,
+    /// Per-session skill modes (`skill name` -> mode), on top of the settings' policies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_overrides: BTreeMap<String, AgentSkillMode>,
     /// Token counts of the last turn and context compressions, when the agent reports them.
     // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
     #[serde(default)]
@@ -614,6 +617,9 @@ pub struct AgentProvider {
     pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
+    /// The built-in command can be owned by a global npm package.
+    #[serde(default)]
+    pub can_check_cli_update: bool,
     /// Environment variables it starts with (from its agent file).
     pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
@@ -684,6 +690,9 @@ pub struct NewAgentTask {
     /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
     #[serde(default)]
     pub mcp_overrides: BTreeMap<String, bool>,
+    /// Per-session skill modes (`skill name` -> mode).
+    #[serde(default)]
+    pub skill_overrides: BTreeMap<String, AgentSkillMode>,
     /// Creates the task without sending `prompt` (it only names the task): the composer's
     /// `!` command runs in it first.
     #[serde(default)]
@@ -876,6 +885,84 @@ pub struct McpServerInput {
 
 fn default_true() -> bool {
     true
+}
+
+pub use ide_core::settings::{AgentSkillMode, AgentSkillPolicy};
+
+/// Which CLI's own folders a skill was discovered in (Settings › Agents › Skills groups by it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSkillSource {
+    /// The project's `.agents/skills` and `.openidea/skills`.
+    #[default]
+    Workspace,
+    /// The user's `~/.agents/skills` (what `npx skills add` fills).
+    User,
+    /// The project's `.claude/skills`.
+    ClaudeWorkspace,
+    /// `~/.claude/skills`.
+    ClaudeUser,
+    /// The project's `.github/skills` (Copilot's repository skills).
+    GithubWorkspace,
+    /// `~/.copilot/skills` and `~/.copilot/installed-plugins/*`.
+    CopilotUser,
+    /// The project's `.codex/skills`.
+    CodexWorkspace,
+    /// `~/.codex/skills`.
+    CodexUser,
+    /// The project's `.cursor/skills`.
+    CursorWorkspace,
+    /// `~/.cursor/skills`.
+    CursorUser,
+}
+
+impl AgentSkillSource {
+    /// Whether skills of this source are only read, never delivered by OpenIDEA: the CLI
+    /// discovers them itself, so "off" holds only where the CLI supports a native disable.
+    pub fn discovered(&self) -> bool {
+        !matches!(self, Self::Workspace | Self::User)
+    }
+}
+
+/// One discovered skill: a folder with a `SKILL.md`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkill {
+    /// The frontmatter `name`, else the folder's name.
+    pub name: String,
+    pub description: String,
+    /// Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse).
+    pub path: IpcPath,
+    pub source: AgentSkillSource,
+    /// The `SKILL.md` passes validation (`name` matches its folder, `description` present).
+    pub valid: bool,
+    /// What validation found (`name` mismatch, missing or over-long description…).
+    pub warnings: Vec<String>,
+}
+
+/// A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+/// which layer decided it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkillState {
+    pub skill: AgentSkill,
+    pub mode: AgentSkillMode,
+    /// What set `mode`: a session override, the workspace, the user's settings, workspace
+    /// trust, or nothing (the default `auto`).
+    pub origin: AgentSkillOrigin,
+}
+
+/// Which layer decided a skill's [`AgentSkillState::mode`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSkillOrigin {
+    #[default]
+    None,
+    Session,
+    Workspace,
+    User,
+    /// An untrusted workspace's skills and policies may only turn skills off.
+    Trust,
 }
 
 /// An external MCP configuration file discovered on disk (user CLI config or workspace file).

@@ -462,35 +462,54 @@ fn main() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires ty on PATH"]
 async fn ty_python_end_to_end() {
+    python_server_end_to_end("ty").await;
+}
+
+/// Pyright loads the workspace only after `workspace/didChangeConfiguration`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires pyright-langserver on PATH"]
+async fn pyright_python_end_to_end() {
+    python_server_end_to_end("pyright").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires basedpyright on PATH"]
+async fn basedpyright_python_end_to_end() {
+    python_server_end_to_end("basedpyright").await;
+}
+
+/// Definition and diagnostics from `name` alone, in a project without configuration.
+async fn python_server_end_to_end(name: &str) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let path = root.join("example.py");
     let source = "def greet(name: str) -> str:\n    return name\n\nresult = greet('Ada')\nbad: int = 'wrong'\n";
     std::fs::write(&path, source).unwrap();
     let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
-    python.language_servers.retain(|server| server.name == "ty");
+    python.language_servers.retain(|server| server.name == name);
     assert_eq!(python.language_servers.len(), 1);
+    python.language_servers[0].fallback = false;
     let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
     let doc = DocId::next();
     mgr.did_open(doc, &path, &LanguageId::new("python"), 1, source);
-    retry("ty ready", Duration::from_secs(30), || {
-        let status = last_status(&events, "ty");
+    retry(&format!("{name} ready"), Duration::from_secs(30), || {
+        let status = last_status(&events, name);
         if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
-            panic!("ty failed: {msg:?}");
+            panic!("{name} failed: {msg:?}");
         }
         async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
     })
     .await;
-    let defs = retry("ty definition", Duration::from_secs(30), || {
+    let defs = retry(&format!("{name} definition"), Duration::from_secs(30), || {
         let mgr = mgr.clone();
         async move { mgr.goto(doc, Pos::new(3, 10), GotoKind::Definition).await.ok().filter(|d| !d.is_empty()) }
     })
     .await;
     assert_eq!(defs[0].path, path);
     assert_eq!(defs[0].range.start.line, 0);
-    retry("ty diagnostics", Duration::from_secs(30), || {
+    retry(&format!("{name} diagnostics"), Duration::from_secs(30), || {
         let found = events.lock().iter().any(
-            |event| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == "ty" && !items.is_empty()),
+            |event| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == name && !items.is_empty()),
         );
         async move { found.then_some(()) }
     })

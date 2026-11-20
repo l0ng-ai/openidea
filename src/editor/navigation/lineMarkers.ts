@@ -172,41 +172,89 @@ const GO_RECEIVER = /^\s*func\s*\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s+)?\*?\s*([\p{L}
 
 const FENCES = [`"""`, `'''`];
 
+/** Code of a line without comments, strings and docstring text; null for a line with no code. */
+type CodeLine = string | null;
+
 /**
- * Name of the type a target sits in (the nearest type declaration above it); null without one.
+ * Name of the type a target sits in (the nearest type declaration above it whose body is still
+ * open at the target); null without one.
  * Text heuristic: docstrings (`"""` / `'''` fences) and line comments (`#`, `//`, `*`…) cannot
  * declare a type, so "the base class does all that is needed" in a comment is not one.
  */
 export function enclosingType(lines: readonly string[] | null | undefined, target: Location): string | null {
   if (!lines) return null;
-  let container: string | null = null;
+  const targetLine = lines[target.range.start.line] ?? "";
+  const receiver = GO_RECEIVER.exec(targetLine)?.[1];
+  if (receiver) return receiver;
+  const from = Math.max(0, target.range.start.line - 2000);
+  const code: CodeLine[] = [];
+  const declarations: { line: number; end: number; name: string }[] = [];
   let fence: string | null = null;
-  for (let l = Math.max(0, target.range.start.line - 2000); l < target.range.start.line; l++) {
+  for (let l = from; l < target.range.start.line; l++) {
     const line = lines[l] ?? "";
+    code.push(null);
     if (fence) {
       if ((line.split(fence).length - 1) % 2 === 1) fence = null;
       continue;
     }
     // Comments first: a `#`/`//` line cannot open a docstring fence either.
-    const code = line.replace(/(^|\s)(#|\/\/).*$/, "$1");
-    if (!code.trim()) continue;
-    const opened = FENCES.find((f) => (code.split(f).length - 1) % 2 === 1);
+    const text = line.replace(/(^|\s)(#|\/\/).*$/, "$1");
+    if (!text.trim()) continue;
+    const opened = FENCES.find((f) => (text.split(f).length - 1) % 2 === 1);
     if (opened) {
       fence = opened;
       continue;
     }
     // A single-line docstring (fences open and close on the line) is text too.
-    if (FENCES.some((f) => code.includes(f))) continue;
-    const m = TYPE_DECLARATION.exec(code);
-    if (m && !/^\s*(\*|\/\*)/.test(line)) container = (m[1] ?? m[2])!;
+    if (FENCES.some((f) => text.includes(f)) || /^\s*(\*|\/\*)/.test(line)) continue;
+    code[l - from] = text;
+    const m = TYPE_DECLARATION.exec(text);
+    if (m) declarations.push({ line: l - from, end: m.index + m[0].length, name: (m[1] ?? m[2])! });
   }
-  return container;
+  code.push(targetLine);
+  const col = target.range.start.col;
+  for (const d of declarations.reverse()) if (bodyHolds(code, d.line, d.end, col)) return d.name;
+  return null;
 }
 
-/** Name of the type a target sits in: the nearest type declaration above it, else the file name. */
+const STRING_LITERAL = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+
+/**
+ * Whether the body of the declaration on `code[line]` (ending at `end`) is still open at `col`
+ * of the last entry of `code` (the target's line): braces when the body opens with one on the
+ * declaration's line or the next (Allman style), else indentation (Python, Ruby, a declaration
+ * without a body).
+ */
+function bodyHolds(code: readonly CodeLine[], line: number, end: number, col: number): boolean {
+  const last = code.length - 1;
+  const next = code.findIndex((c, i) => i > line && i < last && c !== null);
+  const braced = code[line]!.slice(end).includes("{") || (next > 0 && /^\s*\{/.test(code[next]!));
+  if (braced) {
+    let depth = 0;
+    let opened = false;
+    for (let i = line; i <= last; i++) {
+      const text = (i === line ? code[i]!.slice(end) : i === last ? code[i]!.slice(0, col) : code[i]) ?? "";
+      for (const c of text.replace(STRING_LITERAL, "")) {
+        if (c === "{") {
+          depth++;
+          opened = true;
+        } else if (c === "}" && --depth === 0 && opened) return false;
+      }
+    }
+    return depth > 0;
+  }
+  const indent = (s: string) => s.length - s.trimStart().length;
+  const own = indent(code[line]!);
+  for (let i = line + 1; i < code.length; i++) {
+    const text = code[i];
+    // A wrapped header (`) : Base {`) continues the declaration.
+    if (text?.trim() && indent(text) <= own && !/^\s*[)\]]/.test(text)) return false;
+  }
+  return true;
+}
+
+/** Name of the type a target sits in: the type declaration around it, else the file name. */
 export function enclosingTypeName(lines: readonly string[] | null | undefined, target: Location): string {
-  const receiver = GO_RECEIVER.exec(lines?.[target.range.start.line] ?? "")?.[1];
-  if (receiver) return receiver;
   const found = enclosingType(lines, target);
   if (found) return found;
   const file = target.path.split(/[\\/]/).pop() ?? target.path;

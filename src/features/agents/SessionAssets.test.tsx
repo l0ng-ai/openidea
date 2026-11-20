@@ -357,3 +357,56 @@ describe("SessionAssets component", () => {
     expect(await screen.findByRole("button", { name: "1 Artifact" })).toBeInTheDocument();
   });
 });
+
+describe("SessionAssets binary file artifacts", () => {
+  const entries: AgentEntry[] = [
+    {
+      type: "tool",
+      id: "t-doc",
+      title: "Write spec",
+      kind: "edit",
+      status: "completed",
+      locations: ["/repo/spec.docx"],
+      output: null,
+      diffs: [{ path: "/repo/spec.docx", added: 1, removed: 0 }],
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSessionAssetsCacheForTests();
+    clearDismissedAssets("task-1");
+    useAgents.setState({ composers: new Map([["task-1", emptyDraft()]]) });
+    vi.spyOn(ipc, "isTauri").mockReturnValue(true);
+    vi.spyOn(ipc, "call").mockImplementation(async (promise) => promise);
+    vi.spyOn(ipc.commands, "vcsRemotes").mockResolvedValue([] as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function openArtifact() {
+    render(<SessionAssets task={makeTask()} entries={entries} head="feat/session" />);
+    fireEvent.click(await screen.findByRole("button", { name: "1 Artifact" }));
+    const dialog = await screen.findByRole("dialog", { name: "Artifacts" });
+    fireEvent.click(within(dialog).getByText("spec.docx"));
+  }
+
+  it("opens a binary file with its application through the backend's checked command", async () => {
+    const open = vi.spyOn(ipc.commands, "fsOpenWithSystem").mockResolvedValue(null as never);
+    await openArtifact();
+    await waitFor(() => expect(open).toHaveBeenCalledWith("/repo/spec.docx"));
+    expect(openFileMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the editor when the backend refuses the launch", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const open = vi
+      .spyOn(ipc.commands, "fsOpenWithSystem")
+      .mockRejectedValue({ kind: "unavailable", message: "Project is in Restricted Mode." } as never);
+    await openArtifact();
+    await waitFor(() => expect(openFileMock).toHaveBeenCalledWith("/repo/spec.docx", { focus: true }));
+    expect(open).toHaveBeenCalledWith("/repo/spec.docx");
+  });
+});

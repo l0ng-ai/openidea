@@ -34,6 +34,7 @@ import {
 import { useContributions, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { TASK_LABELS, taskLabel, type BeforeLaunchKind } from "./beforeLaunch";
 import { ExpandableTextarea } from "./ExpandableTextarea";
+import { CWD_MACROS } from "./cwdMacros";
 import {
   commandLine,
   compoundCycle,
@@ -245,6 +246,65 @@ function BrowseButton({
   );
 }
 
+const CWD_MACRO_LABELS: Record<(typeof CWD_MACROS)[number], string> = {
+  PROJECT_DIR: "Project root",
+  ContentRoot: "Content root",
+  MODULE_DIR: "Module directory",
+  MODULE_WORKING_DIR: "Module working directory",
+  USER_HOME: "User home directory",
+};
+
+/** Inserts a path macro at the caret of the working directory field. */
+function CwdMacroButton({
+  input,
+  onInsert,
+}: {
+  input: RefObject<HTMLInputElement | null>;
+  onInsert: (v: string) => void;
+}) {
+  const tx = useTx();
+  const ref = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const insert = (macro: string) => {
+    const el = input.current;
+    const value = el?.value ?? "";
+    const from = el?.selectionStart ?? value.length;
+    const to = el?.selectionEnd ?? from;
+    onInsert(value.slice(0, from) + macro + value.slice(to));
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(from + macro.length, from + macro.length);
+    });
+  };
+  return (
+    <>
+      <IconButton
+        ref={ref}
+        icon="plus"
+        size="small"
+        iconSize={14}
+        title={tx("Insert Macro…")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      />
+      <Menu
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={ref}
+        placement="bottom-end"
+        aria-label={tx("Macros")}
+        items={CWD_MACROS.filter((m) => m !== "USER_HOME" || !isRemoteWindow()).map((m) => ({
+          id: m,
+          label: `$${m}$`,
+          shortcut: tx(CWD_MACRO_LABELS[m]),
+          run: () => insert(`$${m}$`),
+        }))}
+      />
+    </>
+  );
+}
+
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
@@ -253,6 +313,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const root = useProject((s) => s.project?.root ?? null);
+  const cwdInput = useRef<HTMLInputElement>(null);
   const gradle = useBuildModel((s) => s.model?.gradle);
   const runUsing = useProject((s) => s.settings?.languages?.java?.gradle?.runUsing);
   const delegated =
@@ -566,12 +627,14 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 <Field label="Working directory" error={errors.cwd}>
                   <div className={styles.inputWithButton}>
                     <Input
+                      ref={cwdInput}
                       mono
                       aria-label="Working directory"
                       value={config.cwd ?? ""}
                       placeholder="Project root"
                       onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
                     />
+                    <CwdMacroButton input={cwdInput} onInsert={(cwd) => update({ cwd })} />
                     <BrowseButton
                       directory
                       title="Browse…"

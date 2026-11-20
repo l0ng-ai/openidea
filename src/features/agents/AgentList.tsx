@@ -21,6 +21,7 @@ import clsx from "clsx";
 import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
+import { LocalCliUpdate } from "./LocalCliUpdate";
 import { isPerModelOption } from "./composerModel";
 import { providerIcon, slugifyId } from "./model";
 import {
@@ -854,6 +855,9 @@ function ProviderSettings({
   const envEditable = agent.commandReadOnlyReason !== "registry" && agent.commandReadOnlyReason !== "customAgent";
   return (
     <>
+      {value.trim() === current && agent.installed && agent.canCheckCliUpdate && (
+        <LocalCliUpdate key={agent.program} agent={agent} backend={backend} />
+      )}
       {agent.loginHint && (
         <Section title="Sign In">
           <p className={styles.text}>

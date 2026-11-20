@@ -276,7 +276,8 @@ export function distractionFreeExtension(
 }
 
 export function foldingFor(settings: EditorSettings | undefined): Extension {
-  return foldingExtension(prefsOf(settings).folding.showOutline);
+  const { showOutline, outlineVisibility } = prefsOf(settings).folding;
+  return foldingExtension(showOutline, outlineVisibility);
 }
 
 export function caretFor(settings: EditorSettings | undefined): Extension {

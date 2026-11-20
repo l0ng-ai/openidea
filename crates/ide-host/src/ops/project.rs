@@ -335,6 +335,12 @@ pub fn set_settings(
             project.agents.notify_mcp_servers_changed();
         }
     }
+    // A skill policy change re-resolves the modes; an idle session restarts to pick them up.
+    if key == "agents" || key == "agents.skills" || key.starts_with("agents.skills.") {
+        for project in affected() {
+            project.agents.notify_mcp_servers_changed();
+        }
+    }
     // A new interpreter / toolchain / server executable restarts the language servers it affects.
     // So do inspections that are compiler options (`ide-sdk` `configure_java_compiler`).
     let code_style = key == "editor"

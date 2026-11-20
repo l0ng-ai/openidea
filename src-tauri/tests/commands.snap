@@ -6,6 +6,8 @@ agent_archive                                always             project_host bin
 agent_base_text                              trusted            project_host bindings async
 agent_cancel                                 always             project_host bindings sync
 agent_changes                                trusted            project_host bindings async
+agent_cli_update                             trusted            project_host bindings async
+agent_cli_update_check                       trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
 agent_context_usage                          trusted            project_host bindings async
 agent_create                                 trusted            project_host bindings async
@@ -44,7 +46,10 @@ agent_set_command                            trusted            project_host bin
 agent_set_config                             trusted            project_host bindings async
 agent_set_env                                trusted            project_host bindings sync
 agent_set_mcp_overrides                      always             project_host bindings sync
+agent_set_skill_overrides                    always             project_host bindings sync
 agent_shell                                  trusted            project_host bindings async
+agent_skills_list                            always             project_host bindings async
+agent_skills_set_mode                        always             project_host bindings sync
 agent_stop_background                        always             project_host bindings async
 agent_subscribe                              always             project_host bindings sync
 agent_unarchive                              always             project_host bindings sync
@@ -171,6 +176,7 @@ debug_jvm_memory_referrers                   trusted            project_host bin
 debug_listen_for_jvm                         trusted            project_host bindings async
 debug_pause                                  trusted            project_host bindings async
 debug_redefine_classes                       trusted            project_host bindings async
+debug_resolve_variable                       trusted            project_host bindings async
 debug_restart_frame                          trusted            project_host bindings async
 debug_resume                                 trusted            project_host bindings async
 debug_run_to                                 trusted            project_host bindings async
@@ -728,6 +734,7 @@ web_url                                      always             project_host bin
 window_close_context                         always             desktop      bindings sync
 window_complete_launch                       always             desktop      bindings sync
 window_cycle                                 always             desktop      bindings sync
+window_drag_files                            always             desktop      bindings async
 window_flash_taskbar                         always             desktop      bindings sync
 window_group_cancel_close                    always             desktop      bindings sync
 window_group_close                           always             desktop      bindings sync
