@@ -6930,6 +6930,7 @@
   "Rebase onto {branch} ({root})": "变基到 {branch}（{root}）",
   "Delete branch {name} ({root})": "删除分支 {name}（{root}）",
   "Rename branch {name} ({root})": "重命名分支 {name}（{root}）",
+  "Unset upstream of {to} ({root})": "取消 {to} 的上游分支（{root}）",
   "1 file amended in {several} repositories": "已在 {several} 个仓库中修改 1 个文件的提交",
   "{n} files amended in {several} repositories": "已在 {several} 个仓库中修改 {n} 个文件的提交",
   "1 file amended": "已修改 1 个文件的提交",

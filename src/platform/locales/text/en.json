@@ -2769,5 +2769,6 @@
   "Check out the same branch in all repositories to operate on them together.": "Check out the same branch in all repositories to operate on them together.",
   "Rename branch {name} ({root})": "Rename branch {name} ({root})",
   "rename it back to {name}": "rename it back to {name}",
-  "restore {name} and check out the previous branch again": "restore {name} and check out the previous branch again"
+  "restore {name} and check out the previous branch again": "restore {name} and check out the previous branch again",
+  "Unset upstream of {to} ({root})": "Unset upstream of {to} ({root})"
 }

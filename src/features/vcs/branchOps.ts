@@ -613,13 +613,14 @@ const branchInfo = (root: string) => call(commands.vcsBranchInfo(root)).catch(()
  * error is reported by `step`), then reports how many repositories it was done in.
  * When it failed after succeeding in some repositories, offers to roll those back so
  * the repositories don't diverge (not when the failed one stopped on conflicts).
+ * Returns the number of repositories it stays done in (0 after a rollback).
  */
 async function eachRepo<T>(
   roots: readonly string[],
   step: (root: string) => Promise<T | undefined>,
   title: string,
   rollback?: Rollback<T>,
-) {
+): Promise<number> {
   const done: { root: string; result: T; before: BranchInfo }[] = [];
   let failed: string | null = null;
   for (const root of roots) {
@@ -650,11 +651,12 @@ async function eachRepo<T>(
         await runOp(tx`Rollback (${repo})`, () => rollback.run(d.root, d.result, d.before), { refresh: false });
       }
       await refreshNow();
-      return;
+      return 0;
     }
   }
   if (done.length)
     notifications().notify({ group: "vcs", level: "info", title: `${title} ${inRepos(done.length, roots.length)}` });
+  return done.length;
 }
 
 /** The repositories of `roots` whose current branch is not `name`. */
@@ -839,19 +841,25 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
   });
   if (!r) return;
   const to = r.value.trim();
-  const unset = upstream && r.checked;
-  await eachRepo(
+  const renamed = await eachRepo(
     roots,
     (root) =>
       runOp(
         tx`Rename branch ${name} (${repoName(root)})`,
-        () => call(commands.vcsRenameBranch(root, name, to, unset)),
+        () => call(commands.vcsRenameBranch(root, name, to, false)),
         { refresh: false },
       ).then((done) => (done === undefined ? undefined : true)),
-    tx`Renamed branch ${name} to ${to}`,
+    `Renamed branch ${name} to ${to}`,
     { undo: tx`rename it back to ${name}`, run: (root) => call(commands.vcsRenameBranch(root, to, name, false)) },
   );
+  if (!renamed) return;
   renameRecent(name, to);
+  // The upstream goes once the rename is final: a rollback could not restore it.
+  if (upstream && r.checked && renamed === roots.length)
+    for (const root of roots)
+      await runOp(tx`Unset upstream of ${to} (${repoName(root)})`, () =>
+        call(commands.vcsRenameBranch(root, to, to, true)),
+      );
 }
 
 // --- favorites ---------------------------------------------------------------
