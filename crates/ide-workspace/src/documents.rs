@@ -1,7 +1,6 @@
 use crate::editorconfig::{EditorConfig, EditorConfigProps};
 use crate::file_defaults::FileDefaults;
 use ide_core::error::ErrorKind;
-use ide_core::event::NotifyLevel;
 use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, SharedSink, TextEdit};
 use ide_text::{AppliedChange, ByteEdit, Document, LineEnding};
 use parking_lot::{Mutex, ReentrantMutex, RwLock};
@@ -1138,6 +1137,24 @@ impl Documents {
         })
     }
 
+    /// Load Changes from Disk: drops the buffer's unsaved changes and reads its file again in
+    /// the buffer's encoding, after the file changed on disk (`IdeEvent::DocDiskConflict`).
+    pub fn discard_and_reload(&self, doc: DocId) -> IdeResult<()> {
+        self.with_doc(doc, |st| {
+            if st.uri.is_some() || st.binary {
+                return Err(IdeError::invalid("only a file's text can be reloaded from disk"));
+            }
+            let loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
+            st.has_bom = loaded.has_bom;
+            st.disk_mtime = loaded.mtime_ms;
+            st.disk_len = disk_len(&st.path);
+            st.disk_conflict = false;
+            self.replace_locked(doc, st, &loaded.text)?;
+            self.set_dirty(doc, st, false);
+            Ok(())
+        })
+    }
+
     /// The URI of a virtual document, or `None` for a file-backed one.
     pub fn virtual_uri(&self, doc: DocId) -> IdeResult<Option<String>> {
         self.with_doc(doc, |st| Ok(st.uri.clone()))
@@ -1250,7 +1267,7 @@ impl Documents {
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
-    /// silently; dirty ones are left alone and reported via `IdeEvent::Notify`.
+    /// silently; dirty ones are left alone and reported via `IdeEvent::DocDiskConflict`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
         self.reload_from_disk(paths, false, false);
@@ -1289,16 +1306,7 @@ impl Documents {
                     st.disk_mtime = mtime;
                     st.disk_len = meta.len();
                     st.disk_conflict = true;
-                    let name = st.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.sink.emit(IdeEvent::Notify {
-                        level: NotifyLevel::Warning,
-                        title: format!("{name} changed on disk"),
-                        body: Some(format!(
-                            "{} was modified externally but has unsaved changes in the editor. \
-                             Saving explicitly will overwrite the external changes; autosave leaves the file alone.",
-                            st.path.display()
-                        )),
-                    });
+                    self.sink.emit(IdeEvent::DocDiskConflict { doc: id, path: st.path.to_string_lossy().into_owned() });
                     return Ok(());
                 }
                 let loaded = if force_clean {

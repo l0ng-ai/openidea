@@ -1,6 +1,6 @@
 use super::*;
 use crate::{HostConfig, Project};
-use ide_core::{IdeEvent, TextChange, event::NotifyLevel};
+use ide_core::{IdeEvent, TextChange};
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
 
@@ -57,7 +57,9 @@ impl Fixture {
         self.events
             .lock()
             .iter()
-            .filter(|e| matches!(e, IdeEvent::DocPatched { .. } | IdeEvent::DocDirty { .. } | IdeEvent::Notify { .. }))
+            .filter(|e| {
+                matches!(e, IdeEvent::DocPatched { .. } | IdeEvent::DocDirty { .. } | IdeEvent::DocDiskConflict { .. })
+            })
             .cloned()
             .collect()
     }
@@ -110,7 +112,7 @@ async fn dirty_document_keeps_edits_and_warns_once() {
     let loaded = f.project.documents.snapshot(original.id).unwrap();
     assert_eq!(loaded.text, "local original\n");
     assert!(loaded.dirty);
-    assert!(matches!(f.document_events().as_slice(), [IdeEvent::Notify { level: NotifyLevel::Warning, .. }]));
+    assert!(matches!(f.document_events().as_slice(), [IdeEvent::DocDiskConflict { .. }]));
     f.events.lock().clear();
     f.sync().await;
     assert!(f.document_events().is_empty());
