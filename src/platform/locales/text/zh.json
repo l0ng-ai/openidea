@@ -5693,6 +5693,7 @@
   "Configure the settings related to version control used in your project": "配置项目中使用的版本控制相关设置",
   "Use non-modal commit interface": "使用非模态提交界面",
   "When off, Local Changes and Stash are tabs of the Git tool window and Commit opens a dialog.": "关闭时，本地更改和贮藏作为 Git 工具窗口的标签页显示，提交时打开对话框。",
+  "Include changes in the commit by default": "默认将更改纳入提交",
   "Clear initial commit message": "清除初始提交消息",
   "Show options before Update": "更新前显示选项",
   "Ask for confirmation to drop commits": "删除提交前请求确认",

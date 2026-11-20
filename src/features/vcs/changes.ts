@@ -75,23 +75,28 @@ export function isPartiallyStaged(fs: FileStatus): boolean {
   );
 }
 
-export function initialCheck(fs: FileStatus): CheckState {
+export function initialCheck(fs: FileStatus, includeByDefault = true): CheckState {
+  if (!includeByDefault) return "none";
   const g = groupOf(fs);
   // Unversioned files and unresolved conflicts are opt-in, as in IDEA.
   if (g !== "changes") return "none";
   return isPartiallyStaged(fs) ? "staged" : "all";
 }
 
-export function checkOf(fs: FileStatus, checks: ReadonlyMap<string, CheckState>): CheckState {
-  return checks.get(fs.path) ?? initialCheck(fs);
+export function checkOf(fs: FileStatus, checks: ReadonlyMap<string, CheckState>, includeByDefault = true): CheckState {
+  return checks.get(fs.path) ?? initialCheck(fs, includeByDefault);
 }
 
 /** Aggregate checkbox state for a set of files. */
-export function aggregateCheck(files: readonly FileStatus[], checks: ReadonlyMap<string, CheckState>) {
+export function aggregateCheck(
+  files: readonly FileStatus[],
+  checks: ReadonlyMap<string, CheckState>,
+  includeByDefault = true,
+) {
   let on = 0;
   let partial = false;
   for (const f of files) {
-    const c = checkOf(f, checks);
+    const c = checkOf(f, checks, includeByDefault);
     if (c !== "none") on++;
     if (c === "staged" || c === "hunks") partial = true;
   }
@@ -410,7 +415,11 @@ export function renamedFromPath(fs: FileStatus): string | null {
 }
 
 /** What the commit takes beyond the index, and what staged changes it leaves out. */
-export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<string, CheckState>): CommitPlan {
+export function planCommit(
+  status: readonly FileStatus[],
+  checks: ReadonlyMap<string, CheckState>,
+  includeByDefault = true,
+): CommitPlan {
   const plan: CommitPlan = { stage: [], exclude: [], included: [], partial: [] };
   for (const fs of status) {
     if (!groupOf(fs)) {
@@ -423,7 +432,7 @@ export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<st
       if (fs.staged && fs.staged !== "conflicted" && fs.unstaged !== "ignored") plan.exclude.push(stripSlash(fs.path));
       continue;
     }
-    const c = checkOf(fs, checks);
+    const c = checkOf(fs, checks, includeByDefault);
     const path = stripSlash(fs.path);
     if (c === "none") {
       if (fs.staged && fs.staged !== "conflicted") {
