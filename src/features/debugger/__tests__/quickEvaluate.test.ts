@@ -91,7 +91,7 @@ describe("paused editor evaluation", () => {
     view.dispatch({ selection: { anchor: 0, head: 5 } });
     expect(click().defaultPrevented).toBe(true);
     await vi.waitFor(() => expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("order.items = 42"));
-    expect(ipc.debugEvaluateIn).toHaveBeenCalledExactlyOnceWith(7, 10, "order.items", "hover");
+    expect(ipc.debugEvaluateIn).toHaveBeenCalledExactlyOnceWith(7, 10, "order.items", "watch");
     expect(view.state.selection.main.head).toBe(16);
   });
 
@@ -101,7 +101,7 @@ describe("paused editor evaluation", () => {
     session();
     view.dispatch({ selection: { anchor: 0, head: doc.length } });
     click();
-    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, doc, "hover"));
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, doc, "watch"));
     expect(view.state.selection.main.from).toBe(0);
     expect(view.state.selection.main.to).toBe(doc.length);
     await vi.waitFor(() =>
@@ -114,7 +114,7 @@ describe("paused editor evaluation", () => {
     const text = "(total +\n order.items)";
     view.dispatch({ changes: { from: 0, to: doc.length, insert: text }, selection: { anchor: 0, head: text.length } });
     click();
-    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, text, "hover"));
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, text, "watch"));
   });
 
   it("ignores an object response that arrives after the debugger resumes", async () => {

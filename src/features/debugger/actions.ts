@@ -208,7 +208,7 @@ function evaluateSeed(view: EditorView | undefined = activeEditor()?.view, pos?:
   const { state } = view;
   const sel = state.selection.main;
   if (!sel.empty && (pos == null || (sel.from <= pos && pos <= sel.to))) return state.sliceDoc(sel.from, sel.to);
-  return expressionAt(view, pos ?? sel.head)?.text ?? "";
+  return expressionAt(view, pos ?? sel.head, { calls: true })?.text ?? "";
 }
 
 async function quickEvaluate(arg?: unknown) {
@@ -234,7 +234,8 @@ async function quickEvaluate(arg?: unknown) {
     );
   };
   try {
-    const value = await evaluate(expression, "hover", session);
+    // Unlike a plain hover, an explicit Quick Evaluate may call methods (adapters refuse that for "hover").
+    const value = await evaluate(expression, "watch", session);
     if (session && stillCurrent()) showQuickValue(view, pos, expression, value, session.id);
   } catch (e) {
     if (stillCurrent()) showHint(view, e instanceof Error ? e.message : String(e), { pos, tone: "error" });
