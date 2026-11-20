@@ -39,7 +39,7 @@ beforeEach(() => {
     status: "ok",
     data: { kind: "opened", label: "second" },
   });
-  vi.spyOn(light, "openLightweightEditor").mockResolvedValue();
+  vi.spyOn(light, "openLightweightEditor").mockResolvedValue("editor-main-1");
 });
 afterEach(() => {
   ctrl?.stop();
@@ -51,6 +51,24 @@ afterEach(() => {
 });
 
 describe("detachTab", () => {
+  it("leaves the move to an editor kind that moves its own tabs", async () => {
+    const openInWindow = vi.fn(async () => true);
+    unregister = registerEditorKind({ kind: "chat", component: () => null, title: () => "Chat", openInWindow });
+    ctrl = new EditorController(createMemoryBackend({}));
+    ctrl.start();
+    await ctrl.openInput({ kind: "chat", key: "chat:1", data: { id: 1 } }, { focus: false });
+    const [pane, id] = current();
+    expect(await ctrl.detachTab(pane, id)).toBe(true);
+    expect(openInWindow).toHaveBeenCalledWith(expect.objectContaining({ key: "chat:1", data: { id: 1 } }));
+    expect(light.openLightweightEditor).not.toHaveBeenCalled();
+    await ctrl.openInWindow({ kind: "chat", key: "chat:1", data: { id: 1 } });
+    expect(light.openLightweightEditor).toHaveBeenCalledWith(
+      { input: JSON.stringify({ kind: "chat", key: "chat:1", data: { id: 1 } }) },
+      null,
+      "chat:1",
+    );
+  });
+
   it("moves a project file to a lightweight editor without saving first", async () => {
     useProject.setState({
       project: { root: "/p", workspace: { projects: ["/p"] } } as never,

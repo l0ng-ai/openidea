@@ -49,6 +49,7 @@ agent_stop_background                        always             project_host bin
 agent_subscribe                              always             project_host bindings sync
 agent_unarchive                              always             project_host bindings sync
 agent_unqueue                                always             project_host bindings sync
+agent_unsubscribe                            always             project_host bindings sync
 analysis_locate_duplicates                   always             project_host bindings async
 android_devices                              trusted            desktop      bindings async
 android_logcat                               trusted            desktop      bindings async
