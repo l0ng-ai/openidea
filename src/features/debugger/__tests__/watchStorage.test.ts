@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { addWatch, loadWatches, useDebug } from "../state";
+import { addWatch, loadWatches, removeAllWatches, useDebug } from "../state";
 
 const SHARED = "openidea.debugger.watches";
 const of = (root: string) => `${SHARED}:${root}`;
@@ -39,6 +39,23 @@ describe("watch storage", () => {
     localStorage.setItem(of("/a"), "[]");
     loadWatches("/a");
     expect(watches()).toEqual([]);
+  });
+
+  it("Remove All Watches empties the project's stored list", () => {
+    localStorage.setItem(SHARED, '["legacy"]');
+    loadWatches("/a");
+    addWatch("x");
+    addWatch("y");
+    loadWatches("/b");
+    addWatch("z");
+    loadWatches("/a");
+    removeAllWatches();
+    expect(watches()).toEqual([]);
+    expect(localStorage.getItem(of("/a"))).toBe("[]");
+    loadWatches("/a");
+    expect(watches()).toEqual([]);
+    loadWatches("/b");
+    expect(watches()).toEqual(["legacy", "z"]);
   });
 
   it("without a project nothing is stored", () => {

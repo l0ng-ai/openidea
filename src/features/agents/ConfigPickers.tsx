@@ -284,7 +284,7 @@ function ModelPicker({
   const pinnedModels = useAgents((s) => s.pinnedModels);
   const anchor = useRef<HTMLButtonElement>(null);
   const selectedModel = selected(model, modelValue);
-  const unavailable = modelRefresh?.draft && modelValue !== null && !selectedModel;
+  const unavailable = !!modelRefresh && modelValue !== null && !selectedModel;
   const modelName = unavailable
     ? tx`${modelValue} (unavailable)`
     : (selectedModel?.name ?? (modelRefresh ? modelValue : null) ?? tx("Default"));

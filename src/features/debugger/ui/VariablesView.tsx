@@ -9,7 +9,15 @@ import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
 import { addFieldWatchpoint } from "../breakpoints/special";
 import { methodAt } from "../breakpoints/symbols";
-import { activeSession, addWatch, removeWatch, revealFrame, sessionSupports, setVariableValue } from "../state";
+import {
+  activeSession,
+  addWatch,
+  removeAllWatches,
+  removeWatch,
+  revealFrame,
+  sessionSupports,
+  setVariableValue,
+} from "../state";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import { classifyValue, oneLine, shownValue, sortVariables } from "../values";
 import { valueText } from "../valueText";
@@ -300,7 +308,11 @@ export function VariablesView({
         { label: "Set Value…", icon: "edit", shortcut: "F2", run: () => startEdit(node) },
         { kind: "separator" },
       );
-    if (node.kind === "watch") items.push({ label: "Remove Watch", icon: "minus", run: () => removeWatch(node.name) });
+    if (node.kind === "watch")
+      items.push(
+        { label: "Remove Watch", icon: "minus", run: () => removeWatch(node.name) },
+        { label: "Remove All Watches", run: removeAllWatches },
+      );
     if (node.kind !== "scope") {
       items.push({ label: "Copy Value", icon: "copy", run: () => void copyValue(node) });
       items.push({ label: "Copy Name", run: () => void writeClipboardText(node.name) });

@@ -1,7 +1,12 @@
 {
   "Inspection details": "Inspection details",
   "Resize inspection panes": "Resize inspection panes",
+  "Resize branch comparison panes": "Resize branch comparison panes",
   "Resize inspection description": "Resize inspection description",
+  "Color scheme options": "Color scheme options",
+  "Resize color scheme preview": "Resize color scheme preview",
+  "Font options": "Font options",
+  "Resize font preview": "Resize font preview",
   "Table actions": "Table actions",
   "Table pages": "Table pages",
   "Resize file type panes": "Resize file type panes",
@@ -2706,5 +2711,10 @@
   "Loading…": "Loading…",
   "<schema>": "<schema>",
   "Shelve Silently": "Shelve Silently",
-  "Unshelve Silently": "Unshelve Silently"
+  "Unshelve Silently": "Unshelve Silently",
+  "Fold Lines Like This": "Fold Lines Like This",
+  "Remove All Watches": "Remove All Watches",
+  "GitHub account": "GitHub account",
+  "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.",
+  "github-username": "github-username"
 }
