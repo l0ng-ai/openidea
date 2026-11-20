@@ -422,7 +422,7 @@ pub async fn serve(
                         };
                         idle = Some((since, timeout));
                     }
-                    if idle.is_some_and(|(since, timeout)| since.elapsed() >= timeout) {
+                    if let Some((since, Some(timeout))) = idle && since.elapsed() >= timeout {
                         tracing::info!("idle openidea-server daemon exiting");
                         break Ok(());
                     }
@@ -458,22 +458,16 @@ fn idle_override() -> Option<u64> {
     None
 }
 
-async fn disconnected_timeout(host: &Arc<Host>, policy: RemoteIdlePolicy) -> io::Result<Duration> {
+async fn disconnected_timeout(host: &Arc<Host>, policy: RemoteIdlePolicy) -> io::Result<Option<Duration>> {
     let override_timeout = policy.override_seconds.map(Duration::from_secs);
     if host.projects().is_empty() {
-        return Ok(override_timeout.unwrap_or(EMPTY_IDLE_EXIT).min(EMPTY_IDLE_EXIT));
+        return Ok(Some(override_timeout.unwrap_or(EMPTY_IDLE_EXIT).min(EMPTY_IDLE_EXIT)));
     }
     if let Some(timeout) = override_timeout {
-        return Ok(timeout);
+        return Ok(Some(timeout));
     }
-    // Another project's daemon can edit the same user's settings on this host.
-    let host = host.clone();
-    tokio::task::spawn_blocking(move || {
-        let settings = host.global_settings.layer(ide_workspace::SettingsScope::Global);
-        Duration::from_secs(u64::from(settings.remote_development.idle_timeout_minutes.get()) * 60)
-    })
-    .await
-    .map_err(io::Error::other)
+    let minutes = crate::ops::project::remote_idle_timeout_minutes(host).await.map_err(io::Error::other)?;
+    Ok((minutes != 0).then(|| Duration::from_secs(u64::from(minutes) * 60)))
 }
 
 fn has_live_work(host: &Host) -> bool {

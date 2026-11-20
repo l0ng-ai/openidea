@@ -542,6 +542,7 @@ remote_download_into                         trusted            project_host bin
 remote_download_local                        trusted            desktop      bindings async
 remote_forward_port                          trusted            desktop      bindings async
 remote_forwarded_ports                       trusted            desktop      bindings sync
+remote_idle_timeout_minutes                  always             project_host bindings async
 remote_import_local                          trusted            desktop      bindings async
 remote_invoke                                always             desktop      bindings async
 remote_list                                  always             project_host bindings async
