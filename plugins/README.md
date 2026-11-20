@@ -772,7 +772,7 @@ then run `openidea-plugin check`.
 | `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                          | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
 | `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                   | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
 | `host::open_editors()`                                                                                         | `editor.open-editors`                        | API 1.4: invoking window's path/language/dirty/active snapshots; requires `editor.read`. Commands/events of a window only.                                                                                                                                                                                                                                |
-| `host::open_editor(path, selection)`                                                                           | `editor.open`                                | API 1.4: open/select a project file (`project.read`) or plugin-dir file; same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                                                      |
+| `host::open_editor(path, selection)`                                                                           | `editor.open`                                | API 1.4: open/select a project file (`project.read`), plugin-dir file, or install-directory file (read-only); same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                 |
 | `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                         | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
 | `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                    | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
 | `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`          | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
@@ -1878,14 +1878,20 @@ leaves out a field type it doesn't know.
 
 Showing a view activates the plugin (`on-view:<id>`). `views` become tool
 windows; a `customEditors` file (`priority = "default"`) opens in the
-plugin's editor, or through _Open With_ for `option`. For a custom editor
-`ctx.editor()` is its document: read it with `document()` and change it with
-`apply_edits(version, …)` — the text editor of the same file follows,
+plugin's editor (ahead of **Settings › Editor › File Types › Files opened in
+associated applications**), or through _Open With_ for `option`. For a custom
+editor `ctx.editor()` is its document: read it with `document()` and change it
+with `apply_edits(version, …)` — the text editor of the same file follows,
 Undo / Redo are one history with it, and Save, the dirty mark and the close
 prompts are the document's. _Open as Text_ opens the text editor. For a
 tool window `ctx.editor()` is the window's active text editor, as for a
 command, so a view's buttons can act on what the user is editing (a click in
 the tool window doesn't change which editor that is).
+
+`editor.open` / `open_location` and `fs.read-*` may use absolute paths under the
+plugin's install directory (the package folder) read-only, without `project.read`
+— the same as `fs.plugin-dir()`. Writing the install directory still needs an
+`fs.write:` grant.
 
 API 1.3 adds optional `group`, `when` and `secondary` fields to `[[contributes.views]]`;
 using any of them requires `engines.openidea = "^1.3"`. `secondary = true`

@@ -1755,12 +1755,12 @@ pub fn unsubscribe(kind: EventKind) {
 }
 
 /// Files outside the open projects, for a program the plugin integrates with
-/// or a tool installed elsewhere. Outside [`fs::plugin_dir`], paths need an
-/// `fs.read:<path>` (reading) or `fs.write:<path>` (writing) grant covering it;
-/// without one a
-/// call returns [`Error::Denied`] naming the capability the manifest has to
-/// declare. Paths are absolute, or start with `~/` for the user's home. A file
-/// inside a project is [`Project::read_file`] / [`Project::write_file`].
+/// or a tool installed elsewhere. Outside [`fs::plugin_dir`] and the plugin's
+/// install directory (read-only), paths need an `fs.read:<path>` (reading) or
+/// `fs.write:<path>` (writing) grant covering it; without one a call returns
+/// [`Error::Denied`] naming the capability the manifest has to declare. Paths
+/// are absolute, or start with `~/` for the user's home. A file inside a
+/// project is [`Project::read_file`] / [`Project::write_file`].
 pub mod fs {
     use super::imp;
     use crate::types::{Error, FileKind, FileStat};
@@ -1979,7 +1979,8 @@ pub fn output_reveal(channel: &str) -> Result<(), Error> {
 pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
     imp::open_editors()
 }
-/// Opens a project file (project.read) or plugin-dir file, optionally selecting a range.
+/// Opens a project file (project.read), a plugin-dir file, or a file in the
+/// plugin's install directory, optionally selecting a range.
 /// Only available in commands/events of a window.
 pub fn open_editor(path: &str, selection: Option<Range>) -> Result<(), Error> {
     imp::editor_open(path, selection)

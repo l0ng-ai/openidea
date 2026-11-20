@@ -313,11 +313,11 @@ impl StoreData {
 
     /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
     /// should be told instead (`denied` naming the capability to declare).
+    /// The private plugin-dir and the install directory are readable without a
+    /// grant; writing still needs `fs.write` or the private dir.
     fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
         let mut granted = self.granted.clone();
-        if let Ok(dir) = self.host.plugin_dir() {
-            granted.push(Capability::FsRead(to_ipc(&dir)));
-        }
+        granted.extend(self.builtin_read_roots());
         sandbox::resolve_granted(&granted, path).map_err(Into::into)
     }
 
@@ -329,6 +329,19 @@ impl StoreData {
             granted.push(Capability::FsWrite(to_ipc(&dir)));
         }
         sandbox::resolve_writable(&granted, path).map_err(Into::into)
+    }
+
+    /// Private plugin-dir and install directory: readable without an `fs.read`
+    /// grant; `editor.open` / `open-location` may use them without project.read.
+    fn builtin_read_roots(&self) -> Vec<Capability> {
+        let mut roots = Vec::new();
+        if let Ok(dir) = self.host.plugin_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        if let Ok(dir) = self.host.install_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        roots
     }
 
     fn client(&self) -> Option<&str> {
@@ -1144,9 +1157,7 @@ impl StoreData {
         sandbox::resolve_in_root(root, path).map_err(wit::Error::Invalid)
     }
     fn openable_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), path) {
             return Ok(real);
         }
         self.require(Capability::ProjectRead)?;
@@ -2078,9 +2089,7 @@ impl views::Host for StoreData {
     }
 
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], &path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), &path) {
             if let Err(e) = self.require_interactive() {
                 return Ok(Err(e));
             }
