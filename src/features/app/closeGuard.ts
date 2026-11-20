@@ -200,6 +200,22 @@ async function processNames(deps: CloseDeps): Promise<string[]> {
 
 let closing = false;
 
+/**
+ * A quit can start outside this window: the Dock or a logout on macOS, another window's action, a
+ * remote client. Every prompt of that flow is drawn inside the window, so a minimized or covered
+ * one asks without showing anything and the app looks stuck. Bring the window up before asking.
+ */
+async function raiseWindowForPrompts(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const window = getCurrentWindow();
+    await Promise.allSettled([window.unminimize(), window.show(), window.setFocus()]);
+  } catch {
+    // A window that cannot be raised still asks; the prompts must not be lost to this.
+  }
+}
+
 /** Drops saved tabs when that setting is on. The result says whether a cancelled close should put them back. */
 function forgetTabs(): boolean {
   if (!closeTabsWithWindowEnabled(useProject.getState().settings)) return false;
@@ -218,6 +234,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   };
   try {
     const ctx = await commands.windowCloseContext();
+    // Each window of a quit asks about its own processes and unsaved changes.
+    if (ctx.quitting) await raiseWindowForPrompts();
     if (!(await closeDocumentWindows())) {
       await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
       return false;
@@ -320,6 +338,7 @@ export async function confirmLeave(
 export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
   if (!isTauri()) return;
   if (confirmExitEnabled(useProject.getState().settings)) {
+    await raiseWindowForPrompts();
     // Each window asks about its own processes as the backend closes it.
     const ok = await decideClose(
       {
