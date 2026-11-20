@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import type { BlockHistory, BlockRevision } from "@/bindings";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
-import { List, Spinner, T } from "@/ui";
+import { List, Spinner, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { DiffEditor } from "./DiffEditor";
 import { diffInput, type DiffSide } from "./diffInput";
@@ -23,6 +23,7 @@ export type HistoryRow =
   | { kind: "revision"; revision: BlockRevision };
 
 const HEAD = "HEAD";
+const COLUMNS = ["Revision", "Date", "Author", "Message"] as const;
 
 /** Lines `from..=to` of `text`, each ending with a line break (as Git prints a block). */
 export function blockOf(text: string, [from, to]: readonly [number, number]): string {
@@ -78,6 +79,7 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
   const rows = history ? historyRows(history, blockOf(data.text, data.lines)) : [];
   const current = rows[Math.min(active, rows.length - 1)];
   const [from, to] = data.lines;
+  const range = `${baseName(data.path)}:${from + 1}-${to + 1}`;
 
   let detail;
   if (!current)
@@ -97,13 +99,23 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
   }
 
   return (
-    <div className={layout.root}>
-      <div className={layout.sidebar}>
+    <SplitGroup
+      className={`${layout.root} ${layout.resizable}`}
+      orientation="vertical"
+      storageKey="openidea.selectionHistory.layout"
+    >
+      <SplitPanel id="selection-preview" defaultSize="50%" minSize="25%">
+        {detail}
+      </SplitPanel>
+      <SplitHandle aria-label={tx("Revisions")} />
+      <SplitPanel id="selection-revisions" defaultSize="50%" minSize="25%">
         <div className={layout.header}>
           <span className={layout.title}>
             <T>History for Selection</T>
           </span>
-          <span className={styles.range}>{`${baseName(data.path)}:${from + 1}-${to + 1}`}</span>
+          <span className={styles.range} title={range}>
+            {range}
+          </span>
         </div>
         {error ? (
           <div className={layout.message}>{error}</div>
@@ -112,43 +124,60 @@ export function SelectionHistoryEditor({ input }: { input: EditorInput }) {
             <Spinner size={14} />
           </div>
         ) : (
-          <List
-            items={rows}
-            getKey={(row) => (row.kind === "local" ? "local" : row.revision.id)}
-            activeIndex={Math.min(active, rows.length - 1)}
-            onActiveChange={setActive}
-            onActivate={(_row, i) => setActive(i)}
-            rowHeight={38}
-            aria-label="Revisions"
-            className={layout.list}
-            empty={
-              <span className={layout.message}>
-                {history.headLines ? tx`No commits changed these lines` : tx`These lines are not committed yet`}
-              </span>
-            }
-            renderItem={(row) =>
-              row.kind === "local" ? (
-                <span className={layout.entry}>
-                  <span className={styles.summary}>
-                    <T>Local Changes</T>
-                  </span>
-                  <span className={styles.meta}>
-                    <T>Not Committed Yet</T>
-                  </span>
+          <div
+            className={styles.table}
+            role="grid"
+            aria-label={tx("Revisions")}
+            aria-colcount={COLUMNS.length}
+            aria-rowcount={rows.length + 1}
+          >
+            <div role="row" aria-rowindex={1} className={`${styles.columns} ${styles.heading}`}>
+              {COLUMNS.map((label) => (
+                <span key={label} role="columnheader" className={styles.cell}>
+                  <T>{label}</T>
                 </span>
-              ) : (
-                <span className={layout.entry}>
-                  <span className={styles.summary}>{row.revision.summary}</span>
-                  <span className={styles.meta}>
-                    {`${row.revision.shortId} · ${row.revision.author} · ${formatTime(row.revision.timeMs)}`}
-                  </span>
+              ))}
+            </div>
+            <List
+              items={rows}
+              getKey={(row) => (row.kind === "local" ? "local" : row.revision.id)}
+              activeIndex={Math.min(active, rows.length - 1)}
+              onActiveChange={setActive}
+              onActivate={(_row, i) => setActive(i)}
+              tableBody={{ headerRows: 1 }}
+              className={styles.list}
+              empty={
+                <span className={layout.message}>
+                  {history.headLines ? tx`No commits changed these lines` : tx`These lines are not committed yet`}
                 </span>
-              )
-            }
-          />
+              }
+              renderItem={(row) => {
+                const revision = row.kind === "revision" ? row.revision : null;
+                const cells = [
+                  revision?.shortId ?? "",
+                  formatTime(revision?.timeMs),
+                  revision?.author ?? "",
+                  revision?.summary ?? tx("Local Changes"),
+                ];
+                return (
+                  <span role="none" className={styles.columns}>
+                    {cells.map((value, i) => (
+                      <span
+                        key={COLUMNS[i]}
+                        role="gridcell"
+                        className={styles.cell}
+                        title={value && (!revision ? tx("Not Committed Yet") : value)}
+                      >
+                        {value}
+                      </span>
+                    ))}
+                  </span>
+                );
+              }}
+            />
+          </div>
         )}
-      </div>
-      <div className={layout.diff}>{detail}</div>
-    </div>
+      </SplitPanel>
+    </SplitGroup>
   );
 }
