@@ -3635,6 +3635,123 @@ async fn turn_changed(mgr: &AgentManager, id: &str) -> Vec<(String, ide_vcs::Cha
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_task_lists_what_it_changed_in_a_nested_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("project");
+    for repo in [root.clone(), root.join("libs/validation")] {
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["add", "a.txt"], &["commit", "-q", "-m", "init"]] {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "{args:?}");
+        }
+    }
+    let mgr = manager(&base.join("ide"), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: Some(IpcPath(root.clone())),
+            prompt: text("Hello"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    one_turn(&mgr, &task.id, None, || {
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        std::fs::write(root.join("libs/validation/b.txt"), "new\n").unwrap();
+    })
+    .await;
+    let changed: Vec<(String, Option<IpcPath>)> =
+        mgr.changes(&task.id).await.unwrap().into_iter().map(|c| (c.rel_path, c.repo)).collect();
+    assert_eq!(
+        changed,
+        [
+            ("a.txt".to_owned(), Some(IpcPath(root.clone()))),
+            ("libs/validation/b.txt".to_owned(), Some(IpcPath(root.join("libs/validation")))),
+        ]
+    );
+    mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "one\n");
+    assert!(!root.join("libs/validation/b.txt").exists());
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_last_turn_of_a_task_spans_nested_repositories() {
+    use ide_vcs::ChangeKind::{Added, Modified};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("project");
+    let nested = root.join("libs/validation");
+    let git = |repo: &Path, args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "{args:?}");
+    };
+    for repo in [&root, &nested] {
+        std::fs::create_dir_all(repo).unwrap();
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(repo, &["init", "-q", "-b", "main"]);
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-q", "-m", "init"]);
+    }
+    let mgr = manager(&base.join("ide"), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: Some(IpcPath(root.clone())),
+            prompt: text("Hello"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    one_turn(&mgr, &task.id, None, || std::fs::write(root.join("a.txt"), "two\n").unwrap()).await;
+    one_turn(&mgr, &task.id, Some("more"), || {
+        std::fs::write(nested.join("a.txt"), "two\n").unwrap();
+        std::fs::write(nested.join("b.txt"), "new\n").unwrap();
+        // Committed in the nested repository: still the turn's.
+        std::fs::write(nested.join("c.txt"), "committed\n").unwrap();
+        git(&nested, &["add", "c.txt"]);
+        git(&nested, &["commit", "-q", "-m", "c"]);
+    })
+    .await;
+
+    // Only the second turn's files, from the nested repository, named from the project.
+    assert_eq!(
+        turn_changed(&mgr, &task.id).await,
+        [
+            ("libs/validation/a.txt".into(), Modified, 1, 1),
+            ("libs/validation/b.txt".into(), Added, 1, 0),
+            ("libs/validation/c.txt".into(), Added, 1, 0),
+        ]
+    );
+    let repos: Vec<_> = mgr.turn_changes(&task.id).await.unwrap().into_iter().map(|c| c.repo).collect();
+    assert_eq!(repos, [Some(IpcPath(nested.clone())), Some(IpcPath(nested.clone())), Some(IpcPath(nested.clone()))]);
+    let then = mgr.base_text(&task.id, nested.join("a.txt"), AgentChangesView::LastTurn).await.unwrap();
+    assert_eq!(then.as_deref(), Some("one\n"));
+
+    mgr.rollback_changes(&task.id, None, AgentChangesView::LastTurn).await.unwrap();
+    assert_eq!(std::fs::read_to_string(nested.join("a.txt")).unwrap(), "one\n");
+    assert!(!nested.join("b.txt").exists());
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "two\n", "the first turn's change stays");
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_last_turn_lists_and_rolls_back_only_its_own_changes() {
     use ide_vcs::ChangeKind::{Added, Deleted, Modified};
     for isolation in [Isolation::Local, Isolation::Worktree] {

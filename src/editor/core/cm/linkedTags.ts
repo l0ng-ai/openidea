@@ -1,12 +1,13 @@
 /**
- * Linked editing for matching HTML tags, as in IDEA's Simultaneous
+ * Linked editing for matching HTML and JSX tags, as in IDEA's Simultaneous
  * `<tag></tag>` editing (on by default) and VS Code's Linked Editing: editing
  * the name in an opening (or closing) tag renames the matching tag of the same
  * element as you type. Done from the syntax tree — `@lezer/html`'s
- * `OpenTag`/`CloseTag` elements, shared by every HTML-based mode — so it works
- * without a language server.
+ * `OpenTag`/`CloseTag` elements, shared by every HTML-based mode, and
+ * `@lezer/javascript`'s `JSXOpenTag`/`JSXCloseTag` — so it works without a
+ * language server.
  *
- * A transaction whose change lies inside one tag's `TagName` is extended with
+ * A transaction whose change lies inside one tag's name is extended with
  * the same edit at the same offset in the counterpart's name — one
  * transaction, so undo takes both back together. Without a matching tag (void
  * and self-closing tags, unclosed elements, a stray close tag) or with the two
@@ -18,18 +19,37 @@ import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode, Tree } from "@lezer/common";
 import { isExternalChange } from "@/editor/api";
 
-/** The `TagName` a changed range edits — an insertion at either edge extends the name. */
+/** A JSX tag's whole name — `div`, `Foo`, `Foo.Bar`, `svg:rect` — as a direct child of its tag. */
+const JSX_NAMES = new Set(["JSXIdentifier", "JSXBuiltin", "JSXMemberExpression", "JSXNamespacedName"]);
+const JSX_TAGS = new Set(["JSXOpenTag", "JSXCloseTag"]);
+
+/** The JSX tag name `n` lies in, or null outside one. */
+function jsxNameOf(n: SyntaxNode | null): SyntaxNode | null {
+  while (n?.parent && !JSX_TAGS.has(n.parent.name)) n = n.parent;
+  return n?.parent && JSX_NAMES.has(n.name) ? n : null;
+}
+
+/** The tag name a changed range edits — an insertion at either edge extends the name. */
 function tagNameAround(tree: Tree, from: number, to: number): SyntaxNode | null {
-  let n = tree.resolveInner(from, -1);
-  if (n.name !== "TagName") n = tree.resolveInner(from, 1);
-  return n.name === "TagName" && n.from <= from && to <= n.to ? n : null;
+  for (const side of [-1, 1] as const) {
+    const inner = tree.resolveInner(from, side);
+    const n = inner.name === "TagName" ? inner : jsxNameOf(inner);
+    if (n && n.from <= from && to <= n.to) return n;
+  }
+  return null;
 }
 
 /** The matching tag's name of the same element, or null without one. */
 function counterpartName(name: SyntaxNode): SyntaxNode | null {
   const tag = name.parent;
   const element = tag?.parent;
-  if (!tag || element?.name !== "Element") return null;
+  if (!tag || !element) return null;
+  if (element.name === "JSXElement") {
+    const other = element.getChild(tag.name === "JSXOpenTag" ? "JSXCloseTag" : "JSXOpenTag");
+    for (let c = other?.firstChild; c; c = c.nextSibling) if (JSX_NAMES.has(c.name)) return c;
+    return null;
+  }
+  if (element.name !== "Element") return null;
   const other = element.getChild(
     /^Open/.test(tag.name) ? tag.name.replace("Open", "Close") : tag.name.replace("Close", "Open"),
   );
@@ -37,10 +57,10 @@ function counterpartName(name: SyntaxNode): SyntaxNode | null {
 }
 
 /** Insertions at a name's edge must extend the name; structural characters end it. */
-const NOT_NAME_CHARS = /[\s/>"'<=]/;
+const NOT_NAME_CHARS = /[\s/>"'<={}]/;
 
 /**
- * Editing the name of an opening (or closing) HTML tag renames its matching
+ * Editing the name of an opening (or closing) HTML or JSX tag renames its matching
  * tag, from the syntax tree — no language server. Installed while Smart Keys ›
  * Simultaneous `<tag></tag>` editing is on (the default).
  */

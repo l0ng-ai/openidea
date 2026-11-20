@@ -46,6 +46,7 @@ export type MenuItem =
       shortcut?: string;
       disabled?: boolean;
       checked?: boolean;
+      current?: boolean;
       danger?: boolean;
       run?: () => void;
       /** Run instead of `run` on ⌘-click (macOS) / Ctrl-click, e.g. "only this one" in a multi-choice filter. */
@@ -67,6 +68,7 @@ interface Resolved {
   shortcut?: string;
   disabled?: boolean;
   checked?: boolean;
+  current?: boolean;
   danger?: boolean;
   run?: () => void;
   runWithModifier?: () => void;
@@ -389,6 +391,7 @@ export function MenuList({
               type="button"
               role={r.checked !== undefined ? "menuitemcheckbox" : "menuitem"}
               aria-checked={r.checked}
+              aria-current={r.current || undefined}
               aria-disabled={r.disabled || undefined}
               aria-haspopup={hasSub ? "menu" : undefined}
               aria-expanded={hasSub ? openSub === i : undefined}
@@ -507,34 +510,41 @@ export function Menu({
 // ---------------------------------------------------------------------------
 // Context menus
 
+type ContextMenuAnchor = { x: number; y: number } | "center";
+type ContextMenuPosition = { x: number; y: number; centered?: false } | { centered: true };
+
 interface ContextMenuState {
-  menu: {
-    x: number;
-    y: number;
-    items: MenuItem[];
-    numbers: boolean;
-    id: number;
-    /** The text selection the menu was opened on (see `restoreSelection`). */
-    selection: Range[] | null;
-    owner: Element | null;
-  } | null;
+  menu:
+    | (ContextMenuPosition & {
+        items: MenuItem[];
+        title?: string;
+        numbers: boolean;
+        id: number;
+        /** The text selection the menu was opened on (see `restoreSelection`). */
+        selection: Range[] | null;
+        owner: Element | null;
+      })
+    | null;
 }
 
 export const useContextMenuStore = create<ContextMenuState>(() => ({ menu: null }));
 let menuSeq = 0;
 
 export function showContextMenu(
-  at: { clientX: number; clientY: number } | { x: number; y: number },
+  at: { clientX: number; clientY: number } | ContextMenuAnchor,
   items: MenuItem[],
-  options?: { numbers?: boolean; owner?: Element | null },
+  options?: { numbers?: boolean; owner?: Element | null; title?: string },
 ) {
-  const x = "clientX" in at ? at.clientX : at.x;
-  const y = "clientY" in at ? at.clientY : at.y;
+  const position: ContextMenuPosition =
+    at === "center"
+      ? { centered: true }
+      : { x: "clientX" in at ? at.clientX : at.x, y: "clientY" in at ? at.clientY : at.y };
+  const title = options?.title;
   useContextMenuStore.setState({
     menu: {
-      x,
-      y,
-      items,
+      ...position,
+      items: title ? [{ kind: "header", label: title }, ...items] : items,
+      title,
       numbers: !!options?.numbers,
       id: ++menuSeq,
       selection: textSelection(),
@@ -592,7 +602,7 @@ export function ContextMenuHost() {
     <Popup
       key={menu.id}
       open
-      anchor={{ x: menu.x, y: menu.y }}
+      anchor={menu.centered ? "center" : { x: menu.x, y: menu.y }}
       placement="bottom-start"
       offset={2}
       role="presentation"
@@ -600,7 +610,12 @@ export function ContextMenuHost() {
       onClose={hideContextMenu}
       className={styles.popup}
     >
-      <MenuList items={menu.items} numbers={menu.numbers} onDone={hideContextMenu} aria-label="Context menu" />
+      <MenuList
+        items={menu.items}
+        numbers={menu.numbers}
+        onDone={hideContextMenu}
+        aria-label={menu.title ? tx(menu.title) : "Context menu"}
+      />
     </Popup>
   );
 }

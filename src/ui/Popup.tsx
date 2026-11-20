@@ -37,7 +37,13 @@ import styles from "./Popup.module.css";
 /** Layer ids of the popups a component is rendered inside: a dialog opened there leaves them open. */
 export const PopupAncestry = createContext<readonly RefObject<number | null>[]>([]);
 
-export type PopupAnchor = Element | VirtualElement | RefObject<Element | null> | { x: number; y: number } | null;
+export type PopupAnchor =
+  | Element
+  | VirtualElement
+  | RefObject<Element | null>
+  | { x: number; y: number }
+  | "center"
+  | null;
 
 export interface PopupProps {
   open: boolean;
@@ -90,7 +96,7 @@ const measureNaturalHeight: Middleware = {
 };
 
 function toReference(anchor: PopupAnchor): Element | VirtualElement | null {
-  if (!anchor) return null;
+  if (!anchor || anchor === "center") return null;
   if ("current" in anchor) return anchor.current;
   if ("getBoundingClientRect" in anchor) return anchor;
   const { x, y } = anchor;
@@ -127,6 +133,7 @@ function PopupInner({
   onResized,
   ...aria
 }: PopupProps) {
+  const centered = anchor === "center";
   const reference = toReference(anchor);
   const hasInlineMaxHeight = style?.maxHeight != null && style.maxHeight !== "";
   const middleware = useMemo(
@@ -261,10 +268,10 @@ function PopupInner({
       role={role}
       aria-label={aria["aria-label"]}
       tabIndex={-1}
-      className={clsx(styles.popup, !unstyled && styles.surface, className)}
-      data-positioned={isPositioned || undefined}
+      className={clsx(styles.popup, centered && styles.centered, !unstyled && styles.surface, className)}
+      data-positioned={centered || isPositioned || undefined}
       data-resized={size ? "" : undefined}
-      style={{ ...floatingStyles, ...(size && { width: size.w, height: size.h }), ...style }}
+      style={{ ...(!centered && floatingStyles), ...(size && { width: size.w, height: size.h }), ...style }}
     >
       <PopupAncestry.Provider value={ancestry}>{children}</PopupAncestry.Provider>
       {resizable && (

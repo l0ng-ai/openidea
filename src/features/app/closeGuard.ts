@@ -200,6 +200,33 @@ async function processNames(deps: CloseDeps): Promise<string[]> {
 
 let closing = false;
 
+/**
+ * A quit can start outside this window: the Dock or a logout on macOS, another window's action, a
+ * remote client. Every prompt of that flow is drawn inside the window, so a minimized or covered
+ * one asks without showing anything and the app looks stuck. Bring the window up before asking.
+ */
+async function raiseWindowForPrompts(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const window = getCurrentWindow();
+    await Promise.allSettled([window.unminimize(), window.show(), window.setFocus()]);
+  } catch {
+    // A window that cannot be raised still asks; the prompts must not be lost to this.
+  }
+}
+
+/** `deps` whose prompts bring the window up first; a window with nothing to ask stays where it is. */
+function raisingBeforeAsk(deps: CloseDeps): CloseDeps {
+  return {
+    ...deps,
+    ask: async (request) => {
+      await raiseWindowForPrompts();
+      return deps.ask(request);
+    },
+  };
+}
+
 /** Drops saved tabs when that setting is on. The result says whether a cancelled close should put them back. */
 function forgetTabs(): boolean {
   if (!closeTabsWithWindowEnabled(useProject.getState().settings)) return false;
@@ -218,6 +245,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   };
   try {
     const ctx = await commands.windowCloseContext();
+    // Each window of a quit asks about its own processes and unsaved changes, if it has any.
+    if (ctx.quitting) deps = raisingBeforeAsk(deps);
     if (!(await closeDocumentWindows())) {
       await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
       return false;
@@ -331,7 +360,7 @@ export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
         dirty: 0,
         project: null,
       },
-      { ...deps, prepareClose: undefined },
+      { ...raisingBeforeAsk(deps), prepareClose: undefined },
     );
     if (!ok) return;
   }
