@@ -189,7 +189,7 @@ it("indents by the code's character width, so a font size change keeps it in lin
   const v = open(true, ["class A {", "\t/**", "\t * Books.", "\t */", "\tvoid book() {}", "}"].join("\n"));
   const body = v.dom.querySelector<HTMLElement>(".cm-openidea-renderedDoc")!;
   // A tab is a tab size of columns, not one character.
-  expect(body.style.marginLeft).toContain(`${v.state.tabSize} * var(--openidea-doc-char`);
+  expect(body.style.marginLeft).toContain(`${v.state.tabSize} * var(--openidea-space`);
 });
 
 it("forgets a flip whose comment is deleted, so the feature turns off again", async () => {

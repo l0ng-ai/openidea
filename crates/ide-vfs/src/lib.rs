@@ -10,6 +10,7 @@ mod rules;
 mod watch;
 
 use ide_core::{IdeError, IdeResult};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::cmp::Ordering;
@@ -133,51 +134,57 @@ pub fn read_dir(dir: &Path, excludes: &[String]) -> IdeResult<Vec<FileEntry>> {
     let base = gitignore.repo_root().unwrap_or(dir).to_path_buf();
     let excludes = ExcludeMatcher::new(excludes);
 
-    let mut entries: Vec<(bool, FileEntry)> = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = match entry {
-            Ok(e) => e,
+    let paths: Vec<PathBuf> = fs::read_dir(dir)?
+        .filter_map(|entry| match entry {
+            Ok(e) => Some(e.path()),
             Err(e) => {
                 tracing::debug!("read_dir {}: {e}", dir.display());
-                continue;
+                None
             }
-        };
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(lmeta) = fs::symlink_metadata(&path) else { continue };
-        let (kind, meta, target_kind) = if lmeta.file_type().is_symlink() {
-            match fs::metadata(&path) {
-                Ok(m) => {
-                    let target = if m.is_dir() { EntryKind::Dir } else { EntryKind::File };
-                    (EntryKind::Symlink, m, Some(target))
+        })
+        .collect();
+    // One stat per entry dominates a large folder (and every stat is a round trip on a network
+    // share): stat in parallel; small folders stay on this thread.
+    let mut entries: Vec<(bool, FileEntry)> = paths
+        .into_par_iter()
+        .with_min_len(256)
+        .filter_map(|path| {
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            let lmeta = fs::symlink_metadata(&path).ok()?;
+            let (kind, meta, target_kind) = if lmeta.file_type().is_symlink() {
+                match fs::metadata(&path) {
+                    Ok(m) => {
+                        let target = if m.is_dir() { EntryKind::Dir } else { EntryKind::File };
+                        (EntryKind::Symlink, m, Some(target))
+                    }
+                    Err(_) => (EntryKind::Symlink, lmeta, None),
                 }
-                Err(_) => (EntryKind::Symlink, lmeta, None),
-            }
-        } else if lmeta.is_dir() {
-            (EntryKind::Dir, lmeta, None)
-        } else {
-            (EntryKind::File, lmeta, None)
-        };
-        let is_dir = meta.is_dir();
-        let rel = path.strip_prefix(&base).unwrap_or(&path);
-        let excluded = excludes.is_excluded(rel);
-        let ignored = excluded || gitignore.is_ignored(&path, is_dir);
-        entries.push((
-            is_dir,
-            FileEntry {
-                hidden: name.starts_with('.'),
-                size: if is_dir { 0 } else { meta.len() },
-                mtime_ms: mtime_ms(&meta),
-                name,
-                path: path.into(),
-                kind,
-                ignored,
-                excluded,
-                target_kind,
-            },
-        ));
-    }
-    entries.sort_by(|(da, a), (db, b)| db.cmp(da).then_with(|| natural_cmp(&a.name, &b.name)));
+            } else if lmeta.is_dir() {
+                (EntryKind::Dir, lmeta, None)
+            } else {
+                (EntryKind::File, lmeta, None)
+            };
+            let is_dir = meta.is_dir();
+            let rel = path.strip_prefix(&base).unwrap_or(&path);
+            let excluded = excludes.is_excluded(rel);
+            let ignored = excluded || gitignore.is_ignored(&path, is_dir);
+            Some((
+                is_dir,
+                FileEntry {
+                    hidden: name.starts_with('.'),
+                    size: if is_dir { 0 } else { meta.len() },
+                    mtime_ms: mtime_ms(&meta),
+                    name,
+                    path: path.into(),
+                    kind,
+                    ignored,
+                    excluded,
+                    target_kind,
+                },
+            ))
+        })
+        .collect();
+    entries.par_sort_by(|(da, a), (db, b)| db.cmp(da).then_with(|| natural_cmp(&a.name, &b.name)));
     Ok(entries.into_iter().map(|(_, e)| e).collect())
 }
 
