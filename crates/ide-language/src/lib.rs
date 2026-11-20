@@ -25,7 +25,7 @@ pub use syntax::{
     CSS_CLASS, CSS_ID, CSS_VARIABLE, ClassBases, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax,
     ExternalToken, FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind,
     SpellingRegion, Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError,
-    VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_visibility,
+    VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_kinds, merge_visibility,
     set_external_syntax, shift_pos, shift_range,
 };
 pub use syntax::{MethodBody, PhpAlignment, PythonClassFacts, PythonFacts, PythonMethodFacts};

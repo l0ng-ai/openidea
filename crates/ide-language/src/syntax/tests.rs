@@ -1477,6 +1477,88 @@ fn merge_visibility_matches_by_name_and_position() {
 }
 
 #[test]
+fn merge_kinds_names_types_a_server_reported_as_values_or_type_parameters() {
+    fn kinds(items: &[OutlineItem], out: &mut Vec<(String, SymbolKind)>) {
+        for i in items {
+            out.push((i.name.clone(), i.kind));
+            kinds(&i.children, out);
+        }
+    }
+    /// The syntax outline with each kind replaced as a server reports it.
+    fn as_server(ts: &[OutlineItem], server: &[(&str, SymbolKind)]) -> Vec<OutlineItem> {
+        fn set(items: &mut [OutlineItem], server: &[(&str, SymbolKind)], at: &mut usize) {
+            for i in items {
+                i.kind = server[*at].1;
+                assert_eq!(i.name, server[*at].0);
+                *at += 1;
+                set(&mut i.children, server, at);
+            }
+        }
+        let mut lsp = ts.to_vec();
+        set(&mut lsp, server, &mut 0);
+        lsp
+    }
+    fn merged(language: &str, src: &str, server: &[(&str, SymbolKind)]) -> Vec<(String, SymbolKind)> {
+        let ts = syntax().outline(&lang(language), src);
+        let mut lsp = as_server(&ts, server);
+        crate::merge_kinds(&mut lsp, &ts);
+        let mut out = Vec::new();
+        kinds(&lsp, &mut out);
+        out
+    }
+    use SymbolKind as K;
+    let owned = |v: &[(&str, SymbolKind)]| v.iter().map(|(n, k)| (n.to_string(), *k)).collect::<Vec<_>>();
+
+    // typescript-language-server: a type alias is a Variable; `const` is one too.
+    let ts = "type Cents = number;\ninterface Shape {}\nconst rate = 1;\n";
+    assert_eq!(
+        merged("typescript", ts, &[("Cents", K::Variable), ("Shape", K::Interface), ("rate", K::Variable)]),
+        owned(&[("Cents", K::TypeAlias), ("Shape", K::Interface), ("rate", K::Variable)]),
+    );
+
+    // rust-analyzer: type aliases and associated types are TypeParameters, a trait an Interface.
+    let rs = "pub type Meters = u32;\ntrait Measure { type Unit; }\nstruct Rope;\nimpl Measure for Rope { type Unit = Meters; }\n";
+    assert_eq!(
+        merged(
+            "rust",
+            rs,
+            &[
+                ("Meters", K::TypeParameter),
+                ("Measure", K::Interface),
+                ("Unit", K::TypeParameter),
+                ("Rope", K::Struct),
+                ("impl Measure for Rope", K::Variable),
+                ("Unit", K::TypeParameter),
+            ],
+        ),
+        owned(&[
+            ("Meters", K::TypeAlias),
+            ("Measure", K::Interface),
+            ("Unit", K::TypeAlias),
+            ("Rope", K::Struct),
+            ("impl Measure for Rope", K::Variable),
+            ("Unit", K::TypeAlias),
+        ]),
+    );
+
+    // sourcekit-lsp: typealias and associatedtype are TypeParameters.
+    let swift = "typealias Meters = Int\nprotocol Measure { associatedtype Unit }\n";
+    assert_eq!(
+        merged("swift", swift, &[("Meters", K::TypeParameter), ("Measure", K::Interface), ("Unit", K::TypeParameter)]),
+        owned(&[("Meters", K::TypeAlias), ("Measure", K::Interface), ("Unit", K::TypeAlias)]),
+    );
+
+    // A type kind the server chose stays: clangd's Class for a typedef, gopls's Struct.
+    let c = "typedef unsigned int meters;\n";
+    assert_eq!(merged("c", c, &[("meters", K::Class)]), owned(&[("meters", K::Class)]));
+    let go = "package p\n\ntype Point struct{}\n";
+    assert_eq!(
+        merged("go", go, &[("p", K::Package), ("Point", K::Struct)]),
+        owned(&[("p", K::Package), ("Point", K::Struct)])
+    );
+}
+
+#[test]
 fn spelling_regions_cover_declared_names_only() {
     let src = "// note\nfn parse_input(raw_text: &str) -> Value { let mut counter = helper(raw_text); \"hi\" }\n";
     let found: Vec<(&str, SpellingKind)> =
