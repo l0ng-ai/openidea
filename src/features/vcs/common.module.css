@@ -48,6 +48,51 @@
   flex-direction: column;
   gap: var(--space-0-5);
 }
+.updateForm {
+  min-width: 0;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+.updateOptions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-inline-size: 0;
+  margin: 0;
+  padding: var(--space-2) 0 0;
+  border: 0;
+  border-top: 1px solid var(--border-popup);
+}
+.updateOptions > legend {
+  padding: 0 var(--space-2) 0 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.updateOptions .updateRadio {
+  align-items: flex-start;
+}
+.updateCommand {
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.updateActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.updateActions .updateReset {
+  max-width: 100%;
+  min-height: var(--h-button);
+  height: auto;
+  padding-block: var(--space-1);
+  line-height: 1.3;
+  white-space: normal;
+}
 .fileList {
   max-height: 260px;
   overflow: auto;
@@ -356,6 +401,44 @@
 .textarea:focus {
   outline: none;
   border-color: var(--focus-ring);
+}
+.stashForm {
+  gap: var(--space-3);
+  padding: var(--space-4);
+  font-size: var(--fs-ui);
+}
+.stashRepo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-secondary);
+}
+.stashRepo > button {
+  flex: 1;
+}
+.stashBranch {
+  color: var(--fg-secondary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.stashMessage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+.stashMessage > label {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.stashMessage > textarea {
+  min-width: 0;
+  padding: var(--space-2);
+  line-height: 1.5;
+}
+.stashOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
 }
 /* Interactive rebase dialog. */
 .rebaseList {
