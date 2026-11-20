@@ -642,6 +642,7 @@
   "If you don't trust the source, preview the project in Restricted Mode, where project commands and tools can't run.": "如果不信任来源，请以受限模式预览项目，此模式下不会运行项目命令和工具。",
   "Loading, running or building a project may execute potentially malicious code from its build scripts.": "加载、运行或构建项目可能会执行其构建脚本中的恶意代码。",
   "Trust projects in": "信任此文件夹中的项目：",
+  "Trust Folder": "信任文件夹",
   "Restricted Mode: project commands and tools are disabled.": "受限模式：项目命令和工具已禁用。",
   "Trust Project": "信任项目",
   "Trust decisions are saved in your user data and take effect immediately.": "信任决定保存在您的用户数据中，并立即生效。",
