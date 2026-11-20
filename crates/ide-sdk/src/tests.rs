@@ -1875,11 +1875,40 @@ fn go_modules_skip_the_main_module_and_missing_downloads() {
 {"Path":"golang.org/x/text","Version":"v0.14.0","Dir":"/gopath/pkg/mod/golang.org/x/text@v0.14.0"}
 {"Path":"example.com/missing","Version":"v1.0.0","Error":{"Err":"module lookup disabled"}}"#;
     assert_eq!(
-        crate::libraries::parse_go_modules(out),
+        crate::libraries::parse_go_modules(out, std::path::Path::new("/p")),
         [(
             "golang.org/x/text@v0.14.0".to_owned(),
             std::path::PathBuf::from("/gopath/pkg/mod/golang.org/x/text@v0.14.0")
         )]
+    );
+}
+
+#[test]
+fn go_modules_skip_module_sources_inside_the_project() {
+    let out = r#"{"Path":"example.com/app","Main":true,"Dir":"/p/app"}
+{"Path":"example.com/local","Version":"v0.0.0","Dir":"/p/local"}
+{"Path":"example.com/vendored","Version":"v0.0.0","Dir":"/p/vendor/vendored"}
+{"Path":"example.com/outside","Version":"v1.0.0","Dir":"/other/outside"}
+{"Path":"golang.org/x/text","Version":"v0.14.0","Dir":"/gopath/pkg/mod/golang.org/x/text@v0.14.0"}"#;
+    assert_eq!(
+        crate::libraries::parse_go_modules(out, std::path::Path::new("/p")),
+        [
+            ("example.com/vendored@v0.0.0".to_owned(), std::path::PathBuf::from("/p/vendor/vendored")),
+            ("example.com/outside@v1.0.0".to_owned(), std::path::PathBuf::from("/other/outside")),
+            (
+                "golang.org/x/text@v0.14.0".to_owned(),
+                std::path::PathBuf::from("/gopath/pkg/mod/golang.org/x/text@v0.14.0")
+            ),
+        ]
+    );
+    // Opened from a root that does not contain it: the same folder is a library again.
+    assert!(
+        crate::libraries::parse_go_modules(
+            r#"{"Path":"example.com/local","Version":"v0.0.0","Dir":"/p/local"}"#,
+            std::path::Path::new("/p/app")
+        )
+        .iter()
+        .any(|(name, _)| name == "example.com/local@v0.0.0")
     );
 }
 
