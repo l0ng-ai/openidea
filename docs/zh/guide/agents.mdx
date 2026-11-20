@@ -139,6 +139,14 @@ agent 运行过一个任务后，新任务会以它自动批准所有操作的�
 - **智能体配置**：自动发现 `~/.copilot/mcp-config.json`（及已安装的 Copilot CLI 插件）、`~/.claude.json`、`~/.codex/config.toml`、`~/.cursor/mcp.json`、`~/.gemini/settings.json`、`~/.jetbrains/mcp/mcp.json`、`.mcp.json` 和 `.vscode/mcp.json` 中已配置的服务器，可一键导入到全局或项目设置。添加或编辑服务器时既可使用表单，也可直接粘贴 `mcpServers` JSON（**从 JSON 添加**），并可通过 **测试连接** 查看服务器声明的工具列表。
 - **按会话覆盖（`MCP` / `/mcp`）**：在 **新建 Agent 任务** 和进行中的任务对话中，单击输入框工具栏的 **MCP**（或输入 `/mcp`），即可仅针对当前任务开启或关闭任意服务器（包括内置的 `openidea` 服务器），或点击 **重置** 恢复继承的默认状态。
 
+### 智能体技能
+
+**设置 › 智能体 › 技能** 把所有技能（`SKILL.md` 文件夹）汇总在一个列表里，并按发现它们的文件夹分组：项目的 `.agents/skills` 与 `.openidea/skills`、你的 `~/.agents/skills`（即 `npx skills add` 填充的目录），以及各 CLI 自己的文件夹（`.claude/skills`、`.github/skills`、`.codex/skills`、`.cursor/skills`、`~/.claude/skills`、`~/.copilot/skills` 及其已安装插件、`~/.codex/skills`、`~/.cursor/skills`）。同一技能的符号链接副本只显示一次，展开一行可以看到其规范路径与 `SKILL.md` 的校验结果。
+
+每个技能有三种运行模式，可全局或按工作区设置，且从不改动技能自身的文件：**自动**（由模型决定）、**仅斜杠**（只通过 `/名称` 调用）或 **关闭**。工作区可以关闭一个全局技能，而无需在 `AGENTS.md` 里写文字规则；被设置关闭的技能在会话选择器中会显示为 **在设置中启用**。
+
+在输入框中，`/skills`（或 **添加上下文** 菜单）会打开与 MCP 并排的会话技能选择器：仅为当前任务关闭单个技能，或点击 **重置** 恢复继承的模式。`/` 菜单会列出所有智能体的活动技能，Claude Code、Copilot 与 Codex 收到的是同一套技能。只讲 ACP 协议的智能体保留自己的 `/` 菜单，因此在那里关闭技能只会让 OpenIDEA 不再提供它，其余尽力而为。
+
 agent 工作时，对话下方的状态行显示它正在做什么：思考、读取、编辑、运行命令、输出回复。
 
 ## 添加自定义 agent

@@ -72,7 +72,7 @@ pub struct Host {
     /// Projects the MCP server serves without a window.
     pub mcp_background: mcp::BackgroundProjects,
     pub(crate) agent_catalogs: Arc<ide_agent::AgentCatalogs>,
-    pub trust: trust::TrustStore,
+    pub trust: std::sync::Arc<trust::TrustStore>,
     pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
@@ -169,7 +169,7 @@ impl Host {
             mcp_agent_runs: Default::default(),
             mcp_background: Default::default(),
             agent_catalogs: Arc::default(),
-            trust: trust::TrustStore::load(&config_dir, &data_dir),
+            trust: std::sync::Arc::new(trust::TrustStore::load(&config_dir, &data_dir)),
             mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),

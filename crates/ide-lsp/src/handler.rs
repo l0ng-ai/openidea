@@ -25,6 +25,17 @@ const PROGRESS_SWEEP: Duration = Duration::from_secs(15);
 /// visible, but stops holding the server busy while the work behind it keeps running.
 const PROGRESS_STALE: Duration = Duration::from_secs(180);
 
+/// How long a cancelled progress task waits for its server to end it.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
+
+/// The key of progress token `token` in [`Server::progress`].
+fn progress_key(token: &Value) -> String {
+    match token {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Task message after [`PROGRESS_STALE`] of silence: keep the server's last message and
 /// say how long nothing happened.
 fn stalled_message(message: Option<&str>) -> String {
@@ -97,22 +108,50 @@ impl ClientHandler {
     }
 
     /// Cancelling task `task` asks this server instance to stop the work of progress `token`.
+    /// A server that never ends it (Pyright waiting on a workspace that never loads) would
+    /// leave the task "Cancelling…" for good: after [`CANCEL_GRACE`] the task ends here.
     fn cancel_handle(&self, task: TaskId, token: &Value) -> ide_core::task::CancelHandle {
-        let (server, generation, token) = (self.server.clone(), self.generation, token.clone());
+        let (mgr, server, generation, token) = (self.mgr.clone(), self.server.clone(), self.generation, token.clone());
         ide_core::task::on_cancel(task, move || {
             if let Some(run) = server.initialized_gen(generation)
                 && let Err(e) = run.peer.notify("window/workDoneProgress/cancel", json!({ "token": token }))
             {
                 tracing::debug!("{}: cannot cancel progress: {e}", server.name);
             }
+            let Some(runtime) = mgr.upgrade().map(|m| m.runtime.clone()) else { return };
+            runtime.spawn(async move {
+                tokio::time::sleep(CANCEL_GRACE).await;
+                let Some(mgr) = mgr.upgrade() else { return };
+                let key = progress_key(&token);
+                let ended = {
+                    let mut progress = server.progress.lock();
+                    if progress.get(&key).is_none_or(|p| p.task != task) {
+                        return; // the server ended it, or the token began new work
+                    }
+                    progress.remove(&key)
+                };
+                if let Some(p) = ended {
+                    tracing::info!("{}: progress '{key}' did not end after cancel; ending its task", server.name);
+                    server.emit(
+                        mgr.sink(),
+                        IdeEvent::Task {
+                            id: p.task,
+                            title: p.title,
+                            message: p.message,
+                            fraction: None,
+                            done: true,
+                            cancellable: false,
+                        },
+                    );
+                    server.refresh_busy_status(mgr.sink());
+                    server.progress_ended();
+                }
+            });
         })
     }
 
     fn progress(&self, mgr: &LspManager, params: Value) {
-        let token = match &params["token"] {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
+        let token = progress_key(&params["token"]);
         let value = &params["value"];
         let kind = value.get("kind").and_then(Value::as_str);
         let message = value.get("message").and_then(Value::as_str).map(str::to_owned);

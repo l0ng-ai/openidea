@@ -130,6 +130,11 @@ pub struct AgentSettings {
     #[serde(deserialize_with = "or_default")]
     #[specta(type = BTreeMap<String, AgentMcpServer>)]
     pub mcp_servers: BTreeMap<String, AgentMcpServer>,
+    /// How agent skills may run, keyed by skill name (`[agents.skills.<name>]`); `SKILL.md`
+    /// files on disk are never modified.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = BTreeMap<String, AgentSkillPolicy>)]
+    pub skills: BTreeMap<String, AgentSkillPolicy>,
 }
 
 impl Default for AgentSettings {
@@ -150,6 +155,7 @@ impl Default for AgentSettings {
             new_task_approvals: NewTaskApprovals::Bypass,
             defaults: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
+            skills: BTreeMap::new(),
         }
     }
 }
@@ -202,6 +208,34 @@ impl Default for AgentMcpServer {
             headers: BTreeMap::new(),
             agents: Vec::new(),
         }
+    }
+}
+
+/// How an agent skill may run (`[agents.skills.<name>] mode = …`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSkillMode {
+    /// The model decides when to use it.
+    #[default]
+    Auto,
+    /// Only when the user invokes it with `/name`.
+    SlashOnly,
+    /// Never.
+    Off,
+}
+
+/// A skill's policy in Settings › Agents › Skills, stored without touching its `SKILL.md`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSkillPolicy {
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = AgentSkillMode)]
+    pub mode: AgentSkillMode,
+}
+
+impl Default for AgentSkillPolicy {
+    fn default() -> Self {
+        Self { mode: AgentSkillMode::Auto }
     }
 }
 

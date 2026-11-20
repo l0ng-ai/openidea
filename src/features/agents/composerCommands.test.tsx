@@ -182,6 +182,18 @@ describe("New Task composer commands", () => {
     expect(await screen.findByText("Session MCP Servers")).toBeInTheDocument();
   });
 
+  it("opens the per-session skills picker when /skills is completed in the composer", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [] });
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "/sk");
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    expect(within(list).getByRole("option", { selected: true })).toHaveTextContent("/skills");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("");
+    expect(await screen.findByText("Session Skills")).toBeInTheDocument();
+  });
+
   it("names the icon-only Start action and disables it while starting", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     let finish!: (value: unknown) => void;

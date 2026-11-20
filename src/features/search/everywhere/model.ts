@@ -442,7 +442,7 @@ export function textItems(path: string, rel: string, matches: readonly LineMatch
     const first = m.ranges[0] ?? [0, 0];
     out.push({
       kind: "text",
-      key: `t:${path}:${m.line}:${first[0]}`,
+      key: `t:${path}:${m.line}:${first[0] + m.textOffset}`,
       path,
       rel,
       line: m.line,
