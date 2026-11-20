@@ -554,7 +554,6 @@ impl Host {
         // A capture's dump may hold secrets from the debuggee's memory: delete it before exiting.
         ops::heap::shutdown(self).await;
         self.environment.shutdown();
-        self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
@@ -574,22 +573,33 @@ impl Host {
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }
+        let stop_processes = async {
+            for project in &projects {
+                self.debugger.stop_under(&project.root).await;
+            }
+            self.processes.shutdown().await;
+        };
         // Kernel cleanup owns its interrupt/termination/reaping deadlines. An
         // outer LSP timeout must never abort it before owned children are reaped.
-        for project in &projects {
-            if let Some(bridge) = &project.kotlin_bridge {
-                bridge.shutdown().await;
+        let stop_kernels = async {
+            for project in &projects {
+                if let Some(bridge) = &project.kotlin_bridge {
+                    bridge.shutdown().await;
+                }
+                project.notebooks.shutdown().await;
             }
-            project.notebooks.shutdown().await;
-        }
+        };
         let stop_language_servers = async {
             for project in &projects {
                 project.lsp.shutdown_all().await;
             }
         };
-        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
-            tracing::warn!("language servers did not shut down in time");
-        }
+        let stop_lsp = async {
+            if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
+                tracing::warn!("language servers did not shut down in time");
+            }
+        };
+        tokio::join!(stop_processes, stop_kernels, stop_lsp);
     }
 
     // ---- cancellable requests: the UI allocates ids, `cancel_request` cancels ----

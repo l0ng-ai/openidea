@@ -69,19 +69,25 @@ function GroupView({ group, id }: { group: WindowGroup; id: string }) {
   const { members, selected } = group.state();
   const location = useViewLocation();
   const saved = readSelectedView(id, location);
-  const active = members.find((m) => m.decl.id === selected) ?? members.find((m) => m.decl.id === saved) ?? members[0];
+  const [fallback, setFallback] = useState<{ location: string | null; id: string | undefined }>();
+  const member = (id: string | null | undefined) => members.find((m) => m.decl.id === id);
+  const active =
+    member(selected) ?? member(saved) ?? member(fallback?.location === location ? fallback.id : null) ?? members[0];
   const activeId = active?.decl.id;
   const shown = useToolWindowShown();
   // Like separate tool windows, opened tabs retain their local state until withdrawn.
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
+    setFallback((previous) =>
+      previous?.location === location && previous.id === activeId ? previous : { location, id: activeId },
+    );
     setVisited((previous) => {
       const next = new Set(
         members.filter((m) => previous.has(m.decl.id) || m.decl.id === activeId).map((m) => m.decl.id),
       );
       return next.size === previous.size && [...next].every((id) => previous.has(id)) ? previous : next;
     });
-  }, [members, activeId]);
+  }, [members, activeId, location]);
   if (!active) return null;
   return (
     <VerbatimTextContext.Provider value={true}>

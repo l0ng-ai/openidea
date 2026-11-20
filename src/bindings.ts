@@ -7984,11 +7984,8 @@ export type IdeEvent =
 { type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
-/**
- *  This remote window's connection to its host ended on its own (network loss, the host or
- *  its server went away); the window's project is unreachable until it reconnects.
- */
-{ type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+/**  This remote window's connection ended or another window took over the session. */
+{ type: "remoteConnectionLost"; host: string; takenOver?: boolean } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**
  *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
  *  from changed and it can be reloaded.

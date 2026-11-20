@@ -842,6 +842,12 @@ impl ProcessManager {
         live.map(|e| e.info()).collect()
     }
 
+    pub fn has_live_runs(&self) -> bool {
+        self.runs.lock().values().any(|entry| {
+            !entry.exited.load(Ordering::Acquire) || entry.pid.lock().is_some_and(|pid| group_alive(pid, entry))
+        })
+    }
+
     /// Rebinds `id`'s output stream to `on_output`, returning its buffered console chunks
     /// and configuration without dropping or duplicating output.
     pub fn reattach(
@@ -888,6 +894,34 @@ impl ProcessManager {
                 && let Some(pid) = *entry.pid.lock()
             {
                 kill_tree(entry, pid, true);
+            }
+        }
+    }
+
+    /// Honor external service stop actions (for example `docker compose down`) before
+    /// forcing run processes to exit.
+    pub async fn shutdown(&self) {
+        let entries: Vec<_> = self.runs.lock().values().cloned().collect();
+        let mut stops = tokio::task::JoinSet::new();
+        for entry in entries {
+            let Some(pid) = *entry.pid.lock() else { continue };
+            if entry.exited.load(Ordering::Acquire) && !group_alive(pid, &entry) {
+                continue;
+            }
+            stops.spawn_blocking(move || {
+                if !entry.stopping.swap(true, Ordering::AcqRel)
+                    && let Some(stop) = &entry.stop
+                {
+                    run_stop_command(stop, &entry);
+                }
+                if group_alive(pid, &entry) {
+                    kill_tree(&entry, pid, true);
+                }
+            });
+        }
+        while let Some(result) = stops.join_next().await {
+            if let Err(e) = result {
+                tracing::warn!("could not stop a run during shutdown: {e}");
             }
         }
     }
@@ -1072,6 +1106,7 @@ fn run_stop_command(stop: &StopCommand, entry: &Entry) {
     let inv = shell_invocation(&stop.line, cfg!(windows), std::env::var("COMSPEC").ok());
     let mut cmd = Command::new(&inv.program);
     ide_core::process::prepare(&mut cmd);
+    ide_core::process::own_group(&mut cmd);
     if inv.raw_args {
         add_raw_args(&mut cmd, &inv.args);
     } else {
@@ -1087,11 +1122,13 @@ fn run_stop_command(stop: &StopCommand, entry: &Entry) {
         }
     };
     let stderr = child.stderr.take().map(|mut pipe| {
+        let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = pipe.read_to_end(&mut buf);
-            String::from_utf8_lossy(&buf).into_owned()
-        })
+            let _ = send.send(String::from_utf8_lossy(&buf).into_owned());
+        });
+        receive
     });
     let deadline = Instant::now() + STOP_COMMAND_TIMEOUT;
     let status = loop {
@@ -1099,15 +1136,17 @@ fn run_stop_command(stop: &StopCommand, entry: &Entry) {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
-                let _ = child.kill();
+                ide_core::process::kill_tree(&mut child);
                 let _ = child.wait();
                 break None;
             }
         }
     };
-    let err = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    if !status.is_some_and(|s| s.success()) && !err.trim().is_empty() {
-        entry.emit_output(OutputChunk::Stderr { text: format!("{}\n", err.trim_end()) });
+    if !status.is_some_and(|s| s.success()) {
+        let err = stderr.and_then(|r| r.recv_timeout(Duration::from_millis(100)).ok()).unwrap_or_default();
+        let detail = status.map_or_else(|| "timed out".to_string(), |s| s.to_string());
+        tracing::warn!("run stop command failed: {detail}");
+        entry.emit_output(OutputChunk::Stderr { text: format!("Stop command failed ({detail})\n{err}") });
     }
 }
 

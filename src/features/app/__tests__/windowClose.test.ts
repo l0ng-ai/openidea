@@ -39,6 +39,7 @@ beforeEach(() => {
   vi.spyOn(ipc.commands, "windowGroupCancelClose").mockResolvedValue(undefined);
   vi.spyOn(ipc.commands, "appCancelQuit").mockResolvedValue(undefined);
   vi.spyOn(ipc.commands, "closeProject").mockResolvedValue(undefined);
+  vi.spyOn(ipc.commands, "remoteStopBackend").mockResolvedValue({ status: "ok", data: null });
   vi.spyOn(services, "maybeEditorService").mockReturnValue({
     forgetSavedTabs: forget,
     keepSavedTabs: keep,
@@ -159,6 +160,7 @@ describe("native window close", () => {
       commands: [],
     });
     vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: false, windows: 2 });
+    vi.mocked(deps.ask).mockResolvedValueOnce({ button: "keep", checked: false });
     const terminate = vi.fn(async () => {});
     deps.runningProcesses = vi.fn(async () => ["docker compose up"]);
     deps.terminate = terminate;
@@ -167,6 +169,7 @@ describe("native window close", () => {
     expect(prevented).not.toHaveBeenCalled();
     expect(deps.runningProcesses).not.toHaveBeenCalled();
     expect(terminate).not.toHaveBeenCalled();
+    expect(ipc.commands.remoteStopBackend).not.toHaveBeenCalled();
     expect(flushSession).toHaveBeenCalledOnce();
   });
 });

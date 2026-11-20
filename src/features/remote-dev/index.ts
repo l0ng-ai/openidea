@@ -110,7 +110,7 @@ export function activate(): () => void {
           "Stops the remote IDE backend and its terminals, runs and agent sessions, then closes the project.",
         category: "File",
         keywords: ["ssh", "remote", "stop", "shutdown", "backend", "server"],
-        when: "projectRemote",
+        when: "projectRemote && !remoteConnectionLost",
         run: async () => {
           const host = useRemote.getState().session?.host;
           if (!host) return;

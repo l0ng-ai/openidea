@@ -580,7 +580,6 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       kind: PLUGIN_LOG_EDITOR_KIND,
       component: PluginLogEditor,
       keepAlive: true,
-      restorable: true,
       title: pluginLogEditorTitle,
       icon: () => "file-log",
     }),

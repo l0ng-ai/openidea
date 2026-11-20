@@ -5,13 +5,14 @@
 //!   stdin / stdout to the Unix socket. Closing the desktop window ends the SSH / WSL /
 //!   `docker exec` attach relay while the daemon — and its index, language servers,
 //!   terminals, runs and agent sessions — keeps running.
-//! * `openidea-server --daemon <socket_path>` is the background process `--attach` starts.
+//! * `openidea-server --daemon <socket_path> <build>` is the process `--attach` starts.
 
 use crate::Host;
 use crate::rpc::{self, Dispatcher, PeerSlot};
 use ide_core::CancellationToken;
 use rustix::fs::{FlockOperation, flock};
 use std::fs::{File, OpenOptions};
+use std::future::{Future, pending};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -21,14 +22,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::signal::unix::{SignalKind, signal};
 
 /// Keep socket paths well below macOS (104) and Linux (108) `sun_path` limits.
 const MAX_SUN_PATH: usize = 96;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const EOF_DRAIN: Duration = Duration::from_secs(2);
-/// Empty daemons (for example when `open_project` failed on a missing path) exit
-/// once disconnected for this long; daemons with an open project stay alive.
 const EMPTY_IDLE_EXIT: Duration = Duration::from_secs(30);
+const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(3 * 60 * 60);
+const IDLE_ENV: &str = "OPENIDEA_SERVER_IDLE_TIMEOUT_SECONDS";
+pub type BuildId = [u8; 16];
+const ATTACHED: u8 = b'A';
+const RETIRING: u8 = b'R';
+const BUSY: u8 = b'B';
 
 pub struct DaemonPaths {
     pub key: String,
@@ -53,17 +61,15 @@ pub fn normalize_project_path(raw_path: &str, home: &Path) -> PathBuf {
     if text.len() > 1 && text.ends_with('/') { PathBuf::from(text.trim_end_matches('/')) } else { canonical }
 }
 
-/// Deterministic socket, lock and log paths for `(project_path, exe_path, base)`.
-pub fn paths_for(base: &Path, home: &Path, exe: &Path, raw_project_path: &str) -> io::Result<DaemonPaths> {
+/// Deterministic socket, lock and log paths for a project and server home, across builds.
+pub fn paths_for(base: &Path, home: &Path, raw_project_path: &str) -> io::Result<DaemonPaths> {
     let project = normalize_project_path(raw_project_path, home);
-    let exe_canon = dunce::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
+    std::fs::create_dir_all(base)?;
     let base_canon = dunce::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
     let mut hasher = blake3::Hasher::new();
-    hasher.update(project.to_string_lossy().as_bytes());
+    hasher.update(project.as_os_str().as_encoded_bytes());
     hasher.update(&[0]);
-    hasher.update(exe_canon.to_string_lossy().as_bytes());
-    hasher.update(&[0]);
-    hasher.update(base_canon.to_string_lossy().as_bytes());
+    hasher.update(base_canon.as_os_str().as_encoded_bytes());
     let key = hasher.finalize().to_hex()[..16].to_owned();
 
     let sock_name = format!("s-{key}.sock");
@@ -125,12 +131,18 @@ pub fn attach(
     output: impl Write,
 ) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate openidea-server: {e}"))?;
-    let paths = paths_for(base, home, &exe, project_path).map_err(|e| format!("cannot prepare runtime dir: {e}"))?;
-    let stream = connect_or_spawn(&exe, &paths)?;
+    let paths = paths_for(base, home, project_path).map_err(|e| format!("cannot prepare runtime dir: {e}"))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(File::open(&exe).map_err(|e| format!("cannot open openidea-server: {e}"))?)
+        .map_err(|e| format!("cannot identify openidea-server build: {e}"))?;
+    let hex = hasher.finalize().to_hex();
+    let build = &hex.as_str()[..16];
+    let stream = connect_or_spawn(&exe, &paths, build)?;
     bridge(stream, input, output).map_err(|e| format!("daemon relay failed: {e}"))
 }
 
-fn connect_or_spawn(exe: &Path, paths: &DaemonPaths) -> Result<UnixStream, String> {
+fn connect_or_spawn(exe: &Path, paths: &DaemonPaths, build: &str) -> Result<UnixStream, String> {
     let lock_file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -142,12 +154,15 @@ fn connect_or_spawn(exe: &Path, paths: &DaemonPaths) -> Result<UnixStream, Strin
     flock(&lock_file, FlockOperation::LockExclusive)
         .map_err(|e| format!("cannot lock {}: {e}", paths.lock.display()))?;
 
-    if let Ok(stream) = UnixStream::connect(&paths.socket) {
-        let _ = flock(&lock_file, FlockOperation::Unlock);
+    if let Some(stream) = existing_daemon(paths, build)? {
         return Ok(stream);
     }
 
-    let _ = std::fs::remove_file(&paths.socket);
+    match std::fs::remove_file(&paths.socket) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot remove stale socket {}: {e}", paths.socket.display())),
+    }
     let mut log_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -159,7 +174,12 @@ fn connect_or_spawn(exe: &Path, paths: &DaemonPaths) -> Result<UnixStream, Strin
     let stderr_file = log_file.try_clone().map_err(|e| format!("cannot clone log handle: {e}"))?;
 
     let mut cmd = Command::new(exe);
-    cmd.arg("--daemon").arg(&paths.socket).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(stderr_file));
+    cmd.arg("--daemon")
+        .arg(&paths.socket)
+        .arg(build)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr_file));
     // SAFETY: `setsid` is an async-signal-safe POSIX call that detaches the daemon into
     // a new session without a controlling terminal, outliving the SSH / WSL / docker exec call.
     unsafe {
@@ -171,27 +191,61 @@ fn connect_or_spawn(exe: &Path, paths: &DaemonPaths) -> Result<UnixStream, Strin
     let mut child = cmd.spawn().map_err(|e| format!("cannot spawn openidea-server daemon: {e}"))?;
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
-    let result = loop {
-        if let Ok(stream) = UnixStream::connect(&paths.socket) {
-            break Ok(stream);
+    loop {
+        if let Some(stream) = existing_daemon(paths, build)? {
+            return Ok(stream);
         }
         if let Ok(Some(status)) = child.try_wait() {
             let tail = read_log_tail(&mut log_file, log_offset);
             let detail = if tail.is_empty() { format!("exited with {status}") } else { tail };
-            break Err(format!("openidea-server daemon failed to start: {detail}"));
+            return Err(format!("openidea-server daemon failed to start: {detail}"));
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
             let tail = read_log_tail(&mut log_file, log_offset);
             let detail = if tail.is_empty() { "timed out waiting for socket".to_owned() } else { tail };
-            break Err(format!("openidea-server daemon did not start: {detail}"));
+            return Err(format!("openidea-server daemon did not start: {detail}"));
         }
         std::thread::sleep(Duration::from_millis(15));
-    };
+    }
+}
 
-    let _ = flock(&lock_file, FlockOperation::Unlock);
-    result
+fn existing_daemon(paths: &DaemonPaths, build: &str) -> Result<Option<UnixStream>, String> {
+    let exchange = |mut stream: UnixStream| -> io::Result<Option<UnixStream>> {
+        stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+        stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+        stream.write_all(build.as_bytes())?;
+        let mut reply = [0];
+        stream.read_exact(&mut reply)?;
+        match reply[0] {
+            ATTACHED => {
+                stream.set_read_timeout(None)?;
+                stream.set_write_timeout(None)?;
+                Ok(Some(stream))
+            }
+            RETIRING => {
+                // This stream stays open until project cleanup and socket removal finish.
+                stream.set_read_timeout(Some(rpc::SHUTDOWN_TIMEOUT))?;
+                if stream.read(&mut reply)? == 0 {
+                    Ok(None)
+                } else {
+                    Err(io::Error::other("unexpected response from stopping daemon"))
+                }
+            }
+            BUSY => Err(io::Error::other(
+                "Another build of OpenIDEA still has this project open, is running tasks, or has unsaved changes. \
+                 Reconnect with that build, then stop the remote backend before upgrading.",
+            )),
+            _ => Err(io::Error::other("unrecognized remote backend response")),
+        }
+    };
+    let stream = match UnixStream::connect(&paths.socket) {
+        Ok(stream) => stream,
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => return Ok(None),
+        Err(e) => return Err(format!("cannot connect to remote backend at {}: {e}", paths.socket.display())),
+    };
+    exchange(stream).map_err(|e| format!("cannot attach to {}: {e}", paths.socket.display()))
 }
 
 fn read_log_tail(file: &mut File, offset: u64) -> String {
@@ -255,58 +309,152 @@ pub fn bridge(
     Ok(())
 }
 
-/// Runs the persistent daemon accept loop on `socket_path` until `"shutdown"` is requested
-/// (or an empty daemon with no open project stays disconnected past [`EMPTY_IDLE_EXIT`]).
-pub async fn serve(socket_path: &Path, host: Arc<Host>, dispatcher: Dispatcher, peer: Arc<PeerSlot>) -> io::Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        ensure_private_dir(parent)?;
-    }
-    let _ = std::fs::remove_file(socket_path);
-    let listener = tokio::net::UnixListener::bind(socket_path)?;
-    let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+/// The socket remains bound until cleanup finishes, so an attach can't start a
+/// replacement while the previous backend is still stopping its processes.
+pub async fn serve(
+    socket_path: &Path,
+    build: BuildId,
+    host: Arc<Host>,
+    dispatcher: Dispatcher,
+    slot: Arc<PeerSlot>,
+    cleanup: impl Future<Output = ()>,
+) -> io::Result<()> {
+    let start = || {
+        if let Some(parent) = socket_path.parent() {
+            ensure_private_dir(parent)?;
+        }
+        let terminate = signal(SignalKind::terminate())?;
+        let listener = tokio::net::UnixListener::bind(socket_path)?;
+        if let Err(e) = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600)) {
+            let _ = std::fs::remove_file(socket_path);
+            return Err(e);
+        }
+        Ok((listener, terminate))
+    };
+    let (listener, mut terminate) = match start() {
+        Ok(started) => started,
+        Err(e) => {
+            cleanup.await;
+            return Err(e);
+        }
+    };
 
     let shutdown = CancellationToken::new();
-    let mut active = tokio::task::JoinSet::new();
-    let mut empty_check = tokio::time::interval(EMPTY_IDLE_EXIT);
-    // Skip the immediate first tick so a newly spawned daemon waits for its starter.
-    empty_check.tick().await;
+    let idle_timeout = idle_timeout();
+    let mut check = tokio::time::interval(idle_timeout.min(Duration::from_secs(5)));
+    let mut idle_since = Some(Instant::now());
+    let mut retiring = None;
+    let mut active: Option<ide_jsonrpc::Peer> = None;
 
-    loop {
+    let result = loop {
         tokio::select! {
-            _ = shutdown.cancelled() => break,
-            accepted = listener.accept() => {
-                match accepted {
-                    Ok((stream, _)) => {
-                        let (reader, writer) = stream.into_split();
-                        let h = host.clone();
-                        let d = dispatcher.clone();
-                        let p = peer.clone();
-                        let s = shutdown.clone();
-                        active.spawn(async move {
-                            rpc::serve_persistent(h, d, p, s, reader, writer).await;
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!("daemon accept failed: {e}");
-                        break;
-                    }
+            _ = shutdown.cancelled() => break Ok(()),
+            _ = terminate.recv() => break Ok(()),
+            _ = async {
+                match &active {
+                    Some(peer) => { peer.closed().await; }
+                    None => pending().await,
                 }
+            } => {
+                active = None;
+                slot.remove();
+                host.client_disconnected();
+                idle_since = None;
             }
-            Some(_) = active.join_next(), if !active.is_empty() => {}
-            _ = empty_check.tick() => {
-                if !peer.has_client()
-                    && host.projects().is_empty()
-                    && host.terminals.list().is_empty()
-                {
-                    tracing::info!("idle empty openidea-server daemon exiting");
-                    break;
+            accepted = listener.accept() => {
+                let mut stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    Err(e) => break Err(e),
+                };
+                let mut requested_build = [0; 16];
+                if !matches!(
+                    tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut requested_build)).await,
+                    Ok(Ok(_))
+                ) {
+                    continue;
+                }
+                if active.as_ref().is_some_and(ide_jsonrpc::Peer::is_closed) {
+                    active = None;
+                    slot.remove();
+                    host.client_disconnected();
+                    idle_since = None;
+                }
+                if shutdown.is_cancelled() {
+                    break Ok(());
+                }
+                if requested_build != build {
+                    let busy = active.is_some() || has_live_work(&host)
+                        || host.projects().iter().any(|project| project.documents.has_unsaved_changes());
+                    if busy {
+                        let _ = stream.write_u8(BUSY).await;
+                    } else if stream.write_u8(RETIRING).await.is_ok() {
+                        retiring = Some(stream);
+                        break Ok(());
+                    }
+                    continue;
+                }
+                if stream.write_u8(ATTACHED).await.is_err() {
+                    continue;
+                }
+                if let Some(old) = slot.remove() {
+                    // Await an acknowledgement before tearing down the old transport.
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(750),
+                        old.request::<_, ()>(rpc::SESSION_REPLACED, (), None),
+                    ).await;
+                    old.kill();
+                    host.client_disconnected();
+                }
+                let (reader, writer) = stream.into_split();
+                active = Some(rpc::connect_persistent(
+                    host.clone(), dispatcher.clone(), slot.clone(), shutdown.clone(), reader, writer,
+                ));
+                idle_since = None;
+            }
+            _ = check.tick() => {
+                if active.is_some() || has_live_work(&host) {
+                    idle_since = None;
+                } else {
+                    let timeout = if host.projects().is_empty() { idle_timeout.min(EMPTY_IDLE_EXIT) } else { idle_timeout };
+                    if idle_since.get_or_insert_with(Instant::now).elapsed() >= timeout {
+                        tracing::info!("idle openidea-server daemon exiting");
+                        break Ok(());
+                    }
                 }
             }
         }
-    }
+    };
 
-    let _ = std::fs::remove_file(socket_path);
-    active.abort_all();
-    while active.join_next().await.is_some() {}
-    Ok(())
+    shutdown.cancel();
+    slot.remove();
+    if let Some(peer) = &active {
+        let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, peer.flush()).await;
+        host.client_disconnected();
+    }
+    cleanup.await;
+    if let Err(e) = std::fs::remove_file(socket_path) {
+        tracing::warn!("cannot remove remote backend socket {}: {e}", socket_path.display());
+    }
+    if let Some(active) = active {
+        active.kill();
+    }
+    drop(retiring);
+    result
+}
+
+fn idle_timeout() -> Duration {
+    if let Some(value) = std::env::var_os(IDLE_ENV) {
+        if let Some(seconds) = value.to_str().and_then(|s| s.parse::<u64>().ok()).filter(|&n| n > 0) {
+            return Duration::from_secs(seconds);
+        }
+        tracing::warn!("{IDLE_ENV} must be a positive number of seconds; using the default");
+    }
+    DEFAULT_IDLE_EXIT
+}
+
+fn has_live_work(host: &Host) -> bool {
+    !host.terminals.list().is_empty()
+        || host.processes.has_live_runs()
+        || !host.debugger.sessions(None).is_empty()
+        || host.projects().iter().any(|project| project.agents.has_live_work())
 }
