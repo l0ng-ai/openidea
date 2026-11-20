@@ -90,6 +90,8 @@ function InlineCompletionLanguages() {
   );
 }
 
+const WHEEL_ZOOM_LABEL = "Change font size with Ctrl/Command+Mouse Wheel";
+
 const GENERAL = editorPage({
   id: "editor.general",
   title: "General",
@@ -120,31 +122,21 @@ const GENERAL = editorPage({
         {
           t: "check",
           key: `${P}.general.wheelZoom`,
-          label: "Change font size with Ctrl/Command+Mouse Wheel",
-          inline: {
-            kind: "select",
-            key: `${P}.general.wheelZoomScope`,
-            options: [
-              { value: "active", label: "Active editor" },
-              { value: "all", label: "All editors" },
-            ],
-          },
-        },
-        { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
-      ],
-    },
-    {
-      title: "Scrolling",
-      items: [
-        {
-          t: "radio",
-          key: `${P}.general.caretScroll`,
-          label: "When caret is moved",
-          options: [
-            { value: "center", label: "Prefer scrolling editor canvas to keep caret line centered" },
-            { value: "minimize", label: "Prefer moving caret line to minimize editor scrolling" },
+          label: WHEEL_ZOOM_LABEL,
+          children: [
+            {
+              t: "radio",
+              key: `${P}.general.wheelZoomScope`,
+              label: WHEEL_ZOOM_LABEL,
+              layout: "options-only",
+              options: [
+                { value: "active", label: "Active editor" },
+                { value: "all", label: "All editors" },
+              ],
+            },
           ],
         },
+        { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
     {
@@ -154,14 +146,14 @@ const GENERAL = editorPage({
           t: "check",
           key: `${P}.softWrap`,
           label: "Soft-wrap files",
+          inline: {
+            kind: "text",
+            key: `${P}.general.softWrapFiles`,
+            label: "File patterns",
+            placeholder: "*.md; *.txt",
+            hint: "Use ; to separate patterns. * matches every file.",
+          },
           children: [
-            {
-              t: "text",
-              key: `${P}.general.softWrapFiles`,
-              label: "File patterns",
-              placeholder: "*.md; *.txt",
-              hint: "Use ; to separate patterns. * matches every file.",
-            },
             { t: "check", key: `${P}.general.softWrapIndent`, label: "Use original line's indent for wrapped parts" },
           ],
         },
@@ -170,6 +162,21 @@ const GENERAL = editorPage({
     {
       title: "Virtual Space",
       items: [{ t: "check", key: `${P}.general.scrollPastEnd`, label: "Show virtual space at file bottom" }],
+    },
+    {
+      title: "Scrolling",
+      items: [
+        {
+          t: "radio",
+          key: `${P}.general.caretScroll`,
+          label: "When caret is moved",
+          layout: "stacked",
+          options: [
+            { value: "center", label: "Prefer scrolling editor canvas to keep caret line centered" },
+            { value: "minimize", label: "Prefer moving caret line to minimize editor scrolling" },
+          ],
+        },
+      ],
     },
     {
       title: "Save Files",
