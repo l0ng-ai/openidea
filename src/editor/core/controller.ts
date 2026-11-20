@@ -115,6 +115,7 @@ import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
+import { selectedLineContext } from "./selectedLines";
 
 export const fileKey = (path: string) => `file:${path}`;
 export const fileInput = (path: string): EditorInput => ({ kind: "file", key: fileKey(path), path });
@@ -994,7 +995,7 @@ export class EditorController implements SlotHost {
           ] as MenuItem[])
         : ([
             { kind: "separator" },
-            openInMenu(slot.model.path, view.state.doc.lineAt(view.state.selection.main.head).number - 1),
+            openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
             gitMenu(slot.model.path),
@@ -2352,7 +2353,7 @@ export class EditorController implements SlotHost {
 }
 
 /** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */
-function openInMenu(path: string, line?: number): MenuItem {
+function openInMenu(path: string, lines?: { line: number; endLine?: number }): MenuItem {
   return {
     label: "Open In",
     submenu: [
@@ -2372,7 +2373,7 @@ function openInMenu(path: string, line?: number): MenuItem {
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
-      ...menuGroupItems("openIn", { paths: [path], line }),
+      ...menuGroupItems("openIn", { paths: [path], ...lines }),
     ],
   };
 }
