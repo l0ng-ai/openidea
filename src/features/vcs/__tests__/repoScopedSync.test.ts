@@ -52,7 +52,7 @@ describe("current branch menu of one repository", () => {
   });
 
   it("keeps the branch shared by all repositories acting on the whole project", () => {
-    const common = { name: "feature", remote: false, current: true, favorite: false };
+    const common = { name: "feature", remote: false, current: true, favorite: false, upstream: false };
     runItem(commonBranchMenu(common, ["/p", "/p/lib"]), "Update");
     expect(mocks.execute).toHaveBeenCalledWith("vcs.update");
   });
