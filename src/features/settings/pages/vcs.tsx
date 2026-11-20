@@ -704,36 +704,24 @@ export const VCS_PAGES: PageSpec[] = [
         title: "Confirmation",
         options: [
           {
-            kind: "custom",
+            kind: "select",
+            key: "vcs.confirmation.onCreate",
             label: "When files are created",
-            keywords: ["Add silently", "Do not add"],
-            component: () => (
-              <RadioRow
-                k="vcs.confirmation.onCreate"
-                label="When files are created"
-                choices={[
-                  { value: "ask", label: "Ask" },
-                  { value: "silently", label: "Add silently" },
-                  { value: "never", label: "Do not add" },
-                ]}
-              />
-            ),
+            options: [
+              { value: "ask", label: "Ask" },
+              { value: "silently", label: "Add silently" },
+              { value: "never", label: "Do not add" },
+            ],
           },
           {
-            kind: "custom",
+            kind: "select",
+            key: "vcs.confirmation.onDelete",
             label: "When files are deleted",
-            keywords: ["Remove silently", "Do not remove"],
-            component: () => (
-              <RadioRow
-                k="vcs.confirmation.onDelete"
-                label="When files are deleted"
-                choices={[
-                  { value: "ask", label: "Ask" },
-                  { value: "silently", label: "Remove silently" },
-                  { value: "never", label: "Do not remove" },
-                ]}
-              />
-            ),
+            options: [
+              { value: "ask", label: "Ask" },
+              { value: "silently", label: "Remove silently" },
+              { value: "never", label: "Do not remove" },
+            ],
           },
           { kind: "toggle", key: "vcs.confirmation.showUpdateOptions", label: "Show options before Update" },
           {
@@ -758,6 +746,10 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Open diff as editor tab",
             hint: "When off, diffs you open (changes, history, Compare) show in a separate window.",
           },
+        ],
+      },
+      {
+        options: [
           {
             kind: "select",
             key: "vcs.confirmation.onPatchCreated",
