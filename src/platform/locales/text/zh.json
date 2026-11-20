@@ -4790,6 +4790,7 @@
   "Dependency Analyzer": "依赖分析器",
   "Search dependencies": "搜索依赖",
   "Show conflicts only": "仅显示冲突",
+  "Resolved Dependencies": "已解析的依赖项",
   "All scopes": "所有范围",
   "Show as List": "以列表显示",
   "Show as Tree": "以树形显示",
