@@ -287,6 +287,11 @@ fn check_id(id: &str) -> IdeResult<&str> {
 /// `docker image history --no-trunc --format '{{json .}}'` of one image.
 pub fn image_history(ep: &DockerEndpoint, id: &str) -> IdeResult<Vec<DockerImageLayer>> {
     let id = check_id(id)?;
+    if docker_executable().is_none()
+        && let Some(layers) = engine::image_history(ep, id, QUICK)
+    {
+        return layers;
+    }
     let out = run(ep, &["image", "history", "--no-trunc", "--format", "{{json .}}", id], QUICK)?;
     Ok(parse_image_history(&out))
 }
@@ -294,6 +299,11 @@ pub fn image_history(ep: &DockerEndpoint, id: &str) -> IdeResult<Vec<DockerImage
 /// `docker top <id>` of a running container.
 pub fn container_top(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerProcessList> {
     let id = check_id(id)?;
+    if docker_executable().is_none()
+        && let Some(processes) = engine::container_top(ep, id, QUICK)
+    {
+        return processes;
+    }
     let out = run(ep, &["top", id], QUICK)?;
     Ok(parse_container_top(&out))
 }
@@ -316,6 +326,11 @@ pub fn logs(
     cancel: &CancellationToken,
     on_line: &dyn Fn(DockerLogLine),
 ) -> IdeResult<()> {
+    if docker_executable().is_none()
+        && let Some(streamed) = engine::logs(ep, id, tail, follow, timestamps, QUICK, cancel, on_line)
+    {
+        return streamed;
+    }
     let tail = tail.to_string();
     let mut args = vec!["logs", "--tail", &tail];
     if follow {
