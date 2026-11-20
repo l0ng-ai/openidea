@@ -123,6 +123,13 @@ ordinary `executeCommand` error.
   invoke go on (ide-dap does that unseen while the trace runs).
   The outcome is forced into the frame before it is pinned, so the pending return keeps it reachable;
   should it be collected before that, the program gets the cancel exception and the trace fails.
+- An exception the terminal threw (the cancel exception of `abort` included) ends the client's
+  `stepOut` in the program's catch. Nothing catching it, the thread would die with no stop left to
+  `collect` in, so before parking the bundle adds an uncaught-exception request on the thread,
+  suspending it: the step-out ends at that throw instead, as a java-debug `exception` stop, and a
+  resume lets the exception end the thread as it would have. Skipped when an enabled request of
+  java-debug's already reports uncaught throws of that type (one stop, not two). `collect` deletes it;
+  after `collect` a release no longer resumes the parked event, since that stop keeps the parked frames.
 - `wait` returns as soon as the trace leaves `running`, or after `ms`, at most 30 000. While the
   terminal runs it also checks every 500 ms whether the VM began to shut down
   (`jdk.internal.misc.VM.initLevel`): `System.exit` in a lambda makes the VM wait forever to report
@@ -204,7 +211,7 @@ Java 21. The recorder is compiled by the `javac` on `PATH` with `--release 8`, s
 run Java 8. Build twice and compare: two builds of the checked-in jar gave
 
 ```
-22980a16bd8e303d67ed2e04d76d8974f2d3981120c26e6d9afa47ba361b1503  openidea-jvm-inspect.jar
+4ab30723afe1254b991d9457ea66271109f397a17b238870572283aad73338ad  openidea-jvm-inspect.jar
 ```
 
 Change `Bundle-Version` whenever the jar changes: OSGi caches bundles by version.
