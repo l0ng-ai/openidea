@@ -51,3 +51,22 @@ export async function valueText(
   await walk(root.reference, 1);
   return lines.join("\n");
 }
+
+const ESCAPES: Record<string, string> = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", v: "\v", "0": "\0" };
+
+/**
+ * A string value as its text (the View popup): a quoted literal (`"a\nb"`, Python's `'a'`)
+ * loses its quotes and has its escapes resolved, so line breaks show as lines. Anything
+ * else, or a literal the adapter cut short, is returned as it came.
+ */
+export function stringText(value: string): string {
+  const m = /^(["'])([\s\S]*)\1$/.exec(value);
+  if (!m) return value;
+  return m[2]!.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (all, e: string) => {
+    if (e[0] === "u" || e[0] === "x") {
+      const code = parseInt(e.replace(/^[ux]\{?|\}$/g, ""), 16);
+      return Number.isNaN(code) ? all : String.fromCodePoint(code);
+    }
+    return ESCAPES[e] ?? e;
+  });
+}

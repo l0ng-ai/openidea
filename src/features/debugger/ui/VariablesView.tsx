@@ -12,15 +12,17 @@ import { methodAt } from "../breakpoints/symbols";
 import {
   activeSession,
   addWatch,
+  evaluate,
   removeAllWatches,
   removeWatch,
   revealFrame,
   sessionSupports,
   setVariableValue,
+  useDebug,
 } from "../state";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import { classifyValue, oneLine, shownValue, sortVariables } from "../values";
-import { valueText } from "../valueText";
+import { stringText, valueText } from "../valueText";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./VariablesView.module.css";
 
@@ -282,7 +284,14 @@ export function VariablesView({
 
   const copyValue = async (node: VarNode) => {
     let text = node.value;
-    if (session != null && node.reference > 0) {
+    const paused = session != null ? useDebug.getState().sessions[session] : undefined;
+    if (paused?.status === "paused" && node.reference <= 0 && node.evaluateName) {
+      // A long string arrives cut short; evaluating it for the clipboard returns all of it.
+      text = await evaluate(node.evaluateName, "clipboard", paused).then(
+        (v) => v.value || text,
+        () => text,
+      );
+    } else if (session != null && node.reference > 0) {
       try {
         text = await valueText(node, (ref) => call(commands.debugVariables(session, ref)));
       } catch (e) {
@@ -383,15 +392,44 @@ export function VariablesView({
           )
         }
       />
-      {valuePopup && <ValueDialog node={valuePopup} onClose={() => setValuePopup(null)} />}
+      {valuePopup && <ValueDialog node={valuePopup} session={session} onClose={() => setValuePopup(null)} />}
     </div>
   );
 }
 
-function ValueDialog({ node, onClose }: { node: VarNode; onClose: () => void }) {
+/**
+ * View: the whole value in a popup that a click outside closes. Adapters cut long strings
+ * short in variables; the value is evaluated again as for copying (`clipboard`), which
+ * returns it in full, and a string shows as its text, line breaks included.
+ */
+function ValueDialog({
+  node,
+  session,
+  onClose,
+}: {
+  node: VarNode;
+  session: DebugSessionId | null;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(node.value);
+  useEffect(() => {
+    const s = session != null ? useDebug.getState().sessions[session] : undefined;
+    if (!s || s.status !== "paused" || !node.evaluateName || node.reference > 0) return;
+    let live = true;
+    evaluate(node.evaluateName, "clipboard", s).then(
+      (v) => live && v.value && setValue(v.value),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [node, session]);
+  const text = classifyValue(value, node.typeName) === "string" ? stringText(value) : value;
   return (
     <Dialog
       open
+      popup
+      dismissOnBackdrop
       onClose={onClose}
       title={`${node.name}${node.typeName ? ` {${node.typeName}}` : ""}`}
       width={720}
@@ -401,7 +439,7 @@ function ValueDialog({ node, onClose }: { node: VarNode; onClose: () => void }) 
       aria-label={formatMessage(tx("Value of {label}"), { label: node.name })}
     >
       <div className={styles.valuePopupContent}>
-        <pre className={styles.valuePopupValue}>{node.value}</pre>
+        <pre className={styles.valuePopupValue}>{text}</pre>
       </div>
     </Dialog>
   );
