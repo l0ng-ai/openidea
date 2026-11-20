@@ -10,6 +10,7 @@ import { Composer } from "../Composer";
 import { ConfigPickers } from "../ConfigPickers";
 import { HermesProfilePicker } from "../HermesProfilePicker";
 import { McpPicker } from "../McpPicker";
+import { SkillsPicker } from "../SkillsPicker";
 import styles from "../Session.module.css";
 import { SessionAssets } from "../SessionAssets";
 import { SubmitButton } from "../SubmitButton";
@@ -27,6 +28,7 @@ import {
   sendQueuedNow,
   setTaskConfig,
   setTaskMcpOverrides,
+  setTaskSkillOverrides,
   stopBackgroundTask,
   useAgentCommands,
   useAgents,
@@ -197,6 +199,7 @@ export function SessionComposer({
   const configChange = useRef<{ loadingModel: boolean } | null>(null);
   const [configuring, setConfiguring] = useState<typeof configChange.current>(null);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  const [skillsOpenRequest, setSkillsOpenRequest] = useState(0);
   const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
@@ -263,6 +266,7 @@ export function SessionComposer({
       });
   };
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
+  const openSkills = () => setSkillsOpenRequest((n) => n + 1);
   const shown = useEditorShown();
   const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
@@ -307,9 +311,11 @@ export function SessionComposer({
         onConfig={setOption}
         onSubmit={send}
         onOpenMcp={openMcp}
+        onOpenSkills={openSkills}
         disabled={task.status === "archived"}
         addMenu={[
           { id: "mcp", label: "MCP Servers…", icon: "plugin", disabled: task.status === "archived", run: openMcp },
+          { id: "skills", label: "Skills…", icon: "bulb", disabled: task.status === "archived", run: openSkills },
         ]}
         toolbar={
           <>
@@ -344,6 +350,23 @@ export function SessionComposer({
               hideTrigger
               onChange={(next) =>
                 void setTaskMcpOverrides(task.id, next).catch((e: unknown) =>
+                  notifications().notify({
+                    level: "error",
+                    title: "Couldn't change the setting",
+                    body: String(e),
+                  }),
+                )
+              }
+            />
+            <SkillsPicker
+              provider={task.provider}
+              overrides={task.skillOverrides}
+              disabled={task.status === "archived"}
+              busy={busy}
+              openRequest={skillsOpenRequest}
+              hideTrigger
+              onChange={(next) =>
+                void setTaskSkillOverrides(task.id, next).catch((e: unknown) =>
                   notifications().notify({
                     level: "error",
                     title: "Couldn't change the setting",
