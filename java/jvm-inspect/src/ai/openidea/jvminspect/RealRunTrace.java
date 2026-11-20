@@ -550,15 +550,16 @@ final class RealRunTrace {
      * Worker, before the trace parks on a terminal that threw. The client's step-out ends in the
      * program's catch, but an exception nothing catches ends the thread, with no stop left to read the
      * records in. This request stops the thread at that throw instead: java-debug reports every
-     * exception event as a stop. Not when an enabled request of java-debug's already stops there,
-     * since the throw would then be reported twice.
+     * exception event as a stop. Not when an enabled request of java-debug's, or an exception breakpoint
+     * without class filters, already stops there, since the throw would then be reported twice.
      */
     private void watchUncaught(ObjectReference exception) {
         try {
             EventRequestManager manager = vm.eventRequestManager();
             ReferenceType type = exception.referenceType();
             for (ExceptionRequest r : manager.exceptionRequests()) {
-                if (r.isEnabled() && r.notifyUncaught() && r.getProperty(Silencer.OWN_PROPERTY) == null && covers(r.exception(), type)) {
+                if (r.isEnabled() && r.notifyUncaught() && r.getProperty(Silencer.OWN_PROPERTY) == null && covers(r.exception(), type)
+                        && ExceptionBreakpoints.coversWholeType(r)) {
                     return;
                 }
             }
@@ -788,6 +789,17 @@ final class RealRunTrace {
                     errors.add("switching breakpoints back on: " + e);
                 }
             }
+        }
+        ExceptionBreakpoints.traceEnded(vm);
+    }
+
+    /** Some of the user's breakpoints are switched off for the trace. */
+    boolean silencing() {
+        synchronized (silenceLock) {
+            for (Silencer s : silencers) {
+                if (s.size() > 0) return true;
+            }
+            return false;
         }
     }
 

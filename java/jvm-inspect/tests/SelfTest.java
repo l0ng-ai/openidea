@@ -45,6 +45,9 @@ public final class SelfTest {
         sessions_found_by_vm();
         sessions_missing_field_is_unsupported();
         hub_listener_parks_and_failures_are_swallowed();
+        exception_spec_parsed_from_gson_json();
+        exception_flags_leave_out_what_another_request_reports();
+        exception_request_with_class_filters_covers_no_whole_type();
     }
 
     /** Stands in for java-debug's provider: its manager has no {@code connectedVMs}. */
@@ -351,6 +354,70 @@ public final class SelfTest {
             check(e.getMessage().contains("terminal"), "detail names the member: " + e.getMessage());
         }
         pass("plan_parsed_from_gson_json");
+    }
+
+    static void exception_spec_parsed_from_gson_json() {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("id", "b1");
+        json.put("className", "java.lang.IllegalStateException");
+        json.put("caught", true);
+        json.put("uncaught", false);
+        json.put("enabled", true);
+        json.put("classFilters", List.of("com.acme.*"));
+        ExceptionBreakpoints.Spec spec = ExceptionBreakpoints.Spec.of(json);
+        check(spec.id().equals("b1") && spec.className().equals("java.lang.IllegalStateException"), "id and class: " + spec);
+        check(spec.caught() && !spec.uncaught() && spec.enabled(), "flags: " + spec);
+        check(spec.classFilters().equals(List.of("com.acme.*")) && spec.classExclusionFilters().isEmpty(), "filters: " + spec);
+        check(spec.hasClassFilters(), "a spec with an include pattern has class filters");
+        json.remove("className");
+        try {
+            ExceptionBreakpoints.Spec.of(json);
+            throw new AssertionError("a spec without a class must be rejected");
+        } catch (IllegalArgumentException e) {
+            check(e.getMessage().contains("className"), "detail names the member: " + e.getMessage());
+        }
+        pass("exception_spec_parsed_from_gson_json");
+    }
+
+    static void exception_flags_leave_out_what_another_request_reports() {
+        ExceptionBreakpoints.Spec ise = spec("ise", "java.lang.IllegalStateException", true, true, true, List.of());
+        List<String> iseSupers = List.of("java.lang.RuntimeException", "java.lang.Exception", "java.lang.Throwable", "java.lang.Object");
+        ExceptionBreakpoints.Flags all = ExceptionBreakpoints.uncovered(ise, iseSupers, false, false, List.of(ise));
+        check(all.caught() && all.uncaught(), "nothing else reports it: both flags stay: " + all);
+        ExceptionBreakpoints.Flags anyCaught = ExceptionBreakpoints.uncovered(ise, iseSupers, true, false, List.of(ise));
+        check(!anyCaught.caught() && anyCaught.uncaught(), "java-debug's caught filter reports every caught throw: " + anyCaught);
+        check(ExceptionBreakpoints.uncovered(ise, iseSupers, true, true, List.of(ise)).none(), "both java-debug filters: no request");
+        ExceptionBreakpoints.Spec runtime = spec("rte", "java.lang.RuntimeException", true, false, true, List.of());
+        ExceptionBreakpoints.Flags bySuper = ExceptionBreakpoints.uncovered(ise, iseSupers, false, false, List.of(runtime, ise));
+        check(!bySuper.caught() && bySuper.uncaught(), "a breakpoint on a superclass reports the caught throws: " + bySuper);
+        ExceptionBreakpoints.Spec filtered = spec("f", "java.lang.RuntimeException", true, true, true, List.of("com.acme.*"));
+        ExceptionBreakpoints.Spec off = spec("off", "java.lang.RuntimeException", true, true, false, List.of());
+        ExceptionBreakpoints.Flags narrow = ExceptionBreakpoints.uncovered(ise, iseSupers, false, false, List.of(filtered, off, ise));
+        check(narrow.caught() && narrow.uncaught(), "a filtered or disabled superclass breakpoint covers nothing: " + narrow);
+        ExceptionBreakpoints.Spec twin = spec("twin", "java.lang.IllegalStateException", true, true, true, List.of());
+        check(ExceptionBreakpoints.uncovered(twin, iseSupers, false, false, List.of(ise, twin)).none(), "the later of two equal breakpoints adds nothing");
+        ExceptionBreakpoints.Flags first = ExceptionBreakpoints.uncovered(ise, iseSupers, false, false, List.of(ise, twin));
+        check(first.caught() && first.uncaught(), "the earlier of two equal breakpoints keeps its flags: " + first);
+        ExceptionBreakpoints.Spec filteredIse = spec("fi", "java.lang.IllegalStateException", true, true, true, List.of("com.acme.*"));
+        check(ExceptionBreakpoints.uncovered(filteredIse, iseSupers, false, false, List.of(filteredIse, twin)).none(),
+                "an unfiltered breakpoint on the same class covers a filtered one before it");
+        pass("exception_flags_leave_out_what_another_request_reports");
+    }
+
+    static void exception_request_with_class_filters_covers_no_whole_type() {
+        EventRequest plain = request(ExceptionRequest.class, true, false);
+        plain.putProperty(ExceptionBreakpoints.PROPERTY, spec("a", "java.lang.RuntimeException", true, true, true, List.of()));
+        EventRequest filtered = request(ExceptionRequest.class, true, false);
+        filtered.putProperty(ExceptionBreakpoints.PROPERTY, spec("b", "java.lang.RuntimeException", true, true, true, List.of("com.acme.*")));
+        EventRequest javaDebugs = request(ExceptionRequest.class, true, false);
+        check(ExceptionBreakpoints.coversWholeType(plain), "an exception breakpoint without filters covers its type");
+        check(!ExceptionBreakpoints.coversWholeType(filtered), "one with class filters may miss a throw");
+        check(ExceptionBreakpoints.coversWholeType(javaDebugs), "java-debug's own requests have no filters the app sets");
+        pass("exception_request_with_class_filters_covers_no_whole_type");
+    }
+
+    private static ExceptionBreakpoints.Spec spec(String id, String type, boolean caught, boolean uncaught, boolean enabled, List<String> include) {
+        return new ExceptionBreakpoints.Spec(id, type, caught, uncaught, enabled, include, List.of());
     }
 
     static void sessions_found_by_vm() throws Exception {

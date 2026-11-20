@@ -150,6 +150,15 @@ public final class StreamCommand implements IDelegateCommandHandler {
         }
     }
 
+    /** The VM's trace has the user's breakpoints switched off. */
+    static boolean silencing(VirtualMachine vm) {
+        RealRunTrace trace;
+        synchronized (TRACES) {
+            trace = TRACES.get(vm);
+        }
+        return trace != null && trace.silencing();
+    }
+
     private static RealRunTrace trace(VirtualMachine vm, Map<?, ?> args) throws Failure {
         long id = number(args, "traceId").longValue();
         synchronized (TRACES) {
