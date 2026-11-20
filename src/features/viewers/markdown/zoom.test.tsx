@@ -171,6 +171,7 @@ describe("editor font size actions", () => {
   });
 
   it("sizes embedded excalidraw.svg, graph SVGs and raster images so they scale with font zoom", async () => {
+    const box = (img: HTMLImageElement) => img.closest<HTMLElement>(".image-zoom")!;
     const excalidrawSvg =
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 940" width="1280" height="940"><!-- svg-source:excalidraw --></svg>';
     const excalidrawUrl = `data:image/svg+xml;base64,${btoa(excalidrawSvg)}`;
@@ -222,19 +223,19 @@ describe("editor font size actions", () => {
 
       const arch = preview.querySelector<HTMLImageElement>('img[alt="Architecture"]')!;
       expect(arch.hasAttribute("data-natural-width")).toBe(true);
-      expect(arch.style.getPropertyValue("--image-width")).toBe("1280px");
+      expect(box(arch).style.getPropertyValue("--image-width")).toBe("1280px");
 
       const graph = preview.querySelector<HTMLImageElement>('img[alt="Graph"]')!;
       expect(graph.hasAttribute("data-natural-width")).toBe(true);
-      expect(graph.style.getPropertyValue("--image-width")).toBe("400px");
+      expect(box(graph).style.getPropertyValue("--image-width")).toBe("400px");
 
       const wordmark = preview.querySelector<HTMLImageElement>('img[alt="Wordmark"]')!;
       expect(wordmark.hasAttribute("data-natural-width")).toBe(true);
-      expect(wordmark.style.getPropertyValue("--image-width")).toBe("280px");
+      expect(box(wordmark).style.getPropertyValue("--image-width")).toBe("280px");
 
       const icon = preview.querySelector<HTMLImageElement>('img[alt="Icon"]')!;
       expect(icon.hasAttribute("data-natural-width")).toBe(true);
-      expect(icon.style.getPropertyValue("--image-width")).toBe("80px");
+      expect(box(icon).style.getPropertyValue("--image-width")).toBe("80px");
 
       const shot = preview.querySelector<HTMLImageElement>('img[alt="Shot"]')!;
       Object.defineProperty(shot, "naturalWidth", { value: 960, configurable: true });
@@ -243,7 +244,60 @@ describe("editor font size actions", () => {
         shot.dispatchEvent(new Event("load"));
       });
       expect(shot.hasAttribute("data-natural-width")).toBe(true);
-      expect(shot.style.getPropertyValue("--image-width")).toBe("960px");
+      expect(box(shot).style.getPropertyValue("--image-width")).toBe("960px");
+    } finally {
+      fsReadImage.mockRestore();
+    }
+  });
+
+  it("zooms a preview image with ⌘/Ctrl+wheel without wheelZoom, and resets it with a double-click", async () => {
+    const ipc = await import("@/platform/ipc");
+    const fsReadImage = vi
+      .spyOn(ipc.commands, "fsReadImage")
+      .mockResolvedValue({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" });
+    try {
+      const live = editorContributions().find((c) => c.id === "viewers.markdownLive")!;
+      const view = new EditorView({
+        state: EditorState.create({ doc: "![Shot](./shot.png)", extensions: [fontZoom, live.extensions(mdCtx)] }),
+      });
+      const handle = { view, ctx: mdCtx };
+      _addEditor(handle);
+      disposers.push(() => _removeEditor(handle));
+      views.push(view);
+      activate(view);
+      act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
+      render(
+        <MarkdownEditor path={mdCtx.path} tabId="t">
+          <div />
+        </MarkdownEditor>,
+      );
+      const preview = screen.getByRole("document", { name: "Markdown preview" });
+      const shot = await vi.waitFor(() => preview.querySelector<HTMLImageElement>('img[alt="Shot"]')!);
+      const box = shot.closest<HTMLElement>(".image-zoom")!;
+      const pan = box.querySelector<HTMLElement>(".pan-zoom-content")!;
+      expect(pan.contains(shot)).toBe(true);
+
+      const zoomIn = new WheelEvent("wheel", { bubbles: true, cancelable: true, metaKey: true, deltaY: -100 });
+      act(() => {
+        shot.dispatchEvent(zoomIn);
+      });
+      expect(zoomIn.defaultPrevented).toBe(true);
+      expect(pan.style.transform).toMatch(/scale\(1\.1/);
+      expect(box.dataset.zoomed).toBe("true");
+      expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("0px");
+
+      // Once zoomed in, the image keeps the wheel even when wheelZoom scales the preview.
+      act(() => useProject.setState({ settings: { editor: { general: { wheelZoom: true } } } } as never));
+      act(() => {
+        shot.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100 }));
+      });
+      expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("0px");
+
+      act(() => {
+        box.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      });
+      expect(pan.style.transform).toBe("");
+      expect(box.dataset.zoomed).toBe("");
     } finally {
       fsReadImage.mockRestore();
     }
