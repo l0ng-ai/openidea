@@ -42,6 +42,7 @@ export { selectableText, copyMenuFor, copyText } from "./selectableText";
 export { selectReadingPane, useSelectionBoundary } from "./useSelectionBoundary";
 export { lockDragCursor, type DragCursor } from "./dragCursor";
 export { useSanitizedField } from "./useSanitizedField";
+export { useFrozenWhileWindowResizes } from "./useFrozenWhileWindowResizes";
 export * from "./rowSelection";
 export * from "./LogPane";
 export * from "./Chip";

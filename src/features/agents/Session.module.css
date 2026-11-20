@@ -232,8 +232,10 @@
 .conversationRow[data-measured] {
   content-visibility: auto;
 }
-/* Keep turns distinct and the work within a turn close to its author. */
-.stream > * + * {
+/* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
+   universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
+   DOM insertion anywhere in the window, which costs every editor scroll frame. */
+.stream > :where(:not(:first-child)) {
   margin-top: var(--space-4);
 }
 .stream > [data-process] + [data-process] {
@@ -336,7 +338,7 @@
 .agentAuthor > .role {
   margin-bottom: 0;
 }
-.agentAuthor + * {
+:where(.conversationRow[data-author]) > :nth-child(2) {
   margin-top: calc(var(--space-2) / 2);
 }
 .conversationRow > .process,
