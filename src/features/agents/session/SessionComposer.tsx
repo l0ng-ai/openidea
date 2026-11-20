@@ -1,4 +1,4 @@
-import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -161,18 +161,37 @@ export function SessionComposer({
   const catalog = useAgents((s) => s.modelCatalogs.get(task.provider));
   const requestingModels = useAgents((s) => s.modelRequests.has(task.provider));
   const model = task.config.find((o) => o.category === "model");
-  const canRefreshModels = task.status !== "archived" && !!model && !!provider?.installed && project?.trusted !== false;
-  const candidateModels = canRefreshModels
-    ? (catalog?.config ?? provider?.config)?.find((o) => o.category === "model")?.values
-    : undefined;
+  const catalogModel = (catalog?.config ?? provider?.config)?.find((o) => o.category === "model");
+  const canRefreshModels =
+    task.status !== "archived" &&
+    (!!model || !!task.model || !!catalogModel) &&
+    !!provider?.installed &&
+    project?.trusted !== false;
   const pickerConfig = useMemo(() => {
-    if (!model || !candidateModels?.length) return task.config;
+    if (!canRefreshModels) return task.config;
+    if (!model) {
+      const recovered: AgentConfigOption =
+        catalogModel === undefined
+          ? {
+              id: "model",
+              name: "Model",
+              description: null,
+              category: "model",
+              current: task.model,
+              values: [],
+              via: "option",
+            }
+          : { ...catalogModel, current: task.model ?? catalogModel.current };
+      return [...task.config, recovered];
+    }
+    const candidateModels = catalogModel?.values;
+    if (!candidateModels?.length) return task.config;
     const sessionModels = new Set(model.values.map((v) => v.value));
     const extra = candidateModels.filter((v) => !sessionModels.has(v.value));
     if (!extra.length) return task.config;
     const pickerModel = { ...model, values: [...model.values, ...extra] };
     return task.config.map((o) => (o === model ? pickerModel : o));
-  }, [task.config, model, candidateModels]);
+  }, [task.config, task.model, model, catalogModel, canRefreshModels]);
   const [sending, setSending] = useState(false);
   const configChange = useRef<{ loadingModel: boolean } | null>(null);
   const [configuring, setConfiguring] = useState<typeof configChange.current>(null);

@@ -1126,6 +1126,16 @@ impl AgentManager {
     /// Changes a session setting (model, mode…): right away when the agent runs, else when it next starts.
     pub async fn set_config(&self, id: &str, option: &str, value: String) -> IdeResult<()> {
         let task = self.task(id)?;
+        let provider = task.state.lock().task.provider.clone();
+        let discovered = self
+            .shared
+            .paths
+            .catalogs
+            .cached(&self.shared, &provider)
+            .config
+            .iter()
+            .find(|o| o.id == option && o.category.as_deref() == Some("model"))
+            .cloned();
         let (target, change) = {
             let mut s = task.state.lock();
             let busy = s.busy;
@@ -1146,17 +1156,19 @@ impl AgentManager {
                 task.emit_task();
                 return Ok(());
             }
-            let target = s
-                .task
-                .config
-                .iter()
-                .find(|o| o.id == option)
-                .ok_or_else(|| IdeError::not_found("no such setting"))?
-                .clone();
+            let session_target = s.task.config.iter().find(|o| o.id == option).cloned();
+            let recovered_model = session_target.is_none();
+            let target = match session_target {
+                Some(target) => target,
+                None if discovered.is_some() => discovered.unwrap(),
+                None => return Err(IdeError::not_found("no such setting")),
+            };
             if s.pending_model.is_some() && config::is_per_model_option(&target) {
                 return Err(IdeError::invalid("This setting is not available on the selected model"));
             }
-            if !target.values.iter().any(|v| v.value == value) {
+            if recovered_model {
+                (target, None)
+            } else if !target.values.iter().any(|v| v.value == value) {
                 if target.category.as_deref() != Some("model") {
                     return Err(IdeError::invalid(format!("{} has no value {value}", target.name)));
                 }
