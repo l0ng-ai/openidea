@@ -30,6 +30,7 @@ import {
   useBreakpoints,
 } from "./breakpoints/store";
 import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
+import { removeAllExceptionClasses } from "./breakpoints/exceptionClasses";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import {
@@ -1105,6 +1106,7 @@ export function registerDebugActions(): () => void {
       run: () => {
         removeAllBreakpoints();
         removeAllSpecial();
+        removeAllExceptionClasses();
       },
     },
     {
