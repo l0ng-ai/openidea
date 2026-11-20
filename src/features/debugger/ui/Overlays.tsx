@@ -1033,6 +1033,7 @@ function AttachPopup() {
   const [filter, setFilter] = useState("");
   const [active, setActive] = useState(0);
   const [installing, setInstalling] = useState(false);
+  const gridId = useId();
   const rows = useMemo(() => attachRows(state?.processes ?? [], filter), [state?.processes, filter]);
   const firstItem = rows.findIndex((r) => r.kind === "process");
   const activeIndex = rows[active]?.kind === "process" ? active : firstItem;
@@ -1071,8 +1072,13 @@ function AttachPopup() {
       open
       onClose={close}
       title={state.mode === "unity" ? "Attach to Unity Process" : "Attach to Process"}
-      width={640}
-      position="top"
+      width={780}
+      minWidth={360}
+      minHeight={300}
+      resizable="both"
+      dismissOnBackdrop
+      closeOnDeactivate
+      className={styles.attachDialog}
       aria-label={state.mode === "unity" ? "Attach to Unity Process" : "Attach to process"}
       buttons={[
         {
@@ -1096,7 +1102,7 @@ function AttachPopup() {
         },
       ]}
     >
-      <div className={styles.evalBody}>
+      <div className={styles.attachContent}>
         {state.mode === "unity" && (
           <p>
             <T>
@@ -1124,6 +1130,7 @@ function AttachPopup() {
           placeholder="Filter by name, PID or command line"
           data-autofocus=""
           aria-label="Filter processes"
+          aria-controls={state.processes !== null && !state.error ? gridId : undefined}
         />
         {state.processes == null ? (
           <div className={styles.empty}>
@@ -1145,43 +1152,80 @@ function AttachPopup() {
             )}
           </div>
         ) : (
-          <List<AttachRow>
-            items={rows}
-            getKey={(r) => r.key}
-            isSection={(r) => r.kind === "group"}
-            renderSection={(r) =>
-              r.kind === "group" ? (
-                <div className={styles.exceptionAdapter}>
-                  {r.label} · {r.count}
-                </div>
-              ) : null
-            }
-            activeIndex={activeIndex}
-            onActiveChange={setActive}
-            onActivate={(r) => r.kind === "process" && void attach(r.process)}
-            focusable={false}
-            aria-label="Processes"
-            className={styles.attachList}
-            empty={
-              <div className={styles.empty}>
-                {filter
-                  ? tx`No attachable processes match the filter.`
-                  : state.mode === "unity"
-                    ? tx`No Unity Editor processes found. Open Unity Editor, then refresh.`
-                    : tx`No attachable processes.`}
+          <div
+            id={gridId}
+            className={styles.attachGrid}
+            role="grid"
+            aria-label={tx("Processes")}
+            aria-rowcount={rows.filter((r) => r.kind === "process").length + 1}
+          >
+            <div role="rowgroup">
+              <div className={styles.attachHeader} role="row" aria-rowindex={1}>
+                <span role="columnheader">
+                  <T>Executable</T>
+                </span>
+                <span role="columnheader" className={styles.attachPid}>
+                  <T>PID</T>
+                </span>
+                <span role="columnheader">
+                  <T>Command line</T>
+                </span>
               </div>
-            }
-            renderItem={(r) =>
-              r.kind === "process" ? (
-                <div className={styles.chooserRow} title={r.process.commandLine}>
-                  <span className={styles.attachPid}>{r.process.pid}</span>
-                  <span className={styles.bpName}>{r.process.name}</span>
-                  <span className={styles.bpDir}>{r.process.commandLine}</span>
-                  <span className={styles.bpCond}>{attachDetail(r.process)}</span>
+            </div>
+            <List<AttachRow>
+              items={rows}
+              getKey={(r) => r.key}
+              isSection={(r) => r.kind === "group"}
+              renderSection={(r) =>
+                r.kind === "group" ? (
+                  <div className={styles.exceptionAdapter}>
+                    {r.label} · {r.count}
+                  </div>
+                ) : null
+              }
+              activeIndex={activeIndex}
+              onActiveChange={setActive}
+              onActivate={(r) => r.kind === "process" && void attach(r.process)}
+              focusable={false}
+              tableBody={{ headerRows: 1 }}
+              className={styles.attachList}
+              empty={
+                <div className={styles.empty}>
+                  {filter
+                    ? tx`No attachable processes match the filter.`
+                    : state.mode === "unity"
+                      ? tx`No Unity Editor processes found. Open Unity Editor, then refresh.`
+                      : tx`No attachable processes.`}
                 </div>
-              ) : null
-            }
-          />
+              }
+              renderItem={(r) => {
+                if (r.kind !== "process") return null;
+                const { name, pid, commandLine, port } = r.process;
+                const endpoint = port == null ? null : attachDetail(r.process);
+                return (
+                  <div className={styles.attachRow} role="presentation">
+                    <span className={styles.attachCell} role="gridcell" title={name}>
+                      {name}
+                    </span>
+                    <span className={styles.attachPid} role="gridcell">
+                      {pid}
+                    </span>
+                    <span className={styles.attachCommand} role="gridcell">
+                      <span className={styles.attachCell} title={commandLine}>
+                        {commandLine}
+                      </span>
+                      {endpoint && (
+                        <span className={styles.attachEndpoint} title={endpoint}>
+                          <span className={styles.attachFullAddress}>{endpoint}</span>
+                          <span className={styles.attachPort}>:{port}</span>
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              }}
+            />
+          </div>
         )}
       </div>
     </Dialog>
