@@ -16,6 +16,7 @@ import {
   maybeEditorService,
   registerAgentContextSource,
   registerEditorDropHandler,
+  provideAgentDraftAppender,
   registerEditorKind,
   registerMenuGroup,
   registerMenuSlotItem,
@@ -32,6 +33,7 @@ import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
 import { clearAgentTabFontZoom } from "./fontZoom";
 import {
+  appendContextBlock,
   closeActiveTask,
   closeAndNewTask,
   connect,
@@ -102,6 +104,7 @@ export function activate(): () => void {
       else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
         void refreshProviders();
     }),
+    provideAgentDraftAppender(appendContextBlock),
     registerToolWindow({
       id: TOOL_WINDOW,
       title: "Agents",

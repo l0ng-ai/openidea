@@ -15,6 +15,8 @@ import {
   registerEditorBanner,
   registerMenuGroup,
   registerTextEditorWrapper,
+  registerToolWindow,
+  toolWindowService,
   useTextEditorWrappers,
 } from "@/workbench/contributions";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
@@ -81,6 +83,16 @@ export function activate(): () => void {
     // Open tabs gain or lose the browser bar and preview when File Types change.
     onFileTypesChange(() => useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }))),
     registerEditorBanner(djangoTemplateBanner),
+    registerToolWindow({
+      id: "browser",
+      title: "Browser",
+      icon: "web",
+      anchor: "right",
+      order: 7,
+      stripe: "onUse",
+      sessionContent: true,
+      component: lazyComponent(() => import("./BrowserView").then((m) => m.BrowserView)),
+    }),
     registerEditorContribution({ id: "web.djangoContent", order: 57, extensions: djangoContentWatcher }),
     registerTextEditorWrapper({
       id: "web.html",
@@ -88,6 +100,15 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./WebEditor").then((m) => m.WebEditor)),
     }),
     registerActions([
+      {
+        id: "web.inspectLocalPage",
+        title: "Inspect Local Page Element",
+        category: "View",
+        icon: "web",
+        when: "projectLocal",
+        keywords: ["browser", "element", "inspect", "agent", "DOM", "CSS"],
+        run: () => toolWindowService().show("browser", true),
+      },
       {
         id: "web.openInBrowser",
         title: "Open in Browser",
