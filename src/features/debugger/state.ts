@@ -114,6 +114,8 @@ export interface ConsoleLine {
   text: string;
   /** `text` styled by its ANSI colours. */
   spans: Span[];
+  /** A carriage return ended the output so far: the next text replaces the line. */
+  cr?: boolean;
 }
 
 interface DebugState {
@@ -187,6 +189,12 @@ function ansiStream(session: DebugSessionId, category: string): AnsiStream {
   let stream = streams.get(category);
   if (!stream) streams.set(category, (stream = new AnsiStream()));
   return stream;
+}
+
+/** Styled output, keeping a carriage return (and erase-line) for the console to overwrite its line. */
+function outputSpans(session: DebugSessionId, category: string, raw: string): Span[] {
+  const stream = ansiStream(session, category);
+  return stream.spans(stream.clean(raw).replace(/\r\n/g, "\n"));
 }
 
 // --- accessors ---------------------------------------------------------------
@@ -482,7 +490,7 @@ function unfollowProcessOutput(session: DebugSessionId) {
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
   flushConsoleOutput();
-  const spans = ansiStream(session, category).parse(raw);
+  const spans = outputSpans(session, category, raw);
   const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
   useDebug.setState((s) => {
@@ -525,7 +533,7 @@ function flushConsoleOutput() {
     const consoleBySession = { ...s.console };
     for (const { session, category, raw } of chunks) {
       if (!s.sessions[session]) continue;
-      const spans = ansiStream(session, category).parse(raw);
+      const spans = outputSpans(session, category, raw);
       const text = spans.map((sp) => sp.text).join("");
       if (!text) continue;
       printed.push([session, text]);
@@ -648,26 +656,36 @@ async function openServerPage(server: DebugSession, known: ServerPage, url: stri
   else void stopSession(page);
 }
 
-/** Split styled output at real line breaks, retaining partial lines across events. */
+/**
+ * Split styled output at real line breaks, retaining partial lines across events. As in the
+ * Run console, a carriage return makes the next text replace the line (progress bars).
+ */
 function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
   const last = lines.at(-1);
   let line =
     last && last.category === category && !last.text.endsWith("\n") ? { ...last, spans: [...last.spans] } : undefined;
   if (line) lines[lines.length - 1] = line;
   for (const span of spans) {
-    let start = 0;
-    while (start < span.text.length) {
-      const newline = span.text.indexOf("\n", start);
-      const end = newline < 0 ? span.text.length : newline + 1;
-      const text = span.text.slice(start, end);
+    for (const piece of span.text.split(/(\r|\n)/)) {
+      if (piece === "\r") {
+        if (line) line.cr = true;
+        continue;
+      }
+      if (!piece) continue;
       if (!line) {
         line = { id: ++lineSeq, category, text: "", spans: [] };
         lines.push(line);
       }
-      line.text += text;
-      line.spans = appendSpans(line.spans, [{ ...span, text }]);
-      if (newline >= 0) line = undefined;
-      start = end;
+      if (line.cr) {
+        line.cr = undefined;
+        if (piece !== "\n") {
+          line.text = "";
+          line.spans = [];
+        }
+      }
+      line.text += piece;
+      line.spans = appendSpans(line.spans, [{ ...span, text: piece }]);
+      if (piece === "\n") line = undefined;
     }
   }
 }
@@ -947,11 +965,21 @@ export function pinSession(id: DebugSessionId, pinned: boolean) {
   patch(id, { pinned });
 }
 
-/** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
+/**
+ * Forgets a session and its descendants (Node's `pnpm` → `pnpm.cjs` → `rspack.js`); a selected
+ * one passes the selection to the tab on its left.
+ */
 export function removeSession(id: DebugSessionId) {
   const st = useDebug.getState();
   const gone = new Set<DebugSessionId>([id]);
-  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+  for (let added = true; added;) {
+    added = false;
+    for (const s of Object.values(st.sessions))
+      if (s.parent != null && gone.has(s.parent) && !gone.has(s.id)) {
+        gone.add(s.id);
+        added = true;
+      }
+  }
 
   const order = Object.values(st.sessions).map((s) => s.id);
   const sessions: Record<number, DebugSession> = {};

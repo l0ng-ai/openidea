@@ -34,6 +34,24 @@ describe("debug console", () => {
     expect(lines(5).some((l) => l.text.includes("\x1b"))).toBe(false);
   });
 
+  it("overwrites the line after a carriage return, as a progress bar expects (#4280)", () => {
+    appendConsole(7, "stdout", "Network: http://localhost:8090/\n");
+    appendConsole(7, "stdout", "\x1b[32m━━\x1b[0m (10%) build modules");
+    appendConsole(7, "stdout", "\r");
+    appendConsole(7, "stdout", "\x1b[32m━━━━━━\x1b[0m (63%) build modules\r");
+    // An erase-line escape counts as a carriage return too.
+    appendConsole(7, "stdout", "\x1b[2K\x1b[1Gdone in 1.2 s\r");
+    appendConsole(7, "stdout", "\n");
+    appendConsole(7, "stdout", "next\r\nline\n");
+    expect(lines(7).map((l) => l.text)).toEqual([
+      "Network: http://localhost:8090/\n",
+      "done in 1.2 s\n",
+      "next\n",
+      "line\n",
+    ]);
+    expect(lines(7)[1]!.spans).toEqual([{ text: "done in 1.2 s\n" }]);
+  });
+
   it("keeps a colour across output events and an escape split between them", () => {
     appendConsole(6, "stderr", "\x1b[3");
     appendConsole(6, "stderr", "1mred ");
