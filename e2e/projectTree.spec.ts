@@ -37,6 +37,30 @@ test("type-ahead jumps to a matching node", async ({ workbench: page }) => {
   await expect(tree.locator('[role="treeitem"][aria-selected="true"]')).toHaveText("README.md");
 });
 
+test("the file deletion form keeps its option and buttons visible in a narrow window", async ({ workbench: page }) => {
+  const file = page.getByRole("treeitem", { name: "README.md", exact: true });
+  await file.click({ button: "right" });
+  await page.getByRole("menuitem", { name: /^Delete…/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Delete", exact: true });
+  await expect(dialog).toBeVisible();
+  await page.setViewportSize({ width: 430, height: 530 });
+  await expect(dialog.locator("[data-dialog-titlebar]")).toContainText("Delete");
+  await expect(dialog).toContainText("Delete 'README.md'?");
+  await expect(dialog).toContainText("Items are moved to the Trash.");
+  const search = dialog.getByRole("checkbox", { name: "Safe delete (with usage search)", exact: true });
+  await expect(search).toBeChecked();
+  await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeInViewport();
+  const option = await search.boundingBox();
+  const footer = await dialog.locator("[data-dialog-footer]").boundingBox();
+  expect(option!.y + option!.height).toBeLessThan(footer!.y);
+  await search.uncheck();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await page.setViewportSize({ width: 1100, height: 730 });
+  await expect(file).toBeVisible();
+});
+
 test("Git ignore submenu offers shared and local destinations for files and folders", async ({ workbench: page }) => {
   for (const name of ["README.md", "src"]) {
     await page.getByRole("treeitem", { name, exact: true }).click({ button: "right" });
