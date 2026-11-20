@@ -174,23 +174,13 @@ struct Shared {
     attention_seq: AtomicU64,
 }
 
-/// What an agent offered in its last session, for the New Task page.
+/// What an agent offered, for the New Task page.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Known {
-    #[serde(default)]
-    config: Vec<AgentConfigOption>,
-    /// Thinking levels reported for each model value, including its last choice.
-    #[serde(default, rename = "thoughtLevels")]
-    thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// By project root: skills and custom commands differ per project.
     #[serde(default, rename = "projectCommands")]
     commands: HashMap<String, Vec<AgentCommand>>,
-    /// Successful discovery, unlike a session report, owns availability.
-    #[serde(default)]
-    authoritative: bool,
-    #[serde(default, rename = "refreshedAtMs")]
-    refreshed_at_ms: Option<f64>,
-    /// Authoritative availability and freshness are scoped to project and launch context.
+    /// Model catalogs by project root, valid for the launch context they were read with.
     #[serde(default, rename = "projectCatalogs")]
     catalogs: HashMap<String, catalogs::SavedCatalog>,
 }
@@ -308,7 +298,8 @@ impl Shared {
         self.paths.project_root.to_string_lossy().into_owned()
     }
 
-    /// Cache levels only when `model` confirms which model the session reported them for.
+    /// Keeps the commands a session offered and the effort levels it reported for `model`, the
+    /// only model whose levels it describes.
     fn remember(
         &self,
         provider: &str,
@@ -317,43 +308,22 @@ impl Shared {
         model: Option<&str>,
     ) {
         let acp = self.spec(provider).is_some_and(|spec| spec.driver == provider::Driver::Acp);
-        let mut cache = self.known.lock();
-        let known = cache.entry(provider.to_owned()).or_default();
         let mut changed = false;
-        // Running tasks retain their own reported settings. Once discovery has
-        // succeeded, a session's older list/defaults cannot change New Task choices.
-        if !known.authoritative
-            && let Some(config) = config.filter(|c| !c.is_empty())
-        {
-            if let Some(model) = model {
-                let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
-                if known.thought_levels.get(model) != Some(&levels) {
-                    known.thought_levels.insert(model.to_owned(), levels);
-                    changed = true;
-                }
-            }
-            if known.config != config {
-                known.config = config.to_vec();
+        if let Some(commands) = commands.filter(|c| !c.is_empty()) {
+            let mut cache = self.known.lock();
+            let known = cache.entry(provider.to_owned()).or_default();
+            if known.commands.get(&self.root_key()).map(Vec::as_slice) != Some(commands) {
+                known.commands.insert(self.root_key(), commands.to_vec());
+                self.persist_known(&cache);
                 changed = true;
             }
         }
         // Discovery reads one model's options; a session on another model reports that model's.
-        let learned = model.filter(|_| acp && known.authoritative).zip(config).map(|(model, config)| {
+        if acp && let Some((model, config)) = model.zip(config) {
             let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
-            (model, levels)
-        });
-        if let Some(commands) = commands.filter(|c| !c.is_empty())
-            && known.commands.get(&self.root_key()).map(Vec::as_slice) != Some(commands)
-        {
-            known.commands.insert(self.root_key(), commands.to_vec());
-            changed = true;
-        }
-        if changed {
-            self.persist_known(&cache);
-        }
-        drop(cache);
-        if let Some((model, levels)) = learned.filter(|(_, levels)| !levels.is_empty()) {
-            self.paths.catalogs.learn_levels(self, provider, model, levels);
+            if !levels.is_empty() {
+                self.paths.catalogs.learn_levels(self, provider, model, levels);
+            }
         }
         if changed {
             self.emit(AgentEvent::Providers);
@@ -2537,8 +2507,7 @@ impl Task {
 
     async fn switch_discovered_model(&self, target: AgentConfigOption, value: String) -> IdeResult<()> {
         let provider = self.state.lock().task.provider.clone();
-        let spec = self.shared.spec(&provider).ok_or_else(|| IdeError::not_found("no such agent"))?;
-        let candidate = self.shared.paths.catalogs.fresh_model(&self.shared, &spec, &value).ok_or_else(|| {
+        let candidate = self.shared.paths.catalogs.listed_model(&self.shared, &provider, &value).ok_or_else(|| {
             IdeError::invalid(format!("{} has no value {value} in the current model catalog", target.name))
         })?;
         let selection = {

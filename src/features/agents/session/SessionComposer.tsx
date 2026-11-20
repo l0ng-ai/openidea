@@ -187,14 +187,15 @@ export function SessionComposer({
           : { ...catalogModel, current: task.model ?? catalogModel.current };
       return [...task.config, recovered];
     }
-    const candidateModels = catalogModel?.values;
-    if (!candidateModels?.length) return task.config;
-    const sessionModels = new Set(model.values.map((v) => v.value));
-    const extra = candidateModels.filter((v) => !sessionModels.has(v.value));
-    if (!extra.length) return task.config;
-    const pickerModel = { ...model, values: [...model.values, ...extra] };
-    return task.config.map((o) => (o === model ? pickerModel : o));
-  }, [task.config, task.model, model, catalogModel, canRefreshModels]);
+    // The agent's current catalog is what a chat can switch to. The session's own list only
+    // keeps the model it runs selectable when the catalog no longer offers it.
+    const offered = catalogModel?.values;
+    if (!offered?.length) return task.config;
+    const kept = model.values.filter(
+      (v) => (v.value === model.current || v.value === task.model) && !offered.some((o) => o.value === v.value),
+    );
+    return task.config.map((o) => (o === model ? { ...model, values: [...offered, ...kept] } : o));
+  }, [task.config, task.model, model, model?.current, catalogModel, canRefreshModels]);
   const [sending, setSending] = useState(false);
   const configChange = useRef<{ loadingModel: boolean } | null>(null);
   const [configuring, setConfiguring] = useState<typeof configChange.current>(null);

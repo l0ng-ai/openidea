@@ -139,9 +139,9 @@ export function quickSwitchItems(preview?: ThemePreview): MenuItem[] {
 }
 
 /** Opens Quick Switch Scheme; a theme previewed there goes away with the menu unless chosen. */
-export function showQuickSwitch(at: { x: number; y: number }) {
+export function showQuickSwitch() {
   const preview = themePreview();
-  showContextMenu(at, quickSwitchItems(preview));
+  showContextMenu("center", quickSwitchItems(preview), { title: "Switch Scheme", numbers: true });
   const menu = useContextMenuStore.getState().menu;
   const unsubscribe = useContextMenuStore.subscribe((s) => {
     if (s.menu === menu) return;

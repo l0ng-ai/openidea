@@ -121,3 +121,82 @@ test("Git Log keeps filters and actions inside the commit pane at the minimum wi
   await toolbar.getByRole("button", { name: "More Filters" }).click();
   await expect(page.getByRole("menuitem", { name: "Paths" })).toBeVisible();
 });
+
+test("the Paths filter replaces the repository filter and can be cleared from overflow", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const storeModule = "/src/features/vcs/store.ts";
+    const { useVcs } = await import(/* @vite-ignore */ storeModule);
+    const root = "/dev/acme-api";
+    const other = "/dev/tools";
+    const branch = (name: string) => ({
+      name,
+      current: true,
+      remote: false,
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      lastCommitMs: 0,
+      commit: "",
+    });
+    const handlers = window.__ipc.handlers;
+    handlers.vcs_branches = ({ repo }) => [branch(repo === other ? "tools-main" : "api-main")];
+    useVcs.setState({ roots: [root, other], branches: [branch("api-main")] });
+    handlers.fs_read_dir = ({ path }) =>
+      path === root ? [{ name: "api.ts", path: root + "/api.ts", kind: "file", size: 0, mtimeMs: 0 }] : [];
+    const log = handlers.vcs_log!;
+    handlers.vcs_log = (args) => {
+      const { paths } = args.query as { paths?: string[] };
+      return log({ ...args, query: { ...(args.query as object), skip: paths?.includes(root + "/api.ts") ? 1 : 0 } });
+    };
+  });
+  await page.setViewportSize({ width: 600, height: 550 });
+  const toolbar = page.getByRole("toolbar", { name: "Log filters" });
+  const overflow = toolbar.getByRole("button", { name: "More Filters" });
+  await overflow.click();
+  await page.getByRole("menuitem", { name: "Paths", exact: true }).click();
+  const acme = page.getByRole("menuitemcheckbox", { name: "acme-api" });
+  await expect(acme).toHaveAttribute("aria-checked", "true");
+  await acme.click();
+  await overflow.click();
+  await page.getByRole("menuitem", { name: "Paths: tools", exact: true }).click();
+  await expect(acme).toHaveAttribute("aria-checked", "false");
+  await page.getByRole("menuitem", { name: "Select in Tree…" }).click();
+  const picker = page.getByRole("dialog", { name: "Filter by Paths" });
+  const pathTree = picker.getByRole("tree", { name: "Files and folders" });
+  const repo = pathTree.getByRole("checkbox", { name: "acme-api" });
+  await expect(repo).toBeVisible();
+  const tree = await pathTree.boundingBox();
+  const row = await repo.locator("xpath=ancestor::label").boundingBox();
+  expect(tree!.x + tree!.width).toBeGreaterThanOrEqual(row!.x + row!.width);
+  await repo.check();
+  await picker.getByRole("button", { name: "OK" }).click();
+  await page.setViewportSize({ width: 1100, height: 720 });
+  const branches = page.getByRole("tree", { name: "Branches", exact: true });
+  await expect(branches.getByText("api-main", { exact: true })).toBeVisible();
+  await expect(branches.getByText("tools-main", { exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 600, height: 550 });
+
+  await overflow.click();
+  await page.getByRole("menuitem", { name: /^Paths:/ }).click();
+  await page.getByRole("menuitem", { name: "Select in Tree…" }).click();
+  await repo.uncheck();
+  await repo.locator("xpath=ancestor::*[@data-row]").locator("[data-tree-toggle]").click();
+  await picker.getByRole("checkbox", { name: "api.ts" }).check();
+  await picker.getByRole("button", { name: "OK" }).click();
+  const firstCommit = page.getByRole("listbox", { name: "Commits" }).getByRole("option").first();
+  await expect(firstCommit.getByText("Commit 1", { exact: true })).toBeVisible();
+  await overflow.click();
+  await page.getByRole("menuitem", { name: /^Paths:/ }).click();
+  await page.getByRole("menuitem", { name: "All" }).click();
+  await expect(firstCommit.getByText("Commit 0", { exact: true })).toBeVisible();
+
+  await overflow.click();
+  await page.getByRole("menuitem", { name: "Paths", exact: true }).click();
+  await expect(page.getByRole("menuitemcheckbox", { name: "api.ts" })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Select…", exact: true }).click();
+  await picker.getByRole("textbox", { name: "Paths" }).fill("acme-api/api.ts");
+  await picker.getByRole("button", { name: "OK" }).click();
+  await expect(firstCommit.getByText("Commit 1", { exact: true })).toBeVisible();
+});

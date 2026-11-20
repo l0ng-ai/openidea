@@ -169,6 +169,17 @@ describe("incremental log refresh", () => {
     expect(useGitLog.getState().commits).toEqual([]);
   });
 
+  it("uses a nested repository's own log when its root is selected in Paths", async () => {
+    useVcs.setState({ roots: ["/repo", "/repo/nested"] });
+    useGitLog.setState({ filters: { ...emptyFilters(), paths: ["/repo/nested"] } });
+    api.log.mockResolvedValue(ok([c("nested")]));
+
+    await reloadLog();
+
+    expect(api.log.mock.calls).toEqual([["/repo/nested", expect.objectContaining({ paths: ["/repo/nested"] })]]);
+    expect(useGitLog.getState().commits.map((entry) => entry.id)).toEqual(["nested"]);
+  });
+
   it("cancels a superseded page and ignores its later response", async () => {
     let finish!: (value: ReturnType<typeof ok<Commit[]>>) => void;
     api.log.mockImplementationOnce(
