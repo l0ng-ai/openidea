@@ -159,7 +159,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           docker pull busybox:latest
-          cargo nextest run -p ide-host --test remote_daemon --run-ignored ignored-only \
+          cargo nextest run -p ide-host --test remote_daemon --run-ignored only \
             -E 'test(=compose_service_survives_disconnect_and_is_removed_on_stop)'
       # nextest skips doctests; ide-command's are its compile-fail tests.
       - if: runner.os == 'Linux'
