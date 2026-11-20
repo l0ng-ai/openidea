@@ -144,6 +144,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::ContentTabReply { .. }
             | PluginEvent::OpenDiff { .. }
             | PluginEvent::DecorationsChanged { .. }
+            | PluginEvent::ConsoleRulesChanged { .. }
             | PluginEvent::EditorOpen { .. }
             | PluginEvent::EditorRanges { .. }
             | PluginEvent::Notification { .. }

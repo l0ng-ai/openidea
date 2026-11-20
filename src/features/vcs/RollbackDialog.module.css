@@ -1,0 +1,46 @@
+.dialog [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: var(--space-2) var(--space-4) 0;
+  font-size: var(--fs-ui);
+}
+
+.content .tree {
+  flex: 1 1 260px;
+  height: auto;
+  min-height: var(--h-row);
+  margin: 0;
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  color: var(--fg-subtle);
+}
+
+.added {
+  color: var(--vcs-added);
+}
+
+.modified {
+  color: var(--vcs-modified);
+}
+
+.deleted {
+  color: var(--vcs-deleted);
+}
+
+.warning {
+  margin: 0;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}

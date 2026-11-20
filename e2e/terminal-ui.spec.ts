@@ -60,6 +60,70 @@ for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, 
   });
 }
 
+test("wide terminal search leaves the grid in place and avoids covering the active match", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(path);
+    layout.setToolWindowSize("bottom", 280);
+    layout.showToolWindow("terminal", true);
+  });
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  const panel = terminal.getByRole("tabpanel");
+  const before = (await panel.boundingBox())!;
+  await page.evaluate(async () => {
+    const path = "/src/features/terminal/runtime.ts";
+    const { activeSession } = await import(path);
+    const { term } = activeSession();
+    await new Promise<void>((resolve) =>
+      term.write(`\x1b[2J\x1b[1;${term.cols - 16}Hright-edge\x1b[1;2Hleft-side\x1b[6;1H`, resolve),
+    );
+  });
+
+  await page.keyboard.press("Meta+f");
+  const search = terminal.getByRole("search", { name: "Find in terminal" });
+  const input = search.getByRole("textbox", { name: "Find in terminal" });
+  await expect(input).toBeFocused();
+  expect(await panel.boundingBox()).toEqual(before);
+  const top = (await search.boundingBox())!;
+  expect(top.y).toBeCloseTo(before.y, 0);
+  expect(top.x + top.width).toBeCloseTo(before.x + before.width, 0);
+  expect(top.width).toBeLessThan(before.width);
+
+  await input.fill("right-edge");
+  await expect(search.locator("[aria-live=polite]")).toHaveText("1/1");
+  await expect
+    .poll(async () => {
+      const box = (await search.boundingBox())!;
+      return box.y + box.height;
+    })
+    .toBeCloseTo(before.y + before.height, 0);
+  await expect(input).toBeFocused();
+  expect(await panel.boundingBox()).toEqual(before);
+
+  await input.fill("left-side");
+  await expect(search.locator("[aria-live=polite]")).toHaveText("1/1");
+  await expect.poll(async () => (await search.boundingBox())!.y).toBeCloseTo(before.y, 0);
+
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const { setToolWindowSize } = await import(path);
+    setToolWindowSize("bottom", 130);
+  });
+  await expect
+    .poll(async () => {
+      const box = (await search.boundingBox())!;
+      return box.y + box.height - (await panel.boundingBox())!.y;
+    })
+    .toBeCloseTo(0, 0);
+  await expect(input).toHaveValue("left-side");
+  await page.keyboard.press("Escape");
+  await expect(search).toBeHidden();
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+});
+
 test("terminal highlights visible occurrences of selected text in a single overlay layer", async ({
   workbench: page,
 }) => {

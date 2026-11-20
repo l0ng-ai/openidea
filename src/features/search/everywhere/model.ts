@@ -4,14 +4,30 @@
  */
 import type { Action } from "@/platform/actions";
 import type { FileMatch, LineMatch, SymbolMatch, WorkspaceSymbol } from "@/platform/ipc";
-import type { SettingsSearchEntry } from "@/workbench/contributions";
+import { searchCategories, type SearchCategoryId, type SettingsSearchEntry } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { basename, isTypeKind, relDir, symbolDisplayName } from "../common/open";
 import { byScore, matchText } from "../common/rank";
 import { wordMatch } from "@/ui";
 
-export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text";
-export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "endpoints" | "actions" | "text";
+export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text" | SearchCategoryId;
+export const isCustomTab = (tab: string): tab is SearchCategoryId => tab.startsWith("plugin:");
+export function searchTabs(): ReadonlyArray<{ id: SeTab; label: string }> {
+  return [...TABS, ...searchCategories().map((c) => ({ id: c.id, label: c.title }))];
+}
+export function sectionTitle(id: SectionId): string {
+  return isCustomTab(id) ? (searchCategories().find((c) => c.id === id)?.title ?? "") : SECTION_TITLES[id];
+}
+export type SectionId =
+  | "recent"
+  | "recentActions"
+  | "classes"
+  | "files"
+  | "symbols"
+  | "endpoints"
+  | "actions"
+  | "text"
+  | SearchCategoryId;
 
 export const TABS: ReadonlyArray<{ id: SeTab; label: string }> = [
   { id: "all", label: "All" },
@@ -33,7 +49,7 @@ export const SECTION_ORDER: readonly SectionId[] = [
   "text",
 ];
 
-export const SECTION_TITLES: Record<SectionId, string> = {
+export const SECTION_TITLES: Record<Exclude<SectionId, SearchCategoryId>, string> = {
   recent: "Recent Files",
   recentActions: "Recent Actions",
   classes: "Classes",
@@ -46,6 +62,7 @@ export const SECTION_TITLES: Record<SectionId, string> = {
 
 /** Sections a tab queries, for a non-empty and an empty query. */
 export function sectionsFor(tab: SeTab, emptyQuery: boolean): SectionId[] {
+  if (isCustomTab(tab)) return [tab];
   if (emptyQuery) {
     switch (tab) {
       case "all":
@@ -106,6 +123,9 @@ export interface ActionItem {
   title: string;
   category?: string;
   icon?: string;
+  /** Provider-owned activation; does not look up a potentially colliding global action ID. */
+  run?: (ctx: import("@/platform/context").ContextKeys) => void | Promise<void>;
+  description?: string;
   enabled: boolean;
   indices: number[];
   score: number;
@@ -311,8 +331,6 @@ export function matchActions(
   const recentRank = new Map(opts.recent.map((id, i) => [id, i]));
   for (const a of actions) {
     if (a.hidden) continue;
-    const enabled = opts.isEnabled(a);
-    if (!enabled && opts.includeDisabled === false) continue;
     let score: number;
     let indices: number[] = [];
     const translated = shown(a, a.title);
@@ -333,6 +351,8 @@ export function matchActions(
       score = Math.max(best, idHit) - 400;
       if (!Number.isFinite(score)) continue;
     }
+    const enabled = opts.isEnabled(a);
+    if (!enabled && opts.includeDisabled === false) continue;
     if (!enabled) score -= 150;
     const r = recentRank.get(a.id);
     if (r !== undefined) score += 40 - Math.min(30, r * 3);
@@ -505,10 +525,10 @@ export function buildRows(
     for (const id of MIXED) if (sections.get(id)?.hasMore) rows.push({ kind: "more", key: `+${id}`, section: id });
     return rows;
   }
-  for (const id of SECTION_ORDER) {
+  for (const id of [...SECTION_ORDER, ...[...sections.keys()].filter(isCustomTab)]) {
     const s = sections.get(id);
     if (!s || !s.items.length) continue;
-    if (opts.headers) rows.push({ kind: "section", key: `#${id}`, section: id, title: SECTION_TITLES[id] });
+    if (opts.headers) rows.push({ kind: "section", key: `#${id}`, section: id, title: sectionTitle(id) });
     for (const item of s.items) rows.push({ ...item, section: id });
     if (s.hasMore) rows.push({ kind: "more", key: `+${id}`, section: id });
   }
@@ -577,7 +597,7 @@ export function topResultSettled(sections: ReadonlyMap<SectionId, SectionState>,
     const top = mixItems(sections, mix.trim())[0]?.weight ?? -Infinity;
     return MIXED.every((id) => !sections.get(id)?.loading || (id === "text" && top > TEXT_WEIGHT));
   }
-  for (const id of SECTION_ORDER) {
+  for (const id of [...SECTION_ORDER, ...[...sections.keys()].filter(isCustomTab)]) {
     const s = sections.get(id);
     if (!s) continue;
     if (s.loading) return false;

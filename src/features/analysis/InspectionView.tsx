@@ -7,7 +7,8 @@ import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
-import { basename, relativeDir, useProject } from "@/platform/project";
+import { basename, relativeDir, relativePath, useProject } from "@/platform/project";
+import { tx } from "@/platform/i18n";
 import { diagnosticInspection, producerOf, type InspectionRef } from "@/platform/inspections";
 import { problemControls } from "@/platform/inspectionControls";
 import { editorService, useOccurrenceNavigator } from "@/workbench/contributions";
@@ -287,31 +288,33 @@ export function InspectionView() {
           <span className={clsx(styles.row, off)}>
             <Icon name={n.severity} size={14} className={styles[`sev-${n.severity}`]} />
             <span className={styles.strong}>{SEVERITY_LABEL[n.severity]}</span>
-            <span className={styles.count}>{plural(n.count, "problem")}</span>
+            <span className={styles.resultMeta}>{plural(n.count, "problem")}</span>
           </span>
         );
       case "inspection":
         return (
-          <span className={clsx(styles.row, off)}>
+          <span className={clsx(styles.row, off)} title={n.name}>
             {!bySeverity && <Icon name={n.severity} size={14} className={styles[`sev-${n.severity}`]} />}
-            <span className={styles.strong}>{n.name}</span>
-            <span className={styles.count}>{n.count}</span>
+            <span className={clsx(styles.strong, styles.resultLabel)}>{n.name}</span>
+            <span className={styles.resultMeta}>{n.count}</span>
           </span>
         );
-      case "file":
+      case "file": {
+        const directory = relativeDir(root, n.path);
         return (
-          <span className={clsx(styles.row, off)}>
+          <span className={clsx(styles.row, off)} title={relativePath(root, n.path)}>
             <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
-            <span className={state.selected ? styles.strong : undefined}>{basename(n.path)}</span>
-            <span className={styles.muted}>{relativeDir(root, n.path)}</span>
-            <span className={styles.count}>{n.count}</span>
+            <span className={clsx(styles.resultLabel, state.selected && styles.strong)}>{basename(n.path)}</span>
+            {directory && <span className={clsx(styles.resultMeta, styles.resultDirectory)}>{directory}</span>}
+            <span className={styles.resultMeta}>{n.count}</span>
           </span>
         );
+      }
       case "problem":
         return (
           <span className={clsx(styles.row, off)} title={n.p.d.message}>
             <span className={styles.message}>{n.p.d.message.split("\n")[0]}</span>
-            <span className={styles.muted}>:{n.p.d.range.start.line + 1}</span>
+            <span className={styles.resultMeta}>:{n.p.d.range.start.line + 1}</span>
           </span>
         );
     }
@@ -342,7 +345,11 @@ export function InspectionView() {
         </div>
       )}
       <div className={styles.body} onKeyDown={onKeyDown}>
-        <SplitGroup orientation="horizontal" id="inspection-details-split">
+        <SplitGroup
+          orientation="horizontal"
+          id="inspection-details-split"
+          storageKey={roots.length > 0 ? "openidea.inspection.results.layout.v1" : undefined}
+        >
           <SplitPanel id="results" minSize={160} className={styles.panel}>
             <Tree<Node>
               aria-label="Inspection results"
@@ -417,9 +424,11 @@ export function InspectionView() {
           </SplitPanel>
           {roots.length > 0 && (
             <>
-              <SplitHandle />
-              <SplitPanel id="details" minSize={160} defaultSize="40%" className={styles.panel}>
-                <ProblemDetails node={lead} root={root} />
+              <SplitHandle aria-label={tx("Resize inspection panes")} />
+              <SplitPanel id="details" minSize={160} defaultSize="50%" className={styles.panel}>
+                <section className={styles.details} aria-label={tx("Inspection details")}>
+                  <ProblemDetails node={lead} root={root} />
+                </section>
               </SplitPanel>
             </>
           )}
@@ -434,14 +443,14 @@ function ProblemDetails({ node, root }: { node: Node | null; root: string }) {
   if (!node || node.kind === "severity" || node.kind === "file") {
     const count = node ? nodeProblems(node).length : 0;
     return (
-      <div className={clsx(styles.details, styles.detailsEmpty)}>
+      <div className={styles.detailsEmpty}>
         {node ? plural(count, "problem") : <T>Select a problem to see its details</T>}
       </div>
     );
   }
   if (node.kind === "inspection") {
     return (
-      <div className={styles.details}>
+      <div className={styles.detailsBody}>
         <div className={styles.detailsTitle}>{node.name}</div>
         <div className={styles.muted}>
           {SEVERITY_LABEL[node.severity]} · {plural(node.count, "problem")}
@@ -451,25 +460,35 @@ function ProblemDetails({ node, root }: { node: Node | null; root: string }) {
   }
   const { p } = node;
   const sev = severityKey(p.d);
+  const pathParts = relativePath(root, p.path).split("/");
   return (
-    <div className={styles.details}>
-      <div className={styles.detailsTitle}>
-        <Icon name={sev} size={14} className={styles[`sev-${sev}`]} />
-        <span>{p.d.source ? `${p.d.source}${p.d.code ? ` (${p.d.code})` : ""}` : <T>Language server</T>}</span>
-      </div>
-      <p className={clsx(styles.detailsMessage, selectableText)}>{p.d.message}</p>
-      <div className={styles.muted}>
-        {relativeDir(root, p.path) ? `${relativeDir(root, p.path)}/` : ""}
-        {basename(p.path)}:{p.d.range.start.line + 1}:{p.d.range.start.col + 1}
-      </div>
-      <div className={styles.detailsActions}>
-        <Button size="small" icon="bulb" onClick={() => void showFixes(p)}>
+    <>
+      <div className={styles.detailsActions} role="group" aria-label={tx("Inspection actions")}>
+        <Button size="small" icon="bulb" className={styles.detailAction} onClick={() => void showFixes(p)}>
           <T>Show Quick Fixes</T>
         </Button>
-        <Button size="small" variant="ghost" onClick={() => void open(p)}>
+        <Button size="small" variant="ghost" className={styles.detailAction} onClick={() => void open(p)}>
           <T>Jump to Source</T>
         </Button>
       </div>
-    </div>
+      <div className={styles.detailsBody}>
+        <div className={styles.detailsTitle}>
+          <Icon name={sev} size={14} className={styles[`sev-${sev}`]} />
+          <span>{p.d.source ? `${p.d.source}${p.d.code ? ` (${p.d.code})` : ""}` : <T>Language server</T>}</span>
+        </div>
+        <div className={clsx(styles.detailsLocation, selectableText)}>
+          {pathParts.slice(0, -1).map((part, i) => (
+            <span key={i}>
+              {part}/<wbr />
+            </span>
+          ))}
+          {pathParts.at(-1)}
+          <span className={styles.detailsCoordinates}>
+            :{p.d.range.start.line + 1}:{p.d.range.start.col + 1}
+          </span>
+        </div>
+        <p className={clsx(styles.detailsMessage, selectableText)}>{p.d.message}</p>
+      </div>
+    </>
   );
 }

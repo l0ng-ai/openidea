@@ -3,11 +3,13 @@
  * blocks inside one HTML container) is wrapped in an element carrying its
  * 0-based source line (`data-line`) for scroll sync; images keep their source in `data-src` and are loaded by the preview
  * (local files through the backend, as the CSP blocks file URLs). Mermaid
- * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`. YAML front matter is shown
+ * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`; math becomes `[data-math]`
+ * placeholders, typeset by the preview (`renderMath`). YAML front matter is shown
  * as a table of its top-level fields.
  */
 import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
+import { mathExtension } from "@/editor/lsp/markdownMath";
 import { opensOtherShare } from "@/platform/paths";
 
 const escapeHtml = (s: string) =>
@@ -22,7 +24,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-});
+}).use(mathExtension());
 
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
@@ -180,7 +182,7 @@ function blocks(text: string): { line: number; html: string }[] {
 
 const SANITIZE = {
   USE_PROFILES: { html: true },
-  ADD_ATTR: ["data-src", "data-line", "data-front-matter"],
+  ADD_ATTR: ["data-src", "data-line", "data-front-matter", "data-math"],
   // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
   // `srcset` and `<source>` would pick an image past the one the preview loads.
   FORBID_TAGS: ["style", "form", "source"],

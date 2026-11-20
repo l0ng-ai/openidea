@@ -2,7 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { Commit } from "@/bindings";
 
-const { files, combined } = vi.hoisted(() => ({ files: vi.fn(), combined: vi.fn() }));
+const { files, combined, executeAction } = vi.hoisted(() => ({
+  files: vi.fn(),
+  combined: vi.fn(),
+  executeAction: vi.fn(async () => true),
+}));
+
+vi.mock("@/platform/actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/actions")>()),
+  executeAction,
+}));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -74,6 +83,18 @@ describe("Push dialog changes", () => {
     expect(rows[0]!.textContent).toContain("service.py");
     expect(rows[0]!.textContent).toContain("src/orders");
     expect(localStorage.getItem("openidea.vcs.push.groupByDirectory")).toBe("false");
+  });
+
+  it("opens a double-clicked file's diff in its own window and keeps the selection's diff in the dialog", async () => {
+    files.mockResolvedValue({ status: "ok", data: [{ path: "a.txt", oldPath: null, kind: "modified" }] });
+    const select = vi.fn();
+    render(<PushChanges repo="/r" commits={[older]} onSelectFile={select} />);
+    fireEvent.doubleClick(await screen.findByText("a.txt"));
+    expect(select).toHaveBeenLastCalledWith(expect.objectContaining({ path: "a.txt" }));
+    expect(executeAction).toHaveBeenCalledWith(
+      "vcs.showDiffInNewWindow",
+      expect.objectContaining({ path: expect.stringContaining("a.txt") }),
+    );
   });
 
   it("shows no commit details for several commits", async () => {

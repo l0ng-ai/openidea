@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEntry } from "@/bindings";
-import { foldedTurns, summarizeWork, workParts } from "./timeline";
+import { foldedTurns, summarizeWork, thoughtDurations, toolDuration, toolRun, workParts } from "./timeline";
 
 const user = (text: string, extra: Partial<Extract<AgentEntry, { type: "user" }>> = {}): AgentEntry => ({
   type: "user",
@@ -63,5 +63,57 @@ describe("foldedTurns", () => {
     expect(foldedTurns([user("q"), { type: "error", message: "x" }, tool("read"), agent("a")], 0, false).size).toBe(0);
     expect(foldedTurns([user("q"), tool("read"), user("more", { steered: true }), agent("a")], 0, false).size).toBe(0);
     expect(foldedTurns([user("q"), tool("read"), agent("a")], 1, false).size).toBe(0);
+  });
+});
+
+// Fragments of a real Hermes 0.22.2 ACP stream (`hermes acp`), as the timeline folds them.
+describe("Hermes tool calls", () => {
+  type Tool = Extract<AgentEntry, { type: "tool" }>;
+  const call = (kind: string, extra: Partial<Tool> = {}) => tool(kind, extra) as Tool;
+  const terminal = call("execute", {
+    title: "terminal: echo ok + 2 commands",
+    output:
+      "$ echo ok >> notes.txt && wc -l notes.txt && cat notes.txt\n" +
+      "terminal result\n- **output:** 3 notes.txt\nline1\nline2\nok\n- **exit_code:** 0",
+    startedMs: 1000,
+    endedMs: 2400,
+  });
+
+  it("splits a terminal call into its command, output and exit code", () => {
+    expect(toolRun(terminal)).toEqual({
+      command: "echo ok >> notes.txt && wc -l notes.txt && cat notes.txt",
+      output: "3 notes.txt\nline1\nline2\nok",
+      exitCode: 0,
+    });
+    expect(toolRun({ ...terminal, output: "$ false\nterminal result\n- **output:**\n- **exit_code:** 1" })).toEqual({
+      command: "false",
+      output: "",
+      exitCode: 1,
+    });
+  });
+
+  it("keeps plain output of other agents as it is", () => {
+    expect(toolRun(call("execute", { output: "ok" }))).toEqual({ command: null, output: "ok", exitCode: null });
+  });
+
+  it("times a call once it ended", () => {
+    expect(toolDuration(terminal)).toBe(1400);
+    expect(toolDuration({ ...terminal, endedMs: null })).toBeNull();
+    expect(toolDuration(call("read"))).toBeNull();
+  });
+
+  it("times each thought until what came next or the end of its turn", () => {
+    const entries: AgentEntry[] = [
+      user("go", { doneMs: 9000 }),
+      { type: "thought", text: "plan", startedMs: 1000 },
+      tool("search", { startedMs: 2500 }),
+      { type: "thought", text: "done", startedMs: 6000 },
+      { type: "agent", text: "ok" },
+      { type: "thought", text: "old" },
+    ];
+    expect([...thoughtDurations(entries)]).toEqual([
+      [1, 1500],
+      [3, 3000],
+    ]);
   });
 });

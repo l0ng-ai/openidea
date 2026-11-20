@@ -29,6 +29,14 @@ id = "window-status"
 title = "window-status"
 
 [[contributes.commands]]
+id = "menu-status"
+title = "menu-status"
+
+[[contributes.commands]]
+id = "bad-menu-status"
+title = "bad-menu-status"
+
+[[contributes.commands]]
 id = "remove-window-status"
 title = "remove-window-status"
 

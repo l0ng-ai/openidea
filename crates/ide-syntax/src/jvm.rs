@@ -24,6 +24,8 @@ pub struct JvmPresentation {
     pub kind: Option<JvmTypeKind>,
     pub spring_boot: bool,
     pub runnable: bool,
+    /// `@Deprecated`, or a Java `@deprecated` Javadoc tag.
+    pub deprecated: bool,
 }
 
 fn text<'a>(node: Node, source: &'a str) -> &'a str {
@@ -139,6 +141,19 @@ pub fn jvm_type_header(source: &str) -> Option<&str> {
     None
 }
 
+/// The Javadoc right before `node` has a `@deprecated` block tag.
+fn javadoc_deprecated(node: Node, source: &str) -> bool {
+    let Some(doc) = node.prev_named_sibling().filter(|n| n.kind() == "block_comment") else {
+        return false;
+    };
+    let doc = text(doc, source);
+    doc.starts_with("/**")
+        && doc.lines().any(|line| {
+            let line = line.trim_start().trim_start_matches("/**").trim_start_matches('*').trim_start();
+            line.strip_prefix("@deprecated").is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric()))
+        })
+}
+
 fn is_type(node: Node) -> bool {
     matches!(
         node.kind(),
@@ -221,7 +236,9 @@ impl StructureService {
                         })
                 })
             });
-            Ok(JvmPresentation { kind: Some(kind), spring_boot, runnable })
+            let deprecated = modifiers.is_some_and(|m| annotation(m, snap.text, "Deprecated"))
+                || cx.grammar == "java" && javadoc_deprecated(node, snap.text);
+            Ok(JvmPresentation { kind: Some(kind), spring_boot, runnable, deprecated })
         })
     }
 }

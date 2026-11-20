@@ -197,28 +197,62 @@ fn software_term(lower: &str) -> bool {
             .is_some_and(|w| ["s", "x", "z", "ch", "sh"].iter().any(|e| w.ends_with(e)) && plural_of(w))
 }
 
-/// Words of a custom dictionary file: a plain word list or a Hunspell `.dic`
-/// (leading count line and `/FLAGS` ignored). Cached by modification time.
-fn dictionary_file(path: &Path) -> Arc<HashSet<String>> {
-    type Cache = HashMap<PathBuf, (Option<SystemTime>, Arc<HashSet<String>>)>;
-    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-    let mut cache = CACHE.get_or_init(Default::default).lock();
-    if let Some((at, words)) = cache.get(path)
-        && *at == modified
-    {
-        return words.clone();
-    }
-    let words: HashSet<String> = match std::fs::read_to_string(path) {
-        Ok(text) => parse_word_list(&text),
-        Err(e) => {
-            tracing::debug!("custom dictionary {}: {e}", path.display());
-            HashSet::new()
+/// A custom dictionary: a word list, or a Hunspell dictionary with its affix rules.
+enum CustomDictionary {
+    Words(HashSet<String>),
+    Hunspell(Box<spellbook::Dictionary>),
+}
+
+impl CustomDictionary {
+    /// Whether the lowercased `lower` is a word of it, in any case style.
+    fn contains(&self, lower: &str) -> bool {
+        match self {
+            Self::Words(words) => words.contains(lower),
+            Self::Hunspell(dict) => {
+                dict.check(lower) || dict.check(&capitalize(lower)) || dict.check(&lower.to_uppercase())
+            }
         }
+    }
+}
+
+/// The `.aff` next to a Hunspell `.dic` (`de_DE.dic` → `de_DE.aff`), if there is one.
+fn affix_file(path: &Path) -> Option<PathBuf> {
+    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dic")) {
+        return None;
+    }
+    ["aff", "AFF"].into_iter().map(|ext| path.with_extension(ext)).find(|aff| aff.is_file())
+}
+
+/// A custom dictionary file: a Hunspell `.dic` with the `.aff` beside it, with
+/// its affix, compounding and case rules; otherwise a plain word list (a `.dic`
+/// alone: leading count line and `/FLAGS` ignored). Cached by modification time.
+fn dictionary_file(path: &Path) -> Arc<CustomDictionary> {
+    type Stamp = (Option<SystemTime>, Option<SystemTime>);
+    type Cache = HashMap<PathBuf, (Stamp, Arc<CustomDictionary>)>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let aff = affix_file(path);
+    let stamp = (modified(path), aff.as_deref().and_then(modified));
+    if let Some((at, dict)) = CACHE.get_or_init(Default::default).lock().get(path)
+        && *at == stamp
+    {
+        return dict.clone();
+    }
+    let read = |p: &Path| {
+        std::fs::read_to_string(p).map_err(|e| tracing::debug!("custom dictionary {}: {e}", p.display())).ok()
     };
-    let words = Arc::new(words);
-    cache.insert(path.to_path_buf(), (modified, words.clone()));
-    words
+    let text = read(path).unwrap_or_default();
+    let hunspell = aff.as_deref().and_then(read).and_then(|aff| {
+        spellbook::Dictionary::new(&aff, &text)
+            .map_err(|e| tracing::warn!("Hunspell dictionary {}: {e}", path.display()))
+            .ok()
+    });
+    let dict = Arc::new(match hunspell {
+        Some(dict) => CustomDictionary::Hunspell(Box::new(dict)),
+        None => CustomDictionary::Words(parse_word_list(&text)),
+    });
+    CACHE.get_or_init(Default::default).lock().insert(path.to_path_buf(), (stamp, dict.clone()));
+    dict
 }
 
 /// Lowercased words of a word list / Hunspell `.dic` text.
@@ -238,7 +272,7 @@ pub fn parse_word_list(text: &str) -> HashSet<String> {
 #[derive(Default)]
 pub struct Speller {
     accepted: HashSet<String>,
-    custom: Vec<Arc<HashSet<String>>>,
+    custom: Vec<Arc<CustomDictionary>>,
 }
 
 impl Speller {
@@ -351,16 +385,31 @@ impl Speller {
             && !near_word(lower, |w| english().check(w))
     }
 
-    /// Replacements for `word`, best first, in the word's case style.
+    /// Replacements for `word`, best first, in the word's case style: from the
+    /// English dictionary and the custom Hunspell dictionaries, the closest first.
     pub fn suggest(&self, word: &str, limit: usize) -> Vec<String> {
+        let hunspell = self.custom.iter().filter_map(|d| match d.as_ref() {
+            CustomDictionary::Hunspell(dict) => Some(dict.as_ref()),
+            CustomDictionary::Words(_) => None,
+        });
+        let dicts: Vec<&spellbook::Dictionary> = std::iter::once(english()).chain(hunspell).collect();
         let mut out = Vec::new();
-        english().suggest(word, &mut out);
-        if out.is_empty() && word.chars().next().is_some_and(char::is_uppercase) {
-            english().suggest(&word.to_lowercase(), &mut out);
-            out = out.into_iter().map(|s| capitalize(&s)).collect();
+        for dict in &dicts {
+            let mut found = Vec::new();
+            dict.suggest(word, &mut found);
+            if found.is_empty() && word.chars().next().is_some_and(char::is_uppercase) {
+                dict.suggest(&word.to_lowercase(), &mut found);
+                found = found.into_iter().map(|s| capitalize(&s)).collect();
+            }
+            out.extend(found);
         }
         let mut seen = HashSet::new();
         out.retain(|s| s != word && seen.insert(s.clone()));
+        if dicts.len() > 1 {
+            // Stable: within a distance each dictionary keeps its own order, English first.
+            let lower = word.to_lowercase();
+            out.sort_by_key(|s| edit_distance(&lower, &s.to_lowercase()));
+        }
         out.truncate(limit);
         out
     }
@@ -414,6 +463,22 @@ impl Speller {
                 .collect(),
         )
     }
+}
+
+/// Levenshtein distance in characters.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let next = (row[j + 1] + 1).min(row[j] + 1).min(diagonal + usize::from(ca != *cb));
+            diagonal = row[j + 1];
+            row[j + 1] = next;
+        }
+    }
+    row[b.len()]
 }
 
 fn capitalize(s: &str) -> String {
@@ -733,6 +798,36 @@ mod tests {
         assert!(s.is_correct("frobnicate"));
         assert!(s.is_correct("quuxify"));
         assert!(!s.is_correct("zorblax"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hunspell_custom_dictionaries_use_their_affix_rules() {
+        let dir = std::env::temp_dir().join(format!("ide-spell-hunspell-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dic = dir.join("de_TEST.dic");
+        std::fs::write(&dic, "3\nhaus/NZ\ntür/NZ\nschlüssel/Z\n").unwrap();
+        std::fs::write(
+            dir.join("de_TEST.aff"),
+            "SET UTF-8\nTRY esianrtolcdugmphbyfvkwzäöüß\nCOMPOUNDFLAG Z\nSFX N Y 1\nSFX N 0 en .\n",
+        )
+        .unwrap();
+        let s = Speller::new::<&str>([], std::slice::from_ref(&dic));
+        // Affix rules, compounds and case styles of the .aff, not just the listed stems.
+        for word in ["haus", "Haus", "hausen", "türen", "Haustür", "schlüsselhaus"] {
+            assert!(s.is_correct(word), "{word}");
+        }
+        assert!(!s.is_correct("hauz"));
+        assert!(!s.is_correct("schlüsselen"));
+        assert!(s.suggest("Hauss", 5).iter().any(|w| w == "Haus"), "{:?}", s.suggest("Hauss", 5));
+        // English still checks and suggests.
+        assert!(s.is_correct("message"));
+        assert!(s.suggest("mesage", 5).iter().any(|w| w == "message"));
+        // Without its .aff, a .dic is a word list.
+        std::fs::remove_file(dir.join("de_TEST.aff")).unwrap();
+        let words = Speller::new::<&str>([], std::slice::from_ref(&dic));
+        assert!(words.is_correct("haus"));
+        assert!(!words.is_correct("hausen"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

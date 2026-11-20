@@ -187,6 +187,11 @@ export function mavenChildren(
     case "profiles":
       return model.profiles
         .filter((p) => p.projectRoot === node.projectRoot)
+        .sort((a, b) => {
+          const aId = a.id.toLowerCase();
+          const bId = b.id.toLowerCase();
+          return aId < bId ? -1 : aId > bId ? 1 : 0;
+        })
         .map((profile) => ({ kind: "profile", key: `mvn:profile:${profileKey(profile)}`, profile }));
     case "mavenProject": {
       const p = node.project;

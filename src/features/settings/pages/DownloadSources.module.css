@@ -1,0 +1,20 @@
+.input {
+  width: 320px;
+}
+
+.hint {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+}
+
+.infoIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--fg-subtle);
+}
+
+.hint code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}

@@ -1,10 +1,21 @@
 /** Built-in settings pages (IDEA layout: Appearance & Behavior, Keymap, Editor). */
+import { useId, useState } from "react";
+import { Tabs } from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
-import { useSetting } from "../components/context";
-import { KeymapPage, keymapSearchLabels } from "../keymap/KeymapPage";
-import { AssociatedApplicationsRow, RecognizedFileTypes } from "./FileTypes";
-import type { PageSpec } from "./spec";
+import { useSearchQuery, useSetting } from "../components/context";
+import { keymapSearchLabels } from "../keymap/model";
+import { labelMatches, queryTerms } from "../model/pages";
+import { lazyPage } from "./lazyPage";
+import { OptionsPage } from "./OptionsPage";
+import { specLabels, type PageSpec, type SectionSpec } from "./spec";
+import styles from "./FileTypes.module.css";
 export const EDITOR_GROUP = "Editor";
+
+const KeymapPage = lazyPage("keymap", () => import("../keymap/KeymapPage").then((m) => m.KeymapPage));
+const RecognizedFileTypes = lazyPage("editor.files", () => import("./FileTypes").then((m) => m.RecognizedFileTypes));
+const AssociatedApplicationsRow = lazyPage("editor.files", () =>
+  import("./FileTypes").then((m) => m.AssociatedApplicationsRow),
+);
 
 function ExcludeRow() {
   const [exclude, setExclude] = useSetting<string[]>("files.exclude");
@@ -32,22 +43,10 @@ function IgnoredNamesRow() {
   );
 }
 
-export const BUILTIN_PAGES: PageSpec[] = [
+const FILE_TYPE_TABS: { id: string; label: string; sections: SectionSpec[] }[] = [
   {
-    id: "keymap",
-    title: "Keymap",
-    order: 10,
-    keywords: ["shortcut", "keyboard", "hotkey", "binding", "preset", "vs code", "intellij"],
-    component: KeymapPage,
-    dynamicLabels: keymapSearchLabels,
-  },
-  {
-    id: "editor.files",
-    title: "File Types",
-    group: EDITOR_GROUP,
-    order: 29,
-    projectScope: true,
-    keywords: ["ignore", "ignored", "excluded", "glob", "exclude patterns", "associate", "association", "extension"],
+    id: "recognized",
+    label: "Recognized File Types",
     sections: [
       {
         title: "Recognized File Types",
@@ -71,6 +70,12 @@ export const BUILTIN_PAGES: PageSpec[] = [
           },
         ],
       },
+    ],
+  },
+  {
+    id: "ignored",
+    label: "Ignored Files and Folders",
+    sections: [
       {
         title: "Ignored Files and Folders",
         options: [
@@ -80,4 +85,76 @@ export const BUILTIN_PAGES: PageSpec[] = [
       },
     ],
   },
+];
+
+const FILE_TYPES: PageSpec = {
+  id: "editor.files",
+  title: "File Types",
+  group: EDITOR_GROUP,
+  order: 29,
+  projectScope: true,
+  keywords: ["ignore", "ignored", "excluded", "glob", "exclude patterns", "associate", "association", "extension"],
+  sections: FILE_TYPE_TABS.flatMap((tab) => tab.sections),
+  component: FileTypesPage,
+};
+
+function FileTypesPage() {
+  const prefix = useId();
+  const query = useSearchQuery();
+  const [selection, select] = useState({ id: "recognized", query: "" });
+  let active = selection.id;
+  if (query !== selection.query) {
+    const terms = queryTerms(query);
+    let best = 0;
+    for (const tab of FILE_TYPE_TABS) {
+      const labels = specLabels({ ...FILE_TYPES, keywords: [], sections: tab.sections });
+      const score = terms.filter((term) => labels.some((label) => labelMatches(label, term))).length;
+      if (score > best) {
+        best = score;
+        active = tab.id;
+      }
+    }
+  }
+  return (
+    <>
+      <Tabs
+        aria-label="File Types"
+        variant="compact"
+        layout="wrap"
+        className={styles.tabs}
+        items={FILE_TYPE_TABS.map(({ id, label }) => ({ id, label }))}
+        activeId={active}
+        panelIdPrefix={prefix}
+        onSelect={(id) => select({ id, query })}
+      />
+      {FILE_TYPE_TABS.map(({ id, sections }) => (
+        <div
+          key={id}
+          role="tabpanel"
+          id={`${prefix}-panel-${id}`}
+          aria-labelledby={`${prefix}-tab-${id}`}
+          hidden={id !== active}
+        >
+          <OptionsPage
+            spec={{
+              ...FILE_TYPES,
+              sections: sections.map((section, i) => (i === 0 ? { ...section, title: undefined } : section)),
+            }}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
+
+export const BUILTIN_PAGES: PageSpec[] = [
+  {
+    id: "keymap",
+    title: "Keymap",
+    order: 10,
+    keywords: ["shortcut", "keyboard", "hotkey", "binding", "preset", "vs code", "intellij"],
+    component: KeymapPage,
+    dynamicLabels: keymapSearchLabels,
+  },
+  FILE_TYPES,
 ];

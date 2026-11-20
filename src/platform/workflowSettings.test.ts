@@ -17,6 +17,14 @@ describe("validateWorkflow", () => {
     expect(clickable("no")).toBe(true);
   });
 
+  it("executes branch operations on all repositories unless switched off", () => {
+    const sync = (syncBranchOperations: unknown) =>
+      validateWorkflow({ vcs: { git: { syncBranchOperations } } }).vcs.git.syncBranchOperations;
+    expect(DEFAULT_WORKFLOW.vcs.git.syncBranchOperations).toBe(true);
+    expect(sync(false)).toBe(false);
+    expect(sync("off")).toBe(true);
+  });
+
   it("keeps the double-click choice unset until it is made", () => {
     expect(DEFAULT_WORKFLOW.vcs.commit.doubleClickOpensDiff).toBeNull();
     expect(validateWorkflow(undefined).vcs.commit.doubleClickOpensDiff).toBeNull();
@@ -25,6 +33,17 @@ describe("validateWorkflow", () => {
     expect(commit(true)).toBe(true);
     expect(commit(false)).toBe(false);
     expect(commit("yes")).toBeNull();
+  });
+
+  it("defaults Build tool window open/focus and rejects unknown values", () => {
+    expect(DEFAULT_WORKFLOW.build).toEqual({ openToolWindow: "always", focusToolWindow: "never" });
+    expect(validateWorkflow({ build: { openToolWindow: "onError", focusToolWindow: "always" } }).build).toEqual({
+      openToolWindow: "onError",
+      focusToolWindow: "always",
+    });
+    expect(validateWorkflow({ build: { openToolWindow: "sometimes", focusToolWindow: 1 } }).build).toEqual(
+      DEFAULT_WORKFLOW.build,
+    );
   });
 
   it("falls back to defaults for missing or malformed values", () => {

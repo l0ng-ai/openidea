@@ -12,10 +12,12 @@ import { commands, type LibraryGroup, type RequestId } from "@/bindings";
 import { mergeLibraryGroups } from "@/platform/libraries";
 import { isGradleBuildInput } from "@/platform/buildFiles";
 import { registerActions } from "@/platform/actions";
-import { setLibraryRoots } from "@/editor/api";
+import { isLibraryPath, registerEditorContribution, setLibraryRoots } from "@/editor/api";
+import { invalidateNavigationProviders } from "@/editor/navigationProviders";
 import { call, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { registerProjectViewRoot, type ProjectViewRootContribution } from "@/workbench/contributions";
+import { goModNavigationExtension } from "./goModNavigation";
 
 export const EXTERNAL_LIBRARIES_LABEL = "External Libraries";
 
@@ -118,6 +120,24 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
   };
 }
 
+/**
+ * The External Libraries folder of Go module `path` in `groups`: `path@version` in the module
+ * cache (any version when `version` is null), or `path` when vendored.
+ */
+export function goModuleRoot(groups: readonly LibraryGroup[], path: string, version: string | null): string | null {
+  for (const g of groups) {
+    if (g.kind !== "goModules") continue;
+    const versioned = version ? `${path}@${version}` : `${path}@`;
+    const root = g.roots.find(
+      (r) => r.name === path || (version ? r.name === versioned : r.name.startsWith(versioned)),
+    );
+    if (root) return root.path;
+  }
+  return null;
+}
+
+const goModules = (groups: readonly LibraryGroup[]) => JSON.stringify(groups.filter((g) => g.kind === "goModules"));
+
 /** Settings that change which SDKs the project uses. */
 const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
   const l = s.settings?.languages;
@@ -145,23 +165,34 @@ export function activate(): () => void {
   let disposeRoot = () => {};
   let disposeReadOnly = () => {};
   let seq = 0;
+  /** The groups shown now. */
+  let shownGroups: LibraryGroup[] = [];
   let shown = "";
   /** The last complete result: what a refresh shows for ecosystems that haven't reported yet. */
   let settled: LibraryGroup[] = [];
   let request: RequestId | undefined;
+  /** The project whose libraries are shown (and `settled`). */
+  let shownFor: string | null = null;
   const clear = () => {
     disposeRoot();
     disposeReadOnly();
     disposeRoot = disposeReadOnly = () => {};
     shown = "";
+    shownGroups = [];
     settled = [];
+    shownFor = null;
   };
   const refresh = () => {
     const id = ++seq;
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     request = undefined;
-    if (!useProject.getState().project || useProject.getState().project?.trusted === false || !isTauri())
-      return clear();
+    const project = useProject.getState().project;
+    if (!project || project.trusted === false || !isTauri()) return clear();
+    // Another project's libraries must not show (or fill in) while this one's are discovered.
+    if (shownFor !== project.root) {
+      clear();
+      shownFor = project.root;
+    }
     let collected: LibraryGroup[] = [];
     const show = (groups: LibraryGroup[]) => {
       if (id !== seq) return;
@@ -172,6 +203,9 @@ export function activate(): () => void {
       const [oldRoot, oldReadOnly] = [disposeRoot, disposeReadOnly];
       disposeRoot = disposeReadOnly = () => {};
       shown = key;
+      // ⌘-hover may have probed a go.mod entry before its module was listed.
+      if (goModules(groups) !== goModules(shownGroups)) invalidateNavigationProviders();
+      shownGroups = groups;
       const root = librariesRoot(groups);
       if (root) {
         disposeReadOnly = setLibraryRoots(
@@ -204,6 +238,10 @@ export function activate(): () => void {
       });
   };
   refresh();
+  const disposeGoMod = registerEditorContribution({
+    id: "libraries.goModNavigation",
+    extensions: goModNavigationExtension((path, version) => goModuleRoot(shownGroups, path, version), isLibraryPath),
+  });
   const disposeActions = registerActions([
     { id: "libraries.reload", title: "Reload External Libraries", category: "Go", hidden: true, run: refresh },
   ]);
@@ -229,6 +267,7 @@ export function activate(): () => void {
     unsubFs();
     unsubRoots();
     disposeActions();
+    disposeGoMod();
     clear();
   };
 }

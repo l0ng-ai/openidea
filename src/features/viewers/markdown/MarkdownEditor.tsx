@@ -41,7 +41,8 @@ import {
 import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
-import { modeOf, useMarkdownModes } from "./modes";
+import { renderMath } from "@/editor/lsp/markdownMath";
+import { modeOf, pinMarkdownMode, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
   ANCHOR_PREFIX,
@@ -89,7 +90,8 @@ export function MarkdownEditor({
   children: ReactNode;
   actionsInTabs?: boolean;
 }) {
-  const mode = useMarkdownModes((s) => modeOf(s, path));
+  const mode = useMarkdownModes((s) => modeOf(s, tabId));
+  useEffect(() => pinMarkdownMode(tabId), [tabId]);
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
 
@@ -117,10 +119,14 @@ export function MarkdownEditor({
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <SplitGroup
         orientation="horizontal"
+        disableCursor
         className={styles.group}
         storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
       >
-        <SplitPanel id="editor" style={{ overflow: "hidden" }} {...splitBounds}>
+        {/* Hidden but mounted in Preview only (its caret drives the preview). Disabled, it leaves the group a
+            single resizable panel: two enabled panels without a separator get an implicit resize region between
+            them, which for a hidden panel spans everything left of the preview. */}
+        <SplitPanel id="editor" style={{ overflow: "hidden" }} disabled={mode === "preview"} {...splitBounds}>
           <div ref={editorRef} className={styles.editor}>
             {children}
           </div>
@@ -184,8 +190,11 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     });
   }, [html]);
 
+  // Math before the preview index: typesetting changes the blocks' heights.
   useLayoutEffect(() => {
-    if (ref.current) invalidatePreviewIndex(ref.current);
+    if (!ref.current) return;
+    renderMath(ref.current);
+    invalidatePreviewIndex(ref.current);
   }, [html]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.

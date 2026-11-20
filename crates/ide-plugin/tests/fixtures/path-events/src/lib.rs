@@ -33,6 +33,7 @@ impl Plugin for Fixture {
             }
             "count" => Ok(host::storage::get("count")?),
             "document" => Ok(host::storage::get("document")?),
+            "document-project" => Ok(host::storage::get("document-project")?),
             _ => Err(Error::NotFound(id.into())),
         }
     }
@@ -42,6 +43,7 @@ impl Plugin for Fixture {
         for event in events {
             if let Event::DocumentChanged(change) = event {
                 host::storage::set("document", &change.path).unwrap();
+                host::storage::set("document-project", change.project.as_deref().unwrap_or_default()).unwrap();
             }
         }
     }

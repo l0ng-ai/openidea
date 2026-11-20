@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { EditorView } from "@codemirror/view";
 import { RgbaColorPicker } from "react-colorful";
 import { useTx } from "@/platform/i18n";
-import { IconButton, Popup } from "@/ui";
+import { Button, IconButton, Popup, T } from "@/ui";
 import { fromHex, toHex8, type Rgba } from "./colors";
 import styles from "./ColorPicker.module.css";
 
@@ -13,6 +13,7 @@ interface PickerRequest {
   value: Rgba;
   onChange?: (value: Rgba) => void;
   onCommit?: (value: Rgba) => void;
+  onCancel?: () => void;
 }
 
 let root: Root | null = null;
@@ -63,28 +64,36 @@ function render() {
 }
 
 export function openColorPicker(request: PickerRequest) {
-  closeColorPicker();
+  closeColorPicker(true);
   active = { ...request, initial: [...request.value] };
   sequence++;
   render();
 }
 
-export function closeColorPicker() {
+function closeColorPicker(commit = false) {
   const previous = active;
   active = null;
   if (root) render();
-  if (previous?.value.some((channel, index) => channel !== previous.initial[index])) rememberColor(previous.value);
-  previous?.onCommit?.(previous.value);
+  if (!previous) return;
+  if (commit && previous.value.some((channel, index) => channel !== previous.initial[index])) {
+    rememberColor(previous.value);
+    previous.onCommit?.(previous.value);
+  } else previous.onCancel?.();
 }
 
 export function closeColorPickerFor(view: EditorView) {
   if (active?.view !== view) return;
+  const cancel = active.onCancel;
   active = null;
   if (root) render();
+  // Destruction and reconfiguration can happen during an editor update.
+  if (cancel) queueMicrotask(cancel);
 }
 
 export function disposeColorPicker() {
+  const cancel = active?.onCancel;
   active = null;
+  cancel?.();
   root?.unmount();
   host?.remove();
   root = null;
@@ -140,14 +149,17 @@ function Picker({ id, request }: { id: number; request: PickerRequest }) {
   const t = useTx();
   const eyeDropper = (window as EyeDropperWindow).EyeDropper;
   useEffect(() => {
-    const close = () => closeColorPickerFor(request.view);
+    const close = () => {
+      if (sequence === id) closeColorPicker();
+    };
     request.view.scrollDOM.addEventListener("scroll", close);
     return () => request.view.scrollDOM.removeEventListener("scroll", close);
-  }, [request.view]);
+  }, [id, request.view]);
 
   const update = (next: Rgba) => {
+    if (sequence !== id || !active) return;
     setValue(next);
-    if (sequence === id && active) active = { ...active, value: next };
+    active = { ...active, value: next };
     request.onChange?.(next);
   };
   const channel = (index: 0 | 1 | 2, text: string) => {
@@ -185,98 +197,113 @@ function Picker({ id, request }: { id: number; request: PickerRequest }) {
       anchor={request.anchor}
       placement="bottom-start"
       offset={4}
-      onClose={closeColorPicker}
+      onClose={(reason) => closeColorPicker(reason !== "escape")}
       aria-label={t("Color picker")}
       className={styles.popup}
       trapFocus
       closeOnDeactivate={false}
     >
-      <div className={styles.pickerArea}>
-        <RgbaColorPicker
-          className={styles.control}
-          color={{ r: value[0], g: value[1], b: value[2], a: value[3] }}
-          onChange={({ r, g, b, a }) => update([r, g, b, a])}
-        />
-        <div className={styles.sampleRow}>
-          <IconButton
-            icon="eyedropper"
-            title="Pick screen color"
-            size="small"
-            disabled={!eyeDropper || sampling}
-            onClick={() => void sampleScreen()}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!event.currentTarget.querySelector('[aria-invalid="true"]')) closeColorPicker(true);
+        }}
+      >
+        <div className={styles.pickerArea}>
+          <RgbaColorPicker
+            className={styles.control}
+            color={{ r: value[0], g: value[1], b: value[2], a: value[3] }}
+            onChange={({ r, g, b, a }) => update([r, g, b, a])}
           />
-          <div className={styles.preview} role="img" aria-label={t("Current color")}>
-            <span style={{ backgroundColor: `rgba(${value.join(", ")})` }} />
+          <div className={styles.sampleRow}>
+            <IconButton
+              icon="eyedropper"
+              title="Pick screen color"
+              size="small"
+              disabled={!eyeDropper || sampling}
+              onClick={() => void sampleScreen()}
+            />
+            <div className={styles.preview} role="img" aria-label={t("Current color")}>
+              <span style={{ backgroundColor: `rgba(${value.join(", ")})` }} />
+            </div>
           </div>
         </div>
-      </div>
-      <div className={styles.fields}>
-        <Field
-          label="R"
-          name="Red"
-          value={String(value[0])}
-          maxLength={3}
-          inputMode="numeric"
-          isValid={numeric(255)}
-          onValid={(v) => channel(0, v)}
-        />
-        <Field
-          label="G"
-          name="Green"
-          value={String(value[1])}
-          maxLength={3}
-          inputMode="numeric"
-          isValid={numeric(255)}
-          onValid={(v) => channel(1, v)}
-        />
-        <Field
-          label="B"
-          name="Blue"
-          value={String(value[2])}
-          maxLength={3}
-          inputMode="numeric"
-          isValid={numeric(255)}
-          onValid={(v) => channel(2, v)}
-        />
-        <Field
-          label="A%"
-          name="Alpha percent"
-          value={String(Math.round(value[3] * 100))}
-          maxLength={3}
-          inputMode="numeric"
-          isValid={numeric(100)}
-          onValid={alpha}
-        />
-        <Field
-          label={t("HEX")}
-          name="Hexadecimal"
-          value={toHex8(value).slice(1).toUpperCase()}
-          maxLength={9}
-          inputMode="text"
-          isValid={(v) => fromHex(v) !== null}
-          onValid={hex}
-        />
-      </div>
-      {recent.length > 0 && (
-        <div className={styles.recent} role="group" aria-label={t("Recent colors")}>
-          {recent.map((hex) => (
-            <button
-              key={hex}
-              type="button"
-              title={hex.toUpperCase()}
-              aria-label={`${t("Recent color")} ${hex.toUpperCase()}`}
-              aria-pressed={hex.toLowerCase() === toHex8(value)}
-              className={styles.recentColor}
-              onClick={() => {
-                const next = fromHex(hex);
-                if (next) update(next);
-              }}
-            >
-              <span style={{ backgroundColor: hex }} />
-            </button>
-          ))}
+        <div className={styles.fields}>
+          <Field
+            label="R"
+            name="Red"
+            value={String(value[0])}
+            maxLength={3}
+            inputMode="numeric"
+            isValid={numeric(255)}
+            onValid={(v) => channel(0, v)}
+          />
+          <Field
+            label="G"
+            name="Green"
+            value={String(value[1])}
+            maxLength={3}
+            inputMode="numeric"
+            isValid={numeric(255)}
+            onValid={(v) => channel(1, v)}
+          />
+          <Field
+            label="B"
+            name="Blue"
+            value={String(value[2])}
+            maxLength={3}
+            inputMode="numeric"
+            isValid={numeric(255)}
+            onValid={(v) => channel(2, v)}
+          />
+          <Field
+            label="A%"
+            name="Alpha percent"
+            value={String(Math.round(value[3] * 100))}
+            maxLength={3}
+            inputMode="numeric"
+            isValid={numeric(100)}
+            onValid={alpha}
+          />
+          <Field
+            label={t("HEX")}
+            name="Hexadecimal"
+            value={toHex8(value).slice(1).toUpperCase()}
+            maxLength={9}
+            inputMode="text"
+            isValid={(v) => fromHex(v) !== null}
+            onValid={hex}
+          />
         </div>
-      )}
+        {recent.length > 0 && (
+          <div className={styles.recent} role="group" aria-label={t("Recent colors")}>
+            {recent.map((hex) => (
+              <button
+                key={hex}
+                type="button"
+                title={hex.toUpperCase()}
+                aria-label={`${t("Recent color")} ${hex.toUpperCase()}`}
+                aria-pressed={hex.toLowerCase() === toHex8(value)}
+                className={styles.recentColor}
+                onClick={() => {
+                  const next = fromHex(hex);
+                  if (next) update(next);
+                }}
+              >
+                <span style={{ backgroundColor: hex }} />
+              </button>
+            ))}
+          </div>
+        )}
+        <div className={styles.actions}>
+          <Button size="small" onClick={() => closeColorPicker()}>
+            <T>Cancel</T>
+          </Button>
+          <Button type="submit" variant="primary" size="small">
+            <T>Apply</T>
+          </Button>
+        </div>
+      </form>
     </Popup>
   );
 }

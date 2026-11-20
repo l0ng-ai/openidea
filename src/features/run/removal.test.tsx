@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => ({
   runSaveConfigs: vi.fn(),
@@ -17,6 +17,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
 
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { MessagesHost } from "@/workbench/messages";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { ConfigChooserOverlay } from "./ConfigChooser";
 import {
@@ -141,12 +142,37 @@ it("keeps other temporary and non-temporary configurations on removal", async ()
   expect(useRun.getState().configs.map((c) => c.id)).toEqual(expect.arrayContaining(["npm:app", other.id]));
 });
 
-it("chooser popup Delete removes the selected detection", async () => {
+it("chooser popup Delete removes the selected detection once confirmed", async () => {
   useRun.setState({ chooserOpen: true, editorOpen: false });
-  render(<ConfigChooserOverlay />);
+  render(
+    <>
+      <ConfigChooserOverlay />
+      <MessagesHost />
+    </>,
+  );
   fireEvent.keyDown(document.querySelector("input[data-autofocus]")!, { key: "Delete" });
+  const ask = await screen.findByRole("dialog", { name: "Confirmation" });
+  expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
+  fireEvent.click(within(ask).getByRole("button", { name: "Delete" }));
   await waitFor(() => expect(ipc.runSaveConfigs).toHaveBeenCalledWith([], ["npm:app"]));
   await waitFor(() => expect(useRun.getState().configs).toEqual([]));
+});
+
+it("chooser popup Delete edits the search text when the caret is not at its end", async () => {
+  useRun.setState({ chooserOpen: true, editorOpen: false });
+  render(
+    <>
+      <ConfigChooserOverlay />
+      <MessagesHost />
+    </>,
+  );
+  const input = document.querySelector<HTMLInputElement>("input[data-autofocus]")!;
+  fireEvent.change(input, { target: { value: "app" } });
+  input.setSelectionRange(1, 1);
+  fireEvent.keyDown(input, { key: "Delete" });
+  await act(async () => {});
+  expect(screen.queryByRole("dialog", { name: "Confirmation" })).toBeNull();
+  expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
 });
 
 it("Cancel discards a pending detected removal", () => {

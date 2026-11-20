@@ -1,7 +1,8 @@
 /**
  * Icon set: JetBrains new-UI ("expui") icons from intellij-community / intellij-plugins
  * (Apache-2.0 / MIT, see THIRD_PARTY_LICENSES.md), vendored as-is under
- * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants. File types
+ * `./expui/<group>/<name>.svg` with their `_dark` and `@20x20` variants; `./expui/flutter/`
+ * holds the Flutter plugin's tool window icons (BSD-3-Clause). File types
  * whose JetBrains icons are not open source use OpenIDEA's own icons drawn in the same
  * style, under `./openidea/<group>/<name>.svg` (paths prefixed `openidea/`). Project type
  * logos under `./brands/` come from Simple Icons (CC0-1.0; see THIRD_PARTY_LICENSES.md). Names are the
@@ -20,7 +21,7 @@
  * - Element ids (clip paths) are made unique per instance: WebKit can't resolve
  *   references into `display: none` subtrees, so ids must never be shared.
  */
-import { useId, useMemo, type CSSProperties } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, type CSSProperties } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import styles from "./icons.module.css";
@@ -268,6 +269,7 @@ const ICONS = {
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
   "agent-omp": "openidea/agents/omp",
+  "agent-hermes": "openidea/agents/hermes",
   "agent-deepseek-harness": "brands/deepseek",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
@@ -310,6 +312,7 @@ const ICONS = {
   "page-first": "openidea/general/pageFirst",
   "page-last": "openidea/general/pageLast",
   sliders: "openidea/general/sliders",
+  layers: "openidea/general/layers",
   "graphql-variables": "openidea/general/graphqlVariables",
   layout: "general/layout",
   split: "general/splitVertically",
@@ -446,12 +449,17 @@ const ICONS = {
   "test-pending": "run/testNotRunYet",
   "test-show-passed": "run/showPassed",
   "test-show-ignored": "run/showIgnored",
+  "test-sort": "runConfigurations/sortByDuration",
   debug: "run/debug",
   "run-coverage": "run/runWithCoverage",
   profile: "run/profile",
   "toolwindow-coverage": "toolwindows/coverage",
   "toolwindow-profiler": "toolwindows/profiler",
   "toolwindow-logcat": "openidea/fileTypes/log",
+  "toolwindow-flutter-inspector": "flutter/inspector",
+  "toolwindow-flutter-devtools": "flutter/devTools",
+  "toolwindow-flutter-deep-links": "flutter/deepLinks",
+  "toolwindow-flutter-extensions": "flutter/extensions",
   "gutter-navigate": "general/autoscrollToSource",
   "gutter-run": "gutter/run",
   "gutter-run-all": "actions/runAll",
@@ -831,6 +839,20 @@ const EMPTY: Prepared = { viewBox: "0 0 16 16", html: "", hasIds: false, mono: t
 
 const withIds = (p: Prepared, prefix: string) => (p.hasIds ? p.html.replace(/__ID__/g, prefix) : p.html);
 
+/** Parsed markup by source, cloned into each icon: a tree or list mounts dozens of the same icon
+ *  per frame, and parsing `innerHTML` for each one costs more than the rest of the row. */
+const parsed = new Map<string, SVGSVGElement>();
+
+function fillIcon(svg: SVGSVGElement, html: string, shared: boolean) {
+  let source = shared ? parsed.get(html) : undefined;
+  if (!source) {
+    source = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    source.innerHTML = html;
+    if (shared) parsed.set(html, source);
+  }
+  svg.replaceChildren(...Array.from(source.childNodes, (n) => n.cloneNode(true)));
+}
+
 // ---------------------------------------------------------------------------
 
 /** Largest `data:` image accepted as an icon (an avatar or a status badge a plugin fetched). */
@@ -879,11 +901,17 @@ function SvgIcon({ name, size = 16, className, style, label }: IconProps) {
   const path = iconPath(name);
   const p = (path && prepare(path, size >= 18)) || prepare(ICONS.file, size >= 18) || EMPTY;
   const html = useMemo(() => withIds(p, `i${uid.replace(/[^a-zA-Z0-9_-]/g, "")}-`), [p, uid]);
+  const ref = useRef<SVGSVGElement>(null);
+  useLayoutEffect(() => {
+    // Markup with per-instance ids is unique to this icon: nothing to share.
+    if (ref.current) fillIcon(ref.current, html, !p.hasIds);
+  }, [html, p.hasIds]);
   if (!path && name.startsWith("symbol-")) {
     return <SymbolBadge kind={name.slice(7)} className={className} style={style} />;
   }
   return (
     <svg
+      ref={ref}
       className={clsx(styles.icon, p.mono && styles.mono, className)}
       style={style}
       width={size}
@@ -894,7 +922,6 @@ function SvgIcon({ name, size = 16, className, style, label }: IconProps) {
       role={label ? "img" : undefined}
       aria-label={label}
       focusable="false"
-      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

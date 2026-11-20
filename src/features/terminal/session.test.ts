@@ -39,7 +39,6 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
     onmessage: ((chunk: string) => void) | null = null;
   },
 }));
-
 const fileLink = (text: string): Extract<TerminalLink, { kind: "file" }> => {
   const [l] = findTerminalLinks(text);
   if (!l || l.kind !== "file") throw new Error(`not a file link: ${text}`);
@@ -51,16 +50,17 @@ describe("Windows PTY metadata", () => {
   afterEach(() => usePlatform.setState(initialPlatform));
 
   it.each([
-    ["windows", 19045, { backend: "conpty", buildNumber: 19045 }],
-    ["windows", 22631, { backend: "conpty", buildNumber: 22631 }],
-    ["windows", null, { backend: "conpty", buildNumber: undefined }],
-    ["macos", null, {}],
-    ["linux", null, {}],
-  ] as const)("configures %s build %s", (os, windowsBuildNumber, expected) => {
+    ["windows", 19045, { backend: "conpty", buildNumber: 19045 }, false],
+    ["windows", 22631, { backend: "conpty", buildNumber: 22631 }, true],
+    ["windows", null, { backend: "conpty", buildNumber: undefined }, false],
+    ["macos", null, {}, false],
+    ["linux", null, {}, false],
+  ] as const)("configures %s build %s", (os, windowsBuildNumber, expected, reflowCursorLine) => {
     usePlatform.setState({ os, windowsBuildNumber });
     const session = new TerminalSession({ key: "pty-options", cwd: "/repo", onChange() {}, onFocus() {} });
     try {
       expect(session.term.options.windowsPty).toEqual(expected);
+      expect(session.term.options.reflowCursorLine).toBe(reflowCursorLine);
     } finally {
       session.dispose();
     }
@@ -69,11 +69,39 @@ describe("Windows PTY metadata", () => {
   it("updates a restored terminal when platform info arrives and unsubscribes on disposal", () => {
     usePlatform.setState({ os: "windows", windowsBuildNumber: null });
     const session = new TerminalSession({ key: "restored", cwd: "/repo", onChange() {}, onFocus() {} });
+    expect(session.term.options.reflowCursorLine).toBe(false);
     usePlatform.setState({ windowsBuildNumber: 22631 });
     expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+    expect(session.term.options.reflowCursorLine).toBe(true);
     session.dispose();
     usePlatform.setState({ windowsBuildNumber: 19045 });
     expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+    expect(session.term.options.reflowCursorLine).toBe(true);
+  });
+
+  it.each([
+    ["idle prompt", ""],
+    ["wrapped pending input", "Write-Output 'pending input spanning more than one terminal row"],
+  ])("preserves the %s when a ConPTY session narrows and widens", async (_, input) => {
+    usePlatform.setState({ os: "windows", windowsBuildNumber: 26200 });
+    const session = new TerminalSession({ key: "pty-reflow", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      const prompt = "PS C:\\workspace\\a-long-project-directory\\src> ";
+      const content = prompt + input;
+      const { term } = session;
+      const terminalText = () => {
+        const buffer = term.buffer.active;
+        return Array.from({ length: buffer.length }, (_, i) => buffer.getLine(i)?.translateToString(true)).join("");
+      };
+      term.resize(80, 8);
+      await new Promise<void>((resolve) => term.write(content, resolve));
+      term.resize(30, 8);
+      expect(terminalText()).toBe(content);
+      term.resize(80, 8);
+      expect(terminalText()).toBe(content);
+    } finally {
+      session.dispose();
+    }
   });
 });
 

@@ -1,5 +1,5 @@
 import { clearContext, setContext } from "@/platform/context";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -8,6 +8,11 @@ import { registerMenuGroup } from "@/workbench/contributions";
 import { contextMenuItems, keyLabel, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
+
+vi.mock("@/platform/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/ipc")>()),
+  isTauri: () => true,
+}));
 
 const ROOT = "/p";
 const SCRATCHES = "/config/scratches";
@@ -175,7 +180,7 @@ describe("project view context menu", () => {
       "-",
       "Edit File Colors…",
     ]);
-    expect(sub(items, "Open In")).toEqual([revealLabel(), "Terminal"]);
+    expect(sub(items, "Open In")).toEqual([revealLabel(), "Associated Application", "Terminal"]);
     expect(sub(items, "Git")?.slice(0, 4)).toEqual(["Commit File…", "Add", "-", "Annotate with Git Blame"]);
   });
 
@@ -199,7 +204,7 @@ describe("project view context menu", () => {
 
   it("hides the OS file manager in an SSH or dev-container window, whose files are not on this desktop", () => {
     const library = { ...node("/root/.m2/lib.jar"), readOnly: true };
-    expect(sub(contextMenuItems([library]), "Open In")).toEqual([revealLabel()]);
+    expect(sub(contextMenuItems([library]), "Open In")).toEqual([revealLabel(), "Associated Application"]);
     for (const target of [
       { kind: "ssh", config: "box" },
       { kind: "devContainer", folder: "/Users/me/app", config: "" },
@@ -207,6 +212,22 @@ describe("project view context menu", () => {
       useRemote.setState({ session: { target, root: ROOT, host: "h", os: "linux", commands: [] } });
       expect(sub(contextMenuItems([node(`${ROOT}/src/a.py`)]), "Open In")).toEqual(["Terminal"]);
       expect(labels(contextMenuItems([library]))).not.toContain("Open In");
+    }
+  });
+
+  it("offers Download to… for remote project files only (#4718)", () => {
+    const off = registerActions([{ id: "project.downloadTo", title: "Download to…", run: () => undefined }]);
+    try {
+      const files = [node(`${ROOT}/src`, true), node(`${ROOT}/a.py`)];
+      expect(labels(contextMenuItems(files))).not.toContain("Download to…");
+      useRemote.setState({
+        session: { target: { kind: "ssh", config: "box" }, root: ROOT, host: "h", os: "linux", commands: [] },
+      });
+      const l = labels(contextMenuItems(files));
+      expect(l.indexOf("Download to…")).toBe(l.indexOf("Open In") + 1);
+      expect(labels(contextMenuItems([node(`${SCRATCHES}/s.py`)]))).not.toContain("Download to…");
+    } finally {
+      off();
     }
   });
 

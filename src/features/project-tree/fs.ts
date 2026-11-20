@@ -18,8 +18,8 @@ export interface ProjectFs {
   createFileBytes(path: string, data: Uint8Array): Promise<void>;
   createDir(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
-  /** Moves to the trash when possible. */
-  delete(path: string): Promise<void>;
+  /** Moves to the trash when possible and returns a restore function reporting skipped paths. */
+  delete(path: string): Promise<() => Promise<string[]>>;
   copy(from: string, to: string): Promise<void>;
   importLocal(from: string, to: string, upload?: LocalImport): Promise<string[]>;
 }
@@ -37,8 +37,9 @@ export const tauriFs: ProjectFs = {
   createDir: async (path) => void (await call(commands.fsCreateDir(path))),
   rename: async (from, to) => void (await call(commands.fsRename(from, to))),
   delete: async (path) => {
-    await call(commands.fsDelete(path));
+    const undo = await call(commands.fsDeleteWithUndo(path));
     notifyFileOperation({ kind: "deleted", paths: [path] });
+    return () => call(commands.fsUndoDelete(undo));
   },
   copy: async (from, to) => {
     await call(commands.fsCopy(from, to));
@@ -106,6 +107,9 @@ type ResolvedNode = Exclude<MemNode, { kind: "symlink" }>;
 
 const err = (kind: "notFound" | "alreadyExists" | "invalidInput", message: string) => new IpcError({ kind, message });
 
+/** Created once: building a collator costs more than sorting a small folder with it. */
+const naturalOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 /** The tree's own notion (see `isDirEntry`): a folder, or a link to one. */
 const isFolder = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.size === 0);
 
@@ -160,13 +164,14 @@ export class MemoryFs implements ProjectFs {
     const { path, node } = this.resolve(at);
     if (!node) throw err("notFound", `${path} not found`);
     if (node.kind !== "dir") throw err("invalidInput", `${at} is not a directory`);
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    // A child is excluded when its folder is, or when it is itself an excluded path.
+    const inExcluded = [...this.ignored].some((i) => path === i || isInside(path, i));
     return (
       this.childrenOf(path)
         .map((p) => {
           const c = this.nodes.get(p)!;
           const name = nameOf(p);
-          const excluded = [...this.ignored].some((i) => p === i || isInside(p, i));
+          const excluded = inExcluded || this.ignored.has(p);
           if (c.kind === "symlink") {
             const t = this.resolve(p);
             return {
@@ -194,7 +199,7 @@ export class MemoryFs implements ProjectFs {
           } satisfies FileEntry;
         })
         // Folders first, counting a link to a folder as a folder (the backend's ordering).
-        .sort((a, b) => Number(isFolder(b)) - Number(isFolder(a)) || collator.compare(a.name, b.name))
+        .sort((a, b) => Number(isFolder(b)) - Number(isFolder(a)) || naturalOrder.compare(a.name, b.name))
     );
   }
 
@@ -238,8 +243,16 @@ export class MemoryFs implements ProjectFs {
 
   async delete(path: string) {
     if (!this.nodes.has(path)) throw err("notFound", `${path} not found`);
-    for (const p of [...this.nodes.keys()]) if (p === path || isInside(p, path)) this.nodes.delete(p);
+    const deleted = [...this.nodes].filter(([p]) => p === path || isInside(p, path));
+    for (const [p] of deleted) this.nodes.delete(p);
     this.emit({ removed: [path] });
+    return async () => {
+      if (this.nodes.has(path)) return [path];
+      this.mkdirp(parentOf(path));
+      for (const [p, node] of deleted) this.nodes.set(p, node);
+      this.emit({ created: deleted.map(([p]) => p) });
+      return [];
+    };
   }
 
   async copy(from: string, to: string) {

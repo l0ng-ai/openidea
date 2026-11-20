@@ -128,6 +128,16 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     submenu: [...extra, act("db.jumpToConsole", n)],
   });
 
+  if (driver === "jdbc" && n.kind !== "source") {
+    return [
+      newConsole,
+      ...(t ? [act("db.editData", n)] : []),
+      refresh,
+      { label: "Copy/Paste", submenu: [copyRef] },
+      navigation(),
+    ];
+  }
+
   switch (n.kind) {
     case "source": {
       const connected = connectedTargets(n.source.id ?? "").length > 0;
@@ -156,8 +166,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         quickDoc,
         navigation(),
         sep,
-        sqlScripts(n, false),
-        act("db.compareSchemas", n),
+        ...(driver === "jdbc" ? [act("db.runSqlScript", n)] : [sqlScripts(n, false), act("db.compareSchemas", n)]),
         ...importExport(dumpItems(n, true)),
         sep,
         act("db.drop", n, { label: "Remove Data Source…" }),

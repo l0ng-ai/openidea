@@ -559,6 +559,10 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 }
             }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
+            "hotReload" => {
+                ok!(msg, Value::Null);
+                send!(json!({"type": "event", "event": "flutter.appStarted", "body": {}}));
+            }
             "redefineClasses" => {
                 send!(
                     json!({"type": "event", "event": "hotcodereplace", "body": {"changeType": "STARTING", "message": "Start hot code replacement procedure..."}})
@@ -567,6 +571,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(
                     json!({"type": "event", "event": "hotcodereplace", "body": {"changeType": 3, "message": "Build completed"}})
                 );
+            }
+            "hotRestart" => {
+                ok!(msg, Value::Null);
+                let uris = json!({"vmServiceUri": "ws://127.0.0.1:1/t=/ws"});
+                let navigate =
+                    |file: &str| json!({"kind": "navigate", "data": {"fileUri": file, "line": 3, "column": 5}});
+                // Not Flutter's yet: a plain Dart session sends these too.
+                send!(json!({"type": "event", "event": "dart.debuggerUris", "body": uris}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("file:///early.dart")}));
+                send!(json!({"type": "event", "event": "flutter.appStart", "body": {"deviceId": "d1"}}));
+                send!(json!({"type": "event", "event": "dart.debuggerUris", "body": uris}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": {"kind": "other", "data": {}}}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("package:a/a.dart")}));
+                send!(json!({"type": "event", "event": "dart.toolEvent", "body": navigate("file:///a%20b/main.dart")}));
             }
             "terminate" => {
                 ok!(msg, Value::Null);
@@ -1892,6 +1910,38 @@ async fn startup_sends_every_file_at_once_and_skips_files_with_nothing_enabled()
 }
 
 #[tokio::test]
+async fn hot_reload_sends_its_reason_and_reports_the_flutter_app() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.manager.hot_reload(id, HotReloadReason::Manual).await.unwrap();
+    h.manager.hot_reload(id, HotReloadReason::Save).await.unwrap();
+    let reasons: Vec<_> = requests(&h, "hotReload").iter().map(|args| args["reason"].clone()).collect();
+    assert_eq!(reasons, [json!("manual"), json!("save")]);
+    h.wait_event(|e| matches!(e, DebugEvent::FlutterAppStarted)).await;
+}
+
+#[tokio::test]
+async fn flutter_events_need_a_flutter_app() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.manager.hot_restart(id).await.unwrap();
+    let navigate = h.wait_event(|e| matches!(e, DebugEvent::FlutterNavigate { .. })).await;
+    let DebugEvent::FlutterNavigate { path, line, column } = navigate else { unreachable!() };
+    assert_eq!((path.as_ref(), line, column), (Path::new("/a b/main.dart"), 2, 4));
+    let events = h.events.lock();
+    let count = |want: fn(&DebugEvent) -> bool| {
+        events.iter().filter(|e| matches!(e, IdeEvent::Debug { event, .. } if want(event))).count()
+    };
+    assert_eq!(
+        count(
+            |e| matches!(e, DebugEvent::FlutterVmService { uri, device } if uri == "ws://127.0.0.1:1/t=/ws" && device.as_deref() == Some("d1"))
+        ),
+        1
+    );
+    assert_eq!(count(|e| matches!(e, DebugEvent::FlutterNavigate { .. })), 1);
+}
+
+#[tokio::test]
 async fn hot_swap_only_for_java_debug() {
     let h = harness(Script::default());
     let id = h.start(config()).await.unwrap();
@@ -2278,6 +2328,16 @@ fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
     assert!(!is_flutter_project(&tool, Some(&tool.join("bin/main.dart"))));
     assert!(!is_flutter_project(&root, None));
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn the_flutter_device_follows_the_tool_arguments() {
+    let mut arguments = json!({ "toolArgs": ["--flavor", "dev"] });
+    add_flutter_device(&mut arguments, json!("macos"));
+    assert_eq!(arguments["toolArgs"], json!(["--flavor", "dev", "-d", "macos"]));
+    let mut arguments = json!({});
+    add_flutter_device(&mut arguments, json!("chrome"));
+    assert_eq!(arguments["toolArgs"], json!(["-d", "chrome"]));
 }
 
 #[test]

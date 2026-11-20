@@ -16,6 +16,7 @@ import {
   T,
   type MenuItem,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import type { RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { useDebugRunSessions } from "@/workbench/contributions";
@@ -36,6 +37,7 @@ import {
 import { selectedTarget } from "./sessionTargets";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { confirm } from "@/workbench/messages";
 
 type Row =
   /** A labelled group, or a thin separator when `label` is empty. */
@@ -98,7 +100,7 @@ export function buildRows(
   return rows;
 }
 
-const rowHeight = (r: Row) => (r.type === "section" && !r.label ? SEPARATOR : ROW);
+const heightOf = (r: Row, rowHeight: number) => (r.type === "section" && !r.label ? SEPARATOR : rowHeight);
 
 let closedAt = 0;
 /** The chooser closed within the last moment (a click on its own anchor shouldn't reopen it). */
@@ -111,6 +113,16 @@ function anchorElement(): Element | { x: number; y: number } {
 }
 
 /** Run/Debug configuration chooser popup (⌃⌥R), anchored to the title bar widget. */
+/** Deletes a configuration from the chooser once the user confirms, as IDEA's popup asks first. */
+async function askDeleteConfig(config: RunConfig) {
+  const ok = await confirm({
+    title: "Confirmation",
+    message: tx`Are you sure you want to delete ${config.name}?`,
+    ok: "Delete",
+  });
+  if (ok) await deleteConfig(config.id);
+}
+
 export function ConfigChooserOverlay() {
   const open = useRun((s) => s.chooserOpen);
   if (!open) return null;
@@ -134,6 +146,7 @@ export function mnemonics(rows: readonly Row[]): Map<string, number> {
 
 function ConfigChooser() {
   const mode = useRun((s) => s.chooserMode);
+  const rowHeight = useRowHeight(ROW);
   const configs = useRun((s) => s.configs);
   const selectedId = useRun((s) => s.selectedId);
   const temporary = useRun((s) => s.temporary);
@@ -250,10 +263,11 @@ function ConfigChooser() {
       e.key === "Delete" &&
       row?.type === "config" &&
       canDeleteConfig(row.config.id) &&
-      input().selectionStart === query.length
+      input().selectionStart === query.length &&
+      input().selectionEnd === query.length
     ) {
       e.preventDefault();
-      void deleteConfig(row.config.id);
+      void askDeleteConfig(row.config);
       return;
     }
     if (numbers.size && !e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$|^Numpad[1-9]$/.test(e.code)) {
@@ -273,8 +287,8 @@ function ConfigChooser() {
   };
 
   const height = Math.min(
-    rows.reduce((sum, r) => sum + rowHeight(r), 0),
-    14 * ROW,
+    rows.reduce((sum, r) => sum + heightOf(r, rowHeight), 0),
+    14 * rowHeight,
   );
 
   // IDEA: a configuration's submenu lists its executors, then Edit and Pin.
@@ -286,7 +300,7 @@ function ConfigChooser() {
       { kind: "header", label: "Configuration" },
       { label: "Edit…", icon: "edit", run: () => activate(row, "edit") },
       { label: pinned.includes(c.id) ? "Unpin" : "Pin", icon: "pin", run: () => togglePinned(c.id) },
-      ...(canDeleteConfig(c.id) ? [{ label: "Delete", danger: true, run: () => void deleteConfig(c.id) }] : []),
+      ...(canDeleteConfig(c.id) ? [{ label: "Delete", danger: true, run: () => void askDeleteConfig(c) }] : []),
     ];
   };
   const openMenu = (c: RunConfig, at: Element) => setMenu({ name: c.name, anchor: at, items: menuItems(c) });
@@ -354,7 +368,7 @@ function ConfigChooser() {
           onActiveChange={setActive}
           focusable={false}
           hoverSelects
-          rowHeight={ROW}
+          rowHeight={rowHeight}
           onActivate={(r) => activate(r)}
           renderItem={(r, { active: isActive }) => {
             if (r.type === "save") {

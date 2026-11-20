@@ -15,12 +15,14 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod flutter;
 pub mod fs;
 pub mod heap;
 pub mod history;
 pub mod java;
 pub mod jvm_icons;
 pub mod lsp;
+pub mod maven_placeholder;
 pub mod nav;
 pub mod notebook;
 pub mod project;
@@ -84,12 +86,14 @@ ide_command::domains!(
     doc_commands: crate::ops::doc::commands,
     docker: crate::ops::docker,
     env: crate::ops::env,
+    flutter: crate::ops::flutter,
     fs: crate::ops::fs,
     heap: crate::ops::heap,
     history: crate::ops::history,
     java: crate::ops::java,
     jvm_icons: crate::ops::jvm_icons,
     lsp: crate::ops::lsp,
+    mcp: crate::mcp::service,
     mcp_reports: crate::mcp::reports,
     nav: crate::ops::nav,
     notebook: crate::ops::notebook,
@@ -97,6 +101,7 @@ ide_command::domains!(
     plugins_commit: crate::plugins::commit,
     plugins_index_ops: crate::plugins::index_ops,
     plugins_run_targets: crate::plugins::run_targets,
+    plugins_search: crate::plugins::search,
     plugins_views: crate::plugins::views,
     project: crate::ops::project,
     refactor: crate::ops::refactor,

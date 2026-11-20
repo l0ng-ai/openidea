@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   worktree: vi.fn(),
+  revisions: vi.fn(),
+  presentations: vi.fn(),
   openDiff: vi.fn(),
   openFile: vi.fn(),
 }));
@@ -10,9 +12,19 @@ vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
     ...real,
-    commands: { ...real.commands, vcsDiffWithWorktree: mocks.worktree },
+    isTauri: () => true,
+    commands: {
+      ...real.commands,
+      vcsDiffWithWorktree: mocks.worktree,
+      vcsDiffRevisions: mocks.revisions,
+      jvmFilePresentations: mocks.presentations,
+    },
   };
 });
+vi.mock("@/ui", async (original) => ({
+  ...(await original<typeof import("@/ui")>()),
+  Icon: ({ name }: { name: string }) => <span data-testid={`icon-${name}`} />,
+}));
 vi.mock("../diffInput", async (original) => {
   const real = await original<typeof import("../diffInput")>();
   return { ...real, openVcsDiff: mocks.openDiff };
@@ -25,7 +37,7 @@ vi.mock("@/workbench/contributions", async (original) => {
   return { ...real, maybeEditorService: () => ({ openFile: mocks.openFile }) };
 });
 import { useProject } from "@/platform/project";
-import { comparisonDiffData, type ComparisonFile } from "../operations";
+import { ChangesBetweenDialog, comparisonDiffData, type ComparisonFile } from "../operations";
 import { CompareToolWindow, useCompareTool } from "../compareTool";
 import { useVcs } from "../store";
 
@@ -112,6 +124,47 @@ describe("CompareToolWindow", () => {
     expect(jump).toBeEnabled();
     fireEvent.click(jump);
     expect(mocks.openFile).toHaveBeenCalledWith("/workspace/client/src/app.ts", { focus: true });
+  });
+
+  it("shows Java and Kotlin declarations from the compared repository and skips deleted files", async () => {
+    const base = "/workspace/client/src/";
+    mocks.worktree.mockResolvedValue({
+      status: "ok",
+      data: [
+        { ...modified, path: "src/PricingRule.java", kind: "renamed", oldPath: "src/Rule.java" },
+        { ...modified, path: "src/Order.java" },
+        { ...modified, path: "src/OrderTest.java", kind: "added" },
+        { ...modified, path: "src/Removed.java", kind: "deleted" },
+        { ...modified, path: "src/Pricing.kt" },
+        modified,
+      ],
+    });
+    mocks.presentations.mockResolvedValue({
+      status: "ok",
+      data: [
+        { path: base + "PricingRule.java", presentation: { kind: "interface" } },
+        { path: base + "Order.java", presentation: { kind: "class" } },
+        { path: base + "OrderTest.java", presentation: { kind: "class" } },
+        { path: base + "Pricing.kt", presentation: { kind: "object" } },
+      ],
+    });
+    render(<CompareToolWindow />);
+    expect(await screen.findByTestId("icon-interface")).toBeInTheDocument();
+    expect(screen.getByText("PricingRule.java").previousElementSibling).toBe(screen.getByTestId("icon-interface"));
+    expect(screen.getByText("Order.java").previousElementSibling).toBe(screen.getByTestId("icon-class"));
+    expect(screen.getByText("OrderTest.java").previousElementSibling).toBe(screen.getByTestId("icon-jvm-test"));
+    expect(screen.getByText("Removed.java").previousElementSibling).toBe(screen.getByTestId("icon-file-java"));
+    expect(screen.getByText("Pricing.kt").previousElementSibling).toBe(screen.getByTestId("icon-kotlin-object"));
+    expect(mocks.presentations.mock.calls.flatMap(([paths]) => paths).sort()).toEqual(
+      ["Order.java", "OrderTest.java", "Pricing.kt", "PricingRule.java"].map((name) => base + name),
+    );
+  });
+
+  it("keeps the file-type icon for a comparison of two revisions", async () => {
+    mocks.revisions.mockResolvedValue({ status: "ok", data: [{ ...modified, path: "src/PricingRule.java" }] });
+    render(<ChangesBetweenDialog from={from} to={{ rev: "next", label: "next" }} onClose={() => {}} />);
+    expect(await screen.findByTestId("icon-file-java")).toBeInTheDocument();
+    expect(mocks.presentations).not.toHaveBeenCalled();
   });
 
   it("lists files without an inline diff and opens a file's diff in the editor", async () => {

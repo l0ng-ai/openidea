@@ -69,6 +69,7 @@ const KNOWN_AGENTS: ReadonlyArray<{ id: string; name: string }> = [
   { id: "cursor", name: "Cursor" },
   { id: "gemini", name: "Gemini CLI" },
   { id: "opencode", name: "OpenCode" },
+  { id: "hermes", name: "Hermes Agent" },
 ];
 
 function formatKeyValues(items: readonly McpKeyValue[]): string {

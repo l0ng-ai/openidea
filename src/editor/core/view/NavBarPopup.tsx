@@ -4,13 +4,13 @@
  * (folder contents, file / symbol members); Enter on a child opens it (a
  * folder becomes the next segment), Escape closes the list, then the bar.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { call, commands, isTauri, type OutlineItem } from "@/platform/ipc";
 import { projectFolder, useProject } from "@/platform/project";
 import { useProjectViewLead } from "@/workbench/contributions";
-import { Icon, Popup, T } from "@/ui";
+import { Icon, listNavigate, Popup, revealHorizontally, revealVertically, T } from "@/ui";
 import { editorController, useEditorStatus } from "../controller";
 import { useOutline } from "../model/document";
 import { symbolChain } from "./outline";
@@ -64,6 +64,74 @@ function anchorPoint(): { x: number; y: number } {
   return r ? { x: r.left + 8, y: r.top + 4 } : { x: 80, y: 80 };
 }
 
+function NavChildList({
+  label,
+  id,
+  items,
+  active,
+  onSelect,
+  onChoose,
+  onKeyDown,
+}: {
+  label: string;
+  id: string;
+  items: readonly NavChild[] | null;
+  active: number;
+  onSelect: (index: number) => void;
+  onChoose: (child: NavChild) => void;
+  onKeyDown?: (e: KeyboardEvent) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const scroller = ref.current;
+    const row = scroller?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!scroller || !row) return;
+    const reveal = () => revealVertically(scroller, row);
+    reveal();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(reveal);
+    resize.observe(scroller);
+    return () => resize.disconnect();
+  }, [active, items]);
+
+  return (
+    <div
+      ref={ref}
+      id={id}
+      className={styles.list}
+      role="listbox"
+      aria-label={label}
+      aria-activedescendant={items?.[active] ? `${id}-${active}` : undefined}
+      tabIndex={0}
+      data-autofocus
+      onKeyDown={onKeyDown}
+    >
+      {items?.length === 0 && (
+        <div className={styles.empty}>
+          <T>Nothing here</T>
+        </div>
+      )}
+      {items?.map((child, i) => (
+        <div
+          key={`${child.path}:${child.label}:${i}`}
+          id={`${id}-${i}`}
+          role="option"
+          aria-selected={i === active}
+          className={clsx(styles.row, i === active && styles.rowActive)}
+          onMouseEnter={() => onSelect(i)}
+          onClick={() => onChoose(child)}
+        >
+          <Icon name={iconOf(child)} size={16} className={styles.rowIcon} />
+          <span className={styles.rowLabel} title={child.label}>
+            {child.label}
+          </span>
+          {child.kind === "dir" && <Icon name="chevron-right" size={12} className={styles.rowChevron} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function NavBar({ path, line, col, directory }: { path: string; line: number; col: number; directory: boolean }) {
   const project = useProject((s) => s.project);
   const outline = useOutline((s) => s[path]);
@@ -77,11 +145,19 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
   const [active, setActive] = useState(() =>
     Math.max(0, directory ? initial.length - 1 : initial.findIndex((s) => s.kind === "file")),
   );
-  const [list, setList] = useState<{ seg: number; items: NavChild[]; active: number; left: number } | null>(null);
+  const [list, setList] = useState<{ seg: number; items: NavChild[]; active: number } | null>(null);
+  const [childAnchor, setChildAnchor] = useState<HTMLButtonElement | null>(null);
+  const listId = useId();
   const [anchor] = useState(anchorPoint);
+  const strip = useRef<HTMLDivElement>(null);
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
-  const listRef = useRef<HTMLDivElement>(null);
   const request = useRef(0);
+  const listSegment = list?.seg;
+
+  const closeList = () => {
+    request.current++;
+    setList(null);
+  };
 
   const openList = async (index: number, segs = segments) => {
     const seg = segs[index];
@@ -92,7 +168,7 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
     // Start on the child that leads to the next segment, like IDEA.
     const next = segs[index + 1];
     const at = next ? items.findIndex((c) => c.path === next.path && c.label === next.label) : -1;
-    setList({ seg: index, items, active: Math.max(0, at), left: buttons.current[index]?.offsetLeft ?? 0 });
+    setList({ seg: index, items, active: Math.max(0, at) });
   };
 
   const choose = (child: NavChild) => {
@@ -125,15 +201,14 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
     let handled = true;
     if (e.key === "ArrowLeft") move(-1);
     else if (e.key === "ArrowRight") move(1);
-    else if (e.key === "ArrowDown" && !list) void openList(active);
-    else if (e.key === "ArrowDown" && list)
-      setList({ ...list, active: Math.min(list.items.length - 1, list.active + 1) });
-    else if (e.key === "ArrowUp" && list) setList({ ...list, active: Math.max(0, list.active - 1) });
-    else if (e.key === "Enter" && list) {
-      const child = list.items[list.active];
-      if (child) choose(child);
-    } else if (e.key === "Enter") void openList(active);
-    else if (e.key === "Escape" && list) setList(null);
+    else if (list) {
+      const next = listNavigate(e.key, list);
+      if (next !== null) setList({ ...list, active: next });
+      else if (e.key === "Enter") {
+        const child = list.items[list.active];
+        if (child) choose(child);
+      } else handled = false;
+    } else if (e.key === "ArrowDown" || e.key === "Enter") void openList(active);
     else handled = false;
     if (handled) {
       e.preventDefault();
@@ -142,11 +217,19 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
   };
 
   useLayoutEffect(() => {
-    buttons.current[active]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [active]);
-  useEffect(() => {
-    listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" });
-  }, [list]);
+    const row = strip.current;
+    const current = buttons.current[active];
+    if (!row || !current) return;
+    const reveal = () => revealHorizontally(row, current);
+    reveal();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(reveal);
+    resize.observe(row);
+    return () => resize.disconnect();
+  }, [active, segments]);
+  useLayoutEffect(() => {
+    setChildAnchor(listSegment === undefined ? null : (buttons.current[listSegment] ?? null));
+  }, [listSegment, segments]);
 
   return (
     <Popup
@@ -156,7 +239,7 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
       offset={0}
       onClose={close}
       aria-label="Navigation bar"
-      className={styles.popup}
+      className={styles.barPopup}
     >
       <div
         className={styles.root}
@@ -166,7 +249,7 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
         role="toolbar"
         aria-label={tx("Navigation bar")}
       >
-        <div className={styles.bar}>
+        <div className={styles.bar} ref={strip}>
           {segments.map((s, i) => (
             <span key={`${i}:${s.path}:${s.label}`} className={styles.segmentWrap}>
               {i > 0 && <Icon name="chevron-right" size={12} className={styles.sep} />}
@@ -176,44 +259,39 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
                 tabIndex={-1}
                 className={clsx(styles.segment, i === active && styles.active)}
                 aria-current={i === active ? "location" : undefined}
+                aria-haspopup="listbox"
+                aria-expanded={i === listSegment}
+                aria-controls={i === listSegment ? listId : undefined}
+                title={s.label}
                 onClick={() => {
                   setActive(i);
                   void openList(i);
                 }}
               >
-                <Icon name={iconOf(s)} size={14} />
-                <span>{s.label}</span>
+                <Icon name={iconOf(s)} size={14} className={styles.rowIcon} />
+                <span className={styles.rowLabel}>{s.label}</span>
               </button>
             </span>
           ))}
         </div>
-        {list && (
-          <div
-            ref={listRef}
-            className={styles.list}
-            style={{ marginLeft: list.left }}
-            role="listbox"
+        {list && childAnchor && (
+          <Popup
+            open
+            anchor={childAnchor}
+            placement="bottom-start"
+            onClose={closeList}
             aria-label={tx("Children")}
+            className={styles.childPopup}
           >
-            {list.items.length === 0 && (
-              <div className={styles.empty}>
-                <T>Nothing here</T>
-              </div>
-            )}
-            {list.items.map((c, i) => (
-              <div
-                key={`${c.path}:${c.label}:${i}`}
-                role="option"
-                aria-selected={i === list.active}
-                className={clsx(styles.row, i === list.active && styles.rowActive)}
-                onMouseEnter={() => setList({ ...list, active: i })}
-                onClick={() => choose(c)}
-              >
-                <Icon name={iconOf(c)} size={14} />
-                <span className={styles.rowLabel}>{c.label}</span>
-              </div>
-            ))}
-          </div>
+            <NavChildList
+              id={listId}
+              label={tx("Children")}
+              items={list.items}
+              active={list.active}
+              onSelect={(i) => setList({ ...list, active: i })}
+              onChoose={choose}
+            />
+          </Popup>
         )}
       </div>
     </Popup>
@@ -228,10 +306,12 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
 export function NavChildrenPopup({
   segment,
   anchor,
+  openAbove = true,
   onClose,
 }: {
   segment: NavSegment;
   anchor: HTMLElement;
+  openAbove?: boolean;
   onClose: () => void;
 }) {
   const [stack, setStack] = useState<NavSegment[]>([segment]);
@@ -239,7 +319,7 @@ export function NavChildrenPopup({
   const outline = useOutline((s) => s[top.path]);
   const [loaded, setLoaded] = useState<{ top: NavSegment; items: NavChild[] } | null>(null);
   const [active, setActive] = useState(0);
-  const listRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
   const items = loaded?.top === top ? loaded.items : null;
 
   useEffect(() => {
@@ -255,10 +335,6 @@ export function NavChildrenPopup({
       alive = false;
     };
   }, [top, outline]);
-  useEffect(() => {
-    listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" });
-  }, [active, items]);
-
   const choose = (child: NavChild) => {
     if (child.kind === "dir") return setStack((s) => [...s, { kind: "dir", path: child.path, label: child.label }]);
     onClose();
@@ -270,10 +346,9 @@ export function NavChildrenPopup({
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    const n = items?.length ?? 0;
+    const next = items ? listNavigate(e.key, { items, active, wrap: true }) : null;
     let handled = true;
-    if (e.key === "ArrowDown" && n) setActive((a) => (a + 1) % n);
-    else if (e.key === "ArrowUp" && n) setActive((a) => (a - 1 + n) % n);
+    if (next !== null) setActive(next);
     else if (e.key === "Enter" || (e.key === "ArrowRight" && items?.[active]?.kind === "dir")) {
       const child = items?.[active];
       if (child) choose(child);
@@ -286,44 +361,31 @@ export function NavChildrenPopup({
   };
 
   return (
-    <Popup open anchor={anchor} placement="top-start" onClose={onClose} aria-label={top.label} className={styles.popup}>
-      <div
-        ref={listRef}
-        className={styles.childList}
-        role="listbox"
-        aria-label={top.label}
-        tabIndex={0}
-        data-autofocus
-        aria-activedescendant={items?.length ? `navbar-child-${active}` : undefined}
+    <Popup
+      open
+      anchor={anchor}
+      placement={openAbove ? "top-start" : "bottom-start"}
+      onClose={onClose}
+      aria-label={top.label}
+      className={styles.childPopup}
+    >
+      {stack.length > 1 && (
+        <div className={styles.childHeader}>
+          <Icon name={iconOf(top)} size={16} className={styles.rowIcon} />
+          <span className={styles.rowLabel} title={top.label}>
+            {top.label}
+          </span>
+        </div>
+      )}
+      <NavChildList
+        id={listId}
+        label={top.label}
+        items={items}
+        active={active}
+        onSelect={setActive}
+        onChoose={choose}
         onKeyDown={onKeyDown}
-      >
-        {stack.length > 1 && (
-          <div className={styles.childHeader}>
-            <Icon name={iconOf(top)} size={14} />
-            <span className={styles.rowLabel}>{top.label}</span>
-          </div>
-        )}
-        {items?.length === 0 && (
-          <div className={styles.empty}>
-            <T>Nothing here</T>
-          </div>
-        )}
-        {items?.map((c, i) => (
-          <div
-            key={`${c.path}:${c.label}:${i}`}
-            id={`navbar-child-${i}`}
-            role="option"
-            aria-selected={i === active}
-            className={clsx(styles.row, i === active && styles.rowActive)}
-            onMouseEnter={() => setActive(i)}
-            onClick={() => choose(c)}
-          >
-            <Icon name={iconOf(c)} size={14} />
-            <span className={styles.rowLabel}>{c.label}</span>
-            {c.kind === "dir" && <Icon name="chevron-right" size={12} className={styles.rowChevron} />}
-          </div>
-        ))}
-      </div>
+      />
     </Popup>
   );
 }

@@ -193,6 +193,7 @@ export interface LanguagesValid {
   go: {
     goroot: string;
     gopath: string;
+    gofumpt: boolean;
     buildTags: GoBuildTags;
     modules: { env: Record<string, string>; autoVendor: boolean };
   };
@@ -233,10 +234,18 @@ export interface LanguagesValid {
       delegateBuild: boolean;
       /** Download dependencies' `-sources.jar` when jdtls imports the project. */
       downloadSources: boolean;
+      /** Always update snapshots: `-U` on Maven runs, `java.maven.updateSnapshots` for jdtls. */
+      updateSnapshots: boolean;
     };
   };
-  /** Preview font size in px; `null` follows the editor font size. */
-  markdown: { previewFontSize: number | null };
+  markdown: {
+    /** Preview font size in px; `null` follows the editor font size. */
+    previewFontSize: number | null;
+    /** Run icons on shell code blocks and command lines. */
+    runCommands: boolean;
+    /** Where commands run; `null` asks when the project and the file's folder differ. */
+    commandDirectory: "project" | "file" | null;
+  };
 }
 
 export interface ProjectStructureValid {
@@ -291,7 +300,13 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
-  go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
+  go: {
+    goroot: "",
+    gopath: "",
+    gofumpt: false,
+    buildTags: DEFAULT_GO_BUILD_TAGS,
+    modules: { env: {}, autoVendor: true },
+  },
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
@@ -317,9 +332,10 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       activeProfiles: "",
       delegateBuild: false,
       downloadSources: false,
+      updateSnapshots: false,
     },
   },
-  markdown: { previewFontSize: null },
+  markdown: { previewFontSize: null, runCommands: true, commandDirectory: null },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -450,6 +466,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     go: {
       goroot: text(go.goroot, d.go.goroot),
       gopath: text(go.gopath, d.go.gopath),
+      gofumpt: bool(go.gofumpt, d.go.gofumpt),
       buildTags: Object.fromEntries(
         Object.entries(DEFAULT_GO_BUILD_TAGS).map(([key, value]) => [key, text(tags[key], value)]),
       ) as unknown as GoBuildTags,
@@ -496,9 +513,17 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
         delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
         downloadSources: bool(maven.downloadSources, d.java.maven.downloadSources),
+        updateSnapshots: bool(maven.updateSnapshots, d.java.maven.updateSnapshots),
       },
     },
-    markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
+    markdown: {
+      previewFontSize: previewSize(markdown.previewFontSize),
+      runCommands: bool(markdown.runCommands, d.markdown.runCommands),
+      commandDirectory:
+        markdown.commandDirectory === "project" || markdown.commandDirectory === "file"
+          ? markdown.commandDirectory
+          : null,
+    },
   };
 }
 
@@ -514,6 +539,14 @@ export function markdownPreviewFontSize(settings: unknown): number {
     // 13: the editor's default font size.
     (typeof editorSize === "number" && editorSize > 0 ? editorSize : 13)
   );
+}
+
+/** Languages & Frameworks › Markdown › Commands of `settings`. */
+export function markdownCommandSettings(
+  settings: unknown,
+): Pick<LanguagesValid["markdown"], "runCommands" | "commandDirectory"> {
+  const markdown = validateLanguages(obj(settings).languages).markdown;
+  return { runCommands: markdown.runCommands, commandDirectory: markdown.commandDirectory };
 }
 
 /** Reactive `markdownPreviewFontSize` of the open project. */

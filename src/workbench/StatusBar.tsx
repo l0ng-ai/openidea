@@ -112,22 +112,24 @@ export function StatusBar({ lightEdit = false }: { lightEdit?: boolean }) {
     return () => ro.disconnect();
   }, []);
   useLayoutEffect(() => {
+    const leftHosts = [...(barRef.current?.querySelectorAll<HTMLElement>(":scope > [data-status-item]") ?? [])];
     measure.current = () => {
       const bar = barRef.current;
       if (!bar) return;
       const css = getComputedStyle(bar);
       const gap = parseFloat(css.columnGap) || 0;
       const spacer = spacerRef.current;
-      // Left items shrink instead (down to their gap); the spacer keeps its minimum.
-      const leftShown = [...bar.querySelectorAll<HTMLElement>(":scope > [data-status-item]")].filter(
-        (el) => el.getClientRects().length > 0,
-      ).length;
+      const leftWidth = leftHosts.reduce(
+        (width, el) =>
+          el.getClientRects().length ? width + (parseFloat(getComputedStyle(el).minWidth) || 0) + gap : width,
+        0,
+      );
       const available =
         bar.clientWidth -
         (parseFloat(css.paddingLeft) || 0) -
         (parseFloat(css.paddingRight) || 0) -
         (spacer ? parseFloat(getComputedStyle(spacer).minWidth) || 0 : 0) -
-        leftShown * gap;
+        leftWidth;
       const items = shownRight.map((i) => ({
         id: i.id,
         priority: i.priority,
@@ -146,6 +148,7 @@ export function StatusBar({ lightEdit = false }: { lightEdit?: boolean }) {
     }
     // The spacer changes width whenever an item comes or goes; the bar, when the window resizes.
     for (const el of [spacerRef.current, barRef.current, moreRef.current]) if (el) ro?.observe(el);
+    for (const el of leftHosts) ro?.observe(el);
   });
 
   const renderLeft = (item: StatusItemContribution) => {

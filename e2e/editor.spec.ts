@@ -55,6 +55,39 @@ test("⌘F opens the find bar and highlights matches; Escape returns to the edit
   await expect(editor.locator(".cm-content")).toBeFocused();
 });
 
+test("Go to Line keeps its label beside the selected coordinates and returns focus to the editor", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const content = editor.locator(".cm-content");
+  await content.focus();
+  await page.keyboard.press("Meta+l");
+  const dialog = page.getByRole("dialog", { name: "Go to Line:Column", exact: true });
+  const coordinates = dialog.getByRole("textbox", { name: "Line and column", exact: true });
+  await expect(coordinates).toBeFocused();
+  await expect(coordinates).toHaveValue("1:1");
+  expect(await coordinates.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([0, 3]);
+
+  await page.setViewportSize({ width: 360, height: 500 });
+  const label = dialog.getByText("Line and column", { exact: true });
+  await expect(label).toBeVisible();
+  const text = (await label.boundingBox())!;
+  const field = (await coordinates.boundingBox())!;
+  expect(text.x + text.width).toBeLessThan(field.x);
+  expect(Math.abs(text.y + text.height / 2 - field.y - field.height / 2)).toBeLessThan(2);
+  await expect(coordinates).toHaveCSS("font-size", await label.evaluate((el) => getComputedStyle(el).fontSize));
+
+  await coordinates.fill("0:2");
+  await expect(coordinates).toHaveAttribute("aria-invalid", "true");
+  await expect(dialog.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+  await coordinates.fill("6:8");
+  await coordinates.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(content).toBeFocused();
+  await page.setViewportSize({ width: 960, height: 600 });
+  await expect(page.getByRole("button", { name: "6:8", exact: true })).toBeVisible();
+});
+
 test("each file keeps its own find bar, query and caret", async ({ workbench: page }) => {
   const find = page.getByRole("textbox", { name: "Find" });
   const caret = page.getByRole("button", { name: /^\d+:\d+/ });
@@ -133,6 +166,64 @@ test("breadcrumbs follow the caret into the symbol under it", async ({ workbench
   await expect(bar).toBeHidden();
 });
 
+test("narrow breadcrumb bars keep the current symbol visible and allow opening earlier crumbs", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const path = page.getByRole("navigation", { name: "Breadcrumbs", exact: true });
+  const code = page.getByRole("navigation", { name: "Code breadcrumbs" });
+  await editor.locator(".cm-line", { hasText: "service.find(status" }).click();
+  await expect(code).toContainText("list()");
+
+  await page.evaluate(async () => {
+    const documentModule = "/src/editor/core/model/document.ts";
+    const editorModule = "/src/editor/core/controller.ts";
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useOutline }, { useEditorStatus }, { useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ documentModule),
+      import(/* @vite-ignore */ editorModule),
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({ settings: { ...base, editor: { ...base.editor, fontSize: 17 } } });
+    const activePath = useEditorStatus.getState().status.path;
+    let outline = useOutline.getState()[activePath];
+    for (const name of ["OrderProcessingStrategies", "SalesApplicationRouting", "CheckoutWorkspaceConfiguration"]) {
+      outline = [{ ...outline[0], name, detail: null, children: outline }];
+    }
+    useOutline.setState({ [activePath]: outline });
+  });
+
+  await page.setViewportSize({ width: 620, height: 620 });
+  const fullyInBar = (bar: typeof path, label: string) =>
+    bar.evaluate((nav, text) => {
+      const crumb = [...nav.querySelectorAll("button")].find((button) => button.textContent === text);
+      if (!crumb) return false;
+      const { left, right } = nav.getBoundingClientRect();
+      const rect = crumb.getBoundingClientRect();
+      return rect.width > 0 && rect.left >= left - 1 && rect.right <= right + 1;
+    }, label);
+  for (const bar of [path, code]) {
+    await expect.poll(() => fullyInBar(bar, "list()")).toBe(true);
+    await expect(bar.locator('[aria-current="location"]')).toHaveText("list()");
+  }
+  await expect(code.locator('[aria-current="location"]')).toHaveCSS("font-size", "17px");
+  await code.hover();
+  await page.mouse.wheel(0, -1200);
+  await expect.poll(() => fullyInBar(code, "CheckoutWorkspaceConfiguration")).toBe(true);
+
+  const current = path.locator('[aria-current="location"]');
+  await current.focus();
+  await current.press("Home");
+  const project = path.getByRole("button", { name: /acme-api/ }).first();
+  await expect(project).toBeFocused();
+  await expect.poll(() => fullyInBar(path, "acme-api")).toBe(true);
+  await project.press("ArrowDown");
+  await expect(page.getByRole("listbox", { name: "acme-api" })).toBeVisible();
+});
+
 /** What the in-memory backend has saved for `path`. */
 const saved = (page: Page, path: string) =>
   page.evaluate(async (path) => {
@@ -172,6 +263,48 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await content.click();
   await page.keyboard.press("Meta+z");
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
+});
+
+test("the inline find and replace controls stay inside a narrow editor pane", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1120, height: 760 });
+  const editor = await openFromTree(page, "build.gradle.kts");
+  await editor.locator(".cm-content").click();
+  await page.keyboard.press("Meta+r");
+  const bar = page.getByRole("search", { name: "Replace in file" });
+  const find = bar.getByRole("textbox", { name: "Find" });
+  const replace = bar.getByRole("textbox", { name: "Replace" });
+  const next = bar.getByRole("button", { name: /Next Occurrence/ });
+  await find.fill("OrderDto");
+  await find.press("Tab");
+  await expect(replace).toBeFocused();
+  await replace.fill("OrderView");
+  const navigationIsBelowFind = async () => {
+    const [input, button] = await Promise.all([find.boundingBox(), next.boundingBox()]);
+    return !!input && !!button && button.y >= input.y + input.height;
+  };
+  const controlsFit = () =>
+    bar.evaluate((panel) => {
+      const bounds = panel.getBoundingClientRect();
+      return [...panel.querySelectorAll("button, textarea")].every((element) => {
+        const control = element.getBoundingClientRect();
+        return control.width > 0 && control.left >= bounds.left && control.right <= bounds.right;
+      });
+    });
+  await expect.poll(navigationIsBelowFind).toBe(false);
+
+  await page.setViewportSize({ width: 590, height: 760 });
+  await expect.poll(controlsFit).toBe(true);
+  await expect.poll(navigationIsBelowFind).toBe(true);
+  await page.setViewportSize({ width: 495, height: 760 });
+  await expect.poll(controlsFit).toBe(true);
+  await expect(find).toHaveValue("OrderDto");
+  await expect(replace).toHaveValue("OrderView");
+  await next.click();
+  await expect(bar.getByText(/^[12]\/2$/)).toBeVisible();
+  await bar.getByRole("button", { name: "Replace All" }).click();
+  await expect(editor.locator(".cm-line", { hasText: "OrderView" })).toHaveCount(2);
+  await bar.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(bar).toBeHidden();
 });
 
 test("Markdown preview highlights ⌘F matches, selected words and scales diagrams with font zoom", async ({
@@ -271,6 +404,48 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
   const reset = await widths();
   expect(reset.mermaid).toBeCloseTo(base.mermaid, 1);
   expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
+});
+
+test("Markdown preview keeps following find and edits after scrolling the source", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const spacer = Array.from({ length: 90 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+  await page.keyboard.insertText(`First needle\n\n${spacer}\n\nSecond needle\n\n${spacer}\n\nThird needle`);
+  await content.press("Control+Home");
+  await expect(preview).toContainText("Third needle");
+  await editor.locator(".cm-scroller").evaluate((el) => (el.scrollTop = 2000));
+  await expect.poll(() => preview.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  await preview.focus();
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await find.fill("needle");
+  const visibleMatch = () =>
+    preview.evaluate((el) => {
+      const match = (CSS.highlights.get("markdown-find-current") as unknown as Set<Range> | undefined)
+        ?.values()
+        .next().value;
+      if (!match) return null;
+      const box = el.getBoundingClientRect();
+      const range = match.getBoundingClientRect();
+      return range.top >= box.top && range.bottom <= box.bottom ? match.startContainer.textContent : null;
+    });
+  await expect.poll(visibleMatch).toBe("First needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Second needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Third needle");
+  await find.press("ArrowUp");
+  await expect.poll(visibleMatch).toBe("Second needle");
+
+  await find.press("Escape");
+  await content.focus();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- **$`v_0`$ Flat wings.**");
+  await expect(preview.locator("strong .katex annotation")).toHaveText("v_0");
 });
 
 test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
@@ -491,12 +666,24 @@ test("dragging the Markdown split divider resizes and reflows editor and preview
   const box = (await handle.boundingBox())!;
   const startX = box.x + box.width / 2;
   const midY = box.y + box.height / 2;
+  const cursorAt = (x: number) =>
+    page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, { x, y: midY });
+
+  await page.mouse.move(startX + 40, midY);
+  await page.mouse.move(startX, midY);
+  expect(await cursorAt(startX)).toMatch(/resize$/);
+  await page.mouse.move(startX - 5, midY);
+  expect(await cursorAt(startX - 5)).not.toMatch(/resize$/);
 
   await page.mouse.move(startX, midY);
   await page.mouse.down();
   await page.mouse.move(startX - 180, midY, { steps: 6 });
   await expect(handle).toHaveAttribute("data-separator", "active");
+  const sourceX = (await editor.boundingBox())!.x + 60;
+  expect(await cursorAt(sourceX)).toMatch(/resize$/);
   await page.mouse.up();
+  await page.mouse.move(sourceX, midY);
+  expect(await cursorAt(sourceX)).toBe("text");
 
   await expect.poll(async () => (await editor.boundingBox())!.width).toBeLessThan(initialEditor - 150);
   await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview + 150);
@@ -537,4 +724,16 @@ test("dragging the Markdown split divider resizes and reflows editor and preview
   await expect
     .poll(async () => Math.round((await reopenedEditor.boundingBox())!.width))
     .toBe(Math.round(initialEditor));
+});
+
+test("Markdown Preview only leaves the Project view clickable", async ({ workbench: page }) => {
+  await openFromTree(page, "README.md");
+  await page.getByRole("button", { name: "Preview Only" }).click();
+  await expect(page.getByRole("document", { name: "Markdown preview" })).toBeVisible();
+
+  const row = page.getByRole("treeitem", { name: "build.gradle.kts", exact: true });
+  // A hidden editor panel used to leave an implicit resize region over everything left of the preview,
+  // which swallowed the click.
+  await row.click();
+  await expect(row).toHaveAttribute("aria-selected", "true");
 });

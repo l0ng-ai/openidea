@@ -7,7 +7,7 @@ import type { Branch } from "@/bindings";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { relativePath } from "@/platform/project";
 import { notifications, toolWindowService } from "@/workbench/contributions";
-import { deleteBranches, newBranch, toggleFavoriteBranch, updateBranch } from "./branchOps";
+import { deleteBranches, newBranch, toggleFavoriteBranch, updateBranches } from "./branchOps";
 import {
   changesArg,
   compareChangeWithLocal,
@@ -144,7 +144,7 @@ export function registerLogPaneActions(): () => void {
       icon: "git-pull",
       when: VCS,
       hidden: true,
-      run: withBranch((b) => updateBranch(b.name)),
+      run: ({ arg }) => updateBranches(branchTargets(arg)),
     },
     {
       id: "vcs.log.branches.delete",

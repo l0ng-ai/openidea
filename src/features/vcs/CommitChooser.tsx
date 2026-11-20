@@ -3,6 +3,7 @@ import type { Commit } from "@/bindings";
 import { Dialog, List, SearchField } from "@/ui";
 import { openDialog } from "./dialogs";
 import { commitKey } from "./multiRoot";
+import { useRowHeight } from "@/ui/density";
 
 export function chooseLogCommit(commits: Commit[], title: string): Promise<Commit | null> {
   return new Promise((resolve) => {
@@ -28,6 +29,7 @@ function CommitChooser({
   title: string;
   onDone: (commit: Commit | null) => void;
 }) {
+  const rowHeight = useRowHeight(26);
   const [query, setQuery] = useState("");
   const shown = commits.filter((c) =>
     `${c.id} ${c.summary} ${c.author}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
@@ -41,7 +43,7 @@ function CommitChooser({
           getKey={commitKey}
           renderItem={(c) => `${c.shortId}  ${c.summary} — ${c.author}`}
           onActivate={onDone}
-          rowHeight={26}
+          rowHeight={rowHeight}
           aria-label={title}
         />
       </div>

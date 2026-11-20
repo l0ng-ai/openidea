@@ -1,7 +1,16 @@
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, T, Tabs } from "@/ui";
+import {
+  EmptyState,
+  IconButton,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  T,
+  Tabs,
+  useFrozenWhileWindowResizes,
+} from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { spanStyle } from "@/ui/ansi";
 import clsx from "clsx";
@@ -15,6 +24,7 @@ import { CommitDetails } from "./log/CommitDetails";
 import { CommitList } from "./log/CommitList";
 import { FilterBar } from "./log/FilterBar";
 import { useLogRepositories, useReadOnlyLog } from "./log/logHooks";
+import { PANE_STYLE } from "./log/shared";
 import { LogIdContext } from "./logContext";
 import { invalidateLogDetails } from "./logDetails";
 import { useLogOptions } from "./logOptions";
@@ -68,6 +78,10 @@ export function GitToolWindow() {
   const { shown } = useGitTabs();
   const available = useVcs((s) => s.available);
   const external = useGitLog((s) => s.logTabs.some((t) => t.id === s.tab && t.readOnly));
+  // The log's rows, graph and branch tree are too much for WebKit to relayout at every step of a
+  // window drag; they follow the window once it stops.
+  const root = useRef<HTMLDivElement>(null);
+  useFrozenWhileWindowResizes(root);
   if (!available && !external)
     return (
       <EmptyState title="Version control is not configured">
@@ -76,6 +90,7 @@ export function GitToolWindow() {
     );
   return (
     <div
+      ref={root}
       className={styles.root}
       role="tabpanel"
       id={`openidea-git-panel-${shown}`}
@@ -209,13 +224,13 @@ export function LogView() {
     >
       {showBranches && (
         <>
-          <SplitPanel id="branches" defaultSize="18%" minSize="120px">
+          <SplitPanel id="branches" style={PANE_STYLE} defaultSize="18%" minSize="120px">
             <BranchesPanel />
           </SplitPanel>
           <SplitHandle />
         </>
       )}
-      <SplitPanel id="commits" defaultSize="54%" minSize="25%">
+      <SplitPanel id="commits" style={PANE_STYLE} defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
           <CommitList />
@@ -224,7 +239,7 @@ export function LogView() {
       {showDetails && (
         <>
           <SplitHandle />
-          <SplitPanel id="details" defaultSize="28%" minSize="15%">
+          <SplitPanel id="details" style={PANE_STYLE} defaultSize="28%" minSize="15%">
             <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
           </SplitPanel>
         </>

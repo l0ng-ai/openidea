@@ -8,6 +8,9 @@
 .group {
   flex: 1;
 }
+.group:has(> :global([data-separator="active"])) * {
+  cursor: col-resize !important;
+}
 .editor {
   flex: 1;
   min-height: 0;

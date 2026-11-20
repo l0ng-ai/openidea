@@ -21,6 +21,7 @@ import {
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
+import { flutterType } from "./flutterType";
 import { tomcatType } from "./tomcat";
 import { goBuildType, goTestType } from "./goTypes";
 
@@ -492,6 +493,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   gradle,
   maven,
   godot,
+  flutterType,
   pythonType,
   pytest,
   rubyScriptType,

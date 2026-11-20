@@ -2252,3 +2252,39 @@ fn status_paths_reads_only_the_named_paths() {
     // An empty list is the full status, so a caller that lost the paths stays correct.
     assert_eq!(repo.status_paths(&[]).unwrap().len(), 4);
 }
+
+#[test]
+fn sets_the_commit_identity_in_the_repository() {
+    let fx = Fixture::new();
+    fx.git(&["config", "--unset", "user.name"]);
+    fx.git(&["config", "--unset", "user.email"]);
+    let repo = fx.repo();
+    repo.set_user_identity(" Ada Lovelace ", "ada@example.com", false).unwrap();
+    assert_eq!(fx.git(&["config", "--local", "user.name"]), "Ada Lovelace");
+    assert_eq!(fx.git(&["config", "--local", "user.email"]), "ada@example.com");
+    assert_eq!(repo.config_get("user.email").unwrap().as_deref(), Some("ada@example.com"));
+    let blank = repo.set_user_identity("Ada", "  ", false).unwrap_err();
+    assert_eq!(blank.kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn status_from_the_git_command_line_matches_the_in_process_one() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    fx.write("staged.txt", "a\n");
+    fx.write("gone.txt", "a\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "b\n");
+    fx.write("staged.txt", "b\n");
+    fx.git(&["add", "staged.txt"]);
+    std::fs::remove_file(fx.path("gone.txt")).unwrap();
+    fx.write("dir/new.txt", "n\n");
+    let repo = fx.repo();
+    repo.set_ignored_names(ide_core::settings::Settings::default().ignored_names());
+    let show = |s: Vec<FileStatus>| s.into_iter().map(|f| (f.rel_path, f.staged, f.unstaged)).collect::<Vec<_>>();
+    let in_process = show(repo.status().unwrap());
+    repo.set_cli_status(true);
+    let from_git = show(repo.status().unwrap());
+    assert_eq!(from_git, in_process);
+    assert_eq!(from_git.len(), 4, "{from_git:#?}");
+}

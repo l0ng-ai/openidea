@@ -17,7 +17,16 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, Location, SearchQuery, RunConfig, RunId, SymbolKind } from "@/bindings";
+import type {
+  CommitSelection,
+  ConsoleRule,
+  FileMatches,
+  Location,
+  SearchQuery,
+  RunConfig,
+  RunId,
+  SymbolKind,
+} from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -145,6 +154,13 @@ export interface EditorKindContribution {
   onClose?(input: EditorInput): void;
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
+  /**
+   * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
+   * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
+   */
+  openInWindow?(input: EditorInput): Promise<boolean>;
+  /** Loads and validates a lightweight window's input before it reports a successful handoff. */
+  prepareWindowInput?(input: EditorInput): Promise<EditorInput>;
   /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
   onTabClose?(tabId: string, input: EditorInput): void;
   /**
@@ -681,6 +697,11 @@ export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
+  /**
+   * Shows `input` in a lightweight window of this project instead (its kind must be registered
+   * there, see `editorWindowBoot`); resolves to the window's label once it is shown.
+   */
+  openInWindow?(input: EditorInput): Promise<string>;
   /** File › New File: an editable untitled buffer; Save asks for a path. */
   openUntitled?(options?: OpenOptions): Promise<void>;
   /** Path of the focused text editor, if any. */
@@ -1012,6 +1033,24 @@ export function showFindResults(source: FindResultsSource) {
 }
 
 // ---------------------------------------------------------------------------
+// Console highlight rules: plugins supply them, the Run and Debug consoles apply
+// them to process output (`ui/consoleRules`).
+
+export const useConsoleRules = create<{ providers: ReadonlyMap<string, readonly ConsoleRule[]> }>(() => ({
+  providers: new Map(),
+}));
+
+/** Replaces the rules of one provider (a plugin id); an empty list removes them. */
+export function setConsoleRules(provider: string, rules: readonly ConsoleRule[]) {
+  useConsoleRules.setState((s) => {
+    const providers = new Map(s.providers);
+    if (rules.length) providers.set(provider, rules);
+    else if (!providers.delete(provider)) return s;
+    return { providers };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // File decorations: colour / badge / tooltip for a path, shown by the project
 // tree, editor tabs, Search Everywhere, etc. Providers (VCS status, problems)
 // push decorations into this store; consumers read with `useFileDecoration`.
@@ -1036,6 +1075,9 @@ export interface FileDecoration {
   suffixColor?: string;
   /** CSS colour tinting the editor tab (a data source's colour on its console). */
   tint?: string;
+  /** Display name and icon for a specialized file tab. The path still identifies the document. */
+  tabTitle?: string;
+  tabIcon?: string;
   /** Short badge text, e.g. a problem count. */
   badge?: string;
   tooltip?: string;
@@ -1434,6 +1476,20 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
 
+// Commit / Local Changes selection while that tool window has focus. Provided by
+// features/vcs so Deployment (and similar) shortcuts see multi-file picks there.
+let changesSelection: (() => string[]) | undefined;
+
+export function provideChangesViewSelection(get: () => string[]): () => void {
+  changesSelection = get;
+  return () => {
+    if (changesSelection === get) changesSelection = undefined;
+  };
+}
+
+/** Selected change-tree paths (absolute) while Commit/Local Changes is focused. */
+export const changesViewSelection = (): string[] => changesSelection?.() ?? [];
+
 /** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
 export interface ProjectViewLead {
   path: string;
@@ -1790,6 +1846,11 @@ export interface RunAnythingProvider {
   items(query: string): RunAnythingItem[];
   /** Runs `line` when it belongs to this provider (`mvn clean`); false leaves it to the next one. */
   execute?(line: string): boolean | Promise<boolean>;
+  /**
+   * Whether `execute` runs `line` as a command this provider recognizes (cheap,
+   * synchronous): Markdown offers run icons for such lines in code blocks.
+   */
+  accepts?(line: string): boolean;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();
@@ -1856,9 +1917,15 @@ export function registerEndpointProvider(p: EndpointProvider): () => void {
   };
 }
 
-export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
+/** Endpoints of every provider, or of those `provider` accepts (by provider id). */
+export async function searchEndpoints(
+  root: string | null,
+  provider: (id: string) => boolean = () => true,
+): Promise<EndpointEntry[]> {
   if (!root) return [];
-  const results = await Promise.allSettled([...endpointProviders.values()].map(async (p) => p.endpoints(root)));
+  const results = await Promise.allSettled(
+    [...endpointProviders.values()].filter((p) => provider(p.id)).map(async (p) => p.endpoints(root)),
+  );
   return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
@@ -1913,7 +1980,9 @@ export const useDebugRunSessions = create<{
   sessions: DebugRunSession[];
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
-}>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+  /** The whole debugger of a session (Services shows it in place); `console` replaces its Console tab. */
+  View: ComponentType<{ sessionId: number; console?: ReactNode }> | null;
+}>(() => ({ sessions: [], serviceSessions: [], Console: null, View: null }));
 
 /**
  * The Services tool window's badge: how many of its listed services are running.
@@ -2132,4 +2201,42 @@ export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>
 export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
   useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
   return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
+}
+
+// ---------------------------------------------------------------------------
+// Search Everywhere categories. Custom categories are opt-in tabs, never All sources.
+export type SearchCategoryId = `plugin:${string}:${string}`;
+export interface SearchCategory {
+  id: SearchCategoryId;
+  title: string;
+  search(
+    request: import("@/bindings").RequestId,
+    query: string,
+    limit: number,
+  ): Promise<import("@/bindings").PluginSearchPage>;
+  /** Resolve within this provider, rather than looking up an ambiguous global action id. */
+  command(id: string): import("@/platform/actions").Action | undefined;
+}
+const searchCategoryProviders = new Map<SearchCategoryId, SearchCategory>();
+const searchCategoryListeners = new Set<() => void>();
+export function searchCategories(): readonly SearchCategory[] {
+  return [...searchCategoryProviders.values()];
+}
+export function onSearchCategoriesChanged(listener: () => void): () => void {
+  searchCategoryListeners.add(listener);
+  return () => {
+    searchCategoryListeners.delete(listener);
+  };
+}
+function searchCategoriesChanged() {
+  notifyEach(searchCategoryListeners, (listener) => listener(), "search categories changed");
+}
+export function registerSearchCategory(category: SearchCategory): () => void {
+  searchCategoryProviders.set(category.id, category);
+  searchCategoriesChanged();
+  return () => {
+    if (searchCategoryProviders.get(category.id) !== category) return;
+    searchCategoryProviders.delete(category.id);
+    searchCategoriesChanged();
+  };
 }

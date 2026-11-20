@@ -229,6 +229,15 @@ fn match_console_encoding(
     fix.notice
 }
 
+/// A script without the execute bit as `/bin/sh <script>` (see [`ide_core::process::needs_sh`]).
+/// Applied last, so the encoding and Java fixes above still see the script itself.
+fn sh_for_unexecutable(inv: &mut Invocation) {
+    if !inv.shell && ide_core::process::needs_sh(&inv.program) {
+        let script = std::mem::replace(&mut inv.program, "/bin/sh".into());
+        inv.args.insert(0, script.to_string_lossy().into_owned());
+    }
+}
+
 /// A launch's pathing jar / argfile, deleted when dropped (the process exited, or never started).
 struct TempFile(Option<PathBuf>);
 
@@ -382,6 +391,7 @@ impl ProcessManager {
         let notice =
             if extras.emulate_terminal { None } else { match_console_encoding(&mut inv, &mut env, config, options) };
         let temp = shorten_java(&mut inv, config, &cwd)?;
+        sh_for_unexecutable(&mut inv);
         if extras.emulate_terminal && followup.is_some() {
             return Err(IdeError::invalid("Go build and run requires the output console"));
         }
@@ -771,6 +781,13 @@ impl ProcessManager {
         self.runs.lock().values().map(|e| e.info()).collect()
     }
 
+    /// The runs started for the project at `root` (that root exactly) that have not exited.
+    pub fn running_in(&self, root: &Path) -> Vec<RunInfo> {
+        let runs = self.runs.lock();
+        let live = runs.values().filter(|e| e.project_root == root && !e.exited.load(Ordering::Acquire));
+        live.map(|e| e.info()).collect()
+    }
+
     /// Kills every running process tree at once (shutting down).
     pub fn kill_project(&self, root: &Path) {
         for entry in self.runs.lock().values().filter(|e| e.project_root == root) {
@@ -921,7 +938,18 @@ fn launch_env(root: &Path, config: &RunConfig) -> IdeResult<LaunchEnv> {
         vars.insert("PYTHONUNBUFFERED".into(), "1".into());
     }
     vars.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    Ok(LaunchEnv { clear: !extras.include_system_env, vars })
+    let mut env = LaunchEnv { clear: !extras.include_system_env, vars };
+    // `npm.cmd` is found on the login-shell and Windows user PATH, then started by its
+    // full path. The script it runs (`node …`) only sees this process's PATH, which
+    // does not include that directory, so `node` is not recognized.
+    let cwd = resolve_cwd(root, config.cwd.as_deref());
+    if !env.clear && !env.vars.keys().any(|k| k.eq_ignore_ascii_case("PATH")) {
+        let path = crate::wrap::search_path_in(config, &cwd);
+        if let Some(text) = path.to_str().filter(|s| !s.is_empty()) {
+            env.vars.insert("PATH".into(), text.to_owned());
+        }
+    }
+    Ok(env)
 }
 
 /// What a run in the project at `root` inherits with "Include system environment variables"
@@ -1396,6 +1424,74 @@ fn input_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn scripts_without_the_execute_bit_run_through_sh() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("gradlew");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let inv = || Invocation {
+            program: script.clone(),
+            args: vec!["build".into()],
+            raw_args: false,
+            shell: false,
+            display: "./gradlew build".into(),
+        };
+        let mut plain = inv();
+        sh_for_unexecutable(&mut plain);
+        assert_eq!(plain.program, PathBuf::from("/bin/sh"));
+        assert_eq!(plain.args, [script.to_string_lossy().as_ref(), "build"]);
+        assert_eq!(plain.display, "./gradlew build");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut executable = inv();
+        sh_for_unexecutable(&mut executable);
+        assert_eq!(executable.program, script);
+        // Not a `#!` script (a binary that lost its mode): left to fail as it is.
+        std::fs::write(&script, b"\x7fELF").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut binary = inv();
+        sh_for_unexecutable(&mut binary);
+        assert_eq!(binary.program, script);
+    }
+
+    fn bare_config(env: BTreeMap<String, String>) -> RunConfig {
+        RunConfig {
+            id: "c".into(),
+            name: "c".into(),
+            kind: "npm".into(),
+            command: "npm".into(),
+            args: vec!["run".into(), "start".into()],
+            cwd: None,
+            env,
+            detected: true,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_run_inherits_the_path_used_to_resolve_its_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = bare_config(BTreeMap::new());
+        let env = launch_env(dir.path(), &config).unwrap();
+        let path = env.vars.get("PATH").expect("child PATH");
+        let search = crate::wrap::search_path_in(&config, dir.path());
+        assert_eq!(path, search.to_str().unwrap());
+    }
+
+    #[test]
+    fn an_explicit_path_override_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = bare_config(BTreeMap::from([("Path".into(), r"C:\tools".into())]));
+        let env = launch_env(dir.path(), &config).unwrap();
+        assert_eq!(env.vars.get("Path").map(String::as_str), Some(r"C:\tools"));
+        assert_eq!(env.vars.keys().filter(|k| k.eq_ignore_ascii_case("PATH")).count(), 1);
+    }
 
     #[test]
     fn shell_lines_use_cmd_verbatim_on_windows() {

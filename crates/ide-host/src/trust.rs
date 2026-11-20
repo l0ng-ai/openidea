@@ -244,6 +244,9 @@ impl crate::Host {
     }
 
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
+        // A background project that is being opened read the trust before this decision and
+        // is not among the projects yet: once its open is over, the loop below corrects it.
+        Self::in_place(|| self.mcp_background.wait_for_open());
         for project in self.projects().into_iter().filter(|p| !p.light) {
             let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
             let roots = project.content_roots();
@@ -282,6 +285,8 @@ impl crate::Host {
                 self.environment.project_closed();
                 self.environment.direnv_closed(&project.root);
                 project.agents.shutdown();
+                project.flutter.stop();
+                project.devtools.stop();
                 self.processes.kill_project(&project.root);
                 project.notebooks.restrict().await;
                 let windows: Vec<_> = self
@@ -303,6 +308,9 @@ impl crate::Host {
             crate::ops::sdk::container_python::ensure(self, &project);
             project.sink.emit(ide_core::IdeEvent::ProjectTrustChanged { root: project.root.clone().into(), trusted });
         }
+        // Trust decides which projects are served without a window. The step waits for a
+        // background open under way and reads files: not on an async worker.
+        Self::in_place(|| self.apply_background_policy());
         Ok(())
     }
 }

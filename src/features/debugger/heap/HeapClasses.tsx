@@ -14,6 +14,7 @@ import {
   type ClassSort,
 } from "./editor/classRows";
 import styles from "./HeapSnapshotEditor.module.css";
+import { useRowHeight } from "@/ui/density";
 
 const COLUMNS: ReadonlyArray<{ key: ClassSort; label: string; numeric: boolean; diff?: boolean }> = [
   { key: "name", label: "Class", numeric: false },
@@ -66,6 +67,7 @@ export function HeapClasses({
   selected: number | null;
   onSelect: (row: HeapClassRow | null) => void;
 }) {
+  const rowHeight = useRowHeight(22);
   const tx = useTx();
   const [query, setQuery] = useState<ClassQuery>(DEFAULT_CLASS_QUERY);
   const compared = changes !== null;
@@ -124,7 +126,7 @@ export function HeapClasses({
           renderItem={(r) => <ClassRow row={r} changes={changes} />}
           activeIndex={selected === null ? -1 : rows.findIndex((r) => r.classIndex === selected)}
           onActiveChange={(i) => onSelect(rows[i] ?? null)}
-          rowHeight={22}
+          rowHeight={rowHeight}
           tableBody={{ headerRows: 1 }}
           empty={<span className={styles.note}>{tx("No matches")}</span>}
         />

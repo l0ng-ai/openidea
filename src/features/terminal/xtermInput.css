@@ -7,6 +7,16 @@
   white-space: pre;
 }
 
+/* xterm places its input textarea and IME composition at the cursor. A program that leaves the
+   cursor in the last column (pi, other TUIs drawing their own cursor) pushes them past the edge,
+   and Chromium (WebView2) then scrolls the clipping pane to keep the caret in view: the whole
+   terminal slides sideways while composing. `clip` keeps that overflow out of every ancestor.
+   xterm 6.1 also resyncs the textarea when a composition begins; this rule stays for the paths
+   that still put it past the edge (a right-click anchor, a TUI that never moves the cursor). */
+.xterm {
+  overflow: clip;
+}
+
 /* An icon or fallback symbol wider than its cell stays over the next cell's background
    (domRowCache), while selected spans keep xterm's `.xterm-decoration-top` z-index (2). */
 .xterm .xterm-rows .openidea-terminal-icon:not(.xterm-decoration-top) {

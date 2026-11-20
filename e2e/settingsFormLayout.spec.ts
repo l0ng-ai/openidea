@@ -72,6 +72,7 @@ test("settings sidebar resizes with mouse and keyboard and remembers its width",
   await expect(handle).toBeVisible();
   const sidebar = dialog.locator("#navigation");
   const initial = (await sidebar.boundingBox())!.width;
+  expect(initial / (await dialog.getByTestId("settings").boundingBox())!.width).toBeCloseTo(0.225, 2);
   const box = (await handle.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();

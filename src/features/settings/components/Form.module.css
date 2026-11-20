@@ -27,6 +27,9 @@
 .formGroup {
   display: grid;
   grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  /* WebKit sizes an `auto` row from its item's height at an earlier width, so a hint or
+     control that wraps to one more line after the window narrows lies over the next row. */
+  grid-auto-rows: min-content;
   column-gap: var(--space-2);
   min-width: 0;
 }
@@ -49,6 +52,8 @@
 .row {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
+  /* See `.formGroup`. */
+  grid-auto-rows: min-content;
   align-items: start;
   column-gap: var(--space-2);
   min-height: 28px;
@@ -58,6 +63,9 @@
 }
 .matched {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
+}
+.disabled > .label {
+  color: var(--fg-faint);
 }
 .stacked {
   grid-template-columns: minmax(0, 1fr);
@@ -93,6 +101,7 @@
 }
 .hint {
   grid-column: 2;
+  margin-top: var(--space-1);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   line-height: 1.4;
@@ -104,10 +113,13 @@
 }
 .toggleHint {
   grid-column: 1 / -1;
-  padding-left: 20px;
+  /* Starts with the checkbox text: the 16px box and its label gap (`ui/Checkbox`). */
+  padding-left: calc(16px + var(--space-2));
 }
 .stacked > .hint {
   grid-column: 1 / -1;
+  /* The stacked row's gap already separates it. */
+  margin-top: 0;
 }
 
 .number {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import type { LineHunk } from "@/bindings";
 import { applyRollback, hunkAtLine, hunkKeys, hunksOverlapping, nextHunk, prevHunk, rollbackEdit } from "../hunks";
@@ -128,6 +128,38 @@ describe("change lane clicks", () => {
       new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 0, clientY: 0 }),
     );
     expect(opened).toEqual(["modified:/p/f.txt"]);
+    view.destroy();
+    setHunkPopupHooks(null);
+    parent.remove();
+  });
+
+  it("opens a deletion from the hit area above its line", async () => {
+    const { EditorView } = await import("@codemirror/view");
+    const { changeLane } = await import("@/editor/core/cm/lanes");
+    const { changeMarkers, setHunkPopupHooks } = await import("../gutter");
+    const opened: string[] = [];
+    setHunkPopupHooks({ open: (_v, hunk) => opened.push(hunk.kind), docChanged: () => {} });
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: "a\nc\n",
+        extensions: [changeLane, changeMarkers({ path: "/p/f.txt" } as Parameters<typeof changeMarkers>[0])],
+      }),
+    });
+    view.dispatch({ effects: setHunksEffect.of([h("deleted", 1, 0, 1, 1, "b\n")]) });
+    const lane = view.dom.querySelector<HTMLElement>(".cm-openidea-lane")!;
+    vi.spyOn(lane, "getBoundingClientRect").mockReturnValue({ left: 100, right: 104, top: 0, bottom: 100 } as DOMRect);
+    const marker = view.dom.querySelector<HTMLElement>(".cm-openidea-laneDeleted")!;
+    vi.spyOn(marker, "getBoundingClientRect").mockReturnValue({ left: 96, top: 14, width: 12, height: 12 } as DOMRect);
+    const previous = view.lineBlockAt(view.state.doc.line(1).from);
+    const deleted = view.lineBlockAt(view.state.doc.line(2).from);
+    vi.spyOn(view, "lineBlockAtHeight").mockImplementation((height) => (height < 20 ? previous : deleted));
+    marker.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 96, clientY: 17 }),
+    );
+    expect(opened).toEqual(["deleted"]);
     view.destroy();
     setHunkPopupHooks(null);
     parent.remove();

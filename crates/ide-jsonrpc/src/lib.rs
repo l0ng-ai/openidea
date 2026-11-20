@@ -407,18 +407,14 @@ impl Peer {
         let resolved = resolve_spawn_program(command, env);
         let mut cmd = tokio::process::Command::new(&resolved);
         // The working directory first: it picks the project's environment.
-        cmd.current_dir(cwd);
+        cmd.current_dir(cwd)
+            .envs(ide_core::process::shell_env_in(cwd))
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         ide_core::process::prepare(cmd.as_std_mut());
         // Wrappers (`npx`, `codex.cmd`, launcher scripts) start the real server as a child:
         // stopping the connection stops the whole tree.
         ide_core::process::own_group(cmd.as_std_mut());
-        cmd.args(args)
-            .envs(ide_core::process::shell_env_in(cwd))
-            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("child stdin unavailable"))?;
         let stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("child stdout unavailable"))?;

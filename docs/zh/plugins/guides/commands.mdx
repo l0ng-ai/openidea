@@ -203,6 +203,11 @@ priority = 100             # 0–1000
   （每个插件最多 8 个；插件空闲时仍保留）；`remove_status_item(id)` 移除。
 - `host::set_window_status_item(id, item)`（API 1.4）只在发起调用的窗口中覆盖它；
   `remove_window_status_item(id)` 恢复为全局项。只能在窗口的命令或事件中调用。
+- `host::set_status_item_menu(id, item, &menu)` 和 `set_window_status_item_menu`（API 1.14）
+  给状态栏项加一个菜单：点击时在状态栏项上方弹出菜单，而不是运行 `command`；选择其中的操作会在该窗口中
+  带参数运行对应命令。菜单项有 `StatusMenuEntry::action(label, command)`（可用 `.with_description(…)`
+  加 URL 等次要文字，用 `.with_argument(…)` 传参数）、`Separator` 和 `Header(text)`，最多 64 项。
+  操作引用了插件未声明的命令时调用失败。之后再调用 `set_status_item` 会去掉菜单。
 
 ## 在代码中设置上下文键
 

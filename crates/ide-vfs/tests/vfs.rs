@@ -428,6 +428,54 @@ fn create_file_bytes_creates_parents() {
     assert_eq!(std::fs::read(path).unwrap(), [0, 255]);
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_file_operations_reject_ambiguous_destinations_before_mutating() {
+    let (_tmp, root) = root();
+    let source = root.join("source.txt");
+    write(&source, "original");
+
+    for name in ["example.txt.", "example.txt ", "first/nested./child", "first/nested /child"] {
+        let destination = root.join(name);
+        for result in [
+            create_file(&destination),
+            create_file_bytes(&destination, b"new"),
+            create_dir(&destination),
+            validate_rename(&source, &destination),
+            rename(&source, &destination),
+            copy(&source, &destination),
+        ] {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput, "{name:?}");
+        }
+        let names: Vec<_> = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(names, ["source.txt"], "{name:?}");
+        assert_eq!(fs::read(&source).unwrap(), b"original");
+    }
+
+    create_file(&root.join(".config.d/file.txt")).unwrap();
+    assert!(root.join(".config.d/file.txt").is_file());
+}
+
+#[cfg(windows)]
+#[test]
+fn create_file_preserves_literal_verbatim_path() {
+    let (_tmp, root) = root();
+    let path = fs::canonicalize(&root).unwrap().join("example.txt.");
+    create_file(&path).unwrap();
+    assert!(path.is_file());
+    assert!(!root.join("example.txt").exists());
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(not(windows))]
+#[test]
+fn create_file_preserves_trailing_dots_and_spaces() {
+    let (_tmp, root) = root();
+    let path = root.join("folder./example.txt ");
+    create_file(&path).unwrap();
+    assert!(path.is_file());
+}
+
 #[cfg(unix)]
 #[test]
 fn create_file_bytes_does_not_follow_existing_symlink() {

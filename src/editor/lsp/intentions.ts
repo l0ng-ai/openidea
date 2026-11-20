@@ -22,7 +22,16 @@ import { offsetsToRange } from "./positions";
 import { showHint } from "./hint";
 import { formatLines } from "./format";
 import { languageSemantics } from "./semantic";
-import { caretAnchor, openPopup, type ListPopupItem, type ListPreview } from "./popupStore";
+import {
+  caretAnchor,
+  closePopup,
+  openPopup,
+  updatePopup,
+  useLspPopup,
+  type ListPopupItem,
+  type ListPreview,
+  type PopupPoint,
+} from "./popupStore";
 import { editPreviewLines } from "./workspaceEdit";
 import { featureBackoff } from "./availability";
 import { iconNode } from "@/ui/iconNode";
@@ -118,34 +127,39 @@ export function lineErrorsAwayFromCaret(
   return errors.filter((p) => p.from >= lineFrom && p.from <= lineTo).sort((a, b) => a.from - b.from);
 }
 
-/** ⌥↵ / lightbulb actions: those at the caret plus, as in IDEA, quick fixes of another error on the line. */
+/**
+ * ⌥↵ / lightbulb actions: those at the caret plus, as in IDEA, quick fixes of
+ * another error on the line. Both are asked at once: the line's errors are a
+ * separate query the server answers independently, so waiting for the caret's
+ * answer first would double the latency of every ⌥↵ on a broken line.
+ */
 async function fetchIntentions(view: EditorView): Promise<CodeAction[]> {
-  const actions = (await fetchActions(view, [])).filter((a) => !a.disabledReason);
-  const doc = docOf(view);
   const state = view.state;
+  const doc = docOf(view);
   const sel = state.selection.main;
-  if (!doc || !sel.empty) return actions;
-  const line = state.doc.lineAt(sel.head);
   const problems: PlacedProblem[] = [];
-  forEachDiagnostic(state, (d, from, to) => problems.push({ from, to, severity: d.severity }));
+  const line = doc && sel.empty ? state.doc.lineAt(sel.head) : null;
+  if (line) forEachDiagnostic(state, (d, from, to) => problems.push({ from, to, severity: d.severity }));
+  const errors = line ? lineErrorsAwayFromCaret(problems, line.from, line.to, sel.head) : [];
+
+  const lineFixes = async (): Promise<CodeAction[]> => {
+    for (const p of errors) {
+      const more = await lspRequest(() =>
+        commands.lspCodeActions(doc!.doc, offsetsToRange(state.doc, p.from, p.to), ["quickfix"]),
+      ).catch(() => null);
+      if (more === null || view.state.doc !== state.doc) return [];
+      // Disabled ones and duplicates of the caret's actions are dropped below.
+      if (more.some((a) => isQuickFix(a) && !a.disabledReason)) return more;
+    }
+    return [];
+  };
+
+  const [main, more] = await Promise.all([fetchActions(view, []), errors.length ? lineFixes() : Promise.resolve([])]);
+  const actions = main.filter((a) => !a.disabledReason);
+  if (view.state.doc !== state.doc) return actions;
   const titles = new Set(actions.map((a) => a.title));
-  for (const p of lineErrorsAwayFromCaret(problems, line.from, line.to, sel.head)) {
-    let more: CodeAction[];
-    try {
-      more = await lspRequest(() =>
-        commands.lspCodeActions(doc.doc, offsetsToRange(state.doc, p.from, p.to), ["quickfix"]),
-      );
-    } catch {
-      break;
-    }
-    if (view.state.doc !== state.doc) break;
-    const fixes = more.filter((a) => isQuickFix(a) && !a.disabledReason && !titles.has(a.title));
-    if (fixes.length) {
-      actions.push(...fixes);
-      break;
-    }
-  }
-  return actions;
+  const extra = more.filter((a) => isQuickFix(a) && !a.disabledReason && !titles.has(a.title));
+  return extra.length ? [...actions, ...extra] : actions;
 }
 
 export type EditorQuickFix = CodeAction | { title: string; run: () => void | Promise<void> };
@@ -489,40 +503,92 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
   ];
 }
 
+/**
+ * How long ⌥↵ waits for the server's actions before showing the popup with a
+ * progress row: the answer that arrives sooner appears at once (no flash), a
+ * slower one no longer leaves the key without any feedback.
+ */
+export const INTENTIONS_POPUP_DELAY_MS = 100;
+
 /** ⌥↵ */
 export async function showIntentions(view: EditorView) {
-  try {
-    // Local inspections need no language server.
-    const local: ListPopupItem[] = [...spellingIntentions(view), ...contributedIntentions(view)];
-    let actions: CodeAction[] = [];
-    let failure: { error: unknown } | null = null;
-    try {
-      // Like IDEA, only applicable intentions are listed (servers also report disabled refactorings).
-      actions = await fetchIntentions(view);
-    } catch (e) {
-      failure = { error: e };
-    }
+  const state = view.state;
+  // Local inspections need no language server.
+  const local: ListPopupItem[] = [...spellingIntentions(view), ...contributedIntentions(view)];
+  const anchor: PopupPoint = caretAnchor(view, state.selection.main.head);
+  const resolved = new Map<CodeAction, Promise<CodeAction>>();
+  const previews = new Map<string, CodeAction>();
+  const itemsFor = (actions: CodeAction[]) => {
     const sorted = listedCodeActions(actions);
-    const resolved = new Map<CodeAction, Promise<CodeAction>>();
     const serverItems = actionItems(view, sorted, resolved);
-    const previews = new Map(serverItems.map((item, i) => [item.id, sorted[i]!]));
-    const items = withInspectionControls(view, listedIntentions(view, [...local, ...serverItems]));
+    serverItems.forEach((item, i) => previews.set(item.id, sorted[i]!));
+    return withInspectionControls(view, listedIntentions(view, [...local, ...serverItems]));
+  };
+  const preview = (item: ListPopupItem, signal: AbortSignal) => {
+    const action = previews.get(item.id);
+    return action ? intentionPreview(view, action, resolved, signal) : Promise.resolve(null);
+  };
+
+  // The popup is ours while `seq` is its sequence number; another popup took its place otherwise.
+  let seq: number | null = null;
+  // Escape (or a click elsewhere) closes it: a late answer must not reopen it.
+  let dismissed = false;
+  const ours = () => {
+    const { popup, seq: current } = useLspPopup.getState();
+    return seq !== null && popup?.kind === "list" && current === seq;
+  };
+  const display = (items: ListPopupItem[], busy: boolean) => {
+    if (dismissed) return;
+    if (ours()) {
+      updatePopup("list", { items, busy });
+      return;
+    }
+    // A popup the user opened meanwhile (another ⌥↵, a chooser) stays: only ours is replaced.
+    if (seq !== null) return;
+    openPopup({
+      kind: "list",
+      anchor,
+      title: "Intentions",
+      items,
+      busy,
+      preview,
+      themeClasses: view.themeClasses,
+      onClose: () => {
+        dismissed = true;
+      },
+    });
+    seq = useLspPopup.getState().seq;
+  };
+
+  const timer = setTimeout(() => {
+    // IDEA shows the list while it is still being filled; the rows found locally come first.
+    display(itemsFor([]), true);
+  }, INTENTIONS_POPUP_DELAY_MS);
+
+  try {
+    let failure: unknown = null;
+    // Like IDEA, only applicable intentions are listed (servers also report disabled refactorings).
+    const actions = await fetchIntentions(view).catch((e: unknown) => {
+      failure = e;
+      return null;
+    });
+    clearTimeout(timer);
+    const items = actions ? itemsFor(actions) : withInspectionControls(view, listedIntentions(view, local));
     if (!items.length) {
-      if (failure) throw failure.error;
+      if (ours()) closePopup();
+      if (failure) throw failure;
       showHint(view, "No intentions available");
       return;
     }
-    openPopup({
-      kind: "list",
-      anchor: caretAnchor(view, view.state.selection.main.head),
-      title: "Intentions",
-      items,
-      preview: (item, signal) => {
-        const action = previews.get(item.id);
-        return action ? intentionPreview(view, action, resolved, signal) : Promise.resolve(null);
-      },
-    });
+    // The list is about the caret's context: an edit while it was being computed makes it stale.
+    if (view.state.doc !== state.doc) {
+      if (ours()) closePopup();
+      return;
+    }
+    display(items, false);
   } catch (e) {
+    clearTimeout(timer);
+    if (ours()) closePopup();
     reportLspError(view, e, true);
   }
 }
@@ -692,10 +758,14 @@ const bulbPlugin = ViewPlugin.fromClass(
  */
 const BULB_COLUMNS = 3;
 
-export function bulbLine(state: EditorView["state"], line: number): { line: number; gutter: boolean } {
+export function bulbLine(
+  state: EditorView["state"],
+  line: number,
+  avoidLine?: number,
+): { line: number; gutter: boolean } {
   const doc = state.doc;
   const free = (n: number) => {
-    if (n < 1 || n > doc.lines) return false;
+    if (n < 1 || n > doc.lines || n === avoidLine) return false;
     const text = doc.line(n).text;
     return text.length - text.trimStart().length >= BULB_COLUMNS || !text.trim();
   };
@@ -721,8 +791,12 @@ class FloatingBulb {
       void showIntentions(this.view);
     });
     view.scrollDOM.appendChild(this.dom);
+    view.scrollDOM.addEventListener("openidea-hover-actions", this.onInlineAction);
     this.place();
   }
+
+  /** An hover action group asked for the anchor line; use the bulb's fallback. */
+  private readonly onInlineAction = () => this.place();
 
   update(u: ViewUpdate) {
     const bulb = u.state.field(bulbField, false) ?? null;
@@ -742,7 +816,8 @@ class FloatingBulb {
     this.view.requestMeasure({
       key: this,
       read: (view) => {
-        const at = bulbLine(view.state, bulb.line);
+        const reserved = Number(view.scrollDOM.dataset.hoverActionLine);
+        const at = bulbLine(view.state, bulb.line, Number.isFinite(reserved) ? reserved : undefined);
         const line = view.state.doc.line(at.line);
         const content = view.contentDOM.getBoundingClientRect();
         const scroller = view.scrollDOM.getBoundingClientRect();
@@ -768,6 +843,7 @@ class FloatingBulb {
   }
 
   destroy() {
+    this.view.scrollDOM.removeEventListener("openidea-hover-actions", this.onInlineAction);
     this.dom.remove();
   }
 }

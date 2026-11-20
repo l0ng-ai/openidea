@@ -235,6 +235,22 @@ fn stop_kills_whole_process_group() {
 }
 
 #[test]
+fn running_in_lists_the_live_runs_of_one_project_root() {
+    let h = harness();
+    let (done, _) = start(&h, &cfg("t:done", "true", &[]));
+    wait_exit(&h, done, Duration::from_secs(5));
+    let (id, _) = start(&h, &cfg("t:serve", "sleep", &["30"]));
+    let running: Vec<_> = h.pm.running_in(h.root.path()).into_iter().map(|r| (r.id, r.name)).collect();
+    assert_eq!(running, [(id, "t:serve".to_owned())], "the finished run is left out");
+    // Another project's root, even one that contains this root, has none.
+    assert!(h.pm.running_in(h.root.path().parent().unwrap()).is_empty());
+    assert!(h.pm.running_in(&h.root.path().join("nested")).is_empty());
+    h.pm.stop(id).unwrap();
+    wait_exit(&h, id, Duration::from_secs(5));
+    assert!(h.pm.running_in(h.root.path()).is_empty());
+}
+
+#[test]
 fn list_prunes_finished_runs_of_same_config() {
     let h = harness();
     let config = cfg("t:list", "true", &[]);

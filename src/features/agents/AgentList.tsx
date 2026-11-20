@@ -21,8 +21,9 @@ import clsx from "clsx";
 import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
+import { LocalCliUpdate } from "./LocalCliUpdate";
 import { isPerModelOption } from "./composerModel";
-import { providerIcon } from "./model";
+import { providerIcon, slugifyId } from "./model";
 import {
   DISTRIBUTION_LABEL,
   afterInstall,
@@ -35,6 +36,10 @@ import {
 import styles from "./AgentList.module.css";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const COPILOT_GITHUB_ACCOUNT_ENV = "OPENIDEA_COPILOT_GITHUB_ACCOUNT";
+
+const launchEnv = (env: Record<string, string>) =>
+  Object.fromEntries(Object.entries(env).filter(([name]) => name !== COPILOT_GITHUB_ACCOUNT_ENV));
 
 /** How often the page checks on installs it did not start. */
 const BACKGROUND_POLL_MS = 1500;
@@ -94,9 +99,19 @@ export function agentRows(providers: AgentProvider[], registry: RegistryAgent[],
   ];
 }
 
+/** Live registry update version once loaded, falling back to the cached provider snapshot before it arrives. */
+function registryUpdate(provider: AgentProvider | null, registry?: RegistryAgent | null): string | null {
+  if (provider && provider.source.kind !== "registry") return null;
+  if (registry) return registry.installed != null && registry.update ? registry.version : null;
+  return provider?.source.kind === "registry" ? provider.source.update : null;
+}
+
 /** What the agent needs, if anything, as a trailing tag in the list. */
-export function agentStatus(agent: AgentProvider): { label: string; tone: "muted" | "accent" } | null {
-  if (agent.source.kind === "registry" && agent.source.update) return { label: "Update", tone: "accent" };
+export function agentStatus(
+  agent: AgentProvider,
+  registry?: RegistryAgent | null,
+): { label: string; tone: "muted" | "accent" } | null {
+  if (registryUpdate(agent, registry)) return { label: "Update", tone: "accent" };
   if (agent.commandOverridden || agent.source.kind === "custom") return { label: "Custom", tone: "accent" };
   if (!agent.installed) return { label: "Not found", tone: "muted" };
   return null;
@@ -104,8 +119,8 @@ export function agentStatus(agent: AgentProvider): { label: string; tone: "muted
 
 function AgentItem({ agent, working }: { agent: Agent; working: boolean }) {
   const status = agent.provider
-    ? agentStatus(agent.provider)
-    : agent.registry?.installed != null && agent.registry.update
+    ? agentStatus(agent.provider, agent.registry)
+    : registryUpdate(null, agent.registry)
       ? ({ label: "Update", tone: "accent" } as const)
       : null;
   return (
@@ -509,8 +524,7 @@ function Details({
   const installed = provider?.source.kind === "registry" || (!provider && registry?.installed != null);
   const isCustom = provider?.source.kind === "custom";
   const canInstall = registry?.distribution != null;
-  const update =
-    provider?.source.kind === "registry" ? provider.source.update : registry?.update ? registry.version : null;
+  const update = registryUpdate(provider, registry);
   const facts = provider
     ? [providerStatus(provider)]
     : [
@@ -610,14 +624,6 @@ function Details({
       )}
     </section>
   );
-}
-
-/** Suggests an agent-file id for a display name (`"My Agent!"` → `"my-agent"`). */
-function slugifyId(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 }
 
 /** Splits arguments on whitespace, honoring single and double quotes. */
@@ -818,13 +824,26 @@ function ProviderSettings({
     onChanged?.();
     return command === agent.defaultProgram ? "" : (command ?? "");
   });
-  const envBase = formatEnv(agent.env);
+  const accountBase = agent.env[COPILOT_GITHUB_ACCOUNT_ENV] ?? "";
+  const account = form.useExternal(`agents.${agent.id}.githubAccount`, accountBase, async (draft) => {
+    const next = { ...agent.env };
+    const value = draft.trim();
+    if (value) next[COPILOT_GITHUB_ACCOUNT_ENV] = value;
+    else delete next[COPILOT_GITHUB_ACCOUNT_ENV];
+    await backend.setEnv(agent.id, next);
+    await refresh();
+    onChanged?.();
+    return value;
+  });
+  const envBase = formatEnv(launchEnv(agent.env));
   const env = form.useExternal(`agents.${agent.id}.env`, envBase, async (draft) => {
     const parsed = parseEnv(draft);
+    const account = agent.env[COPILOT_GITHUB_ACCOUNT_ENV];
+    if (account) parsed[COPILOT_GITHUB_ACCOUNT_ENV] = account;
     await backend.setEnv(agent.id, parsed);
     await refresh();
     onChanged?.();
-    return formatEnv(parsed);
+    return formatEnv(launchEnv(parsed));
   });
   const [error, setError] = useState<string | null>(null);
   // An edit can have been staged by a previous page instance. Its Apply callback
@@ -836,6 +855,9 @@ function ProviderSettings({
   const envEditable = agent.commandReadOnlyReason !== "registry" && agent.commandReadOnlyReason !== "customAgent";
   return (
     <>
+      {value.trim() === current && agent.installed && agent.canCheckCliUpdate && (
+        <LocalCliUpdate key={agent.program} agent={agent} backend={backend} />
+      )}
       {agent.loginHint && (
         <Section title="Sign In">
           <p className={styles.text}>
@@ -848,6 +870,27 @@ function ProviderSettings({
       </Section>
       <Section title="Launch">
         <div className={styles.form}>
+          {agent.id === "copilot" && (
+            <Row
+              label={<T>GitHub account</T>}
+              htmlFor={`agent-github-account-${agent.id}`}
+              hint={
+                <T>
+                  Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never
+                  stores it.
+                </T>
+              }
+            >
+              <Input
+                id={`agent-github-account-${agent.id}`}
+                mono
+                value={account.value}
+                disabled={account.saving}
+                placeholder="github-username"
+                onChange={(e) => account.set(e.target.value)}
+              />
+            </Row>
+          )}
           <Row label={<T>Command</T>}>
             <code className={styles.launch} title={launch}>
               {launch}

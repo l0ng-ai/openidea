@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { emitLocalIdeEvent } from "@/platform/ipc";
-import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import {
+  provideNotificationService,
+  SettingsPageFocusContext,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
 import { MemoryToolsBackend, sampleTools, setToolsBackend } from "../backend";
 import { cancelInstall, installTool, refreshTools, uninstallTool, useTools } from "../store";
@@ -448,6 +452,21 @@ describe("LanguageServersPage", () => {
     expect(rows.map((r) => r.dataset.tool)).toEqual(["basedpyright", "pyright", "ty", "pyrefly"]);
     await user.click(toolItem("ty"));
     expect(within(screen.getByLabelText("ty (Python) details")).queryByRole("radio")).toBeNull();
+  });
+
+  it("opens on the tool it was asked to show (languages.servers#<tool>)", async () => {
+    const consume = vi.fn();
+    render(
+      <SettingsPageFocusContext.Provider value={{ focus: "pyrefly", consume }}>
+        <TestSettingsForm>
+          <LanguageServersPage />
+        </TestSettingsForm>
+      </SettingsPageFocusContext.Provider>,
+    );
+    await waitFor(() => expect(toolItem("pyrefly")).toHaveAttribute("aria-current", "true"));
+    expect(language("Python")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByLabelText("Python tools")).toContainElement(toolItem("pyrefly"));
+    expect(consume).toHaveBeenCalled();
   });
 
   it("jumps to a missing tool from the language's banner", async () => {

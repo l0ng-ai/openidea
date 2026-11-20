@@ -158,11 +158,17 @@ export function startPointerDrag(
     onEnd?: (dragged: boolean, drop?: PointerDrop) => void;
     /** Not subject to "Drag-and-drop with Alt pressed only" (tabs and stripe buttons). */
     always?: boolean;
+    /**
+     * Classes of the container `source` is styled by (a tab strip's): the ghost is wrapped in a
+     * `display: contents` element carrying them, so the container's descendant rules still match it.
+     */
+    ghostContext?: string;
   } = {},
 ) {
   if (e.button !== 0 || (!opts.always && requiresAlt() && !e.altKey)) return;
   const start = { x: e.clientX, y: e.clientY };
   let ghost: HTMLElement | null = null;
+  let context: HTMLElement | null = null;
   let endDrag: (() => void) | null = null;
   const session = dragSession(data);
   const onMove = (ev: PointerEvent) => {
@@ -185,7 +191,13 @@ export function startPointerDrag(
         width: `${r.width}px`,
         height: `${r.height}px`,
       });
-      document.body.appendChild(ghost);
+      if (opts.ghostContext) {
+        context = document.createElement("div");
+        context.className = opts.ghostContext;
+        context.style.display = "contents";
+        context.appendChild(ghost);
+      }
+      document.body.appendChild(context ?? ghost);
       endDrag = beginDrag();
       opts.onStart?.();
     }
@@ -217,7 +229,7 @@ export function startPointerDrag(
     window.removeEventListener("pointerup", onUp);
     window.removeEventListener("pointercancel", onCancel);
     window.removeEventListener("keydown", onKey, true);
-    ghost?.remove();
+    (context ?? ghost)?.remove();
     endDrag?.();
   };
   const onCancel = () => {

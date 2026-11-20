@@ -59,7 +59,8 @@ pub struct HostConfig {
 }
 
 pub struct Host {
-    pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
+    pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
+    pub mcp: mcp::McpService,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     /// Every `Diagnostics` event the host ever emitted, per file and producer:
     /// the snapshot plugins read (`problems`), independent of windows and reports.
@@ -68,6 +69,8 @@ pub struct Host {
     pub mcp_requests: mcp::Requests,
     /// Commands agents run in the Run tool window (`run_command`).
     pub mcp_agent_runs: mcp::AgentRuns,
+    /// Projects the MCP server serves without a window.
+    pub mcp_background: mcp::BackgroundProjects,
     pub(crate) agent_catalogs: Arc<ide_agent::AgentCatalogs>,
     pub trust: trust::TrustStore,
     pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
@@ -124,10 +127,16 @@ pub struct Host {
 const EXIT_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Host {
-    /// Windows whose current project has this root.
+    /// Windows whose current project has this root. A project served without a window
+    /// has none.
     pub(crate) fn windows_for_root(&self, root: &std::path::Path) -> Vec<String> {
-        let mut windows: Vec<_> =
-            self.projects.read().iter().filter(|(_, p)| p.root == root).map(|(w, _)| w.clone()).collect();
+        let mut windows: Vec<_> = self
+            .projects
+            .read()
+            .iter()
+            .filter(|(w, p)| p.root == root && !mcp::BackgroundProjects::is_key(w))
+            .map(|(w, _)| w.clone())
+            .collect();
         windows.sort();
         windows
     }
@@ -152,11 +161,13 @@ impl Host {
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
-            mcp_executable: RwLock::default(),
+            mcp_executable: Arc::default(),
+            mcp: Default::default(),
             diagnostics,
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
             mcp_agent_runs: Default::default(),
+            mcp_background: Default::default(),
             agent_catalogs: Arc::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
@@ -222,12 +233,12 @@ impl Host {
         }
     }
 
-    /// Associates the plugin runtime that executes this host's project operations.
-    /// Publishes only the executable of the running built-in MCP service.
+    /// Publishes the executable of the running built-in MCP service (`None` while it is off).
     pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
         *self.mcp_executable.write() = executable;
     }
 
+    /// Associates the plugin runtime that executes this host's project operations.
     pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
         *self.plugin_host.write() = Arc::downgrade(plugins);
     }
@@ -320,9 +331,18 @@ impl Host {
         }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
+        // A project served without a window shares its files with a window whose root lies
+        // around or below its own: their diagnostics stay.
+        let background = mcp::BackgroundProjects::is_key(window);
+        let shared = background
+            && self.projects.read().values().any(|other| {
+                !other.light && (other.root.starts_with(&project.root) || project.root.starts_with(&other.root))
+            });
         // The producers will re-report when a project reopens; until then the snapshot
         // must not answer for files whose project is gone.
-        self.diagnostics.forget_root(&project.root);
+        if !shared {
+            self.diagnostics.forget_root(&project.root);
+        }
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);
@@ -341,6 +361,8 @@ impl Host {
         }
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
+        project.flutter.stop();
+        project.devtools.stop();
         project.notebooks.stop_admission();
         // What the closing window started goes with it — the builds and searches it
         // asked for, its runs, its shells and its debug sessions — and its language
@@ -351,7 +373,8 @@ impl Host {
             vec![project.notebooks.clone()],
             project.kotlin_bridge.iter().cloned().collect(),
             Some(project.lsp.clone()),
-            Some((self.debugger.clone(), window.to_owned(), project.root.clone())),
+            // Debug sessions under the root belong to windows: a project served without one starts none.
+            Some((self.debugger.clone(), window.to_owned(), (!background).then(|| project.root.clone()))),
             Some(project),
         ))
     }
@@ -364,7 +387,7 @@ impl Host {
         notebooks: Vec<Arc<notebook::NotebookService>>,
         bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
         lsp: Option<Arc<ide_lsp::LspManager>>,
-        debug: Option<(Arc<ide_dap::DebugManager>, String, std::path::PathBuf)>,
+        debug: Option<(Arc<ide_dap::DebugManager>, String, Option<std::path::PathBuf>)>,
         retired: Option<Arc<Project>>,
     ) -> std::thread::JoinHandle<()> {
         for bridge in &bridges {
@@ -391,7 +414,9 @@ impl Host {
                 }
                 if let Some((debug, key, root)) = debug {
                     debug.stop_key(&key).await;
-                    debug.stop_under(&root).await;
+                    if let Some(root) = root {
+                        debug.stop_under(&root).await;
+                    }
                 }
             });
             if let Some(retired) = retired {
@@ -410,17 +435,22 @@ impl Host {
     }
 
     fn wait_blocking(&self, shutdown: std::thread::JoinHandle<()>) {
-        let wait = move || {
+        Self::in_place(move || {
             if let Err(error) = shutdown.join() {
                 tracing::error!("project shutdown thread failed: {error:?}");
             }
-        };
+        });
+    }
+
+    /// Runs blocking work on this thread. On a worker of a multi-thread runtime the
+    /// runtime is told first, so the worker's other tasks move to another thread.
+    pub(crate) fn in_place<T>(work: impl FnOnce() -> T) -> T {
         if tokio::runtime::Handle::try_current()
             .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
         {
-            tokio::task::block_in_place(wait);
+            tokio::task::block_in_place(work)
         } else {
-            wait();
+            work()
         }
     }
 
@@ -459,6 +489,10 @@ impl Host {
     pub fn stop_processes_on_exit(&self) {
         self.processes.kill_all();
         self.terminals.kill_all();
+        for project in self.projects() {
+            project.flutter.kill();
+            project.devtools.kill();
+        }
     }
 
     /// Called before desktop exit, which may bypass document destructors.
@@ -480,6 +514,8 @@ impl Host {
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+            project.flutter.kill();
+            project.devtools.kill();
         }
         for project in &projects {
             project.plugin_diagnostics.close();

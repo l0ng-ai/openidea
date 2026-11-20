@@ -266,33 +266,39 @@ By default all Git repositories are returned.",
                 .map(|r| (r.root.into_path_buf(), r.head))
                 .collect();
             let wanted = call.opt_str("repositoryPathRelativeToProject")?;
-            let scope = super::scope::Scope::of(&call)?;
+            let paths = super::search::PathScope::of(&call)?;
             let git = git_executable(&call);
-            // A repository asked for, or the one holding `scope`.
-            let target = match &wanted {
-                Some(wanted) => Some(call.resolve_inside(wanted)?),
-                None => scope.dir().map(Path::to_path_buf),
+            // The repository asked for, or those holding the folders of `paths`.
+            let targets: Vec<PathBuf> = match &wanted {
+                Some(wanted) => vec![call.resolve_inside(wanted)?],
+                None => paths.roots().map(<[PathBuf]>::to_vec).unwrap_or_default(),
             };
-            let mut roots: Vec<(PathBuf, Option<String>)> = match target {
-                None => repos,
-                Some(path) => {
+            let mut roots: Vec<(PathBuf, Option<String>)> = if targets.is_empty() {
+                repos
+            } else {
+                let mut picked: Vec<(PathBuf, Option<String>)> = Vec::new();
+                for path in targets {
                     // The innermost repository containing the path.
-                    match innermost_repo(repos, &path) {
-                        Some(repo) => vec![repo],
+                    let repo = match innermost_repo(repos.clone(), &path) {
+                        Some(repo) => repo,
                         None => match find_git_root(call.root(), &path) {
                             Some(root) => {
                                 // JetBrains reads the branch of any repository it reports.
                                 let (git, dir) = (git.clone(), root.clone());
                                 let branch = host.blocking(move || Ok(read_branch(&git, &dir))).await?;
-                                vec![(root, branch)]
+                                (root, branch)
                             }
                             None => {
-                                let shown = wanted.unwrap_or_else(|| call.display(&path));
+                                let shown = wanted.clone().unwrap_or_else(|| call.display(&path));
                                 return Err(IdeError::not_found(format!("No git repository found for path: {shown}")));
                             }
                         },
+                    };
+                    if !picked.iter().any(|p| p.0 == repo.0) {
+                        picked.push(repo);
                     }
                 }
+                picked
             };
             roots.sort_by_key(|r| relative_to_project(&call, &r.0));
             let mut repositories = Vec::new();
@@ -305,7 +311,7 @@ By default all Git repositories are returned.",
                     .map_err(|e| {
                         IdeError::internal(format!("Failed to get git status for repository '{rel}': {}", e.message))
                     })?;
-                entries.retain(|e| scope.contains(&root.join(e.path.trim_end_matches('/'))));
+                entries.retain(|e| paths.matches_path(&root.join(e.path.trim_end_matches('/'))));
                 let count = |f: fn(&StatusEntry) -> bool| entries.iter().filter(|e| f(e)).count();
                 let listed: Vec<Value> = entries
                     .iter()
@@ -352,7 +358,7 @@ By default all Git repositories are returned.",
     ))
     .param(Param::optional("includeUntracked", ParamType::Boolean, "Whether to include untracked files"))
     .param(Param::optional("includeIgnored", ParamType::Boolean, "Whether to include ignored files"))
-    .param(super::scope::param())
+    .param(super::search::paths_param())
     .param(Param::optional("limit", ParamType::Integer, "Entries to return per repository at most (default 100)"))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }

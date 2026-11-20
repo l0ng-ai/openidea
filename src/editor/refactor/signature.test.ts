@@ -16,7 +16,7 @@ const info: MethodSignature = {
 
 describe("change signature", () => {
   it("previews the signature like the declaration", () => {
-    expect(signatureText(info)).toBe("public int sum(int a, int b) throws java.io.IOException");
+    expect(signatureText(info)).toBe("public int sum(\n    int a,\n    int b\n) throws java.io.IOException");
     expect(signatureText({ ...info, modifier: "", parameters: [], exceptions: [] })).toBe("int sum()");
   });
 

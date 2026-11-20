@@ -230,7 +230,7 @@ pub async fn target_path(root: &Path, config: &RunConfig) -> IdeResult<String> {
     }
     let mut command = std::process::Command::new(&config.command);
     command.args(args).current_dir(root);
-    ide_core::process::host_env(&mut command);
+    ide_core::process::prepare(&mut command);
     if !config.extras.include_system_env {
         command.env_clear();
     } else {

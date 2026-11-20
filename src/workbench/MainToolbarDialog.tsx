@@ -101,7 +101,6 @@ function CustomizeDialog({ onClose }: { onClose: () => void }) {
                 getKey={(id) => id}
                 activeIndex={sel.side === side ? sel.index : -1}
                 onActiveChange={(index) => setSel({ side, index })}
-                rowHeight={24}
                 className={styles.list}
                 aria-label={side === "left" ? "Left group" : "Right group"}
                 empty={
@@ -212,7 +211,6 @@ function AddPicker({ hidden, present, onPick }: { hidden: string[]; present: str
         activeIndex={active}
         onActiveChange={setActive}
         onActivate={(c) => onPick(c.id)}
-        rowHeight={24}
         className={styles.pickerList}
         aria-label="Actions and widgets to add"
         renderItem={(c, state) => (

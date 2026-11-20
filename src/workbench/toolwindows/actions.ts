@@ -1,4 +1,4 @@
-import { registerAction, registerActions, type Action } from "@/platform/actions";
+import { registerAction, registerActions, retitleAction, type Action } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { formatMessage, tx } from "@/platform/i18n";
 import { occurrenceNavigator, showStatusInfo, useContributions } from "../contributions";
@@ -27,6 +27,7 @@ import {
   lastUsedToolWindow,
   resizeActiveToolWindow,
   setToolWindowViewMode,
+  toolWindowsRestorable,
   useToolWindowLayout,
   toggleMaximizeToolWindow,
   viewModeOf,
@@ -213,7 +214,13 @@ export function installToolWindowActions(): () => void {
   };
 
   const disposeStatic = registerActions([
-    { id: "toolwindow.hideAll", title: "Hide All Tool Windows", category: "Window", run: hideAllToolWindows },
+    {
+      id: "toolwindow.hideAll",
+      title: "Hide All Tool Windows",
+      category: "Window",
+      keywords: ["restore tool windows"],
+      run: hideAllToolWindows,
+    },
     {
       id: "toolwindow.jumpToLast",
       title: "Jump to Last Tool Window",
@@ -312,9 +319,17 @@ export function installToolWindowActions(): () => void {
     })),
   ]);
 
+  // Pressed again with every window hidden, Hide All restores them: its title says so.
+  const retitleHideAll = () =>
+    retitleAction("toolwindow.hideAll", toolWindowsRestorable() ? "Restore Tool Windows" : undefined);
+  retitleHideAll();
+  const unsubscribeHideAll = useToolWindowLayout.subscribe(retitleHideAll);
+
   return () => {
     unsubscribe();
     unsubscribeLayouts();
+    unsubscribeHideAll();
+    retitleAction("toolwindow.hideAll", undefined);
     disposeStatic();
     perWindow.forEach((e) => e.dispose());
     perWindow.clear();

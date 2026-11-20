@@ -38,7 +38,7 @@ flowchart LR
 ## 服务端
 
 ```text
-openidea-server --stdio | --connect <host> <port> | --version
+openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
 ```
 
 - `--stdio` 通过 stdin/stdout 为一个桌面客户端提供服务。stdout 承载协议，所以日志写到 stderr（用 `OPENIDEA_LOG` 过滤）。
@@ -78,12 +78,12 @@ openidea-server --stdio | --connect <host> <port> | --version
 
 ### 什么在哪里运行
 
-| 远程机器上                       | 桌面端                       |
-| -------------------------------- | ---------------------------- |
-| 项目：文件、文档、设置           | 窗口、菜单、webview          |
-| 语言服务器、索引、搜索           | 客户端 UI 设置、keymap、主题 |
-| Git、终端、运行、调试适配器      | SSH 连接和端口转发           |
-| 项目的代码插件及其进程和网络请求 | 插件密钥（钥匙串）           |
+| 远程机器上                                   | 桌面端                       |
+| -------------------------------------------- | ---------------------------- |
+| 项目：文件、文档、设置                       | 窗口、菜单、webview          |
+| 语言服务器、索引、搜索                       | 客户端 UI 设置、keymap、主题 |
+| Git、终端、运行、调试适配器、内置 MCP 服务器 | SSH 连接和端口转发           |
+| 项目的代码插件及其进程和网络请求             | 插件密钥（钥匙串）           |
 
 ## 端口转发
 

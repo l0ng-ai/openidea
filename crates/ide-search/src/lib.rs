@@ -50,6 +50,11 @@ pub struct SearchQuery {
     #[serde(default)]
     #[specta(optional)]
     pub context: SearchContext,
+    /// Also search what `.gitignore` / `.ignore` / `info/exclude` leave out (the caller then
+    /// adds none of the project's exclusions either).
+    #[serde(default)]
+    #[specta(optional)]
+    pub include_excluded: bool,
 }
 
 /// IDEA's search context: matches anywhere, only in, or outside comments and
@@ -254,6 +259,7 @@ pub fn search_in_context(
         context: query.context,
         literals,
         max_matches: query.max_matches,
+        ignore_rules: !query.include_excluded,
         text,
         cancel,
         on_file,

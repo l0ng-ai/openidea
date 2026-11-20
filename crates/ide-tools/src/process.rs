@@ -23,23 +23,99 @@ fn describe(cmd: &Command) -> String {
     s
 }
 
+pub const PUBLIC_NPM_REGISTRY: &str = "https://registry.npmjs.org/";
+
+fn failed_command(label: &str, output: &str, status: &str) -> IdeError {
+    let tail: Vec<&str> = output.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    IdeError::new(
+        ErrorKind::Io,
+        format!(
+            "`{label}` failed ({status}){}",
+            if tail.is_empty() { String::new() } else { format!(": {}", tail.join(" / ")) }
+        ),
+    )
+}
+
+/// CLI flags forcing `npm` / `pnpm` onto [`PUBLIC_NPM_REGISTRY`], including `@scope:registry`
+/// overrides that otherwise take precedence over `--registry` in `~/.npmrc` for scoped packages.
+pub fn npm_public_registry_args<'a>(specs: impl IntoIterator<Item = &'a str>, pnpm: bool) -> Vec<String> {
+    let mut args = vec![format!("--registry={PUBLIC_NPM_REGISTRY}")];
+    if !pnpm {
+        for spec in specs {
+            if let Some((scope, _)) = spec.split_once('/').filter(|(s, _)| s.starts_with('@') && s.len() > 1) {
+                let flag = format!("--{scope}:registry={PUBLIC_NPM_REGISTRY}");
+                if !args.contains(&flag) {
+                    args.push(flag);
+                }
+            }
+        }
+    }
+    args
+}
+
+/// Whether `npm` / `pnpm` output indicates a mirror miss or private-registry auth rejection
+/// (`ETARGET`, `E404`, `E401`, `ENEEDAUTH`, `E403`).
+pub fn is_npm_registry_miss(output: &str) -> bool {
+    const CODES: &[&str] = &[
+        "ETARGET",
+        "notarget",
+        "No matching version found",
+        "ERR_PNPM_NO_MATCHING_VERSION",
+        "E404",
+        "404 Not Found",
+        "ERR_PNPM_FETCH_404",
+        "E401",
+        "ENEEDAUTH",
+        "ERR_PNPM_FETCH_401",
+        "E403",
+        "ERR_PNPM_FETCH_403",
+    ];
+    CODES.iter().any(|code| output.contains(code))
+}
+
 /// Runs `cmd`, forwarding each stdout/stderr line as [`InstallEvent::Line`].
 /// Returns the collected output; fails on non-zero exit or cancellation.
 pub fn run_streamed(cmd: Command, cancel: &CancellationToken, emit: Emit) -> IdeResult<String> {
     let label = describe(&cmd);
     let (ok, output, status) = run_collect(cmd, cancel, emit)?;
     if !ok {
-        let tail: Vec<&str> = output.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
-        let tail: Vec<&str> = tail.into_iter().rev().collect();
-        return Err(IdeError::new(
-            ErrorKind::Io,
-            format!(
-                "`{label}` failed ({status}){}",
-                if tail.is_empty() { String::new() } else { format!(": {}", tail.join(" / ")) }
-            ),
-        ));
+        return Err(failed_command(&label, &output, &status));
     }
     Ok(output)
+}
+
+/// Runs an `npm` / `pnpm` command against the user's configured registry first (preserving
+/// corporate mirrors, proxies, and CAs), and retries once against [`PUBLIC_NPM_REGISTRY`] when
+/// the configured registry misses the package/version or rejects auth. Preserves the primary
+/// error if the public registry is unreachable.
+pub fn run_npm_with_public_fallback(
+    mut build: impl FnMut(&[String]) -> Command,
+    specs: &[String],
+    pnpm: bool,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<String> {
+    let primary = build(&[]);
+    let label = describe(&primary);
+    let (ok, output, status) = run_collect(primary, cancel, emit)?;
+    if ok {
+        return Ok(output);
+    }
+    let err = failed_command(&label, &output, &status);
+    if cancel.is_cancelled() || !is_npm_registry_miss(&output) {
+        return Err(err);
+    }
+    emit(InstallEvent::Line {
+        text: format!("Configured npm registry missed package; retrying against {PUBLIC_NPM_REGISTRY}…"),
+    });
+    let extra = npm_public_registry_args(specs.iter().map(String::as_str), pnpm);
+    match run_collect(build(&extra), cancel, emit) {
+        Ok((true, retry_out, _)) => Ok(retry_out),
+        Ok((false, _, _)) => Err(err),
+        Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+        Err(_) => Err(err),
+    }
 }
 
 /// Like [`run_streamed`] but returns `(success, output, status text)` instead of failing on a non-zero exit.

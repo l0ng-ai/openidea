@@ -373,7 +373,7 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["delete all rows", "empty table"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n?.kind === "table" && n.table.kind === "table")
+        if (n?.kind === "table" && n.table.kind === "table" && driverOf(n.id) !== "jdbc")
           openDialog({ kind: "truncate", id: n.id, schema: n.schema, table: n.table.name });
       },
     }),
@@ -425,7 +425,7 @@ export function registerDatabaseTreeActions(): () => void {
       run: ({ arg }) => {
         const n = nodeFrom(arg);
         const id = n && nodeTarget(n);
-        if (!n || !id) return;
+        if (!n || !id || driverOf(id) === "jdbc") return;
         const schema =
           "schema" in n && typeof n.schema === "string" ? n.schema : driverOf(id) === "sqlite" ? "main" : null;
         if (schema !== null) openDialog({ kind: "modifyTable", id, schema, table: null });
@@ -441,6 +441,7 @@ export function registerDatabaseTreeActions(): () => void {
         const n = nodeFrom(arg);
         const id = n && nodeTarget(n);
         const schema = n && "schema" in n && typeof n.schema === "string" ? n.schema : null;
+        if (id && driverOf(id) === "jdbc") return;
         openDialog({
           kind: "compareSchemas",
           source: id ? { id, schema: schema ?? (driverOf(id) === "sqlite" ? "main" : "") } : null,
@@ -466,7 +467,12 @@ export function registerDatabaseTreeActions(): () => void {
       keywords: ["csv", "tsv", "load data"],
       run: ({ arg }) => {
         const n = nodeFrom(arg);
-        if (n?.kind === "table" && n.table.kind === "table" && driverOf(n.id) !== "clickhouse")
+        if (
+          n?.kind === "table" &&
+          n.table.kind === "table" &&
+          driverOf(n.id) !== "clickhouse" &&
+          driverOf(n.id) !== "jdbc"
+        )
           openDialog({ kind: "import", id: n.id, schema: n.schema, table: n.table.name });
       },
     }),

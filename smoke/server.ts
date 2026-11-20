@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 /**
  * `openidea-server --stdio`, spoken to as the desktop app does in remote development:
  * JSON-RPC with `Content-Length` framing over the server's stdin / stdout.
@@ -121,12 +122,21 @@ export class Server {
   onEvent: (window: string | null, event: unknown) => void = () => {};
 
   private closing: Promise<void> | undefined;
+  private failure: unknown;
   // A plain field, not a parameter property: the evals load this file with Node's type stripping.
   private readonly child: ChildProcessWithoutNullStreams;
 
   private constructor(child: ChildProcessWithoutNullStreams) {
     this.child = child;
-    child.stdout.on("data", (chunk: Buffer) => this.receive(chunk));
+    child.stdout.on("data", (chunk: Buffer) => {
+      try {
+        this.receive(chunk);
+      } catch (error) {
+        this.failure = error;
+        for (const p of this.pending.values()) p.reject(error);
+        this.pending.clear();
+      }
+    });
     child.stderr.on("data", (chunk: Buffer) => {
       // The whole log, when asked for (OPENIDEA_SMOKE_LOG=<file>; OPENIDEA_LOG sets its level).
       if (process.env.OPENIDEA_SMOKE_LOG) appendFileSync(process.env.OPENIDEA_SMOKE_LOG, chunk);
@@ -134,6 +144,7 @@ export class Server {
       if (this.stderr.length > 200) this.stderr.shift();
     });
     child.on("error", (error) => {
+      this.failure = error;
       for (const p of this.pending.values()) p.reject(error);
       this.pending.clear();
     });
@@ -143,13 +154,14 @@ export class Server {
       this.pending.clear();
     });
     child.on("exit", (code) => {
+      this.failure = new Error(`openidea-server exited (${code}): ${this.log()}`);
       for (const p of this.pending.values()) p.reject(new Error(`openidea-server exited (${code}): ${this.log()}`));
       this.pending.clear();
     });
   }
 
   /** Starts a server whose settings, caches and tools live under `home`. */
-  static async start(home: string, env: Record<string, string> = {}): Promise<Server> {
+  static async start(home: string, env: Record<string, string> = {}, initializeTimeoutMs = 30_000): Promise<Server> {
     const child = spawn(serverBinary(), ["--stdio"], {
       env: { ...process.env, OPENIDEA_SERVER_HOME: home, ...env },
       stdio: ["pipe", "pipe", "pipe"],
@@ -158,7 +170,7 @@ export class Server {
     });
     const server = new Server(child);
     try {
-      await server.request("initialize", { version: PROTOCOL_VERSION });
+      await server.request("initialize", { version: PROTOCOL_VERSION }, initializeTimeoutMs);
       return server;
     } catch (error) {
       await server.close();
@@ -258,12 +270,33 @@ export class Server {
     if (errors.size > 1) throw new AggregateError(errors, "Smoke server cleanup failed");
   }
 
-  private request(method: string, params: unknown): Promise<unknown> {
+  private request(method: string, params: unknown, timeoutMs = 5 * 60_000): Promise<unknown> {
+    if (this.failure) return Promise.reject(this.failure);
+    if (this.closing) return Promise.reject(new Error("openidea-server is closing"));
     const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: "2.0", id, method, params });
+    const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+    const timer = setTimeout(() => {
+      this.pending.delete(id);
+      reject(new Error(`${method} timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+    this.pending.set(id, {
+      resolve: (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
     });
+    try {
+      this.send({ jsonrpc: "2.0", id, method, params });
+    } catch (error) {
+      clearTimeout(timer);
+      this.pending.delete(id);
+      reject(error);
+    }
+    return promise;
   }
 
   private send(message: unknown) {

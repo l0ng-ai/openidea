@@ -1,7 +1,7 @@
 /**
  * Pure helpers of the result views: IDEA's local filter and client-side sort
  * of loaded rows, search in the grid, paging of console results, the
- * Aggregates of a selection, and the series of the chart.
+ * Aggregates of a selection, the series of the chart, and how long a statement took.
  */
 import type { Cell } from "./model";
 
@@ -461,4 +461,9 @@ export function pageWindow({ page, pageSize, rows, hasMore, total }: PageState):
 /** A page is read by running the query again: the backend reads past the rows before it and returns only the page. */
 export function pageFetch(page: number, pageSize: number): { maxRows: number; skip: number } {
   return { maxRows: pageSize, skip: page * pageSize };
+}
+
+/** A statement's run time as IDEA shows it: `840 ms`, `3.2 s`. */
+export function formatElapsed(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }

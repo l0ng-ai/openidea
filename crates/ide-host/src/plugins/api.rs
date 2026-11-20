@@ -406,15 +406,16 @@ impl Proc {
         }
     }
 
-    /// What it printed since the last call, each stream at most `max` bytes.
+    /// What it printed since the last call, each stream at most `max` bytes. The status
+    /// comes with the last chunk only: once it ended, its pipes reached the end and
+    /// nothing is left to read, so a caller can stop at the first chunk that has one.
     fn chunk(&self, max: usize) -> ProcessChunk {
         let mut state = self.state.lock();
         let eof = state.readers == 0;
-        ProcessChunk {
-            stdout: take_text(&mut state.stdout, max, eof),
-            stderr: take_text(&mut state.stderr, max, eof),
-            status: state.status,
-        }
+        let stdout = take_text(&mut state.stdout, max, eof);
+        let stderr = take_text(&mut state.stderr, max, eof);
+        let drained = eof && state.stdout.is_empty() && state.stderr.is_empty();
+        ProcessChunk { stdout, stderr, status: state.status.filter(|_| drained) }
     }
 }
 
@@ -568,6 +569,8 @@ pub(super) struct Shared {
     /// (plugin, item id) → item, for windows opened later.
     output: Mutex<BTreeMap<(String, String), String>>,
     decorations: Mutex<BTreeMap<String, Vec<super::DecorationSet>>>,
+    /// plugin → its console highlight rules, in order.
+    console_rules: Mutex<BTreeMap<String, Vec<ide_plugin::ConsoleRule>>>,
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
     setting_snapshots: Mutex<SettingSnapshots>,
     window_status: Mutex<BTreeMap<(String, String, String), StatusItem>>,
@@ -648,6 +651,7 @@ impl Shared {
             status: Mutex::default(),
             output: Mutex::default(),
             decorations: Mutex::default(),
+            console_rules: Mutex::default(),
             window_status: Mutex::default(),
             setting_snapshots: Mutex::default(),
             contexts: Mutex::default(),
@@ -873,6 +877,9 @@ impl Shared {
         }
         if self.decorations.lock().remove(plugin).is_some() {
             self.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: plugin.into(), sets: Vec::new() });
+        }
+        if self.console_rules.lock().remove(plugin).is_some() {
+            self.sink.emit(None, PluginEvent::ConsoleRulesChanged { plugin_id: plugin.into(), rules: Vec::new() });
         }
         self.withdraw_prompts(plugin);
         self.net_prompts.lock().remove(plugin);
@@ -1706,6 +1713,18 @@ impl HostApi for PluginApi {
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
         self.set_file_icon_decorations(set, items)
     }
+    fn console_rules(&self, rules: Vec<ide_plugin::ConsoleRule>) -> Result<(), HostError> {
+        let rules = super::console_rules::normalize(rules).map_err(HostError::Invalid)?;
+        let mut all = self.shared.console_rules.lock();
+        if rules.is_empty() {
+            all.remove(self.id());
+        } else {
+            all.insert(self.id().into(), rules.clone());
+        }
+        // Emitted under the lock so replacements cannot arrive out of order.
+        self.shared.sink.emit(None, PluginEvent::ConsoleRulesChanged { plugin_id: self.id().into(), rules });
+        Ok(())
+    }
     fn vcs_log(
         &self,
         root: &Path,
@@ -2096,6 +2115,23 @@ impl HostApi for PluginApi {
         self.shared
             .sink
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
+    }
+
+    fn check_status_menu(&self, menu: &[ide_plugin::StatusMenuEntry]) -> Result<(), HostError> {
+        let actions: Vec<ide_plugin::NotificationAction> = menu
+            .iter()
+            .filter_map(|entry| match entry {
+                ide_plugin::StatusMenuEntry::Action { label, command, argument, .. } => {
+                    Some(ide_plugin::NotificationAction {
+                        label: label.clone(),
+                        command: command.clone(),
+                        argument: argument.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        check_actions(self, &actions)
     }
 
     fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
@@ -3276,6 +3312,7 @@ impl PluginWorkspace for HostWorkspace {
             scope: ide_search::SearchScope::Project,
             max_matches: limit.min(10_000).saturating_add(1),
             context: Default::default(),
+            include_excluded: false,
         };
         query.exclude.extend(project.search_excludes());
         let files = Mutex::new(Vec::new());
@@ -4090,6 +4127,27 @@ mod tests {
         api.release_process(id);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_status_comes_with_the_last_of_the_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = shell_api(tmp.path());
+        let token = CancellationToken::new();
+        let id = api.start_process(shell("printf 'abcdefghij'; printf 'xyz' >&2"), None, None).unwrap();
+        let first = api.wait_process(id, 4, Duration::from_secs(5), &token).unwrap();
+        assert_eq!((first.stdout.as_str(), first.stderr.as_str(), first.status), ("abcd", "xyz", None));
+        let mut stdout = first.stdout;
+        let status = loop {
+            let chunk = api.poll_process(id, 4).unwrap();
+            stdout.push_str(&chunk.stdout);
+            if let Some(status) = chunk.status {
+                break status;
+            }
+        };
+        assert_eq!((stdout.as_str(), status), ("abcdefghij", 0));
+        api.release_process(id);
+    }
+
     #[test]
     fn programs_run_only_as_approved() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4441,6 +4499,9 @@ impl Shared {
     pub(super) fn decoration_sets(&self) -> BTreeMap<String, Vec<super::DecorationSet>> {
         self.decorations.lock().clone()
     }
+    pub(super) fn console_rules(&self) -> BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+        self.console_rules.lock().clone()
+    }
 }
 
 #[cfg(test)]
@@ -4610,6 +4671,34 @@ mod workbench_tests {
         assert!(api.file_icon_decorations("icons", vec![(path.clone(), "BAD ID".into())]).is_err());
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
+    }
+    #[test]
+    fn console_rules_replace_keep_the_last_valid_list_and_go_with_the_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), false, None);
+        let rule = |pattern: &str| ide_plugin::ConsoleRule {
+            pattern: pattern.into(),
+            ignore_case: false,
+            foreground: Some("bright-yellow".into()),
+            background: Some("navy".into()),
+            styles: vec!["bold".into()],
+            whole_line: true,
+            enabled: true,
+        };
+        // No capability, and no trusted project, is needed: the rules read nothing.
+        api.console_rules(vec![rule(r"\[AUDIT\]"), rule(r"JOB-\d+")]).unwrap();
+        let rules = &api.shared.console_rules()["test"];
+        assert_eq!(rules.len(), 2);
+        assert_eq!((rules[0].foreground.as_deref(), rules[0].background.as_deref()), (Some("bright-yellow"), None));
+        assert!(matches!(api.console_rules(vec![rule("(a+)+b")]), Err(HostError::Invalid(_))));
+        assert_eq!(api.shared.console_rules()["test"].len(), 2);
+        api.console_rules(vec![rule("x")]).unwrap();
+        assert_eq!(api.shared.console_rules()["test"].len(), 1);
+        api.console_rules(Vec::new()).unwrap();
+        assert!(api.shared.console_rules().is_empty());
+        api.console_rules(vec![rule("x")]).unwrap();
+        api.shared.clear_plugin("test", true);
+        assert!(api.shared.console_rules().is_empty());
     }
     #[test]
     fn decoration_styles_keep_the_severity_palette_the_editor_renders() {

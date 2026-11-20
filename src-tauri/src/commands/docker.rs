@@ -31,6 +31,16 @@ async fn cancellable<T: Send + 'static>(
     result
 }
 
+/// Closes the connection's SSH tunnel and, when nothing else uses it, its SSH connection
+/// (Services › Disconnect); other endpoints keep nothing open.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn docker_disconnect(state: State<'_, AppState>, endpoint: DockerEndpoint) -> IdeResult<()> {
+    ide_host::ops::docker::disconnect(&state.host, &endpoint).await;
+    Ok(())
+}
+
 /// Availability plus containers, images, volumes and networks.
 #[desktop_command(trust = trusted)]
 #[tauri::command]
@@ -285,6 +295,7 @@ ide_command::desktop_domain!(
     docker_container_op,
     docker_container_stats,
     docker_container_top,
+    docker_disconnect,
     docker_events,
     docker_image_history,
     docker_inspect,

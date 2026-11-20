@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorController, openFilePaths, useEditorStatus, useTabs } from "./controller";
+import { EditorController, openFilePaths, useEditorStatus, useTabErrors, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
 import { useDocMeta } from "./model/document";
+import { storeSession } from "./model/session";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
+import * as contributions from "@/workbench/contributions";
 import {
   registerEditorKind,
   registerTextEditorWrapper,
@@ -11,6 +13,7 @@ import {
   useProjectViewLead,
 } from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
+import { IpcError, type ErrorKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { hideContextMenu, resolveMenuItems, useContextMenuStore } from "@/ui";
@@ -27,6 +30,75 @@ afterEach(() => {
   ctrl = null;
   useTabs.setState(initialTabsState(), true);
   useEditorStatus.setState({ status: null });
+});
+
+describe("restoring an editor session", () => {
+  const root = "/session-restore";
+  const existing = `${root}/existing.txt`;
+  const unavailable = `${root}/unavailable.txt`;
+  const text = "first\nsecond";
+  let controller: EditorController | undefined;
+
+  afterEach(() => {
+    controller?.stop();
+    controller = undefined;
+    storeSession(root, null);
+    useTabErrors.setState({}, true);
+    vi.restoreAllMocks();
+  });
+
+  async function restoreWithOpenError(kind: ErrorKind, message: string) {
+    storeSession(root, {
+      version: 1,
+      layout: { kind: "pane", tabs: [{ path: existing }, { path: unavailable }], active: 1 },
+      activePane: 0,
+      files: { [existing]: { anchor: 6, head: 6 } },
+    });
+    const backend = createMemoryBackend({ [existing]: text });
+    // For an absent path the memory backend serves sample text, not a disk error.
+    const open = backend.open.bind(backend);
+    vi.spyOn(backend, "open").mockImplementation(async (path) => {
+      if (path === unavailable) throw new IpcError({ kind, message });
+      return open(path);
+    });
+    const editor = (controller = new EditorController(backend));
+    editor.start();
+
+    const restoring = editor.restoreSession(root);
+    const state = useTabs.getState();
+    const selected = state.panes[state.activePane]!.active!;
+    // Restore opens the selected tab in the background. Join the same slot request.
+    await Promise.all([restoring, editor.ensureSlot(selected)]);
+    return { editor, selected };
+  }
+
+  it("silently drops a deleted selected file and restores the remaining tab", async () => {
+    const notify = vi.fn();
+    vi.spyOn(contributions, "notifications").mockReturnValue({ notify });
+    const { editor, selected } = await restoreWithOpenError("notFound", `No such file: ${unavailable}`);
+
+    expect(notify).not.toHaveBeenCalled();
+    expect(useTabErrors.getState()).toEqual({});
+    expect(openFilePaths(useTabs.getState())).toEqual([existing]);
+    expect(editor.slotFor(selected)).toBeNull();
+    expect(editor.activeInput()?.path).toBe(existing);
+
+    // In the app the visible tab's editor host requests this slot after selection changes.
+    const state = useTabs.getState();
+    const slot = await editor.ensureSlot(state.panes[state.activePane]!.active!);
+    expect(slot?.model.path).toBe(existing);
+    expect(slot?.state.doc.toString()).toBe(text);
+    expect(slot?.caret()).toMatchObject({ line: 1, col: 0 });
+  });
+
+  it("keeps a tab and reports its open error when access is denied", async () => {
+    const message = `Permission denied: ${unavailable}`;
+    const { editor, selected } = await restoreWithOpenError("permissionDenied", message);
+
+    expect(openFilePaths(useTabs.getState())).toEqual([existing, unavailable]);
+    expect(editor.activeInput()?.path).toBe(unavailable);
+    expect(useTabErrors.getState()).toEqual({ [selected]: message });
+  });
 });
 
 describe("EditorController", () => {

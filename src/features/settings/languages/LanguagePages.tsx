@@ -14,6 +14,7 @@ import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form
 import { choosePath } from "@/platform/choosePath";
 import { usePageContext, useSetting } from "../components/context";
 import { SdkField, tildify, useDetected, useJdtlsJdk } from "./components";
+import { isMavenThreadCount } from "./mavenThreads";
 import styles from "./Sdk.module.css";
 
 function PathInput({
@@ -365,6 +366,7 @@ export function RustPage() {
 // Go
 
 export function GoPage() {
+  const [gofumpt, setGofumpt] = useSetting<boolean>("languages.go.gofumpt");
   const { list } = useDetected("go");
   const defaultGopath = list.find((s) => s.extra)?.extra;
   return (
@@ -388,6 +390,14 @@ export function GoPage() {
           label="Project GOPATH"
           placeholder={defaultGopath ? tildify(defaultGopath) : "go env GOPATH"}
           title="Select GOPATH"
+        />
+      </Section>
+      <Section title="Formatting">
+        <Toggle
+          label="Format with gofumpt"
+          checked={gofumpt}
+          onChange={setGofumpt}
+          hint="gopls applies gofumpt's stricter rules on top of gofmt when reformatting."
         />
       </Section>
     </div>
@@ -555,7 +565,9 @@ export function MavenPage() {
   const [delegateBuild, setDelegateBuild] = useSetting<boolean>("languages.java.maven.delegateBuild");
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   const [downloadSources, setDownloadSources] = useSetting<boolean>("languages.java.maven.downloadSources");
+  const [updateSnapshots, setUpdateSnapshots] = useSetting<boolean>("languages.java.maven.updateSnapshots");
   const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const threadsInvalid = !!threads?.trim() && !isMavenThreadCount(threads);
   const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
   const id = useId();
   return (
@@ -572,6 +584,12 @@ export function MavenPage() {
           checked={downloadSources}
           onChange={setDownloadSources}
           hint="The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only."
+        />
+        <Toggle
+          label="Always update snapshots"
+          checked={updateSnapshots}
+          onChange={setUpdateSnapshots}
+          hint="Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U)."
         />
         <SdkRow
           k="languages.java.maven.runnerJre"
@@ -635,12 +653,24 @@ export function MavenPage() {
         <Row
           label="Thread count"
           htmlFor={id}
-          hint="Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+          hint={
+            threadsInvalid ? (
+              <span className={styles.error} role="alert">
+                <T>
+                  Not a thread count Maven accepts, so builds run serially. Use a number (4) or a core multiplier (2C,
+                  2.5C).
+                </T>
+              </span>
+            ) : (
+              "Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+            )
+          }
         >
           <span className={styles.pathRow}>
             <Input
               id={id}
               mono
+              invalid={threadsInvalid}
               className={styles.pathInput}
               value={threads}
               placeholder="4, 2C"

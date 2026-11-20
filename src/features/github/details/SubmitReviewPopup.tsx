@@ -5,7 +5,7 @@
  * Request Changes (not for the author) and Comment. Shown above the button that opened
  * it, or centred in the window. 500×200, resizable.
  */
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Button, IconButton, Popup, Spinner, T } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { ask } from "@/workbench/messages";
@@ -13,40 +13,59 @@ import { errorMessage } from "../api/client";
 import type { GHPullRequestReviewEvent } from "../api/types";
 import { deleteReview, submitOrCreateReview } from "../data/operations";
 import { loadPullRequestData, usePullRequestData } from "../data/pullRequest";
+import { useGhRepository } from "../data/repository";
 import { openDialog } from "../ui/dialogs";
-import { setReviewText, useReviewText } from "./state";
+import { reviewDraftKey, setReviewText, useReviewText } from "./state";
 import styles from "./Details.module.css";
 
 /** Opens the popup for pull request `number`; resolves when it closes. */
 export function showSubmitReview(number: number, anchor?: Element | null): Promise<unknown> {
+  const draftKey = reviewDraftKey(useGhRepository.getState().connection, number);
+  if (draftKey === null) return Promise.resolve(null);
   // The details and the pending review are needed for the buttons and the header.
   void loadPullRequestData(number, "details").catch(() => undefined);
   void loadPullRequestData(number, "pendingReview").catch(() => undefined);
   const at = anchor?.isConnected
     ? anchor
     : { x: Math.round(window.innerWidth / 2) - 250, y: Math.round(window.innerHeight / 3) };
-  return openDialog<true>((done) => <SubmitReview number={number} anchor={at} onClose={() => done(null)} />);
+  return openDialog<true>((done) => (
+    <SubmitReview number={number} draftKey={draftKey} anchor={at} onClose={() => done(null)} />
+  ));
 }
 
-function SubmitReview(props: { number: number; anchor: Element | { x: number; y: number }; onClose: () => void }) {
-  const { number } = props;
+function SubmitReview(props: {
+  number: number;
+  draftKey: string;
+  anchor: Element | { x: number; y: number };
+  onClose: () => void;
+}) {
+  const { number, draftKey, onClose } = props;
   const t = useTx();
   const details = usePullRequestData(number, "details").value;
   const pending = usePullRequestData(number, "pendingReview").value;
-  const text = useReviewText((s) => s.text[number] ?? "");
+  const text = useReviewText((s) => s.text[draftKey] ?? "");
+  const activeDraftKey = useGhRepository((s) => reviewDraftKey(s.connection, number));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeDraftKey !== draftKey) onClose();
+  }, [activeDraftKey, draftKey, onClose]);
+  if (activeDraftKey !== draftKey) return null;
+
   const comments = pending?.commentsCount ?? 0;
   const hasAnyComment = text.length > 0 || comments > 0;
   const isAuthor = details?.viewerDidAuthor ?? false;
 
   const submit = async (event: GHPullRequestReviewEvent) => {
+    const connection = useGhRepository.getState().connection;
+    if (!connection || reviewDraftKey(connection, number) !== draftKey) return;
     setBusy(true);
     setError(null);
     try {
-      await submitOrCreateReview(number, event, text);
-      setReviewText(number, "");
-      props.onClose();
+      if (await submitOrCreateReview(number, event, text, connection)) {
+        setReviewText(draftKey, "");
+        onClose();
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -54,7 +73,8 @@ function SubmitReview(props: { number: number; anchor: Element | { x: number; y:
     }
   };
   const discard = async () => {
-    if (!pending) return;
+    const connection = useGhRepository.getState().connection;
+    if (!pending || reviewDraftKey(connection, number) !== draftKey) return;
     const r = await ask({
       title: tx("Discard Pending Review"),
       body: tx("Are you sure you want to delete all pending comments?"),
@@ -64,7 +84,7 @@ function SubmitReview(props: { number: number; anchor: Element | { x: number; y:
       ],
       cancel: false,
     });
-    if (r.button !== "yes") return;
+    if (r.button !== "yes" || useGhRepository.getState().connection !== connection) return;
     setBusy(true);
     try {
       await deleteReview(number, pending.id);
@@ -82,7 +102,7 @@ function SubmitReview(props: { number: number; anchor: Element | { x: number; y:
       placement={anchored ? "top-start" : "bottom-start"}
       onClose={(reason) => {
         // A click outside does not drop a review while it is being sent.
-        if (reason !== "outside" || !busy) props.onClose();
+        if (reason !== "outside" || !busy) onClose();
       }}
       role="dialog"
       aria-label={t("Submit Review")}
@@ -100,7 +120,7 @@ function SubmitReview(props: { number: number; anchor: Element | { x: number; y:
         {pending && comments > 0 && (
           <IconButton icon="trash" size="small" title="Discard pending comments" disabled={busy} onClick={discard} />
         )}
-        <IconButton icon="close" size="small" title="Close" onClick={props.onClose} />
+        <IconButton icon="close" size="small" title="Close" onClick={onClose} />
       </div>
       <textarea
         data-autofocus
@@ -110,7 +130,7 @@ function SubmitReview(props: { number: number; anchor: Element | { x: number; y:
         value={text}
         onChange={(e) => {
           setError(null);
-          setReviewText(number, e.target.value);
+          setReviewText(draftKey, e.target.value);
         }}
       />
       {error && (

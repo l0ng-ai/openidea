@@ -229,7 +229,9 @@ describe("SessionAssets component", () => {
     vi.spyOn(ipc, "call").mockImplementation(async (promise) => {
       return promise;
     });
-    vi.spyOn(ipc.commands, "vcsConfigGet").mockResolvedValue("git@github-personal:acme/monorepo.git" as never);
+    vi.spyOn(ipc.commands, "vcsRemotes").mockResolvedValue([
+      { name: "origin", url: "git@github-personal:acme/monorepo.git" },
+    ] as never);
     vi.spyOn(ipc.commands, "ghPrList").mockResolvedValue([branchSummary] as never);
     vi.spyOn(ipc.commands, "ghApi").mockImplementation((_repo, req) => {
       if (req.endpoint === "repos/acme/monorepo/pulls/122518") {

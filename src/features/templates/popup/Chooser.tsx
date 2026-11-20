@@ -4,6 +4,7 @@ import { HighlightedText, List, Popup, fuzzyMatch, listNavigate } from "@/ui";
 import { closeChooser, useChooser, type ChooserItem, type ChooserRequest } from "./store";
 import styles from "./Chooser.module.css";
 import { tx } from "@/platform/i18n";
+import { useRowHeight } from "@/ui/density";
 
 /** Overlay contribution: renders the pending chooser, if any. */
 export function ChooserHost() {
@@ -57,6 +58,7 @@ function MnemonicLabel({ item }: { item: ChooserItem }) {
 }
 
 function ChooserPopup({ request }: { request: ChooserRequest }) {
+  const rowHeight = useRowHeight(22);
   const [filter, setFilter] = useState(request.filter ?? "");
   const rows = useMemo(() => filterChooserItems(request.items, filter), [request.items, filter]);
   const [active, setActive] = useState(() =>
@@ -129,7 +131,7 @@ function ChooserPopup({ request }: { request: ChooserRequest }) {
           renderSection={(r) => <div className={styles.section}>{r.item.label}</div>}
           focusable={false}
           hoverSelects
-          rowHeight={22}
+          rowHeight={rowHeight}
           className={styles.list}
           aria-label={request.title}
           empty={<div className={styles.empty}>{request.emptyText ?? tx("Nothing to show")}</div>}

@@ -5,6 +5,7 @@ import { Tree, type TreeHandle } from "./Tree";
 import { getContext } from "@/platform/context";
 import { registerAction } from "@/platform/actions";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { usePlatform } from "@/platform/platformInfo";
 
 interface N {
   id: string;
@@ -47,6 +48,35 @@ const labels = (tree: HTMLElement) =>
   within(tree)
     .queryAllByRole("treeitem")
     .map((el) => el.textContent);
+
+describe("Tree context-menu selection", () => {
+  it.each([
+    { os: "windows", gesture: { button: 2 } },
+    { os: "macos", gesture: { button: 0, ctrlKey: true } },
+  ])("marks $os context-menu selection without changing ordinary activation", ({ os, gesture }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    try {
+      const selection = vi.fn();
+      const menu = vi.fn();
+      const { tree, key, onActivate } = setup({ onSelectionChange: selection, onContextMenu: menu });
+      const readme = within(tree).getByRole("treeitem", { name: "README.md" });
+      fireEvent.mouseDown(readme, gesture);
+      fireEvent.contextMenu(readme, gesture);
+      expect(selection).toHaveBeenLastCalledWith(new Set(["README.md"]), data[1], "contextMenu");
+      expect(menu).toHaveBeenCalledWith(data[1], new Set(["README.md"]), expect.anything());
+      expect(onActivate).not.toHaveBeenCalled();
+      key("Home");
+      expect(selection).toHaveBeenLastCalledWith(new Set(["src"]), data[0]);
+      fireEvent.mouseDown(readme, { button: 0 });
+      expect(selection).toHaveBeenLastCalledWith(new Set(["README.md"]), data[1]);
+      key("Enter");
+      expect(onActivate).toHaveBeenCalledWith(data[1], expect.anything());
+    } finally {
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+});
 
 describe("Tree directory context", () => {
   it("does not contribute virtual document URIs as filesystem directories", () => {
@@ -307,6 +337,29 @@ describe("Tree speed search", () => {
     expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
     fireEvent.click(toggle);
     expect(labels(tree)).toHaveLength(6);
+  });
+
+  it("⌘F / Ctrl+F opens the field before anything is typed, and Escape closes it", () => {
+    const os = usePlatform.getState().os;
+    try {
+      for (const [platform, init] of [
+        ["macos", { metaKey: true }],
+        ["windows", { ctrlKey: true }],
+      ] as const) {
+        usePlatform.setState({ os: platform });
+        const { key, unmount } = setup({ speedSearchField: true });
+        expect(screen.queryByRole("status")).toBeNull();
+        key("f", init);
+        expect(screen.getByRole("status")).toHaveTextContent("");
+        key("u");
+        expect(screen.getByRole("status")).toHaveTextContent("u");
+        key("Escape");
+        expect(screen.queryByRole("status")).toBeNull();
+        unmount();
+      }
+    } finally {
+      usePlatform.setState({ os });
+    }
   });
 });
 

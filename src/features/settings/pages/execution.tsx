@@ -3,16 +3,24 @@
  * Stepping), Python Debugger and Run/Debug. Consumed by the run and debugger
  * features (and `ide-run` for encoding / termination timeout).
  */
-import { CMakeProfiles } from "./cmake";
+import { useEffect } from "react";
 import { WORKFLOW_LIMITS } from "@/platform/workflowSettings";
+import { useSettingsPageFocus } from "@/workbench/contributions";
+import { isTauri } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import type { SelectOption } from "@/ui";
 import { ColorSwatches, FormGroup, GlobListEditor, NumberInput, Row, Toggle } from "../components/Form";
-import { GradlePage, MavenPage } from "../languages/LanguagePages";
-import { useSetting } from "../components/context";
+import { usePageContext, useSetting } from "../components/context";
+import { useSettingsDialog } from "../model/staging";
+import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
 import { Indented, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import { T } from "@/ui";
+
+const CMakeProfiles = lazyPage("build.cmake", () => import("./cmake").then((m) => m.CMakeProfiles));
+const GradlePage = lazyPage("build.gradle", () => import("../languages/LanguagePages").then((m) => m.GradlePage));
+const MavenPage = lazyPage("build.maven", () => import("../languages/LanguagePages").then((m) => m.MavenPage));
 
 export const BUILD_GROUP = "Build, Execution, Deployment";
 
@@ -50,6 +58,18 @@ function BufferRow() {
 
 function FoldPatterns() {
   const [patterns, set] = useSetting<string[]>("console.foldPatterns");
+  // Opened as `build.console#<text>` by the console's Fold Lines Like This: add it as a pattern.
+  const { focus, consume } = useSettingsPageFocus();
+  // With a project open, the Global list arrives after the dialog opens (until then it is the project's).
+  const { scope } = usePageContext();
+  const globalPending = useSettingsDialog((s) => s.globalBase === s.base);
+  const hasProject = useProject((s) => !!s.project);
+  const waiting = scope === "global" && globalPending && hasProject && isTauri();
+  useEffect(() => {
+    if (!focus || waiting) return;
+    consume();
+    if (!patterns.includes(focus)) set([...patterns, focus]);
+  }, [focus, consume, waiting, patterns, set]);
   return (
     <Row
       label="Fold console lines that contain"
@@ -138,7 +158,47 @@ function TooltipDelayRow() {
   );
 }
 
+const BUILD_WINDOW_WHEN = [
+  { value: "always", label: "Always" },
+  { value: "onError", label: "Only on errors" },
+  { value: "never", label: "Never" },
+];
+
 export const EXECUTION_PAGES: PageSpec[] = [
+  {
+    id: "build.compiler",
+    title: "Compiler",
+    group: BUILD_GROUP,
+    order: 355,
+    projectScope: true,
+    keywords: [
+      "Build tool window",
+      "Open Build tool window",
+      "Focus Build tool window",
+      "automatic build",
+      "before launch",
+    ],
+    sections: [
+      {
+        options: [
+          {
+            kind: "select",
+            key: "build.openToolWindow",
+            label: "Open Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "Automatic and explicit builds. Run/Debug before-launch builds stay hidden until they fail.",
+          },
+          {
+            kind: "select",
+            key: "build.focusToolWindow",
+            label: "Focus Build tool window",
+            options: BUILD_WINDOW_WHEN,
+            hint: "When Build opens, whether it takes keyboard focus from the editor.",
+          },
+        ],
+      },
+    ],
+  },
   {
     id: "build.cmake",
     title: "CMake",
@@ -212,6 +272,9 @@ export const EXECUTION_PAGES: PageSpec[] = [
       "threads",
       "-T",
       "parallel",
+      "Always update snapshots",
+      "SNAPSHOT",
+      "-U",
     ],
     component: MavenPage,
   },
@@ -268,6 +331,17 @@ export const EXECUTION_PAGES: PageSpec[] = [
             key: "debugger.debugServerPage",
             label: "Debug a dev server's page in the browser",
             hint: "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.",
+          },
+        ],
+      },
+      {
+        title: "Flutter",
+        options: [
+          {
+            kind: "toggle",
+            key: "debugger.flutterHotReloadOnSave",
+            label: "Hot reload on save",
+            hint: "Saving a Dart file of a running Flutter debug session reloads the app, unless the file has errors.",
           },
         ],
       },

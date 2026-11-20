@@ -41,6 +41,8 @@ const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
 const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const EDITOR_SIZE: (f64, f64) = (1100.0, 720.0);
+const EDITOR_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
 
@@ -77,6 +79,29 @@ pub struct Launch {
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
+    /// Editor windows: the file to show (Open in New Window → lightweight aux editor).
+    #[serde(default)]
+    pub editor: Option<Box<EditorLaunch>>,
+}
+
+/// What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+/// the tab of another editor kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorLaunch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ide_core::IpcPath>,
+    /// The tab's editor input, as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
 
 /// Local files to compare with a deployment server (Sync with Deployed).
@@ -191,6 +216,74 @@ pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
     Some(RemoteLaunch { target: RemoteTarget::Wsl { distro: w.distro }, path: w.path })
 }
 
+/// A saved project path that is a remote location: `ssh://`, `wsl://`, `devcontainer://`,
+/// or a `\\wsl.localhost` share remembered before those locations existed.
+pub(crate) fn saved_remote(path: &Path) -> Option<RemoteLaunch> {
+    if let Some(text) = path.to_str()
+        && let Some((target, root)) = crate::remote_dev::parse_remote_location(text)
+    {
+        return Some(RemoteLaunch { target, path: root });
+    }
+    wsl_launch(path)
+}
+
+/// What reopening `path` should launch. A remote location is recognised before any stat,
+/// so a WSL share that is down still comes back as a remote project.
+pub(crate) fn saved_project_launch(path: &Path) -> Option<Launch> {
+    if let Some(remote) = saved_remote(path) {
+        return Some(Launch { remote: Some(remote), ..Default::default() });
+    }
+    path.is_dir().then(|| Launch { project: Some(path.to_path_buf().into()), ..Default::default() })
+}
+
+/// The same project, including a WSL share and the `wsl://` location of that folder.
+pub(crate) fn same_saved_project(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (saved_remote(a), saved_remote(b)) {
+        (Some(left), Some(right)) => {
+            left.target == right.target && left.path.trim_end_matches('/') == right.path.trim_end_matches('/')
+        }
+        _ => false,
+    }
+}
+
+/// The project `label` has open: a remote location (`wsl://` and the rest), else its local root.
+pub(crate) fn window_project_path(app: &AppHandle, label: &str) -> Option<PathBuf> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(c) = state.remote_dev.get(label) {
+        return Some(PathBuf::from(crate::remote_dev::remote_location(&c.target, &c.root)));
+    }
+    state.project(label).ok().filter(|p| !p.light).map(|p| p.root.clone())
+}
+
+/// Reopens a project saved at quit. Remote locations become a remote launch; a missing
+/// local folder is skipped. An already connected window is focused instead of duplicated.
+pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Option<WebviewWindow>> {
+    let Some(launch) = saved_project_launch(path) else {
+        return Ok(None);
+    };
+    if let Some(remote) = launch.remote.clone() {
+        let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(&remote.target, &remote.path));
+        if let Some(w) = open.and_then(|label| app.get_webview_window(&label)) {
+            return Ok(Some(w));
+        }
+        let title = remote
+            .path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty() && *n != "~")
+            .map(str::to_owned);
+        return Ok(Some(create_window_for(app, title, launch, true)?));
+    }
+    if let Some(w) = find_project_window(app, path) {
+        return Ok(Some(w));
+    }
+    Ok(Some(create_restored_window(app, path.to_path_buf())?))
+}
+
 #[derive(Default)]
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
@@ -267,6 +360,12 @@ impl WindowsState {
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
         let mut launches = self.launches.lock();
+        // Lightweight windows need their launch again when their webview reloads.
+        if let Some(launch) = launches.get(label)
+            && launch.editor.is_some()
+        {
+            return Some(launch.clone());
+        }
         let launch = launches.remove(label)?;
         if launch.project.is_some() || launch.remote.is_some() || !launch.files.is_empty() || launch.diff.is_some() {
             self.opening.lock().insert(label.to_owned(), launch.clone());
@@ -352,11 +451,13 @@ pub enum AuxKind {
     Settings,
     Comparison,
     Diff,
+    Editor,
     Deployment,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 4] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Deployment];
+    const ALL: [AuxKind; 5] =
+        [AuxKind::Settings, AuxKind::Comparison, AuxKind::Diff, AuxKind::Editor, AuxKind::Deployment];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
@@ -364,13 +465,14 @@ impl AuxKind {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
             AuxKind::Diff => "diff",
+            AuxKind::Editor => "editor",
             AuxKind::Deployment => "deployment",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        matches!(self, AuxKind::Comparison | AuxKind::Diff)
+        matches!(self, AuxKind::Comparison | AuxKind::Diff | AuxKind::Editor)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
@@ -394,6 +496,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_MIN_SIZE,
             AuxKind::Comparison => COMPARISON_MIN_SIZE,
             AuxKind::Diff => DIFF_MIN_SIZE,
+            AuxKind::Editor => EDITOR_MIN_SIZE,
             AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
         }
     }
@@ -403,6 +506,7 @@ impl AuxKind {
             AuxKind::Settings => SETTINGS_SIZE,
             AuxKind::Comparison => COMPARISON_SIZE,
             AuxKind::Diff => DIFF_SIZE,
+            AuxKind::Editor => EDITOR_SIZE,
             AuxKind::Deployment => DEPLOYMENT_SIZE,
         }
     }
@@ -724,7 +828,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
+        .and_then(|b| dev_font_preferences(b).on_new_window(open_popup_in_browser).build())
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1735,6 +1839,28 @@ pub fn open_diff_window(
     )
 }
 
+/// Opens a lightweight editor window for `editor.path` ("Open in New Window"), sharing the
+/// parent's project documents and language servers.
+pub fn open_editor_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    editor: EditorLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Editor,
+            title: "Editor",
+            size: AuxKind::Editor.default_size(),
+            min_size: AuxKind::Editor.min_size(),
+            launch: Launch { editor: Some(Box::new(editor)), ..Default::default() },
+            background,
+        },
+    )
+}
+
 /// Opens (or focuses and hands over to) the project window's Sync with Deployed window: local
 /// files next to their copies on a deployment server, like IDEA's.
 pub fn open_deployment_window(
@@ -2031,6 +2157,20 @@ fn fit_bounds(
 /// (never above the parent's top edge, so the title bar stays reachable).
 fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
+}
+
+/// A link in an embedded page that asks for a new window (Flutter DevTools' documentation links)
+/// opens in the system browser; the IDE itself never needs such a window.
+fn open_popup_in_browser<R: tauri::Runtime>(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<R> {
+    if matches!(url.scheme(), "http" | "https")
+        && let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+    {
+        tracing::warn!("cannot open {url}: {e}");
+    }
+    tauri::webview::NewWindowResponse::Deny
 }
 
 /// Reproduce WKWebView's user-font restriction before WKWebView creation. The
@@ -2385,9 +2525,39 @@ mod tests {
         let folder = launch_for(share.clone(), true);
         let remote =
             RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
-        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote), None, 0));
+        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote.clone()), None, 0));
         let file = launch_for(share.join("main.py"), false);
         assert_eq!((file.remote, file.project, file.files.len()), (None, None, 1));
+    }
+
+    #[test]
+    fn a_saved_wsl_project_reopens_as_a_remote_launch_without_the_share() {
+        let remote =
+            RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
+        for saved in [r"\\wsl.localhost\Ubuntu\home\me\app", "wsl://Ubuntu/home/me/app", "//wsl$/Ubuntu/home/me/app"] {
+            let launch = saved_project_launch(Path::new(saved)).expect(saved);
+            assert_eq!(launch.remote, Some(remote.clone()));
+            assert!(launch.project.is_none(), "{saved}");
+        }
+        assert!(same_saved_project(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\me\app"),
+            Path::new("wsl://Ubuntu/home/me/app/")
+        ));
+        let ssh = saved_project_launch(Path::new("ssh://box/srv/app")).unwrap();
+        assert_eq!(
+            ssh.remote,
+            Some(RemoteLaunch { target: RemoteTarget::Ssh { config: "box".into() }, path: "/srv/app".into() })
+        );
+        let container =
+            saved_project_launch(Path::new("devcontainer://%2Fwork%2Fapp:devcontainer.json/workspaces/app")).unwrap();
+        assert_eq!(
+            container.remote,
+            Some(RemoteLaunch {
+                target: RemoteTarget::DevContainer { folder: "/work/app".into(), config: "devcontainer.json".into() },
+                path: "/workspaces/app".into(),
+            })
+        );
+        assert!(saved_project_launch(Path::new("/no/such/local/project-openidea")).is_none());
     }
 
     fn p(s: &str) -> PathBuf {
@@ -2597,6 +2767,27 @@ mod tests {
     }
 
     #[test]
+    fn editor_launch_survives_webview_reload_until_window_closes() {
+        let st = WindowsState::default();
+        let launch = Launch {
+            editor: Some(Box::new(EditorLaunch {
+                path: None,
+                input: Some(r#"{"kind":"agent-session","key":"agent:running-task"}"#.into()),
+                line: None,
+                column: None,
+                end_line: None,
+                end_column: None,
+            })),
+            ..Default::default()
+        };
+        st.set_launch("editor-main-3", launch.clone());
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch.clone()));
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch));
+        st.forget("editor-main-3");
+        assert!(st.take_launch("editor-main-3").is_none());
+    }
+
+    #[test]
     fn a_taken_launch_owns_its_window_until_completion() {
         for launch in [
             path_launch_of(Some(p("/project")), vec![p("/project/a.cs")]),
@@ -2651,14 +2842,24 @@ mod tests {
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
         assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
+        assert_eq!(auxiliary("editor-project-2-3"), Some((AuxKind::Editor, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
         assert_eq!(state_key("diff-main-3"), "diff");
+        assert_eq!(state_key("editor-main-3"), "editor");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = [
+            "comparison-main-0",
+            "diff-main-1",
+            "editor-main-2",
+            "project-2",
+            "main",
+            "settings-main",
+            "deployment-project-2",
+        ];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
     }
 

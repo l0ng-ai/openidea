@@ -190,6 +190,17 @@ impl SshManager {
         self.sessions.lock().remove(id);
     }
 
+    /// Closes the shared session of configuration `id` when nothing but this manager holds it
+    /// right now (no terminal, tunnel or transfer in progress); returns whether it did.
+    pub fn release(&self, id: &str) -> bool {
+        let mut sessions = self.sessions.lock();
+        let unused = sessions.get(id).is_some_and(|s| Arc::strong_count(s) == 1);
+        if unused {
+            sessions.remove(id);
+        }
+        unused
+    }
+
     /// Ids of the configurations with an open session.
     pub fn connected(&self) -> Vec<String> {
         self.sessions.lock().iter().filter(|(_, s)| !s.is_closed()).map(|(k, _)| k.clone()).collect()

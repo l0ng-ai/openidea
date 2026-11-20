@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
 import { CLEAR_COLOR, _setSchemeSource } from "@/platform/colorScheme";
 import { setLocale } from "@/platform/i18n";
@@ -9,6 +9,7 @@ import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings, stage, stagedValue, useSettingsDialog } from "../model/staging";
 import { PageContext } from "../components/context";
 import { COLOR_SCHEME_PAGES } from "../pages/editor/colorScheme";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 
 const mocks = vi.hoisted(() => ({
   open: vi.fn(),
@@ -40,6 +41,7 @@ const schemePage = (id: string) => {
   );
 };
 
+beforeAll(() => preloadBuiltinPage("editor.colorScheme"));
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.open.mockResolvedValue("/schemes/forest.icls");
@@ -179,6 +181,19 @@ describe("python scheme attributes", () => {
   });
 });
 
+describe("Julia scheme attributes", () => {
+  it("previews Julia roles and selects their independently scoped attributes", () => {
+    schemePage("editor.colorScheme.julia");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-function-call"]')!));
+    expect(screen.getByRole("treeitem", { name: "Function call", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-type"]')!));
+    expect(screen.getByRole("treeitem", { name: "Class name", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("@show")));
+    expect(screen.getByRole("treeitem", { name: "Metadata", selected: true })).toBeInTheDocument();
+  });
+});
+
 describe("doc comment scheme attributes", () => {
   it.each([
     ["en", "Doc comment", "Tag", "Tag value", "Markup"],
@@ -260,6 +275,21 @@ describe("Go scheme attributes", () => {
 
 describe("scheme attribute state", () => {
   beforeEach(() => schemePage("editor.colorScheme.language-defaults"));
+  it("shows and clears inherited italics for static symbols (#4493)", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-static-italic"]')!));
+
+    const italic = screen.getByRole("checkbox", { name: "Italic" });
+    expect(italic).toBeChecked();
+
+    act(() => fireEvent.click(italic));
+    expect(italic).not.toBeChecked();
+    expect(preview.style.getPropertyValue("--syn-static-italic")).toBe("normal");
+    expect(value("colorOverrides")).toEqual({ dark: { staticSymbol: { italic: false } } });
+  });
+
   it("shows the red-green colours the editor uses and the setting behind them (#3851)", () => {
     _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
     try {

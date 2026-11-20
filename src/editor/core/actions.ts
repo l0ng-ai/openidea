@@ -109,6 +109,25 @@ function activeSlot(): EditorSlot | null {
   return slot && !slot.disposed ? slot : null;
 }
 
+/**
+ * The text pane that has focus in a diff or merge editor (`editable`: only a side that can be
+ * edited). Text actions that need nothing but the view run there, as in a file editor.
+ */
+function focusedDiffPane(editable: boolean): EditorView | null {
+  const el = typeof document === "undefined" ? null : document.activeElement;
+  const view = el instanceof HTMLElement ? EditorView.findFromDOM(el) : null;
+  return view && !(editable && view.state.readOnly) ? view : null;
+}
+
+/** `run` on the focused diff pane while a diff has focus, otherwise on the active editor. */
+function withTextView(run: (view: EditorView) => unknown, editable: boolean) {
+  return () => {
+    if (!getContext().diffEditorFocus) return withView(run)();
+    const view = focusedDiffPane(editable);
+    if (view) run(view);
+  };
+}
+
 function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
   return () => {
     const slot = activeSlot();
@@ -736,6 +755,16 @@ export function registerEditorActions(): () => void {
     run: withView(run),
     ...extra,
   });
+  /** A text action that also runs in a diff: on its editable side (`edit`) or on either side (`caret`). */
+  const diffText =
+    (editable: boolean) =>
+    (id: string, title: string, run: (view: EditorView) => unknown, extra: Partial<Action> = {}): Action => ({
+      ...text(id, title, run, extra),
+      when: `${TEXT_WHEN} || diffEditorFocus`,
+      run: withTextView(run, editable),
+    });
+  const edit = diffText(true);
+  const caret = diffText(false);
   const activePaneTab = () => {
     const s = useTabs.getState();
     const pane = s.panes[s.activePane];
@@ -745,13 +774,13 @@ export function registerEditorActions(): () => void {
     id,
     title,
     category: "Edit",
-    when: `${TEXT_WHEN} || findBarFocus || findBarOpen && popupOpen && !toolWindowFocus`,
+    when: `${TEXT_WHEN} || diffEditorFocus || findBarFocus || findBarOpen && popupOpen && !toolWindowFocus`,
     run: ({ arg, ctx }) => {
       const view = typeof arg === "string" || ctx.findBarFocus ? findPanelTarget(arg)?.view() : null;
       if (view) {
         run(view);
         view.focus();
-      } else withView(run)();
+      } else withTextView(run, false)();
     },
   });
   return registerActions([
@@ -773,16 +802,16 @@ export function registerEditorActions(): () => void {
       toggled: codeVisionShown,
       run: () => toggleCodeVision(),
     },
-    text("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
-    text("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
-    text("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
-    text("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
-    text("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
-    text("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
-    text("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
+    edit("code.commentLine", "Comment with Line Comment", (v) => commentLine(v)),
+    edit("code.commentBlock", "Comment with Block Comment", (v) => commentBlock(v)),
+    edit("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
+    edit("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
+    edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
+    edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
+    edit("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
       keywords: ["swap argument", "move parameter"],
     }),
-    text("code.moveElementRight", "Move Element Right", (v) => moveElementRight(v), {
+    edit("code.moveElementRight", "Move Element Right", (v) => moveElementRight(v), {
       keywords: ["swap argument", "move parameter"],
     }),
     text("code.moveStatementUp", "Move Statement Up", (v, slot) => moveStatement(v, slot, true)),
@@ -818,7 +847,7 @@ export function registerEditorActions(): () => void {
       category: "Edit",
       keywords: ["fully qualified name", "fqn", "copy path"],
     },
-    text("code.pasteAsPlainText", "Paste as Plain Text", (v) => pasteAsPlainText(v), {
+    edit("code.pasteAsPlainText", "Paste as Plain Text", (v) => pasteAsPlainText(v), {
       category: "Edit",
       icon: "paste",
     }),
@@ -862,23 +891,23 @@ export function registerEditorActions(): () => void {
     occurrence("code.addCaretNextOccurrence", "Add Selection for Next Occurrence", addNextOccurrence),
     occurrence("code.selectAllOccurrences", "Select All Occurrences", selectAllOccurrences),
     text("code.completeStatement", "Complete Current Statement", (v, slot) => completeCurrentStatement(v, slot)),
-    text("code.startNewLine", "Start New Line", (v) => startNewLine(v)),
-    text("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
-    text("code.splitLine", "Split Line", (v) => splitLine(v)),
-    text("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
-    text("editor.codeBlockStart", "Move Caret to Code Block Start", (v) => cursorCodeBlockStart(v), {
+    edit("code.startNewLine", "Start New Line", (v) => startNewLine(v)),
+    edit("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
+    edit("code.splitLine", "Split Line", (v) => splitLine(v)),
+    caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
+    caret("editor.codeBlockStart", "Move Caret to Code Block Start", (v) => cursorCodeBlockStart(v), {
       category: "Editor Actions",
     }),
-    text("editor.codeBlockEnd", "Move Caret to Code Block End", (v) => cursorCodeBlockEnd(v), {
+    caret("editor.codeBlockEnd", "Move Caret to Code Block End", (v) => cursorCodeBlockEnd(v), {
       category: "Editor Actions",
     }),
-    text(
+    caret(
       "editor.codeBlockStartWithSelection",
       "Move Caret to Code Block Start with Selection",
       (v) => selectCodeBlockStart(v),
       { category: "Editor Actions" },
     ),
-    text(
+    caret(
       "editor.codeBlockEndWithSelection",
       "Move Caret to Code Block End with Selection",
       (v) => selectCodeBlockEnd(v),
@@ -905,7 +934,7 @@ export function registerEditorActions(): () => void {
       }),
     ]),
     text("code.collapseBlock", "Fold Code Block", (v) => collapseBlock(v), { category: "Folding", keywords: ["fold"] }),
-    text("code.autoIndentLines", "Auto-Indent Lines", (v) => !v.state.readOnly && indentSelection(v), {
+    edit("code.autoIndentLines", "Auto-Indent Lines", (v) => !v.state.readOnly && indentSelection(v), {
       keywords: ["reindent", "fix indentation"],
     }),
     {
@@ -927,8 +956,8 @@ export function registerEditorActions(): () => void {
       // The mouse selection style owns the drag; invoking the action alone is harmless.
       run: () => {},
     },
-    text("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
-    text("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
+    caret("editor.cloneCaretAbove", "Clone Caret Above", (v) => cloneCaretAbove(v), { category: "Editor Actions" }),
+    caret("editor.cloneCaretBelow", "Clone Caret Below", (v) => cloneCaretBelow(v), { category: "Editor Actions" }),
     text("editor.matchBrace", "Move Caret to Matching Brace", (v) => cursorMatchBrace(v), {
       category: "Editor Actions",
       // ⌃M is Show Commit Message History in the commit window.
@@ -942,9 +971,9 @@ export function registerEditorActions(): () => void {
         return view ? isOverwrite(view.state) : false;
       },
     }),
-    text("code.joinLines", "Join Lines", (v) => joinLines(v)),
-    text("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
-    text("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
+    edit("code.joinLines", "Join Lines", (v) => joinLines(v)),
+    edit("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
+    caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),
     occurrence("code.unselectOccurrence", "Unselect Occurrence", unselectOccurrence),
@@ -952,8 +981,8 @@ export function registerEditorActions(): () => void {
       category: "Edit",
       keywords: ["clipboard", "paste multiple"],
     }),
-    text("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
-    text("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
+    edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
     text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
       keywords: ["unwrap", "remove if"],
     }),

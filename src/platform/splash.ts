@@ -31,7 +31,14 @@ export function askOverSplash(question: Promise<unknown>): void {
   const el = document.getElementById("splash");
   if (!el || el.classList.contains("splash-out")) return;
   el.classList.add("splash-under-dialogs");
-  const answered: Promise<unknown> = question.catch(() => {}).finally(() => questions.delete(answered));
+  // The startup timeout (boot.js) doesn't count while the user takes their time to answer.
+  window.dispatchEvent(new Event("openidea:boot-question"));
+  const answered: Promise<unknown> = question
+    .catch(() => {})
+    .finally(() => {
+      questions.delete(answered);
+      window.dispatchEvent(new Event("openidea:boot-answer"));
+    });
   questions.add(answered);
 }
 

@@ -279,7 +279,7 @@ interface StatusDecl {
 
 // --- settings ---------------------------------------------------------------------
 
-export { withPluginSetting, pluginSettingsPageId } from "./settings";
+export { withPluginSetting } from "./settings";
 
 // --- views and custom editors -----------------------------------------------------
 

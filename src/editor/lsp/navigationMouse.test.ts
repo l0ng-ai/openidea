@@ -300,13 +300,14 @@ describe("mouse navigation", () => {
     expect(lspGoto).not.toHaveBeenCalled();
   });
 
-  it("reports missing implementations without navigating to the declaration", async () => {
+  it("asks for the declaration before reporting missing implementations", async () => {
     lspGoto.mockResolvedValue({ status: "ok", data: [] });
     click({ metaKey: true, altKey: true });
     await vi.waitFor(() =>
       expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("No implementations found"),
     );
-    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 9 }, "implementation");
+    // IDEA falls back to the declaration when nothing implements the name.
+    expect(lspGoto.mock.calls.map(([, , kind]) => kind)).toEqual(["implementation", "definition"]);
     expect(openFile).not.toHaveBeenCalled();
   });
 

@@ -127,6 +127,16 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
           {ex.request.method} {ex.request.url}
         </span>
       </div>
+      {r != null && (r.redirects?.length ?? 0) > 0 && (
+        <div className={styles.redirects}>
+          {r.redirects?.map((hop, i) => (
+            // A redirect loop repeats locations: the hop's position is its identity.
+            <div key={i} className={styles.redirectHop} title={hop.location}>
+              {hop.status} {hop.statusText} → {hop.location}
+            </div>
+          ))}
+        </div>
+      )}
       <Tabs
         variant="compact"
         activeId={tab}
@@ -255,7 +265,7 @@ function HeaderTable({ headers }: { headers: Array<[string, string]> }) {
 export function HttpClientView() {
   const history = useHttpClient((s) => s.history);
   const selected = useHttpClient((s) => s.selected);
-  const exchange = useHttpClient((s) => (s.selected ? s.exchanges[s.selected] : undefined));
+  const exchange = useHttpClient((s) => s.exchanges.find((e) => e.entry.id === s.selected));
   const running = useHttpClient((s) => s.running);
   useEffect(() => {
     void refreshHistory();

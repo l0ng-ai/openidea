@@ -306,7 +306,7 @@ pub(crate) fn run_raw_env(
     env: &[(&str, &std::ffi::OsStr)],
 ) -> IdeResult<Output> {
     let first = run_raw_env_once(root, args, stdin, env)?;
-    if !retryable_index_lock(args, &first) {
+    if !retryable_index_conflict(args, &first) {
         return Ok(first);
     }
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -320,13 +320,17 @@ pub(crate) fn run_raw_env(
             return Ok(first);
         }
         let out = run_raw_env_once(root, args, stdin, env)?;
-        if !retryable_index_lock(args, &out) {
+        if !retryable_index_conflict(args, &out) {
             return Ok(out);
         }
     }
 }
 
-fn retryable_index_lock(args: &[&str], out: &Output) -> bool {
+/// git reporting that it could not replace `.git/index`: on Windows the file cannot be
+/// renamed over while another process still has it open, which is no `index.lock` conflict.
+const INDEX_WRITE_BLOCKED: &str = "fatal: Could not write new index file.";
+
+fn retryable_index_conflict(args: &[&str], out: &Output) -> bool {
     // These builtins take the index lock before changing the index, worktree or refs.
     // switch folds post-checkout hook failures to exit 1, unlike checkout/restore
     // path operations, whose hooks can return 128 after files have already changed.
@@ -345,11 +349,24 @@ fn retryable_index_lock(args: &[&str], out: &Output) -> bool {
         return false;
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let Some(path) = stderr.lines().next().and_then(|line| line.strip_prefix("fatal: Unable to create '")) else {
-        return false;
-    };
-    path.strip_suffix("': File exists.")
-        .is_some_and(|path| path.ends_with("/index.lock") || path.ends_with("\\index.lock"))
+    let Some(first) = stderr.lines().next() else { return false };
+    if let Some(path) = first.strip_prefix("fatal: Unable to create '") {
+        return path
+            .strip_suffix("': File exists.")
+            .is_some_and(|path| path.ends_with("/index.lock") || path.ends_with("\\index.lock"));
+    }
+    // `.git/index` keeps its previous entries when the new file could not replace it, so
+    // rerunning is safe for the builtins that take the lock before changing anything.
+    // switch may already have updated the worktree by then, and `rm` without `--cached`
+    // has deleted the files before it writes the index.
+    if first == INDEX_WRITE_BLOCKED {
+        return match *sub {
+            "switch" => false,
+            "rm" => options.contains(&"--cached"),
+            _ => true,
+        };
+    }
+    false
 }
 
 fn run_raw_env_once(
@@ -977,15 +994,15 @@ mod index_lock_tests {
             code: Some(128),
         };
         for args in [&["switch", "other"][..], &["--literal-pathspecs", "add", "-A", "--"], &["rm"], &["reset"]] {
-            assert!(retryable_index_lock(args, &out));
+            assert!(retryable_index_conflict(args, &out));
         }
         for sub in ["merge", "rebase", "stash", "commit", "update-index", "checkout", "restore", "pull", "status"] {
-            assert!(!retryable_index_lock(&[sub], &out));
+            assert!(!retryable_index_conflict(&[sub], &out));
         }
-        assert!(!retryable_index_lock(&["add", "--patch"], &out));
-        assert!(!retryable_index_lock(&["reset", "--soft"], &out));
+        assert!(!retryable_index_conflict(&["add", "--patch"], &out));
+        assert!(!retryable_index_conflict(&["reset", "--soft"], &out));
         out.code = Some(1); // switch's post-checkout hook can fail after the switch succeeded.
-        assert!(!retryable_index_lock(&["switch"], &out));
+        assert!(!retryable_index_conflict(&["switch"], &out));
         out.code = Some(128);
         for message in [
             "fatal: Unable to create '/repo/.git/HEAD.lock': File exists.",
@@ -994,7 +1011,37 @@ mod index_lock_tests {
             "warning: partial work\nfatal: Unable to create '/repo/.git/index.lock': File exists.",
         ] {
             out.stderr = message.as_bytes().to_vec();
-            assert!(!retryable_index_lock(&["switch"], &out));
+            assert!(!retryable_index_conflict(&["switch"], &out));
         }
+    }
+
+    #[test]
+    fn retries_an_index_the_worktree_scan_keeps_open_on_windows() {
+        // Windows cannot rename over `.git/index` while the IDE's own status scan has it
+        // open: git then reports a write failure instead of an index.lock conflict.
+        let mut out = Output { stdout: Vec::new(), stderr: INDEX_WRITE_BLOCKED.as_bytes().to_vec(), code: Some(128) };
+        for args in [
+            &["--literal-pathspecs", "reset", "-q", "HEAD", "--", "a.md"][..],
+            &["--literal-pathspecs", "add", "-A", "--"],
+            &["--literal-pathspecs", "rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"],
+        ] {
+            assert!(retryable_index_conflict(args, &out), "{args:?}");
+        }
+        // The worktree may already be updated by switch, and `rm` deletes its files before
+        // it writes the index, so neither is repeated.
+        out.code = Some(128);
+        for args in [&["switch", "other"][..], &["rm"]] {
+            assert!(!retryable_index_conflict(args, &out), "{args:?}");
+        }
+        for sub in ["commit", "merge", "rebase", "update-index", "restore"] {
+            assert!(!retryable_index_conflict(&[sub], &out));
+        }
+        // The same failure with output on stdout is not this message alone; and a
+        // different exit code is not git's fatal.
+        out.stdout = b"partial".to_vec();
+        assert!(!retryable_index_conflict(&["reset"], &out));
+        out.stdout.clear();
+        out.code = Some(1);
+        assert!(!retryable_index_conflict(&["reset"], &out));
     }
 }

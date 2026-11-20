@@ -15,7 +15,12 @@ vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
     ...real,
-    commands: { ...real.commands, vcsDeleteBranch: mocks.deleteBranch, vcsBranches: mocks.branches },
+    commands: {
+      ...real.commands,
+      vcsDeleteBranch: mocks.deleteBranch,
+      vcsBranches: mocks.branches,
+      vcsBranchInfo: () => Promise.resolve({ status: "ok", data: { head: "main", headCommit: "1", operation: null } }),
+    },
   };
 });
 vi.mock("../dialogs", async (original) => ({
@@ -42,7 +47,7 @@ vi.mock("../CompareBranches", async (original) => ({
   showCommitRange: mocks.range,
 }));
 
-import { canDeleteBranch, deleteBranches } from "../branchOps";
+import { canDeleteBranch, deleteBranches, deleteInRepos } from "../branchOps";
 import { branchMenu } from "../branchMenu";
 import { registerLogPaneActions, useBranchesPane } from "../logPaneActions";
 import { getAction } from "@/platform/actions";
@@ -192,4 +197,18 @@ it("keeps the primary repository focused implicitly", async () => {
   await deleteBranches([target("one", "/p/b")]);
   expect(useVcs.getState().repo).toBeNull();
   expect(mocks.focus).not.toHaveBeenCalled();
+});
+
+it("deletes a common branch only in the repositories where it is not checked out", async () => {
+  mocks.local.mockImplementation(async (_title, run) => run());
+  mocks.deleteBranch.mockResolvedValue({ status: "ok", data: { name: "dev" } });
+  useVcs.setState({ heads: { "/p/a": { head: "main", headCommit: "1" }, "/p/b": { head: "dev", headCommit: "2" } } });
+  await deleteInRepos("dev", ["/p/a", "/p/b"]);
+  expect(mocks.deleteBranch.mock.calls).toEqual([["/p/a", "dev"]]);
+  useVcs.setState({ heads: { "/p/a": { head: "dev", headCommit: "1" }, "/p/b": { head: "dev", headCommit: "2" } } });
+  mocks.deleteBranch.mockClear();
+  mocks.confirm.mockClear();
+  await deleteInRepos("dev", ["/p/a", "/p/b"]);
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(mocks.deleteBranch).not.toHaveBeenCalled();
 });

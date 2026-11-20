@@ -7,11 +7,13 @@
 import type { Commit } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { ipcPath } from "@/platform/paths";
+import { relativePath } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import type { DiffData } from "./diffInput";
-import { openDiff } from "./diffInput";
+import { commitFileDiffData, openDiff } from "./diffInput";
 import { repositoryPath } from "./repositoryPaths";
-import { repoOf } from "./store";
+import { currentRepoRoot, repoOf } from "./store";
 
 /** The diff that shows `commit` against its first parent; `null` for a root commit. */
 export function previousRevisionDiffData(
@@ -46,11 +48,11 @@ export function revisionDiffData(
   };
 }
 
-function notifyFailure(e: unknown): void {
+function notifyFailure(e: unknown, title = tx("Cannot annotate")): void {
   notifications().notify({
     group: "vcs",
     level: "error",
-    title: tx("Cannot annotate"),
+    title,
     body: e instanceof Error ? e.message : String(e),
   });
 }
@@ -91,5 +93,39 @@ export async function annotatePreviousRevision(path: string, commit: string): Pr
     await openDiff(data, { preview: false });
   } catch (e) {
     notifyFailure(e);
+  }
+}
+
+/**
+ * The annotate gutter's Show Diff (IDEA's): what `commit` changed in the file, against its first
+ * parent, so a file the commit added or renamed shows as such. The file's history gives its name
+ * at that commit when it was renamed later.
+ */
+export async function showRevisionDiff(path: string, commit: string): Promise<void> {
+  const repo = repoOf(path) ?? currentRepoRoot();
+  if (!repo) return;
+  const relative = relativePath(ipcPath(repo).replace(/\/$/, ""), ipcPath(path));
+  const log = (file: string | null) =>
+    call(
+      commands.vcsLog(repo, {
+        branch: commit,
+        path: file,
+        follow: !!file,
+        author: null,
+        text: null,
+        skip: 0,
+        limit: 1,
+      }),
+    );
+  try {
+    const [[inHistory], files] = await Promise.all([log(path), call(commands.vcsCommitFiles(repo, commit))]);
+    // A line's commit is in its file's history; a merge commit may not be, so read it directly then.
+    const found = inHistory?.id === commit ? inHistory : (await log(null))[0];
+    if (!found) return;
+    const name = (found === inHistory && found.historyPath) || relative;
+    const changed = files.find((f) => f.path === name) ?? { path: name, kind: "modified", oldPath: null };
+    await openDiff(commitFileDiffData({ ...found, repo }, changed), { preview: false });
+  } catch (e) {
+    notifyFailure(e, tx("Could not show diff"));
   }
 }

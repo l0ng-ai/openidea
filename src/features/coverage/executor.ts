@@ -11,7 +11,7 @@ import {
   type RunExecutorContribution,
 } from "@/workbench/contributions";
 import { coverageSupports, formatPercent } from "./model";
-import { addSuite } from "./store";
+import { addSuite, captureCoverageProject } from "./store";
 import { tx } from "@/platform/i18n";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -69,7 +69,13 @@ async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
     notifications().notify({ group: "run", level: "warning", title: "Coverage needs the desktop app" });
     return null;
   }
-  const plan = await call(commands.coveragePrepare(config));
+  const project = captureCoverageProject();
+  if (!project) return null;
+  const plan = await call(commands.coveragePrepare(config)).catch((e: unknown) => {
+    if (project.isCurrent()) throw e;
+    return null;
+  });
+  if (!plan || !project.isCurrent()) return null;
   if (plan.status === "unsupported") {
     notifications().notify({
       group: "run",
@@ -88,10 +94,11 @@ async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
   return {
     launch: plan.launch,
     finished: ({ stopped }) => {
-      if (stopped) return;
+      if (stopped || !project.isCurrent()) return;
       void (async () => {
         try {
           const data = await call(commands.coverageCollect(report));
+          if (!project.isCurrent()) return;
           const suite = addSuite(config.name, data);
           const totals = data.files.reduce((a, f) => [a[0]! + f.linesCovered, a[1]! + f.linesTotal], [0, 0]);
           try {
@@ -106,6 +113,7 @@ async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
             title: `Coverage of '${suite.name}': ${formatPercent(totals[0]!, totals[1]!)} lines`,
           });
         } catch (e) {
+          if (!project.isCurrent()) return;
           notifications().notify({
             group: "run",
             level: "error",

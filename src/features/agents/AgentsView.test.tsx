@@ -9,6 +9,7 @@ import { promptInput } from "@/workbench/inputDialogs";
 import { ContextMenuHost, dragSession, hideContextMenu } from "@/ui";
 import { AgentsHeaderActions, AgentsView } from "./AgentsView";
 import { SESSION_KIND, TASK_DRAG } from "./model";
+import { usePlatform } from "@/platform/platformInfo";
 import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, useAgents } from "./store";
 import { taskActions, taskMenu, useAgentsHeaderMenu } from "./taskActions";
 import styles from "./Agents.module.css";
@@ -140,6 +141,42 @@ function setup() {
 }
 
 describe("Agents selection", () => {
+  it.each([SESSION_KIND, "file"])("right-clicking a task keeps the current %s view open", (kind) => {
+    editor.active = { kind, key: "current", data: { task: "one" } };
+    setup();
+    context("two");
+    expect(screen.getByRole("menuitem", { name: "Rename…" })).toBeTruthy();
+    expect(selectedTasks()).toEqual(["two"]);
+    expect(openTask).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(openTask).not.toHaveBeenCalled();
+  });
+
+  it("preserves a multi-selection when opening its context menu without activating a task", () => {
+    setup();
+    select("one");
+    select("three", { shiftKey: true });
+    vi.mocked(openTask).mockClear();
+    context("two");
+    expect(selectedTasks()).toEqual(["one", "two", "three"]);
+    expect(screen.getByRole("menuitem", { name: "Delete (3)…" })).toBeTruthy();
+    expect(openTask).not.toHaveBeenCalled();
+  });
+
+  it("treats macOS Control-click as a context menu without opening the task", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "macos" });
+    try {
+      setup();
+      fireEvent.mouseDown(row("two"), { button: 0, ctrlKey: true });
+      fireEvent.contextMenu(row("two"), { button: 0, ctrlKey: true });
+      expect(screen.getByRole("menuitem", { name: "Rename…" })).toBeTruthy();
+      expect(openTask).not.toHaveBeenCalled();
+    } finally {
+      usePlatform.setState({ os });
+    }
+  });
+
   it("extends and shrinks a range without opening its lead or losing selection to an editor echo", () => {
     setup();
     select("one");
@@ -164,14 +201,24 @@ describe("Agents selection", () => {
     expect(openTask).not.toHaveBeenCalled();
   });
 
-  it.each(["metaKey", "ctrlKey"])("toggles individual tasks with %s", (modifier) => {
-    setup();
-    select("one");
-    select("three", { [modifier]: true });
-    expect(selectedTasks()).toEqual(["one", "three"]);
-    select("three", { [modifier]: true });
-    expect(selectedTasks()).toEqual(["one"]);
-    expect(openTask).toHaveBeenCalledTimes(1);
+  it.each([
+    { os: "macos", modifier: "metaKey" },
+    { os: "windows", modifier: "ctrlKey" },
+    { os: "linux", modifier: "ctrlKey" },
+  ])("toggles individual tasks with $modifier on $os", ({ os, modifier }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    try {
+      setup();
+      select("one");
+      select("three", { [modifier]: true });
+      expect(selectedTasks()).toEqual(["one", "three"]);
+      select("three", { [modifier]: true });
+      expect(selectedTasks()).toEqual(["one"]);
+      expect(openTask).toHaveBeenCalledTimes(1);
+    } finally {
+      usePlatform.setState({ os: previousOs });
+    }
   });
 });
 

@@ -78,14 +78,14 @@ fn has_kotlin_sources(root: &Path) -> bool {
     })
 }
 
-fn plan(root: &Path, model: &BuildModel) -> IdeResult<compile::BuildPlan> {
+fn plan(root: &Path, model: &BuildModel, cancel: &CancellationToken) -> IdeResult<compile::BuildPlan> {
     if model.maven.as_ref().is_none_or(|m| m.projects.is_empty()) {
         return Err(IdeError::invalid("Kotlin bridge requires a Maven build root"));
     }
     Ok(compile::BuildPlan {
         system: compile::BuildSystem::Maven,
         title: root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-        steps: compile::maven_steps(root, model, BuildKind::Build, None)?,
+        steps: compile::maven_steps(root, model, BuildKind::Build, None, None, cancel)?,
     })
 }
 
@@ -99,7 +99,7 @@ pub fn build(
     cancel: &CancellationToken,
 ) -> IdeResult<Outcome> {
     std::fs::create_dir_all(generation)?;
-    let mut plan = plan(root, model)?;
+    let mut plan = plan(root, model, cancel)?;
     let mut manifests = Vec::new();
     for (index, step) in plan.steps.iter_mut().enumerate() {
         step.args.push("--fail-at-end".into());
@@ -522,7 +522,7 @@ mod tests {
             }
             std::fs::write(root.join("kotlin/App.kt"), "class App").unwrap();
             assert!(has_kotlin(root, &model), "{marker}");
-            let plan = plan(root, &model).unwrap();
+            let plan = plan(root, &model, &CancellationToken::new()).unwrap();
             assert_eq!(plan.system, compile::BuildSystem::Maven);
             assert_eq!(plan.steps.len(), 2);
             for (step, name) in plan.steps.iter().zip(["java", "kotlin"]) {
@@ -562,7 +562,7 @@ mod tests {
             ..Default::default()
         };
         assert!(has_kotlin(workspace.path(), &model));
-        assert_eq!(plan(workspace.path(), &model).unwrap().steps[0].cwd, external.path());
+        assert_eq!(plan(workspace.path(), &model, &CancellationToken::new()).unwrap().steps[0].cwd, external.path());
     }
 
     #[test]

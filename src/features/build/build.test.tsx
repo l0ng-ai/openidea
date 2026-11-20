@@ -165,7 +165,10 @@ describe("build feature", () => {
     provideNotificationService({ notify: (n) => void notes.push(n) });
     fake = new FakeBackend();
     setBuildBackend(fake);
-    useProject.setState({ project: { root: "/p", name: "demo" } as never });
+    useProject.setState({
+      project: { root: "/p", name: "demo" } as never,
+      settings: { build: { openToolWindow: "always", focusToolWindow: "never" } } as never,
+    });
     setContext("projectOpen", true);
     dispose = activate();
   });
@@ -173,7 +176,7 @@ describe("build feature", () => {
   afterEach(() => {
     dispose();
     setBuildBackend(null);
-    useProject.setState({ project: null });
+    useProject.setState({ project: null, settings: null });
     setContext("projectOpen", false);
     setContext("run.cmakeBuild", null);
   });
@@ -305,6 +308,44 @@ describe("build feature", () => {
     );
   });
 
+  it('keeps successful builds hidden when Open Build tool window is "Never"', async () => {
+    useProject.setState({
+      settings: { build: { openToolWindow: "never", focusToolWindow: "never" } } as never,
+    });
+    const run = startBuild("build");
+    await act(async () => {});
+    expect(show).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it('opens Build only on failure when Open is "Only on errors"', async () => {
+    useProject.setState({
+      settings: { build: { openToolWindow: "onError", focusToolWindow: "onError" } } as never,
+    });
+    const ok = startBuild("build");
+    await act(async () => {});
+    expect(show).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await ok;
+    });
+    expect(show).not.toHaveBeenCalled();
+
+    const failed = startBuild("build");
+    await act(async () => {});
+    expect(show).not.toHaveBeenCalled();
+    const messages = [err("/p/src/A.java", 3)];
+    await act(async () => {
+      fake.resolve(result(messages, false));
+      await failed;
+    });
+    expect(show).toHaveBeenCalledExactlyOnceWith("build", true);
+  });
+
   it.each([
     ["build.buildModule", { target: "/p/core", activate: false, wait: true }, "build", "/p/core"],
     ["build.buildArtifacts", { activate: false, wait: true }, "artifacts", null],
@@ -408,6 +449,91 @@ describe("build feature", () => {
     });
     expect(useBuildRun.getState().status).toBe("cancelled");
     expect(notes).toHaveLength(0);
+  });
+
+  it.each(["cancelled", "failed", "succeeded"])("ignores a previous project's build that %s", async (outcome) => {
+    const previous = startBuild("build", null, false);
+    await act(async () => {});
+    const oldRequest = useBuildRun.getState().request;
+    useProject.setState({ project: { root: "/other", name: "other" } as never });
+    expect(fake.cancelled).toEqual([oldRequest]);
+
+    const nextBackend = new FakeBackend();
+    setBuildBackend(nextBackend);
+    const next = startCompileFile("/other/Main.java", false);
+    await act(async () => {});
+    const current = useBuildRun.getState();
+    expect(current.request).not.toBe(oldRequest);
+
+    fake.emit!({ kind: "output", text: "old output\n", stderr: false });
+    if (outcome === "cancelled") fake.reject(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    else if (outcome === "failed") fake.reject(new Error("Old build failed"));
+    else fake.resolve(result([], true));
+    const previousResult = await previous;
+    expect(useBuildRun.getState()).toBe(current);
+    expect(previousResult).toBeNull();
+    expect(getContext()["build.lastStatus"]).toBeNull();
+    expect(getContext()["build.running"]).toBe(true);
+    expect(isActionEnabled(getAction("build.stop")!)).toBe(true);
+    expect(useTasks.getState().tasks.find((task) => task.id === BUILD_TASK_ID)).toMatchObject({
+      title: "Compile File",
+      done: false,
+    });
+    expect(notes).toEqual([]);
+    expect(show).not.toHaveBeenCalled();
+    expect(openFile).not.toHaveBeenCalled();
+
+    stopBuild();
+    expect(nextBackend.cancelled).toEqual([current.request]);
+    nextBackend.reject(new IpcError({ kind: "cancelled", message: "Cancelled" }));
+    await next;
+    expect(useBuildRun.getState().status).toBe("cancelled");
+    expect(isActionEnabled(getAction("build.stop")!)).toBe(false);
+  });
+
+  it("drops a previous project's build that was waiting for Save All", async () => {
+    let saved!: () => void;
+    const saving = new Promise<void>((resolve) => (saved = resolve));
+    provideEditorService({
+      openFile,
+      saveAll: vi.fn().mockReturnValueOnce(saving).mockResolvedValue(undefined),
+      activePath: () => null,
+    } as unknown as EditorService);
+    const previous = startBuild("build", null, false);
+    useProject.setState({ project: { root: "/other", name: "other" } as never });
+    const next = startCompileFile("/other/Main.java", false);
+    await act(async () => {});
+    saved();
+    await act(async () => {});
+
+    expect(fake.calls).toEqual([{ kind: "compileFile", file: "/other/Main.java", clear: [] }]);
+    expect(await previous).toBeNull();
+    fake.resolve(result([], true));
+    await next;
+    expect(useBuildRun.getState().status).toBe("success");
+  });
+
+  it("keeps the next build's progress when the finished task's linger expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const previous = startBuild("build", null, false);
+      await act(async () => {});
+      fake.resolve(result([], true));
+      await previous;
+      useProject.setState({ project: { root: "/other", name: "other" } as never });
+      const next = startBuild("rebuild", null, false);
+      await act(async () => {});
+
+      await vi.advanceTimersByTimeAsync(600);
+      expect(useTasks.getState().tasks.find((task) => task.id === BUILD_TASK_ID)).toMatchObject({
+        title: "Rebuild",
+        done: false,
+      });
+      fake.resolve(result([], true));
+      await next;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("compiles one file without its module and reruns it from the tool window", async () => {

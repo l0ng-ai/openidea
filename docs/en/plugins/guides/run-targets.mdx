@@ -318,5 +318,9 @@ let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PRO
 - Calls are cancelled with the task or call and killed at timeout; run anything slow
   inside `host::begin_task`. Dropping a `Child` kills it, and disabling or reclaiming the
   plugin ends its children.
+- A `Child`'s `poll` and `wait` return what it printed since the last read. `status` comes
+  with the chunk that holds the last of its output, so read until it is set. Output nobody
+  reads keeps only its last 1 MiB per stream: for the whole output of a command that ends,
+  use `run_command`.
 - In **Settings › Plugins** the user can choose the executable of a `process:` grant
   globally or per project; the plugin keeps calling its declared program name.

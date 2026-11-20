@@ -158,6 +158,8 @@
 .toastBody {
   color: var(--fg-secondary);
   overflow-wrap: anywhere;
+  /* Bodies list one item per line (compile errors, failed paths). */
+  white-space: pre-line;
   /* A huge message (stack trace, build output) scrolls inside the balloon instead
      of growing past the window and pushing the close button off-screen. */
   max-height: 40vh;

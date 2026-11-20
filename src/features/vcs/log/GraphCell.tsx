@@ -1,4 +1,5 @@
 import { tx } from "@/platform/i18n";
+import { useRowHeight } from "@/ui/density";
 import { Fragment } from "react";
 import styles from "../GitLog.module.css";
 import { laneColor, type GraphRow, type GraphSegment } from "../graph";
@@ -38,13 +39,15 @@ export function GraphCell({
   onNode?: () => void;
   interactive?: boolean;
 }) {
-  const cy = ROW / 2;
+  const height = useRowHeight(ROW);
+  const cy = height / 2;
+  const width = row.width * LANE;
   const draw = (s: GraphSegment, i: number, up: boolean) => {
     const fromX = x(s.fromX ?? s.from);
     const toX = x(s.toX ?? s.to);
     const path =
-      seg(fromX, up ? 0 : cy, toX, up ? cy : ROW) +
-      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : ROW, up ? -1 : 1) : "");
+      seg(fromX, up ? 0 : cy, toX, up ? cy : height) +
+      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : height, up ? -1 : 1) : "");
     const line = (
       <path
         key={interactive ? undefined : `${up ? "u" : "d"}${i}`}
@@ -112,8 +115,8 @@ export function GraphCell({
   return (
     <svg
       className={styles.graph}
-      width={row.width * LANE}
-      height={ROW}
+      width={width}
+      height={height}
       aria-label={tx("Commit graph")}
       onMouseLeave={() => onHover?.(null)}
     >

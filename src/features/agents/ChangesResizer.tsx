@@ -38,7 +38,7 @@ export function ChangesResizer() {
     const start = pane.getBoundingClientRect().width;
     const origin = e.clientX;
     const previous = session.style.getPropertyValue(WIDTH_VAR);
-    const releaseCursor = lockDragCursor("ew-resize");
+    const releaseCursor = lockDragCursor("col-resize");
     let next: number | null = null;
     // Only this session follows the pointer; every task takes the new width on release.
     const move = (ev: globalThis.PointerEvent) => {

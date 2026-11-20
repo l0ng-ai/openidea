@@ -10,7 +10,7 @@ import { ZOOM_LIMITS } from "@/platform/zoom";
 import { validateIconThemeOptionsMap } from "@/platform/iconThemeOptions";
 
 export type Antialiasing = "subpixel" | "greyscale" | "none";
-export type OpenProjectIn = "ask" | "new" | "same";
+export type OpenProjectIn = "ask" | "new" | "same" | "tab";
 export type NotificationDisplay = "balloon" | "sticky" | "none";
 export type NavigationBarPosition = "top" | "statusBar" | "hidden";
 export type BackgroundImageFill = "scale" | "plain" | "tile";
@@ -76,6 +76,8 @@ export interface AppearanceExtras {
   compactMode: boolean;
   /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
   smallTreeIndents: boolean;
+  /** IDEA "Smooth scrolling" (Linux: WebKitGTK animates each mouse wheel step). */
+  smoothScrolling: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
@@ -91,6 +93,7 @@ export interface AppearanceExtras {
   showToolWindowNames: boolean;
   showToolWindowBadges: boolean;
   widescreenToolWindows: boolean;
+  rememberToolWindowSizes: boolean;
   /** View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
   showMainToolbar: boolean;
   showStatusBar: boolean;
@@ -161,6 +164,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   differentToolWindowBackground: false,
   compactMode: false,
   smallTreeIndents: false,
+  smoothScrolling: true,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
@@ -174,6 +178,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   showToolWindowNames: false,
   showToolWindowBadges: true,
   widescreenToolWindows: false,
+  rememberToolWindowSizes: false,
   showMainToolbar: true,
   showStatusBar: true,
   navigationBar: "statusBar",
@@ -244,6 +249,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
     smallTreeIndents: b("smallTreeIndents"),
+    smoothScrolling: b("smoothScrolling"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
@@ -257,6 +263,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     showToolWindowNames: b("showToolWindowNames"),
     showToolWindowBadges: b("showToolWindowBadges"),
     widescreenToolWindows: b("widescreenToolWindows"),
+    rememberToolWindowSizes: b("rememberToolWindowSizes"),
     showMainToolbar: b("showMainToolbar"),
     showStatusBar: b("showStatusBar"),
     // Legacy settings stored this as `showNavigationBar: bool` (`true` = shown,
@@ -299,7 +306,7 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   const d = DEFAULT_GENERAL_EXTRAS;
   const df = obj(g.dateFormat);
   return {
-    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same"] as const, d.openProjectIn),
+    openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same", "tab"] as const, d.openProjectIn),
     updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     autoCheckUpdates: bool(g.autoCheckUpdates, d.autoCheckUpdates),
     showWhatsNewAfterUpdate: bool(g.showWhatsNewAfterUpdate, d.showWhatsNewAfterUpdate),

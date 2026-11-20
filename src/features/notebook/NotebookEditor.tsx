@@ -60,7 +60,7 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
     if (index < 0) return;
     session.selectedCell = reveal.cell;
     select(reveal.cell);
-    virtualizer.scrollToIndex(index, { align: "start" });
+    virtualizer.scrollToIndex(index, { align: reveal.align ?? "start" });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per request; the virtualizer is a new object each render
   }, [reveal, session]);
   useLayoutEffect(() => {

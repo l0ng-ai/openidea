@@ -43,6 +43,15 @@ export function parseDuration(text: string | undefined): number | undefined {
   return matched ? Math.round(total * 1000) / 1000 : undefined;
 }
 
+/** Formats a duration the way the test tree shows it: `850 ms`, `1.25 s`, `2 m 5 s`. */
+export function formatDuration(ms: number | undefined): string {
+  if (ms === undefined) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1).replace(/\.?0+$/, "")} s`;
+  const m = Math.floor(ms / 60_000);
+  return `${m} m ${Math.round((ms % 60_000) / 1000)} s`;
+}
+
 /**
  * Stdout of a runner that prints machine-readable records (`go test -json`, PHPUnit `--teamcity`):
  * feeds complete, unsplit lines to the test parser and returns each line's console text.

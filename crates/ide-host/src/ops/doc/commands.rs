@@ -127,6 +127,13 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
     .await
 }
 
+/// Structure view of a Flutter file: its declarations with the widgets they build. `None`
+/// when the Dart server published no widgets for it; `doc_outline` then applies.
+#[command(trust = always)]
+pub async fn doc_flutter_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<Vec<OutlineItem>>> {
+    Ok(host.project(window)?.lsp.flutter_outline(doc))
+}
+
 #[command(trust = always)]
 pub async fn doc_folding(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<FoldRange>> {
     let project = host.project(window)?;
@@ -227,6 +234,7 @@ pub async fn history_content(host: &Host, window: &str, id: String) -> IdeResult
 
 ide_command::domain!(
     doc_commands:
+    doc_flutter_outline,
     doc_folding,
     doc_highlights,
     doc_language,

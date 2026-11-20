@@ -67,6 +67,7 @@ import {
   useDatabase,
   withConnection,
 } from "./store";
+import { provideToolWindowService } from "@/workbench/contributions";
 
 const initial = useDatabase.getState();
 const initialProject = useProject.getState();
@@ -129,6 +130,8 @@ function switchProject(project: ProjectInfo) {
 }
 
 beforeEach(() => {
+  // `showServiceView` reaches the real service, not the mocked accessor above.
+  provideToolWindowService({ show: ui.show } as never);
   vi.resetAllMocks();
   useProject.setState({ project: projectA });
   savedSources = [pg, other];
@@ -274,6 +277,31 @@ describe("database metadata request lifetimes", () => {
     expect(useDatabase.getState().connected.has("pg:app")).toBe(false);
   });
 
+  it("collapses the tree nodes of what a disconnect forgets", async () => {
+    const tree = [
+      "pg",
+      "pg/@app",
+      "pg/public",
+      "pg/public/tables",
+      "pg:other/public",
+      "pg/@other",
+      "pg2",
+      "pg2/public",
+    ];
+    useDatabase.setState({ treeExpanded: new Set(tree) });
+    await disconnect("pg:other");
+    expect([...useDatabase.getState().treeExpanded]).toEqual([
+      "pg",
+      "pg/@app",
+      "pg/public",
+      "pg/public/tables",
+      "pg2",
+      "pg2/public",
+    ]);
+    await disconnect("pg");
+    expect([...useDatabase.getState().treeExpanded]).toEqual(["pg2", "pg2/public"]);
+  });
+
   it("disconnects one database without invalidating its sibling", async () => {
     const response = deferred();
     backend.schemas.mockReturnValueOnce(response.promise);
@@ -334,11 +362,14 @@ describe("database metadata request lifetimes", () => {
 });
 
 describe("connection and metadata continuations", () => {
-  it("reloads every level the tree had expanded after a data source is edited", async () => {
+  it.each([
+    ["edited", () => saveSource({ ...pg, host: "new-host" }, undefined)],
+    ["renamed", () => renameSource("pg", "Renamed")],
+  ])("reloads every level the tree had expanded after a data source is %s", async (_, change) => {
     await loadSchemas("pg");
     await loadTables("pg", "public");
     await loadDetails("pg", "public", "users");
-    await saveSource({ ...pg, host: "new-host" }, undefined);
+    await change();
     const st = useDatabase.getState();
     expect(st.schemas.pg).toEqual({ status: "ok", value: ["public"] });
     expect(st.tables["pg\u0000public"]?.status).toBe("ok");

@@ -39,6 +39,8 @@ export interface IpcStub {
 declare global {
   interface Window {
     __ipc: IpcStub;
+    /** Releases a stubbed answer a test holds back on purpose (see the ⌥⏎ popup test). */
+    __releaseActions?: (() => void) | null;
   }
 }
 

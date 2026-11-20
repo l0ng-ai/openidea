@@ -204,7 +204,6 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
               activeIndex={active}
               onActivate={acceptPrefix}
               focusable={false}
-              rowHeight={24}
               aria-label={tx("Branch name prefixes")}
               className={styles.prefixList}
               renderItem={(prefix, state) => (

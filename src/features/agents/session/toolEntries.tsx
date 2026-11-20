@@ -1,20 +1,25 @@
 import type { AgentEntry, AgentTask } from "@/bindings";
 import { useTx } from "@/platform/i18n";
+import { basename } from "@/platform/project";
 import { Icon, IconButton, Spinner, T } from "@/ui";
 import clsx from "clsx";
 import { memo, useLayoutEffect } from "react";
 import { AgentReply } from "../AgentReply";
-import { Markdown } from "../Markdown";
 import styles from "../Session.module.css";
 import { useAgentSettings } from "../agentSettings";
 import { formatDuration } from "../conversation";
+import { Markdown, openPathLink } from "../Markdown";
 import { subagentTitle, subagentWorking, type SubagentEntry } from "../model";
 import { useRevealedText } from "../reveal";
+import { toolDuration, toolRun } from "../timeline";
 import { cancelTask } from "../store";
 import { openChangeDiff } from "./ChangesPane";
 import { Fold } from "./Folds";
 import { liveTool } from "./conversationRows";
 import { shortTitle, useNow } from "./shared";
+
+/** A location as the agent reported it: absolute on any platform, or relative to the task's folder. */
+const isAbsolute = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
 
 const TOOL_ICONS: Record<string, string> = {
   read: "file",
@@ -40,11 +45,14 @@ function thoughtPreview(text: string): string {
 export function ThoughtEntry({
   task,
   text,
+  took,
   working,
   onDiagramDrawn,
 }: {
   task: AgentTask;
   text: string;
+  /** How long the finished thought took, when its times are known. */
+  took: number | null;
   working: boolean;
   onDiagramDrawn: () => void;
 }) {
@@ -70,6 +78,9 @@ export function ThoughtEntry({
             ) : (
               <span className={styles.thoughtPreview}>{thoughtPreview(text) || <T>Reasoning</T>}</span>
             )}
+            {!working && took != null && took >= 1000 && (
+              <span className={styles.thoughtTook}>{formatDuration(took)}</span>
+            )}
           </summary>
         }
       >
@@ -89,12 +100,36 @@ export const ToolEntry = memo(function ToolEntry({
   entry: Extract<AgentEntry, { type: "tool" }>;
 }) {
   const { expandToolOutput } = useAgentSettings();
+  const tx = useTx();
+  const live = liveTool(entry);
+  const took = toolDuration(entry);
+  const run = entry.kind === "execute" ? toolRun(entry) : null;
+  const title = shortTitle(task, entry.title || entry.kind);
+  // A title that already names the file ("Read pom.xml") needs no second link to it.
+  const links =
+    entry.kind === "execute" ? [] : entry.locations.slice(0, 3).filter((path) => !title.includes(basename(path)));
   const head = (
     <>
-      <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={clsx(styles.toolTitle, liveTool(entry) && styles.shimmer)} title={entry.title || entry.kind}>
-        {shortTitle(task, entry.title || entry.kind)}
+      <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} className={styles.toolKindIcon} />
+      <span className={clsx(styles.toolTitle, live && styles.shimmer)} title={entry.title || entry.kind}>
+        {title}
       </span>
+      {links.map((path) => (
+        <button
+          key={path}
+          type="button"
+          className={styles.toolPath}
+          title={path}
+          onClick={(e) => {
+            e.preventDefault();
+            openPathLink({
+              path: isAbsolute(path) ? path : `${task.cwd}/${path}`,
+            });
+          }}
+        >
+          {basename(path)}
+        </button>
+      ))}
       {entry.diffs.map((d) => (
         <button
           key={d.path}
@@ -109,12 +144,27 @@ export const ToolEntry = memo(function ToolEntry({
           <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
         </button>
       ))}
-      {entry.status === "failed" && <Icon name="error" size={12} />}
+      {run?.exitCode != null && (
+        <span className={clsx(styles.exitCode, run.exitCode !== 0 && styles.exitFailed)} title={tx("Exit code")}>
+          {run.exitCode}
+        </span>
+      )}
+      <span className={styles.toolEnd}>
+        {took != null && <span className={styles.muted}>{formatDuration(took)}</span>}
+        {live ? (
+          <Spinner size={10} className={styles.toolSpinner} label={tx("Running")} />
+        ) : entry.status === "failed" ? (
+          <Icon name="error" size={12} />
+        ) : (
+          entry.status === "completed" && <Icon name="check" size={12} className={styles.toolDone} />
+        )}
+      </span>
     </>
   );
+  const className = clsx(styles.process, styles.toolEntry, styles[`kind-${entry.kind}`], live && styles.toolLive);
   if (!entry.output)
     return (
-      <div className={clsx(styles.process, styles.toolEntry)}>
+      <div className={className}>
         <div className={styles.tool}>
           <span className={styles.toolChevronSpacer} aria-hidden="true" />
           {head}
@@ -122,10 +172,12 @@ export const ToolEntry = memo(function ToolEntry({
       </div>
     );
   return (
-    <div className={clsx(styles.process, styles.toolEntry)}>
+    <div className={className}>
       <Fold
         className={styles.toolDetails}
-        open={liveTool(entry) || expandToolOutput}
+        open={live || expandToolOutput}
+        // A `!` command the user ran from the composer: its output is what they asked for.
+        defaultOpen={entry.id.startsWith("shell-")}
         summary={
           <summary className={styles.tool}>
             <Icon name="chevron-right" size={12} className={styles.toolChevron} />
@@ -133,7 +185,16 @@ export const ToolEntry = memo(function ToolEntry({
           </summary>
         }
       >
-        <pre className={styles.output}>{entry.output}</pre>
+        {run?.command ? (
+          <div className={styles.terminalBlock}>
+            <pre className={styles.terminalCommand}>
+              <span className={styles.prompt}>$</span> {run.command}
+            </pre>
+            {run.output && <pre className={styles.terminalOutput}>{run.output}</pre>}
+          </div>
+        ) : (
+          <pre className={styles.output}>{entry.output}</pre>
+        )}
       </Fold>
     </div>
   );

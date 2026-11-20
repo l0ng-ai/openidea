@@ -78,12 +78,12 @@ export class FindSession {
     this.update({ ...this.state, stale: true, matchCount: 0, summary: null, error: null }, true);
   }
 
-  /** Starts (or restarts) a search; an empty pattern resets to idle. */
-  async search(query: SearchQuery): Promise<void> {
+  /** Starts (or restarts) a search; missing query or pattern resets to idle. */
+  async search(query: SearchQuery | null): Promise<void> {
     const seq = ++this.seq;
     this.disposed = false;
     this.cancelRunning();
-    if (!query.pattern) {
+    if (!query?.pattern) {
       this.update({ ...IDLE }, true);
       return;
     }

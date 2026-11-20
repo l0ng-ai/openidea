@@ -1,8 +1,8 @@
 /** Local change operations: commit, rollback, add, stash. */
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FileStatus, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { Checkbox, Dialog, Icon, IconButton, Input, T, fileIconName } from "@/ui";
+import { Checkbox, Dialog, IconButton, Input, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { addedThenDeleted, groupOf, remainingOverrides, renamedFromPath } from "./changes";
 import { runCommitChecks } from "./commitChecks";
@@ -12,11 +12,14 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { RepoPicker, useBranchInfo } from "./gitMenuDialogs";
-import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
+import { baseName, effectiveKind, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
+import { ensureCommitIdentity } from "./commitIdentity";
 import { showCompareRevisions } from "./operations";
+import { FileChecklist } from "./shelf";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
+import rollbackStyles from "./RollbackDialog.module.css";
 import { tx } from "@/platform/i18n";
 
 export function firstLine(message: string): string {
@@ -74,6 +77,13 @@ export async function commitChanges(): Promise<string | undefined> {
       return undefined;
     }
   }
+  if (
+    !(await ensureCommitIdentity(
+      selection.repositories.map((r) => r.root || null),
+      amend,
+    ))
+  )
+    return undefined;
   const id = await runOp(
     amend ? "Amend commit" : "Commit",
     async () => {
@@ -208,12 +218,16 @@ export function showRollbackDialog(files: FileStatus[]) {
 }
 
 function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () => void }) {
-  const root = useVcs((s) => s.root) ?? "";
   const [selected, setSelected] = useState(() => new Set(files.map((f) => f.path)));
   const [deleteAdded, setDeleteAdded] = useState(false);
-  const hasAdded = files.some((f) => f.staged === "added");
+  const chosen = files.filter((f) => selected.has(f.path));
+  const counts = { added: 0, modified: 0, deleted: 0 };
+  for (const file of chosen) {
+    const kind = effectiveKind(file);
+    counts[kind === "added" || kind === "deleted" ? kind : "modified"]++;
+  }
+  const { added, modified, deleted } = counts;
   const run = async () => {
-    const chosen = files.filter((f) => selected.has(f.path));
     onClose();
     if (!chosen.length) return;
     await saveAll();
@@ -232,49 +246,40 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
       open
       title="Rollback Changes"
       onClose={onClose}
-      width={520}
-      footerStart={
-        hasAdded && (
-          <Checkbox checked={deleteAdded} onChange={setDeleteAdded} label="Delete local copies of added files" />
-        )
-      }
+      className={rollbackStyles.dialog}
+      width={540}
+      minWidth={320}
+      minHeight={240}
+      resizable="both"
       buttons={[
-        { label: "Rollback", role: "default", autoFocus: true, disabled: !selected.size, onClick: () => void run() },
-        { label: "Cancel", role: "cancel" },
+        { label: "Rollback", role: "default", disabled: !chosen.length, onClick: () => void run() },
+        { label: "Close", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        {files.length === 1
-          ? tx`${selected.size} of ${files.length} file will be reverted to their last committed state. Uncommitted changes are lost.`
-          : tx`${selected.size} of ${files.length} files will be reverted to their last committed state. Uncommitted changes are lost.`}
+      <div className={rollbackStyles.content}>
+        <FileChecklist
+          files={files}
+          selected={selected}
+          onChange={setSelected}
+          label="Files to roll back"
+          className={rollbackStyles.tree}
+        />
+        <div className={rollbackStyles.summary} role="status">
+          {!chosen.length && <T>No files selected</T>}
+          {added > 0 && <span className={rollbackStyles.added}>{tx`${added} added`}</span>}
+          {modified > 0 && <span className={rollbackStyles.modified}>{tx`${modified} modified`}</span>}
+          {deleted > 0 && <span className={rollbackStyles.deleted}>{tx`${deleted} deleted`}</span>}
+        </div>
+        <Checkbox
+          checked={added > 0 && deleteAdded}
+          disabled={!added}
+          onChange={setDeleteAdded}
+          label="Delete local copies of added files"
+        />
+        <p className={rollbackStyles.warning}>
+          <T>Rollback discards uncommitted changes in the selected files.</T>
+        </p>
       </div>
-      <div className={styles.fileList} role="group" aria-label={tx("Files to roll back")}>
-        {files.map((f) => {
-          const kind = effectiveKind(f) ?? "modified";
-          return (
-            <div key={f.path} className={styles.fileRow}>
-              <Checkbox
-                aria-label={tx`Include ${baseName(f.path)}`}
-                checked={selected.has(f.path)}
-                onChange={(v) =>
-                  setSelected((s) => {
-                    const n = new Set(s);
-                    if (v) n.add(f.path);
-                    else n.delete(f.path);
-                    return n;
-                  })
-                }
-              />
-              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
-              <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
-                {baseName(f.path)}
-              </span>
-              <span className={styles.fileDir}>{dirName(relTo(root, stripSlash(f.path)))}</span>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ height: 12 }} />
     </Dialog>
   );
 }
@@ -359,7 +364,9 @@ function StashDialog({
   const [message, setMessage] = useState("");
   const [keepIndex, setKeepIndex] = useState(false);
   const [includeUntracked, setIncludeUntracked] = useState(false);
+  const showRepo = useVcs((s) => pickRepo && s.roots.length > 1);
   const branch = useBranchInfo(repo)?.head ?? null;
+  const messageId = useId();
   const submit = () => onDone({ repo, message: message.trim(), keepIndex, includeUntracked });
   return (
     <Dialog
@@ -373,26 +380,38 @@ function StashDialog({
       ]}
     >
       <form
-        className={styles.form}
+        className={`${styles.form} ${styles.stashForm}`}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        {pickRepo && <RepoPicker repo={repo} onChange={setRepo} />}
-        {branch && <div className={styles.hint}>{tx`Current branch: ${branch}`}</div>}
-        <label className={styles.fieldLabel}>
-          <T>Message:</T>
-        </label>
-        <Input
-          data-autofocus
-          aria-label="Message"
-          placeholder="WIP"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-        />
-        <Checkbox checked={keepIndex} onChange={setKeepIndex} label="Keep index" />
-        <Checkbox checked={includeUntracked} onChange={setIncludeUntracked} label="Include untracked files" />
+        {showRepo && (
+          <div className={styles.stashRepo}>
+            <T>Repository:</T>
+            <RepoPicker repo={repo} onChange={setRepo} />
+          </div>
+        )}
+        {branch && <div className={styles.stashBranch}>{tx`Current branch: ${branch}`}</div>}
+        <div className={styles.stashMessage}>
+          <label htmlFor={messageId}>
+            <T>Message:</T>
+          </label>
+          <textarea
+            id={messageId}
+            className={styles.textarea}
+            data-autofocus
+            aria-label={tx("Message")}
+            placeholder={tx("WIP")}
+            rows={3}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+          />
+        </div>
+        <div className={styles.stashOptions}>
+          <Checkbox checked={keepIndex} onChange={setKeepIndex} label="Keep index" />
+          <Checkbox checked={includeUntracked} onChange={setIncludeUntracked} label="Include untracked files" />
+        </div>
       </form>
     </Dialog>
   );

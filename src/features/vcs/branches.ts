@@ -46,6 +46,16 @@ export interface BranchTreeOptions {
   showTags?: boolean;
 }
 
+/** The entries of `all` under `prefix` (without it); unprefixed entries when `prefix` is empty. */
+export function scopedExpansion(all: ReadonlyMap<string, boolean>, prefix: string): ReadonlyMap<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const [key, open] of all) {
+    const scoped = key.indexOf("\u0000");
+    if (prefix ? key.startsWith(prefix) : scoped < 0) out.set(key.slice(prefix.length), open);
+  }
+  return out;
+}
+
 /** Copy of `expanded` with `key` set to `open`. */
 export function withExpanded(expanded: ReadonlyMap<string, boolean>, key: string, open: boolean): Map<string, boolean> {
   return new Map(expanded).set(key, open);
@@ -209,6 +219,63 @@ export const sortTags = (tags: readonly string[]) =>
   [...tags].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 
 /**
+ * How well `name` matches `query`: at the start of its last segment, at a word start, matching the
+ * segment to its end, then nearer the segment's start.
+ */
+function matchDegree(name: string, query: string): number {
+  const match = wordMatch(name, query);
+  const at = match?.[0];
+  if (at === undefined) return -Infinity;
+  const segment = name.lastIndexOf("/") + 1;
+  const wordStart = at === 0 || /[\s_\-./\\:]/.test(name[at - 1]!);
+  const toEnd = match!.at(-1) === name.length - 1;
+  return (at === segment ? 4 : 0) + (wordStart ? 2 : 0) + (toEnd ? 1 : 0) - Math.abs(at - segment) / (name.length + 1);
+}
+
+/**
+ * The row to select while filtering, as IDEA's branches popup does: the best match of the
+ * lowest-ranked kind that has one (matching actions, then local branches, remote ones, tags).
+ * -1 without a query or a candidate.
+ */
+export function preferredMatch<R>(
+  rows: readonly R[],
+  query: string,
+  candidate: (row: R) => { rank: number; name: string } | null,
+): number {
+  const q = query.trim();
+  if (!q) return -1;
+  let best = -1;
+  let bestRank = Infinity;
+  let bestDegree = -Infinity;
+  rows.forEach((row, i) => {
+    const c = candidate(row);
+    if (!c || c.rank > bestRank) return;
+    const degree = matchDegree(c.name, q);
+    if (c.rank < bestRank || degree > bestDegree) {
+      best = i;
+      bestRank = c.rank;
+      bestDegree = degree;
+    }
+  });
+  return best;
+}
+
+const GROUP_RANK: Record<BranchGroup, number> = { recent: 1, local: 2, remote: 3 };
+
+/** `preferredMatch` for the branches popup of one repository. */
+export function preferredBranchRow(rows: readonly BranchRow[], query: string): number {
+  return preferredMatch(rows, query, (r) =>
+    r.type === "action"
+      ? { rank: 0, name: tx(r.action.label) }
+      : r.type === "branch"
+        ? { rank: GROUP_RANK[r.group], name: r.branch.name }
+        : r.type === "tag"
+          ? { rank: 4, name: r.tag }
+          : null,
+  );
+}
+
+/**
  * Rows for the Branches popup: actions (separated by group), then the collapsible
  * Recent (recently checked-out local branches other than the current one), Local,
  * Remote and Tags groups. Recent is open by default, Local only without Recent,
@@ -322,6 +389,8 @@ export interface BranchTreeNode {
   ref: string | null;
   branch?: Branch;
   favorite?: boolean;
+  /** Merged tree: the repositories that have this branch or tag. */
+  repos?: string[];
   children?: BranchTreeNode[];
 }
 
@@ -451,6 +520,50 @@ export function buildRepositoryBranchTree(
       })),
     })),
   ];
+}
+
+/**
+ * One tree for several repositories: each branch and tag listed once, with the
+ * repositories that have it (`repos`). Its `branch` is the `current` repository's when that
+ * one has it, else the first's; it counts as current when it is current in any of them.
+ */
+export function buildMergedBranchTree(
+  repositories: readonly { root: string; name: string; branches: Branch[]; tags: string[] }[],
+  favorites: readonly string[] | null,
+  current: string | null,
+): BranchTreeNode[] {
+  const merged = new Map<string, { branch: Branch; roots: string[]; current: boolean }>();
+  const tagRoots = new Map<string, string[]>();
+  for (const r of repositories) {
+    for (const b of r.branches) {
+      const key = `${b.remote}:${b.name}`;
+      const entry = merged.get(key);
+      if (!entry) merged.set(key, { branch: b, roots: [r.root], current: b.current });
+      else {
+        entry.roots.push(r.root);
+        entry.current ||= b.current;
+        if (r.root === current) entry.branch = b;
+      }
+    }
+    for (const t of r.tags) tagRoots.set(t, [...(tagRoots.get(t) ?? []), r.root]);
+  }
+  const branchRoots = new Map<string, string[]>();
+  const branches = [...merged.entries()].map(([key, m]) => {
+    branchRoots.set(key, m.roots);
+    return { ...m.branch, current: m.current };
+  });
+  const withRepos = (nodes: BranchTreeNode[]): BranchTreeNode[] =>
+    nodes.map((n) => ({
+      ...n,
+      repos:
+        n.kind === "branch"
+          ? branchRoots.get(`${n.branch!.remote}:${n.ref}`)
+          : n.kind === "tag"
+            ? tagRoots.get(n.ref!)
+            : undefined,
+      children: n.children && withRepos(n.children),
+    }));
+  return withRepos(buildBranchTree(branches, favorites, [...tagRoots.keys()]));
 }
 
 /** Keys of the nodes on the way to branch `name` (to reveal it). */

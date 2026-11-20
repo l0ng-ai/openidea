@@ -70,18 +70,34 @@ it.each([undefined, true, false])(
 );
 
 it.each(["breakpoint", "function breakpoint", "exception", "pause"])(
-  "reveals an in-place session on suspend (%s)",
+  "reveals an in-place session in Services on suspend (%s)",
   async (reason) => {
     const show = vi.fn();
     provideToolWindowService({ show } as unknown as ToolWindowService);
     await startSession(config("launch"), { show: false });
     expect(show).not.toHaveBeenCalled();
     handleDebugEvent(42, { kind: "stopped", threadId: 1, reason, description: null, allThreadsStopped: true });
-    expect(show).toHaveBeenCalledWith("debug");
+    // Services shows the session's debugger in place (#4773).
+    expect(show).toHaveBeenCalledExactlyOnceWith("services");
     expect(useDebug.getState().active).toBe(42);
     expect(useDebug.getState().sessions[42]).toMatchObject({ status: "paused", selectedThread: 1 });
   },
 );
+
+it("reveals a session started elsewhere in the Debug tool window on suspend", async () => {
+  const show = vi.fn();
+  provideToolWindowService({ show } as unknown as ToolWindowService);
+  await startSession(config("launch"));
+  show.mockClear();
+  handleDebugEvent(42, {
+    kind: "stopped",
+    threadId: 1,
+    reason: "breakpoint",
+    description: null,
+    allThreadsStopped: true,
+  });
+  expect(show).toHaveBeenCalledExactlyOnceWith("debug");
+});
 
 it.each(["launch", "attach"])("awaits every file before %s can send configurationDone", async (request) => {
   const completed: string[] = [];

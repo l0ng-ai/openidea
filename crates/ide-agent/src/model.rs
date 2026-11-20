@@ -45,6 +45,8 @@ pub struct AgentCapabilities {
     pub steer: bool,
     /// It reports its background tasks and stops them one by one.
     pub background_tasks: bool,
+    /// The connected agent can report a breakdown of its context window.
+    pub context_usage: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -108,6 +110,29 @@ pub struct AgentTask {
     /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_overrides: BTreeMap<String, bool>,
+    /// Token counts of the last turn and context compressions, when the agent reports them.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub stats: Box<AgentSessionStats>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionStats {
+    /// The last turn's tokens (`session/prompt` result `usage`).
+    #[serde(default)]
+    pub tokens: Option<AgentTokens>,
+    /// How many times the agent compressed the conversation (Hermes `compressionDepth`).
+    #[serde(default)]
+    pub compressions: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTokens {
+    pub input: u32,
+    pub cached: u32,
+    pub output: u32,
 }
 
 /// A task the agent runs in the background while the conversation goes on.
@@ -250,6 +275,24 @@ pub struct AgentUsage {
     // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
     #[serde(default)]
     pub cost: Option<Box<AgentCost>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentContextUsage {
+    pub categories: Vec<AgentContextCategory>,
+    pub total_tokens: u32,
+    pub max_tokens: u32,
+    pub model: String,
+    pub is_auto_compact_enabled: Option<bool>,
+    pub auto_compact_threshold: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct AgentContextCategory {
+    pub name: String,
+    pub tokens: u32,
+    pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -479,6 +522,9 @@ pub enum AgentEntry {
     },
     Thought {
         text: String,
+        /// When the reasoning started (ms since the epoch); `None` in tasks saved before.
+        #[serde(default)]
+        started_ms: Option<f64>,
     },
     Tool {
         id: String,
@@ -490,6 +536,11 @@ pub enum AgentEntry {
         /// Text the tool reported (command output…), truncated.
         output: Option<String>,
         diffs: Vec<AgentToolDiff>,
+        /// When the call started and ended (ms since the epoch); `None` in tasks saved before.
+        #[serde(default)]
+        started_ms: Option<f64>,
+        #[serde(default)]
+        ended_ms: Option<f64>,
     },
     Plan {
         items: Vec<AgentPlanItem>,
@@ -563,6 +614,9 @@ pub struct AgentProvider {
     pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
+    /// The built-in command can be owned by a global npm package.
+    #[serde(default)]
+    pub can_check_cli_update: bool,
     /// Environment variables it starts with (from its agent file).
     pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
@@ -633,6 +687,10 @@ pub struct NewAgentTask {
     /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
     #[serde(default)]
     pub mcp_overrides: BTreeMap<String, bool>,
+    /// Creates the task without sending `prompt` (it only names the task): the composer's
+    /// `!` command runs in it first.
+    #[serde(default)]
+    pub idle: bool,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
@@ -672,6 +730,8 @@ pub enum AgentChangesView {
     SinceStart,
     /// The uncommitted files against `HEAD`; commits made since the start stay.
     Group,
+    /// What the last turn changed, against the checkout as that turn started.
+    LastTurn,
 }
 
 /// A task's uncommitted files and the commits made since it started.

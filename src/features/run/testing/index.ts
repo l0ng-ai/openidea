@@ -12,8 +12,8 @@ import { zigParser } from "./zig";
 import type { TestEvent, TestOutputParser } from "./types";
 
 export type { TestEvent, TestOutputParser, TestStatus } from "./types";
-export { parseDuration } from "./types";
-export { TestResults, nodeOutput, nodeStatus, type TestNode } from "./results";
+export { formatDuration, parseDuration } from "./types";
+export { TestResults, nodeDuration, nodeOutput, nodeStatus, type TestNode } from "./results";
 export {
   cargoParser,
   goParser,

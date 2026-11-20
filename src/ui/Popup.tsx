@@ -25,6 +25,7 @@ import {
   shift,
   size as sizeMw,
   useFloating,
+  type Middleware,
   type Placement,
   type VirtualElement,
 } from "@floating-ui/react-dom";
@@ -78,6 +79,16 @@ export interface PopupProps {
 type ResizeEdge = "right" | "bottom" | "corner";
 const EDGE_CURSOR = { right: "ew-resize", bottom: "ns-resize", corner: "nwse-resize" } as const;
 
+const measureNaturalHeight: Middleware = {
+  name: "measureNaturalHeight",
+  fn({ elements, middlewareData }) {
+    // Keep the new cap through internal flip/size restarts, not through the next update.
+    if (middlewareData.measureNaturalHeight) return {};
+    const previousLimit = elements.floating.style.removeProperty("max-height");
+    return { data: { measured: true }, reset: previousLimit ? { rects: true } : undefined };
+  },
+};
+
 function toReference(anchor: PopupAnchor): Element | VirtualElement | null {
   if (!anchor) return null;
   if ("current" in anchor) return anchor.current;
@@ -117,22 +128,28 @@ function PopupInner({
   ...aria
 }: PopupProps) {
   const reference = toReference(anchor);
+  const hasInlineMaxHeight = style?.maxHeight != null && style.maxHeight !== "";
   const middleware = useMemo(
     () => [
       offsetMw(offset),
+      hasInlineMaxHeight ? null : measureNaturalHeight,
       flip({ padding: 6 }),
       shift({ padding: 6 }),
       sizeMw({
         padding: 6,
         apply({ rects, elements, availableHeight, availableWidth }) {
-          elements.floating.style.maxHeight = `${Math.max(120, availableHeight)}px`;
+          const floatingStyle = elements.floating.style;
+          const maxHeight = Math.max(120, availableHeight);
+          if (!hasInlineMaxHeight && (rects.floating.height > maxHeight || floatingStyle.maxHeight)) {
+            floatingStyle.maxHeight = `${maxHeight}px`;
+          }
           const width = Math.max(0, availableWidth);
-          elements.floating.style.maxWidth = `${width}px`;
-          if (matchWidth) elements.floating.style.minWidth = `${Math.min(rects.reference.width, width)}px`;
+          floatingStyle.maxWidth = `${width}px`;
+          if (matchWidth) floatingStyle.minWidth = `${Math.min(rects.reference.width, width)}px`;
         },
       }),
     ],
-    [offset, matchWidth],
+    [hasInlineMaxHeight, offset, matchWidth],
   );
   const { refs, floatingStyles, isPositioned } = useFloating({
     placement,

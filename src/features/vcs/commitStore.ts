@@ -170,6 +170,54 @@ export function rememberMessage(message: string) {
   }
 }
 
+const draftKey = (root: string) => `openidea.vcs.commitDraft:${root}`;
+
+/** The project's unsent commit message, as IDEA keeps it in the workspace: restored after a restart. */
+export function savedDraft(root: string): string {
+  try {
+    return localStorage.getItem(draftKey(root)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeDraft(root: string, text: string) {
+  try {
+    if (text.trim()) localStorage.setItem(draftKey(root), text);
+    else localStorage.removeItem(draftKey(root));
+  } catch {
+    // ignore
+  }
+}
+
+/** The draft the field stands for: not Amend's message or one a commit / the template left there. */
+function draftText(): string {
+  const m = useCommit.getState().message;
+  if (amendData) return amendData.before;
+  return m.trim() === keptMessage ? "" : m;
+}
+
+let pendingDraft: { root: string; text: string } | null = null;
+let draftTimer: ReturnType<typeof setTimeout> | undefined;
+const DRAFT_DELAY_MS = 500;
+
+export function flushDraft() {
+  clearTimeout(draftTimer);
+  const p = pendingDraft;
+  pendingDraft = null;
+  if (p) writeDraft(p.root, p.text);
+}
+
+function scheduleDraft() {
+  const root = useVcs.getState().root;
+  if (!root) return;
+  // Another project's pending draft goes to its own key first.
+  if (pendingDraft && pendingDraft.root !== root) flushDraft();
+  pendingDraft = { root, text: draftText() };
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(flushDraft, DRAFT_DELAY_MS);
+}
+
 /** The message typed before Amend replaced it, and the amended commit's message. */
 let amendData: { before: string; amend: string } | null = null;
 
@@ -231,6 +279,9 @@ export function keepMessageAfterCommit(committed: string, clear: boolean) {
   const message = messageAfterCommit(committed, clear);
   keptMessage = message || null;
   useCommit.setState({ message });
+  // The committed message is no draft any more, even if it stays in the field; written at once.
+  scheduleDraft();
+  flushDraft();
   if (!message) void loadTemplate();
 }
 
@@ -294,10 +345,26 @@ export function installPreparedMessage(): () => void {
     }
   };
   const op = (s = useVcs.getState()) => s.branch?.operation ?? null;
+  const restoreDraft = () => {
+    const root = useVcs.getState().root;
+    const draft = root ? savedDraft(root) : "";
+    if (draft && !useCommit.getState().message.trim()) useCommit.setState({ message: draft });
+  };
+  restoreDraft();
   if (PREPARED_MESSAGE_OPS.has(op() ?? "")) void load();
   else void loadTemplate();
-  return useVcs.subscribe((s, prev) => {
+  const offDraft = useCommit.subscribe((s, prev) => {
+    if (s.message !== prev.message) scheduleDraft();
+  });
+  const onHide = () => flushDraft();
+  if (typeof window !== "undefined") {
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("beforeunload", onHide);
+    window.addEventListener("blur", onHide);
+  }
+  const offVcs = useVcs.subscribe((s, prev) => {
     if (s.root !== prev.root) {
+      flushDraft();
       // Another repository: nothing typed or ticked for the previous one carries over (Amend least of all).
       amendData = null;
       keptMessage = null;
@@ -312,6 +379,7 @@ export function installPreparedMessage(): () => void {
         selectedList: null,
         selectedShelf: null,
       });
+      restoreDraft();
       if (PREPARED_MESSAGE_OPS.has(op(s) ?? "")) void load();
       else void loadTemplate();
       return;
@@ -319,4 +387,14 @@ export function installPreparedMessage(): () => void {
     const now = op(s);
     if (now !== op(prev) && PREPARED_MESSAGE_OPS.has(now ?? "")) void load();
   });
+  return () => {
+    offVcs();
+    offDraft();
+    flushDraft();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("beforeunload", onHide);
+      window.removeEventListener("blur", onHide);
+    }
+  };
 }

@@ -4,6 +4,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { selectAll } from "@codemirror/commands";
 import { getCM, Vim } from "@replit/codemirror-vim";
 import {
+  adjacentEditor,
   embeddedEditorExtensions,
   externalHistory,
   transientChange,
@@ -153,6 +154,33 @@ describe("Vim engine", () => {
     await tick();
     expect(ran).toEqual(["navigate.declaration"]);
     view.destroy();
+  });
+
+  it("applies +=, -= and ^= to list and number options from the rc file", () => {
+    try {
+      const problems = applyRcCommands(
+        parseVimrc("set clipboard+=unnamed\nset cb+=unnamedplus\nset clipboard+=unnamed").commands,
+      );
+      expect(problems).toEqual([]);
+      expect(Vim.getOption("clipboard")).toBe("ideaput,autoselect,unnamed,unnamedplus");
+      applyRcCommands(parseVimrc("set clipboard-=autoselect\nset clipboard^=unnamedplus").commands);
+      expect(Vim.getOption("clipboard")).toBe("ideaput,unnamed,unnamedplus");
+      applyRcCommands(parseVimrc("set clipboard^=autoselect").commands);
+      expect(Vim.getOption("clipboard")).toBe("autoselect,ideaput,unnamed,unnamedplus");
+      const timeout = Vim.getOption("insertModeEscKeysTimeout");
+      applyRcCommands(
+        parseVimrc(
+          "set insertModeEscKeysTimeout=100\nset insertModeEscKeysTimeout+=50\nset insertModeEscKeysTimeout^=2\nset insertModeEscKeysTimeout-=60",
+        ).commands,
+      );
+      expect(Vim.getOption("insertModeEscKeysTimeout")).toBe(240);
+      expect(applyRcCommands(parseVimrc("set insertModeEscKeysTimeout+=x").commands)).toEqual([
+        "insertModeEscKeysTimeout: number required: x",
+      ]);
+      Vim.setOption("insertModeEscKeysTimeout", timeout);
+    } finally {
+      Vim.setOption("clipboard", "ideaput,autoselect");
+    }
   });
 
   it("sends u and Ctrl-R to an editor's own history (notebook cells)", () => {
@@ -379,7 +407,7 @@ describe("Vim engine", () => {
     /** A key's keydown, then the text it types. jsdom reports an Apple vendor, so CodeMirror
      * treats it as Safari and drops the keydown within 100ms of `compositionend`. */
     const press = (view: EditorView, key: string, text: string) => {
-      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
       typeText(view, text);
     };
     let clock = 0;
@@ -422,6 +450,19 @@ describe("Vim engine", () => {
       press(view, "j", "j");
       await tick();
       expect(view.state.doc.toString()).toBe("");
+      view.destroy();
+    });
+
+    it("drops the text an input method echoes after a key Vim took outside Insert mode (#4402)", async () => {
+      const view = makeView();
+      press(view, "j", "j");
+      expect(view.state.doc.toString()).toBe("one two\nthree");
+      expect(view.state.selection.main.head).toBe(8);
+      press(view, "i", "i");
+      expect(view.state.doc.toString()).toBe("one two\nthree");
+      // Keys typed in the new Insert mode stay text, even the same letter.
+      press(view, "i", "i");
+      expect(view.state.doc.toString()).toBe("one two\nithree");
       view.destroy();
     });
 
@@ -507,5 +548,47 @@ describe("Vim engine", () => {
     expect(modes).toEqual(expect.arrayContaining(["insert", "normal", "visual"]));
     offModes();
     view.destroy();
+  });
+});
+
+describe("line motions across editors", () => {
+  const key = (view: EditorView, k: string) =>
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+
+  it("continue into the host's neighbouring editor past the first or last line", () => {
+    const moves: [number, number][] = [];
+    const view = makeView([
+      vimExtension(),
+      adjacentEditor.of((direction, column) => (moves.push([direction, column]), true)),
+    ]);
+    // "one two\nthree": on line 1, `k` leaves upwards; `j` stays inside.
+    view.dispatch({ selection: { anchor: 2 } });
+    key(view, "k");
+    key(view, "j");
+    expect(view.state.selection.main.head).toBe(10);
+    key(view, "ArrowDown");
+    expect(moves).toEqual([
+      [-1, 2],
+      [1, 2],
+    ]);
+    view.destroy();
+  });
+
+  it("keep counts, operators and editors without a host inside the editor", () => {
+    const moves: number[] = [];
+    const view = makeView([vimExtension(), adjacentEditor.of((direction) => (moves.push(direction), true))]);
+    view.dispatch({ selection: { anchor: 9 } });
+    key(view, "2");
+    key(view, "j");
+    key(view, "d");
+    key(view, "j");
+    expect(moves).toEqual([]);
+    view.destroy();
+
+    const alone = makeView();
+    alone.dispatch({ selection: { anchor: 9 } });
+    key(alone, "j");
+    expect(alone.state.selection.main.head).toBe(12);
+    alone.destroy();
   });
 });

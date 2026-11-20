@@ -56,7 +56,7 @@ describe("preview-only scroll position", () => {
   it("restores the preview's own scroll after a remount", async () => {
     open(mdCtx);
     activate(views[0]!);
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
     const first = render(
       <MarkdownEditor path={mdCtx.path} tabId="t">
         <div />
@@ -84,7 +84,7 @@ describe("preview-only scroll position", () => {
     open(mdCtx);
     activate(views[0]!);
     act(() => useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, previewTop: 300 } })));
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
     render(
       <MarkdownEditor path={mdCtx.path} tabId="t">
         <div />
@@ -105,8 +105,8 @@ describe("preview-only scroll position", () => {
     });
     try {
       // Re-running the restore (mode toggle) hits the clamp…
-      act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "split" } })));
-      act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+      act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
+      act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
       expect(preview.scrollTop).toBe(100);
       // The browser reports the clamped write as a scroll; the saved offset stays.
       act(() => preview.dispatchEvent(new Event("scroll")));
@@ -132,7 +132,7 @@ describe("preview-only scroll position", () => {
     open(mdCtx);
     activate(views[0]!);
     act(() => useLiveMarkdown.setState((s) => ({ [mdCtx.path]: { ...s[mdCtx.path]!, previewTop: 300 } })));
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
     render(
       <MarkdownEditor path={mdCtx.path} tabId="t">
         <div />

@@ -70,6 +70,44 @@ pub struct StatusItem {
     pub tooltip: Option<String>,
     /// One of the plugin's commands, run on click.
     pub command: Option<String>,
+    /// Opened on click instead of running `command` when not empty (API 1.14).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[specta(optional)]
+    pub menu: Vec<StatusMenuEntry>,
+}
+
+/// An entry of a plugin status bar item's menu (API 1.14, `ui.set-status-item-menu`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StatusMenuEntry {
+    /// Runs one of the plugin's commands with `argument`.
+    #[serde(rename_all = "camelCase")]
+    Action {
+        label: String,
+        description: Option<String>,
+        command: String,
+        argument: Option<String>,
+    },
+    Separator,
+    Header {
+        label: String,
+    },
+}
+
+/// A plugin's highlight rule for Run and Debug console output (API 1.12, `ui.set-console-rules`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleRule {
+    pub pattern: String,
+    pub ignore_case: bool,
+    /// A console palette colour (`red`, `bright-blue`); `None` keeps the text's own.
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    /// `bold`, `italic`, `underline`, `strikethrough`, `dim`.
+    pub styles: Vec<String>,
+    /// The whole line, or only the matched text.
+    pub whole_line: bool,
+    pub enabled: bool,
 }
 
 /// An entry of a plugin's `pick` or `pick-many`.
@@ -250,6 +288,9 @@ pub struct DocumentTextChange {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentChanged {
     pub path: String,
+    /// The open project `path` is relative to, set when the event is handed to a plugin
+    /// (the editor posts the absolute path and `null`).
+    pub project: Option<String>,
     pub base_version: u64,
     pub version: u64,
     pub changes: Vec<DocumentTextChange>,

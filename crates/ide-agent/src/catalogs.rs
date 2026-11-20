@@ -213,6 +213,31 @@ impl AgentCatalogs {
             .unwrap_or_else(|| Self::fallback(shared, provider))
     }
 
+    /// Availability for an explicit session switch must come from a recent discovery for this
+    /// launch, not from the display fallback or a different project's session report.
+    pub(super) fn fresh_model(
+        &self,
+        shared: &Shared,
+        spec: &provider::ProviderSpec,
+        model: &str,
+    ) -> Option<crate::AgentConfigValue> {
+        let context = LaunchContext::new(spec.clone(), &shared.paths.project_root);
+        let select = |catalog: &CatalogData| {
+            let age = self.epoch_ms() - catalog.refreshed_at_ms?;
+            if !(0.0..FRESH_FOR.as_millis() as f64).contains(&age) {
+                return None;
+            }
+            catalog.model_option()?.values.iter().find(|value| value.value == model).cloned()
+        };
+        let state = self.state.lock();
+        if let Some(entry) = state.entries.get(&Self::key(shared, &spec.id)) {
+            return select(entry.catalog.as_ref().filter(|_| entry.context == context)?);
+        }
+        let cache = shared.known.lock();
+        let saved = cache.get(&spec.id)?.catalogs.get(&shared.root_key())?;
+        (saved.fingerprint == context.fingerprint()).then(|| select(&saved.catalog)).flatten()
+    }
+
     pub(crate) fn levels(&self, shared: &Shared, provider: &str, model: &str) -> Option<Vec<AgentConfigOption>> {
         let state = self.state.lock();
         if let Some(catalog) = state.entries.get(&Self::key(shared, provider)).and_then(|entry| entry.catalog.as_ref())
@@ -229,6 +254,38 @@ impl AgentCatalogs {
             .unwrap_or(&known.thought_levels)
             .get(model)
             .cloned()
+    }
+
+    pub(super) async fn load_levels(
+        self: &Arc<Self>,
+        shared: &Arc<Shared>,
+        provider: &str,
+        model: &str,
+    ) -> Result<Vec<AgentConfigOption>, String> {
+        if let Some(levels) = self.levels(shared, provider, model) {
+            return Ok(levels);
+        }
+        let unavailable = || "The agent did not report settings for the selected model".to_owned();
+        let spec = shared.spec(provider).ok_or_else(unavailable)?;
+        let (_, flight) = self.request(shared, spec, false, Some(model));
+        if let Some(mut ready) = flight {
+            while !*ready.borrow_and_update() {
+                if ready.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+        self.levels(shared, provider, model).ok_or_else(|| {
+            let state = self.state.lock();
+            state
+                .entries
+                .get(&Self::key(shared, provider))
+                .and_then(|entry| {
+                    entry.model_failures.get(model).map(|failure| &failure.error).or(entry.error.as_ref())
+                })
+                .cloned()
+                .unwrap_or_else(unavailable)
+        })
     }
 
     pub(crate) fn evict_if_idle(&self, shared: &Shared, provider: &str) {

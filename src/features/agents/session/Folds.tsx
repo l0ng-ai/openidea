@@ -20,6 +20,7 @@ export function Fold({
   id,
   className,
   open,
+  defaultOpen,
   summary,
   children,
 }: {
@@ -27,13 +28,15 @@ export function Fold({
   id?: string;
   className?: string;
   open?: boolean;
+  /** Starts open; the reader can still fold it. */
+  defaultOpen?: boolean;
   summary: ReactElement;
   children: ReactNode;
 }) {
   const always = useContext(FoldedContent);
   const remembered = useContext(OpenFolds);
   const reveal = useContext(RevealFold);
-  const [expanded, setExpanded] = useState(() => !!open || (!!id && !!remembered?.get(id)));
+  const [expanded, setExpanded] = useState(() => !!open || !!defaultOpen || (!!id && !!remembered?.get(id)));
   const ref = useRef<HTMLDetailsElement>(null);
   const opened = useRef(false);
   // Once its content is laid out, so its height is known.
@@ -46,7 +49,7 @@ export function Fold({
     <details
       ref={ref}
       className={className}
-      open={open || (!!id && expanded) || undefined}
+      open={open || ((!!id || defaultOpen) && expanded) || undefined}
       onToggle={(e) => {
         const now = e.currentTarget.open;
         opened.current = now;

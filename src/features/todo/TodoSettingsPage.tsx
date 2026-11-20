@@ -1,5 +1,6 @@
 /** Settings › Editor › TODO: patterns, colours, matching options. */
 import { Button, Checkbox, IconButton, Input, Select, T } from "@/ui";
+import { useSettingsForm } from "@/workbench/contributions";
 import { DEFAULT_PATTERNS, type TodoPattern } from "./model";
 import { updateTodoSettings, useTodoSettings } from "./store";
 import styles from "./TodoSettingsPage.module.css";
@@ -15,24 +16,28 @@ const COLORS = [
 ];
 
 export function TodoSettingsPage() {
-  const s = useTodoSettings();
-  const setPatterns = (patterns: TodoPattern[]) => updateTodoSettings({ patterns });
+  const form = useSettingsForm();
+  const saved = useTodoSettings();
+  const caseSensitive = form.useExternal("caseSensitive", saved.caseSensitive, async (value) => {
+    updateTodoSettings({ caseSensitive: value });
+    return value;
+  });
+  const commentsOnly = form.useExternal("commentsOnly", saved.commentsOnly, async (value) => {
+    updateTodoSettings({ commentsOnly: value });
+    return value;
+  });
+  const { value: patterns, set: setPatterns } = form.useExternal("patterns", saved.patterns, async (value) => {
+    updateTodoSettings({ patterns: value });
+    return value;
+  });
   const patch = (id: string, p: Partial<TodoPattern>) =>
-    setPatterns(s.patterns.map((x) => (x.id === id ? { ...x, ...p } : x)));
+    setPatterns(patterns.map((x) => (x.id === id ? { ...x, ...p } : x)));
 
   return (
     <div className={styles.page}>
       <div className={styles.options}>
-        <Checkbox
-          checked={s.caseSensitive}
-          onChange={(v) => updateTodoSettings({ caseSensitive: v })}
-          label="Case sensitive"
-        />
-        <Checkbox
-          checked={s.commentsOnly}
-          onChange={(v) => updateTodoSettings({ commentsOnly: v })}
-          label="Only in comments"
-        />
+        <Checkbox checked={caseSensitive.value} onChange={caseSensitive.set} label="Case sensitive" />
+        <Checkbox checked={commentsOnly.value} onChange={commentsOnly.set} label="Only in comments" />
       </div>
       <div className={styles.header}>
         <span>
@@ -44,14 +49,14 @@ export function TodoSettingsPage() {
           title="Add Pattern"
           onClick={() =>
             setPatterns([
-              ...s.patterns,
+              ...patterns,
               { id: `p${Date.now().toString(36)}`, keyword: "NOTE", color: "var(--success)", enabled: true },
             ])
           }
         />
       </div>
       <div className={styles.list} role="list" aria-label={tx("TODO patterns")}>
-        {s.patterns.map((p) => (
+        {patterns.map((p) => (
           <div key={p.id} className={styles.row} role="listitem">
             <Checkbox
               checked={p.enabled}
@@ -76,7 +81,7 @@ export function TodoSettingsPage() {
               icon="trash"
               size="small"
               title="Remove Pattern"
-              onClick={() => setPatterns(s.patterns.filter((x) => x.id !== p.id))}
+              onClick={() => setPatterns(patterns.filter((x) => x.id !== p.id))}
             />
           </div>
         ))}

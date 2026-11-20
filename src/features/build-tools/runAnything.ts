@@ -97,4 +97,8 @@ export const buildToolsRunAnything: RunAnythingProvider = {
     const tool = lineTool(line);
     return !!tool && executeBuildLine(tool, line);
   },
+  accepts(line) {
+    const tool = lineTool(line);
+    return !!tool && (tool === "maven" ? parseGoalLine(line) : parseTaskLine(line)).length > 0;
+  },
 };

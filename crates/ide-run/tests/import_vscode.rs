@@ -555,3 +555,108 @@ fn existing_names_match_without_surrounding_spaces() {
     let r = import_from(dir.path(), &[existing]);
     assert_eq!(reason(&r, "Django"), &SkipReason::NameTaken);
 }
+
+const PUBSPEC_FLUTTER: &str = "name: my_app\ndependencies:\n  flutter:\n    sdk: flutter\n";
+
+fn write(root: &Path, rel: &str, text: &str) {
+    let path = root.join(rel);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+// The configurations Dart Code adds to a Flutter app's launch.json.
+const FLUTTER: &str = r#"{
+    "version": "0.2.0",
+    "configurations": [
+        { "name": "my_app", "request": "launch", "type": "dart" },
+        { "name": "my_app (profile mode)", "request": "launch", "type": "dart", "flutterMode": "profile" },
+        { "name": "my_app (release mode)", "request": "launch", "type": "dart", "flutterMode": "release" },
+        { "name": "Attach", "request": "attach", "type": "dart" }
+    ],
+    "compounds": [{ "name": "Both", "configurations": ["my_app", "my_app (profile mode)"] }]
+}"#;
+
+#[test]
+fn flutter_launches_from_dart_code_next_to_the_detected_configuration() {
+    let dir = project(FLUTTER);
+    let root = dir.path();
+    write(root, "pubspec.yaml", PUBSPEC_FLUTTER);
+    write(root, "lib/main.dart", "void main() {}\n");
+    let r = import_from(root, &ide_run::detect(root));
+    assert_eq!(reason(&r, "my_app"), &SkipReason::SameAs { existing: "flutter run".into() });
+    for (name, mode) in [("my_app (profile mode)", "--profile"), ("my_app (release mode)", "--release")] {
+        let c = get(&r, name);
+        assert_eq!(
+            (c.kind.as_str(), c.command.as_str(), c.debug_adapter.as_deref()),
+            ("flutter", "flutter", Some("dart"))
+        );
+        assert_eq!(c.args, s(&["run", "-t", "lib/main.dart", mode]));
+        assert_eq!(cwd(c), None);
+    }
+    assert_eq!(reason(&r, "Attach"), &SkipReason::UnsupportedRequest { request: "attach".into() });
+    // A compound naming the left-out entry starts the detected configuration.
+    assert_eq!(
+        get(&r, "Both").extras.compound,
+        ["flutter:run".to_owned(), get(&r, "my_app (profile mode)").id.clone()]
+    );
+}
+
+#[test]
+fn flutter_entry_device_tool_and_app_arguments_in_a_subfolder() {
+    let dir = project(
+        r#"{ "configurations": [
+            { "name": "Dev", "request": "launch", "type": "dart", "cwd": "${workspaceFolder}/app",
+              "program": "lib/main_dev.dart", "deviceId": "chrome", "args": ["--seed", "1"],
+              "toolArgs": ["--flavor", "dev", "--dart-define=ENV=dev"], "vmAdditionalArgs": ["--x"] },
+            { "name": "From the root", "request": "launch", "type": "dart", "program": "app/lib/main_dev.dart" }
+        ] }"#,
+    );
+    let root = dir.path();
+    write(root, "app/pubspec.yaml", PUBSPEC_FLUTTER);
+    write(root, "app/lib/main_dev.dart", "void main() {}\n");
+    let r = import_from(root, &[]);
+    let c = get(&r, "Dev");
+    assert_eq!(
+        c.args,
+        s(&[
+            "run",
+            "-t",
+            "lib/main_dev.dart",
+            "-d",
+            "chrome",
+            "--flavor",
+            "dev",
+            "--dart-define=ENV=dev",
+            "--dart-entrypoint-args",
+            "--seed",
+            "--dart-entrypoint-args",
+            "1",
+        ])
+    );
+    assert_eq!(cwd(c), Some(PathBuf::from("app")));
+    assert_eq!(ignored(&r, "Dev"), ["vmAdditionalArgs"]);
+    // A program path from the workspace folder runs in its package too.
+    let c = get(&r, "From the root");
+    assert_eq!((c.args.clone(), cwd(c)), (s(&["run", "-t", "lib/main_dev.dart"]), Some(PathBuf::from("app"))));
+}
+
+#[test]
+fn dart_programs_outside_flutter_run_with_dart() {
+    let dir = project(
+        r#"{ "configurations": [
+            { "name": "Server", "request": "launch", "type": "dart", "program": "bin/server.dart",
+              "args": ["--port", "8080"], "toolArgs": ["--enable-asserts"] },
+            { "name": "Server (absolute)", "request": "launch", "type": "dart", "program": "${workspaceFolder}/bin/server.dart" },
+            { "name": "Nothing", "request": "launch", "type": "dart" }
+        ] }"#,
+    );
+    let root = dir.path();
+    write(root, "pubspec.yaml", "name: server\n");
+    write(root, "bin/server.dart", "void main() {}\n");
+    let r = import_from(root, &[]);
+    let c = get(&r, "Server");
+    assert_eq!((c.kind.as_str(), c.command.as_str(), c.debug_adapter.as_deref()), ("dart", "dart", Some("dart")));
+    assert_eq!(c.args, s(&["run", "--enable-asserts", "bin/server.dart", "--port", "8080"]));
+    assert_eq!(get(&r, "Server (absolute)").args, s(&["run", "bin/server.dart"]));
+    assert_eq!(reason(&r, "Nothing"), &SkipReason::NothingToRun);
+}

@@ -222,6 +222,15 @@ function leadingColumns(text: string, tabSize: number): number {
   return col;
 }
 
+/** Indentation of the nearest non-empty line above `line` (1-based), for pastes onto a blank line in languages without an indent engine. */
+function previousLineIndent(state: EditorState, line: number): number | null {
+  for (let n = line - 1; n >= 1; n--) {
+    const prev = state.doc.line(n);
+    if (/\S/.test(prev.text)) return leadingColumns(prev.text, state.tabSize);
+  }
+  return null;
+}
+
 /** Reformat on paste › Indent Block: re-indents a pasted block to the caret's indentation. */
 export function indentPastedText(
   text: string,
@@ -277,7 +286,11 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     let targetCol = leadingColumns(atIndent ? before : line.text, tabSize);
     let prefix = "";
     if (atIndent) {
-      const proper = getIndentation(start, line.from);
+      let proper = getIndentation(start, line.from);
+      if (!targetCol && !proper) {
+        const above = previousLineIndent(start, line.number);
+        if (above) proper = above;
+      }
       if (proper !== null && proper !== targetCol) {
         targetCol = proper;
         prefix = indentString(start, proper);

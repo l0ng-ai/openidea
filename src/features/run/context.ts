@@ -22,6 +22,10 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
   if (/\.cs$/i.test(relPath) && content && csharpTargets(content).some((target) => target.kind === "test"))
     return "test";
   const name = relPath.split("/").pop() ?? relPath;
+  // A JVM class with a `main` is a runnable program even when its name looks like
+  // a test's (`Test.java`): content decides before the test-name pattern does.
+  if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
+    return "main";
   if (
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(name) ||
     /(^|\/)__tests__\//.test(relPath) ||
@@ -36,8 +40,6 @@ export function fileRole(relPath: string, content?: string, windows = isWindows(
     return "test";
   if (/(^|\/)src\/main\.rs$|(^|\/)src\/bin\/[^/]+\.rs$/.test(relPath)) return "main";
   if (/\.go$/.test(name) && content !== undefined && /^\s*package\s+main\b/m.test(content)) return "main";
-  if (/\.(kt|java)$/.test(name) && content !== undefined && /\bfun\s+main\s*\(|static\s+void\s+main\s*\(/.test(content))
-    return "main";
   if (/\.(py|rb|sh|bash|zsh|[cm]?js|ts)$/.test(name)) return "script";
   if (windows && /\.(bat|cmd)$/i.test(name)) return "script";
   return null;

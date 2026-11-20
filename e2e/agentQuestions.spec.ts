@@ -1,5 +1,7 @@
 import { expect, test } from "./fixtures";
 import type { AgentQuestion, AgentTask } from "../src/bindings";
+import type * as AgentStore from "../src/features/agents/store";
+import type * as Ipc from "../src/platform/ipc";
 
 const task: AgentTask = {
   id: "questions",
@@ -49,14 +51,12 @@ for (const status of ["running", "ready"] as const) {
     const key = JSON.stringify(["request_user_input_async", "call-1", 0]);
     await page.evaluate(
       async ({ task, status, key }) => {
+        // Keep the workbench imports in the browser's Vite realm.
         const storePath = "/src/features/agents/store.ts";
         const ipcPath = "/src/platform/ipc.ts";
-        const store = await import(storePath);
-        (await import(ipcPath)).commands.agentAnswerQuestion = async (
-          id: string,
-          question: string,
-          answer: string | null,
-        ) => {
+        const store: typeof AgentStore = await import(storePath);
+        const { commands }: typeof Ipc = await import(ipcPath);
+        commands.agentAnswerQuestion = async (id, question, answer) => {
           document.documentElement.dataset.asyncAnswer = JSON.stringify({ id, question, answer });
           const entries = store.useAgents.getState().entries.get(id)!;
           store.useAgents.setState({
@@ -111,7 +111,7 @@ for (const status of ["running", "ready"] as const) {
     if (status === "running") {
       await page.evaluate(async (id) => {
         const storePath = "/src/features/agents/store.ts";
-        const { useAgents } = await import(storePath);
+        const { useAgents }: typeof AgentStore = await import(storePath);
         useAgents.setState((s) => ({ tasks: new Map(s.tasks).set(id, { ...s.tasks.get(id)!, status: "ready" }) }));
       }, task.id);
       await expect(card.getByRole("radio", { name: /^Read latest content/ })).toBeChecked();

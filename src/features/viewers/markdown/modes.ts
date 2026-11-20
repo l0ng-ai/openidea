@@ -1,4 +1,7 @@
-/** Markdown editor layout per file: Editor only / Editor and Preview / Preview only (IDEA's split editor). */
+/**
+ * Markdown editor layout per editor tab: Editor only / Editor and Preview / Preview only. Split
+ * panes showing the same file each keep their own.
+ */
 import { create } from "zustand";
 
 export type MarkdownMode = "editor" | "split" | "preview";
@@ -16,17 +19,23 @@ function storedDefault(): MarkdownMode {
 }
 
 interface ModesState {
-  byPath: Record<string, MarkdownMode>;
-  /** Mode of files not switched yet: the last one chosen. */
+  byTab: Record<string, MarkdownMode>;
+  /** Mode of tabs opened since: the last one chosen. */
   fallback: MarkdownMode;
 }
 
-export const useMarkdownModes = create<ModesState>(() => ({ byPath: {}, fallback: storedDefault() }));
+export const useMarkdownModes = create<ModesState>(() => ({ byTab: {}, fallback: storedDefault() }));
 
-export const modeOf = (s: ModesState, path: string): MarkdownMode => s.byPath[path] ?? s.fallback;
+export const modeOf = (s: ModesState, tabId: string): MarkdownMode => s.byTab[tabId] ?? s.fallback;
 
-export function setMarkdownMode(path: string, mode: MarkdownMode) {
-  useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: mode }, fallback: mode }));
+/** Fixes a shown tab's mode, so choosing one in another tab doesn't change it. */
+export function pinMarkdownMode(tabId: string) {
+  if (useMarkdownModes.getState().byTab[tabId]) return;
+  useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, [tabId]: s.fallback } }));
+}
+
+export function setMarkdownMode(tabId: string, mode: MarkdownMode) {
+  useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, [tabId]: mode }, fallback: mode }));
   try {
     localStorage.setItem(DEFAULT_KEY, mode);
   } catch {

@@ -63,6 +63,10 @@ pub struct PluginJavaAgent {
     pub file_name: String,
     /// The optional argument passed after `=`.
     pub args: Option<String>,
+    /// Extra JVM flags from `vmOptions` (API 1.14).
+    pub vm_options: Vec<String>,
+    /// When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime.
+    pub jdk: Option<String>,
     /// The jar still has the hash recorded when `java.agent` was granted.
     pub approved: bool,
 }
@@ -241,6 +245,9 @@ pub enum PluginEvent {
     /// Complete replacement of one plugin's project-scoped decorations.
     #[serde(rename_all = "camelCase")]
     DecorationsChanged { plugin_id: String, sets: Vec<DecorationSet> },
+    /// Complete replacement of one plugin's console highlight rules (empty: none).
+    #[serde(rename_all = "camelCase")]
+    ConsoleRulesChanged { plugin_id: String, rules: Vec<ide_plugin::ConsoleRule> },
     /// Open a file in the invoking window.
     EditorOpen { path: ide_core::IpcPath, selection: Option<ide_core::Range> },
     /// Change selection or scrolling only in this window's already open editor.

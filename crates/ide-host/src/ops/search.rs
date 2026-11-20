@@ -34,8 +34,10 @@ pub async fn search_start(
 ) -> IdeResult<()> {
     let project = host.project(window)?;
     // Excluded roots (Project Structure marks and detected `target`, `node_modules`, …) and
-    // ignored names are never searched.
-    query.exclude.extend(project.search_excludes());
+    // ignored names are not searched, unless the query asks for them.
+    if !query.include_excluded {
+        query.exclude.extend(project.search_excludes());
+    }
     let cancel = host.begin_request(request);
     let events = on_event.clone();
     let syntax = host.syntax();
@@ -80,10 +82,15 @@ pub(crate) fn search_project(
                 query.scope,
                 ide_search::SearchScope::Directory { .. } | ide_search::SearchScope::Files { .. }
             ));
-    let content_roots = match query.scope {
+    let content_roots: Vec<std::path::PathBuf> = match query.scope {
         ide_search::SearchScope::Project
         | ide_search::SearchScope::FileSet { .. }
-        | ide_search::SearchScope::Pattern { .. } => project.content_roots(),
+        | ide_search::SearchScope::Pattern { .. } => project
+            .content_roots()
+            .into_iter()
+            // Kept out of the root's walk only by its ignore rules, which this search does not apply.
+            .filter(|r| !(query.include_excluded && include_root && r.starts_with(root)))
+            .collect(),
         _ => within.into_iter().collect(),
     };
     let filter = |rel: &str| match set {
@@ -144,7 +151,7 @@ pub(crate) fn search_project(
 /// Project-relative `masks` (each a comma-separated list) for a search from the content root
 /// shown as `prefix`: paths below it lose the prefix, other paths can match nothing there and
 /// are dropped, names and `**/` patterns (`*.rs`, `**/build/**`) stay as they are.
-fn rebase_masks(masks: &[String], prefix: &str) -> Vec<String> {
+pub(crate) fn rebase_masks(masks: &[String], prefix: &str) -> Vec<String> {
     let prefix = format!("{}/", prefix.trim_end_matches('/'));
     masks
         .iter()

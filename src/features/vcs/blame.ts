@@ -2,6 +2,7 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { Compartment, Prec, RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type PluginValue, type ViewUpdate } from "@codemirror/view";
+import { create } from "zustand";
 import type { BlameLine } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
@@ -88,7 +89,10 @@ class BlameMarker extends GutterMarker {
     const date = document.createElement("span");
     date.className = "cm-vcs-blame-date";
     date.textContent = formatDate(l.timeMs);
-    el.append(date, author);
+    const revision = document.createElement("span");
+    revision.className = "cm-vcs-blame-revision";
+    revision.textContent = l.commit.slice(0, 8);
+    el.append(date, author, revision);
     if (this.bg) {
       el.style.setProperty("--blame-bg", this.bg);
       el.style.backgroundColor = this.bg;
@@ -98,7 +102,82 @@ class BlameMarker extends GutterMarker {
   }
 }
 
-const spacer = new BlameMarker({ commit: "f", author: "Mmmmmmmm", timeMs: Date.UTC(2020, 11, 28), summary: "" });
+const spacer = new BlameMarker({
+  commit: "ffffffff",
+  author: "Mmmmmmmm",
+  timeMs: Date.UTC(2020, 11, 28),
+  summary: "",
+});
+
+/** The columns the gutter shows (IDEA's annotate Options); kept across sessions. */
+const COLUMNS = ["date", "author", "revision"] as const;
+type AnnotateColumn = (typeof COLUMNS)[number];
+type AnnotateColumns = Record<AnnotateColumn, boolean>;
+
+const COLUMNS_KEY = "openidea.vcs.annotateColumns";
+const DEFAULT_COLUMNS: AnnotateColumns = { date: true, author: true, revision: false };
+
+export function readAnnotateColumns(): AnnotateColumns {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? "null");
+    const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const out = { ...DEFAULT_COLUMNS };
+    for (const k of COLUMNS) if (typeof o[k] === "boolean") out[k] = o[k];
+    return COLUMNS.some((k) => out[k]) ? out : { ...DEFAULT_COLUMNS };
+  } catch {
+    return { ...DEFAULT_COLUMNS };
+  }
+}
+
+export const useAnnotateColumns = create<AnnotateColumns>(() => readAnnotateColumns());
+
+// Other windows (project, diff) annotate too.
+if (typeof window !== "undefined")
+  window.addEventListener("storage", (e) => {
+    if (e.key === COLUMNS_KEY) useAnnotateColumns.setState(readAnnotateColumns());
+  });
+
+/** Shows or hides a column in every annotated editor; the last shown column stays. */
+function setAnnotateColumn(column: AnnotateColumn, shown: boolean) {
+  const next = { ...useAnnotateColumns.getState(), [column]: shown };
+  if (!COLUMNS.some((k) => next[k])) return;
+  useAnnotateColumns.setState(next);
+  try {
+    localStorage.setItem(COLUMNS_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
+
+/** Hides the columns turned off in Options, here and in editors annotated before the change. */
+const annotateColumns = ViewPlugin.define(
+  (view) => ({ destroy: useAnnotateColumns.subscribe(() => view.dispatch({})) }),
+  {
+    provide: () =>
+      EditorView.editorAttributes.of(() => {
+        const c = useAnnotateColumns.getState();
+        const hidden = COLUMNS.filter((k) => !c[k]);
+        return hidden.length ? { class: hidden.map((k) => `cm-vcs-blame-hide-${k}`).join(" ") } : null;
+      }),
+  },
+);
+
+const COLUMN_LABELS: Record<AnnotateColumn, string> = { date: "Date", author: "Author", revision: "Revision" };
+
+function optionsMenu() {
+  const c = useAnnotateColumns.getState();
+  const shown = COLUMNS.filter((k) => c[k]).length;
+  return {
+    label: "Options",
+    submenu: COLUMNS.map((k) => ({
+      label: COLUMN_LABELS[k],
+      checked: c[k],
+      // At least one column stays, as in IDEA.
+      disabled: c[k] && shown === 1,
+      run: () => setAnnotateColumn(k, !c[k]),
+    })),
+  };
+}
 
 const setBlame = StateEffect.define<BlameLine[]>();
 
@@ -178,6 +257,9 @@ const blameTheme = EditorView.baseTheme({
   },
   ".cm-vcs-blame-date": { minWidth: "7ch", fontVariantNumeric: "tabular-nums" },
   ".cm-vcs-blame-author": { minWidth: "9ch" },
+  ".cm-vcs-blame-revision": { fontFamily: "var(--font-mono)" },
+  "&.cm-vcs-blame-hide-date .cm-vcs-blame-date, &.cm-vcs-blame-hide-author .cm-vcs-blame-author, &.cm-vcs-blame-hide-revision .cm-vcs-blame-revision":
+    { display: "none" },
   ".cm-vcs-blame .cm-gutterElement:hover .cm-vcs-blame-line, .cm-vcs-blame .cm-gutterElement.cm-vcs-blame-same-commit .cm-vcs-blame-line":
     {
       color: "var(--fg-strong)",
@@ -278,6 +360,11 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       run: () => void executeAction("vcs.showCommit", l.commit),
                     },
                     {
+                      label: "Show Diff",
+                      icon: "diff",
+                      run: () => void import("./annotateRevision").then((m) => m.showRevisionDiff(path, l.commit)),
+                    },
+                    {
                       label: "Copy Revision Number",
                       icon: "copy",
                       run: () => void writeClipboardText(l.commit),
@@ -302,6 +389,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                     { kind: "separator" as const },
                   ]
                 : []),
+              optionsMenu(),
               { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
             ]);
             return true;
@@ -310,6 +398,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
       }),
     ),
     ViewPlugin.define((view) => new BlameInteraction(view)),
+    annotateColumns,
     // Static content (a merge pane's side) is not re-blamed on edits / HEAD moves.
     ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path))] : []),
     blameTheme,

@@ -39,8 +39,10 @@ function TrustDialog() {
   return (
     <Dialog
       open={!!path}
-      icon="app"
-      width={560}
+      icon="warning"
+      width={600}
+      className={styles.trustDialog}
+      blockWorkbenchShortcuts
       title="Trust and Open Project?"
       onClose={() => void executeAction("project.dontOpen")}
       buttons={[
@@ -49,8 +51,12 @@ function TrustDialog() {
           autoFocus: true,
           onClick: () => void executeAction("project.previewRestricted"),
         },
-        { label: "Don't Open", onClick: () => void executeAction("project.dontOpen") },
-        { label: "Trust Project", role: "default", onClick: () => void executeAction("project.trust") },
+        { label: "Don't Open", role: "cancel" },
+        {
+          label: folder ? "Trust Folder" : "Trust Project",
+          role: "default",
+          onClick: () => void executeAction("project.trust"),
+        },
       ]}
       footerStart={
         <Checkbox
@@ -68,16 +74,16 @@ function TrustDialog() {
         />
       }
     >
-      <div className={styles.content}>
+      <div className={styles.promptContent}>
         <PathLine path={path ?? ""} />
         <p>
+          <T>Loading, running or building a project may execute potentially malicious code from its build scripts.</T>
+        </p>
+        <p className={styles.restrictedPreview}>
           <T>
             If you don't trust the source, preview the project in Restricted Mode, where project commands and tools
             can't run.
           </T>
-        </p>
-        <p>
-          <T>Loading, running or building a project may execute potentially malicious code from its build scripts.</T>
         </p>
       </div>
     </Dialog>
@@ -140,6 +146,14 @@ function TrustSettings() {
       setError(String(e));
     }
   };
+  const trust = async (path: string) => {
+    try {
+      await call(commands.projectTrustSet(path, true, false));
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
   const addLocation = async () => {
     try {
       const { open } = await import("@/platform/dialog");
@@ -169,6 +183,24 @@ function TrustSettings() {
           </Button>
         </div>
       ))}
+      {decisions?.restricted.length ? (
+        <>
+          <h3>
+            <T>Restricted projects</T>
+          </h3>
+          <p className={styles.hint}>
+            <T>These projects open in Restricted Mode, even inside a trusted location.</T>
+          </p>
+          {decisions.restricted.map((path) => (
+            <div className={styles.row} key={path}>
+              <span className={styles.path}>{path}</span>
+              <Button onClick={() => void trust(path)}>
+                <T>Trust</T>
+              </Button>
+            </div>
+          ))}
+        </>
+      ) : null}
       <div className={styles.sectionHead}>
         <h3>
           <T>Trusted locations</T>
@@ -178,7 +210,7 @@ function TrustSettings() {
         </Button>
       </div>
       <p className={styles.hint}>
-        <T>Every project inside a trusted location is trusted without asking.</T>
+        <T>Every project inside a trusted location is trusted without asking, unless it is a restricted project.</T>
       </p>
       {decisions?.locations.map((path) => (
         <div className={styles.row} key={path}>

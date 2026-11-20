@@ -40,7 +40,7 @@ describe("semanticRanges", () => {
     expect(semanticRanges(doc, input, false, "python")[0]?.className).toBe(
       "cm-sem-function cm-sem-builtin cm-sem-python-builtin",
     );
-    expect(semanticRanges(doc, input, false, "java")[0]?.className).toBe("cm-sem-function cm-sem-builtin");
+    expect(semanticRanges(doc, input, false, "typescript")[0]?.className).toBe("cm-sem-function cm-sem-builtin");
   });
 
   it("ignores type and modifier names that only exist on Object.prototype", () => {

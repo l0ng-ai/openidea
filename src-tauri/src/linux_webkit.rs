@@ -18,6 +18,28 @@ pub fn configure() {
     }
 }
 
+/// Applies Appearance › Smooth scrolling to every new web view
+#[cfg(target_os = "linux")]
+pub fn smooth_scrolling_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    use tauri::Manager;
+    tauri::plugin::Builder::new("linux-smooth-scrolling")
+        .on_webview_ready(|webview| {
+            let enabled = webview
+                .try_state::<crate::state::AppState>()
+                .is_some_and(|s| s.global_settings.effective().appearance.smooth_scrolling);
+            let _ = webview.with_webview(move |platform| set_smooth_scrolling(&platform, enabled));
+        })
+        .build()
+}
+
+#[cfg(target_os = "linux")]
+pub fn set_smooth_scrolling(platform: &tauri::webview::PlatformWebview, enabled: bool) {
+    use webkit2gtk::{SettingsExt, WebViewExt};
+    if let Some(settings) = platform.inner().settings() {
+        settings.set_enable_smooth_scrolling(enabled);
+    }
+}
+
 /// A Wayland session on the NVIDIA driver, unless the user already chose a workaround
 /// (either variable set keeps their setting).
 fn disable_explicit_sync(var: impl Fn(&str) -> Option<String>, nvidia: bool) -> bool {

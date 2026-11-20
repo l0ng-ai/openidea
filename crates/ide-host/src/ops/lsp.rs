@@ -359,10 +359,22 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
     if kind != GotoKind::Definition {
         return result;
     }
-    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else { return result };
+    // A Maven placeholder (`@profileActive@` in `application.yml` or `.properties`) navigates to its pom.
+    let maven = super::maven_placeholder::definition(host, window, doc, pos).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else {
+        return match maven {
+            None => result,
+            Some(found) => {
+                let in_string = in_string_literal(host, window, doc, pos).await;
+                definition_targets(result, vec![found], in_string)
+            }
+        };
+    };
     let found = plugin_call(move || plugins.provide_definition(&d, pos)).await.unwrap_or_default();
-    let found: Vec<Location> =
-        found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect();
+    let found: Vec<Location> = maven
+        .into_iter()
+        .chain(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }))
+        .collect();
     let in_string = !found.is_empty() && in_string_literal(host, window, doc, pos).await;
     definition_targets(result, found, in_string)
 }
@@ -1964,6 +1976,7 @@ pub struct PluginLanguageVisuals {
     pub injections: Vec<ide_plugin::language_features::Injection>,
     pub colors: Vec<(String, ide_plugin::language_features::ColorInfo)>,
     pub gutter_actions: Vec<(String, ide_plugin::language_features::GutterAction)>,
+    pub hover_actions: Vec<(String, ide_plugin::language_features::HoverAction)>,
 }
 #[command(trust = trusted)]
 pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> IdeResult<PluginLanguageVisuals> {
@@ -1977,14 +1990,20 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
             version: u64::from(snap.version),
             text: snap.text,
         };
-        let mut out =
-            PluginLanguageVisuals { version: d.version, injections: vec![], colors: vec![], gutter_actions: vec![] };
+        let mut out = PluginLanguageVisuals {
+            version: d.version,
+            injections: vec![],
+            colors: vec![],
+            gutter_actions: vec![],
+            hover_actions: vec![],
+        };
         if d.text.len() <= crate::plugins::navigation::MAX_DOCUMENT_BYTES
             && let Some(plugins) = crate::plugins::editor_plugin_host()
         {
             out.injections = plugins.provide_injections(&d);
             out.colors = plugins.language_colors(&d);
             out.gutter_actions = plugins.language_gutter_actions(&d);
+            out.hover_actions = plugins.language_hover_actions(&d);
         }
         project.lsp.set_injections_at(
             doc,

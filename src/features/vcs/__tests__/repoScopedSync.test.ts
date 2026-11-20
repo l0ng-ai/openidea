@@ -8,7 +8,6 @@ vi.mock("@/platform/actions", async (original) => ({
 }));
 
 import { branchMenu, commonBranchMenu } from "../branchMenu";
-import { updateBranch } from "../branchOps";
 import { updateRepos } from "../remoteUi";
 import { useVcs } from "../store";
 
@@ -53,17 +52,9 @@ describe("current branch menu of one repository", () => {
   });
 
   it("keeps the branch shared by all repositories acting on the whole project", () => {
-    const common = { name: "feature", remote: false, current: true, favorite: false };
-    runItem(commonBranchMenu(common, ["/p", "/p/lib"]), "Update");
+    const common = { name: "feature", remote: false, current: true, favorite: false, upstream: false };
+    runItem(commonBranchMenu(common, ["/p", "/p/lib"], "feature"), "Update");
     expect(mocks.execute).toHaveBeenCalledWith("vcs.update");
-  });
-});
-
-describe("Update Selected in the Git Log branches pane", () => {
-  it("updates only the repository whose current branch is selected", async () => {
-    useVcs.setState({ branches: [current] });
-    await updateBranch("feature");
-    expect(mocks.execute).toHaveBeenCalledWith("vcs.update", { repo: "/p/lib" });
   });
 });
 

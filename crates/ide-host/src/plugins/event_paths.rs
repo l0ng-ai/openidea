@@ -162,7 +162,8 @@ impl PluginHost {
             .collect()
     }
 
-    /// What a plugin receives for `document-changed`: the path relative to the file's own project.
+    /// What a plugin receives for `document-changed`: the path relative to the file's own
+    /// project, and that project's root, since two open projects can hold the same relative path.
     pub(super) fn relativize_documents(
         shared: &super::api::Shared,
         client: Option<&str>,
@@ -181,6 +182,7 @@ impl PluginHost {
                     .to_string_lossy()
                     .replace('\\', "/");
                 change.path = relative;
+                change.project = Some(ide_core::ipc_path::to_ipc(&root));
                 Some(WorkbenchEvent::DocumentChanged(change))
             })
             .collect()

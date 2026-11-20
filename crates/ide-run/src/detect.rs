@@ -88,6 +88,7 @@ pub(crate) fn detect_with_profiles(
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
     detect_godot(root, &mut out);
+    detect_projects(root, &["pubspec.yaml"], detect_flutter, &mut out);
     crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
@@ -630,9 +631,11 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
     }
 }
 
-/// The module has main sources, and its build applies the Spring Boot plugin: its own build
-/// file, or a build above it in `build` that applies it to its modules (a parent POM's
-/// `<build><plugins>`, Gradle's `subprojects` / `allprojects`).
+/// The module has main sources and Spring Boot on its classpath, as far as its build files
+/// tell: its own build, or a build above it in `build` that hands Spring Boot to its modules,
+/// references it (a dependency, the starter parent, the BOM or the plugin). A Maven module that
+/// depends on Spring Boot through a parent or another module is a Spring Boot application even
+/// without the packaging plugin; only `<pluginManagement>` alone doesn't count.
 fn applies_spring_boot(build: &Path, module: &Path) -> bool {
     if !["java", "kotlin"].iter().any(|l| module.join("src/main").join(l).is_dir()) {
         return false;
@@ -641,20 +644,32 @@ fn applies_spring_boot(build: &Path, module: &Path) -> bool {
         if pom.contains("<packaging>pom</packaging>") {
             return false;
         }
-        if pom.contains("spring-boot-maven-plugin") {
+        if references_spring_boot(&without_plugin_management(&pom)) {
             return true;
         }
-    } else if GRADLE_BUILDS.iter().filter_map(|n| read(&module.join(n))).any(|text| applies_boot_gradle_plugin(&text)) {
+    } else if GRADLE_BUILDS
+        .iter()
+        .filter_map(|n| read(&module.join(n)))
+        .any(|text| applies_boot_gradle_plugin(&text) || text.contains("org.springframework.boot:"))
+    {
         return true;
     }
     module.ancestors().skip(1).take_while(|dir| dir.starts_with(build)).any(|dir| {
         if let Some(pom) = read(&dir.join("pom.xml")) {
-            return without_plugin_management(&pom).contains("spring-boot-maven-plugin");
+            return references_spring_boot(&without_plugin_management(&pom));
         }
         GRADLE_BUILDS.iter().filter_map(|n| read(&dir.join(n))).any(|text| {
             (text.contains("subprojects") || text.contains("allprojects")) && applies_boot_gradle_plugin(&text)
         })
     })
+}
+
+/// A POM (without its `<pluginManagement>`) referencing Spring Boot: a dependency or the parent
+/// (`org.springframework.boot`), a starter, the BOM import or the plugin.
+fn references_spring_boot(pom: &str) -> bool {
+    ["org.springframework.boot", "spring-boot-starter", "spring-boot-dependencies", "spring-boot-maven-plugin"]
+        .iter()
+        .any(|m| pom.contains(m))
 }
 
 /// A Gradle build applying the plugin (`id("org.springframework.boot")`, `apply plugin: '…'`),
@@ -1542,6 +1557,17 @@ fn detect_godot(root: &Path, out: &mut Vec<RunConfig>) {
             (format!("godot:project:{r}"), format!("Godot Project ({r})"), Some(rel.clone()))
         };
         out.push(config(id, name, "godot", "godot", &["--path", "."]).debug("godot").in_dir(cwd));
+    }
+}
+
+/// A Flutter app: depends on the SDK and has the conventional entry point (packages have none).
+fn detect_flutter(root: &Path, out: &mut Vec<RunConfig>) {
+    if root.join("lib/main.dart").is_file()
+        && read(&root.join("pubspec.yaml")).is_some_and(|pubspec| pubspec.contains("sdk: flutter"))
+    {
+        out.push(
+            config("flutter:run", "flutter run", "flutter", "flutter", &["run", "-t", "lib/main.dart"]).debug("dart"),
+        );
     }
 }
 

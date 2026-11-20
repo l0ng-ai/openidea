@@ -5,12 +5,14 @@ use crate::Host;
 use ide_command::command;
 
 use super::build::load;
+use ide_build::BuildModel;
 use ide_build::compile;
 use ide_core::error::ErrorKind;
+use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
 use ide_lsp::jdtls::{JavaBuildStatus, JavaLaunchInfo};
 use ide_run::BuildPolicy;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Cancellable with `cancel_request(request)`.
 /// Builds according to `policy`, then resolves the runtime (or test)
@@ -45,6 +47,9 @@ pub(crate) async fn resolve_launch(
     let started = std::time::Instant::now();
     let project = host.project(window)?;
     let module = project.root.join(module);
+    if !project.lsp.java_served_by_jdtls(&module) {
+        return resolve_launch_without_jdtls(host, &project, module, test, policy, cancel).await;
+    }
     let settings = project.settings.effective();
     // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
     let build = policy != BuildPolicy::NoBuild;
@@ -161,35 +166,7 @@ pub(crate) async fn resolve_launch(
             }
         }
         let compile_ms = started.elapsed().as_millis() - lsp_ms;
-        // The module/project JDK, else the JDK jdtls compiles the module against, else one matching its Java version.
-        let project_jdk = ide_sdk::apply::module_jdk(&project.root, &module, &settings);
-        let from_jdtls = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
-        let java = project_jdk.map(|j| ide_sdk::java::java_executable(&j.home)).or(from_jdtls).or_else(|| {
-            // The build model's level includes what the module inherits from its parent POMs.
-            let release = model
-                .maven
-                .as_ref()
-                .and_then(|m| m.projects.iter().find(|p| project.root.join(&p.dir) == module))
-                .and_then(|p| p.java_version)
-                .or_else(|| ide_sdk::java::project_java_version(&module));
-            let jdks = ide_sdk::java::installed_jdks();
-            info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
-            ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
-        });
-        info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
-        let exec = PathBuf::from(info.java_exec.as_deref().unwrap_or("java"));
-        let shorten =
-            ide_run::java_cmdline::shortening_for(&exec, &info.class_paths, &info.module_paths, cfg!(windows));
-        info.shorten_command_line = Some(shorten.as_str().to_owned());
-        if info.error_count > 0 {
-            let own = ide_sdk::lombok::agent_in_args(settings.languages.java.jdtls_vm_args.split_whitespace());
-            let managed = ide_tools::managed_bundle(&data_dir, "lombok");
-            let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings);
-            let root = project.root.clone();
-            // Detection may read the project's sources.
-            let lombok = ide_sdk::lombok::lombok_agent(&root, own, managed, repo);
-            info.hints.extend(lombok.problem());
-        }
+        finish_launch(&mut info, &project.root, &module, &settings, &model, &data_dir);
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -204,6 +181,151 @@ pub(crate) async fn resolve_launch(
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// A launch of a module jdtls doesn't serve (another Java language server, or none): the
+/// build tool compiles it, and the classpath comes from that server, else from Maven.
+async fn resolve_launch_without_jdtls(
+    host: &Host,
+    project: &std::sync::Arc<crate::Project>,
+    module: PathBuf,
+    test: bool,
+    policy: BuildPolicy,
+    cancel: &CancellationToken,
+) -> IdeResult<JavaLaunchInfo> {
+    let started = std::time::Instant::now();
+    let settings = project.settings.effective();
+    let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
+    let (model, built) = {
+        let (root, cache, settings, module, cancel) =
+            (project.root.clone(), project.build_cache_dir(), settings.clone(), module.clone(), cancel.clone());
+        tokio::task::spawn_blocking(move || {
+            let model = load(&root, &cache, &settings);
+            let built = if policy == BuildPolicy::NoBuild {
+                None
+            } else {
+                Some(compile::build_for_launch(&root, &model, &module, test, kind, &cancel))
+            };
+            (model, built)
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+    };
+    let mut info =
+        JavaLaunchInfo { path_list_separator: if cfg!(windows) { ";" } else { ":" }.into(), ..Default::default() };
+    let mut class_paths = Vec::new();
+    match built {
+        None => {}
+        Some(Err(e)) if e.kind == ErrorKind::Cancelled => return Err(e),
+        Some(Err(e)) => {
+            return Err(IdeError::unavailable(format!(
+                "Cannot build the module without jdtls: {}. Running needs a Maven or Gradle build, or jdtls",
+                e.message
+            )));
+        }
+        Some(Ok(built)) => {
+            info.build = Some(match built.failure {
+                None => JavaBuildStatus::Succeeded,
+                Some(failure) if policy == BuildPolicy::MakeAndContinueOnErrors => {
+                    info.hints.push(failure);
+                    JavaBuildStatus::Failed
+                }
+                Some(failure) => return Err(IdeError::internal(failure)),
+            });
+            class_paths.extend(built.class_dirs.iter().map(|p| p.to_string_lossy().into_owned()));
+        }
+    }
+    let build_ms = started.elapsed().as_millis();
+    let from_server = project.lsp.java_server_classpath(&module, test, cancel).await?;
+    let data_dir = host.local_data_dir.clone();
+    let project = project.clone();
+    let cancel = cancel.clone();
+    tokio::task::spawn_blocking(move || {
+        match from_server {
+            Some(server) => {
+                info.project_root = server.classpath.project_root;
+                info.module_paths = server.classpath.module_paths;
+                info.java_home = server.jdk_home.map(Into::into);
+                append_unique_class_paths(&mut class_paths, server.classpath.class_paths);
+            }
+            None => {
+                let is_maven = model
+                    .maven
+                    .as_ref()
+                    .is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
+                if !is_maven {
+                    return Err(IdeError::unavailable(
+                        "Cannot resolve the classpath: the Java language server does not report it \
+                         (java-analyzer/projectClasspath), and the module is not a Maven project",
+                    ));
+                }
+                let local_repo = ide_sdk::apply::maven_local_repository(&project.root, &settings);
+                let classpath = compile::module_classpath(
+                    &project.root,
+                    &model,
+                    &module,
+                    test,
+                    local_repo,
+                    &project.build_cache_dir(),
+                    &cancel,
+                )?;
+                append_unique_class_paths(
+                    &mut class_paths,
+                    std::env::split_paths(&classpath).map(|p| p.to_string_lossy().into_owned()),
+                );
+            }
+        }
+        info.class_paths = class_paths;
+        apply_library_classpath(&mut info, &project.root, &settings.project_structure.libraries, test);
+        finish_launch(&mut info, &project.root, &module, &settings, &model, &data_dir);
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        tracing::info!(build_ms, total_ms = started.elapsed().as_millis(), "Java launch resolved without jdtls");
+        Ok(info)
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Picks the `java` launcher and how to shorten its command line, and explains likely
+/// causes of compile errors.
+fn finish_launch(
+    info: &mut JavaLaunchInfo,
+    root: &Path,
+    module: &Path,
+    settings: &Settings,
+    model: &BuildModel,
+    data_dir: &Path,
+) {
+    // The module/project JDK, else the JDK the Java language server builds the module with, else one
+    // matching its Java version.
+    let project_jdk = ide_sdk::apply::module_jdk(root, module, settings);
+    let from_server = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
+    let java = project_jdk.map(|j| ide_sdk::java::java_executable(&j.home)).or(from_server).or_else(|| {
+        // The build model's level includes what the module inherits from its parent POMs.
+        let release = model
+            .maven
+            .as_ref()
+            .and_then(|m| m.projects.iter().find(|p| root.join(&p.dir) == module))
+            .and_then(|p| p.java_version)
+            .or_else(|| ide_sdk::java::project_java_version(module));
+        let jdks = ide_sdk::java::installed_jdks();
+        info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
+        ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
+    });
+    info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
+    let exec = PathBuf::from(info.java_exec.as_deref().unwrap_or("java"));
+    let shorten = ide_run::java_cmdline::shortening_for(&exec, &info.class_paths, &info.module_paths, cfg!(windows));
+    info.shorten_command_line = Some(shorten.as_str().to_owned());
+    if info.error_count > 0 {
+        let own = ide_sdk::lombok::agent_in_args(settings.languages.java.jdtls_vm_args.split_whitespace());
+        let managed = ide_tools::managed_bundle(data_dir, "lombok");
+        let repo = ide_sdk::apply::maven_local_repository(root, settings);
+        // Detection may read the project's sources.
+        let lombok = ide_sdk::lombok::lombok_agent(root, own, managed, repo);
+        info.hints.extend(lombok.problem());
+    }
 }
 
 /// With Settings › Maven › Delegate IDE build/run actions to Maven, javac's verdict replaces
@@ -372,6 +494,21 @@ fn use_snapshot_on(
         }
     }
     copies
+}
+
+/// The debug adapter for the JVMs of `module`: `java-debug` inside jdtls, or `java-analyzer`
+/// (`java-analyzer dap`) when jdtls doesn't serve the module and java-analyzer does.
+#[command(trust = trusted)]
+pub fn java_debug_adapter(host: &Host, window: &str, module: PathBuf) -> IdeResult<String> {
+    let project = host.project(window)?;
+    let module = project.root.join(module);
+    let lsp = &project.lsp;
+    Ok(if !lsp.java_served_by_jdtls(&module) && lsp.java_analyzer_binary(&module).is_some() {
+        ide_dap::adapter::JAVA_ANALYZER
+    } else {
+        "java-debug"
+    }
+    .to_owned())
 }
 
 /// Port of java-debug's DAP server inside the jdtls serving `module` (started on demand).
@@ -671,4 +808,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(java: java_build_workspace, java_debug_server, java_resolve_launch);
+ide_command::domain!(java: java_build_workspace, java_debug_adapter, java_debug_server, java_resolve_launch);

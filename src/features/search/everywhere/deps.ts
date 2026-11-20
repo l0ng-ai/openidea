@@ -1,8 +1,8 @@
-import { allActions, type Action } from "@/platform/actions";
-import { evaluateWhen, type ContextKeys } from "@/platform/context";
+import { allActions, isActionEnabled } from "@/platform/actions";
+import type { ContextKeys } from "@/platform/context";
 import { call, commands, nextRequestId, type LanguageInfo } from "@/platform/ipc";
 import { inFileSet } from "@/platform/projectRoots";
-import { searchEndpoints, searchableSettings, useProjectViewRoots } from "@/workbench/contributions";
+import { searchCategories, searchEndpoints, searchableSettings, useProjectViewRoots } from "@/workbench/contributions";
 import { projectRoot } from "../common/open";
 import { cancelRequest, streamSearch } from "@/platform/textSearch";
 import type { SeDeps } from "./controller";
@@ -25,9 +25,9 @@ export function ipcDeps(ctx: ContextKeys): SeDeps {
     cancel: cancelRequest,
     nextRequestId,
     actions: () => allActions(),
-    isEnabled: (a: Action) => {
+    isEnabled: (a) => {
       try {
-        return evaluateWhen(a.when, ctx);
+        return isActionEnabled(a, ctx);
       } catch {
         return false;
       }
@@ -39,6 +39,7 @@ export function ipcDeps(ctx: ContextKeys): SeDeps {
     now: () => performance.now(),
     inFileSet: (set, path) => inFileSet(set, path),
     routes: () => searchEndpoints(projectRoot()),
+    categories: searchCategories,
   };
 }
 

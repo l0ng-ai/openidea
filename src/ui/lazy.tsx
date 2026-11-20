@@ -2,13 +2,17 @@ import { useEffect, useState, type ComponentType } from "react";
 
 const loaders: Array<() => Promise<unknown>> = [];
 
+export type LazyComponent<P extends object = Record<string, never>> = ComponentType<P> & {
+  preload(): Promise<ComponentType<P>>;
+};
+
 /**
  * A component whose code loads on first render (rendering nothing until then),
  * so contributions keep heavy views out of the start-up bundle. Deliberately
  * not `React.lazy`: a suspended boundary is revealed ~300 ms late (React's
  * fallback throttling), even when the chunk is already there.
  */
-export function lazyComponent<P extends object>(load: () => Promise<ComponentType<P>>): ComponentType<P> {
+export function lazyComponent<P extends object>(load: () => Promise<ComponentType<P>>): LazyComponent<P> {
   let loaded: ComponentType<P> | null = null;
   let pending: Promise<ComponentType<P>> | null = null;
   const get = () =>
@@ -36,6 +40,7 @@ export function lazyComponent<P extends object>(load: () => Promise<ComponentTyp
     }, [Component]);
     return Component ? <Component {...props} /> : null;
   }
+  LazyComponent.preload = get;
   return LazyComponent;
 }
 

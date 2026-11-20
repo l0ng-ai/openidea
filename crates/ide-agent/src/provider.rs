@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub(crate) const COPILOT_GITHUB_ACCOUNT_ENV: &str = "OPENIDEA_COPILOT_GITHUB_ACCOUNT";
+
 /// The protocol an agent speaks. Native ones run behind an in-process ACP endpoint
 /// (`native`), so tasks see every agent as ACP and read features from its capabilities.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +84,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("kiro", "Kiro", Driver::Acp, &["kiro-cli", "acp"], "Run `kiro-cli login` in a terminal."),
     ("vibe", "Mistral Vibe", Driver::Acp, &["vibe-acp"], "Run `vibe` in a terminal and sign in."),
     ("omp", "OMP", Driver::Acp, &["omp", "acp"], "Run `omp` in a terminal and sign in."),
+    ("hermes", "Hermes Agent", Driver::Acp, &["hermes", "acp"], "Run `hermes model` in a terminal."),
 ];
 
 fn builtins() -> Vec<ProviderSpec> {
@@ -137,15 +140,31 @@ impl ProviderSpec {
     /// Resolve once before connecting, so authentication guidance names that same install.
     pub(crate) fn resolve_for_launch(self, cwd: &Path) -> Self {
         let strip = prefer_stored_copilot_auth();
-        self.resolve_for_launch_with_copilot_env(cwd, strip)
+        self.resolve_for_launch_base(cwd, strip)
     }
 
-    pub(crate) fn resolve_for_launch_with_copilot_env(mut self, cwd: &Path, strip_ambient_tokens: bool) -> Self {
+    pub(crate) fn resolve_for_launch_with_copilot_env(
+        self,
+        cwd: &Path,
+        strip_ambient_tokens: bool,
+    ) -> Result<Self, String> {
+        let account = is_copilot_provider(&self.id).then(|| copilot_github_account(&self.env)).flatten();
+        let mut resolved = self.resolve_for_launch_base(cwd, strip_ambient_tokens || account.is_some());
+        if let Some(account) = account {
+            let token = github_token_for_account(&account)?;
+            resolved.env.retain(|(name, _)| !AMBIENT_COPILOT_AUTH_VARS.contains(&name.as_str()));
+            resolved.env.push(("COPILOT_GITHUB_TOKEN".into(), token));
+        }
+        Ok(resolved)
+    }
+
+    fn resolve_for_launch_base(mut self, cwd: &Path, strip_ambient_tokens: bool) -> Self {
         if self.driver != Driver::Acp {
             self.command = crate::native::newest_install(&self.command);
         }
         if is_copilot_provider(&self.id) {
             self.env = sanitized_copilot_env(&self.env, strip_ambient_tokens);
+            self.env.retain(|(name, _)| name != COPILOT_GITHUB_ACCOUNT_ENV);
         }
         let program = ide_jsonrpc::resolve_spawn_program(&self.command, &self.env);
         self.command =
@@ -161,6 +180,50 @@ static PREFER_STORED_COPILOT_AUTH: std::sync::atomic::AtomicBool = std::sync::at
 
 pub(crate) fn is_copilot_provider(id: &str) -> bool {
     id == "copilot" || id.starts_with("copilot-")
+}
+
+pub(crate) fn copilot_github_account(env: &[(String, String)]) -> Option<String> {
+    env.iter()
+        .rev()
+        .find(|(name, _)| name == COPILOT_GITHUB_ACCOUNT_ENV)
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn github_token_for_account(account: &str) -> Result<String, String> {
+    let path = ide_core::process::shell_env()
+        .find(|(name, _)| name == "PATH")
+        .map(|(_, value)| value)
+        .or_else(|| ide_core::process::host_var_os("PATH"));
+    let program = path
+        .as_deref()
+        .and_then(|path| ide_core::process::find_executable("gh", path))
+        .ok_or_else(|| "GitHub CLI (`gh`) is required to select a Copilot GitHub account".to_owned())?;
+    let mut command = std::process::Command::new(program);
+    command.args(["auth", "token", "--hostname", "github.com", "--user", account]).envs(ide_core::process::shell_env());
+    for name in AMBIENT_COPILOT_AUTH_VARS {
+        command.env_remove(name);
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("Couldn't read GitHub authentication for account {account}: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("GitHub CLI has no authenticated account named {account}")
+        } else {
+            format!("Couldn't use GitHub account {account}: {detail}")
+        });
+    }
+    let token = String::from_utf8(output.stdout)
+        .map_err(|_| format!("GitHub CLI returned a non-text token for account {account}"))?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(format!("GitHub CLI returned no token for account {account}"));
+    }
+    Ok(token.to_owned())
 }
 
 pub(crate) fn prefer_stored_copilot_auth() -> bool {
@@ -310,6 +373,7 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
         command_editable: reason.is_none(),
         command_read_only_reason: reason,
         installed: installed(&spec.command),
+        can_check_cli_update: spec.source == AgentSource::Builtin && crate::cli_update::package(&spec.id).is_some(),
         env: spec.env.iter().cloned().collect(),
         config: vec![],
         thought_levels: BTreeMap::new(),
@@ -338,6 +402,31 @@ pub(crate) fn set_builtin_env(
     id: &str,
     env: BTreeMap<String, String>,
 ) -> IdeResult<()> {
+    if id == "copilot" {
+        let file = custom_dir.join("copilot.toml");
+        if file.try_exists()?
+            && let mut agent = CustomAgent::read_with(&file, id, secrets).map_err(IdeError::invalid)?
+            && agent.registry.is_some()
+        {
+            let existing = agent.env.clone();
+            let mut existing_launch_env = existing.clone();
+            let mut next_launch_env = env.clone();
+            existing_launch_env.remove(COPILOT_GITHUB_ACCOUNT_ENV);
+            next_launch_env.remove(COPILOT_GITHUB_ACCOUNT_ENV);
+            if existing_launch_env != next_launch_env {
+                return Err(IdeError::invalid(format!("{id} is installed from the ACP Registry")));
+            }
+            match env.get(COPILOT_GITHUB_ACCOUNT_ENV).filter(|value| !value.trim().is_empty()) {
+                Some(account) => {
+                    agent.env.insert(COPILOT_GITHUB_ACCOUNT_ENV.into(), account.trim().into());
+                }
+                None => {
+                    agent.env.remove(COPILOT_GITHUB_ACCOUNT_ENV);
+                }
+            }
+            return agent.write(&file).map_err(Into::into);
+        }
+    }
     update_builtin(custom_dir, secrets, id, |agent, _| agent.env = env)
 }
 
@@ -503,7 +592,7 @@ fn validated_custom_id(id: &str) -> IdeResult<String> {
 }
 
 /// Turns an `acp.json` server name into a file-stem id (`"My Agent!"` → `"my-agent"`).
-fn slugify_id(name: &str) -> String {
+pub(crate) fn slugify_id(name: &str) -> String {
     let mut id = String::with_capacity(name.len());
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -715,6 +804,15 @@ fn is_executable(p: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hermes_is_built_in_over_acp() {
+        let spec = builtin_spec("hermes").unwrap();
+        assert_eq!(spec.driver, Driver::Acp);
+        let info = describe(&spec);
+        assert_eq!((info.name.as_str(), info.command.as_str()), ("Hermes Agent", "hermes acp"));
+        assert_eq!(info.login_hint.as_deref(), Some("Run `hermes model` in a terminal."));
+    }
 
     #[test]
     fn qoder_global_and_cn_editions_are_both_built_in() {
@@ -943,6 +1041,46 @@ mod tests {
         set_builtin_env(dir.path(), None, "claude", BTreeMap::new()).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
         set_builtin_env(dir.path(), None, "not-a-builtin", env).unwrap_err();
+    }
+
+    #[test]
+    fn registry_copilot_allows_only_the_github_account_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("copilot.toml");
+        CustomAgent {
+            name: Some("GitHub Copilot".into()),
+            driver: Driver::Acp,
+            command: "/tools/copilot".into(),
+            args: vec!["--acp".into()],
+            env: BTreeMap::from([("REGISTRY_SETTING".into(), "kept".into())]),
+            registry: Some(RegistryRef { id: "copilot".into(), version: "1.0.0".into() }),
+        }
+        .write(&file)
+        .unwrap();
+
+        set_builtin_env(
+            dir.path(),
+            None,
+            "copilot",
+            BTreeMap::from([
+                ("REGISTRY_SETTING".into(), "kept".into()),
+                (COPILOT_GITHUB_ACCOUNT_ENV.into(), "dengliu_microsoft".into()),
+            ]),
+        )
+        .unwrap();
+        let spec = load(Some(dir.path()), None).into_iter().find(|spec| spec.id == "copilot").unwrap();
+        assert_eq!(copilot_github_account(&spec.env).as_deref(), Some("dengliu_microsoft"));
+
+        set_builtin_env(dir.path(), None, "copilot", BTreeMap::from([("REGISTRY_SETTING".into(), "changed".into())]))
+            .unwrap_err();
+    }
+
+    #[test]
+    fn launch_metadata_never_passes_the_github_account_control_to_copilot() {
+        let mut spec = builtin_spec("copilot").unwrap();
+        spec.env.push((COPILOT_GITHUB_ACCOUNT_ENV.into(), "dengliu_microsoft".into()));
+        let resolved = spec.resolve_for_launch(Path::new("."));
+        assert!(resolved.env.iter().all(|(name, _)| name != COPILOT_GITHUB_ACCOUNT_ENV));
     }
 
     #[test]

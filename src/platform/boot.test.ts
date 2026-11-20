@@ -116,6 +116,18 @@ it("counts the startup timeout only while the window shows", () => {
   }
 });
 
+it("doesn't count the startup timeout while a question over the splash waits for the user", () => {
+  vi.advanceTimersByTime(50_000);
+  window.dispatchEvent(new Event("openidea:boot-question"));
+  vi.advanceTimersByTime(120_000);
+  expect(document.getElementById("boot-error")).toBeNull();
+  window.dispatchEvent(new Event("openidea:boot-answer"));
+  vi.advanceTimersByTime(9_000);
+  expect(document.getElementById("boot-error")).toBeNull();
+  vi.advanceTimersByTime(1_000);
+  expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 60 seconds.");
+});
+
 it("preserves the first failure", () => {
   window.dispatchEvent(new ErrorEvent("error", { error: new Error("startup failed") }));
   window.dispatchEvent(new ErrorEvent("error", { message: "later failure" }));

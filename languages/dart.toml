@@ -12,6 +12,7 @@ name = "dart"
 command = "dart"
 args = ["language-server", "--protocol=lsp"]
 root-markers = ["pubspec.yaml", "analysis_options.yaml"]
+initialization-options = { flutterOutline = true }
 install-hint = "Install the Dart SDK (https://dart.dev/get-dart) or Flutter"
 
 # `dart` here; a project that depends on the Flutter SDK is switched to

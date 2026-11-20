@@ -337,6 +337,20 @@ export function targetOf(id: string, database: string | null, current: string | 
 /** Key of the Database tree node of database `name` of data source `id`. */
 export const databaseKey = (id: string, name: string) => `${id}/@${name}`;
 
+/**
+ * `expanded` without the Database tree nodes that show what target `id` loaded (a data source
+ * id: the source and all its databases). Once that is forgotten, an expanded node would wait
+ * for children nothing loads until it is expanded again.
+ */
+export function collapseTarget(expanded: ReadonlySet<string>, id: string): Set<string> {
+  const { id: source, database } = splitTarget(id);
+  const under = (key: string, node: string) => key === node || key.startsWith(`${node}/`);
+  const shows = database
+    ? (key: string) => under(key, databaseKey(source, database)) || under(key, id)
+    : (key: string) => under(key, source) || key.startsWith(`${source}:`);
+  return new Set([...expanded].filter((key) => !shows(key)));
+}
+
 const SSL_MODES: Record<string, DbSslMode> = {
   disable: "disable",
   disabled: "disable",
@@ -469,4 +483,74 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
   }
   if (properties.length) source.properties = properties;
   return { source, password };
+}
+
+/** A row of the console's database › schema switcher. */
+export interface SchemaTreeRow {
+  value: string;
+  label: string;
+  verbatim?: boolean;
+  icon?: string;
+  disabled?: boolean;
+  /** Searching a database's name keeps its schemas visible. */
+  keywords?: string;
+  tree: { depth: number; expanded?: boolean };
+}
+
+const TREE_SEP = "\u0000";
+
+/** The switcher value of database `database`, or of its schema `schema`. */
+export function schemaTreeValue(database: string, schema?: string): string {
+  return schema === undefined ? `d${TREE_SEP}${database}` : `s${TREE_SEP}${database}${TREE_SEP}${schema}`;
+}
+
+/** The database (and schema, for a schema row) a switcher value names. */
+export function parseSchemaTreeValue(value: string): { database: string; schema: string | null } {
+  const [kind, database = "", schema = ""] = value.split(TREE_SEP);
+  return { database, schema: kind === "s" ? schema : null };
+}
+
+/**
+ * Rows of the switcher (IDEA's `database.schema` popup): every database, each expanded one followed
+ * by its schemas, a "Loading…" row while `schemasOf` has none for it yet, or the error reading them.
+ */
+export function schemaTreeRows(
+  databases: readonly string[],
+  expanded: ReadonlySet<string>,
+  schemasOf: (database: string) => readonly string[] | { error: string } | undefined,
+): SchemaTreeRow[] {
+  const out: SchemaTreeRow[] = [];
+  for (const database of databases) {
+    const open = expanded.has(database);
+    out.push({
+      value: schemaTreeValue(database),
+      label: database,
+      verbatim: true,
+      icon: "database",
+      tree: { depth: 0, expanded: open },
+    });
+    if (!open) continue;
+    const schemas = schemasOf(database);
+    if (!schemas || "error" in schemas) {
+      out.push({
+        value: `l${TREE_SEP}${database}`,
+        label: schemas ? schemas.error : "Loading…",
+        verbatim: !!schemas,
+        disabled: true,
+        keywords: database,
+        tree: { depth: 1 },
+      });
+      continue;
+    }
+    for (const schema of schemas)
+      out.push({
+        value: schemaTreeValue(database, schema),
+        label: schema,
+        verbatim: true,
+        icon: "db-schema",
+        keywords: database,
+        tree: { depth: 1 },
+      });
+  }
+  return out;
 }

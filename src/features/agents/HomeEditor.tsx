@@ -13,6 +13,7 @@ import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { HermesProfilePicker } from "./HermesProfilePicker";
 import { McpPicker } from "./McpPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
@@ -22,6 +23,7 @@ import {
   HOME,
   NO_COMMANDS,
   draftConfig,
+  draftModelSettings,
   refreshProviders,
   refreshModels,
   setDraftMcpOverrides,
@@ -47,6 +49,10 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   );
   const members = project?.workspace?.projects ?? [];
   const root = members.includes(selected ?? "") ? selected! : (members[0] ?? project?.root ?? "");
+  // Send to Agent resolves references against the project picked here.
+  useEffect(() => {
+    if (members.length && draft.projectRoot !== root) updateDraft({ projectRoot: root });
+  }, [members.length, root, draft.projectRoot]);
   // A window without a project yet has no fact to show: the where row stays empty until it does.
   const projectLabel = members.length ? basename(root) : project?.name;
   const [repoState, setRepoState] = useState<{
@@ -94,7 +100,8 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
   const requestTarget = useAgents((s) => s.modelRequestTargets.get(provider?.id ?? ""));
   const { defaults, fitWindowWidth } = useAgentSettings();
-  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const providerDefaults = (provider && defaults[provider.id]) || {};
+  const config = draftConfig(provider, draft, providerDefaults);
   const model = config.find((o) => o.category === "model");
   const selectedModel = model?.current ?? null;
   const selectedModelRef = useRef(selectedModel);
@@ -217,13 +224,21 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                   }
                 />
               </span>
+              <HermesProfilePicker
+                provider={provider?.id}
+                onChange={(id) => updateDraft({ provider: id, config: {} })}
+              />
               <ConfigPickers
                 key={provider?.id}
                 config={config}
-                onChange={setDraftOption}
+                onChange={(option, value, forModel) => {
+                  if (forModel && model) setDraftOption(model.id, forModel);
+                  setDraftOption(option, value);
+                }}
                 modelRefresh={
                   provider?.installed
                     ? {
+                        draft: true,
                         refreshing: requestingModels || (catalog?.refreshing ?? false),
                         loadingSettings: unknownModelSettings && (requestingModels || (catalog?.refreshing ?? false)),
                         retryAtMs:
@@ -231,7 +246,17 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                             ? (catalog?.retryAtMs ?? null)
                             : null,
                         error: !requestingModels && currentModelRequest ? (catalog?.error ?? null) : null,
-                        onRefresh: () => void executeAction("agents.refreshModels"),
+                        onRefresh: () => void executeAction("agents.refreshModels", null),
+                        preview: {
+                          settingsFor: (id) =>
+                            draftModelSettings(
+                              (catalog ?? provider).thoughtLevels?.[id],
+                              draft.thoughtLevels?.[id],
+                              providerDefaults,
+                            ),
+                          load: (id) => void refreshModels(provider.id, false, id),
+                          errorFor: (id) => (requestTarget === id ? catalog?.error : null),
+                        },
                       }
                     : undefined
                 }

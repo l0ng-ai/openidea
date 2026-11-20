@@ -25,7 +25,8 @@ describe("RefLabels long branch names (#2447)", () => {
     const refBlocks = [...css.matchAll(/\.ref\s*\{([^}]*)\}/g)].map((m) => m[1]);
     expect(refBlocks.length).toBeGreaterThan(0);
     for (const block of refBlocks) expect(block).not.toMatch(/max-width:\s*\d+px/);
-    expect(refBlocks[0]).toMatch(/text-overflow:\s*ellipsis/);
+    const textBlock = css.match(/\.refText\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(textBlock).toMatch(/text-overflow:\s*ellipsis/);
     const refsBlock = css.match(/\.refs\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(refsBlock).toMatch(/overflow:\s*hidden/);
   });

@@ -1,4 +1,4 @@
-import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -8,6 +8,7 @@ import clsx from "clsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Composer } from "../Composer";
 import { ConfigPickers } from "../ConfigPickers";
+import { HermesProfilePicker } from "../HermesProfilePicker";
 import { McpPicker } from "../McpPicker";
 import styles from "../Session.module.css";
 import { SessionAssets } from "../SessionAssets";
@@ -18,8 +19,9 @@ import { useEffortFocus } from "../effortFocus";
 import { isBusy } from "../model";
 import { asksInCard, type PermissionEntry } from "../permission";
 import {
-  cancelTask,
+  stopTask,
   editQueued,
+  refreshTaskModels,
   removeQueued,
   sendMessage,
   sendQueuedNow,
@@ -155,11 +157,50 @@ export function SessionComposer({
   const { sendWith, whileRunning } = useAgentSettings();
   const project = useProject((s) => s.project);
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
+  const provider = useAgents((s) => s.providers.find((p) => p.id === task.provider));
+  const catalog = useAgents((s) => s.modelCatalogs.get(task.provider));
+  const requestingModels = useAgents((s) => s.modelRequests.has(task.provider));
+  const requestTarget = useAgents((s) => s.modelRequestTargets.get(task.provider));
+  const model = task.config.find((o) => o.category === "model");
+  const catalogModel = (catalog?.config ?? provider?.config)?.find((o) => o.category === "model");
+  const canRefreshModels =
+    task.status !== "archived" &&
+    (!!model || !!task.model || !!catalogModel) &&
+    !!provider?.installed &&
+    project?.trusted !== false;
+  const pickerConfig = useMemo(() => {
+    if (!canRefreshModels) return task.config;
+    if (!model) {
+      const recovered: AgentConfigOption =
+        catalogModel === undefined
+          ? {
+              id: "model",
+              name: "Model",
+              description: null,
+              category: "model",
+              current: task.model,
+              values: [],
+              via: "option",
+            }
+          : { ...catalogModel, current: task.model ?? catalogModel.current };
+      return [...task.config, recovered];
+    }
+    const candidateModels = catalogModel?.values;
+    if (!candidateModels?.length) return task.config;
+    const sessionModels = new Set(model.values.map((v) => v.value));
+    const extra = candidateModels.filter((v) => !sessionModels.has(v.value));
+    if (!extra.length) return task.config;
+    const pickerModel = { ...model, values: [...model.values, ...extra] };
+    return task.config.map((o) => (o === model ? pickerModel : o));
+  }, [task.config, task.model, model, catalogModel, canRefreshModels]);
   const [sending, setSending] = useState(false);
+  const configChange = useRef<{ loadingModel: boolean } | null>(null);
+  const [configuring, setConfiguring] = useState<typeof configChange.current>(null);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
   const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
+  const shellRunning = useAgents((s) => s.shellRunning.has(task.id));
   // ↑ recalls this conversation's messages, newest first.
   const history = useMemo(
     () => (entries ?? []).flatMap((e) => (e.type === "user" && e.text ? [e.text] : [])).reverse(),
@@ -173,7 +214,7 @@ export function SessionComposer({
     task.status === "running" &&
     (composer.images.length === 0 || !!task.capabilities.images);
   const send = (now: boolean) => {
-    if (!canSend(composer) || sending || task.status === "archived") return;
+    if (!canSend(composer) || sending || configChange.current || task.status === "archived") return;
     setSending(true);
     sendMessage(task.id, now && (whileRunning !== "steer" || steers))
       .catch((e: unknown) =>
@@ -185,14 +226,42 @@ export function SessionComposer({
       )
       .finally(() => setSending(false));
   };
-  const setOption = (id: string, value: string) =>
-    void setTaskConfig(task.id, id, value).catch((e: unknown) =>
-      notifications().notify({
-        level: "error",
-        title: "Couldn't change the setting",
-        body: String(e),
-      }),
-    );
+  const setOption = (id: string, value: string, forModel?: string) => {
+    const pickerModel = pickerConfig.find((o) => o.category === "model");
+    const changingModel = id === pickerModel?.id;
+    const loadingModel = !!forModel || (changingModel && !model?.values.some((v) => v.value === value));
+    const pendingModel = model?.current != null && model.current !== task.model;
+    const change = loadingModel || (changingModel && configChange.current) || pendingModel ? { loadingModel } : null;
+    if (change) {
+      configChange.current = change;
+      setConfiguring(change);
+    }
+    const apply = async () => {
+      if (forModel && pickerModel) {
+        await setTaskConfig(task.id, pickerModel.id, forModel);
+        // A later model choice supersedes both halves of this edit.
+        const latest = useAgents.getState().tasks.get(task.id);
+        const selected = latest?.config.find((o) => o.category === "model")?.current ?? latest?.model;
+        if (configChange.current !== change) return;
+        if (selected !== forModel) throw new Error(tx("The model changed before its setting could be applied."));
+      }
+      await setTaskConfig(task.id, id, value);
+    };
+    void apply()
+      .catch((e: unknown) =>
+        notifications().notify({
+          level: "error",
+          title: "Couldn't change the setting",
+          body: String(e),
+        }),
+      )
+      .finally(() => {
+        if (change && configChange.current === change) {
+          configChange.current = null;
+          setConfiguring(null);
+        }
+      });
+  };
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
   const shown = useEditorShown();
   const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
@@ -244,7 +313,28 @@ export function SessionComposer({
         ]}
         toolbar={
           <>
-            <ConfigPickers config={task.config} onChange={setOption} />
+            <HermesProfilePicker provider={task.provider} />
+            <ConfigPickers
+              config={pickerConfig}
+              onChange={setOption}
+              modelRefresh={
+                canRefreshModels
+                  ? {
+                      refreshing: requestingModels || (catalog?.refreshing ?? false),
+                      loadingSettings: configuring?.loadingModel,
+                      retryAtMs: catalog?.retryAtMs ?? null,
+                      error: requestingModels ? null : (catalog?.error ?? null),
+                      onOpen: () => void refreshTaskModels(task.id, false),
+                      onRefresh: () => void executeAction("agents.refreshModels", task.id),
+                      preview: {
+                        settingsFor: (id) => (catalog ?? provider)?.thoughtLevels?.[id],
+                        load: (id) => void refreshTaskModels(task.id, false, id),
+                        errorFor: (id) => (requestTarget === id ? catalog?.error : null),
+                      },
+                    }
+                  : undefined
+              }
+            />
             <McpPicker
               provider={task.provider}
               overrides={task.mcpOverrides}
@@ -266,12 +356,12 @@ export function SessionComposer({
         }
         actions={
           <>
-            {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
+            {(busy || shellRunning) && <IconButton icon="stop" title="Stop" onClick={() => void stopTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}
               variant={busy ? "secondary" : "primary"}
-              disabled={!canSend(composer) || sending || task.status === "archived"}
+              disabled={!canSend(composer) || sending || configuring !== null || task.status === "archived"}
               onClick={() => send(false)}
             />
           </>

@@ -36,6 +36,20 @@ describe("Go to Test / Test Subject", () => {
     expect(d.open).toHaveBeenCalledWith("/p/src/test/java/a/FooTest.java");
   });
 
+  it("uses the top-level class at the caret when a file declares several", async () => {
+    const files = [
+      "/p/src/main/java/a/Widget.java",
+      "/p/src/test/java/a/WidgetTest.java",
+      "/p/src/test/java/a/HelperTest.java",
+    ];
+    const d = { ...deps(files), classAtCaret: async () => "Helper" };
+    await gotoTestOrSubject("/p/src/main/java/a/Widget.java", "", d);
+    expect(d.open).toHaveBeenCalledWith("/p/src/test/java/a/HelperTest.java");
+    const other = { ...deps(files), classAtCaret: async () => null };
+    await gotoTestOrSubject("/p/src/main/java/a/Widget.java", "", other);
+    expect(other.open).toHaveBeenCalledWith("/p/src/test/java/a/WidgetTest.java");
+  });
+
   it("goes back from a test to its subject", async () => {
     const d = deps(["/p/src/main/java/a/Foo.java", "/p/src/test/java/a/FooTest.java"]);
     await gotoTestOrSubject("/p/src/test/java/a/FooTest.java", "", d);

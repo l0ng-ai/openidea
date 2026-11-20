@@ -12,3 +12,55 @@
   align-items: center;
   gap: var(--space-2);
 }
+/* Framed like the Folders list above it; rows as in the status bar's Background Projects popup. */
+.projects {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 480px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  list-style: none;
+}
+.project {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+}
+.project + .project {
+  border-top: 1px solid var(--border);
+}
+.projectText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+.projectName,
+.projectPath,
+.projectState {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projectName {
+  color: var(--fg-strong);
+}
+.projectPath,
+.projectState {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.unload {
+  flex: none;
+}
+.off {
+  opacity: 0.5;
+}

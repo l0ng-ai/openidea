@@ -119,6 +119,29 @@ fn php_cs_fixer_edits(
         .collect())
 }
 
+/// Some language servers (Vue's, for one) answer Reformat Code with one edit replacing the
+/// whole file; applied as is, it moves the caret and the view to the top of the file. The same
+/// result as one edit per changed region keeps them where they were.
+fn minimal_edits(text: &str, edits: Vec<TextEdit>) -> Vec<TextEdit> {
+    if !edits.iter().any(|e| e.range.end.line > e.range.start.line) {
+        return edits;
+    }
+    let original = ide_text::Document::new(text);
+    let mut formatted = original.clone();
+    if formatted.apply_edits(&edits).is_err() {
+        return edits;
+    }
+    original
+        .diff(&formatted.text())
+        .changes
+        .into_iter()
+        .map(|c| TextEdit {
+            range: Range::new(original.offset_to_pos(c.from), original.offset_to_pos(c.to)),
+            new_text: c.insert,
+        })
+        .collect()
+}
+
 pub async fn format(
     host: &Host,
     window: &str,
@@ -292,7 +315,11 @@ async fn provider_edits(
         if options.on_save && !settings.editor.format_on_save {
             return Ok(None);
         }
-        return project.lsp.format(doc, range, options).await.map(Some);
+        let edits = project.lsp.format(doc, range, options).await?;
+        let text = snap.text;
+        return tokio::task::spawn_blocking(move || Some(minimal_edits(&text, edits)))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()));
     };
     let tool_settings = settings.languages.formatter(selected);
     if options.on_save && !tool_settings.run_on_save {
@@ -522,6 +549,25 @@ mod tests {
     }
 
     const ALIGN: PhpAlignment = PhpAlignment { key_value_pairs: true, assignments: true };
+
+    #[test]
+    fn a_whole_file_edit_becomes_one_edit_per_changed_region() {
+        let text = "a\n  b\nc\nd\n  e\n";
+        let formatted = "a\nb\nc\nd\ne\n";
+        let whole = vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(5, 0)), new_text: formatted.into() }];
+        let edits = minimal_edits(text, whole);
+        assert_eq!(
+            edits,
+            [
+                TextEdit { range: Range::new(Pos::new(1, 0), Pos::new(1, 2)), new_text: String::new() },
+                TextEdit { range: Range::new(Pos::new(4, 0), Pos::new(4, 2)), new_text: String::new() },
+            ]
+        );
+        assert_eq!(after(text, &edits), formatted);
+        // Single-line edits are already minimal and pass through.
+        let small = vec![TextEdit { range: Range::new(Pos::new(1, 0), Pos::new(1, 2)), new_text: String::new() }];
+        assert_eq!(minimal_edits(text, small.clone()), small);
+    }
 
     #[test]
     fn php_alignment_is_off_unless_the_php_code_style_turns_it_on() {

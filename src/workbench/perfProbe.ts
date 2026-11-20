@@ -10,6 +10,7 @@ import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
+import { subscribeDiagnostics } from "@/editor/lsp/diagnostics";
 import type { Commit, CompletionItem, CompletionKind, LogQuery } from "@/bindings";
 import { openProject } from "@/platform/project";
 import { setInvokeRoute } from "@/platform/tauriCore";
@@ -19,6 +20,10 @@ export interface PerfProbe {
   /** Seeds file contents for the in-memory document backend (plain-browser mode). */
   seed(path: string, text: string): void;
   openFile(path: string): Promise<void>;
+  /** Opens a document while observing fresh backend publications, excluding cached/local diagnostics. */
+  openFileForDiagnostics(path: string, source: string): Promise<number>;
+  /** Whether the current opening has received its producer's publication and is still active. */
+  diagnosticsPublished(generation: number): boolean;
   /** Opens project `path` in this window (as the welcome screen does), without the window chooser. */
   openProject(path: string): Promise<void>;
   runAction(id: string, arg?: unknown): Promise<boolean>;
@@ -28,8 +33,8 @@ export interface PerfProbe {
   setCursor(offset: number): void;
   /** True while the active editor's background syntax parser still has work. */
   parsing(): boolean;
-  /** The active editor's text. */
-  editorText(): string | null;
+  /** The active editor's text, optionally restricted to a UTF-16 offset range. */
+  editorText(from?: number, to?: number): string | null;
   /** Inserts `text` after the first `after` in the active editor, as an edit of the user's; the offset after it. */
   insertAfter(after: string, text: string): number;
   /** Replaces the active editor's whole text, as an edit of the user's. */
@@ -43,7 +48,16 @@ export interface PerfProbe {
   /** 0-based line of the active editor shown at viewport `y` (e.g. a gutter marker's), or -1. */
   lineAtY(y: number): number;
   /** Document length and caret (offset, 0-based line, the word around it) of the active editor. */
-  editorState(): { path: string; length: number; lines: number; head: number; line: number; word: string } | null;
+  editorState(): {
+    doc: number;
+    path: string;
+    length: number;
+    lines: number;
+    head: number;
+    line: number;
+    col: number;
+    word: string;
+  } | null;
   /**
    * Answers code completion with `items` generated items (a language server's
    * list); other language server requests report no server. `0` removes it.
@@ -152,6 +166,9 @@ function requireView() {
 }
 
 export function installPerfProbe(): () => void {
+  let diagnosticGeneration = 0;
+  let diagnosticOpening: { generation: number; path: string; doc: number | null; published: boolean } | null = null;
+  let stopDiagnostics: (() => void) | null = null;
   const probe: PerfProbe = {
     seed(path, text) {
       const backend = docBackend() as Partial<MemoryBackend>;
@@ -159,6 +176,40 @@ export function installPerfProbe(): () => void {
       backend.files.set(path, text);
     },
     openFile: (path) => editorService().openFile(path),
+    async openFileForDiagnostics(path, source) {
+      stopDiagnostics?.();
+      const opening = { generation: ++diagnosticGeneration, path, doc: null as number | null, published: false };
+      diagnosticOpening = opening;
+      stopDiagnostics = subscribeDiagnostics(path, (publication) => {
+        if (diagnosticOpening === opening && publication?.source === source) opening.published = true;
+      });
+      try {
+        await editorService().openFile(path);
+        const editor = activeEditor();
+        if (diagnosticOpening !== opening || editor?.ctx.path !== path)
+          throw new Error("diagnostics opening was superseded");
+        opening.doc = editor.ctx.doc;
+        return opening.generation;
+      } catch (error) {
+        if (diagnosticOpening === opening) {
+          stopDiagnostics?.();
+          stopDiagnostics = null;
+          diagnosticOpening = null;
+        }
+        throw error;
+      }
+    },
+    diagnosticsPublished(generation) {
+      const opening = diagnosticOpening;
+      const editor = activeEditor();
+      return (
+        !!opening &&
+        opening.generation === generation &&
+        opening.published &&
+        editor?.ctx.path === opening.path &&
+        editor.ctx.doc === opening.doc
+      );
+    },
     openProject: async (path) => void (await openProject(path)),
     runAction: (id, arg) => executeAction(id, arg),
     bindings: (id) => bindingsFor(id),
@@ -202,7 +253,7 @@ export function installPerfProbe(): () => void {
           : null,
       );
     },
-    editorText: () => activeEditor()?.view.state.doc.toString() ?? null,
+    editorText: (from = 0, to) => activeEditor()?.view.state.doc.sliceString(from, to) ?? null,
     insertAfter(after, text) {
       const view = requireView();
       const at = view.state.doc.toString().indexOf(after);
@@ -240,15 +291,20 @@ export function installPerfProbe(): () => void {
       const word = e.view.state.wordAt(head);
       return {
         path: e.ctx.path,
+        doc: e.ctx.doc,
         length: doc.length,
         lines: doc.lines,
         head,
         line: doc.lineAt(head).number - 1,
+        col: head - doc.lineAt(head).from,
         word: word ? doc.sliceString(word.from, word.to) : "",
       };
     },
   };
   const w = window as unknown as { __openideaPerf?: PerfProbe };
   w.__openideaPerf = probe;
-  return () => void delete w.__openideaPerf;
+  return () => {
+    stopDiagnostics?.();
+    delete w.__openideaPerf;
+  };
 }

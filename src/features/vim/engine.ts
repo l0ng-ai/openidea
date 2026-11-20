@@ -6,14 +6,15 @@
 import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, runScopeHandlers } from "@codemirror/view";
 import { CodeMirror, Vim, getCM, vim } from "@replit/codemirror-vim";
-import { externalHistory, transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
+import { adjacentEditor, externalHistory, transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
 import { setContext } from "@/platform/context";
 import { strokeOf } from "@/platform/keymap";
 import { executeAction, getAction } from "@/platform/actions";
 import { showStatusInfo } from "@/workbench/contributions";
-import { movedToIde, VIM_EDITOR_ATTR } from "./conflicts";
+import { installClipboardHooks } from "./clipboard";
+import { modeAction, modeMovedToIde, movedToIde, VIM_EDITOR_ATTR, VIM_MODE_ATTR, vimModeOf } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
-import { resolveActionId, type RcCommand } from "./rc";
+import { resolveActionId, type RcCommand, type SetOp } from "./rc";
 import { useVimSettings } from "./settings";
 import { mapFunctionTextObjects } from "./textObjects";
 
@@ -146,12 +147,33 @@ const imeHandlers = EditorView.domEventHandlers({
   },
 });
 
-/** A keydown CodeMirror didn't drop reaches Vim the usual way (observers run even after Vim's). */
+/** The last keydown and whether it arrived outside Insert mode (see `vimKeyEcho`). */
+const lastKeydown = new WeakMap<EditorView, { event: KeyboardEvent; at: number; normal: boolean }>();
+const KEY_ECHO_WINDOW_MS = 100;
+
+/** A keydown CodeMirror didn't drop reaches Vim the usual way (observers run before Vim's handler). */
 const imeKeydown = EditorView.domEventObservers({
-  keydown(_e, view) {
+  keydown(e, view) {
     imeEnded.delete(view);
+    const vimState = getCM(view)?.state.vim;
+    lastKeydown.set(view, { event: e, at: Date.now(), normal: !!vimState && !vimState.insertMode });
   },
 });
+
+/**
+ * Text input echoing a key Vim already took outside Insert mode. Some macOS input methods
+ * (Doubao in its English mode) still insert a key's character after its keydown was handled
+ * and prevented, so `j` both moved and typed `j`, and `i` entered Insert mode and typed `i`.
+ * Any later keydown replaces the record, so a key typed in the new Insert mode stays text.
+ */
+function vimKeyEcho(view: EditorView, text: string): boolean {
+  const last = lastKeydown.get(view);
+  if (!last || view.composing) return false;
+  lastKeydown.delete(view);
+  return (
+    last.normal && last.event.defaultPrevented && last.event.key === text && Date.now() - last.at <= KEY_ECHO_WINDOW_MS
+  );
+}
 
 /**
  * The key typed right after a Normal-mode composition. On WebKit (macOS, and WebKitGTK on
@@ -186,7 +208,7 @@ function imeNextKey(view: EditorView, text: string): boolean {
 
 /** Let CodeMirror apply the composing text; it is removed when the IME ends. */
 const imeInput = EditorView.inputHandler.of((view, _from, _to, text) => {
-  if (imeNextKey(view, text)) return true;
+  if (imeNextKey(view, text) || vimKeyEcho(view, text)) return true;
   const composition = imeCompositions.get(view);
   if (!composition) return false;
   const cm = getCM(view);
@@ -259,7 +281,20 @@ const escapeClosesPopupsFirst = EditorView.domEventHandlers({
 const ideHandledKeys = EditorView.domEventHandlers({
   keydown(e, view) {
     const stroke = strokeOf(e);
-    if (!stroke || !movedToIde(stroke, useVimSettings.getState().handlers)) return false;
+    if (!stroke) return false;
+    const settings = useVimSettings.getState();
+    const mode = vimModeOf(e.target);
+    const action = modeMovedToIde(stroke, settings.handlers, mode) ? modeAction(stroke, mode) : null;
+    if (!movedToIde(stroke, settings.handlers) && !action) return false;
+    if (action) {
+      // The mode gives this stroke an IDE meaning: paste while inserting, copy a Visual selection.
+      // Before the editor keymap: its default Ctrl-v scrolls the page, not pastes.
+      e.preventDefault();
+      void executeAction(action);
+      const cm = getCM(view);
+      if (cm?.state.vim?.visualMode) Vim.exitVisualMode(cm as never);
+      return true;
+    }
     if (runScopeHandlers(view, e, "editor")) return true;
     // Returning true would cancel the browser's cut or paste: skip Vim's handler for this event only.
     const plugin = getCM(view)?.state.vimPlugin as { handleKey?: unknown } | undefined;
@@ -271,10 +306,36 @@ const ideHandledKeys = EditorView.domEventHandlers({
   },
 });
 
+const LINE_MOTIONS: Record<string, 1 | -1> = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 };
+
+/** Normal-mode `j`/`k` on the last/first line continue into the host's neighbouring editor (notebook cells). */
+const lineMotionLeavesEditor = EditorView.domEventHandlers({
+  keydown(e, view) {
+    const direction = LINE_MOTIONS[e.key];
+    const leave = view.state.facet(adjacentEditor);
+    if (!direction || !leave || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+    const vimState = getCM(view)?.state.vim;
+    if (!vimState || vimState.insertMode || vimState.visualMode) return false;
+    // A count, operator or register applies to this editor only (`3j`, `dj`).
+    const input = vimState.inputState;
+    if (input.operator || input.keyBuffer.length || input.prefixRepeat.length || input.motionRepeat.length)
+      return false;
+    if (input.registerName) return false;
+    const { doc, selection } = view.state;
+    const line = doc.lineAt(selection.main.head);
+    if (direction > 0 ? line.number < doc.lines : line.number > 1) return false;
+    if (!leave(direction, selection.main.head - line.from)) return false;
+    e.preventDefault();
+    return true;
+  },
+});
+
 const modeTracker = (ctx?: EditorDocContext) =>
   ViewPlugin.define((view) => {
     const cm = getCM(view);
     let state: VimModeState = { mode: cm?.state.vim?.insertMode ? "insert" : "normal", sub: null };
+    // Claims read this attribute synchronously; it must be current even while another editor has focus.
+    view.dom.setAttribute(VIM_MODE_ATTR, state.mode);
     const publish = () => {
       useVimMode.setState(state);
       setContext("vim.mode", state.mode);
@@ -284,6 +345,7 @@ const modeTracker = (ctx?: EditorDocContext) =>
     const focused = () => view.root.activeElement === view.contentDOM;
     const onModeChange = (e: { mode: string; subMode?: string }) => {
       state = { mode: e.mode, sub: e.subMode === "linewise" || e.subMode === "blockwise" ? e.subMode : null };
+      view.dom.setAttribute(VIM_MODE_ATTR, state.mode);
       queueMicrotask(() => view.dispatch({ effects: setVimInsert.of(e.mode === "insert" || e.mode === "replace") }));
       if (focused()) publish();
     };
@@ -320,18 +382,27 @@ const vimTheme = EditorView.theme({
     padding: "2px 10px",
     minHeight: "1.6em",
     alignItems: "center",
-    fontFamily: "var(--font-mono)",
-    fontSize: "var(--fs-code)",
+    // The command line is text like the code above it: same configured font and zoom.
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    fontVariantLigatures: "none",
     background: "var(--bg-elev)",
     color: "var(--fg)",
     borderTop: "1px solid var(--border)",
   },
+  // The package writes `font-family: monospace` inline on the span that holds the prefix
+  // and the input; only an important rule beats an inline declaration, and `inherit` then
+  // picks up the panel's font.
+  ".cm-vim-panel span": { fontFamily: "inherit !important" },
+  // Ligatures follow the editor's toggle, as the scroller's pair does.
+  "&.cm-openidea-ligatures .cm-vim-panel": { fontVariantLigatures: "normal" },
   ".cm-vim-panel input": { color: "var(--fg)", fontFamily: "inherit", fontSize: "inherit" },
 });
 
 /** Vim for one editor. Highest precedence: Vim sees keys before the editor's keymaps. */
 export function vimExtension(ctx?: EditorDocContext): Extension {
   defineExCommands();
+  installClipboardHooks();
   return [
     Prec.highest([
       vimInsert,
@@ -341,6 +412,7 @@ export function vimExtension(ctx?: EditorDocContext): Extension {
       imeTracker,
       imeTransactions,
       escapeClosesPopupsFirst,
+      lineMotionLeavesEditor,
       ideHandledKeys,
       vim(),
       modeTracker(ctx),
@@ -446,6 +518,28 @@ function firstKey(lhs: string): string {
   return /^<[^<>]+>|^./.exec(lhs)?.[0] ?? lhs;
 }
 
+/**
+ * The value `set name{op}value` gives an option, as in Vim: numbers add, subtract or multiply;
+ * comma lists append an item once (`+=`), remove it (`-=`) or put it first (`^=`).
+ */
+function adjustedOption(name: string, op: SetOp, value: string): string | number {
+  const current = Vim.getOption(name);
+  // A number option (rc values arrive as text, so `set x=100` stores "100").
+  if (typeof current === "number" || (typeof current === "string" && /^-?\d+$/.test(current))) {
+    if (!/^-?\d+$/.test(value)) throw new Error(`number required: ${value}`);
+    const [a, b] = [Number(current), Number(value)];
+    return op === "+=" ? a + b : op === "-=" ? a - b : a * b;
+  }
+  const items = (typeof current === "string" ? current : "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  const rest = items.filter((v) => v !== value);
+  if (op === "-=") return rest.join(",");
+  if (op === "^=") return (items.includes(value) ? items : [value, ...items]).join(",");
+  return (items.includes(value) ? items : [...items, value]).join(",");
+}
+
 /** Applies rc commands (replacing earlier rc mappings). Returns problems to report. */
 export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   defineExCommands();
@@ -457,7 +551,7 @@ export function applyRcCommands(commands: readonly RcCommand[]): string[] {
   for (const c of commands) {
     try {
       if (c.kind === "set") {
-        const err = Vim.setOption(c.name, c.value);
+        const err = Vim.setOption(c.name, c.op ? adjustedOption(c.name, c.op, String(c.value)) : c.value);
         if (err) problems.push(`set ${c.name}: ${err.message}`);
       } else if (c.kind === "map") {
         if (c.noremap) Vim.noremap(c.lhs, c.rhs, c.mode as string);

@@ -68,6 +68,31 @@ pub async fn find_files_named(host: &Host, window: &str, name: String) -> IdeRes
     blocking(move || Ok(project.index.files_named(&name).into_iter().map(Into::into).collect())).await
 }
 
+/// The files of a custom scope (`file:src//*.ts`), for the Project view's scope panes.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeFiles {
+    pub paths: Vec<IpcPath>,
+    /// More files than `limit` matched; `paths` holds the first ones.
+    pub truncated: bool,
+}
+
+#[command(trust = always)]
+pub async fn scope_files(host: &Host, window: &str, pattern: String, limit: u32) -> IdeResult<ScopeFiles> {
+    let project = host.project(window)?;
+    blocking(move || {
+        let mask = ide_search::FileMask::new(&[], &project.search_excludes())?;
+        let scope = ide_search::SearchScope::Pattern { pattern };
+        let mut files =
+            ide_search::scope_files(&project.root, &scope, &mask, None, &ide_core::CancellationToken::new())?;
+        files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        let truncated = files.len() > limit as usize;
+        files.truncate(limit as usize);
+        Ok(ScopeFiles { paths: files.into_iter().map(|f| f.path.into()).collect(), truncated })
+    })
+    .await
+}
+
 /// Folders holding indexed files, for `@` references.
 #[command(trust = always)]
 pub async fn find_dirs(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
@@ -375,6 +400,7 @@ ide_command::domain!(
     path_completions,
     recent_files,
     remove_recent,
+    scope_files,
     web_goto,
     web_unresolved_references,
 );

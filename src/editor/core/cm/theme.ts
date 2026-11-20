@@ -276,14 +276,23 @@ export const openideaTheme = EditorView.theme({
   },
   ".cm-openidea-laneDeleted": {
     position: "absolute",
-    left: "0",
-    top: "-3px",
+    left: "-4px",
+    top: "-6px",
+    width: "12px",
+    height: "12px",
+    cursor: "pointer",
+    zIndex: "1",
+  },
+  ".cm-openidea-laneDeleted::after": {
+    content: '""',
+    position: "absolute",
+    left: "4px",
+    top: "3px",
     width: "0",
     height: "0",
     borderTop: "3px solid transparent",
     borderBottom: "3px solid transparent",
     borderLeft: "6px solid var(--lane-color)",
-    zIndex: "1",
   },
   ".cm-foldGutter": { width: "16px" },
   ".cm-foldGutter .cm-gutterElement": {
@@ -367,6 +376,11 @@ export const openideaTheme = EditorView.theme({
     borderRadius: "var(--radius-popup)",
     boxShadow: "var(--shadow-popup)",
   },
+  // Near the window edge CodeMirror caps the hover host's height; its sections then shrink and
+  // scroll inside the popup instead of running past its border. Content tooltips still carry
+  // their own `max-height` + `overflow` for the space they get when not squeezed.
+  ".cm-tooltip.cm-tooltip-hover": { display: "flex", flexDirection: "column" },
+  ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
   ".cm-tooltip .cm-tooltip-arrow:before": {
     borderTopColor: "var(--border-popup)",
     borderBottomColor: "var(--border-popup)",
@@ -420,4 +434,8 @@ export const openideaTheme = EditorView.theme({
   "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": {
     paddingRight: "calc(24px + var(--cm-corner-inset, 0px))",
   },
+  // The wrapped-part indent is a negative `text-indent` on the line (prefs.ts). Widgets inherit
+  // it, and a block-level box inside one (the inline blame, a line-end hint) would start its
+  // text that many columns to the left, over the code.
+  ".cm-line [contenteditable='false']": { textIndent: "0" },
 });

@@ -268,7 +268,7 @@
   "menu.toolwindow.debug": "Débogage",
   "menu.toolwindow.find": "Recherche",
   "menu.toolwindow.git": "Git",
-  "menu.toolwindow.hideAll": "Masquer toutes les fenêtres d'outils",
+  "menu.toolwindow.hideAll": "{toolWindows, select, hidden {Restaurer les fenêtres d'outils} other {Masquer toutes les fenêtres d'outils}}",
   "menu.toolwindow.problems": "Problèmes",
   "menu.toolwindow.project": "Projet",
   "menu.toolwindow.run": "Exécution",

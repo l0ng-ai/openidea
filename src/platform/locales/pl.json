@@ -269,7 +269,7 @@
   "menu.toolwindow.debug": "Debug",
   "menu.toolwindow.find": "Znajdź",
   "menu.toolwindow.git": "Git",
-  "menu.toolwindow.hideAll": "Ukryj wszystkie okna narzędziowe",
+  "menu.toolwindow.hideAll": "{toolWindows, select, hidden {Przywróć okna narzędziowe} other {Ukryj wszystkie okna narzędziowe}}",
   "menu.toolwindow.problems": "Problemy",
   "menu.toolwindow.project": "Projekt",
   "menu.toolwindow.run": "Uruchom",

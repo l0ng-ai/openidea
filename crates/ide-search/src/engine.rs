@@ -36,6 +36,8 @@ pub(crate) struct Request<'a> {
     pub context: SearchContext,
     pub literals: Option<Literals<'a>>,
     pub max_matches: u32,
+    /// Skip what `.gitignore` / `.ignore` / `info/exclude` leave out.
+    pub ignore_rules: bool,
     pub text: TextSource<'a>,
     pub cancel: &'a CancellationToken,
     pub on_file: &'a (dyn Fn(FileMatches) + Sync),
@@ -153,6 +155,7 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
     if !ctx.ctl.should_stop() {
         walk_files(
             &on_disk,
+            req.ignore_rules,
             &|path| ctx.mask.has_directory_exclusions() && ctx.mask.excludes_dir(&rel_path(ctx.root, path)),
             || {
                 let mut searcher = searcher_builder.build();
@@ -187,9 +190,11 @@ pub(crate) type VisitFile<'s> = Box<dyn FnMut(&Path) -> WalkState + Send + 's>;
 /// `.gitignore` / `.ignore` / `info/exclude` are skipped with everything in
 /// them, while ignored files elsewhere (`.env`) and hidden files and folders
 /// (`.github`, `.eslintrc`) are visited. `.git`, symlinks and archives (jar,
-/// zip: browsed, not searched) are never visited.
+/// zip: browsed, not searched) are never visited. Without `ignore_rules` the
+/// ignored directories are visited too.
 pub(crate) fn walk_files<'s>(
     roots: &[PathBuf],
+    ignore_rules: bool,
     skip_dir: &'s (dyn Fn(&Path) -> bool + Sync),
     mut visitor: impl FnMut() -> VisitFile<'s> + Send,
 ) {
@@ -199,11 +204,11 @@ pub(crate) fn walk_files<'s>(
         walk.add(path);
     }
     walk.hidden(false)
-        .ignore(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .parents(true)
+        .ignore(ignore_rules)
+        .git_ignore(ignore_rules)
+        .git_global(ignore_rules)
+        .git_exclude(ignore_rules)
+        .parents(ignore_rules)
         .require_git(ide_core::ignored::inside_git_repo(first))
         .follow_links(false)
         .threads(std::thread::available_parallelism().map_or(4, |n| n.get()).min(12))
@@ -662,7 +667,7 @@ mod walk_tests {
         std::fs::write(root.join("edge/device/src/main.go"), "hit").unwrap();
         let mask = FileMask::new(&[], &["**/build/**".into()]).unwrap();
         let seen = Mutex::new(Vec::new());
-        walk_files(&[root.to_path_buf()], &|path| mask.excludes_dir(&rel_path(root, path)), || {
+        walk_files(&[root.to_path_buf()], true, &|path| mask.excludes_dir(&rel_path(root, path)), || {
             let seen = &seen;
             Box::new(move |path| {
                 // No file-level mask here: a visit means the walker entered the subtree.
@@ -672,13 +677,18 @@ mod walk_tests {
         });
         assert_eq!(*seen.lock().unwrap(), ["edge/device/src/main.go"]);
         seen.lock().unwrap().clear();
-        walk_files(&[root.join("edge/device/build/deep")], &|path| mask.excludes_dir(&rel_path(root, path)), || {
-            let seen = &seen;
-            Box::new(move |path| {
-                seen.lock().unwrap().push(rel_path(root, path));
-                WalkState::Continue
-            })
-        });
+        walk_files(
+            &[root.join("edge/device/build/deep")],
+            true,
+            &|path| mask.excludes_dir(&rel_path(root, path)),
+            || {
+                let seen = &seen;
+                Box::new(move |path| {
+                    seen.lock().unwrap().push(rel_path(root, path));
+                    WalkState::Continue
+                })
+            },
+        );
         assert!(seen.lock().unwrap().is_empty());
     }
 }

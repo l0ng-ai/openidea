@@ -4,7 +4,7 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import type { GitOperation, RemoteOp } from "@/bindings";
+import type { BranchUpdate, GitOperation, RemoteOp } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { AnsiStream, stripAnsi, type Span } from "@/ui/ansi";
@@ -159,7 +159,6 @@ const REMOTE_TITLE: Record<RemoteOp["op"], [string, string]> = {
   push: ["Pushing", "Push"],
   deleteBranch: ["Deleting remote branch", "Delete remote branch"],
   pushBranch: ["Pushing", "Push"],
-  updateBranch: ["Updating branch", "Update"],
   pushTag: ["Pushing", "Push"],
   deleteRemoteTag: ["Deleting remote tag", "Delete remote tag"],
 };
@@ -300,6 +299,67 @@ export async function runRemote(
     return false;
   } finally {
     task(null, 1, true);
+    activeRemote = null;
+    useVcs.setState({ remoteBusy: null });
+    void refreshNow();
+  }
+}
+
+export interface RepoBranchUpdate extends BranchUpdate {
+  repo: string | null;
+}
+
+/**
+ * Branches › Update Selected: fast-forwards `branches` of each repository (one fetch per
+ * remote), with progress like `runRemote`. Null when it failed or was cancelled (a failure
+ * is reported here); otherwise what happened to each branch, for the caller to report.
+ */
+export async function runBranchUpdates(
+  branches: ReadonlyMap<string | null, readonly string[]>,
+): Promise<RepoBranchUpdate[] | null> {
+  if (useVcs.getState().remoteBusy) {
+    notify({ level: "warning", title: "Another remote operation is in progress" });
+    return null;
+  }
+  const progressTitle = tx("Updating branches");
+  const request = nextRequestId();
+  const taskId = `vcs:${request}`;
+  activeRemote = request;
+  useVcs.setState({ remoteBusy: progressTitle });
+  const cancel = () => void commands.cancelRequest(request);
+  const task = (message: string | null, done: boolean) =>
+    upsertTaskSoon({ id: taskId, title: progressTitle, message, fraction: done ? 1 : null, done, cancel });
+  task(null, false);
+  notify({
+    level: "info",
+    key: "vcs.remote",
+    title: `${progressTitle}…`,
+    sticky: true,
+    actions: [{ label: "Cancel", run: cancelRemote }],
+  });
+  const channel = new Channel<string>();
+  channel.onmessage = (line) => {
+    logConsole("out", line);
+    task(line.trim() || null, false);
+  };
+  const results: RepoBranchUpdate[] = [];
+  try {
+    for (const [repo, names] of branches) {
+      logConsole("cmd", `git update ${names.join(" ")}${repo && branches.size > 1 ? ` (${repoName(repo)})` : ""}`);
+      const updates = await call(commands.vcsUpdateBranches(repo, request, [...names], channel));
+      results.push(...updates.map((u) => ({ ...u, repo })));
+    }
+    lastRemoteError = null;
+    return results;
+  } catch (e) {
+    const cancelled = isCancelled(e);
+    lastRemoteError = cancelled ? null : errorMessage(e);
+    logConsole(cancelled ? "info" : "err", cancelled ? "Update cancelled" : errorMessage(e));
+    if (cancelled) notifications().expire?.("vcs.remote");
+    else notify({ level: "error", key: "vcs.remote", title: "Update failed", body: errorMessage(e) });
+    return null;
+  } finally {
+    task(null, true);
     activeRemote = null;
     useVcs.setState({ remoteBusy: null });
     void refreshNow();

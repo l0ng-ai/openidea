@@ -24,8 +24,6 @@ import { githubHandler, handlerContextKey } from "./toolwindow/handlers";
 import { GithubDialogHost } from "./ui/dialogs";
 import { activateSettingsPages } from "./settingsPages";
 
-export { activateSettingsPages } from "./settingsPages";
-
 const WINDOW = "pullRequests";
 const TIMELINE_KIND = "github.timeline";
 const WHEN = "projectOpen";

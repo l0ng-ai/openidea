@@ -472,6 +472,8 @@ impl Shared {
 
     fn full_scan(&self, found: Option<Vec<Found>>, guard: SystemTime) {
         self.scan(None, found, guard);
+        // Parsing every file churns through far more memory than the index keeps.
+        ide_core::memory::release_free_pages();
     }
 
     fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) -> Option<ScanCounts> {
@@ -591,7 +593,7 @@ impl Shared {
         let update_elapsed = update_started.elapsed();
         let snapshot_started = Instant::now();
         if let Some(store) = &self.store {
-            let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
+            let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.recent_key(p)).collect();
             let d = self.data.read();
             let snapshot_started = Instant::now();
             if let Err(e) = store.save_snapshot(&d, &filter, guard) {
@@ -926,7 +928,7 @@ impl Shared {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-            if filter.is_excluded(&path, meta.is_dir()) {
+            if filter.is_excluded(&path) {
                 continue;
             }
             if meta.is_dir() {
@@ -976,7 +978,7 @@ impl Shared {
             }
         }
         if save_recent && let Some(store) = &self.store {
-            let rels: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
+            let rels: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.recent_key(p)).collect();
             if let Err(e) = store.save_recent(&rels) {
                 tracing::warn!("index cache: saving recent files failed: {e}");
             }

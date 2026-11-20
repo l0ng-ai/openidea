@@ -8,11 +8,17 @@ import * as contributions from "@/workbench/contributions";
 import { ask } from "@/workbench/messages";
 import type * as Messages from "@/workbench/messages";
 import { registerEditorKind, type EditorDocumentLifecycle } from "@/workbench/contributions";
+import * as light from "./openLightweightEditor";
 
 vi.mock("@/workbench/messages", async (original) => ({
   ...(await original<typeof Messages>()),
   ask: vi.fn(),
 }));
+
+vi.mock("@/platform/ipc", async (original) => {
+  const mod = await original<typeof import("@/platform/ipc")>();
+  return { ...mod, isTauri: () => true };
+});
 
 const notify = vi.fn();
 let ctrl: EditorController;
@@ -33,6 +39,7 @@ beforeEach(() => {
     status: "ok",
     data: { kind: "opened", label: "second" },
   });
+  vi.spyOn(light, "openLightweightEditor").mockResolvedValue("editor-main-1");
 });
 afterEach(() => {
   ctrl?.stop();
@@ -44,7 +51,63 @@ afterEach(() => {
 });
 
 describe("detachTab", () => {
-  it.each([false, true])("waits for text save before opening and closing, autosave=%s", async (autoSave) => {
+  it("leaves the move to an editor kind that moves its own tabs", async () => {
+    const openInWindow = vi.fn(async () => true);
+    unregister = registerEditorKind({ kind: "chat", component: () => null, title: () => "Chat", openInWindow });
+    ctrl = new EditorController(createMemoryBackend({}));
+    ctrl.start();
+    await ctrl.openInput({ kind: "chat", key: "chat:1", data: { id: 1 } }, { focus: false });
+    const [pane, id] = current();
+    expect(await ctrl.detachTab(pane, id)).toBe(true);
+    expect(openInWindow).toHaveBeenCalledWith(expect.objectContaining({ key: "chat:1", data: { id: 1 } }));
+    expect(light.openLightweightEditor).not.toHaveBeenCalled();
+    await ctrl.openInWindow({ kind: "chat", key: "chat:1", data: { id: 1 } });
+    expect(light.openLightweightEditor).toHaveBeenCalledWith(
+      { input: JSON.stringify({ kind: "chat", key: "chat:1", data: { id: 1 } }) },
+      null,
+      "chat:1",
+    );
+  });
+
+  it("moves a project file to a lightweight editor without saving first", async () => {
+    useProject.setState({
+      project: { root: "/p", workspace: { projects: ["/p"] } } as never,
+      settings: { files: { autoSave: false } } as never,
+    });
+    const backend = createMemoryBackend({ [path]: "original\n" });
+    const save = vi.spyOn(backend, "save");
+    ctrl = new EditorController(backend);
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const [pane, id] = current();
+    ctrl.slotFor(id)!.dispatchLocal({ changes: { from: 0, to: 8, insert: "edited" } });
+    expect(await ctrl.detachTab(pane, id)).toBe(true);
+    expect(hasTab(id)).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    expect(commands.windowOpenFileInNewWindow).not.toHaveBeenCalled();
+    expect(light.openLightweightEditor).toHaveBeenCalledWith(
+      expect.objectContaining({ path, line: expect.any(Number), column: expect.any(Number) }),
+      null,
+    );
+    await vi.waitFor(() => expect(ctrl.manager.get(path)).toBeUndefined());
+  });
+
+  it("keeps the tab when the lightweight editor fails to open", async () => {
+    useProject.setState({
+      project: { root: "/p", workspace: { projects: ["/p"] } } as never,
+      settings: { files: { autoSave: false } } as never,
+    });
+    ctrl = new EditorController(createMemoryBackend({ [path]: "original\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const [pane, id] = current();
+    vi.mocked(light.openLightweightEditor).mockRejectedValue(new Error("window failed"));
+    expect(await ctrl.detachTab(pane, id)).toBe(false);
+    expect(hasTab(id)).toBe(true);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "window failed" }));
+  });
+
+  it.each([false, true])("waits for text save before opening a full window, autosave=%s", async (autoSave) => {
     useProject.setState({ settings: { files: { autoSave } } as never });
     const backend = createMemoryBackend({ [path]: "original\n" });
     ctrl = new EditorController(backend);
@@ -69,6 +132,7 @@ describe("detachTab", () => {
     const result = ctrl.detachTab(pane, id);
     await vi.waitFor(() => expect(save).toHaveBeenCalled());
     expect(commands.windowOpenFileInNewWindow).not.toHaveBeenCalled();
+    expect(light.openLightweightEditor).not.toHaveBeenCalled();
     expect(hasTab(id)).toBe(true);
     finish();
     expect(await result).toBe(true);
@@ -168,15 +232,21 @@ describe("detachTab", () => {
   );
 
   it.each([
-    ["C:\\project\\a.ts", ["C:/project"], "C:/project"],
-    ["C:\\other\\a.ts", ["C:/project", "C:/other"], "C:/project"],
-    ["C:\\project-other\\a.ts", ["C:/project"], null],
-  ])("routes %s by workspace containment", async (file, projects, expected) => {
+    ["C:\\project\\a.ts", ["C:/project"], true],
+    ["C:\\other\\a.ts", ["C:/project", "C:/other"], true],
+    ["C:\\project-other\\a.ts", ["C:/project"], false],
+  ])("routes %s by workspace containment", async (file, projects, lightPath) => {
     useProject.setState({ project: { root: "C:/project", workspace: { projects } } as never });
     ctrl = new EditorController(createMemoryBackend({ [file]: "text\n" }));
     ctrl.start();
     await ctrl.openFile(file, { focus: false });
     expect(await ctrl.detachTab(...current())).toBe(true);
-    expect(commands.windowOpenFileInNewWindow).toHaveBeenCalledWith(expected, file);
+    if (lightPath) {
+      expect(light.openLightweightEditor).toHaveBeenCalledWith(expect.objectContaining({ path: file }), null);
+      expect(commands.windowOpenFileInNewWindow).not.toHaveBeenCalled();
+    } else {
+      expect(commands.windowOpenFileInNewWindow).toHaveBeenCalledWith(null, file);
+      expect(light.openLightweightEditor).not.toHaveBeenCalled();
+    }
   });
 });

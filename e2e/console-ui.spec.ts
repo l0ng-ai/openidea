@@ -30,7 +30,7 @@ for (const kind of ["run", "debug", "services-run", "services-debug", "stacktrac
             component = SessionPanel;
             props = {
               session: run.useRun.getState().sessions.find((s: { id: string }) => s.id === id),
-              ...(kind === "services-run" ? { onRerun: null, onDebug: null } : {}),
+              showLifecycle: kind === "run",
             };
           } else if (kind === "debug" || kind === "services-debug") {
             const statePath = "/src/features/debugger/state.ts";

@@ -45,13 +45,21 @@ If navigation, search or highlighting doesn't match the files, rebuild the cache
 
 The Windows packages aren't code-signed yet, so Microsoft Defender SmartScreen may show an unknown-publisher warning. Choose **More info**, then **Run anyway**. See [Install](/en/guide/install#windows).
 
-## The window stays blank on Linux
+## The window stays blank or stops responding on Linux
 
-WebKitGTK's DMA-BUF renderer fails on Wayland with the NVIDIA driver. OpenIDEA detects this combination and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself. If you see a blank or broken window in another setup, quit OpenIDEA and start it from a terminal with that variable set, for example:
+WebKitGTK's DMA-BUF renderer fails on some Wayland setups. With the NVIDIA driver on Wayland, OpenIDEA turns the driver's explicit sync off for itself (`__NV_DISABLE_EXPLICIT_SYNC=1`), which avoids the failure and keeps the renderer. If the window stays blank, draws incorrectly, or stops reacting to the keyboard and mouse a few seconds after launch in another setup, quit OpenIDEA and start it from a terminal through XWayland first:
+
+```sh
+GDK_BACKEND=x11 ./OpenIDEA_<version>_amd64.AppImage
+```
+
+The page is still drawn on the GPU this way; at a fractional display scale the window may look less sharp. If that does not help, turn the DMA-BUF renderer off instead:
 
 ```sh
 WEBKIT_DISABLE_DMABUF_RENDERER=1 ./OpenIDEA_<version>_amd64.AppImage
 ```
+
+The page is then drawn without the GPU, so dragging large panels can be slower. To keep either setting for launches from the application menu with the deb or rpm package, copy `/usr/share/applications/OpenIDEA.desktop` to `~/.local/share/applications/` and change its `Exec=` line, for example to `Exec=env GDK_BACKEND=x11 openidea`.
 
 ## OpenIDEA exits at startup with a data directory error
 

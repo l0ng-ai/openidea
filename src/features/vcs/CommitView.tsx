@@ -18,7 +18,9 @@ import {
 import { tx, txTemplate } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
-import { basename, dirname } from "@/platform/project";
+import { fontWeightOf } from "@/platform/editorSettings";
+import { resolveMonoFont } from "@/platform/fonts";
+import { basename, dirname, useProject } from "@/platform/project";
 import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
 import {
   Button,
@@ -67,7 +69,7 @@ import {
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
-import { inclusionChecks, isCommitAll, useStagingArea } from "./staging";
+import { inclusionChecks, isCommitAll, stagingAreaOn, useStagingArea } from "./staging";
 import { addToChangelist, commitFiles } from "./changelistsUi";
 import { acceptSide } from "./conflictsUi";
 import { copyChangesAsPatch } from "./patches";
@@ -107,9 +109,10 @@ import { showChangesDiff, toLogChanges, type LogChange } from "./logChanges";
 import { OperationBanner } from "./operations";
 import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
-import { refreshNow, repoName, selectRepo, useVcs } from "./store";
+import { existsOnDisk, refreshNow, repoName, selectRepo, useVcs } from "./store";
 import { saveVcsSetting } from "./settingsUi";
 import styles from "./CommitView.module.css";
+import { useRowHeight } from "@/ui/density";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
@@ -300,7 +303,7 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
 /** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
 /** The selected files that still exist in the working tree (Delete… removes them from disk). */
 /** Whether the change leaves the file in the working tree. */
-const onDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
+const onDisk = existsOnDisk;
 
 export function deletableFiles(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);
@@ -345,15 +348,20 @@ export function nodeMenu(
           { kind: "separator" as const },
         ]
       : []),
-    {
-      label: "Commit File…",
-      icon: "commit",
-      disabled: !files.some((f) => groupOf(f) === "changes"),
-      run: () => commitFiles(paths),
-    },
-    { kind: "separator" },
-    // Under the modal interface the node itself, like double-click, in the front window.
-    vcsDiffInFront() && opts?.roots && first
+    // With the staging area a commit takes the whole index: there is no committing one file.
+    ...(stagingAreaOn()
+      ? []
+      : [
+          {
+            label: "Commit File…",
+            icon: "commit" as const,
+            disabled: !files.some((f) => groupOf(f) === "changes"),
+            run: () => commitFiles(paths),
+          },
+          { kind: "separator" as const },
+        ]),
+    // The node itself, like double-click: under Staged or Unstaged its side of the index.
+    opts?.roots && first
       ? {
           label: "Show Diff",
           icon: "diff",
@@ -758,68 +766,80 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
 
   return (
     <div className={styles.changes}>
-      <div className={styles.toolbar} role="toolbar" aria-label={tx("Changes")}>
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
-        {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
-        <IconButton icon="undo" action="vcs.rollback" size="small" />
-        {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
-        {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
-        <IconButton
-          ref={viewRef}
-          icon="eye"
-          title="View Options"
-          size="small"
-          aria-haspopup="menu"
-          onClick={() =>
-            viewRef.current &&
-            showContextMenu(bottomLeft(viewRef.current), [
-              { kind: "header", label: "Group By" },
-              { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
-              // IDEA offers it once the project has several repositories.
-              ...(repos.length > 1
-                ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
-                : []),
-              ...(staging
-                ? []
-                : [{ label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) }]),
-              { kind: "separator" },
-              {
-                label: "Show Unversioned Files Separately",
-                checked: showUnversionedSeparately,
-                run: () => setShowUnversionedSeparately(!showUnversionedSeparately),
-              },
-              ...(mode === "local"
-                ? [
-                    { kind: "separator" } as const,
-                    { label: "Show Diff Preview", checked: diffPreview, run: () => setDiffPreview(!diffPreview) },
-                  ]
-                : []),
-              // Not in the Commit dialog, whose files always open as source.
-              ...(mode === "dialog" ? [] : doubleClickMenu(doubleClickOpensDiff)),
-            ])
-          }
-        />
-        {/* WebStorm's Preview Diff: an embedded diff of the selection beside the changes (#1599). */}
-        {mode === "commit" && (
+      <div className={clsx(styles.toolbar, styles.changesToolbar)} role="toolbar" aria-label={tx("Changes")}>
+        <div className={styles.changesTools}>
+          <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshNow()} />
+          {mode === "local" && <IconButton icon="commit" action="vcs.commit" size="small" />}
+          <IconButton icon="undo" action="vcs.rollback" size="small" />
+          {mode === "local" && <IconButton icon="changelist" action="vcs.changelist.new" size="small" />}
+          {mode !== "dialog" && <IconButton icon="shelve" action="vcs.shelveSilently" size="small" />}
+          {mode !== "dialog" && <IconButton icon="git-pull" action="vcs.update" size="small" />}
           <IconButton
-            icon="editor-preview"
-            title="Preview Diff"
+            ref={viewRef}
+            icon="eye"
+            title="View Options"
             size="small"
-            pressed={commitDiffPreview}
-            onClick={() => setCommitDiffPreview(!commitDiffPreview)}
+            aria-haspopup="menu"
+            onClick={() =>
+              viewRef.current &&
+              showContextMenu(bottomLeft(viewRef.current), [
+                { kind: "header", label: "Group By" },
+                { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+                // IDEA offers it once the project has several repositories.
+                ...(repos.length > 1
+                  ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
+                  : []),
+                ...(staging
+                  ? []
+                  : [
+                      {
+                        label: "Staging State",
+                        checked: groupByStaging,
+                        run: () => setGroupByStaging(!groupByStaging),
+                      },
+                    ]),
+                { kind: "separator" },
+                {
+                  label: "Show Unversioned Files Separately",
+                  checked: showUnversionedSeparately,
+                  run: () => setShowUnversionedSeparately(!showUnversionedSeparately),
+                },
+                ...(mode === "local"
+                  ? [
+                      { kind: "separator" } as const,
+                      { label: "Show Diff Preview", checked: diffPreview, run: () => setDiffPreview(!diffPreview) },
+                    ]
+                  : []),
+                // Not in the Commit dialog, whose files always open as source.
+                ...(mode === "dialog" ? [] : doubleClickMenu(doubleClickOpensDiff)),
+              ])
+            }
           />
-        )}
-        <span className={styles.sep} />
-        {mode !== "dialog" && (
-          <IconButton icon="locate" title="Select Opened File" size="small" onClick={selectOpened} />
-        )}
-        <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(new Set())} />
-        <IconButton
-          icon="collapse-all"
-          title="Collapse All"
-          size="small"
-          onClick={() => setCollapsed(new Set([...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key)))}
-        />
+          {/* WebStorm's Preview Diff: an embedded diff of the selection beside the changes (#1599). */}
+          {mode === "commit" && (
+            <IconButton
+              icon="editor-preview"
+              title="Preview Diff"
+              size="small"
+              pressed={commitDiffPreview}
+              onClick={() => setCommitDiffPreview(!commitDiffPreview)}
+            />
+          )}
+        </div>
+        <div className={styles.changesTools}>
+          {mode !== "dialog" && (
+            <IconButton icon="locate" title="Select Opened File" size="small" onClick={selectOpened} />
+          )}
+          <IconButton icon="expand-all" title="Expand All" size="small" onClick={() => setCollapsed(new Set())} />
+          <IconButton
+            icon="collapse-all"
+            title="Collapse All"
+            size="small"
+            onClick={() =>
+              setCollapsed(new Set([...byKey.values()].filter((n) => n.type !== "file").map((n) => n.key)))
+            }
+          />
+        </div>
       </div>
       {mode !== "dialog" && <OperationBanner />}
       <div
@@ -887,7 +907,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             followSelection(nodes);
           }}
           onActivate={(n) => openNode(n, roots, mode === "dialog")}
-          onJumpToSource={(n) => {
+          onJumpToSource={async (n) => {
+            if (n.type === "group") {
+              const files = n.files.filter((f) => onDisk(f) && !f.path.endsWith("/"));
+              for (const [i, file] of files.entries()) {
+                await editorService().openFile(file.path, { focus: i === files.length - 1 });
+              }
+              return;
+            }
             const file = n.type === "file" ? n : selectedNodes().find((x) => x.type === "file");
             if (file?.path && file.kind !== "deleted") void editorService().openFile(file.path, { focus: true });
           }}
@@ -975,7 +1002,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   />
                 )}
                 {label}
-                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.nodeCount}>{fileCount(n.files.length)}</span>}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
@@ -1121,6 +1148,8 @@ export function CommitMessageField({
   }
 
   const cfg = useWorkflowSettings((s) => s.vcs.commit);
+  const editor = useProject((s) => s.settings?.editor);
+  const { family, size } = resolveMonoFont(undefined, editor);
   const first = message.split("\n")[0] ?? "";
   const tooLong = cfg.limitSubject && first.length > cfg.subjectLimit;
   const problems = messageProblems(message, cfg).filter((p) => !p.startsWith("Subject line"));
@@ -1170,7 +1199,13 @@ export function CommitMessageField({
         data-autofocus={autoFocus ? "" : undefined}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
         aria-invalid={emptyError || undefined}
-        style={{ ["--guide" as string]: `${margin}ch` }}
+        style={{
+          ["--guide" as string]: `${margin}ch`,
+          fontFamily: family,
+          fontSize: size,
+          fontWeight: fontWeightOf(editor?.fontWeight, 400),
+          lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+        }}
         value={message}
         placeholder={tx("Commit Message")}
         aria-label={tx("Commit message")}
@@ -1348,6 +1383,7 @@ async function stashFileChanges(stash: StashEntry): Promise<LogChange[]> {
 }
 
 export function StashesPanel() {
+  const rowHeight = useRowHeight(22);
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
   const version = useVcs((s) => s.version);
@@ -1458,7 +1494,7 @@ export function StashesPanel() {
           loadChildren={loadFiles}
           selected={useMemo(() => new Set(selectedKey ? [selectedKey] : []), [selectedKey])}
           multiSelect={false}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label="Stashes"
           className={styles.stashList}
           empty={<span className={styles.empty}>{error ?? (loaded ? tx("No stashes") : tx("Loading…"))}</span>}

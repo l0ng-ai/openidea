@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import clsx from "clsx";
+import type { GroupImperativeHandle, Layout } from "react-resizable-panels";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
@@ -45,17 +47,23 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { nodeOutput } from "./testing";
-import { TestTreeView, formatDuration } from "./TestTreeView";
+import { formatDuration, nodeOutput } from "./testing";
+import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
+import { hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
 import { configIcon } from "./configs";
 import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+
+const TEST_SPLIT_DEFAULTS = {
+  horizontal: { tests: 34, console: 66 },
+  vertical: { tests: 48, console: 52 },
+};
 
 function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
@@ -91,6 +99,25 @@ export function SessionPanel({
   const softWrap = wrapOverride ?? defaultWrap;
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  const [stackedTests, setStackedTests] = useState(false);
+  const testSplit = useRef<GroupImperativeHandle>(null);
+  const testLayouts = useRef<Record<keyof typeof TEST_SPLIT_DEFAULTS, Layout>>({ ...TEST_SPLIT_DEFAULTS });
+  const testOrientation = stackedTests ? "vertical" : "horizontal";
+  const hasTests = !!rt?.tests;
+  useLayoutEffect(() => {
+    const pane = body.current;
+    if (!hasTests || !pane) return;
+    const measure = () => setStackedTests(pane.clientWidth < 560);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(measure);
+    resize.observe(pane);
+    return () => resize.disconnect();
+  }, [hasTests]);
+  useLayoutEffect(() => {
+    if (hasTests) testSplit.current?.setLayout(testLayouts.current[testOrientation]);
+  }, [hasTests, testOrientation]);
   const running = isLive(session);
   const cwd = runDirectory(session.config.cwd);
   const baseConfig = useRun(() => baseConfigOf(session));
@@ -134,6 +161,7 @@ export function SessionPanel({
 
   const consoleColumn = (
     <div className={styles.consoleColumn}>
+      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={running} />}
       {rt.console.dropped > 0 && !testModel && (
         <div className={styles.notice}>{tx`${rt.console.dropped.toLocaleString()} earlier lines were discarded`}</div>
       )}
@@ -180,10 +208,15 @@ export function SessionPanel({
   );
 
   return (
-    <div className={styles.session}>
-      <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
+    <div className={clsx(styles.session, showLifecycle && styles.topToolbarSession)}>
+      <div
+        className={styles.toolbar}
+        role="toolbar"
+        aria-orientation={showLifecycle ? "horizontal" : "vertical"}
+        aria-label={tx("Run actions")}
+      >
         {showLifecycle && (
-          <>
+          <div className={styles.toolbarGroup}>
             <IconButton
               icon="rerun"
               title="Rerun"
@@ -223,44 +256,74 @@ export function SessionPanel({
                 onClick={() => showApplicationUpdate(session.id)}
               />
             )}
-            <div className={styles.toolbarSep} />
-          </>
+            {supportsHotReload(session.config) && (
+              <>
+                <IconButton
+                  icon="hot-reload"
+                  title="Hot Reload"
+                  shortcut={shortcutLabel("run.flutterHotReload")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotReload(session.id)}
+                />
+                <IconButton
+                  icon="refresh"
+                  title="Hot Restart"
+                  shortcut={shortcutLabel("run.flutterHotRestart")}
+                  disabled={!acceptsInput(session)}
+                  onClick={() => hotRestart(session.id)}
+                />
+              </>
+            )}
+          </div>
         )}
-        {!rt.terminal && (
-          <>
-            <IconButton
-              icon="search"
-              title="Find…"
-              shortcut={formatBinding(hostBinding("Meta+F"))}
-              pressed={findOpen}
-              onClick={() => setFindOpen((v) => !v)}
-            />
-            <IconButton
-              icon="scroll-to-end"
-              title="Scroll to End"
-              pressed={follow}
-              onClick={() => setFollow((v) => !v)}
-            />
-            <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
-          </>
-        )}
-        <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
-        <div className={styles.toolbarSep} />
-        <IconButton
-          icon="settings"
-          title="Edit Configurations…"
-          onClick={() => void executeAction("run.editConfigs", session.config.id)}
-        />
+        <div className={styles.toolbarGroup}>
+          {!rt.terminal && (
+            <>
+              <IconButton
+                icon="search"
+                title="Find…"
+                shortcut={formatBinding(hostBinding("Meta+F"))}
+                pressed={findOpen}
+                onClick={() => setFindOpen((v) => !v)}
+              />
+              <IconButton
+                icon="scroll-to-end"
+                title="Scroll to End"
+                pressed={follow}
+                onClick={() => setFollow((v) => !v)}
+              />
+              <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
+            </>
+          )}
+          <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
+        </div>
+        <div className={styles.toolbarGroup}>
+          <IconButton
+            icon="settings"
+            title="Edit Configurations…"
+            onClick={() => void executeAction("run.editConfigs", session.config.id)}
+          />
+        </div>
       </div>
-      <div className={styles.sessionBody}>
+      <div ref={body} className={styles.sessionBody}>
         {rt.tests ? (
-          <SplitGroup orientation="horizontal" id={`run-tests-${session.id}`} className={styles.testSplit}>
-            <SplitPanel id="tests" defaultSize="32%" minSize="140px">
+          <SplitGroup
+            orientation={testOrientation}
+            id={`run-tests-${session.id}`}
+            className={styles.testSplit}
+            groupRef={testSplit}
+            defaultLayout={TEST_SPLIT_DEFAULTS[testOrientation]}
+            onLayoutChanged={(layout, meta) => {
+              if (meta.isUserInteraction) testLayouts.current[testOrientation] = meta.requestedLayout ?? layout;
+            }}
+          >
+            <SplitPanel id="tests" minSize={stackedTests ? "28%" : "140px"}>
               <TestTreeView
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
                 running={running}
+                name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
@@ -268,7 +331,7 @@ export function SessionPanel({
               />
             </SplitPanel>
             <SplitHandle />
-            <SplitPanel id="console" minSize="200px">
+            <SplitPanel id="console" minSize={stackedTests ? "28%" : "200px"}>
               {consoleColumn}
             </SplitPanel>
           </SplitGroup>

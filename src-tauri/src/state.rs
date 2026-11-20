@@ -1,4 +1,4 @@
-use crate::events::TauriSink;
+use crate::events::{TauriSink, coalescing_sink};
 use ide_core::{EventSink, IdeEvent, IdeResult, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
 use ide_workspace::RecentProjects;
@@ -19,8 +19,6 @@ pub struct AppState {
     pub recent: RecentProjects,
     /// Plugins (`ide_host::plugins`), shared by all windows.
     pub plugins: Arc<ide_host::plugins::PluginHost>,
-    /// Agents › MCP Server: built-in IDE tools for agents.
-    pub mcp: crate::commands::mcp::McpService,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
     pub askpass: Option<ide_ssh::askpass::AskpassServer>,
     /// Remote development connections, by window label.
@@ -85,9 +83,11 @@ impl AppState {
             tracing::info!("invalidated caches: {removed:?}");
         }
         ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
-        let global_sink: SharedSink = Arc::new(TauriSink { app: app.clone(), window: None });
+        let runtime = tauri::async_runtime::handle().inner().clone();
+        let global_sink = coalescing_sink(Arc::new(TauriSink { app: app.clone(), window: None }), runtime.clone());
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
+        let sink_runtime = runtime.clone();
         let host = Arc::new(Host::new(ide_host::HostConfig {
             config_dir: config_dir.clone(),
             data_dir: data_dir.clone(),
@@ -95,19 +95,24 @@ impl AppState {
             languages: languages.clone(),
             syntax,
             sink_for: Box::new(move |window| {
-                Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) })
+                coalescing_sink(
+                    Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
+                    sink_runtime.clone(),
+                )
             }),
             owner: Self::owner_window,
-            runtime: tauri::async_runtime::handle().inner().clone(),
+            runtime,
             project_environment: false,
         }));
+        let announce = global_sink.clone();
+        host.set_background_projects_observer(Arc::new(move || announce.emit(IdeEvent::McpBackgroundProjectsChanged)));
+        host.start_background_sweeper();
         Ok(Self {
             recent: RecentProjects::load(&config_dir),
             updates: Default::default(),
             askpass: start_askpass(&app),
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
-            mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,
             startup: Startup {
@@ -143,10 +148,11 @@ impl AppState {
 
     /// Opens `root` in `window` and records it in the recent projects.
     pub fn open_project(&self, window: &str, root: &Path) -> IdeResult<Arc<Project>> {
-        // A local project replaces a remote one in this window.
-        self.remote_dev.disconnect(window);
         let project = self.host.open_project(window, root)?;
         self.record_project(&project)?;
+        // Drop the remote connection only once the local project is actually open.
+        // A failed open leaves the window on the host it is still routing to.
+        self.remote_dev.disconnect(window);
         Ok(project)
     }
 
@@ -166,14 +172,16 @@ impl AppState {
 
     /// Opens `window` for editing the loose file `file` (LightEdit); not a recent project.
     pub fn open_light(&self, window: &str, file: &Path) -> IdeResult<Arc<Project>> {
+        let project = self.host.open_light(window, file)?;
         self.remote_dev.disconnect(window);
-        self.host.open_light(window, file)
+        Ok(project)
     }
 
     /// LightEdit without a file (File › New File from a welcome window).
     pub fn open_light_empty(&self, window: &str) -> IdeResult<Arc<Project>> {
+        let project = self.host.open_light_empty(window)?;
         self.remote_dev.disconnect(window);
-        self.host.open_light_empty(window)
+        Ok(project)
     }
 
     /// Called on the event-loop thread (window destruction, the `close_project`

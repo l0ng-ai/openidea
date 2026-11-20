@@ -121,6 +121,8 @@ struct State {
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     window_status: BTreeMap<String, StatusItem>,
+    status_menus: BTreeMap<String, Vec<StatusMenuEntry>>,
+    console_rules: Vec<ConsoleRule>,
     ipc: BTreeMap<u64, VecDeque<u8>>,
     next_ipc: u64,
     loopbacks: BTreeSet<u64>,
@@ -451,9 +453,19 @@ impl MockHost {
         self.state.borrow().logs.clone()
     }
 
+    /// The menu of status item `id`, as the last [`crate::host::set_status_item_menu`] set it.
+    pub fn status_menu(&self, id: &str) -> Vec<StatusMenuEntry> {
+        self.state.borrow().status_menus.get(id).cloned().unwrap_or_default()
+    }
+
     pub fn status_items(&self) -> BTreeMap<String, StatusItem> {
         let s = self.state.borrow();
         s.status.iter().chain(&s.window_status).map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// The rules of the last successful [`crate::host::set_console_rules`].
+    pub fn console_rules(&self) -> Vec<ConsoleRule> {
+        self.state.borrow().console_rules.clone()
     }
 
     pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
@@ -996,7 +1008,46 @@ pub mod current {
     }
 
     pub fn set_status_item(id: &str, item: &StatusItem) {
-        with(|s| s.status.insert(id.to_owned(), item.clone()));
+        with(|s| {
+            s.status_menus.remove(id);
+            s.status.insert(id.to_owned(), item.clone())
+        });
+    }
+
+    /// The host's entry limit; it also checks the commands against the plugin's declarations.
+    pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        if menu.len() > 64 {
+            return Err(Error::Invalid("a status item menu has at most 64 entries".into()));
+        }
+        with(|s| {
+            s.status.insert(id.to_owned(), item.clone());
+            s.status_menus.insert(id.to_owned(), menu.to_vec());
+        });
+        Ok(())
+    }
+
+    pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        if menu.len() > 64 {
+            return Err(Error::Invalid("a status item menu has at most 64 entries".into()));
+        }
+        with(|s| {
+            s.window_status.insert(id.to_owned(), item.clone());
+            s.status_menus.insert(id.to_owned(), menu.to_vec());
+        });
+        Ok(())
+    }
+
+    /// The host's count and length limits; it also refuses patterns that could
+    /// backtrack for long, which the mock doesn't check.
+    pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+        if rules.len() > 100 {
+            return Err(Error::Invalid("at most 100 console rules".into()));
+        }
+        if let Some(i) = rules.iter().position(|r| r.pattern.is_empty() || r.pattern.len() > 512) {
+            return Err(Error::Invalid(format!("console rule {i}: a pattern is 1-512 bytes")));
+        }
+        with(|s| s.console_rules = rules.to_vec());
+        Ok(())
     }
 
     pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {
@@ -2900,6 +2951,15 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
+        let menu = [
+            StatusMenuEntry::Header("App".into()),
+            StatusMenuEntry::action("Open website", "open").with_description("https://app.test").with_argument("web"),
+            StatusMenuEntry::Separator,
+        ];
+        host::set_status_item_menu("s", &StatusItem { text: "y".into(), tooltip: None, command: None }, &menu).unwrap();
+        assert_eq!((mock.status_items()["s"].text.as_str(), mock.status_menu("s")), ("y", menu.to_vec()));
+        host::set_status_item("s", &StatusItem { text: "z".into(), tooltip: None, command: None });
+        assert!(mock.status_menu("s").is_empty(), "a plain update drops the menu");
         host::set_context("a", 1.0).unwrap();
         host::set_context("b", "x").unwrap();
         assert_eq!(mock.context_keys()["a"], ContextValue::Number(1.0));

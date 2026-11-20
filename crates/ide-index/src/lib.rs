@@ -265,7 +265,7 @@ impl ProjectIndex {
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_files(&d, &matching::Recents::new(&recent), query, limit)
+        matching::find_files(&d, &matching::Recents::new(&recent), query, Some(&self.root), limit)
     }
 
     /// All indexed files with this exact basename, for resolving printed source locations.
@@ -301,7 +301,7 @@ impl ProjectIndex {
 
     /// Fuzzy search for folders that hold indexed files; `rel_path` ends in `/`.
     pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-        matching::find_dirs(&self.shared.data.read(), query, limit)
+        matching::find_dirs(&self.shared.data.read(), query, Some(&self.root), limit)
     }
 
     /// Fuzzy symbol search; CamelHump aware (`OCo` → `OrderController`).
@@ -400,15 +400,10 @@ impl ProjectIndex {
 
     /// Boost for "recent files" ranking.
     /// Records a recently opened file; a virtual document's URI (library
-    /// class) is kept verbatim, like IDEA lists library classes in Recent Files.
+    /// class) is kept verbatim, and a file outside the project (a scratch file)
+    /// by its absolute path.
     pub fn mark_recent(&self, path: &Path) {
-        let path = match path.to_str() {
-            Some(s) if ide_core::text::is_virtual_uri(s) => path.to_owned(),
-            _ => match self.normalize(path) {
-                Some(p) => p,
-                None => return,
-            },
-        };
+        let Some(path) = self.recent_key(path) else { return };
         {
             let mut r = self.shared.recent.lock();
             r.retain(|p| p != &path);
@@ -420,13 +415,7 @@ impl ProjectIndex {
 
     /// Drops a file from Recent Files (Delete in the ⌘E popup).
     pub fn remove_recent(&self, path: &Path) {
-        let path = match path.to_str() {
-            Some(s) if ide_core::text::is_virtual_uri(s) => path.to_owned(),
-            _ => match self.normalize(path) {
-                Some(p) => p,
-                None => return,
-            },
-        };
+        let Some(path) = self.recent_key(path) else { return };
         {
             let mut r = self.shared.recent.lock();
             let before = r.len();
@@ -471,6 +460,20 @@ impl ProjectIndex {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// How Recent Files stores `path`: a virtual URI verbatim, a project file normalized,
+    /// and an existing file outside the root canonicalized. Excluded files under the root
+    /// are left out.
+    fn recent_key(&self, path: &Path) -> Option<PathBuf> {
+        if path.to_str().is_some_and(ide_core::text::is_virtual_uri) {
+            return Some(path.to_owned());
+        }
+        if let Some(p) = self.normalize(path) {
+            return Some(p);
+        }
+        let p = dunce::canonicalize(path).ok().filter(|p| p.is_file())?;
+        (!p.starts_with(&self.root)).then_some(p)
     }
 
     /// Absolute path inside the root (or a content root), or `None` for paths outside the project.
@@ -571,11 +574,11 @@ pub mod bench_support {
         }
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, limit)
+            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, None, limit)
         }
 
         pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_dirs(&self.data, query, limit)
+            matching::find_dirs(&self.data, query, None, limit)
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {

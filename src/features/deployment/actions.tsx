@@ -22,10 +22,15 @@ import {
   type DeploymentServerValid,
 } from "@/platform/remoteSettings";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { notifications, projectViewSelection, toolWindowService } from "@/workbench/contributions";
+import {
+  changesViewSelection,
+  notifications,
+  projectViewSelection,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { chooseItem } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
-import { initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
+import { defaultGroup, initialSyncChoices, resolveServer, serverLabel, summarizeReport, targetPaths } from "./model";
 import { withSsh } from "./ssh";
 import { REMOTE_HOST_WINDOW, patchSync, useDeployment } from "./store";
 import styles from "./Deployment.module.css";
@@ -37,12 +42,13 @@ const errorText = (e: unknown) => txTemplate(e instanceof Error ? e.message : St
 const projectRoot = () => useProject.getState().project?.root ?? null;
 const deployment = () => workflowSettings().deployment;
 
-/** The files an action works on (menu argument, project view selection or the editor's file). */
+/** The files an action works on (menu, Commit selection, Project view or the editor). */
 export function actionTargets(arg: unknown): string[] {
   const editorPath = getContext().editorPath;
   return targetPaths(arg, {
     part: useDeployment.getState().part,
     selection: projectViewSelection(),
+    changesSelection: changesViewSelection(),
     editorPath: typeof editorPath === "string" ? editorPath : null,
     projectRoot: projectRoot(),
   });
@@ -61,7 +67,7 @@ function notifyNoServers() {
 function notifyNoTargets() {
   notifications().notify({
     level: "info",
-    title: "Select files in the Project view or open a file in the editor",
+    title: "Select files in the Project view, Commit tool window, or open a file in the editor",
     group: GROUP,
     key: "deployment.noTarget",
   });
@@ -468,7 +474,15 @@ export function registerDeploymentActions(): () => void {
       icon: "export",
       when,
       keywords: ["deploy", "sftp", "upload", "remote"],
-      run: withTargets(async (paths) => transfer("upload", await defaultServer("Upload to", paths), paths)),
+      run: withTargets(async (paths) => {
+        // The default server group: each of its servers in turn, as Upload to… on the group does.
+        const group = defaultGroup(deployment());
+        if (group) {
+          for (const server of group.servers) await transfer("upload", server, paths);
+          return;
+        }
+        await transfer("upload", await defaultServer("Upload to", paths), paths);
+      }),
     },
     {
       id: "deployment.uploadTo",

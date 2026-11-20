@@ -29,6 +29,7 @@ import {
   type StructuralForm,
 } from "./structural";
 import styles from "./Analysis.module.css";
+import fieldsetStyles from "@/ui/DialogFieldset.module.css";
 import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 
@@ -168,40 +169,50 @@ function ReformatCodeDialog({ targets, onClose }: { targets: readonly ReformatTa
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <div className={styles.hint}>{subject}</div>
-        {targets.some((t) => t.dir) && (
+      <div className={fieldsetStyles.body}>
+        <div className={styles.reformatSubject}>{subject}</div>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
+            <T>Options</T>
+          </legend>
           <Checkbox
-            checked={options.recursive}
-            onChange={(recursive) => setOptions({ ...options, recursive })}
-            label="Include subdirectories"
+            checked={options.optimizeImports}
+            onChange={(optimizeImports) => setOptions({ ...options, optimizeImports })}
+            label="Optimize imports"
           />
-        )}
-        <Checkbox
-          checked={options.optimizeImports}
-          onChange={(optimizeImports) => setOptions({ ...options, optimizeImports })}
-          label="Optimize imports"
-        />
-        <Checkbox
-          checked={options.changedTextOnly}
-          onChange={(changedTextOnly) => setOptions({ ...options, changedTextOnly })}
-          label="Only VCS changed text"
-        />
-        <div className={styles.fieldRow}>
           <Checkbox
-            checked={options.useMask}
-            onChange={(useMask) => setOptions({ ...options, useMask })}
-            label="File mask:"
+            checked={options.changedTextOnly}
+            onChange={(changedTextOnly) => setOptions({ ...options, changedTextOnly })}
+            label="Only VCS changed text"
           />
-          <Input
-            className={styles.grow}
-            value={options.mask}
-            disabled={!options.useMask}
-            placeholder="*.sh, *.py"
-            onChange={(e) => setOptions({ ...options, mask: e.target.value })}
-            aria-label="File mask"
-          />
-        </div>
+          {targets.some((t) => t.dir) && (
+            <Checkbox
+              checked={options.recursive}
+              onChange={(recursive) => setOptions({ ...options, recursive })}
+              label="Include subdirectories"
+            />
+          )}
+        </fieldset>
+        <fieldset className={fieldsetStyles.group}>
+          <legend className={fieldsetStyles.legend}>
+            <T>Filters</T>
+          </legend>
+          <div className={styles.reformatMask}>
+            <Checkbox
+              checked={options.useMask}
+              onChange={(useMask) => setOptions({ ...options, useMask })}
+              label="File mask:"
+            />
+            <Input
+              className={styles.reformatMaskInput}
+              value={options.mask}
+              disabled={!options.useMask}
+              placeholder="*.sh, *.py"
+              onChange={(e) => setOptions({ ...options, mask: e.target.value })}
+              aria-label="File mask"
+            />
+          </div>
+        </fieldset>
         <div className={styles.hint}>
           <T>Files are reformatted by their language's formatter and saved; files without one are skipped.</T>
         </div>

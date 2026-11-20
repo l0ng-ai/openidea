@@ -213,6 +213,87 @@ async fn folders_that_are_not_open_are_named_in_the_error() {
     assert!(serde_json::from_str::<Value>(&body).unwrap()["result"]["tools"].is_array());
 }
 
+/// One project open in a window and, optionally, one folder served without a window.
+struct WithBackground {
+    open: PathBuf,
+    background: Option<PathBuf>,
+}
+
+impl ToolRegistry for WithBackground {
+    fn projects(&self) -> Vec<PathBuf> {
+        vec![self.open.clone()]
+    }
+    fn resolve(&self, path: &Path) -> Option<PathBuf> {
+        self.background.clone().filter(|root| path.starts_with(root))
+    }
+    fn tools(&self, project: &Path) -> Result<Vec<Tool>, String> {
+        Ok(vec![Tool {
+            name: "where".into(),
+            description: format!("Names {}", project.display()),
+            input_schema: json!({ "type": "object" }),
+            read_only: true,
+            destructive: false,
+            output_schema: None,
+        }])
+    }
+    fn call(&self, project: &Path, _: &str, _: &str, _: ide_mcp::CancellationToken) -> Result<String, ToolCallError> {
+        Ok(json!({"project":project}).to_string())
+    }
+}
+
+/// The server over [`WithBackground`]; the folder `inventory` next to the open project.
+fn setup_with_background(served: bool) -> (Setup, PathBuf) {
+    let mut s = setup();
+    s.server.take().unwrap().stop();
+    let inventory = s.project.parent().unwrap().join("inventory");
+    std::fs::create_dir_all(inventory.join("src")).unwrap();
+    let registry = WithBackground { open: s.project.clone(), background: served.then(|| inventory.clone()) };
+    s.server = Some(McpServer::start(Arc::new(registry), None, &tokio::runtime::Handle::current()).unwrap());
+    (s, inventory)
+}
+
+async fn rpc_for(s: &Setup, folder: &Path, method: &str, params: Value) -> Value {
+    let project = format!("X-OpenIDEA-Project: {}", folder.display());
+    let body = json!({ "jsonrpc": "2.0", "id": 7, "method": method, "params": params });
+    let (status, body) = post(s, "/mcp", &[&bearer(s), &project], &body).await;
+    assert_eq!(status, 200, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_served_in_the_background_answers_initialize_list_and_call() {
+    let (s, inventory) = setup_with_background(true);
+    let inside = inventory.join("src");
+    let init = rpc_for(&s, &inside, "initialize", json!({})).await;
+    let instructions = init["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains(inventory.to_str().unwrap()), "{instructions}");
+    let list = rpc_for(&s, &inside, "tools/list", json!({})).await;
+    assert_eq!(list["result"]["tools"][0]["description"], format!("Names {}", inventory.display()), "{list}");
+    let call = rpc_for(&s, &inside, "tools/call", json!({ "name": "where" })).await;
+    assert_eq!(call["result"]["structuredContent"]["project"], json!(inventory), "{call}");
+    // The argument names it as well, whatever project the header is for.
+    let routed = rpc(&s, "tools/call", json!({ "name": "where", "arguments": { "projectPath": inside } })).await;
+    assert_eq!(routed["result"]["structuredContent"]["project"], json!(inventory), "{routed}");
+    // A folder inside the open project stays with that project.
+    let open = rpc(&s, "tools/call", json!({ "name": "where" })).await;
+    assert_eq!(open["result"]["structuredContent"]["project"], json!(s.project), "{open}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_that_is_neither_open_nor_served_in_the_background_says_where_to_turn_it_on() {
+    let (s, inventory) = setup_with_background(false);
+    for (method, params) in [("tools/list", json!({})), ("tools/call", json!({ "name": "where" }))] {
+        let reply = rpc_for(&s, &inventory, method, params).await;
+        assert_eq!(reply["error"]["code"], -32001, "{method}: {reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("isn't open in OpenIDEA and isn't served in the background"), "{message}");
+        assert!(message.contains("Settings › Agents › IDE MCP Server"), "{message}");
+        assert!(message.contains(inventory.to_str().unwrap()) && message.contains(s.project.to_str().unwrap()));
+    }
+    let init = rpc_for(&s, &inventory, "initialize", json!({})).await;
+    assert!(init["result"]["instructions"].is_string(), "initialize answers without a project: {init}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_discovery_file_lives_while_the_server_runs() {
     let mut s = setup();
@@ -423,4 +504,53 @@ async fn another_listen_address_is_used_and_one_not_on_this_computer_fails() {
     let elsewhere = ServerOptions { address: Some("192.0.2.1".parse().unwrap()), ..Default::default() };
     let error = McpServer::start_with(registry, None, &runtime, elsewhere).err().expect("no such address here");
     assert!(error.to_string().contains("192.0.2.1"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multiple_servers_sharing_app_data_route_by_project_and_survive_one_closing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let (proj_a, proj_b) = (base.join("proj-a"), base.join("proj-b"));
+    std::fs::create_dir_all(&proj_a).unwrap();
+    std::fs::create_dir_all(&proj_b).unwrap();
+    let discovery = discovery_path(&base.join("app-data"));
+    let runtime = tokio::runtime::Handle::current();
+
+    let server_a =
+        McpServer::start(Arc::new(Registry { project: proj_a.clone() }), Some(discovery.clone()), &runtime).unwrap();
+    let server_b =
+        McpServer::start(Arc::new(Registry { project: proj_b.clone() }), Some(discovery.clone()), &runtime).unwrap();
+
+    let session = |text: &str| {
+        [
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "clientInfo": { "name": "agent", "version": "1" } } }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "echo", "arguments": { "text": text } } }),
+        ]
+        .iter()
+        .map(|m| format!("{m}\n"))
+        .collect::<String>()
+    };
+
+    for (proj, tag) in [(&proj_a, "alpha"), (&proj_b, "beta")] {
+        let mut out = Vec::new();
+        stdio::bridge(&discovery, proj, session(tag).as_bytes(), &mut out).await.unwrap();
+        let mut replies: Vec<Value> =
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        replies.sort_by_key(|r| r["id"].as_i64());
+        assert!(replies[0]["result"]["instructions"].as_str().unwrap().contains(&proj.display().to_string()));
+        assert_eq!(replies[1]["result"]["content"][0]["text"], format!("{tag} in {}", proj.display()));
+    }
+
+    // Closing the newer server promotes the remaining server back to server.json.
+    server_b.stop();
+    assert_eq!(Discovery::read(&discovery).unwrap().port, server_a.port());
+    let mut out = Vec::new();
+    stdio::bridge(&discovery, &proj_a, session("still-here").as_bytes(), &mut out).await.unwrap();
+    let mut replies: Vec<Value> =
+        String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    replies.sort_by_key(|r| r["id"].as_i64());
+    assert_eq!(replies[1]["result"]["content"][0]["text"], format!("still-here in {}", proj_a.display()));
+
+    server_a.stop();
+    assert!(!discovery.exists());
 }

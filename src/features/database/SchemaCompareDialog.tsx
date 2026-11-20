@@ -54,11 +54,13 @@ function SidePicker({ label, side, onChange }: { label: string; side: Side; onCh
   useEffect(() => {
     if (side.id && !useDatabase.getState().schemas[side.id]) void loadSchemas(side.id);
   }, [side.id]);
-  const sourceOptions: SelectOption[] = sources.map((s) => ({
-    value: s.id ?? "",
-    label: s.name ?? "",
-    icon: "database",
-  }));
+  const sourceOptions: SelectOption[] = sources
+    .filter((s) => s.driver !== "jdbc")
+    .map((s) => ({
+      value: s.id ?? "",
+      label: s.name ?? "",
+      icon: "database",
+    }));
   if (side.id && !sourceOptions.some((o) => o.value === side.id))
     sourceOptions.push({ value: side.id, label: targetLabel(side.id), icon: "database" });
   const names = schemas?.status === "ok" ? schemas.value : [];
@@ -326,7 +328,12 @@ export function SchemaCompareDialog({ initial }: { initial: Side | null }) {
               />
             )}
           </div>
-          <CodePreview sql className={styles.preview} aria-label="Migration script" text={sql} />
+          <div className={styles.preview}>
+            <span className={styles.previewLabel}>
+              <T>Migration script</T>
+            </span>
+            <CodePreview sql aria-label="Migration script" text={sql} />
+          </div>
         </div>
       </div>
     </Dialog>

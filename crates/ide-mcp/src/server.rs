@@ -185,7 +185,7 @@ impl Drop for McpServer {
         self.cancel.cancel();
         let _ = self.shutdown.send(true);
         if let Some(path) = &self.discovery {
-            Discovery::remove_if_ours(path);
+            Discovery::remove_server(path, self.port);
         }
     }
 }

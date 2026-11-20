@@ -8,7 +8,8 @@
  * keydown that started the commit is still waiting for its keyup, so the commit is dropped.
  * `CompositionHelper` has the same problem from the other side: it reads a keyCode-229
  * commit from a `setTimeout(0)` snapshot diff of the textarea, which misses text inserted
- * after the timer and emits DEL when an IME clears the textarea first.
+ * after that timer. (xterm 6.1 guards that diff with a single timer and no longer sends DEL
+ * when an IME clears the textarea first; text inserted later is still missed.)
  *
  * So only the commits xterm would lose are taken over:
  * - a keyCode-229 keydown never reaches xterm, so its deferred textarea diff cannot run;
@@ -17,8 +18,10 @@
  * - composition input that arrives without a `compositionstart` is sent the same way;
  * - so is an `insertText` while only a modifier is down: an IME that commits a shifted
  *   character directly (`？` from Shift+/ with WeChat or Pinyin) delivers it before the
- *   character's keydown, and the Shift keydown already armed xterm's gate, so the first press
- *   was dropped.
+ *   character's keydown, and the Shift keydown armed xterm's gate, so the first press was
+ *   dropped. xterm 6.1 stops arming that gate for a modifier keydown, but the textarea is
+ *   ours for as long as an IME key is pending on every version, so the commit is taken over
+ *   either way — and still sent exactly once.
  *
  * Everything else stays xterm's: real compositions (`compositionstart` … `compositionend`),
  * input events for keys xterm already sent, and input with no IME keydown behind it.

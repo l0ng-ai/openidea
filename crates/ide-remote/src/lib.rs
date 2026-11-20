@@ -14,7 +14,7 @@ pub use deploy::{
     Deployment, DeploymentCoverage, SyncAction, SyncEntry, SyncStatus, SyncStep, TransferReport, coverage,
 };
 pub use mapping::{Excludes, Mappings, ResolvedMapping};
-pub use service::{DeployedPath, DeploymentRoot, RemoteService};
+pub use service::{DeployedPath, DeploymentRoot, RemoteService, default_targets};
 pub use target::{RemoteRuns, RemoteStart};
 
 pub mod plugin_target;

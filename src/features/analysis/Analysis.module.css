@@ -199,6 +199,21 @@
   align-items: center;
   gap: var(--space-2);
 }
+.reformatSubject {
+  overflow-wrap: anywhere;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.reformatMask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.reformatMaskInput {
+  flex: 1 1 12ch;
+  min-width: 0;
+}
 .languageSelect {
   min-width: 180px;
 }
@@ -285,10 +300,26 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  font-size: var(--fs-ui);
 }
 .panel > * {
   flex: 1;
   min-height: 0;
+}
+.resultLabel,
+.resultDirectory {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.resultMeta {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.resultDirectory {
+  flex-shrink: 1;
+  max-width: 35%;
 }
 .excluded .message,
 .excluded .strong {
@@ -298,22 +329,38 @@
 .details {
   display: flex;
   flex-direction: column;
+}
+.detailsBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
-  padding: 10px 12px;
+  padding: var(--space-2) var(--space-3);
   overflow: auto;
-  border-left: 1px solid var(--border);
-  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
 }
 .detailsEmpty {
+  flex: 1;
+  display: flex;
   align-items: center;
   justify-content: center;
+  padding: var(--space-3);
   color: var(--fg-faint);
+  text-align: center;
 }
 .detailsTitle {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-1-5);
   color: var(--fg-strong);
+}
+.detailsLocation {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.detailsCoordinates {
+  white-space: nowrap;
 }
 .detailsMessage {
   margin: 0;
@@ -321,6 +368,18 @@
   color: var(--fg);
 }
 .detailsActions {
+  flex: none;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.detailAction {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--h-control);
+  white-space: normal;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }

@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
 import { useWindowGroup } from "@/platform/windowGroups";
 import { useContextMenuStore } from "@/ui/Menu";
+import { projectColorVars } from "./projectColor";
+import { setTabColorOverride } from "./tabColors";
 import { WindowGroupTabs } from "./WindowGroupTabs";
 
 vi.mock("@/platform/actions", async (importOriginal) => ({
@@ -12,6 +14,7 @@ vi.mock("@/platform/actions", async (importOriginal) => ({
 
 beforeEach(() => {
   vi.mocked(executeAction).mockClear();
+  localStorage.clear();
   useWindowGroup.setState({
     tabs: [
       { label: "main", name: "Frontend", root: "/front", current: true },
@@ -84,4 +87,27 @@ it("offers Move Tab to New Window for every tab in its context menu", () => {
   expect(item.disabled).toBeUndefined();
   void item.run?.();
   expect(executeAction).toHaveBeenLastCalledWith("window.detachTab", "project-1");
+});
+
+it("offers Tab Color… in the context menu", () => {
+  render(<WindowGroupTabs />);
+  fireEvent.contextMenu(screen.getByRole("tab", { name: "Backend" }));
+  const item = useContextMenuStore
+    .getState()
+    .menu!.items.find((i) => "label" in i && i.label === "Change Project Color…") as {
+    run?: () => unknown;
+  };
+  void item.run?.();
+  expect(executeAction).toHaveBeenLastCalledWith("window.setTabColor", "project-1");
+});
+
+it("tints only tabs with a stored colour override", () => {
+  setTabColorOverride("/back", "#112233");
+  render(<WindowGroupTabs />);
+  const front = screen.getByRole("tab", { name: "Frontend" }).parentElement!;
+  const back = screen.getByRole("tab", { name: "Backend" }).parentElement!;
+  expect(front.style.getPropertyValue("--project-color")).toBe(projectColorVars("Frontend")["--project-color"]);
+  expect(front.hasAttribute("data-tinted")).toBe(false);
+  expect(back.style.getPropertyValue("--project-color")).toBe("#112233");
+  expect(back.hasAttribute("data-tinted")).toBe(true);
 });

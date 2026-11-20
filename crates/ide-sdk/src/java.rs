@@ -86,6 +86,11 @@ pub(crate) fn java_runs(java: &Path) -> bool {
     runnable
 }
 
+/// First runnable Java installation in discovery order, including standalone JREs.
+pub fn java_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
+    jdks.iter().find(|j| j.major >= min_java && java_runs(&java_executable(&j.home)))
+}
+
 fn project_jdk_is_usable(jdk: &Jdk) -> bool {
     jdk.home.join("bin").join(crate::exe("javac")).is_file()
         && (jdk.major < 9 || ide_core::java_runtime::supports_java_bundles(&jdk.home))
@@ -747,6 +752,16 @@ pub(crate) fn write_test_java(home: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn java_runtime_accepts_a_jre_without_a_compiler() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jre = test_jdk(tmp.path(), 17, "jre");
+        std::fs::remove_file(jre.home.join("bin").join(crate::exe("javac"))).unwrap();
+        let jdks = [test_jdk(tmp.path(), 11, "old"), jre.clone()];
+        assert_eq!(java_runtime(&jdks, 17), Some(&jre));
+        assert_eq!(java_runtime(&jdks, 21), None);
+    }
 
     fn test_jdk(root: &Path, major: u32, name: &str) -> Jdk {
         let home = root.join(name.trim_start_matches('/'));
@@ -1616,6 +1631,16 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
         "java-usages",
         "1.16.0",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
+    )
+}
+
+/// Extracts the JDBC bridge into the application's data directory.
+pub fn jdbc_bridge_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(
+        data_dir,
+        "jdbc-bridge",
+        "1.0.0",
+        include_bytes!("../../../java/jdbc-bridge/openidea-jdbc-bridge.jar"),
     )
 }
 

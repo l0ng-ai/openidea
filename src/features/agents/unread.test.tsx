@@ -56,7 +56,10 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentProviders: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
     agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
-    agentBaseText: async (_task: string, path: string) => ({ status: "ok", data: `base of ${path}` }),
+    agentBaseText: async (_task: string, path: string, view: string | null) => ({
+      status: "ok",
+      data: view === "lastTurn" ? `before the last turn: ${path}` : `base of ${path}`,
+    }),
     agentEntries: async () => ({ status: "ok", data: await backend.entries }),
   },
 }));
@@ -520,6 +523,21 @@ describe("the diff of an agent change", () => {
     expect(input.data.left).toEqual({ type: "text", text: "base of /project/b.ts", label: "Base" });
     expect(input.data.chain.map((d: { path: string }) => d.path)).toEqual(["/project/a.ts", "/project/b.ts"]);
     expect(input.data.chain[0].left.text).toBe("base of /project/a.ts");
+  });
+
+  it("in the last turn, lists that turn's files against how they were as it started", async () => {
+    useAgents.setState({
+      changes: new Map([["one", [change("/project/a.ts"), change("/project/b.ts")]]]),
+      turnChanges: new Map([["one", [change("/project/b.ts")]]]),
+    });
+    await openChangeDiff(task("one"), "/project/b.ts", "turn");
+    const input = backend.openInput.mock.lastCall![0];
+    expect(input.data.left).toEqual({
+      type: "text",
+      text: "before the last turn: /project/b.ts",
+      label: "Before Last Turn",
+    });
+    expect(input.data.chain).toBeUndefined();
   });
 
   it("opens a file outside the change list on its own", async () => {

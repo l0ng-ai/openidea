@@ -104,6 +104,7 @@ export type LspPopup =
       pin?: { label: string; run: () => void };
       /** Side panel for the selected row, fetched lazily; `signal` aborts when the selection moves. */
       preview?: (item: ListPopupItem, signal: AbortSignal) => Promise<ListPreview | null>;
+      themeClasses?: string;
       /** Runs when the popup goes away (closed, replaced or a row ran). */
       onClose?: () => void;
     }
@@ -130,6 +131,14 @@ export type LspPopup =
       onSubmit: (name: string) => void;
     }
   | {
+      kind: "symbolRename";
+      title: string;
+      initial: string;
+      note?: string;
+      themeClasses: string;
+      onSubmit: (name: string) => void;
+    }
+  | {
       kind: "preview";
       title: string;
       summary: WorkspaceEditSummary;
@@ -139,6 +148,8 @@ export type LspPopup =
       warnings?: string[];
       /** Individual occurrences with line previews (single-file syntax-based renames). */
       occurrences?: PreviewOccurrence[];
+      /** The editor theme for a symbol rename and its occurrence snippets. */
+      renameThemeClasses?: string;
     };
 
 export interface PreviewOccurrence {

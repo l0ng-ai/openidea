@@ -189,6 +189,14 @@ describe("context configuration", () => {
     expect(fileRole("lib/tasks/gen.rb")).toBe("script");
     expect(fileRole("src/main.rs")).toBe("main");
     expect(fileRole("cmd/main.go", "package main\nfunc main() {}")).toBe("main");
+    // A JVM class with a `main` runs as a program even under a test-like name.
+    expect(
+      fileRole("src/test/java/com/example/Test.java", "class Test { public static void main(String[] a) {} }"),
+    ).toBe("main");
+    expect(fileRole("src/test/kotlin/Spec.kt", "fun main() {}")).toBe("main");
+    // Without content (the menu's first pass) the name still says test.
+    expect(fileRole("src/test/java/com/example/Test.java")).toBe("test");
+    expect(fileRole("src/test/java/com/example/OrderBookTest.java", "@Test void totals() {}")).toBe("test");
     expect(fileRole("tools/gen.py")).toBe("script");
     expect(fileRole("scripts/build.bat", undefined, true)).toBe("script");
     expect(fileRole("scripts/run.cmd", undefined, true)).toBe("script");

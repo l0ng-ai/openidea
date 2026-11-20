@@ -388,6 +388,7 @@ function DropDatabaseDialog({ id, database }: { id: string; database: string }) 
 // ---- Modify Table / New Table -----------------------------------------------
 
 const TYPES: Record<DbDriver, string[]> = {
+  jdbc: [],
   snowflake: [
     "NUMBER(38,0)",
     "NUMBER(10,2)",

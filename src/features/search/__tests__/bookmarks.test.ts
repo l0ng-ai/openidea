@@ -9,7 +9,6 @@ import {
   marksOf,
   toggleMnemonic,
   renameBookmarks,
-  setFileLines,
   toggleBookmark,
   updateBookmarks,
   useBookmarks,
@@ -26,20 +25,6 @@ describe("bookmark helpers", () => {
     expect(list[2]!.text).toBe("val x = 1");
     list = toggleBookmark(list, "/p/b.kt", 1, "import");
     expect(linesOf(list, "/p/b.kt")).toEqual([3]);
-  });
-
-  it("moves lines after edits and collapses duplicates", () => {
-    const list = [
-      { path: "/p/a", line: 1, text: "a", created: 1 },
-      { path: "/p/a", line: 5, text: "b", created: 2 },
-      { path: "/p/z", line: 0, text: "z", created: 3 },
-    ];
-    const moved = setFileLines(list, "/p/a", [
-      { line: 3, text: "a" },
-      { line: 3, text: "b" },
-    ]);
-    expect(moved.map((b) => `${b.path}:${b.line}`)).toEqual(["/p/a:3", "/p/z:0"]);
-    expect(moved[0]!.created).toBe(1);
   });
 
   it("follows renames and drops deleted files", () => {
@@ -97,19 +82,15 @@ describe("mnemonic bookmarks", () => {
     expect(linesOf(list, "/p/a")).toEqual([3]);
   });
 
-  it("keeps mnemonics and descriptions when lines move or storage reloads", () => {
+  it("keeps mnemonics and descriptions when storage reloads", () => {
     const list: Bookmark[] = [{ path: "/p/a", line: 1, text: "a", created: 1, mnemonic: "7", description: "note" }];
-    expect(setFileLines(list, "/p/a", [{ line: 4, text: "a" }])[0]).toMatchObject({
-      line: 4,
-      mnemonic: "7",
-      description: "note",
-    });
     localStorage.setItem(
       "openidea.bookmarks.v1:/m",
       JSON.stringify([...list, { path: "/p/b", line: 0, mnemonic: "ab" }]),
     );
     loadBookmarks("/m");
     expect(useBookmarks.getState().items.map((b) => b.mnemonic)).toEqual(["7", undefined]);
+    expect(useBookmarks.getState().items[0]).toMatchObject({ line: 1, description: "note" });
   });
 
   it("F3 on a selection uses it as the description; Rename edits it", () => {

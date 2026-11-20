@@ -321,7 +321,7 @@ export function SettingsLayout() {
 
   return (
     <SplitGroup id="settings" orientation="horizontal" storageKey="openidea.settings.layout" className={styles.layout}>
-      <SplitPanel id="navigation" defaultSize="240px" minSize="160px" maxSize="40%" className={styles.sidebar}>
+      <SplitPanel id="navigation" defaultSize="22.5%" minSize="160px" maxSize="40%" className={styles.sidebar}>
         <SearchField
           data-autofocus
           className={styles.search}
@@ -356,7 +356,6 @@ export function SettingsLayout() {
             onSelectionChange={(_sel, node) => node && selectPage(node.key)}
             multiSelect={false}
             speedSearch={false}
-            rowHeight={24}
             empty={
               <div className={styles.noMatch}>
                 <T>No matches</T>

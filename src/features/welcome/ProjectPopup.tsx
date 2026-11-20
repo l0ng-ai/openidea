@@ -5,14 +5,14 @@ import { call, commands, isTauri, type OpenProject, type RecentProject } from "@
 import { HighlightedText, Icon, Popup, showContextMenu, type IconName, T } from "@/ui";
 import type { ProjectPopupProps } from "@/workbench/contributions";
 import { askRemoveRecent, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
-import { filterRecent, loadRecent, openRecent, useRecent, type RecentMatch } from "./recent";
+import { filterRecent, loadRecent, openRecent, recentRows, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
 import { parseRemoteLocation, remoteLocation } from "@/platform/remote";
 
 type Entry =
   | { kind: "action"; id: string; label: string; icon: IconName }
-  | { kind: "project"; open: boolean; m: RecentMatch };
+  | { kind: "project"; open: boolean; m: RecentMatch; group?: string | null };
 
 const ACTIONS: { id: string; label: string; icon: IconName }[] = [
   { id: "file.newProject", label: "New Project…", icon: "plus" },
@@ -36,10 +36,14 @@ function useOpenProjects(): OpenProject[] {
   return open;
 }
 
-/** The title bar project widget's popup, after IDEA's ProjectWidget: actions, open projects, recent projects; type to filter. */
+/**
+ * The title bar project widget's popup, after IDEA's ProjectWidget: actions, open projects, recent
+ * projects (under the Welcome screen's project groups, then the ungrouped ones); type to filter.
+ */
 export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
   const actions = useActions((s) => s.actions);
   const recent = useRecent((s) => s.projects);
+  const groups = useRecent((s) => s.groups);
   const home = useRecent((s) => s.home);
   const openProjects = useOpenProjects();
   const [query, setQuery] = useState("");
@@ -60,14 +64,17 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
       open: true,
       m,
     }));
-    const rest = filterRecent(
+    // Every group lists its projects here, collapsed on the Welcome screen or not; a search is flat.
+    const expanded = groups.map((g) => ({ ...g, expanded: true }));
+    const rest = recentRows(
       recent.filter((r) => !openPaths.has(r.path)),
+      expanded,
       query,
       home,
-    ).map((m) => ({ kind: "project" as const, open: false, m }));
+    ).flatMap((r) => (r.kind === "project" ? [{ kind: "project" as const, open: false, m: r.m, group: r.group }] : []));
     const acts = query ? [] : ACTIONS.filter((a) => actions.has(a.id)).map((a) => ({ kind: "action" as const, ...a }));
     return [...acts, ...open, ...rest];
-  }, [actions, recent, home, openProjects, query]);
+  }, [actions, recent, groups, home, openProjects, query]);
   const current = Math.min(active, entries.length - 1);
 
   useEffect(() => {
@@ -150,6 +157,7 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
                 <T>Recent Projects</T>
               </Header>
             )}
+            {e.kind === "project" && !e.open && <GroupBoundary entry={e} previous={entries[i - 1]} />}
             <div
               role="option"
               aria-selected={i === current}
@@ -194,10 +202,35 @@ function Header({ first, children }: { first: boolean; children: ReactNode }) {
   );
 }
 
+/** A project group's name above its first project; a separator where the ungrouped projects start. */
+function GroupBoundary({
+  entry,
+  previous,
+}: {
+  entry: Extract<Entry, { kind: "project" }>;
+  previous: Entry | undefined;
+}) {
+  const before = previous?.kind === "project" && !previous.open ? (previous.group ?? null) : null;
+  const group = entry.group ?? null;
+  if (group === before) return null;
+  if (group === null) return <div className={styles.separator} role="separator" />;
+  return (
+    <div className={styles.groupHeader}>
+      <Icon name="folder" size={14} />
+      <span className={styles.label}>{group}</span>
+    </div>
+  );
+}
+
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
   return (
     <>
-      <ProjectBadge name={m.project.name} className={styles.badge} missing={!!m.project.missing} />
+      <ProjectBadge
+        name={m.project.name}
+        path={m.project.path}
+        className={styles.badge}
+        missing={!!m.project.missing}
+      />
       <span className={styles.text} title={unavailableTitle(m.project)}>
         <span className={styles.top}>
           <HighlightedText

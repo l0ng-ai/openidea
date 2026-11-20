@@ -18,14 +18,21 @@ struct State {
     database: String,
     settings: Vec<(String, String)>,
     read_only: bool,
-    session_id: String,
-    session: Mutex<bool>,
+    session: Mutex<Session>,
     closed: CancellationToken,
+}
+
+#[derive(Default)]
+struct Session {
+    id: Option<String>,
+    initialized: bool,
+    strict_read_only: bool,
 }
 
 /// The response format: a names line, a types line, then one JSON array per row, so rows past
 /// the grid's limit are skipped without being parsed.
 const FORMAT: &str = "JSONCompactEachRowWithNamesAndTypes";
+const SESSION_LOST: &str = "ClickHouse HTTP session expired or is missing on this node (code 372). Reconnect to start a new session. Behind a load balancer, use one node or session affinity, or set use_http_session=false in Advanced for independent queries.";
 
 pub(crate) fn transaction_error() -> IdeError {
     IdeError::invalid("ClickHouse HTTP does not support SQL transactions; use auto-commit and run writes directly")
@@ -36,10 +43,31 @@ impl ClickhousePool {
         if source.options.transaction == DbTxMode::Manual {
             return Err(transaction_error());
         }
-        for (name, _) in &setup.params {
-            if reserved_setting(name) {
+        let mut use_http_session = None;
+        let mut settings = Vec::with_capacity(setup.params.len());
+        for (name, value) in setup.params {
+            if name.eq_ignore_ascii_case("use_http_session") {
+                if use_http_session.is_some() {
+                    return Err(IdeError::invalid("ClickHouse use_http_session must be specified only once"));
+                }
+                use_http_session = Some(if value.eq_ignore_ascii_case("true") {
+                    true
+                } else if value.eq_ignore_ascii_case("false") {
+                    false
+                } else {
+                    return Err(IdeError::invalid("ClickHouse use_http_session must be true or false"));
+                });
+            } else if reserved_setting(&name) {
                 return Err(IdeError::invalid(format!("ClickHouse HTTP manages the {name} setting")));
+            } else {
+                settings.push((name, value));
             }
+        }
+        let use_http_session = use_http_session.unwrap_or(true);
+        if !use_http_session && (!setup.statements.is_empty() || !source.options.startup_script.trim().is_empty()) {
+            return Err(IdeError::invalid(
+                "ClickHouse use_http_session=false does not support startup scripts; configure database and settings on the data source for each request",
+            ));
         }
         let secure = matches!(source.ssl, DbSslMode::Require | DbSslMode::VerifyCa | DbSslMode::VerifyFull);
         let tls_files = [&source.ssl_ca_file, &source.ssl_cert_file, &source.ssl_key_file];
@@ -105,16 +133,50 @@ impl ClickhousePool {
             endpoint,
             user: if source.user.is_empty() { "default".into() } else { source.user.clone() },
             password: password.unwrap_or_default().to_owned(),
-            database: if database.is_empty() { "default".into() } else { database.into() },
-            settings: setup.params,
+            database: database.into(),
+            settings,
             read_only: source.read_only,
-            session_id: uuid::Uuid::new_v4().to_string(),
-            session: Mutex::new(false),
+            session: Mutex::new(Session {
+                id: use_http_session.then(|| uuid::Uuid::new_v4().to_string()),
+                ..Session::default()
+            }),
             closed: CancellationToken::new(),
         }));
         let cancel = CancellationToken::new();
         let initialize = async {
-            pool.execute("SELECT 1", 1, &cancel).await?;
+            if let Err(error) = pool.execute("SELECT 1", 1, &cancel).await {
+                if !rejects_driver_setting(&error) {
+                    return Err(error);
+                }
+                if !use_http_session {
+                    return Err(IdeError::new(
+                        error.kind,
+                        format!(
+                            "{}; use_http_session=false requires per-request read-only and result-limit settings. Strict read-only fallback requires an HTTP session on one node or session affinity",
+                            error.message
+                        ),
+                    ));
+                }
+                // Retry only the connection probe. Keep relying on the server for write protection
+                // only after verifying strict read-only mode in this same session.
+                {
+                    let mut session = pool.0.session.lock().await;
+                    // Start the proof in a fresh session: the rejected probe may have left
+                    // its id on another replica without applying the configured database.
+                    session.id = Some(uuid::Uuid::new_v4().to_string());
+                    session.strict_read_only = true;
+                }
+                let result = pool.execute("SELECT getSetting('readonly')", 1, &cancel).await?;
+                if result.rows.first().and_then(|row| row.first()).and_then(Option::as_deref) != Some("1") {
+                    return Err(error);
+                }
+            }
+            // The HTTP database parameter applies to one request. A named session needs
+            // USE once so later queries inherit the selection (and may change it).
+            if use_http_session && !database.is_empty() {
+                let name = crate::sql::quote_ident(crate::DbDriver::Clickhouse, database);
+                pool.execute(&format!("USE {name}"), 0, &cancel).await?;
+            }
             for sql in setup.statements {
                 pool.execute(&sql, 0, &cancel).await?;
             }
@@ -151,27 +213,30 @@ impl ClickhousePool {
     }
 
     /// `max_rows`: the rows the server may send (the skipped ones included).
-    fn request(&self, client: &Client, query_id: &str, max_rows: usize, initialized: bool) -> RequestBuilder {
+    fn request(&self, client: &Client, query_id: &str, max_rows: usize, session: &Session) -> RequestBuilder {
         let mut request = client
             .post(self.0.endpoint.clone())
             .basic_auth(&self.0.user, Some(&self.0.password))
             .header(reqwest::header::CONTENT_TYPE, "text/plain; charset=utf-8")
             .query(&self.0.settings)
-            .query(&[
-                ("session_id", self.0.session_id.clone()),
-                ("session_timeout", "3600".into()),
-                ("query_id", query_id.to_owned()),
-                ("default_format", FORMAT.into()),
+            .query(&[("query_id", query_id), ("default_format", FORMAT)]);
+        if !session.strict_read_only {
+            request = request.query(&[
                 ("output_format_json_quote_denormals", "1".into()),
                 ("max_result_rows", max_rows.saturating_add(1).to_string()),
                 ("result_overflow_mode", "break".into()),
             ]);
-        if initialized {
-            request = request.query(&[("session_check", "1")]);
-        } else {
+        }
+        if let Some(session_id) = &session.id {
+            request = request.query(&[("session_id", session_id.as_str()), ("session_timeout", "3600")]);
+            if session.initialized {
+                request = request.query(&[("session_check", "1")]);
+            }
+        }
+        if !self.0.database.is_empty() && (session.id.is_none() || !session.initialized) {
             request = request.query(&[("database", &self.0.database)]);
         }
-        if self.0.read_only {
+        if self.0.read_only && !session.strict_read_only {
             request = request.query(&[("readonly", "1")]);
         }
         request
@@ -200,7 +265,7 @@ impl ClickhousePool {
         };
         let client = self.client()?;
         let query_id = uuid::Uuid::new_v4().to_string();
-        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), *session).body(sql.to_owned());
+        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), &session).body(sql.to_owned());
         let started = Instant::now();
         let fetch = async {
             let mut response = request.send().await.map_err(http_error)?;
@@ -254,7 +319,7 @@ impl ClickhousePool {
         match result {
             Some(result) => {
                 if result.is_ok() {
-                    *session = true;
+                    session.initialized = true;
                 }
                 result
             }
@@ -307,11 +372,7 @@ impl ClickhousePool {
         let auth = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
             || matches!(code, Some("193" | "194" | "195" | "516" | "497"));
         let detail = if message.is_empty() { status.canonical_reason().unwrap_or("request failed") } else { &message };
-        let detail = if detail.contains("SESSION_NOT_FOUND") || detail.contains("Session not found") {
-            "ClickHouse HTTP session expired; reconnect to restore session settings"
-        } else {
-            detail
-        };
+        let detail = if code == Some("372") || session_not_found(detail) { SESSION_LOST } else { detail };
         self.redact_error(IdeError::new(
             if auth { ErrorKind::PermissionDenied } else { ErrorKind::InvalidInput },
             format!("ClickHouse HTTP {}: {detail}", status.as_u16()),
@@ -323,9 +384,9 @@ type DecodedResult = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, bool);
 
 /// Decodes a streamed [`FORMAT`] body. Reads past the first `skip` rows unparsed (a later
 /// page), then keeps `max_rows` rows; later rows only set `has_more` and are read past
-/// unparsed, so a grid limit bounds memory however large the block
-/// `result_overflow_mode=break` lets the server send. A line that is not a JSON array
-/// starts the exception ClickHouse writes when a query fails mid-stream.
+/// unparsed, so a grid limit bounds memory even if a strict read-only server does not allow
+/// per-query result limits. A line that is not a JSON array starts the exception ClickHouse
+/// writes when a query fails mid-stream.
 struct RowReader {
     skip: usize,
     max_rows: usize,
@@ -433,7 +494,11 @@ impl RowReader {
         let rest = std::mem::take(&mut self.pending);
         self.line(&rest)?;
         if let Some(exception) = self.exception {
-            return Err(IdeError::invalid(format!("ClickHouse: {}", exception_text(&exception))));
+            let detail = exception_text(&exception);
+            return Err(IdeError::invalid(format!(
+                "ClickHouse: {}",
+                if session_not_found(detail) { SESSION_LOST } else { detail }
+            )));
         }
         let Some(names) = self.names else { return Ok((Vec::new(), Vec::new(), false)) };
         let types = self.types.unwrap_or_default();
@@ -443,6 +508,13 @@ impl RowReader {
         let columns = names.into_iter().zip(types).map(|(name, type_name)| ResultColumn { name, type_name }).collect();
         Ok((columns, self.rows, self.more))
     }
+}
+
+/// Whether a server message reports a named HTTP session this node doesn't have.
+fn session_not_found(detail: &str) -> bool {
+    detail.starts_with("Code: 372.")
+        || detail.starts_with("Session not found")
+        || detail.starts_with("SESSION_NOT_FOUND")
 }
 
 /// The server's message in a failed response: rows already streamed and the
@@ -477,6 +549,20 @@ fn http_error(error: reqwest::Error) -> IdeError {
 fn read_pem(path: &str, label: &str) -> IdeResult<Vec<u8>> {
     std::fs::read(ide_ssh::expand(path))
         .map_err(|error| IdeError::new(ErrorKind::Io, format!("cannot read ClickHouse {label}: {error}")))
+}
+
+fn rejects_driver_setting(error: &IdeError) -> bool {
+    error
+        .message
+        .split_once(": ")
+        .and_then(|(_, detail)| detail.strip_prefix("Code: 164. DB::Exception: Cannot modify '"))
+        .and_then(|detail| detail.split_once("' setting in readonly mode"))
+        .is_some_and(|(name, _)| {
+            matches!(
+                name,
+                "output_format_json_quote_denormals" | "max_result_rows" | "result_overflow_mode" | "readonly"
+            )
+        })
 }
 
 fn reserved_setting(name: &str) -> bool {
@@ -575,6 +661,19 @@ mod tests {
         DataSource { driver: DbDriver::Clickhouse, host: "127.0.0.1".into(), port: Some(port), ..Default::default() }
     }
 
+    fn property(name: &str, value: &str) -> DbProperty {
+        DbProperty { name: name.into(), value: value.into() }
+    }
+
+    fn request_url(request: &str) -> Url {
+        let target = request.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+        Url::parse(&format!("http://localhost{target}")).unwrap()
+    }
+
+    fn query_value(url: &Url, key: &str) -> Option<String> {
+        url.query_pairs().find(|(name, _)| name == key).map(|(_, value)| value.into_owned())
+    }
+
     fn decode(body: &[u8], max_rows: usize, chunk: usize) -> IdeResult<DecodedResult> {
         decode_from(body, 0, max_rows, chunk)
     }
@@ -653,6 +752,7 @@ mod tests {
         let (port, requests) = server(vec![
             ("200 OK", "X-ClickHouse-Format: JSONCompactEachRowWithNamesAndTypes\r\n", ONE),
             ("200 OK", "", ""),
+            ("200 OK", "", ""),
             (
                 "200 OK",
                 "X-ClickHouse-Format: JSONCompactEachRowWithNamesAndTypes\r\n",
@@ -664,7 +764,7 @@ mod tests {
             user: "reader".into(),
             read_only: true,
             options: DbOptions { default_schema: "analytics".into(), time_zone: "UTC".into(), ..Default::default() },
-            properties: vec![DbProperty { name: "max_threads".into(), value: "2".into() }],
+            properties: vec![property("max_threads", "2"), property("use_http_session", "true")],
             ..source(port)
         };
         let pool = Pool::connect(&source, Some("mock-password"), None).await.unwrap();
@@ -687,7 +787,7 @@ mod tests {
         assert_eq!(value(&urls[1], "session_check").as_deref(), Some("1"));
         assert_eq!(value(&urls[0], "session_id"), value(&urls[2], "session_id"));
         assert_ne!(value(&urls[0], "query_id"), value(&urls[2], "query_id"));
-        assert_eq!(value(&urls[2], "max_result_rows").as_deref(), Some("2"));
+        assert_eq!(value(&urls[3], "max_result_rows").as_deref(), Some("2"));
         for (request, url) in requests.iter().zip(&urls) {
             assert!(request.starts_with("POST /?"));
             assert!(request.contains("Basic cmVhZGVyOm1vY2stcGFzc3dvcmQ="));
@@ -695,8 +795,10 @@ mod tests {
             assert_eq!(value(url, "readonly").as_deref(), Some("1"));
             assert_eq!(value(url, "session_timezone").as_deref(), Some("UTC"));
             assert_eq!(value(url, "max_threads").as_deref(), Some("2"));
+            assert_eq!(value(url, "use_http_session"), None);
         }
         assert!(requests[0].ends_with("SELECT 1"));
+        assert!(requests[1].ends_with("USE `analytics`"));
         assert!(pool.transaction(&[]).await.is_err());
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -704,6 +806,85 @@ mod tests {
         pool.close().await;
         assert!(pool.is_closed());
         assert!(pool.execute("SELECT 1", 1, &CancellationToken::new()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unset_database_uses_the_accounts_default_in_both_modes() {
+        for mode in ["true", "false"] {
+            let (port, requests) = server(vec![("200 OK", "", ONE); 2]).await;
+            let source = DataSource { properties: vec![property("use_http_session", mode)], ..source(port) };
+            let pool = Pool::connect(&source, None, None).await.unwrap();
+            pool.execute("SELECT 1", 1, &CancellationToken::new()).await.unwrap();
+            for request in requests.await.unwrap() {
+                assert_eq!(query_value(&request_url(&request), "database"), None);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stateless_requests_keep_database_settings_readonly_and_limits() {
+        let (port, requests) = server(vec![("200 OK", "", ONE); 3]).await;
+        let source = DataSource {
+            database: "configured_database".into(),
+            read_only: true,
+            options: DbOptions { default_schema: "analytics".into(), time_zone: "UTC".into(), ..Default::default() },
+            properties: vec![property("use_http_session", "false"), property("max_threads", "2")],
+            ..source(port)
+        };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        pool.execute("SELECT 2", 2, &CancellationToken::new()).await.unwrap();
+        pool.execute("SELECT 3", 3, &CancellationToken::new()).await.unwrap();
+
+        let requests = requests.await.unwrap();
+        let mut query_ids = std::collections::HashSet::new();
+        for (index, request) in requests.iter().enumerate() {
+            let url = request_url(request);
+            for name in ["session_id", "session_check", "session_timeout", "use_http_session"] {
+                assert_eq!(query_value(&url, name), None, "{name} must not be sent in stateless mode");
+            }
+            assert_eq!(query_value(&url, "database").as_deref(), Some("analytics"));
+            assert_eq!(query_value(&url, "session_timezone").as_deref(), Some("UTC"));
+            assert_eq!(query_value(&url, "max_threads").as_deref(), Some("2"));
+            assert_eq!(query_value(&url, "readonly").as_deref(), Some("1"));
+            assert_eq!(query_value(&url, "max_result_rows"), Some((index + 2).to_string()));
+            assert_eq!(query_value(&url, "result_overflow_mode").as_deref(), Some("break"));
+            assert_eq!(query_value(&url, "output_format_json_quote_denormals").as_deref(), Some("1"));
+            assert_eq!(query_value(&url, "default_format").as_deref(), Some(FORMAT));
+            assert!(query_ids.insert(query_value(&url, "query_id").unwrap()));
+            assert!(request.ends_with(&format!("SELECT {}", index + 1)));
+        }
+    }
+
+    #[tokio::test]
+    async fn default_session_expiry_never_recreates_the_session_or_replays_sql() {
+        for failure in [
+            ("500 Internal Server Error", "X-ClickHouse-Exception-Code: 372\r\n", "session unavailable"),
+            ("500 Internal Server Error", "", "Code: 372. DB::Exception: Session not found. (SESSION_NOT_FOUND)"),
+            ("200 OK", "", "Code: 372. DB::Exception: Session not found. (SESSION_NOT_FOUND)"),
+        ] {
+            let (port, requests) = server(vec![("200 OK", "", ONE), failure, ("200 OK", "", ONE)]).await;
+            let pool = Pool::connect(&source(port), None, None).await.unwrap();
+            let sql = "INSERT INTO events VALUES (1)";
+            let error = pool.execute(sql, 0, &CancellationToken::new()).await.unwrap_err();
+            assert!(error.message.contains("372"));
+            assert!(error.message.contains("one node or session affinity"));
+            assert!(error.message.contains("Reconnect"));
+            assert!(error.message.contains("use_http_session=false"));
+            pool.execute("SELECT 1", 1, &CancellationToken::new()).await.unwrap();
+
+            let requests = requests.await.unwrap();
+            assert_eq!(requests.len(), 3);
+            assert!(requests[0].ends_with("SELECT 1"));
+            assert!(requests[1].ends_with(sql));
+            assert!(requests[2].ends_with("SELECT 1"));
+            let session_id = query_value(&request_url(&requests[0]), "session_id").unwrap();
+            for request in &requests[1..] {
+                let url = request_url(request);
+                assert_eq!(query_value(&url, "session_id").as_deref(), Some(session_id.as_str()));
+                assert_eq!(query_value(&url, "session_check").as_deref(), Some("1"));
+                assert_eq!(query_value(&url, "database"), None);
+            }
+        }
     }
 
     #[tokio::test]
@@ -724,6 +905,144 @@ mod tests {
             vec![vec![Some("1".into())]]
         );
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connects_when_server_forbids_settings_in_readonly_mode() {
+        let (port, requests) = server(vec![
+            (
+                "500 Internal Server Error",
+                "X-ClickHouse-Exception-Code: 164\r\n",
+                "Code: 164. DB::Exception: Cannot modify 'output_format_json_quote_denormals' setting in readonly mode. (READONLY)",
+            ),
+            ("200 OK", "", ONE),
+            ("200 OK", "", ""),
+            ("200 OK", "", "[\"n\"]\n[\"UInt64\"]\n[1]\n[2]\n"),
+        ])
+        .await;
+        let source = DataSource {
+            database: "system".into(),
+            read_only: true,
+            properties: vec![DbProperty { name: "max_threads".into(), value: "2".into() }],
+            ..source(port)
+        };
+        let pool = Pool::connect(&source, None, None).await.unwrap();
+        let result = pool.execute("SELECT number FROM numbers(2)", 1, &CancellationToken::new()).await.unwrap();
+        assert_eq!(result.rows, vec![vec![Some("1".into())]]);
+        assert!(result.has_more);
+
+        let requests = requests.await.unwrap();
+        assert!(requests[0].ends_with("SELECT 1"));
+        assert!(requests[0].contains("output_format_json_quote_denormals=1"));
+        assert!(requests[1].ends_with("SELECT getSetting('readonly')"));
+        assert!(!requests[1].contains("session_check="));
+        assert_eq!(query_value(&request_url(&requests[1]), "database").as_deref(), Some("system"));
+        assert!(requests[2].contains("session_check=1"));
+        let session_id = query_value(&request_url(&requests[1]), "session_id").unwrap();
+        assert_ne!(query_value(&request_url(&requests[0]), "session_id").as_deref(), Some(session_id.as_str()));
+        for request in &requests[1..] {
+            assert_eq!(query_value(&request_url(request), "session_id").as_deref(), Some(session_id.as_str()));
+            assert!(request.contains("default_format=JSONCompactEachRowWithNamesAndTypes"));
+            assert!(request.contains("max_threads=2"));
+            for setting in
+                ["output_format_json_quote_denormals=", "max_result_rows=", "result_overflow_mode=", "readonly="]
+            {
+                assert!(!request.contains(setting), "{setting} is not allowed in a strict read-only session");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stateless_connections_never_fall_back_to_session_readonly_proof() {
+        for read_only in [false, true] {
+            let (port, requests) = server(vec![(
+                "500 Internal Server Error",
+                "X-ClickHouse-Exception-Code: 164\r\n",
+                "Code: 164. DB::Exception: Cannot modify 'max_result_rows' setting in readonly mode. (READONLY)",
+            )])
+            .await;
+            let source =
+                DataSource { read_only, properties: vec![property("use_http_session", "false")], ..source(port) };
+            let error = Pool::connect(&source, None, None).await.err().expect("stateless fallback must be rejected");
+            assert!(error.message.contains("Cannot modify 'max_result_rows'"));
+            assert!(error.message.contains("use_http_session=false requires per-request"));
+            let requests = requests.await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].ends_with("SELECT 1"));
+            let url = request_url(&requests[0]);
+            assert_eq!(query_value(&url, "max_result_rows").as_deref(), Some("2"));
+            assert_eq!(query_value(&url, "readonly").as_deref(), read_only.then_some("1"));
+            assert_eq!(query_value(&url, "session_id"), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn incompatible_stateless_options_are_rejected_before_connecting() {
+        for (properties, startup_script, expected) in [
+            (vec![property("use_http_session", "false")], "SET max_threads = 2", "does not support startup scripts"),
+            (vec![property("use_http_session", "invalid")], "", "must be true or false"),
+            (
+                vec![property("use_http_session", "false"), property("USE_HTTP_SESSION", "true")],
+                "",
+                "must be specified only once",
+            ),
+            (
+                vec![property("use_http_session", "false"), property("session_id", "custom")],
+                "",
+                "manages the session_id",
+            ),
+            (
+                vec![property("use_http_session", "false"), property("session_check", "0")],
+                "",
+                "manages the session_check",
+            ),
+            (
+                vec![property("use_http_session", "false"), property("session_timeout", "60")],
+                "",
+                "manages the session_timeout",
+            ),
+        ] {
+            let source = DataSource {
+                properties,
+                options: DbOptions { startup_script: startup_script.into(), ..Default::default() },
+                ..source(1)
+            };
+            let error = Pool::connect(&source, None, None).await.err().expect("incompatible options must fail");
+            assert!(error.message.contains(expected), "{}", error.message);
+        }
+    }
+
+    #[tokio::test]
+    async fn readonly_probe_does_not_disable_settings_on_a_writable_session() {
+        let (port, requests) = server(vec![
+            (
+                "500 Internal Server Error",
+                "X-ClickHouse-Exception-Code: 164\r\n",
+                "Code: 164. DB::Exception: Cannot modify 'max_result_rows' setting in readonly mode. (READONLY)",
+            ),
+            ("200 OK", "", "[\"readonly\"]\n[\"UInt64\"]\n[0]\n"),
+        ])
+        .await;
+        let source = DataSource { read_only: true, ..source(port) };
+        let error = Pool::connect(&source, None, None).await.err().expect("writable session must stay rejected");
+        assert!(error.message.contains("Cannot modify 'max_result_rows'"));
+        assert!(requests.await.unwrap()[1].ends_with("SELECT getSetting('readonly')"));
+    }
+
+    #[test]
+    fn readonly_probe_matches_only_the_driver_settings() {
+        for (code, setting, expected) in [
+            (164, "max_result_rows", true),
+            (164, "result_overflow_mode", true),
+            (164, "readonly", true),
+            (164, "max_threads", false),
+            (516, "max_result_rows", false),
+        ] {
+            let error = IdeError::invalid(format!(
+                "ClickHouse HTTP 500: Code: {code}. DB::Exception: Cannot modify '{setting}' setting in readonly mode. (READONLY)"
+            ));
+            assert_eq!(rejects_driver_setting(&error), expected, "{setting}");
+        }
     }
 
     #[tokio::test]

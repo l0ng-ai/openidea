@@ -140,3 +140,58 @@ export function foldedTurns(entries: readonly AgentEntry[], from: number, busy: 
   });
   return turns;
 }
+
+/** A command a tool ran and how it ended, read from its output (Hermes: `$ cmd`, `- **exit_code:** 0`). */
+export interface ToolRun {
+  command: string | null;
+  output: string;
+  exitCode: number | null;
+}
+
+/** Splits an `execute` tool's text into its command, output and exit code, where it names them. */
+export function toolRun(entry: ToolEntry): ToolRun {
+  const text = entry.output ?? "";
+  const command = /^\$ (.+)$/m.exec(text)?.[1] ?? null;
+  const code = /^- \*\*exit_code:\*\* (-?\d+)\s*$/m.exec(text);
+  const output = /^- \*\*output:\*\* ?([\s\S]*?)(?=^- \*\*exit_code:\*\*|(?![\s\S]))/m.exec(text)?.[1];
+  return {
+    command,
+    output: (output ?? (command ? text.replace(`$ ${command}`, "") : text)).trim(),
+    exitCode: code ? Number(code[1]) : null,
+  };
+}
+
+/** How long a tool call took, once it ended; `null` while it runs or when its times aren't known. */
+export function toolDuration(entry: ToolEntry): number | null {
+  const { startedMs, endedMs } = entry;
+  return startedMs != null && endedMs != null ? Math.max(0, endedMs - startedMs) : null;
+}
+
+/**
+ * How long each finished thought took, by index: from its start to the start of what came
+ * next that keeps time (a tool call, another thought) or else the end of its turn.
+ */
+export function thoughtDurations(entries: readonly AgentEntry[]): Map<number, number> {
+  const out = new Map<number, number>();
+  let open: { index: number; started: number } | null = null;
+  let turnEnd: number | null = null;
+  // An untimed entry (older history) says nothing about when the open thought ended.
+  const close = (at: number | null | undefined) => {
+    if (at == null) return;
+    if (open) out.set(open.index, Math.max(0, at - open.started));
+    open = null;
+  };
+  entries.forEach((e, i) => {
+    if (e.type === "user" && !e.steered) {
+      close(turnEnd);
+      open = null;
+      turnEnd = e.doneMs ?? null;
+    } else if (e.type === "tool") close(e.startedMs);
+    else if (e.type === "thought" && e.startedMs != null) {
+      close(e.startedMs);
+      open = { index: i, started: e.startedMs };
+    }
+  });
+  close(turnEnd);
+  return out;
+}

@@ -111,7 +111,7 @@ The toolbar has **Stop Request**, **Reload History** and **Clear History**. The 
 
 - HTTP/1.1 and HTTP/2. gzip, deflate and brotli responses are decoded.
 - TLS certificates are verified against the system trust store.
-- Redirects are followed.
+- Redirects are followed (up to 50): a 303 continues as GET without the body, other redirects keep the method and body, and the hops are shown in the response.
 - Cookies are not kept between requests.
 - Connections time out after 30 seconds; there is no overall request timeout.
 - The proxy comes from **Settings › Appearance & Behavior › System Settings › HTTP Proxy**.
@@ -135,7 +135,9 @@ In Java and Kotlin `@FeignClient` interfaces, click the **Go to Feign Endpoint**
 
 The built-in index matches HTTP methods and literal paths, including whole `{variable}` segments. A literal Feign `name` or `value` narrows candidates against an unambiguous `spring.application.name` in the destination module's `src/main/resources/application.properties`, `.yml` or `.yaml` (also under `resources/config`). Configuration is never inherited from a parent module or test sources. Conflicting profile names, dynamic or missing identities, and clients with explicit/dynamic `url` retain method/path candidates. No HTTP request is sent.
 
-This is source navigation, not service-discovery or effective runtime configuration resolution. Custom source sets, composed/aliased annotations, inherited mappings, dynamic mapping paths, `@RequestLine`, Ant/regex path patterns and reverse controller-to-client navigation are outside this first version. Navigation reads bounded local configuration and rechecks current controller text, including unsaved editor changes.
+To see which Feign interfaces declare a request to a Spring endpoint, open the endpoint’s gutter menu and choose **Find Feign Clients**. You can also invoke the action from the editor menu or Find Action with the caret in the controller method. A single service match opens directly. When several clients match, the chooser shows each interface method and its source path. Clients whose service cannot be established appear below known matches as **Possible match**, even when only one is found. A client known to target another service is excluded.
+
+Navigation reads local source and module configuration, including unsaved editor changes. Custom source sets, composed or aliased annotations, inherited mappings, dynamic mapping paths, `@RequestLine`, Ant/regex path patterns, and runtime service discovery are outside its scope.
 
 ## Not supported
 

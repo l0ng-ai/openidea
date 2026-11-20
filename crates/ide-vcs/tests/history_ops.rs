@@ -560,7 +560,7 @@ fn push_branch_and_up_to_revision() {
 }
 
 #[test]
-fn update_branch_fast_forwards_a_branch_not_checked_out() {
+fn update_branches_fast_forwards_each_selected_branch() {
     let fx = Fixture::new();
     let bare = fx._tmp.path().join("origin.git");
     git_in(fx._tmp.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
@@ -568,22 +568,104 @@ fn update_branch_fast_forwards_a_branch_not_checked_out() {
     fx.commit_all("one");
     fx.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
     fx.git(&["push", "-q", "-u", "origin", "main"]);
-    fx.git(&["checkout", "-q", "-b", "work"]);
-    // Someone else advances origin/main.
+    for b in ["behind", "diverged", "ahead", "same", "elsewhere"] {
+        fx.git(&["push", "-q", "origin", &format!("main:{b}")]);
+        fx.git(&["branch", "-q", "--track", b, &format!("origin/{b}")]);
+    }
+    fx.git(&["branch", "-q", "local-only"]);
+    // Someone else advances main, behind, diverged and elsewhere on the remote.
     let other = fx._tmp.path().join("other");
     git_in(fx._tmp.path(), &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
-    std::fs::write(other.join("a.txt"), "2\n").unwrap();
-    git_in(&other, &["-c", "user.name=O", "-c", "user.email=o@x", "commit", "-q", "-am", "two"]);
-    git_in(&other, &["push", "-q", "origin", "main"]);
-    let tip = git_in(&other, &["rev-parse", "HEAD"]);
+    let mut tips = std::collections::HashMap::new();
+    for b in ["main", "behind", "diverged", "elsewhere"] {
+        git_in(&other, &["checkout", "-q", b]);
+        std::fs::write(other.join("a.txt"), format!("{b}\n")).unwrap();
+        git_in(&other, &["-c", "user.name=O", "-c", "user.email=o@x", "commit", "-q", "-am", b]);
+        git_in(&other, &["push", "-q", "origin", b]);
+        tips.insert(b, git_in(&other, &["rev-parse", "HEAD"]));
+    }
+    // Local commits: `diverged` can't be fast-forwarded, `ahead` has nothing to take.
+    for b in ["diverged", "ahead"] {
+        fx.git(&["checkout", "-q", b]);
+        fx.write("b.txt", b);
+        fx.commit_all(b);
+    }
+    fx.git(&["checkout", "-q", "main"]);
+    // A branch checked out in another worktree is refused rather than moved under it.
+    let wt = fx._tmp.path().join("wt");
+    fx.git(&["worktree", "add", "-q", wt.to_str().unwrap(), "elsewhere"]);
+    let ahead = fx.git(&["rev-parse", "ahead"]);
 
     let repo = fx.repo();
     let (cancel, out) = quiet();
-    repo.update_branch("main", &cancel, &out).unwrap();
-    assert_eq!(fx.git(&["rev-parse", "main"]), tip);
-    assert_eq!(fx.git(&["rev-parse", "origin/main"]), tip);
-    // The checked-out branch and branches without upstream are refused.
-    assert!(repo.update_branch("work", &cancel, &out).is_err());
+    let names = ["main", "behind", "diverged", "ahead", "same", "local-only", "elsewhere"].map(String::from);
+    let result = repo.update_branches(&names, &cancel, &out).unwrap();
+    let status: Vec<_> = result.iter().map(|u| (u.branch.as_str(), u.status)).collect();
+    use BranchUpdateStatus::*;
+    assert_eq!(
+        status,
+        [
+            ("main", Updated),
+            ("behind", Updated),
+            ("diverged", NotFastForward),
+            ("ahead", UpToDate),
+            ("same", UpToDate),
+            ("local-only", NoUpstream),
+            ("elsewhere", Failed),
+        ]
+    );
+    assert!(result[6].message.as_deref().is_some_and(|m| m.contains("checked out")), "{:?}", result[6].message);
+    // The checked-out branch is fast-forwarded with its working tree.
+    assert_eq!(fx.git(&["rev-parse", "main"]), tips["main"]);
+    assert_eq!(fx.read("a.txt"), "main\n");
+    assert_eq!(fx.git(&["rev-parse", "behind"]), tips["behind"]);
+    assert_eq!(fx.git(&["rev-parse", "origin/diverged"]), tips["diverged"]);
+    assert_ne!(fx.git(&["rev-parse", "diverged"]), tips["diverged"]);
+    assert_eq!(fx.git(&["rev-parse", "ahead"]), ahead);
+    assert_ne!(fx.git(&["rev-parse", "elsewhere"]), tips["elsewhere"]);
+    assert!(repo.update_branches(&["origin/main".into()], &cancel, &out).is_err());
+}
+
+#[test]
+fn update_branches_fetches_each_remote_once_and_reports_its_failure() {
+    let fx = Fixture::new();
+    let bare = fx._tmp.path().join("origin.git");
+    git_in(fx._tmp.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
+    fx.write("a.txt", "1\n");
+    fx.commit_all("one");
+    fx.git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+    fx.git(&["remote", "add", "gone", fx._tmp.path().join("missing.git").to_str().unwrap()]);
+    fx.git(&["push", "-q", "-u", "origin", "main", "main:a", "main:b"]);
+    for b in ["a", "b"] {
+        fx.git(&["branch", "-q", "--track", b, &format!("origin/{b}")]);
+    }
+    fx.git(&["branch", "-q", "c"]);
+    fx.git(&["config", "branch.c.remote", "gone"]);
+    fx.git(&["config", "branch.c.merge", "refs/heads/c"]);
+
+    // Counts the fetches from origin.
+    #[cfg(unix)]
+    let counter = {
+        use std::os::unix::fs::PermissionsExt;
+        let counter = fx._tmp.path().join("fetches");
+        let script = fx._tmp.path().join("upload-pack.sh");
+        std::fs::write(&script, format!("#!/bin/sh\necho >> '{}'\nexec git-upload-pack \"$@\"\n", counter.display()))
+            .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fx.git(&["config", "remote.origin.uploadpack", script.to_str().unwrap()]);
+        counter
+    };
+
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let names = ["a", "b", "c"].map(String::from);
+    let result = repo.update_branches(&names, &cancel, &out).unwrap();
+    let status: Vec<_> = result.iter().map(|u| u.status).collect();
+    use BranchUpdateStatus::*;
+    assert_eq!(status, [UpToDate, UpToDate, Failed]);
+    assert!(result[2].message.is_some());
+    #[cfg(unix)]
+    assert_eq!(std::fs::read_to_string(counter).unwrap().lines().count(), 1);
 }
 
 /// `"` and tabs are illegal in Windows file names, and only they make Git quote a path.

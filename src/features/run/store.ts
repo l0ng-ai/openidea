@@ -4,6 +4,7 @@
  * per-session `ConsoleModel`, batched per animation frame.
  */
 import { withRunTarget } from "@/platform/runTargetSelection";
+import { notifyCwdError, withExpandedCwd } from "./cwdMacros";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -448,6 +449,17 @@ function sameApplication(a: RunConfig, b: RunConfig): boolean {
 }
 
 /**
+ * IDEA's `isConfigurationFromContext` for a Maven / Gradle goal: the same command line run by the
+ * same build tool in the same build directory, whatever the configuration is named (#4436). The
+ * existing configuration is run as is, so reuse must not drop option flags.
+ */
+function sameBuildGoal(a: RunConfig, b: RunConfig): boolean {
+  if ((a.kind !== "maven" && a.kind !== "gradle") || a.kind !== b.kind) return false;
+  if (a.command !== b.command || (a.cwd ?? "") !== (b.cwd ?? "")) return false;
+  return a.args.length > 0 && a.args.length === b.args.length && a.args.every((arg, i) => arg === b.args[i]);
+}
+
+/**
  * Selects the configuration for a gutter / context run: a saved or detected
  * configuration with the same id is reused, otherwise `config` becomes a
  * temporary one (the oldest idle temporary is dropped beyond five).
@@ -457,7 +469,9 @@ export function adoptTemporary(config: RunConfig): RunConfig {
   // IDEA's `findExistingConfiguration`: a configuration the user keeps for this context wins.
   const existing =
     state.configs.find((c) => c.id === config.id) ??
-    state.configs.find((c) => !state.temporary.includes(c.id) && sameApplication(c, config));
+    state.configs.find(
+      (c) => !state.temporary.includes(c.id) && (sameApplication(c, config) || sameBuildGoal(c, config)),
+    );
   if (existing && !state.temporary.includes(config.id)) {
     selectConfig(existing.id);
     return existing;
@@ -834,6 +848,12 @@ async function startRunIn(
   options: StartRunOptions,
 ): Promise<RunSession | null> {
   config = withRunTarget(config);
+  try {
+    config = await withExpandedCwd(config);
+  } catch (e) {
+    notifyCwdError(config, e);
+    return null;
+  }
   if (!options.launch && isCMakeBuild(config)) {
     await buildCMake(config.id, options.show !== false);
     return null;
@@ -1599,7 +1619,7 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
   }
 }
 
-/** Keystrokes typed into a console that emulates a terminal, sent as they are. */
+/** Keystrokes for the process (typed into a terminal console, or Flutter's hot reload keys), sent as they are. */
 export function writeTerminal(sessionId: string, data: string) {
   const session = getSession(sessionId);
   if (!session || session.runId === null || session.status !== "running") return;

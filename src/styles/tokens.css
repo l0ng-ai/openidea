@@ -295,6 +295,8 @@ html {
   --fs-tiny: 11px;
   --fs-code: 13px;
   --fs-input-large: 15px;
+  /* main toolbar, status bar, tool window headers and editor tabs (IDEA fontSizeOffset) */
+  --fs-chrome: var(--fs-ui);
   --lh-code: 22px;
 
   /* metrics (theme JSON at 100%) */
@@ -302,6 +304,8 @@ html {
   /* IDEA's compact header (HEADER_HEIGHT_DFM), the same in compact mode. */
   --h-compact-header: 30px;
   --titlebar-tool-button: 30px;
+  /* main toolbar dropdowns: project, VCS branch, run configuration */
+  --h-toolbar-widget: 30px;
   /* tool window stripe button, icons only */
   --stripe-icon-button: 30px;
   --stripe-outer-padding: 4px;
@@ -324,6 +328,8 @@ html {
   --radius-control: 4px;
   --radius-tab: 6px;
   --radius-toolbar-button: 6px;
+  /* main toolbar dropdowns (MainToolbar.Dropdown.arc 12): unchanged in compact mode */
+  --radius-toolbar-dropdown: 6px;
   --radius-floating-toolbar: 3px;
   --h-floating-toolbar-button: 22px;
   --floating-toolbar-top: 25px;
@@ -449,6 +455,14 @@ html {
   --project-gradient-strength: 22%;
 
   color-scheme: dark;
+}
+
+/* The letter on the Flutter plugin's widget icons: one colour in every theme, as in the plugin. */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark-hc"],
+:root[data-color-theme] {
+  --flutter-widget-fg: #231f20;
 }
 
 /* RecentProject.ColorN.Avatar Start/End — identical in Islands Light and Dark. */
@@ -1488,18 +1502,30 @@ html {
  * Appearance options (Settings › Appearance), applied as attributes on :root
  * by the settings runtime.
  */
-/* Compact mode: smaller rows, toolbars and tabs. */
+/*
+ * Compact mode: smaller rows, toolbars and tabs. Values follow IDEA's `*.compact`
+ * theme keys (Islands): Tree/List.rowHeight 22, MainToolbar.Button.size and
+ * RunWidget.toolbarHeight 26, Island.borderWidth 4, chrome fontSizeOffset -1.
+ * Swing `arc` is a diameter, so radii here are half of it.
+ */
 :root[data-compact] {
   --h-titlebar: 32px;
+  --titlebar-tool-button: 26px;
+  --h-toolbar-widget: 26px;
   --h-header: 32px;
   --h-tabbar: 32px;
   --h-tab: 24px;
-  --h-row: 20px;
-  --h-list-row: 20px;
+  --h-row: 22px;
+  --h-list-row: 22px;
   --h-statusbar: 24px;
   --stripe-icon-button: 24px;
   --h-field: 24px;
   --h-button: 24px;
+  --fs-chrome: calc(var(--fs-ui) - 1px);
+  --island-gap: 4px;
+  --island-radius: 8px;
+  --radius-control: 3px;
+  --radius-toolbar-button: 4px;
 }
 /* Use contrast scrollbars. */
 :root[data-contrast-scrollbars] {

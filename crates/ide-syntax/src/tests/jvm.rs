@@ -103,3 +103,29 @@ fn a_cut_off_file_is_classified_by_its_type_header() {
     let closed = format!("{}}}", jvm_type_header(cut).unwrap());
     assert_eq!(presentation("java", &closed).kind, Some(AbstractClass));
 }
+
+#[test]
+fn deprecated_primary_types() {
+    for (language, source) in [
+        ("java", "@Deprecated public class Foo {}"),
+        ("java", "@java.lang.Deprecated(since = \"2\") interface Foo {}"),
+        ("java", "/**\n * Old.\n * @deprecated use Bar\n */\npublic class Foo {}"),
+        ("java", "/** @deprecated */ class Foo {}"),
+        ("kotlin", "@Deprecated(\"use Bar\") class Foo"),
+        ("kotlin", "@kotlin.Deprecated(\"x\", level = DeprecationLevel.ERROR) object Foo {}"),
+    ] {
+        assert!(presentation(language, source).deprecated, "{language}: {source}");
+    }
+    for (language, source) in [
+        ("java", "public class Foo {}"),
+        ("java", "/* @deprecated */ class Foo {}"),
+        ("java", "// @Deprecated\nclass Foo {}"),
+        ("java", "/** See {@link Old}; @deprecatedSince is not a tag. */ class Foo {}"),
+        ("java", "class Foo { @Deprecated void old() {} }"),
+        ("java", "@Deprecated class Other {} class Foo {}"),
+        ("kotlin", "class Foo { @Deprecated(\"x\") fun old() {} }"),
+        ("kotlin", "/** @deprecated */ class Foo"),
+    ] {
+        assert!(!presentation(language, source).deprecated, "{language}: {source}");
+    }
+}

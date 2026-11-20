@@ -52,7 +52,15 @@ import {
 } from "./ops";
 import { SERVICES_VIEW_FOCUS, ServicesTreeView, showAddServiceMenu } from "./ServicesTree";
 import { ServicesHeaderActions, ServicesHost, ServicesTabs } from "./ServicesHost";
-import { connections, refresh, setDockerFilters, useServices } from "./store";
+import {
+  connectConnection,
+  connectionState,
+  connections,
+  disconnectConnection,
+  refresh,
+  setDockerFilters,
+  useServices,
+} from "./store";
 import { SERVICES_TREE_VIEW } from "./tree";
 import { isRunning } from "./model";
 import type { PruneTarget } from "@/platform/ipc";
@@ -142,6 +150,26 @@ export function activate(): () => void {
         icon: "refresh",
         when: PROJECT,
         run: () => refresh(),
+      },
+      {
+        id: "docker.connect",
+        title: "Connect to Docker",
+        category: "Docker",
+        when: PROJECT,
+        run: () => {
+          const id = currentConnection();
+          if (id && connectionState(id).disconnected) void connectConnection(id);
+        },
+      },
+      {
+        id: "docker.disconnect",
+        title: "Disconnect from Docker",
+        category: "Docker",
+        when: PROJECT,
+        run: () => {
+          const id = currentConnection();
+          if (id && !connectionState(id).disconnected) disconnectConnection(id);
+        },
       },
       {
         id: "docker.start",

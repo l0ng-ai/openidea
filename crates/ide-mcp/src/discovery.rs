@@ -61,18 +61,96 @@ impl Discovery {
         serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
-    /// Writes the file atomically, readable only by the user.
+    /// Writes the file atomically, readable only by the user, and records a per-server
+    /// entry alongside it so multiple `openidea-server` processes sharing one data
+    /// directory remain discoverable by project.
     pub fn write(&self, path: &Path) -> io::Result<()> {
         let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        write_atomic(path, &bytes)
+        write_atomic(path, &bytes)?;
+        if let Some(entry) = server_entry_path(path, self.pid, self.port) {
+            let _ = write_atomic(&entry, &bytes);
+        }
+        // Entries of servers that ended without removing theirs (a crash) go now, so bridges
+        // stop trying them.
+        for (file, other) in sibling_entry_files(path) {
+            if (other.pid, other.port) != (self.pid, self.port) && !other.listening() {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        Ok(())
+    }
+
+    fn listening(&self) -> bool {
+        let addr = std::net::SocketAddr::new(self.address, self.port);
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(50)).is_ok()
     }
 
     /// Removes the file at `path` if it still describes this process's server.
     pub fn remove_if_ours(path: &Path) {
-        if Self::read(path).is_ok_and(|d| d.pid == std::process::id()) {
+        if let Ok(d) = Self::read(path)
+            && d.pid == std::process::id()
+        {
+            Self::remove_server(path, d.port);
+        }
+    }
+
+    /// Removes this server's entry and updates `path` to another live entry when one exists.
+    pub fn remove_server(path: &Path, port: u16) {
+        let pid = std::process::id();
+        if let Some(entry) = server_entry_path(path, pid, port) {
+            let _ = std::fs::remove_file(entry);
+        }
+        if Self::read(path).is_ok_and(|d| d.pid == pid && d.port == port) {
+            for (file, other) in sibling_entry_files(path) {
+                if other.pid == pid && other.port == port {
+                    continue;
+                }
+                if other.listening() {
+                    if let Ok(bytes) = serde_json::to_vec_pretty(&other)
+                        && write_atomic(path, &bytes).is_ok()
+                    {
+                        return;
+                    }
+                } else {
+                    let _ = std::fs::remove_file(file);
+                }
+            }
             let _ = std::fs::remove_file(path);
         }
     }
+
+    /// Running server entries recorded for `path`, starting with `path` itself.
+    pub fn candidates(path: &Path) -> Vec<Self> {
+        let mut out = Vec::new();
+        if let Ok(primary) = Self::read(path) {
+            out.push(primary);
+        }
+        for (_, item) in sibling_entry_files(path) {
+            if !out.iter().any(|d| d.address == item.address && d.port == item.port) {
+                out.push(item);
+            }
+        }
+        out
+    }
+}
+
+fn servers_dir(path: &Path) -> Option<PathBuf> {
+    path.parent().map(|dir| dir.join("servers"))
+}
+
+fn server_entry_path(path: &Path, pid: u32, port: u16) -> Option<PathBuf> {
+    servers_dir(path).map(|dir| dir.join(format!("{pid}-{port}.json")))
+}
+
+fn sibling_entry_files(path: &Path) -> Vec<(PathBuf, Discovery)> {
+    let Some(dir) = servers_dir(path) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    files.sort();
+    files.into_iter().filter_map(|p| Discovery::read(&p).ok().map(|d| (p, d))).collect()
 }
 
 /// Writes `bytes` to `path` atomically, readable only by the user.

@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SSH_CONFIG, type SshAuthValid } from "@/platform/remoteSettings";
 import { useProject } from "@/platform/project";
 import { PageContext } from "../components/context";
 import { validateSettings } from "../model/schema";
 import { applySettings, closeSettings, openSettings, resetPage, useSettingsDialog } from "../model/staging";
 import { SettingsFooter } from "../dialog/SettingsDialog";
+import { preloadBuiltinPage } from "../pages/lazyPage";
 import { SSH_PAGES } from "../pages/ssh";
 
 const mocks = vi.hoisted(() => ({ store: vi.fn(), test: vi.fn(), needsSecret: vi.fn(), trust: vi.fn() }));
@@ -32,6 +33,7 @@ const savedDialog = useSettingsDialog.getState();
 const savedProject = useProject.getState();
 let typed: string;
 
+beforeAll(() => preloadBuiltinPage("tools.sshConfigurations"));
 beforeEach(() => {
   vi.resetAllMocks();
   typed = crypto.randomUUID();

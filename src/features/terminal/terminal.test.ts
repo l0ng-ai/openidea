@@ -17,6 +17,8 @@ import {
 } from "./store";
 import type { SessionSnapshot } from "./session";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
+import type { Settings } from "@/bindings";
 import { buildTheme, mix, parseColor, terminalFont, toHex } from "./theme";
 
 describe("theme", () => {
@@ -474,6 +476,19 @@ describe("terminal tab titles", () => {
     expect(tabTitle(tab, snap(long))).toHaveLength(30);
     expect(tabTitle(tab, snap(long))).toBe(trimMiddle(long, 30));
     expect(tabFullTitle(tab, snap(long))).toBe(long);
+  });
+
+  it("uses the program's title always or never, per Settings › Terminal", () => {
+    const set = (appTitleAsTabName: string) =>
+      useProject.setState({ settings: { terminal: { appTitleAsTabName } } as unknown as Settings });
+    try {
+      set("always");
+      expect(tabTitle(tab, snap("claude", false))).toBe("claude");
+      set("off");
+      expect(tabTitle(tab, snap("vim notes.md"))).toBe("Local");
+    } finally {
+      useProject.setState({ settings: null });
+    }
   });
 
   it("keeps a name the user gave the tab", () => {

@@ -241,6 +241,7 @@ describe("completion helpers", () => {
   it("finds identifier ends", () => {
     expect(identifierEnd("foo.barBaz(1)", 4)).toBe(10);
     expect(identifierEnd("x ", 1)).toBe(1);
+    expect(identifierEnd("a𐐀\u0301;", 1)).toBe(4);
   });
 });
 
@@ -704,15 +705,27 @@ describe("lookup commit characters", () => {
 });
 
 describe("explicit completion", () => {
-  function editor(labels: string[]) {
+  function editor(labels: string[], doc = "pri|", serverItems = false) {
     const source: CompletionSource = (ctx) => {
       const word = ctx.matchBefore(/\w*/);
-      return { from: word?.from ?? ctx.pos, options: labels.map((label) => ({ label })) };
+      const from = word?.from ?? ctx.pos;
+      const options = labels.map((label) =>
+        serverItems
+          ? makeCompletion(item({ label, insertText: label, kind: "field" }), {
+              doc: 1,
+              path: "/p/a.ts",
+              language: "typescript",
+              pos: ctx.pos,
+              text: ctx.state.doc,
+            })
+          : { label },
+      );
+      return { from, options };
     };
     const view = new EditorView({
       state: EditorState.create({
-        doc: "pri",
-        selection: { anchor: 3 },
+        doc: doc.replace("|", ""),
+        selection: { anchor: doc.indexOf("|") },
         extensions: [completionExtension(), EditorState.languageData.of(() => [{ openideaCompletion: source }])],
       }),
       parent: document.body,
@@ -720,12 +733,34 @@ describe("explicit completion", () => {
     return view;
   }
 
-  it("inserts a sole candidate right away (IDEA)", async () => {
-    const view = editor(["println"]);
+  it.each([
+    ["pri|", "println"],
+    ["pri|;", "println;"],
+  ])("inserts a sole candidate right away at the end of a prefix (%s)", async (doc, expected) => {
+    const view = editor(["println"], doc);
     explicitCompletion(view);
-    await vi.waitFor(() => expect(view.state.doc.toString()).toBe("println"), { timeout: 2000 });
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe(expected), { timeout: 2000 });
     view.destroy();
   });
+
+  it.each(["first|Name", "fir|Name", "first|𐐀Name"])(
+    "leaves the lookup open inside an identifier (%s)",
+    async (reference) => {
+      const doc = `const person = { firstName: "Ada", lastName: "Lovelace" };\nconst value = person.${reference};`;
+      const view = editor(["firstName"], doc, true);
+      try {
+        explicitCompletion(view);
+        await vi.waitFor(() => expect(currentCompletions(view.state)).toHaveLength(1));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(view.state.doc.toString()).toBe(doc.replace("|", ""));
+        expect(currentCompletions(view.state)).toHaveLength(1);
+        expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor")).toBe(true);
+        expect(view.state.doc.toString()).toBe(doc.replace(reference, "firstName"));
+      } finally {
+        view.destroy();
+      }
+    },
+  );
 
   it("keeps a sole candidate in the list when auto-insert is off", async () => {
     useProject.setState({ settings: { editor: { completion: { autoInsertSingle: false } } } as unknown as Settings });

@@ -132,6 +132,23 @@ describe("recent files switcher", () => {
     ).toEqual(["README.md"]);
   });
 
+  it("shows a scratch file under its root's label", () => {
+    const labelled = [{ path: "/data/scratches", label: "Scratches" }];
+    const items = filterRecentFiles(
+      ["/data/scratches/api/generated-requests.http", "/p/src/Main.kt", "/elsewhere/a.txt"],
+      "",
+      {
+        root: "/p",
+        labelled,
+      },
+    );
+    expect(items.map((f) => [f.rel, f.dir])).toEqual([
+      ["Scratches/api/generated-requests.http", "Scratches/api"],
+      ["src/Main.kt", "src"],
+      ["/elsewhere/a.txt", "/elsewhere"],
+    ]);
+  });
+
   it("preselects the previous file when the current one is first", () => {
     const items = filterRecentFiles(paths, "", { root: "/p" });
     expect(initialFileIndex(items, "/p/src/Main.kt", "")).toBe(1);

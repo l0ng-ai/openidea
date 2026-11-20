@@ -99,6 +99,22 @@ const supports = new Map<string, Promise<LanguageSupport | null>>();
 /** Frontend modes that extend or replace the bundled parsers. */
 const OWN_MODES = [
   LanguageDescription.of({
+    name: "Julia",
+    extensions: ["jl"],
+    load: async () => {
+      const { julia } = await import("@plutojl/lang-julia");
+      const support = julia();
+      // The package's call rule matches VariableName nodes, but its grammar
+      // represents ordinary call targets as Identifier nodes. Cover those too
+      // so a call is not colored like an uncalled variable.
+      const language = support.language as LRLanguage;
+      return new LanguageSupport(
+        language.configure({ props: [styleTags({ "CallExpression/Identifier": t.function(t.variableName) })] }),
+        support.support,
+      );
+    },
+  }),
+  LanguageDescription.of({
     name: "CMake",
     extensions: ["cmake", "cmake.in"],
     filename: /^(?:CMakeLists\.txt|.*\.cmake(?:\.in)?)$/,
@@ -404,6 +420,9 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   this: t.keyword,
 };
 
+// @lezer/go leaves `default` uncoloured, unlike `case` and `switch`.
+const GO_TAGS: Parameters<typeof styleTags>[0] = { default: t.controlKeyword };
+
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
@@ -421,6 +440,7 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
     "MethodDeclaration/Name FunctionDefinition/Name": t.function(t.definition(t.variableName)),
     "PropertyDeclaration/VariableDeclarator/VariableName": t.definition(t.propertyName),
   },
+  Go: GO_TAGS,
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,

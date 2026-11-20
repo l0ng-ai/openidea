@@ -38,12 +38,14 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, confirm } from "@/workbench/messages";
 import {
   activeSchema,
+  collapseTarget,
   colorVar,
   connectRemedy,
   databaseKey,
   effectiveSsh,
   idleTargets,
   newSourceId,
+  sourceIcon,
   splitTarget,
   targetOf,
 } from "./model";
@@ -172,6 +174,12 @@ export interface SourceCatalog {
   databases: Record<string, DbCatalogSchema[]>;
 }
 
+export interface ConsoleExecution {
+  startedAt: number;
+  /** Statements submitted (a batch runs them in order; the backend doesn't say which one is current). */
+  statements: number;
+}
+
 interface DatabaseState {
   sources: DataSource[];
   loaded: boolean;
@@ -203,6 +211,8 @@ interface DatabaseState {
   output: OutputLine[];
   /** Console path → running request. */
   running: Record<string, RequestId>;
+  /** Console path → what its running request submitted, and since when (ms since the epoch). */
+  executions: Record<string, ConsoleExecution>;
   maxRows: number;
   dialog: DialogState | null;
   /** Target of the tree's lead node. */
@@ -269,6 +279,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   activeResult: null,
   output: [],
   running: {},
+  executions: {},
   maxRows: 500,
   dialog: null,
   selectedSource: null,
@@ -437,12 +448,8 @@ export async function duplicateSource(id: string): Promise<void> {
 export async function renameSource(id: string, name: string): Promise<void> {
   const src = sourceById(id);
   if (!src || !name.trim() || name.trim() === src.name) return;
-  const sources = useDatabase.getState().sources.map((s) => (s.id === src.id ? { ...s, name: name.trim() } : s));
-  forget(id);
-  const current = sourceMutation(id);
-  await call(commands.dbSaveSources(sources));
-  if (!current()) return;
-  await loadSources();
+  // Saved like any edit, so what the tree had loaded under the source is loaded again.
+  await saveSource({ ...src, name: name.trim() }, undefined);
 }
 
 /** Removes the data source after asking (Database tree › Drop on a source). */
@@ -523,6 +530,7 @@ const lastUsed = new Map<string, number>();
 function applyConnectDefaults(id: string) {
   if (
     sourceById(id)?.driver !== "clickhouse" &&
+    sourceById(id)?.driver !== "jdbc" &&
     sourceById(id)?.options?.transaction === "manual" &&
     !useDatabase.getState().manualCommit.has(id)
   )
@@ -571,6 +579,7 @@ export async function disconnect(id: string): Promise<void> {
   if (!targets.includes(id)) targets.push(id);
   const current = projectRequest();
   forget(id);
+  useDatabase.setState((s) => ({ treeExpanded: collapseTarget(s.treeExpanded, id) }));
   const intent = {};
   for (const target of targets) connectionIntents.set(target, intent);
   if (!splitTarget(id).database) sourceConnectionIntents.set(id, {});
@@ -602,13 +611,21 @@ export function watchIdleConnections(everyMs = 5000): () => void {
   return () => clearInterval(timer);
 }
 
-/** Console files of coloured data sources, tinted like IDEA's (file decorations). */
-export function consoleTints(s: Pick<DatabaseState, "consoles" | "sources">): Map<string, FileDecoration> {
+/** Managed consoles show their source in the tab. Ordinary SQL files can also inherit a source tint. */
+export function consoleDecorations(s: Pick<DatabaseState, "consoles" | "sources">): Map<string, FileDecoration> {
   const out = new Map<string, FileDecoration>();
   for (const [path, target] of Object.entries(s.consoles)) {
-    const id = splitTarget(target).id;
-    const tint = colorVar(s.sources.find((x) => x.id === id)?.color);
-    if (tint) out.set(path, { tint });
+    const { id, database } = splitTarget(target);
+    const source = s.sources.find((x) => x.id === id);
+    if (!source) continue;
+    const tint = colorVar(source.color);
+    // db_console_path and db_consoles own this directory, including already saved consoles.
+    const consoleName = /(?:^|\/)consoles\/db\/[^/]+\/(console(?:_\d+)?)\.sql$/.exec(path.replaceAll("\\", "/"))?.[1];
+    if (consoleName) {
+      const name = source.name || id;
+      const label = database ? `${name}: ${database}` : name;
+      out.set(path, { tint, tabTitle: `${consoleName} [${label}]`, tabIcon: sourceIcon(source) });
+    } else if (tint) out.set(path, { tint });
   }
   return out;
 }
@@ -1055,6 +1072,18 @@ function promptOf(id: string): string {
  * `schema` is a console's active context: the backend puts the connection that runs
  * each statement in it, so unqualified names resolve there.
  */
+/** Shows `id` disconnected when the backend closed its connection (it reconnects on next use). */
+async function syncDropped(id: string) {
+  const server = await call(commands.dbConnected()).catch(() => null);
+  if (!server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
+  useDatabase.setState((s) => {
+    const connected = new Set(s.connected);
+    connected.delete(id);
+    return { connected };
+  });
+  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`);
+}
+
 async function run(
   id: string,
   statements: SqlStatement[],
@@ -1070,6 +1099,8 @@ async function run(
   );
   if (!current()) return outcomes;
   if (!wasConnected) log("info", "Connected");
+  // A failed statement can have found the session dead; the backend then dropped it.
+  if (outcomes.some((o) => o.error)) void syncDropped(id);
   const prompt = schema || promptOf(id);
   for (const o of outcomes) {
     log("statement", o.statement.text, `${prompt}>`);
@@ -1225,6 +1256,8 @@ export async function executeConsole(
   text: string,
   from: number,
   to: number,
+  /** Called once the statements are submitted, with what was submitted. */
+  onStart?: (statements: readonly SqlStatement[]) => void,
 ): Promise<DbStatementOutcome[]> {
   const id = consoleSource(path);
   if (!id) {
@@ -1244,8 +1277,14 @@ export async function executeConsole(
   const prev = useDatabase.getState().running[path];
   if (prev) void commands.cancelRequest(prev);
   const request = nextRequestId();
-  useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
+  useDatabase.setState((s) => ({
+    running: { ...s.running, [path]: request },
+    executions: { ...s.executions, [path]: { startedAt: Date.now(), statements: statements.length } },
+  }));
   try {
+    onStart?.(statements);
+    // IDEA brings the results up as the run starts, showing it executing.
+    if (!inEditorResults()) showServiceView(RESULTS_VIEW, false);
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     if (!current()) return [];
@@ -1288,7 +1327,9 @@ export async function executeConsole(
       if (s.running[path] !== request) return s;
       const running = { ...s.running };
       delete running[path];
-      return { running };
+      const executions = { ...s.executions };
+      delete executions[path];
+      return { running, executions };
     });
   }
 }
@@ -1353,7 +1394,7 @@ async function explain(id: string, statement: SqlStatement, schema?: string): Pr
 /** Explain Plan: the plan of the statement at `from` (the first selected one) of console `path`. */
 export async function explainConsole(path: string, text: string, from: number, to: number): Promise<void> {
   const id = consoleSource(path);
-  if (!id) return;
+  if (!id || sourceById(id)?.driver === "jdbc") return;
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;
@@ -1530,7 +1571,7 @@ function setPending(id: string, pending: boolean) {
 
 /** Commits or rolls back the open transaction of a manual-commit data source. */
 export async function finishTransaction(id: string, commit: boolean): Promise<boolean> {
-  if (sourceById(id)?.driver === "clickhouse") return false;
+  if (sourceById(id)?.driver === "clickhouse" || sourceById(id)?.driver === "jdbc") return false;
   try {
     await call(commands.dbFinishTransaction(id, commit));
     log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
@@ -1562,7 +1603,7 @@ async function askEndTransaction(source: DataSource): Promise<boolean | null> {
  * whether to commit or roll them back.
  */
 export async function setManualCommit(id: string, manual: boolean): Promise<void> {
-  if (sourceById(id)?.driver === "clickhouse" && manual) return;
+  if (sourceById(id)?.driver === "jdbc" || (sourceById(id)?.driver === "clickhouse" && manual)) return;
   const st = useDatabase.getState();
   if (manual === st.manualCommit.has(id)) return;
   if (!manual && st.pendingTx.has(id)) {

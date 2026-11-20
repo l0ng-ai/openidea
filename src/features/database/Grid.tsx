@@ -98,6 +98,10 @@ export interface GridProps {
   onFind?: () => void;
   /** Go to Column: a new object selects that column's cell in the current row, scrolls to it and focuses the grid. */
   revealColumn?: { col: number } | null;
+  /** Horizontal scroll offset to restore on mount, when a caller keeps view state across mounts. */
+  initialScrollLeft?: number;
+  /** Reports horizontal scroll changes to a caller that keeps view state across mounts. */
+  onHorizontalScroll?: (left: number) => void;
   "aria-label"?: string;
 }
 
@@ -118,7 +122,6 @@ interface Sel {
 }
 
 const ROW_H = 24;
-const NUM_W = 48;
 
 /** Wide enough for the whole header (icon, name, filter, sort) and the longest sampled value. */
 function initialWidth(c: GridColumn, sample: Cell[], decorations: number): number {
@@ -169,6 +172,7 @@ export function Grid(props: GridProps) {
     copyFormat = "tsv",
   } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
+  const numberWidth = Math.max(40, String(firstRowNumber + rowCount - 1).length * 8 + 8);
   const [sel, setSel] = useState<Sel | null>(null);
   const dragging = useRef(false);
   useEffect(() => {
@@ -225,8 +229,8 @@ export function Grid(props: GridProps) {
   const scrollColumnIntoView = (c: number) => {
     const el = scrollRef.current;
     if (!el || c < 0 || c >= widths.length) return;
-    const left = c ? NUM_W + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
-    const right = NUM_W + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
+    const left = c ? numberWidth + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
+    const right = numberWidth + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
     if (left < el.scrollLeft) el.scrollLeft = left;
     else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = Math.min(left, right - el.clientWidth);
   };
@@ -252,8 +256,17 @@ export function Grid(props: GridProps) {
     // Runs once per request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealColumn]);
-  const totalWidth = useMemo(() => NUM_W + widths.reduce((a, b) => a + b, 0), [widths]);
-  const template = `${NUM_W}px ${widths.map((w) => `${w}px`).join(" ")}`;
+  const totalWidth = useMemo(() => numberWidth + widths.reduce((a, b) => a + b, 0), [numberWidth, widths]);
+  const template = `${numberWidth}px ${widths.map((w) => `${w}px`).join(" ")}`;
+  // Retried as columns are measured, until the content is wide enough to reach the offset.
+  const pendingScrollLeft = useRef(props.initialScrollLeft);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const left = pendingScrollLeft.current;
+    if (!el || !left) return;
+    el.scrollLeft = left;
+    if (el.scrollLeft >= left - 1) pendingScrollLeft.current = undefined;
+  }, [totalWidth]);
 
   const selected = (r: number, c: number) => {
     if (!sel) return false;
@@ -574,7 +587,7 @@ export function Grid(props: GridProps) {
   const startResize = (e: MouseEvent, col: number) => {
     e.preventDefault();
     e.stopPropagation();
-    const releaseCursor = lockDragCursor("ew-resize");
+    const releaseCursor = lockDragCursor("col-resize");
     const startX = e.clientX;
     const start = widths[col] ?? 100;
     const move = (ev: globalThis.MouseEvent) => {
@@ -605,6 +618,7 @@ export function Grid(props: GridProps) {
         pointerFocus.current = true;
         setTimeout(() => (pointerFocus.current = false));
       }}
+      onScroll={(e) => props.onHorizontalScroll?.(e.currentTarget.scrollLeft)}
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >

@@ -80,15 +80,31 @@ export function cancelDotnet() {
 export function reloadDotnet() {
   const root = useProject.getState().project?.root;
   if (!root) return;
+  const old = useDotnet.getState();
   return task(async (signal) => {
     const model = await dotnetWorkspace(root, signal);
-    const old = useDotnet.getState();
-    const project = model.projects.find((p) => p.path === old.selected) ?? model.projects[0];
+    let project = model.projects.find((p) => p.path === old.selected) ?? model.projects[0];
+    const sameProject = project?.path === old.selected;
+    const configurations = project?.configurations ?? [];
+    const defaultConfiguration = configurations.includes(initial.configuration)
+      ? initial.configuration
+      : (configurations[0] ?? initial.configuration);
+    const configuration =
+      sameProject && configurations.includes(old.configuration) ? old.configuration : defaultConfiguration;
+
+    // The workspace scan evaluates Debug and the first framework for each project.
+    if (project && configuration !== initial.configuration)
+      project = await evaluateProject(project.path, configuration, "", signal);
+    const framework =
+      sameProject && project?.frameworks.includes(old.framework) ? old.framework : (project?.frameworks[0] ?? "");
+    if (project && framework && framework !== project.frameworks[0])
+      project = await evaluateProject(project.path, configuration, framework, signal);
+
     return {
-      model,
+      model: { ...model, projects: model.projects.map((item) => (item.path === project?.path ? project : item)) },
       selected: project?.path ?? "",
-      configuration: "Debug",
-      framework: project?.frameworks[0] ?? "",
+      configuration,
+      framework,
       packages: [],
       found: [],
       tests: [],

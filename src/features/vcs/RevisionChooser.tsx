@@ -193,7 +193,6 @@ function Chooser({
           renderSection={(i) => <span title={i.detail}>{i.rev}</span>}
           focusable={false}
           hoverSelects
-          rowHeight={24}
           aria-label="Revisions"
           className={styles.grow}
           renderItem={(i) => (

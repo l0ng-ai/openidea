@@ -61,12 +61,15 @@ export const ProcessRun = memo(function ProcessRun({
   task,
   lastIndex,
   busy,
+  thinking,
   onDiagramDrawn,
 }: {
   row: Extract<ConversationRow, { kind: "process" }>;
   task: AgentTask;
   lastIndex: number;
   busy: boolean;
+  /** How long each finished thought took, by entry index. */
+  thinking: ReadonlyMap<number, number> | null;
   onDiagramDrawn: () => void;
 }) {
   const tx = useTx();
@@ -122,6 +125,7 @@ export const ProcessRun = memo(function ProcessRun({
               key={index}
               task={task}
               text={entry.text}
+              took={thinking?.get(index) ?? null}
               working={busy && index === lastIndex}
               onDiagramDrawn={onDiagramDrawn}
             />

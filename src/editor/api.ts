@@ -307,6 +307,17 @@ export const externalHistory = Facet.define<ExternalHistory, ExternalHistory | n
   combine: (values) => values[0] ?? null,
 });
 
+/**
+ * Provided by a host of several editors in a column (notebook cells): moves the caret into the
+ * editor before (`-1`) or after (`1`) this one, at `column` of its nearest line, when a line
+ * motion leaves this editor's first or last line. Returns false when there is none.
+ */
+export type AdjacentEditor = (direction: 1 | -1, column: number) => boolean;
+
+export const adjacentEditor = Facet.define<AdjacentEditor, AdjacentEditor | null>({
+  combine: (values) => values[0] ?? null,
+});
+
 export function whenSynced(view: EditorView): Promise<void> {
   return view.state.facet(documentSynced)?.() ?? Promise.resolve();
 }
@@ -479,7 +490,11 @@ export type ContributedFormatter = (
   range: { from: number; to: number } | null,
 ) => Array<{ from: number; to: number; insert: string }>;
 /** Go to Declaration / ⌘-click: `true` when it handled `pos`. */
-export type ContributedDefinition = (view: EditorView, pos: number) => boolean;
+export interface ContributedDefinition {
+  (view: EditorView, pos: number): boolean;
+  /** Cheap, side-effect-free eligibility for hover underline and navigation probing. */
+  canHandle?(state: EditorState, pos: number): boolean;
+}
 /** Hover and Quick Documentation: Markdown about the symbol at `pos`. */
 export type ContributedHover = (
   state: EditorState,
@@ -488,6 +503,16 @@ export type ContributedHover = (
 
 export function contributedAt<T>(state: EditorState, key: string, pos: number): T | undefined {
   return state.languageDataAt<T>(key, pos)[0];
+}
+
+/**
+ * Every provider registered for a contributed language-data key at `pos`. A provider may
+ * be present for the document but decline this particular position (the MyBatis SQL
+ * provider on a Maven POM, for example), so callers that dispatch a request must not stop
+ * at the first entry when it returns "not handled".
+ */
+export function contributedAtAll<T>(state: EditorState, key: string, pos: number): readonly T[] {
+  return state.languageDataAt<T>(key, pos);
 }
 
 /** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵). */

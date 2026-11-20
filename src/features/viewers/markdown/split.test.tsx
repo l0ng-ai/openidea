@@ -13,7 +13,7 @@ const SPLIT_KEY = "openidea.markdown.split";
 describe("Markdown split resizer", () => {
   beforeEach(() => {
     localStorage.clear();
-    useMarkdownModes.setState({ byPath: {}, fallback: "split" });
+    useMarkdownModes.setState({ byTab: {}, fallback: "split" });
   });
 
   afterEach(() => {
@@ -38,17 +38,17 @@ describe("Markdown split resizer", () => {
     expect(screen.getByRole("separator", { name: "Resize Markdown preview" })).toBeInTheDocument();
     expect(mounts).toBe(1);
 
-    act(() => setMarkdownMode(PATH, "preview"));
+    act(() => setMarkdownMode("t", "preview"));
     expect(screen.queryByRole("separator", { name: "Resize Markdown preview" })).toBeNull();
     expect(screen.getByTestId("editor-probe")).toBeInTheDocument();
     expect(mounts).toBe(1);
 
-    act(() => setMarkdownMode(PATH, "editor"));
+    act(() => setMarkdownMode("t", "editor"));
     expect(screen.queryByRole("separator", { name: "Resize Markdown preview" })).toBeNull();
     expect(screen.getByTestId("editor-probe")).toBeInTheDocument();
     expect(mounts).toBe(1);
 
-    act(() => setMarkdownMode(PATH, "split"));
+    act(() => setMarkdownMode("t", "split"));
     expect(screen.getByRole("separator", { name: "Resize Markdown preview" })).toBeInTheDocument();
     expect(mounts).toBe(1);
   });

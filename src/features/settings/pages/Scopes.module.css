@@ -26,3 +26,38 @@
   border-radius: var(--radius-sm, 4px);
   background: none;
 }
+.scopeLayout {
+  display: grid;
+  grid-template-columns: minmax(160px, 31%) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  font-size: var(--fs-ui);
+}
+.scopePane {
+  min-width: 0;
+  height: clamp(240px, 42vh, 360px);
+}
+.scopeList {
+  flex: 1;
+  min-height: 0;
+}
+.scopeName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scopeEmpty {
+  padding: var(--space-3);
+  color: var(--fg-muted);
+}
+.scopeInput {
+  width: 100%;
+}
+@container settings-content (max-width: 580px) {
+  .scopeLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scopePane {
+    height: clamp(148px, 28vh, 200px);
+  }
+}

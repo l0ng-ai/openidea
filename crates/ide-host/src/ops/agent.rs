@@ -5,10 +5,10 @@ use crate::Host;
 use crate::agent_secrets::{AgentSecrets, Kept};
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
-    AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput,
-    ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput,
-    McpTransport, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCliOffer,
+    AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe,
+    AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpExternalSource,
+    McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput, McpTransport, NewAgentTask,
 };
 use ide_command::command;
 use ide_core::error::ErrorKind;
@@ -17,12 +17,28 @@ use ide_tools::InstallEvent;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-/// Streams the project's agent events to this window; returns every task.
+/// Streams the project's agent events to `subscriber`, one of the project's windows (a remote
+/// host sees them all as one `window`); returns every task.
 #[command(trust = always)]
-pub fn agent_subscribe(host: &Host, window: &str, on_event: Channel<AgentEvent>) -> IdeResult<Vec<AgentTask>> {
-    Ok(host.project(window)?.agents.subscribe(std::sync::Arc::new(move |e| {
-        let _ = on_event.send(e);
-    })))
+pub fn agent_subscribe(
+    host: &Host,
+    window: &str,
+    on_event: Channel<AgentEvent>,
+    subscriber: String,
+) -> IdeResult<Vec<AgentTask>> {
+    Ok(host.project(window)?.agents.subscribe_as(
+        &subscriber,
+        std::sync::Arc::new(move |e| {
+            let _ = on_event.send(e);
+        }),
+    ))
+}
+
+/// Stops the events of a window that closed.
+#[command(trust = always)]
+pub fn agent_unsubscribe(host: &Host, window: &str, subscriber: String) -> IdeResult<()> {
+    host.project(window)?.agents.unsubscribe(&subscriber);
+    Ok(())
 }
 
 #[command(trust = trusted)]
@@ -31,6 +47,16 @@ pub fn agent_providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider
     let mut providers = host.project(window)?.agents.providers();
     ide_agent::registry::mark_updates(&registry_paths(host), &mut providers);
     Ok(providers)
+}
+
+/// Hermes Agent profiles on this machine (`default` first); empty without Hermes.
+#[command(trust = trusted)]
+pub async fn agent_hermes_profiles(host: &Host, window: &str) -> IdeResult<Vec<ide_agent::hermes::HermesProfile>> {
+    host.require_trust(window)?;
+    let root = ide_agent::hermes::root(dirs::home_dir().as_deref());
+    tokio::task::spawn_blocking(move || root.map(|r| ide_agent::hermes::labeled_profiles(&r)).unwrap_or_default())
+        .await
+        .map_err(join_err)
 }
 
 /// Refreshes the model catalog; force bypasses freshness, not the cooldown.
@@ -268,6 +294,24 @@ pub async fn agent_prompt(host: &Host, window: &str, task: String, prompt: Agent
     host.project(window)?.agents.prompt(&task, prompt, now).await
 }
 
+/// Runs a `!` line of the composer in the task's folder with the user's shell, without
+/// starting a turn; its output goes to the agent with the next message.
+#[command(trust = trusted)]
+pub async fn agent_shell(
+    host: &Host,
+    window: &str,
+    task: String,
+    command: String,
+    request: RequestId,
+) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    let cancel = host.begin_request(request);
+    let result = agents.run_shell(&task, &command, cancel).await;
+    host.end_request(request);
+    result
+}
+
 /// Answers a non-blocking question, without cancelling the current turn.
 #[command(trust = trusted)]
 pub async fn agent_answer_question(
@@ -315,12 +359,63 @@ pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32)
     host.project(window)?.agents.rollback(&task, turns).await
 }
 
+/// Checks the selected installation without modifying it.
+#[command(trust = trusted)]
+pub async fn agent_cli_update_check(
+    host: &Host,
+    window: &str,
+    provider: String,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    cli_update(host, window, provider, None, request).await
+}
+
+/// Installs the exact version offered if the selected installation still matches.
+#[command(trust = trusted)]
+pub async fn agent_cli_update(
+    host: &Host,
+    window: &str,
+    provider: String,
+    offer: AgentCliOffer,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    cli_update(host, window, provider, Some(offer), request).await
+}
+
+async fn cli_update(
+    host: &Host,
+    window: &str,
+    provider: String,
+    offer: Option<AgentCliOffer>,
+    request: RequestId,
+) -> IdeResult<AgentCliUpdateResult> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let installing = offer.as_ref().map(|_| Installing::begin(&provider)).transpose()?;
+    let cancel = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        let _installing = installing;
+        project.agents.cli_update(&provider, offer.as_ref(), &cancel)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    result?
+}
+
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
 /// or sign-in run). Remembered until `refresh`.
 #[command(trust = trusted)]
 pub async fn agent_probe(host: &Host, window: &str, provider: String, refresh: bool) -> IdeResult<AgentProbe> {
     host.require_trust(window)?;
     host.project(window)?.agents.probe(&provider, refresh).await
+}
+
+/// Reads the running session's context categories without sending a prompt.
+#[command(trust = trusted)]
+pub async fn agent_context_usage(host: &Host, window: &str, task: String) -> IdeResult<AgentContextUsage> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.context_usage(&task).await
 }
 
 /// Stops the task's current turn, or with `subagent` only that subagent's work.
@@ -369,10 +464,21 @@ pub async fn agent_delete(host: &Host, window: &str, task: String, remove_worktr
     host.project(window)?.agents.delete(&task, remove_worktree).await
 }
 
+/// The task's changed files as `view` compares them (without: since it started).
 #[command(trust = trusted)]
-pub async fn agent_changes(host: &Host, window: &str, task: String) -> IdeResult<Vec<AgentChange>> {
+pub async fn agent_changes(
+    host: &Host,
+    window: &str,
+    task: String,
+    view: Option<AgentChangesView>,
+) -> IdeResult<Vec<AgentChange>> {
     host.require_trust(window)?;
-    host.project(window)?.agents.changes(&task).await
+    let agents = &host.project(window)?.agents;
+    match view.unwrap_or_default() {
+        AgentChangesView::SinceStart => agents.changes(&task).await,
+        AgentChangesView::Group => Ok(agents.grouped_changes(&task).await?.uncommitted),
+        AgentChangesView::LastTurn => agents.turn_changes(&task).await,
+    }
 }
 
 /// The task's uncommitted changes and the commits made since it started.
@@ -382,11 +488,17 @@ pub async fn agent_grouped_changes(host: &Host, window: &str, task: String) -> I
     host.project(window)?.agents.grouped_changes(&task).await
 }
 
-/// Content of `path` when the task started (left side of its diff).
+/// Content of `path` as `view` compares it (without: when the task started), the left side of its diff.
 #[command(trust = trusted)]
-pub async fn agent_base_text(host: &Host, window: &str, task: String, path: IpcPath) -> IdeResult<Option<String>> {
+pub async fn agent_base_text(
+    host: &Host,
+    window: &str,
+    task: String,
+    path: IpcPath,
+    view: Option<AgentChangesView>,
+) -> IdeResult<Option<String>> {
     host.require_trust(window)?;
-    host.project(window)?.agents.base_text(&task, path.into_path_buf()).await
+    host.project(window)?.agents.base_text(&task, path.into_path_buf(), view.unwrap_or_default()).await
 }
 
 /// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.
@@ -1032,7 +1144,10 @@ ide_command::domain!(
     agent_archive,
     agent_base_text,
     agent_cancel,
+    agent_context_usage,
     agent_changes,
+    agent_cli_update,
+    agent_cli_update_check,
     agent_commands,
     agent_create,
     agent_delete,
@@ -1040,6 +1155,7 @@ ide_command::domain!(
     agent_external_sessions,
     agent_fork,
     agent_grouped_changes,
+    agent_hermes_profiles,
     agent_import_session,
     agent_mcp_discover_sources,
     agent_mcp_import,
@@ -1063,6 +1179,7 @@ ide_command::domain!(
     agent_rollback_changes,
     agent_send_queued_now,
     agent_set_command,
+    agent_shell,
     agent_set_config,
     agent_set_env,
     agent_set_mcp_overrides,
@@ -1070,4 +1187,5 @@ ide_command::domain!(
     agent_subscribe,
     agent_unarchive,
     agent_unqueue,
+    agent_unsubscribe,
 );

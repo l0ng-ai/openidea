@@ -4,6 +4,7 @@ import {
   allocationProfilerSupports,
   colorSlot,
   flameLayout,
+  flameStep,
   formatWeight,
   frameLocation,
   matchingFrames,
@@ -106,5 +107,24 @@ describe("profiler model", () => {
     expect(frameLocation(profile, 2)).toBeNull();
     expect(colorSlot("main")).toBe(colorSlot("main"));
     expect(colorSlot("main")).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("flameStep", () => {
+  // root (0) → a (1, 60%) and b (2, 40%); a → c (3)
+  const rects = [
+    { node: 0, depth: 0, x: 0, width: 1 },
+    { node: 1, depth: 1, x: 0, width: 0.6 },
+    { node: 2, depth: 1, x: 0.6, width: 0.4 },
+    { node: 3, depth: 2, x: 0, width: 0.5 },
+  ];
+  it("goes to the widest callee, the caller and the neighbours on a row", () => {
+    expect(flameStep(rects, 0, "deeper")).toBe(1);
+    expect(flameStep(rects, 1, "next")).toBe(2);
+    expect(flameStep(rects, 2, "next")).toBe(2);
+    expect(flameStep(rects, 2, "previous")).toBe(1);
+    expect(flameStep(rects, 2, "deeper")).toBe(2);
+    expect(flameStep(rects, 3, "shallower")).toBe(1);
+    expect(flameStep(rects, 2, "shallower")).toBe(0);
   });
 });

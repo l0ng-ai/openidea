@@ -7,7 +7,13 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Checkbox, Dialog, Icon, Kbd, T } from "@/ui";
 import type { Action } from "@/platform/actions";
-import { formatBinding, mouseStrokeOf, normalizeBinding, suspendKeyboardDispatch } from "@/platform/keymap";
+import {
+  formatBinding,
+  mouseStrokeOf,
+  normalizeBinding,
+  parseDoubleModifier,
+  suspendKeyboardDispatch,
+} from "@/platform/keymap";
 import { isPageSwipe } from "@/platform/pageSwipe";
 import { ask } from "@/workbench/messages";
 import { findConflicts, resolveBindings, type Conflict, type KeymapDraft } from "./model";
@@ -35,8 +41,8 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
   const os = usePlatform((s) => s.os);
   const rectangularSelection = action.id === "editor.createRectangularSelectionOnMouseDrag";
 
-  const binding =
-    mouse || isPageSwipe(first) ? first : first && useSecond ? (second ? `${first} ${second}` : "") : first;
+  const allowsSecond = !isPageSwipe(first) && !parseDoubleModifier(first);
+  const binding = !mouse && allowsSecond && first && useSecond ? (second ? `${first} ${second}` : "") : first;
   const conflicts = useMemo(
     () => (binding ? findConflicts(draft, binding, action.id, actions) : []),
     [binding, draft, action.id, actions],
@@ -84,7 +90,8 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
           <KeyStrokes
             first={first}
             second={second}
-            useSecond={useSecond && !isPageSwipe(first)}
+            useSecond={useSecond && allowsSecond}
+            allowsSecond={allowsSecond}
             setFirst={setFirst}
             setSecond={setSecond}
             setUseSecond={setUseSecond}
@@ -157,12 +164,13 @@ interface KeyStrokesProps {
   first: string;
   second: string;
   useSecond: boolean;
+  allowsSecond: boolean;
   setFirst: (v: string) => void;
   setSecond: (v: string) => void;
   setUseSecond: (v: boolean) => void;
 }
 
-function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
+function KeyStrokes({ first, second, useSecond, allowsSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
   return (
     <>
       <div className={styles.recordRow}>
@@ -172,11 +180,12 @@ function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecon
         <StrokeRecorder autoFocus value={first} onChange={setFirst} aria-label="First stroke" />
       </div>
       <div className={styles.recordRow}>
-        <Checkbox checked={useSecond} onChange={setUseSecond} disabled={isPageSwipe(first)} label="Second stroke:" />
+        <Checkbox checked={useSecond} onChange={setUseSecond} disabled={!allowsSecond} label="Second stroke:" />
         <StrokeRecorder
           value={second}
           onChange={setSecond}
           disabled={!useSecond}
+          allowDoubleModifier={false}
           placeholder={useSecond ? "Press a shortcut" : ""}
           aria-label="Second stroke"
         />

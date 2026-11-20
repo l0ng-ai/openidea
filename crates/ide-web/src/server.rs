@@ -366,7 +366,7 @@ const HTML: &str = "text/html; charset=utf-8";
 fn content_type(path: &Path) -> &'static str {
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
-        "html" | "htm" | "xhtml" => HTML,
+        "html" | "htm" | "xhtml" | "shtml" => HTML,
         "css" => "text/css; charset=utf-8",
         "js" | "mjs" | "cjs" => "text/javascript; charset=utf-8",
         "json" | "map" | "webmanifest" => "application/json; charset=utf-8",
@@ -413,6 +413,11 @@ mod tests {
         let mut out = String::new();
         sock.read_to_string(&mut out).await.unwrap();
         out
+    }
+
+    #[test]
+    fn shtml_files_are_html_by_name() {
+        assert_eq!(content_type(Path::new("page.SHTML")), HTML);
     }
 
     #[tokio::test]

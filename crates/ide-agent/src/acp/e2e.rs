@@ -203,7 +203,11 @@ async fn a_task_runs_on_a_v2_agent_and_resumes_its_session() {
     let agent2 = Arc::new(FakeV2Agent::default());
     let mgr2 = manager(tmp.path(), agent2.clone());
     mgr2.prompt(&task.id, text("again"), false).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The task is Ready until the resumed turn starts: wait for the turn's entries first.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while mgr2.entries(&task.id, None).unwrap().len() < 8 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     wait_for(&mgr2, &task.id, AgentStatus::Ready).await;
     let entries = mgr2.entries(&task.id, None).unwrap();
     assert_eq!(summary(&entries[6..]), ["user: again", "agent: second turn"]);

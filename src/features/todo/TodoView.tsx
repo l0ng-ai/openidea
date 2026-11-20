@@ -1,6 +1,7 @@
 /** TODO tool window: "Project", "Current File", "Scope Based" and "Changes" tabs, grouped by file. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import clsx from "clsx";
 import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
@@ -18,6 +19,7 @@ import {
   SplitPanel,
   Spinner,
   Tabs,
+  Toolbar,
   Tree,
   fileIconName,
   type MenuItem,
@@ -156,7 +158,7 @@ function useChangedPaths(): Set<string> {
 }
 
 /** Groups for a tab (exported for the badge and tests). */
-export function useTodoGroups(tab: Tab): TodoGroup[] {
+export function useTodoGroups(tab: Tab, openPaths?: ReadonlySet<string>): TodoGroup[] {
   const scanned = useTodos((s) => s.scanned);
   const scoped = useTodos((s) => s.scoped);
   const live = useTodos((s) => s.live);
@@ -170,6 +172,8 @@ export function useTodoGroups(tab: Tab): TodoGroup[] {
       patterns.map((p) => p.keyword.trim()),
     );
     if (tab === "scope") {
+      // Open Files membership comes from the tabs, even when the last scan found no matches there.
+      if (openPaths) return groupTodos(mergeLive(scoped, live), { keywords, paths: openPaths });
       // Open editors' unsaved text, for the files the scope scan found.
       const inScope = new Map([...live].filter(([path]) => scoped.has(path)));
       return groupTodos(mergeLive(scoped, inScope), { keywords });
@@ -177,26 +181,22 @@ export function useTodoGroups(tab: Tab): TodoGroup[] {
     const merged = mergeLive(scanned, live);
     if (tab === "changes") return groupTodos(merged, { keywords, paths: changed });
     return groupTodos(merged, tab === "file" ? { keywords, path: current } : { keywords });
-  }, [scanned, scoped, live, hidden, patterns, tab, current, changed]);
+  }, [scanned, scoped, live, hidden, patterns, tab, current, changed, openPaths]);
 }
 
 /** The Scope Based tab's scope as the backend scope, with a key that changes when it does. */
 function useScopeQuery() {
   const scope = useTodoView((s) => s.scope);
   const custom = useCustomScopeList();
-  // Open tabs change with the active editor (or its count): re-read them then.
-  const openKey = useEditorRegistry((s) =>
-    scope === "openFiles" ? `${s.editors.size}:${s.active?.ctx.path ?? ""}` : "",
-  );
+  const openPaths = useEditorRegistry(useShallow(() => (scope === "openFiles" ? openEditorPaths() : [])));
   return useMemo(() => {
-    const search = todoSearchScope(scope, custom, scope === "openFiles" ? openEditorPaths() : []);
-    return { search, key: JSON.stringify(search) };
-  }, [scope, custom, openKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    const search = todoSearchScope(scope, custom, openPaths);
+    return { search, key: JSON.stringify(search), openPaths: scope === "openFiles" ? new Set(openPaths) : undefined };
+  }, [scope, custom, openPaths]);
 }
 
 /** Rescans the chosen scope when it changes, and (debounced) when the project index does. */
-function useScopeScan(active: boolean) {
-  const { search, key } = useScopeQuery();
+function useScopeScan(active: boolean, { search, key }: ReturnType<typeof useScopeQuery>) {
   const scanned = useTodos((s) => s.scanned);
   const scopedKey = useTodos((s) => s.scopedKey);
   const fresh = scopedKey === key;
@@ -292,14 +292,16 @@ function ItemText({ item }: { item: TodoItem }) {
   const kwLen = item.keyword.length;
   const color = colorFor(item.keyword);
   return (
-    <span className={styles.text} style={{ color }}>
-      <strong className={styles.keyword}>{item.text.slice(0, kwLen)}</strong>
+    <span className={styles.text}>
+      <strong className={styles.keyword} style={{ color }}>
+        {item.text.slice(0, kwLen)}
+      </strong>
       {item.text.slice(kwLen)}
     </span>
   );
 }
 
-export function TodoHeaderActions() {
+function TodoToolbar() {
   const settings = useTodoSettings();
   const hidden = useTodoView((s) => s.hidden);
   const toggleKeyword = useTodoView((s) => s.toggleKeyword);
@@ -317,7 +319,7 @@ export function TodoHeaderActions() {
     })),
   ];
   return (
-    <>
+    <Toolbar aria-label="TODO actions" orientation="vertical" className={styles.toolbar}>
       <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" />
       <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" />
       <IconButton
@@ -336,7 +338,7 @@ export function TodoHeaderActions() {
         onClick={() => updateTodoSettings({ caseSensitive: !settings.caseSensitive })}
       />
       <IconButton icon="refresh" size="small" title="Refresh" disabled={scanning} onClick={() => void scanProject()} />
-    </>
+    </Toolbar>
   );
 }
 
@@ -391,9 +393,9 @@ export function TodoView() {
   const root = useProject((s) => s.project?.root ?? "");
   const current = useEditorRegistry((s) => s.active?.ctx.path ?? null);
   const { scanning, error, limitHit, scannedOnce, scopedScanning, scopedKey } = useTodos();
-  const groups = useTodoGroups(tab);
-  useScopeScan(tab === "scope");
-  const scopeKey = useScopeQuery().key;
+  const scope = useScopeQuery();
+  const groups = useTodoGroups(tab, scope.openPaths);
+  useScopeScan(tab === "scope", scope);
   const showPreview = useTodoViewOptions((o) => o.preview);
   const tree = useRef<TreeHandle>(null);
   const [lead, setLead] = useState<Node | null>(null);
@@ -422,11 +424,20 @@ export function TodoView() {
   const renderNode = (n: Node, state: TreeRowState) => {
     if (n.kind === "file") {
       const name = basename(n.group.path);
+      const directory = relativeDir(root, n.group.path);
       return (
         <span className={styles.row}>
           <Icon name={fileIconName(name)} size={16} className={styles.fileIcon} />
-          <span className={clsx(styles.fileName, state.selected && styles.selectedText)}>{name}</span>
-          <span className={styles.muted}>{relativeDir(root, n.group.path)}</span>
+          <span className={styles.fileLocation}>
+            <span className={clsx(styles.fileName, state.selected && styles.selectedText)} title={name}>
+              {name}
+            </span>
+            {directory && (
+              <span className={styles.directory} title={directory}>
+                {directory}
+              </span>
+            )}
+          </span>
           <span className={styles.count}>
             {n.group.items.length === 1 ? tx`${n.group.items.length} item` : tx`${n.group.items.length} items`}
           </span>
@@ -435,8 +446,8 @@ export function TodoView() {
     }
     return (
       <span className={styles.row} title={n.item.text}>
-        <span className={styles.position}>
-          ({n.item.line + 1}, {n.item.col + 1})
+        <span className={styles.position} title={`(${n.item.line + 1}, ${n.item.col + 1})`}>
+          {n.item.line + 1}
         </span>
         <ItemText item={n.item} />
       </span>
@@ -447,7 +458,7 @@ export function TodoView() {
     tab === "file" && !current ? (
       <EmptyState icon="todo" title="No file is open" />
     ) : tab === "scope" ? (
-      scopedScanning || scopedKey !== scopeKey ? (
+      scopedScanning || scopedKey !== scope.key ? (
         <div className={styles.loading}>
           <Spinner size={14} /> <T>Scanning for TODO items…</T>
         </div>
@@ -470,18 +481,20 @@ export function TodoView() {
 
   return (
     <div className={styles.view}>
-      {tab === "project" && limitHit && (
-        <div className={styles.banner}>
-          <T>Too many matches; showing the first 10 000.</T>
-        </div>
-      )}
-      {tab === "scope" && <ScopeBar />}
-      {tab === "changes" && <ChangelistBar />}
-      <div className={styles.body}>
+      <TodoToolbar />
+      <div className={styles.content}>
+        {tab === "project" && limitHit && (
+          <div className={styles.banner}>
+            <T>Too many matches; showing the first 10 000.</T>
+          </div>
+        )}
+        {tab === "scope" && <ScopeBar />}
+        {tab === "changes" && <ChangelistBar />}
         <SplitGroup
           orientation="horizontal"
           id="todo-preview-split"
           storageKey={showPreview ? "openidea.todo.previewSplit" : undefined}
+          className={styles.body}
         >
           <SplitPanel id="items" minSize={160} className={styles.panel}>
             <Tree<Node>
@@ -520,7 +533,7 @@ export function TodoView() {
           {showPreview && (
             <>
               <SplitHandle />
-              <SplitPanel id="preview" minSize={160} defaultSize="45%" className={styles.panel}>
+              <SplitPanel id="preview" minSize={160} defaultSize="50%" className={styles.panel}>
                 <TodoPreview node={lead} />
               </SplitPanel>
             </>

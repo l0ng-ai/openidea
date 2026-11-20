@@ -44,6 +44,7 @@ export const VENDORS: readonly DbVendor[] = [
     icon: "db-cockroach",
     scheme: "postgresql",
   },
+  { id: "jdbc", label: "Custom JDBC", driver: "jdbc", port: null, icon: "database", scheme: "" },
   { id: "greenplum", label: "Greenplum", driver: "postgres", port: 5432, icon: "db-greenplum", scheme: "postgresql" },
   { id: "mariadb", label: "MariaDB", driver: "mysql", port: 3306, icon: "db-mariadb", scheme: "mariadb" },
   {
@@ -175,11 +176,21 @@ const SCHEMES: Record<string, string> = {
 
 export const vendorOfScheme = (scheme: string): DbVendor | undefined => BY_ID.get(SCHEMES[scheme.toLowerCase()] ?? "");
 
+/**
+ * The dialect a custom JDBC source's URL speaks (`jdbc:oracle:thin:@//db:1521/ORCL` → `oracle`):
+ * its `driver: "jdbc"` says nothing about how the server folds identifiers.
+ */
+export function jdbcDialect(url: string | null | undefined): DbDriver | null {
+  const scheme = /^(?:jdbc:)?([a-z][a-z0-9]*):/i.exec((url ?? "").trim())?.[1] ?? "";
+  return vendorOfScheme(scheme)?.driver ?? null;
+}
+
 const bracketed = (host: string) => (host.includes(":") && !host.startsWith("[") ? `[${host}]` : host);
 
 /** The JDBC URL of a data source's fields (the General tab's URL preview). */
 export function sourceUrl(s: DataSource): string {
   const v = vendorOf(s);
+  if (v.driver === "jdbc") return s.url ?? "";
   if (v.driver === "sqlite") return `jdbc:sqlite:${s.file ?? ""}`;
   const host = bracketed(s.host?.trim() || "localhost");
   const port = s.port ?? v.port;

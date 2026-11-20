@@ -105,7 +105,6 @@ fn native_select(app: &AppHandle, group: &Group, to: &WebviewWindow) -> IdeResul
     crate::macos::sync_tab_group(members, &anchor, to).map_err(|e| IdeError::internal(e.to_string()))
 }
 
-#[cfg(target_os = "macos")]
 pub fn join(app: &AppHandle, anchor: &str, new_window: &str) -> IdeResult<()> {
     let state = app.state::<WindowsState>();
     state.groups.lock().join(anchor, new_window)?;
@@ -277,10 +276,18 @@ pub async fn persist(app: &AppHandle) -> IdeResult<()> {
     }
     let groups = state.groups.lock().groups().to_vec();
     let windows = labels_in_order(app);
-    let project_of = |label: &str| match host.project(label) {
-        Ok(p) => (!p.light).then(|| p.root.clone()),
-        // A restored window may have taken its launch but not finished opening yet.
-        Err(_) => state.pending(label).and_then(|l| l.project).map(Into::into),
+    let project_of = |label: &str| {
+        if let Some(path) = windows::window_project_path(app, label) {
+            return Some(path);
+        }
+        // Taken its launch, not finished opening: keep the remote location or local folder.
+        state.pending(label).and_then(|launch| {
+            launch
+                .remote
+                .as_ref()
+                .map(|remote| PathBuf::from(crate::remote_dev::remote_location(&remote.target, &remote.path)))
+                .or_else(|| launch.project.clone().map(Into::into))
+        })
     };
     let Some(saved) = ide_workspace::window_groups::session(&groups, &windows, project_of) else {
         return Ok(());
@@ -315,8 +322,13 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     }
     let state = app.state::<WindowsState>();
     let host = app.state::<AppState>();
-    let project = host.project(caller)?;
-    if !project.settings.effective().general.reopen_last_project || state.groups_restored.swap(true, Ordering::SeqCst) {
+    // A remote window has no local project. Leave the flag clear until this window has
+    // one, so the call that runs once the connection is up can still restore its siblings.
+    let Some(root) = windows::window_project_path(app, caller) else {
+        return Ok(());
+    };
+    let settings = ide_host::ops::project::settings_get(&host.host, caller);
+    if !settings.general.reopen_last_project || state.groups_restored.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
     let saved = {
@@ -328,30 +340,25 @@ pub async fn restore(app: &AppHandle, caller: &str) -> IdeResult<()> {
     };
     // The caller's own group first (it already shows one of its projects), then every other
     // group and single window that was open at quit. Missing folders are skipped.
-    let order = saved
-        .iter()
-        .filter(|g| g.projects.contains(&project.root))
-        .chain(saved.iter().filter(|g| !g.projects.contains(&project.root)));
+    let owns = |group: &ide_workspace::window_groups::SavedWindows| {
+        group.projects.iter().any(|path| windows::same_saved_project(path, &root))
+    };
+    let order = saved.iter().filter(|group| owns(group)).chain(saved.iter().filter(|group| !owns(group)));
     for group in order {
         let mut labels = Vec::new();
         let mut selected = None;
         for path in &group.projects {
-            let label = if path == &project.root {
+            let label = if windows::same_saved_project(path, &root) {
                 Some(caller.to_owned())
-            } else if path.is_dir() {
-                let window = match windows::find_project_window(app, path) {
-                    Some(w) => Ok(w),
-                    None => windows::create_restored_window(app, path.clone()),
-                };
-                match window {
-                    Ok(w) => Some(w.label().to_owned()),
+            } else {
+                match windows::reopen_saved_window(app, path) {
+                    Ok(Some(w)) => Some(w.label().to_owned()),
+                    Ok(None) => None,
                     Err(e) => {
                         tracing::warn!("cannot reopen {}: {e}", path.display());
                         None
                     }
                 }
-            } else {
-                None
             };
             if let Some(label) = label {
                 if group.projects.get(group.selected) == Some(path) {

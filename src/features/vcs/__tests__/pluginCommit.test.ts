@@ -13,6 +13,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsCommit: commit.mockImplementation(() => ok("commit1")),
+      vcsConfigGet: () => ok("configured"),
       vcsPendingPatch: createPatch.mockImplementation(() => ok("diff --git a/p b/p\n")),
     },
   };

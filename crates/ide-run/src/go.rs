@@ -124,6 +124,11 @@ fn package_info(mut command: Command, dir: &Path, flags: &[String]) -> IdeResult
         }
     }
     command.arg(".").current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(ide_core::process::CREATE_NO_WINDOW);
+    }
     let mut child = command.spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

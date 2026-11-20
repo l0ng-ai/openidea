@@ -52,7 +52,7 @@ import { commitKey, commitRepo } from "../multiRoot";
 import { currentRepo, repoName } from "../store";
 import { CommitMessage } from "./CommitMessage";
 import { useDropdownMenu, useReadOnlyLog } from "./logHooks";
-import { toggle } from "./shared";
+import { PANE_STYLE, toggle } from "./shared";
 
 const LogMergePreview = lazyComponent(() => import("../GitMergeDiff").then((m) => m.GitMergeDiff));
 
@@ -312,7 +312,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
 
   const details = (
     <SplitGroup orientation="vertical" id="git-log-details" storageKey="openidea.vcs.logDetailsSplit">
-      <SplitPanel id="files" defaultSize="60%" minSize="60px">
+      <SplitPanel id="files" style={PANE_STYLE} defaultSize="60%" minSize="60px">
         <div
           className={styles.filesPane}
           onFocusCapture={() => setContext("vcsLogChangesFocus", true)}
@@ -412,7 +412,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
         </div>
       </SplitPanel>
       <SplitHandle />
-      <SplitPanel id="message" minSize="60px">
+      <SplitPanel id="message" style={PANE_STYLE} minSize="60px">
         <div className={styles.messageBox}>
           {many ? (
             chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
@@ -434,11 +434,11 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
           id={`git-log-preview-${diffLocation}`}
           storageKey={`openidea.vcs.logPreviewSplit.${diffLocation}`}
         >
-          <SplitPanel id="changes" defaultSize="55%" minSize="20%">
+          <SplitPanel id="changes" style={PANE_STYLE} defaultSize="55%" minSize="20%">
             {details}
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel id="preview" minSize="20%">
+          <SplitPanel id="preview" style={PANE_STYLE} minSize="20%">
             {selectedChange ? (
               selectedChange.mergeParents?.length === 2 && selectedChange.after ? (
                 <LogMergePreview

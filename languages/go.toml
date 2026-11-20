@@ -17,7 +17,7 @@ func main() {
 [[language-servers]]
 name = "gopls"
 command = "gopls"
-initialization-options = { semanticTokens = true, vulncheck = "Imports" }
+initialization-options = { semanticTokens = true, vulncheck = "Imports", hints = { constantValues = true } }
 root-markers = ["go.work", "go.mod"]
 install-hint = "go install golang.org/x/tools/gopls@latest"
 

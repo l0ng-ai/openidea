@@ -77,14 +77,22 @@ export interface RowProps {
   htmlFor?: string;
   /** Control under the label (lists, previews) instead of beside it. */
   stacked?: boolean;
+  /** Dims the label; the control takes its own `disabled`. */
+  disabled?: boolean;
   className?: string;
 }
 
-export function Row({ label, hint, children, htmlFor, stacked, className }: RowProps) {
+export function Row({ label, hint, children, htmlFor, stacked, disabled, className }: RowProps) {
   const matched = useLabelMatch(label);
   return (
     <div
-      className={clsx(styles.row, stacked && styles.stacked, matched && styles.matched, className)}
+      className={clsx(
+        styles.row,
+        stacked && styles.stacked,
+        disabled && styles.disabled,
+        matched && styles.matched,
+        className,
+      )}
       data-search-match={matched || undefined}
     >
       <label className={styles.label} htmlFor={htmlFor}>
@@ -459,20 +467,32 @@ export function GlobListEditor({
 // ---------------------------------------------------------------------------
 // Bound to settings keys
 
-export function SettingToggle({ k, label, hint }: { k: string; label: string; hint?: ReactNode }) {
+export function SettingToggle({
+  k,
+  label,
+  hint,
+  disabled,
+}: {
+  k: string;
+  label: string;
+  hint?: ReactNode;
+  disabled?: boolean;
+}) {
   const [value, set] = useSetting<boolean>(k);
-  return <Toggle label={label} checked={!!value} onChange={set} hint={hint} />;
+  return <Toggle label={label} checked={!!value} onChange={set} hint={hint} disabled={disabled} />;
 }
 
 export function SettingNumber({
   k,
   label,
   hint,
+  disabled,
   ...limits
 }: {
   k: string;
   label: string;
   hint?: ReactNode;
+  disabled?: boolean;
   min: number;
   max: number;
   step?: number;
@@ -482,8 +502,8 @@ export function SettingNumber({
   const [value, set] = useSetting<number>(k);
   const id = useId();
   return (
-    <Row label={label} hint={hint} htmlFor={id}>
-      <NumberInput id={id} value={value} onChange={set} aria-label={label} {...limits} />
+    <Row label={label} hint={hint} htmlFor={id} disabled={disabled}>
+      <NumberInput id={id} value={value} onChange={set} disabled={disabled} aria-label={label} {...limits} />
     </Row>
   );
 }
@@ -493,16 +513,18 @@ export function SettingSelect<V extends string>({
   label,
   hint,
   options,
+  disabled,
 }: {
   k: string;
   label: string;
   hint?: ReactNode;
   options: readonly SelectOption<V>[];
+  disabled?: boolean;
 }) {
   const [value, set] = useSetting<V>(k);
   return (
-    <Row label={label} hint={hint}>
-      <Select<V> value={value} options={options} onChange={set} aria-label={label} />
+    <Row label={label} hint={hint} disabled={disabled}>
+      <Select<V> value={value} options={options} onChange={set} disabled={disabled} aria-label={label} />
     </Row>
   );
 }
@@ -512,21 +534,24 @@ export function SettingText({
   label,
   hint,
   placeholder,
+  disabled,
 }: {
   k: string;
   label: string;
   hint?: ReactNode;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   const [value, set] = useSetting<string>(k);
   const id = useId();
   return (
-    <Row label={label} hint={hint} htmlFor={id}>
+    <Row label={label} hint={hint} htmlFor={id} disabled={disabled}>
       <Input
         id={id}
         className={styles.text}
         value={value ?? ""}
         placeholder={placeholder}
+        disabled={disabled}
         onChange={(e) => set(e.target.value)}
       />
     </Row>

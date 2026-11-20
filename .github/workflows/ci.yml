@@ -5,6 +5,7 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -12,8 +13,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A newer push supersedes the run in progress, on main too.
-  cancel-in-progress: true
+  # A newer push supersedes a pull request's run in progress. Runs on main and in the merge
+  # queue finish, so a broken main shows up and the queue's required checks report.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,7 +25,7 @@ env:
 
 jobs:
   # Which parts a pull request touches, so jobs it can't affect skip and leave the
-  # shared runners to others. Pushes and manual runs always run everything.
+  # shared runners to others. Pushes, the merge queue and manual runs always run everything.
   changes:
     name: Changes
     runs-on: ubuntu-latest
@@ -139,6 +141,22 @@ jobs:
       - name: Bindings and command snapshot are up to date
         if: runner.os == 'Linux'
         run: git diff --exit-code src/bindings.ts src-tauri/tests/commands.snap
+
+  # One check that always reports, for the ruleset to require: a skipped matrix job reports
+  # under its unexpanded name, so the per-OS checks never appear on frontend-only PRs.
+  rust-checks:
+    name: Rust checks
+    needs: [changes, rust]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.rust.result }}
+        run: |
+          echo "changes: $CHANGES, rust: $RUST"
+          [ "$CHANGES" = success ] && { [ "$RUST" = success ] || [ "$RUST" = skipped ]; }
 
   # The remote development server ships as a static Linux binary (release-build.yml):
   # keep that build working.

@@ -23,7 +23,6 @@ pub mod github;
 pub mod hotkeys;
 pub mod http;
 pub mod lsp;
-pub mod mcp;
 pub mod nav;
 pub mod notification;
 pub mod perf;
@@ -207,7 +206,6 @@ fn catalogue() -> (tauri_specta::Commands<tauri::Wry>, Vec<Command>) {
         desktop hotkeys;
         desktop http;
         desktop lsp;
-        desktop mcp;
         desktop nav;
         desktop notification;
         desktop perf;

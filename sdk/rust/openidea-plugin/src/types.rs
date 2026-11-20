@@ -153,6 +153,38 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// An entry of a status bar item's menu ([`crate::host::set_status_item_menu`], API 1.14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StatusMenuEntry {
+    /// Runs one of the plugin's commands, with `argument`, when chosen.
+    Action { label: String, description: Option<String>, command: String, argument: Option<String> },
+    /// A line between groups of actions.
+    Separator,
+    /// A caption above a group.
+    Header(String),
+}
+
+impl StatusMenuEntry {
+    /// An action labelled `label` that runs the plugin command `command`.
+    pub fn action(label: impl Into<String>, command: impl Into<String>) -> Self {
+        Self::Action { label: label.into(), description: None, command: command.into(), argument: None }
+    }
+    /// Sets an action's secondary text (a URL, a path); other entries are returned unchanged.
+    pub fn with_description(mut self, text: impl Into<String>) -> Self {
+        if let Self::Action { description, .. } = &mut self {
+            *description = Some(text.into());
+        }
+        self
+    }
+    /// Sets the text an action passes to its command; other entries are returned unchanged.
+    pub fn with_argument(mut self, text: impl Into<String>) -> Self {
+        if let Self::Action { argument, .. } = &mut self {
+            *argument = Some(text.into());
+        }
+        self
+    }
+}
+
 /// What [`crate::host::read_clipboard`] found (API 1.11): `None` for a kind the clipboard
 /// doesn't hold.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -185,6 +217,71 @@ impl PickItem {
 
     pub fn description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
+        self
+    }
+}
+
+/// A highlight rule for Run and Debug console output ([`crate::host::set_console_rules`], API 1.12).
+///
+/// `pattern` is a regular expression in the syntax Rust's `regex` and JavaScript share, without
+/// inline flags, named groups, lookaround, backreferences or repeated groups; one that could
+/// backtrack for long on a 2000-character line is `Invalid`. Colours are console palette names
+/// (`red`, `bright-blue`, …), styles any of `bold`, `italic`, `underline`, `strikethrough`, `dim`;
+/// unknown names are ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsoleRule {
+    pub pattern: String,
+    pub ignore_case: bool,
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    pub styles: Vec<String>,
+    /// Style the whole line instead of only the matched text.
+    pub whole_line: bool,
+    /// A disabled rule keeps its place but never matches.
+    pub enabled: bool,
+}
+
+impl ConsoleRule {
+    /// An enabled, case-sensitive rule that styles only the matched text.
+    pub fn new(pattern: &str) -> Self {
+        Self {
+            pattern: pattern.to_owned(),
+            ignore_case: false,
+            foreground: None,
+            background: None,
+            styles: Vec::new(),
+            whole_line: false,
+            enabled: true,
+        }
+    }
+
+    pub fn ignore_case(mut self) -> Self {
+        self.ignore_case = true;
+        self
+    }
+
+    pub fn foreground(mut self, color: &str) -> Self {
+        self.foreground = Some(color.to_owned());
+        self
+    }
+
+    pub fn background(mut self, color: &str) -> Self {
+        self.background = Some(color.to_owned());
+        self
+    }
+
+    pub fn style(mut self, style: &str) -> Self {
+        self.styles.push(style.to_owned());
+        self
+    }
+
+    pub fn whole_line(mut self) -> Self {
+        self.whole_line = true;
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
         self
     }
 }
@@ -302,7 +399,13 @@ pub struct DocumentTextChange {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentChanged {
+    /// Relative to `project`.
     pub path: String,
+    /// Root of the open project `path` is relative to (absolute). Two open projects can
+    /// hold the same relative path; pass this project to `document-at`. `None` from
+    /// older IDEs.
+    #[serde(default)]
+    pub project: Option<String>,
     pub base_version: u64,
     pub version: u64,
     pub changes: Vec<DocumentTextChange>,
@@ -596,13 +699,19 @@ mod tests {
             "document-changed".into(),
             r#"{"path":"/p/a.rs","baseVersion":7,"version":8,"changes":[{"from":1,"to":2,"insert":"x"}]}"#.into(),
         );
-        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { base_version: 7, .. })));
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { base_version: 7, project: None, .. })));
+        let change = Event::from_other(
+            "document-changed".into(),
+            r#"{"path":"a.rs","project":"/p","baseVersion":7,"version":8,"changes":[]}"#.into(),
+        );
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { project: Some(ref p), .. }) if p == "/p"));
         let ready = Event::from_other("websocket-ready".into(), r#"{"pluginId":"collab","connection":42}"#.into());
         assert_eq!(ready, Event::WebSocketReady(WebSocketReady { plugin_id: "collab".into(), connection: 42 }));
 
         let document = Document { version: 7, text: "a😀b".into() };
         let change = DocumentChanged {
             path: "/p/a.rs".into(),
+            project: None,
             base_version: 7,
             version: 8,
             changes: vec![DocumentTextChange { from: 1, to: 3, insert: "x".into() }],

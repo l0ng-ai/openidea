@@ -22,6 +22,8 @@ use tokio::process::{Child, Command};
 pub const PORT_PLACEHOLDER: &str = "${port}";
 /// Replaced by the session's working directory (the project) in adapter arguments.
 pub const ROOT_PLACEHOLDER: &str = "${root}";
+/// java-analyzer's debug adapter (`java-analyzer dap`), a separate process over stdio.
+pub const JAVA_ANALYZER: &str = "java-analyzer";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Transport {
@@ -133,6 +135,14 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             &[],
             "tcp",
             "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers)",
+        ),
+        // The Java language server's own debugger, for modules jdtls doesn't serve; the host
+        // runs the executable of the java-analyzer serving the module.
+        JAVA_ANALYZER => cfg(
+            "java-analyzer",
+            &["dap"],
+            "stdio",
+            "Configure java-analyzer as a Java language server (Settings › Languages & Frameworks › Language Servers)",
         ),
         "bun-dap" => cfg(
             "bun-dap",
@@ -920,6 +930,13 @@ mod tests {
         }
         let delve = resolve(&builtin("delve").unwrap(), PathBuf::from("/"));
         assert_eq!(delve.transport, Transport::Tcp);
+        // java-analyzer debugs over stdio with its `dap` subcommand.
+        let java_analyzer = resolve(&builtin(JAVA_ANALYZER).unwrap(), PathBuf::from("/"));
+        assert_eq!(
+            (java_analyzer.command.as_str(), java_analyzer.args.as_slice()),
+            ("java-analyzer", &["dap".to_owned()][..])
+        );
+        assert_eq!(java_analyzer.transport, Transport::Stdio);
         // GDB's own DAP interpreter over stdio, with the required version in its hint.
         let gdb = builtin("gdb").unwrap();
         assert_eq!(gdb.command, "gdb");

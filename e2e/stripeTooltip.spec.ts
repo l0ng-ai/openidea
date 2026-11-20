@@ -102,7 +102,7 @@ test("stripe themes inherit base tooltip tokens and keep shortcut text readable"
       delete root.dataset.colorTheme;
       root.dataset.theme = kind;
       root.dataset.pluginTheme = "test/base-tooltip";
-      const path = "/src/features/plugins/bridge.ts";
+      const path = "/src/features/plugins/themeRuntime.ts";
       const { pluginThemeCss } = await import(/* @vite-ignore */ path);
       const style = document.createElement("style");
       style.id = "test-plugin-theme";

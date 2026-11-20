@@ -19,6 +19,9 @@ const MESSAGES: TableDefinition<&str, &str> = TableDefinition::new("messages-v1"
 const MAX_MEMORY_COMMITS: usize = 4096;
 const MAX_MEMORY_MESSAGES: usize = 1024;
 const MAX_DIRTY_BATCH: usize = 16_384;
+/// redb's page cache, which otherwise grows to 1 GiB per repository. Hot commits are already
+/// kept in `memory`.
+const DB_CACHE_BYTES: usize = 32 * 1024 * 1024;
 
 pub(crate) struct IndexedRow {
     pub id: ObjectId,
@@ -269,7 +272,11 @@ impl LogIndex {
         let path = dir.join("commits.redb");
         let mut databases = DATABASES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner());
         self.db = databases.get(&path).and_then(Weak::upgrade).or_else(|| {
-            let db = Arc::new(std::fs::create_dir_all(dir).ok().and_then(|_| Database::create(&path).ok())?);
+            let db = Arc::new(
+                std::fs::create_dir_all(dir)
+                    .ok()
+                    .and_then(|_| Database::builder().set_cache_size(DB_CACHE_BYTES).create(&path).ok())?,
+            );
             drop_stale_tables(&db);
             databases.insert(path, Arc::downgrade(&db));
             Some(db)

@@ -6,7 +6,7 @@
  * There is no network repository: Available lists the plugin packages
  * available locally (`plugin_catalog`) and installs them from disk.
  */
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import type {
   CapabilityInfo,
@@ -27,6 +27,9 @@ import {
   SearchField,
   Select,
   Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   Tabs,
   showContextMenu,
   type MenuItem,
@@ -600,7 +603,7 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
   );
 }
 
-/** The agent a `java.agent` grant loads: its jar's file name and arguments, as `-javaagent:` takes them. */
+/** The agent a `java.agent` grant loads: jar, args, and any contributed JVM options. */
 function JavaAgentDetail({ plugin, cap, disabled }: { plugin: PluginInfo; cap: CapabilityInfo; disabled: boolean }) {
   const agent = plugin.javaAgent;
   if (!agent) return null;
@@ -610,12 +613,18 @@ function JavaAgentDetail({ plugin, cap, disabled }: { plugin: PluginInfo; cap: C
       await setPluginCapability(plugin.id, cap.id, true);
     }
   };
+  const agentLabel = `${agent.fileName}${agent.args ? `=${agent.args}` : ""}`;
+  const vmLabel = agent.vmOptions.length ? `${agent.vmOptions.join(" ")}${agent.jdk ? ` (${agent.jdk})` : ""}` : null;
   return (
     <div className={styles.programPermission}>
       <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("Java agent")}>
-        {agent.fileName}
-        {agent.args ? `=${agent.args}` : ""}
+        {agentLabel}
       </span>
+      {vmLabel && (
+        <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("JVM options")}>
+          {vmLabel}
+        </span>
+      )}
       {cap.granted && !agent.approved && (
         <div className={styles.error} role="alert">
           <p>
@@ -1303,6 +1312,19 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedCatalogId, setSelectedCatalogId] = useState<string | null>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+
+  useLayoutEffect(() => {
+    const page = pageRef.current;
+    if (!page) return;
+    const measure = () => setStacked(page.clientWidth < 600);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(page);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     void refreshPlugins();
@@ -1397,7 +1419,7 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
 
   const headerSlot = useSettingsHeaderSlot();
   const header = (
-    <>
+    <div className={styles.topBar}>
       <Tabs
         variant="compact"
         className={styles.sourceTabs}
@@ -1415,12 +1437,12 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
       />
       {(loading || installing) && <Spinner size={14} label={installing ? "Installing plugin" : "Loading plugins"} />}
       <IconButton icon="settings" title="Manage Plugins" aria-haspopup="menu" onClick={openGear} />
-    </>
+    </div>
   );
 
   return (
-    <div className={styles.page}>
-      {headerSlot ? createPortal(header, headerSlot) : <div className={styles.topBar}>{header}</div>}
+    <div ref={pageRef} className={styles.page}>
+      {headerSlot && !stacked ? createPortal(header, headerSlot) : header}
 
       {error && (
         <div className={styles.error} role="alert">
@@ -1428,8 +1450,13 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
         </div>
       )}
 
-      <div className={styles.body}>
-        <div className={styles.side}>
+      <SplitGroup
+        id="plugin-panes"
+        className={styles.body}
+        orientation={stacked ? "vertical" : "horizontal"}
+        storageKey={`openidea.settings.plugins.layout.${stacked ? "stacked" : "sideBySide"}`}
+      >
+        <SplitPanel id="plugin-list" defaultSize="45%" minSize={stacked ? "28%" : "240px"}>
           <div className={styles.searchRow}>
             <SearchField
               className={styles.searchField}
@@ -1521,39 +1548,41 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
               {catalogError && <li className={clsx(styles.listEmpty, styles.errorText)}>{catalogError}</li>}
             </ul>
           )}
-        </div>
-
-        {tab === "installed" ? (
-          selected ? (
-            <InstalledDetails key={selected.id} plugin={selected} />
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Resize plugin panes")} />
+        <SplitPanel id="plugin-details" defaultSize="55%" minSize={stacked ? "35%" : "320px"}>
+          {tab === "installed" ? (
+            selected ? (
+              <InstalledDetails key={selected.id} plugin={selected} />
+            ) : (
+              <EmptyState className={styles.detailsEmpty} title={loaded ? "No plugin selected" : "Loading…"}>
+                <T>Plugins are folders with a</T> <code>plugin.toml</code>
+                <T>. Use the gear menu to install one from disk, or put dev plugins in</T>{" "}
+                <code>.openidea/plugins/</code> <T>inside your project.</T>
+              </EmptyState>
+            )
+          ) : selectedMarket ? (
+            <MarketDetails
+              key={`market:${selectedMarket.id}`}
+              entry={selectedMarket}
+              suggestedBy={suggestions.get(selectedMarket.id)}
+              onInstalled={(id) => {
+                setTab("installed");
+                setSelectedId(id);
+              }}
+            />
+          ) : selectedEntry ? (
+            <CatalogDetails key={selectedEntry.id} entry={selectedEntry} />
+          ) : marketUrl ? (
+            <EmptyState className={styles.detailsEmpty} title="No plugin selected" />
           ) : (
-            <EmptyState className={styles.detailsEmpty} title={loaded ? "No plugin selected" : "Loading…"}>
-              <T>Plugins are folders with a</T> <code>plugin.toml</code>
-              <T>. Use the gear menu to install one from disk, or put dev plugins in</T> <code>.openidea/plugins/</code>{" "}
-              <T>inside your project.</T>
+            <EmptyState className={styles.detailsEmpty} title={NO_REPOSITORY}>
+              <T>Install a plugin folder with</T> <code>plugin.toml</code>{" "}
+              <T>via the gear menu › Install Plugin from Disk….</T>
             </EmptyState>
-          )
-        ) : selectedMarket ? (
-          <MarketDetails
-            key={`market:${selectedMarket.id}`}
-            entry={selectedMarket}
-            suggestedBy={suggestions.get(selectedMarket.id)}
-            onInstalled={(id) => {
-              setTab("installed");
-              setSelectedId(id);
-            }}
-          />
-        ) : selectedEntry ? (
-          <CatalogDetails key={selectedEntry.id} entry={selectedEntry} />
-        ) : marketUrl ? (
-          <EmptyState className={styles.detailsEmpty} title="No plugin selected" />
-        ) : (
-          <EmptyState className={styles.detailsEmpty} title={NO_REPOSITORY}>
-            <T>Install a plugin folder with</T> <code>plugin.toml</code>{" "}
-            <T>via the gear menu › Install Plugin from Disk….</T>
-          </EmptyState>
-        )}
-      </div>
+          )}
+        </SplitPanel>
+      </SplitGroup>
     </div>
   );
 }

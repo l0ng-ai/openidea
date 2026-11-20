@@ -214,15 +214,6 @@ pub(crate) fn settings_get(window: Window) -> Settings {
     ide_host::ops::project::settings_get(&state.host, window.label())
 }
 
-/// Defaults plus the global layer, without any project's values: what new
-/// projects (and projects without their own value) get.
-#[desktop_command(trust = always)]
-#[tauri::command]
-#[specta::specta]
-pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
-    state.host.with_proxy_password(state.global_settings.effective())
-}
-
 pub(crate) fn settings_removed_theme(window: Window) -> Option<String> {
     let state = window.state::<AppState>();
     state.note_ipc();
@@ -258,7 +249,7 @@ fn settings_set_now(
 ) -> IdeResult<Settings> {
     let applied = ide_host::ops::project::set_settings(&state.host, window, scope, key, value)?;
     if key == "mcpServer" || key.starts_with("mcpServer.") {
-        crate::commands::mcp::apply(state);
+        state.host.mcp.apply(&state.host);
     }
     if !applied.project_scope {
         state.updates.wake.notify_one();
@@ -319,7 +310,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }
     crate::commands::ssh::apply_ssh_settings(&state);
-    crate::commands::mcp::apply(&state);
+    state.host.mcp.apply(&state.host);
     state.host.apply_proxy();
     state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
@@ -415,7 +406,6 @@ ide_command::desktop_domain!(
     remove_recent_project,
     set_recent_project_groups,
     settings_export,
-    settings_get_global,
     settings_import,
     settings_list_jetbrains_ides,
     settings_read_jetbrains,

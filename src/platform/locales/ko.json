@@ -275,7 +275,7 @@
   "menu.toolwindow.debug": "디버그",
   "menu.toolwindow.find": "찾기",
   "menu.toolwindow.git": "Git",
-  "menu.toolwindow.hideAll": "모든 도구 창 숨기기",
+  "menu.toolwindow.hideAll": "{toolWindows, select, hidden {도구 창 복원} other {모든 도구 창 숨기기}}",
   "menu.toolwindow.problems": "문제",
   "menu.toolwindow.project": "프로젝트",
   "menu.toolwindow.run": "실행",
