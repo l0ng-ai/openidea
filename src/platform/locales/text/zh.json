@@ -3349,6 +3349,7 @@
   "Hold Shift to Debug, F4 to edit, Delete to remove": "按住 Shift 调试，F4 编辑，Delete 删除",
   "Hold Shift to Run, F4 to edit, Delete to remove": "按住 Shift 运行，F4 编辑，Delete 删除",
   "Send EOF": "发送 EOF",
+  "Fold Lines Like This": "折叠与此类似的行",
   "Collapse folded lines": "折叠行",
   "Close Tool Window Tab": "关闭工具窗口标签页",
   "No open files": "没有打开的文件",
