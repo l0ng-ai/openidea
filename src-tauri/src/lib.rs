@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod application_focus;
+mod browser_picker;
 mod cli;
 mod commands;
 #[cfg(debug_assertions)]
@@ -53,6 +54,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use windows::WindowsState;
 
+pub use browser_picker::run_helper as run_browser_picker;
 pub use commands::declarations;
 
 /// Builds the tauri-specta builder holding every command and exported type.

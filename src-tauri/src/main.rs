@@ -11,5 +11,8 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     macos_webview::ensure_modern_webkit();
+    if let Some(code) = openidea_lib::run_browser_picker() {
+        std::process::exit(code);
+    }
     openidea_lib::run()
 }

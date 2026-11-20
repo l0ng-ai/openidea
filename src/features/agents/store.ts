@@ -34,6 +34,7 @@ import {
   canSend,
   cursorModelDefaults,
   emptyDraft,
+  fenced,
   isMentioned,
   isPerModelOption,
   toPrompt,
@@ -1427,6 +1428,18 @@ export async function setTaskMcpOverrides(task: string, overrides: Record<string
   useAgents.setState((s) => ({
     tasks: new Map(s.tasks).set(task, updated),
   }));
+}
+
+/** Attach a reviewed block without submitting, changing providers, or replacing draft attachments. */
+export function appendContextBlock({ text, info }: { text: string; info: string }) {
+  const selected = activeComposerKey();
+  const task = useAgents.getState().tasks.get(selected);
+  const key = task && task.status !== "archived" ? task.id : HOME;
+  const existing = composerDraft(key).text;
+  const block = fenced(text, info);
+  updateComposer(key, { text: existing ? `${existing}\n\n${block}` : block });
+  if (key === HOME) openHome();
+  else openTask(key);
 }
 
 /** The composer the user is looking at: the Agents surface on show, else the one typed in last. */

@@ -6719,6 +6719,7 @@ dependencies = [
  "serde_json",
  "specta",
  "specta-typescript",
+ "tao",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -6737,6 +6738,7 @@ dependencies = [
  "webview2-com",
  "windows",
  "windows-sys 0.61.2",
+ "wry",
 ]
 
 [[package]]

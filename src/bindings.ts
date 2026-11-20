@@ -1804,6 +1804,12 @@ export const commands = {
 	reference: WebReference,
 	targets: Location[],
 } | null, IdeError>(__TAURI_INVOKE("web_goto", { doc, pos })),
+	/**  Picks one element in an isolated guest. The owner explicitly reviews the result in its draft. */
+	webInspectElement: (url: string, title: string, request: RequestId) => typedError<{
+	selector: string,
+	html: string,
+	styles: string,
+} | null, IdeError>(__TAURI_INVOKE("web_inspect_element", { url, title, request })),
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
 	/**  Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open. */
@@ -6972,6 +6978,12 @@ export type InspectSummary = {
 	failed: number,
 	cancelled: boolean,
 	elapsedMs: number,
+};
+
+export type InspectedElement = {
+	selector: string,
+	html: string,
+	styles: string,
 };
 
 export type InspectedFile = {

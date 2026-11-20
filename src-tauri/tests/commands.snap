@@ -689,6 +689,7 @@ vcs_worktrees                                always             project_host bin
 vcs_write_patch                              always             project_host bindings async
 web_browsers                                 always             desktop      bindings async
 web_goto                                     always             project_host bindings async
+web_inspect_element                          trusted            desktop      bindings async
 web_open                                     always             desktop      bindings async
 web_serves_page                              trusted            desktop      bindings async
 web_unresolved_references                    always             project_host bindings async

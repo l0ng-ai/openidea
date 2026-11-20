@@ -15,6 +15,9 @@ dunce.workspace = true
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# The local element picker owns a plain WebView without the desktop command bridge.
+tao = "0.37"
+wry = "0.57"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2.8.1"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
