@@ -271,6 +271,9 @@ export const inlineBlameTheme = {
   ".cm-vcs-inline-blame-tooltip": {
     padding: "8px 12px",
     maxWidth: "min(70ch, 80vw)",
+    maxHeight: "min(420px, 55vh)",
+    overflow: "auto",
+    overscrollBehavior: "contain",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
   },

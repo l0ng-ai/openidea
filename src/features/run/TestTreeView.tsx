@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import {
   findOccurrence,
   Icon,
@@ -15,13 +15,23 @@ import {
   type TreeHandle,
 } from "@/ui";
 import { useOccurrenceNavigator } from "@/workbench/contributions";
-import { openTarget } from "./navigate";
-import { formatDuration, nodeDuration, nodeStatus, type TestNode, type TestResults, type TestStatus } from "./testing";
+import { openTarget, resolveTarget } from "./navigate";
+import {
+  formatDuration,
+  nodeDuration,
+  nodeOutput,
+  nodeStatus,
+  type TestNode,
+  type TestResults,
+  type TestStatus,
+} from "./testing";
 import { parseComparison } from "./testing/comparison";
 import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import { ExportTestResultsDialog } from "./ExportTestResultsDialog";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+
+const DIAGNOSE = "agents.diagnoseTestFailure";
 
 /** Test tree filters and sorting, kept across runs and restarts (IDEA hides passed tests by default). */
 const FILTERS_KEY = "openidea.run.testFilters";
@@ -215,6 +225,23 @@ export function TestTreeView({
     if (target) void openTarget(target, cwd, true);
   };
 
+  // The agents feature's action: the failure becomes a draft the user reviews and sends.
+  const diagnose = async (n: TestNode, name: string) => {
+    const located = n.location ?? firstLocated(n)?.location;
+    const path = located ? await resolveTarget(located, cwd).catch(() => null) : null;
+    // Rust's `left` / `right` don't say which side is expected; the output excerpt shows them as written.
+    const parsed = parseComparison(n.output);
+    const comparison = parsed?.labels ? null : parsed;
+    await executeAction(DIAGNOSE, {
+      name,
+      path,
+      line: path ? located?.line : undefined,
+      expected: comparison?.expected,
+      actual: comparison?.actual,
+      output: nodeOutput(n),
+    });
+  };
+
   const contextMenu = (node: TestNode | null, sel: Set<string>, e: MouseEvent) => {
     if (!node) return;
     const ids = sel.has(node.id) ? [...sel] : [node.id];
@@ -245,6 +272,8 @@ export function TestTreeView({
       }
       if (ids.length === 1 && nodeStatus(node) === "failed" && parseComparison(node.output))
         items.push({ label: "Show Diff", icon: "diff", run: () => void showTestDiff(node) });
+      if (ids.length === 1 && !node.children.length && nodeStatus(node) === "failed" && getAction(DIAGNOSE))
+        items.push({ label: "Diagnose with Agent", icon: "toolwindow-agents", run: () => void diagnose(node, name) });
       items.push({
         label: "Jump to Source",
         icon: "external-link",

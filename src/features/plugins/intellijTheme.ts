@@ -4,10 +4,12 @@
  * plugin into an OpenIDEA theme plugin package. The mapping covers the main
  * keys only; anything unmapped keeps the built-in value of the base (`kind`).
  *
- * Pure functions without imports: Settings › Plugins › Import IntelliJ Theme
+ * Pure functions, importing only data: Settings › Plugins › Import IntelliJ Theme
  * uses them on what the host read from the plugin (`plugin_read_intellij_theme`),
  * and so does the command line (`scripts/theme/import-intellij-theme.ts`).
  */
+
+import { DARCULA_TOKENS } from "./intellijDarcula.ts";
 
 /** OpenIDEA token ← IntelliJ `ui` keys, first present wins. `*.prop` wildcards apply too. */
 export const UI_KEYS: Record<string, string[]> = {
@@ -357,6 +359,12 @@ export function convertIcls(xml: string): { name: string; dark: boolean | null; 
     if (key === "DEFAULT_LINE_COMMENT" && parts.has("FONT_TYPE")) {
       tokens["--syn-comment-style"] = Number(parts.get("FONT_TYPE")) & 2 ? "italic" : "normal";
     }
+  }
+  if (parent === "Darcula") {
+    // IntelliJ replaces a parent's attribute as a whole: what the file names, even empty or by baseAttributes, wins.
+    const keys = [...body.matchAll(/<option name="([^"]+)"/g)].map((m) => m[1]!);
+    const own = new Set(keys.flatMap((key) => (ICLS_ATTRIBUTES[key] ?? []).map(([, t]) => t)));
+    for (const [token, value] of Object.entries(DARCULA_TOKENS)) if (!own.has(token)) tokens[token] ??= value;
   }
   if (tokens["--wave-error"]) tokens["--editor-error-decoration"] = `underline wavy ${tokens["--wave-error"]}`;
   if (tokens["--bg-editor"]) tokens["--bg-editor-gutter"] ??= tokens["--bg-editor"];

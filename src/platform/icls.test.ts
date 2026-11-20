@@ -10,6 +10,7 @@ import {
   schemeCss,
 } from "./colorScheme";
 import { deleteScheme, exportIcls, importScheme, parseIcls, SchemeParseError } from "./icls";
+import { DARCULA_ATTRIBUTES } from "./iclsDarcula";
 import { validateSettings } from "@/features/settings/model/schema";
 import { colorSchemeItems } from "@/workbench/quickSwitch";
 import { useProject } from "./project";
@@ -178,7 +179,7 @@ describe(".icls schemes", () => {
     expect(fg("docCommentTagValue")).toBe("#e5c07b");
     expect(fg("regexp")).toBe("#56b6c2");
     // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
-    expect(scheme.attributes.operator).toBeUndefined();
+    expect(scheme.attributes.operator).toEqual(DARCULA_ATTRIBUTES.operator);
     expect([applied, skipped]).toEqual([10, 6]);
   });
 
@@ -403,6 +404,26 @@ describe(".icls schemes", () => {
       '<option name="FOREGROUND" value="808080"/></value></option></attributes></scheme>';
     const { id, customs } = importScheme({}, parseIcls(xml).scheme);
     expect(parseIcls(exportIcls(id, customs)).scheme.attributes.pyFString?.foreground).toBe("#808080");
+  });
+
+  it("takes what a Darcula-based scheme leaves out from Darcula, as IntelliJ does", () => {
+    const { scheme, applied } = parseIcls(`<scheme name="Mine" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="ff8800"/></value></option>
+      <option name="ERRORS_ATTRIBUTES"><value/></option>
+      <option name="DEFAULT_CONSTANT" baseAttributes="DEFAULT_IDENTIFIER"/>
+    </attributes></scheme>`);
+    expect(applied).toBe(1);
+    expect(scheme.parent).toBe("dark");
+    expect(scheme.attributes.text).toEqual({ foreground: "#a9b7c6", background: "#2b2b2b" });
+    expect(scheme.attributes.string?.foreground).toBe("#6a8759");
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#ff8800", bold: false, italic: false });
+    // An entry of its own, even an empty one, replaces Darcula's.
+    expect(scheme.attributes.error).toBeUndefined();
+    expect(scheme.attributes.constant).toBeUndefined();
+    // The gutter keeps the editor's background, as in IntelliJ's new UI.
+    expect(scheme.attributes.gutter).toBeUndefined();
+    // Other parents keep the IDE's own base.
+    expect(parseIcls('<scheme name="I" parent_scheme="Islands Dark"></scheme>').scheme.attributes).toEqual({});
   });
 
   it("imports the global variable colour", () => {

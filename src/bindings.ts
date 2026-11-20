@@ -38,6 +38,8 @@ export const commands = {
 	 *  before a task exists (skills and custom commands on disk included).
 	 */
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
+	/**  Reads the running session's context categories without sending a prompt. */
+	agentContextUsage: (task: string) => typedError<AgentContextUsage, IdeError>(__TAURI_INVOKE("agent_context_usage", { task })),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
 	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
@@ -1344,6 +1346,12 @@ export const commands = {
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
 	remoteDownloadInto: (connection: FsConnection, paths: string[], target: IpcPath, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_into", { connection, paths, target, request })),
 	/**
+	 *  The project view's Download to…: remote files and folders of this window's project into the
+	 *  local folder `target`, each under its own name. Like Remote Host › Download to…, nothing is
+	 *  written outside `target`, even through a local symlink inside it.
+	 */
+	remoteDownloadLocal: (paths: string[], target: string, request: RequestId, onProgress: Channel<DownloadProgress>) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_local", { paths, target, request, onProgress })),
+	/**
 	 *  Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
 	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
 	 */
@@ -2153,6 +2161,8 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
+	/**  The connected agent can report a breakdown of its context window. */
+	contextUsage?: boolean,
 };
 
 /**
@@ -2256,6 +2266,21 @@ export type AgentConfigVia =
 "mode" | 
 /**  `session/set_model` (agents that report `models` instead of a model config option). */
 "model";
+
+export type AgentContextCategory = {
+	name: string,
+	tokens: number,
+	kind: string | null,
+};
+
+export type AgentContextUsage = {
+	categories: AgentContextCategory[],
+	totalTokens: number,
+	maxTokens: number,
+	model: string,
+	isAutoCompactEnabled: boolean | null,
+	autoCompactThreshold: number | null,
+};
 
 export type AgentCost = {
 	amount: number | null,
@@ -5461,6 +5486,13 @@ export type DocumentTextChange = {
 	insert: string,
 };
 
+/**  One file of a [`remote_download_local`] transfer starting: `done` of `total` files are finished. */
+export type DownloadProgress = {
+	path: string,
+	done: number,
+	total: number,
+};
+
 export type DuplicateGroup = {
 	tokens: number,
 	/**  Lines of the first fragment. */
@@ -6459,6 +6491,8 @@ export type GitSettings = {
 	 */
 	inlineBlameClickable?: boolean,
 	showBranchInProjectView?: boolean,
+	/**  Branch operations from the branches popup act on every repository of the project. */
+	syncBranchOperations?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
 	/**  Default of Update Project: `merge` | `rebase`. */

@@ -69,6 +69,8 @@ const summary = (rows: RepoRow[]) =>
         return `${"  ".repeat(r.depth)}${r.repo.name}:${r.branch.name}`;
       case "tag":
         return `${"  ".repeat(r.depth)}tag ${r.tag}`;
+      case "notice":
+        return `! ${r.label}`;
     }
   });
 
@@ -121,7 +123,13 @@ describe("commonBranches", () => {
 
   it("is current only when checked out everywhere", () => {
     const common = commonBranches([[b("dev", { current: true })], [b("dev")]]);
-    expect(common.local).toEqual([{ name: "dev", remote: false, current: false, favorite: false }]);
+    expect(common.local).toEqual([{ name: "dev", remote: false, current: false, favorite: false, upstream: false }]);
+  });
+
+  it("marks a common branch with an upstream in any repository", () => {
+    const tracked = commonBranches([[b("dev")], [b("dev", { upstream: "origin/dev" })]]);
+    expect(tracked.local[0]?.upstream).toBe(true);
+    expect(commonBranches([[b("dev")], [b("dev")]]).local[0]?.upstream).toBe(false);
   });
 
   it("does not match a local branch with a remote one of the same name", () => {
@@ -131,7 +139,7 @@ describe("commonBranches", () => {
 });
 
 describe("buildMultiRepoRows", () => {
-  const input = { repos, branches, actions, expanded: new Map<string, boolean>() };
+  const input = { repos, branches, actions, expanded: new Map<string, boolean>(), sync: true };
 
   it("lists actions, repositories with their branch, then the common groups", () => {
     expect(summary(buildMultiRepoRows({ ...input, query: "" }))).toEqual([
@@ -200,6 +208,19 @@ describe("buildMultiRepoRows", () => {
     expect(dev?.type === "common" && [dev.label, dev.matches]).toEqual(["dev", [0, 1, 2]]);
   });
 
+  it("counts a detached HEAD as diverged: warns and keeps the common groups", () => {
+    const detached = [repo("ology-collect", null), repo("ology-dependencies"), repo("ology-gateway")];
+    const rows = summary(buildMultiRepoRows({ ...input, repos: detached, query: "" }));
+    expect(rows).toContain("! Branches have diverged");
+    expect(rows).toContain("v Common Local Branches");
+  });
+
+  it("lists the current repository's branches when sync is off, even when repositories agree", () => {
+    const rows = summary(buildMultiRepoRows({ ...input, sync: false, current: "/p/ology-collect", query: "" }));
+    expect(rows).not.toContain("v Common Local Branches");
+    expect(rows).toContain("v Local Branches in ology-collect");
+  });
+
   it("shows no common branches until every repository's branches are loaded", () => {
     const partial = { "/p/ology-collect": branches["/p/ology-collect"]! };
     expect(summary(buildMultiRepoRows({ ...input, branches: partial, query: "" })).at(-1)).toBe(
@@ -239,7 +260,20 @@ describe("buildMultiRepoRows with repositories on different branches", () => {
     expanded: new Map<string, boolean>(),
     recent: ["dev", "release/1.0", "gone"],
     tags: ["v1.2", "v1.10"],
+    sync: false,
   };
+
+  it("keeps the common groups and warns when branches diverged and sync is on", () => {
+    const rows = summary(buildMultiRepoRows({ ...input, sync: true, current: "/p/ology-collect", query: "" }));
+    expect(rows.slice(3, 6)).toEqual(["---", "! Branches have diverged", "v Common Local Branches"]);
+    expect(rows).not.toContain("v Recent Branches in ology-collect");
+  });
+
+  it("never prefers the diverged notice while searching", () => {
+    const rows = buildMultiRepoRows({ ...input, sync: true, current: "/p/ology-collect", query: "diverged" });
+    expect(rows.some((r) => r.type === "notice")).toBe(true);
+    expect(rows[preferredRepoRow(rows, "diverged")]?.type).not.toBe("notice");
+  });
 
   it("lists the current repository's recent, local, remote branches and tags instead of the common ones", () => {
     expect(summary(buildMultiRepoRows({ ...input, current: "/p/ology-collect", query: "" }))).toEqual([

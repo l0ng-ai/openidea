@@ -1600,6 +1600,18 @@ export interface ReferenceTarget {
  * how many were added; a path outside every project shows a notice.
  */
 export function addReferences(targets: readonly ReferenceTarget[]): number {
+  return appendToComposer((mentions) => mentions.join(" "), targets);
+}
+
+/**
+ * Appends text to the agent message typed last (a task's or New Task's) and opens it; nothing is
+ * sent. `compose` gets the `@` mentions of `targets` (those inside this window's projects, which
+ * also become chips). Returns how many targets were referenced.
+ */
+export function appendToComposer(
+  compose: (mentions: readonly string[]) => string,
+  targets: readonly ReferenceTarget[] = [],
+): number {
   const s = useAgents.getState();
   const key = activeComposerKey();
   const task = key === HOME ? null : s.tasks.get(key)!;
@@ -1623,9 +1635,14 @@ export function addReferences(targets: readonly ReferenceTarget[]): number {
   }
   if (files.length < targets.length)
     notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
-  if (!files.length) return 0;
-  const joined = mentions.join(" ");
-  const text = current.text && !/\s$/.test(current.text) ? `${current.text} ${joined} ` : `${current.text}${joined} `;
+  const joined = compose(mentions);
+  if (!joined) return 0;
+  // A block of several lines (a test failure) goes in a paragraph of its own.
+  const text = joined.includes("\n")
+    ? `${current.text.trimEnd() ? `${current.text.trimEnd()}\n\n` : ""}${joined}\n`
+    : current.text && !/\s$/.test(current.text)
+      ? `${current.text} ${joined} `
+      : `${current.text}${joined} `;
   updateComposer(key, { text, files: [...current.files, ...files] });
   if (task) openTask(task.id);
   else openHome();

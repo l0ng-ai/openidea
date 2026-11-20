@@ -1161,6 +1161,50 @@ pub async fn remote_import_local(
     result
 }
 
+/// One file of a [`remote_download_local`] transfer starting: `done` of `total` files are finished.
+#[derive(Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadProgress {
+    pub path: String,
+    pub done: u32,
+    pub total: u32,
+}
+
+/// The project view's Download to…: remote files and folders of this window's project into the
+/// local folder `target`, each under its own name. Like Remote Host › Download to…, nothing is
+/// written outside `target`, even through a local symlink inside it.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_download_local(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    target: std::path::PathBuf,
+    request: ide_core::RequestId,
+    on_progress: Channel<DownloadProgress>,
+) -> IdeResult<ide_remote::TransferReport> {
+    let label = AppState::owner_window(window.label());
+    let c = state.remote_dev.get(label).ok_or_else(|| IdeError::unavailable("Remote project is disconnected"))?;
+    let Some(session) = c.session.clone() else {
+        return Err(IdeError::unavailable("Downloading files is not supported in a WSL project yet"));
+    };
+    let cancel = state.host.begin_request(request);
+    let result = async {
+        let fs = ide_ssh::RemoteFs::new(session.sftp().await?);
+        let mut progress = |path: &str, done: usize, total: usize| {
+            let _ =
+                on_progress.send(DownloadProgress { path: path.to_owned(), done: done as u32, total: total as u32 });
+        };
+        let result = ide_remote::service::download_into(&fs, &paths, &target, &cancel, &mut progress).await;
+        fs.close().await;
+        result
+    }
+    .await;
+    state.host.end_request(request);
+    result
+}
+
 /// A command the server does not know, from a server of another version than this app: says so,
 /// instead of the bare JSON-RPC error.
 fn older_server_error(e: IdeError, server_version: &str, host: &str) -> IdeError {
@@ -1391,6 +1435,7 @@ ide_command::desktop_domain!(
     remote_connect,
     remote_current,
     remote_disconnect,
+    remote_download_local,
     remote_forward_port,
     remote_forwarded_ports,
     remote_import_local,

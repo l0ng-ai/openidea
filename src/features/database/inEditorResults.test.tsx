@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
-import { consoleExtension, executeScriptInView } from "./console";
+import { consoleExtension, executeInView, executeScriptInView } from "./console";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { executeConsole, rerunResult, useDatabase } from "./store";
 import { provideToolWindowService } from "@/workbench/contributions";
@@ -138,6 +138,39 @@ describe("In-Editor Results", () => {
 });
 
 describe("statements in flight", () => {
+  it("runs SQL from a read-only editor without leaving execution progress behind", async () => {
+    useProject.setState({ settings: {} as never });
+    const view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({
+        doc: "SELECT 1;",
+        extensions: [
+          EditorState.readOnly.of(true),
+          consoleExtension({ language: SQL_LANGUAGE, path: PATH, readOnly: true } as never),
+        ],
+      }),
+    });
+    try {
+      await executeInView(view, PATH);
+      const { results, running, executions } = useDatabase.getState();
+      expect(results[0]?.outcome.result?.rows).toEqual([["SELECT 1 #1"]]);
+      expect(running).toEqual({});
+      expect(executions).toEqual({});
+    } finally {
+      view.destroy();
+    }
+  });
+
+  it("clears execution progress if setting up editor marks fails", async () => {
+    const outcomes = await executeConsole(PATH, "SELECT 1;", 0, 0, () => {
+      throw new Error("Could not set up editor marks");
+    });
+    expect(outcomes).toEqual([]);
+    const { running, executions } = useDatabase.getState();
+    expect(running).toEqual({});
+    expect(executions).toEqual({});
+  });
+
   it("marks what was submitted with its running time, then the outcome", async () => {
     const parent = document.createElement("div");
     document.body.append(parent);

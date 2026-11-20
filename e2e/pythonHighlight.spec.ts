@@ -53,7 +53,8 @@ test("Python syntax supplements retain PyCharm colours without a language server
   await expect(page.locator(".cm-sem-python-predefined-definition")).toHaveCSS("color", "rgb(187, 153, 34)");
   await expect(page.locator(".cm-sem-python-predefined-usage")).toHaveCSS("color", "rgb(204, 170, 51)");
   await expect(page.locator(".cm-sem-keyword").filter({ hasText: /^type$/ })).toHaveCSS("color", "rgb(17, 34, 51)");
-  await expect(page.locator(".cm-sem-unused")).toHaveCSS("color", "rgb(111, 115, 122)");
+  // The scheme is Darcula-based and doesn't name NOT_USED_ELEMENT_ATTRIBUTES: Darcula's #72737A applies.
+  await expect(page.locator(".cm-sem-unused")).toHaveCSS("color", "rgb(114, 115, 122)");
   expect(errors).toEqual([]);
   await page.screenshot({ path: info.outputPath("python-highlighting.png") });
 });

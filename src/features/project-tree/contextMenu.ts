@@ -34,6 +34,7 @@ import {
   revealInFinder,
   vcsArg,
 } from "./operations";
+import { canDownload } from "./download";
 import { isSameOrInside } from "./paths";
 import { useProjectTree } from "./store";
 import { tx } from "@/platform/i18n";
@@ -355,6 +356,14 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       { kind: "separator" },
       ...menuGroupItems("openIn", menuGroupContext(nodes)),
     ]),
+    inWorkspace &&
+      canDownload() &&
+      delegated(
+        "project.downloadTo",
+        nodes.map((n) => n.path),
+        "Download to…",
+        { icon: "download" },
+      ),
     { kind: "separator" },
   );
 

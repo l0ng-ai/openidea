@@ -301,7 +301,14 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("packageReference", "Identifiers › Package reference", [LD], "namespace"),
   syn("constant", "Identifiers › Constant", [LD], "constant", { defaultItalic: true }),
   syn("field", "Identifiers › Instance field", [LD], "property"),
-  { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
+  {
+    id: "staticSymbol",
+    name: "Identifiers › Static symbol",
+    path: [LD],
+    token: "static",
+    italicOnly: true,
+    defaultItalic: true,
+  },
   syn("functionDeclaration", "Identifiers › Function declaration", [LD], "function"),
   syn("functionCall", "Identifiers › Function call", [LD], "function-call"),
   syn("predefined", "Identifiers › Predefined symbol", [LD], "builtin"),
@@ -403,7 +410,10 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     ["separator", "Comma and semicolon", "separator"],
     ["scriptTag", "PHP tags", "processing-instruction"],
     ["staticField", "Static field", "static-property"],
-  ].map(([id, name, token]) => ({ ...syn(`php.${id}`, name!, ["PHP"], token!), language: "PHP" })),
+  ].map(([id, name, token]) => ({
+    ...syn(`php.${id}`, name!, ["PHP"], token!, id === "staticField" ? { defaultItalic: true } : {}),
+    language: "PHP",
+  })),
 ];
 
 // --- scheme base values ------------------------------------------------------
@@ -816,7 +826,10 @@ export function schemeCss(
       }
     // The editor surface follows the scheme, not the island colour of the UI theme.
     const bg = tokens.get("--bg-editor") ?? tokens.get("--bg-island");
-    if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", tokens.get("--bg-editor-gutter") ?? bg]);
+    // An imported scheme's gutter keeps its editor background unless it sets one of its own.
+    const custom = valid[id];
+    const gutter = custom ? (custom.attributes.gutter?.background ?? bg) : (tokens.get("--bg-editor-gutter") ?? bg);
+    if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", gutter ?? bg]);
   }
   decls.push(...overrideDeclarations(overrides?.[id]));
   const body = decls

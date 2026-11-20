@@ -57,6 +57,29 @@ describe("color schemes", () => {
     );
   });
 
+  it("reports the italic static symbols and PHP static fields the editor draws by default (#4493)", () => {
+    for (const scheme of ["dark", "light"]) {
+      expect(resolvedAttribute(scheme, "staticSymbol").italic).toBe(true);
+      expect(resolvedAttribute(scheme, "php.staticField").italic).toBe(true);
+    }
+  });
+
+  it("keeps an imported scheme's gutter on its editor background unless it sets its own", () => {
+    const customs = (gutter?: string) => ({
+      "custom-a": {
+        name: "A",
+        parent: "dark" as const,
+        attributes: { text: { background: "#2b2b2b" }, ...(gutter ? { gutter: { background: gutter } } : {}) },
+      },
+    });
+    expect(schemeCss("custom-a", undefined, document.documentElement, customs())).toContain(
+      "--bg-editor-gutter: #2b2b2b !important;",
+    );
+    expect(schemeCss("custom-a", undefined, document.documentElement, customs("#313335"))).toContain(
+      "--bg-editor-gutter: #313335 !important;",
+    );
+  });
+
   it("offers a Go scheme page and scopes its overrides to Go editors", () => {
     expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
     const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });

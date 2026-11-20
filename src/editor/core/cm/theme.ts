@@ -376,6 +376,11 @@ export const openideaTheme = EditorView.theme({
     borderRadius: "var(--radius-popup)",
     boxShadow: "var(--shadow-popup)",
   },
+  // Near the window edge CodeMirror caps the hover host's height; its sections then shrink and
+  // scroll inside the popup instead of running past its border. Content tooltips still carry
+  // their own `max-height` + `overflow` for the space they get when not squeezed.
+  ".cm-tooltip.cm-tooltip-hover": { display: "flex", flexDirection: "column" },
+  ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
   ".cm-tooltip .cm-tooltip-arrow:before": {
     borderTopColor: "var(--border-popup)",
     borderBottomColor: "var(--border-popup)",
