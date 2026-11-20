@@ -117,6 +117,23 @@ describe("paused editor evaluation", () => {
     await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(7, 10, text, "hover"));
   });
 
+  it("ignores an object response that arrives after the debugger resumes", async () => {
+    session();
+    view.dispatch({ selection: { anchor: 16 } });
+    type Response = Awaited<ReturnType<typeof ipc.debugEvaluateIn>>;
+    let reply!: (result: Response) => void;
+    ipc.debugEvaluateIn.mockImplementationOnce(() => new Promise((resolve) => (reply = resolve)));
+    const evaluating = executeAction("debug.quickEvaluate");
+    await vi.waitFor(() => expect(ipc.debugEvaluateIn).toHaveBeenCalledOnce());
+    useDebug.setState((s) => ({ sessions: { 7: { ...s.sessions[7]!, status: "running" } } }));
+    reply({
+      status: "ok",
+      data: { name: "order.items", value: "Array(2)", typeName: "Array", variablesReference: 5, evaluateName: null },
+    });
+    await evaluating;
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+  });
+
   it("lets a higher priority custom mouse action win the shared gesture", () => {
     session();
     const run = vi.fn();

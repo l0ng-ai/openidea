@@ -95,6 +95,17 @@ export function valueHint(
   return { dom, destroy: () => tree?.unmount() };
 }
 
+export function showQuickValue(
+  view: EditorView,
+  pos: number,
+  expression: string,
+  value: Variable,
+  session: DebugSessionId,
+) {
+  if (value.variablesReference > 0) showValueTree(view, pos, expression, value, session);
+  else showHint(view, () => valueHint(expression, value, session), { pos, timeout: 60_000 });
+}
+
 export function valueTooltip(): Extension {
   return hoverTooltip(
     async (view, pos) => {
@@ -123,18 +134,17 @@ export function valueTooltip(): Extension {
             // The tree outgrows the hint and may move to the other side of the line, away from the
             // mouse, which closed the hover tooltip before it could be reached. Like IDEA's value
             // popup it stays until Escape, a click in the editor or the next step.
-            pin: () => {
-              view.dispatch({ effects: closeHoverTooltips });
-              showHint(view, () => pinnedTree(view, expr.text, value, session.id), {
-                pos: expr.from,
-                timeout: null,
-              });
-            },
+            pin: () => showValueTree(view, expr.from, expr.text, value, session.id),
           }),
       };
     },
     { hoverTime: BASE_HOVER },
   );
+}
+
+function showValueTree(view: EditorView, pos: number, expression: string, value: Variable, session: DebugSessionId) {
+  view.dispatch({ effects: closeHoverTooltips });
+  showHint(view, () => pinnedTree(view, expression, value, session), { pos, timeout: null });
 }
 
 /** An expanded value tree, closed when its session leaves the stop it was evaluated in. */
@@ -144,6 +154,20 @@ function pinnedTree(view: EditorView, expression: string, value: Variable, sessi
     if (s.stopSeq !== stop || s.sessions[session]?.status !== "paused") hideHint(view);
   });
   const hint = valueHint(expression, value, session, 400, { expanded: true });
+  let width = 0;
+  let resizeFrame = 0;
+  const updateWidth = () => {
+    const next = view.dom.clientWidth;
+    if (!next || next === width) return;
+    width = next;
+    hint.dom.style.setProperty("--debug-value-editor-width", `${width}px`);
+  };
+  updateWidth();
+  const resize = new ResizeObserver(() => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(updateWidth);
+  });
+  resize.observe(view.dom);
   // The tree has the focus, so the editor's Escape doesn't reach the hint.
   hint.dom.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || e.defaultPrevented) return;
@@ -154,6 +178,8 @@ function pinnedTree(view: EditorView, expression: string, value: Variable, sessi
   return {
     dom: hint.dom,
     destroy: () => {
+      resize.disconnect();
+      cancelAnimationFrame(resizeFrame);
       unsubscribe();
       hint.destroy();
     },
