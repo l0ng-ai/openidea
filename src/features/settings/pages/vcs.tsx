@@ -16,7 +16,7 @@ import { Row, SearchLabel, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
 import type { AgentModelCatalog, AgentProvider } from "@/bindings";
 import type { PageSpec } from "./spec";
-import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
+import { BoundToggle, Grid, Indented, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import gitStyles from "./GitSettings.module.css";
 import { tx } from "@/platform/i18n";
