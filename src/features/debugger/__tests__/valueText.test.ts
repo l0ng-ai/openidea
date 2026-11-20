@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Variable } from "@/platform/ipc";
-import { valueText } from "../valueText";
+import { stringText, valueText } from "../valueText";
 
 const v = (name: string, value: string, variablesReference = 0): Variable =>
   ({ name, value, variablesReference, typeName: null, evaluateName: null }) as Variable;
@@ -37,5 +37,17 @@ describe("valueText", () => {
     const tree = { 1: [v("a", "x", 2)], 2: [v("b", "y", 3)], 3: [v("c", "z")] };
     const text = await valueText({ value: "r", reference: 1 }, fetcher(tree), { depth: 2, entries: 100 });
     expect(text).toBe("r\n  a: x\n    b: y\n      …");
+  });
+});
+
+describe("stringText (#4747)", () => {
+  it("shows a quoted string as its text, escapes resolved", () => {
+    expect(stringText('"Name: app\\nPort: \\"3306\\"\\tok\\\\"')).toBe('Name: app\nPort: "3306"\tok\\');
+    expect(stringText("'it\\'s'")).toBe("it's");
+    expect(stringText('"caf\\u00e9 \\x41 \\u{1F600}"')).toBe("café A 😀");
+  });
+
+  it("leaves anything that isn't one quoted literal alone", () => {
+    for (const value of ["42", "[]string len: 2", '"a" + "b', "Foo@12"]) expect(stringText(value)).toBe(value);
   });
 });
