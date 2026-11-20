@@ -2755,6 +2755,9 @@
   "Shelve Changes": "搁置更改",
   "Shelve Changes…": "搁置更改…",
   "Shelved changes": "已搁置的更改",
+  "Shelved files": "已搁置的文件",
+  "Select a shelf to view its files": "选择一条搁置记录以查看文件",
+  "No files": "没有文件",
   "Show": "显示",
   "Show \"Today\", \"Yesterday\" and \"N min ago\" for recent dates": "对最近的日期显示“今天”、“昨天”和“N 分钟前”",
   "Show All": "全部显示",
@@ -9066,6 +9069,7 @@
   "Resize left merge pane": "调整左侧合并窗格宽度",
   "Resize rebase panes": "调整变基计划和详细信息窗格大小",
   "Resize right merge pane": "调整右侧合并窗格宽度",
+  "Resize shelf panes": "调整搁置记录和文件窗格大小",
   "Database and schema": "数据库和 schema",
   "Shelve Silently": "静默搁置",
   "Unshelve Silently": "静默取消搁置"

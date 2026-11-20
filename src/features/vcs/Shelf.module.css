@@ -1,0 +1,41 @@
+.split {
+  flex: 1;
+  min-height: 0;
+}
+
+.patchName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-strong);
+  text-overflow: ellipsis;
+}
+
+.fileText {
+  display: flex;
+  flex-direction: column;
+}
+
+.filesHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-height: var(--h-compact-header);
+  padding-inline: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.detail {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.date {
+  composes: detail;
+  flex: 0 10000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
