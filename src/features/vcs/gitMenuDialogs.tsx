@@ -6,18 +6,21 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import {
+  Button,
   Checkbox,
   Dialog,
   HighlightedText,
   Icon,
   IconButton,
   Input,
+  Menu,
   Select,
   T,
   Tree,
   useSanitizedField,
   type SelectOption,
   type SelectProps,
+  type MenuItem,
 } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
@@ -33,6 +36,7 @@ import {
   type RepoWorktrees,
 } from "./worktrees";
 import styles from "./common.module.css";
+import pullStyles from "./PullDialog.module.css";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
@@ -73,16 +77,8 @@ const FLAG_LABELS: Array<[MergeFlag, string]> = [
   ["noCommit", "--no-commit"],
 ];
 
-function MergeFlags({
-  on,
-  setOn,
-  rebase = false,
-}: {
-  on: Set<MergeFlag>;
-  setOn: (next: Set<MergeFlag>) => void;
-  rebase?: boolean;
-}) {
-  const disabled = disabledMergeFlags(on, rebase);
+function MergeFlags({ on, setOn }: { on: Set<MergeFlag>; setOn: (next: Set<MergeFlag>) => void }) {
+  const disabled = disabledMergeFlags(on);
   return (
     <div className={styles.optionGrid} role="group" aria-label={tx("Merge options")}>
       {FLAG_LABELS.map(([flag, label]) => (
@@ -141,12 +137,21 @@ export function showPullDialog(repo?: string | null) {
 }
 
 /** IDEA's Git Root choice: shown only when the project holds several repositories. */
-export function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+export function RepoPicker({
+  repo,
+  onChange,
+  className,
+}: {
+  repo: string | null;
+  onChange: (root: string) => void;
+  className?: string;
+}) {
   const [roots] = useState(() => useVcs.getState().roots);
   if (roots.length < 2) return null;
   return (
     <Select
       aria-label="Repository"
+      className={className}
       value={repo ?? roots[0] ?? null}
       options={roots.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
       onChange={onChange}
@@ -181,6 +186,8 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
   const [chosenBranch, setBranch] = useState<string | null>(null);
   const [rebase, setRebase] = useState(false);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsRef = useRef<HTMLButtonElement>(null);
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
@@ -215,6 +222,25 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
       : preferred && remoteBranches.includes(preferred)
         ? preferred
         : (remoteBranches[0] ?? null);
+  const disabledFlags = disabledMergeFlags(flags, rebase);
+  const selectedFlags = rebase
+    ? ["--rebase"]
+    : FLAG_LABELS.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
+  const options: MenuItem[] = [
+    { label: "--rebase", verbatim: true, checked: rebase, run: () => setRebase(!rebase) },
+    ...FLAG_LABELS.map(([flag, label]) => ({
+      label,
+      verbatim: true,
+      checked: flags.has(flag),
+      disabled: disabledFlags.has(flag) && !flags.has(flag),
+      run: () => {
+        const next = new Set(flags);
+        if (next.has(flag)) next.delete(flag);
+        else next.add(flag);
+        setFlags(next);
+      },
+    })),
+  ];
 
   const run = async () => {
     if (!remote) return;
@@ -238,44 +264,69 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
       open
       title={tx`Pull to ${info?.head ?? "HEAD"}`}
       onClose={onClose}
-      width={460}
+      width={640}
+      footerStart={
+        <>
+          <Button
+            ref={optionsRef}
+            variant="ghost"
+            aria-haspopup="menu"
+            aria-expanded={optionsOpen}
+            onClick={() => setOptionsOpen(!optionsOpen)}
+          >
+            <T>Modify options</T>
+            <Icon name="chevron-down" size={12} />
+          </Button>
+          <Menu
+            open={optionsOpen}
+            onClose={() => setOptionsOpen(false)}
+            anchor={optionsRef}
+            placement="top-start"
+            aria-label="Modify options"
+            items={options}
+          />
+        </>
+      }
       buttons={[
         { label: "Pull", role: "default", disabled: !remote, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        {remotes && !remotes.length ? (
-          <>
-            <RepoPicker repo={repo} onChange={chooseRepo} />
-            <div className={styles.hint}>
+      <div className={pullStyles.form}>
+        <div className={pullStyles.source}>
+          <RepoPicker repo={repo} onChange={chooseRepo} className={pullStyles.repository} />
+          {remotes && !remotes.length ? (
+            <div className={clsx(styles.hint, pullStyles.noRemotes)}>
               <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
             </div>
-          </>
-        ) : (
-          <div className={styles.fieldRow}>
-            <RepoPicker repo={repo} onChange={chooseRepo} />
-            <Select
-              aria-label="Remote"
-              value={remote}
-              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
-              onChange={setRemote}
-            />
-            <BranchSelect
-              aria-label="Remote branch"
-              className={styles.grow}
-              value={branch}
-              placeholder="Branch"
-              options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
-              onChange={setBranch}
-            />
+          ) : (
+            <div className={pullStyles.command}>
+              <code className={pullStyles.verb}>git pull</code>
+              <Select
+                aria-label="Remote"
+                className={pullStyles.remote}
+                value={remote}
+                options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, verbatim: true, detail: r.url }))}
+                onChange={setRemote}
+              />
+              <BranchSelect
+                aria-label="Remote branch"
+                className={pullStyles.branch}
+                value={branch}
+                renderValue={(option) => (option ? <span title={option.label}>{option.label}</span> : <T>Branch</T>)}
+                options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch", verbatim: true }))}
+                onChange={setBranch}
+              />
+            </div>
+          )}
+        </div>
+        {selectedFlags.length > 0 && (
+          <div className={pullStyles.flags} role="group" aria-label={tx("Options:")}>
+            {selectedFlags.map((label) => (
+              <code key={label}>{label}</code>
+            ))}
           </div>
         )}
-        <div className={styles.fieldLabel}>
-          <T>Options:</T>
-        </div>
-        <Checkbox label="--rebase" checked={rebase} onChange={setRebase} />
-        <MergeFlags on={flags} setOn={setFlags} rebase={rebase} />
         <div className={styles.hint}>
           <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
         </div>
