@@ -353,3 +353,15 @@
   border-bottom: 0;
   border-top: 1px solid var(--border);
 }
+
+.serviceView {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.serviceView > * {
+  flex: 1;
+  min-height: 0;
+}
