@@ -247,6 +247,7 @@ const APPEARANCE = editorPage({
   keywords: ["caret", "line numbers", "whitespace", "indent guides", "distraction free", "zen"],
   sections: [
     {
+      title: "Caret",
       items: [
         {
           t: "check",
@@ -269,6 +270,11 @@ const APPEARANCE = editorPage({
             ],
           },
         },
+      ],
+    },
+    {
+      title: "Code Structure",
+      items: [
         {
           t: "check",
           key: `${P}.appearance.hardWrapGuides`,
@@ -291,6 +297,17 @@ const APPEARANCE = editorPage({
         { t: "check", key: `${P}.appearance.methodSeparators`, label: "Show method separators" },
         {
           t: "check",
+          key: `${P}.appearance.indentGuides`,
+          label: "Show indent guides",
+          children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
+        },
+      ],
+    },
+    {
+      title: "Presentation",
+      items: [
+        {
+          t: "check",
           key: `${P}.showWhitespace`,
           label: "Show whitespaces",
           children: [
@@ -299,13 +316,6 @@ const APPEARANCE = editorPage({
             { t: "check", key: `${P}.appearance.whitespaceTrailing`, label: "Trailing" },
           ],
         },
-        {
-          t: "check",
-          key: `${P}.appearance.indentGuides`,
-          label: "Show indent guides",
-          children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
-        },
-        { t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" },
         {
           t: "check",
           key: `${P}.appearance.renderDocComments`,
@@ -320,6 +330,10 @@ const APPEARANCE = editorPage({
           unit: "chars",
         },
       ],
+    },
+    {
+      title: "Code Assistance",
+      items: [{ t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" }],
     },
   ],
 });

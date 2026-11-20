@@ -80,6 +80,29 @@ test("⌘, opens Settings with the page tree; Escape closes", async ({ workbench
   await expect(dialog).toBeHidden();
 });
 
+test("editor appearance groups related controls and keeps whitespace options editable", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settings.getByRole("textbox", { name: "Search settings" }).fill("Show whitespaces");
+  await settings.getByRole("treeitem", { name: "Appearance", exact: true }).click();
+  const section = (name: string) => settings.getByRole("region", { name, exact: true });
+
+  await expect(section("Caret").getByRole("checkbox", { name: "Use block caret" })).toBeVisible();
+  await expect(section("Code Structure").getByRole("checkbox", { name: "Show line numbers" })).toBeVisible();
+  await expect(section("Code Assistance").getByRole("checkbox", { name: "Show intention bulb" })).toBeVisible();
+  const presentation = section("Presentation");
+  await expect(presentation.getByRole("checkbox", { name: "Render documentation comments" })).toBeVisible();
+  await expect(presentation.getByRole("textbox", { name: "Distraction free mode text width:" })).toBeVisible();
+  const whitespace = presentation.getByRole("checkbox", { name: "Show whitespaces" });
+  const leading = presentation.getByRole("checkbox", { name: "Leading", exact: true });
+  if (await whitespace.isChecked()) await whitespace.uncheck();
+  await expect(leading).toBeDisabled();
+  await whitespace.check();
+  await expect(leading).toBeEnabled();
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(settings).toBeHidden();
+});
+
 test("Language Servers page installs a tool with progress (in-memory installer)", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings" });
