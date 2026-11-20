@@ -1346,6 +1346,12 @@ export const commands = {
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
 	remoteDownloadInto: (connection: FsConnection, paths: string[], target: IpcPath, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_into", { connection, paths, target, request })),
 	/**
+	 *  The project view's Download to…: remote files and folders of this window's project into the
+	 *  local folder `target`, each under its own name. Like Remote Host › Download to…, nothing is
+	 *  written outside `target`, even through a local symlink inside it.
+	 */
+	remoteDownloadLocal: (paths: string[], target: string, request: RequestId, onProgress: Channel<DownloadProgress>) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_download_local", { paths, target, request, onProgress })),
+	/**
 	 *  Forwards `localhost:<remote_port>` of the remote host to the same port here when it is free,
 	 *  else to a free one. Nothing needs to listen there yet; connections are opened per use.
 	 */
@@ -5478,6 +5484,13 @@ export type DocumentTextChange = {
 	from: number,
 	to: number,
 	insert: string,
+};
+
+/**  One file of a [`remote_download_local`] transfer starting: `done` of `total` files are finished. */
+export type DownloadProgress = {
+	path: string,
+	done: number,
+	total: number,
 };
 
 export type DuplicateGroup = {
