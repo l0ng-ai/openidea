@@ -15,6 +15,8 @@ export interface ListPopupItem {
   label: string;
   /** Muted trailing text (file:line, kind…). */
   detail?: string;
+  /** In its own column before the label (for example, a timestamp). */
+  leadingDetail?: string;
   /** Second line / muted text after the label (code preview). */
   preview?: string;
   icon?: string;
@@ -93,7 +95,7 @@ export type LspPopup =
     }
   | {
       kind: "list";
-      anchor: PopupPoint;
+      anchor: PopupPoint | "center";
       title: string;
       items: ListPopupItem[];
       /** Rows 1-9 get a number; typing it runs the row (IDEA's numbered popups). */

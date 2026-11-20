@@ -123,6 +123,14 @@
 .listBody > * {
   flex: 1;
 }
+.centeredList {
+  min-width: min(360px, 90vw);
+}
+.centeredList .listMain,
+.centeredList .listBody {
+  flex-shrink: 1;
+  min-height: 0;
+}
 .item {
   display: flex;
   align-items: center;
@@ -181,6 +189,12 @@
   padding: 6px 0;
   min-width: 200px;
   max-width: 420px;
+}
+.leadingDetail {
+  flex: 0 0 min(var(--list-leading-detail-width), 42%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
 .detail {
   flex: 0 1 auto;
