@@ -2763,6 +2763,12 @@ async fn step_of_one_thread_keeps_the_others_suspended() {
     assert_eq!(session.suspended.ticket(), ticket + 1);
     h.manager.step_in_target(id, 7, 1).await.unwrap();
     assert!(!session.suspended.get());
+    // The UI stays on a thread that is still stopped only when told the step ran one thread.
+    for thread in [7, 8] {
+        let continued =
+            h.wait_event(|e| matches!(e, DebugEvent::Continued { thread_id, .. } if *thread_id == thread)).await;
+        assert!(matches!(continued, DebugEvent::Continued { all_threads_continued: false, .. }), "{continued:?}");
+    }
 }
 
 #[tokio::test]

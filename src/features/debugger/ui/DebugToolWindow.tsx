@@ -32,6 +32,7 @@ import {
   closeSessionTab,
   evaluate,
   isLive,
+  isThreadSuspended,
   selectFrame,
   selectSession,
   selectThread,
@@ -406,7 +407,7 @@ function FramesPane({ session }: { session: DebugSession }) {
               value: String(t.id),
               label: t.name,
               verbatim: true,
-              detail: t.id === session.stoppedThread ? "suspended" : undefined,
+              detail: isThreadSuspended(session, t.id) ? "suspended" : undefined,
             }))}
             onChange={(v) => void selectThread(session.id, +v)}
             aria-label="Thread"

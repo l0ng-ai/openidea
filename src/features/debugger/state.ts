@@ -84,6 +84,13 @@ export interface DebugSession {
   stoppedThread: number | null;
   stopReason: string | null;
   stopDescription: string | null;
+  /**
+   * Threads stopped alone (a `stopped` event without `allThreadsStopped`), oldest first. Adapters
+   * such as java-debug keep them suspended while another thread runs.
+   */
+  suspendedThreads?: SuspendedThread[];
+  /** The last stop suspended every thread. */
+  allThreadsStopped?: boolean;
   threads: ThreadInfo[];
   selectedThread: number | null;
   frames: StackFrame[];
@@ -105,6 +112,12 @@ export interface DebugSession {
   hotSwapNeedsRestart?: boolean;
   /** `flutter debug_adapter` reported the app as started: it can take a hot reload. */
   flutterAppStarted?: boolean;
+}
+
+export interface SuspendedThread {
+  id: number;
+  reason: string;
+  description: string | null;
 }
 
 export interface ConsoleLine {
@@ -1051,6 +1064,11 @@ export function pausedThread(s: DebugSession): number | null {
   return s.selectedThread ?? s.stoppedThread ?? s.threads[0]?.id ?? null;
 }
 
+export function isThreadSuspended(s: DebugSession, threadId: number): boolean {
+  if (s.status !== "paused") return false;
+  return !!s.allThreadsStopped || s.stoppedThread === threadId || !!s.suspendedThreads?.some((t) => t.id === threadId);
+}
+
 /** The selected frame of the paused session (top frame when none is selected). */
 export function selectedFrame(s: DebugSession): StackFrame | null {
   return s.frames.find((f) => f.id === s.selectedFrame) ?? s.frames[0] ?? null;
@@ -1116,7 +1134,8 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
   void loadLocals(id, frameId);
 }
 
-async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean) {
+/** `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened. */
+async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true) {
   const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
   try {
@@ -1128,7 +1147,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean)
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames });
   const top = topFrame(frames);
-  if (top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
+  if (newStop && top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
     consumeTemporary(top.path, top.line);
   }
@@ -1377,8 +1396,13 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "stopped": {
       const isBp = event.reason === "breakpoint" || event.reason === "function breakpoint";
+      const alone = (s.suspendedThreads ?? []).filter((t) => t.id !== event.threadId);
+      if (!event.allThreadsStopped)
+        alone.push({ id: event.threadId, reason: event.reason, description: event.description });
       patch(id, {
         status: "paused",
+        suspendedThreads: event.allThreadsStopped ? [] : alone,
+        allThreadsStopped: event.allThreadsStopped,
         stoppedThread: event.threadId,
         selectedThread: event.threadId,
         stopReason: event.reason,
@@ -1410,13 +1434,39 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "continued": {
       const cur = useDebug.getState().sessions[id]!;
       if (cur.status === "terminated") break;
-      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) break;
+      const rest = event.allThreadsContinued ? [] : (cur.suspendedThreads ?? []).filter((t) => t.id !== event.threadId);
+      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) {
+        patch(id, { suspendedThreads: rest });
+        break;
+      }
       stopTaskbarFlash();
+      const next = rest.at(-1);
+      if (next) {
+        // Like IDEA, the session stays suspended on a thread its own breakpoint still holds.
+        patch(id, {
+          status: "paused",
+          suspendedThreads: rest,
+          stoppedThread: next.id,
+          selectedThread: next.id,
+          stopReason: next.reason,
+          stopDescription: next.description,
+          frames: [],
+          selectedFrame: null,
+        });
+        useDebug.setState((st) => ({ stopSeq: st.stopSeq + 1 }));
+        publishContext();
+        updateExecutionPoint();
+        void loadThreads(id);
+        void loadFrames(id, next.id, true, false);
+        break;
+      }
       patch(id, {
         status: "running",
         frames: [],
         selectedFrame: null,
         stoppedThread: null,
+        suspendedThreads: [],
+        allThreadsStopped: false,
       });
       updateExecutionPoint();
       break;
