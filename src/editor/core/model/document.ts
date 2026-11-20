@@ -927,7 +927,7 @@ export class DocumentManager {
         try {
           await model.save("auto");
         } catch (e) {
-          console.warn(`autosave of ${model.path} failed`, e);
+          logError(`autosave of ${model.path} failed`, e);
         }
       }
       // As in IDEA, a file whose changes are not saved (autosave off, or a failed save) stays
@@ -985,6 +985,8 @@ export class DocumentManager {
         .filter((m) => !(skipUntitled && isUntitledUri(m.path)))
         .map((m) =>
           m.save(reason).catch((e) => {
+            // The notification shows the message only; the log keeps the stack for reports.
+            logError(`saving ${m.path} failed`, e);
             errors.push(e);
           }),
         ),

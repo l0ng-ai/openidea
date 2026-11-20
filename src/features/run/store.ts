@@ -55,6 +55,7 @@ import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
+import { testsBySubproject } from "./testing/gradleSubprojects";
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
@@ -1539,8 +1540,11 @@ export async function rerunFailed(sessionId: string): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
-  const selection = rerunFailedConfigs(base, failedTests(sessionId));
-  const derived = selection instanceof Promise ? await selection : selection;
+  const paths = failedTests(sessionId);
+  const selection = rerunFailedConfigs(base, paths);
+  const derived = await Promise.all(
+    (selection instanceof Promise ? await selection : selection).map((c) => testsBySubproject(c, paths)),
+  );
   if (getSession(sessionId) !== session || isLive(session)) return false;
   if (!derived.length) return false;
   derived.forEach((config, index) => void startRun(config, index === 0 ? sessionId : undefined, base));
@@ -1564,7 +1568,9 @@ export async function runSelectedTests(
   const base = baseConfigOf(session);
   const name = nodes.length === 1 ? nodes[0]!.name : `${paths.length} tests`;
   const selection = testsConfigs(base, paths, name);
-  const derived = selection instanceof Promise ? await selection : selection;
+  const derived = await Promise.all(
+    (selection instanceof Promise ? await selection : selection).map((c) => testsBySubproject(c, paths)),
+  );
   if (getSession(sessionId) !== session) return false;
   if (!derived.length) return false;
   for (const [index, next] of derived.entries()) {

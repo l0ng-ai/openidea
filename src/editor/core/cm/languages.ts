@@ -17,6 +17,7 @@ import {
   language as languageFacet,
   type StreamParser,
 } from "@codemirror/language";
+import { NodeProp } from "@lezer/common";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
@@ -450,8 +451,19 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 const bracedIndent = delimitedIndent({ closing: "}" });
 
-/** Grammar props the stock languages lack: indentation that follows the language's usual style. */
+/**
+ * JSX tags pair up as HTML's do: Enter between `<div>` and `</div>` puts the caret on an
+ * indented line of its own with the closing tag below, and the tags match each other.
+ */
+const JSX_TAG_PAIRS = [
+  NodeProp.closedBy.add({ JSXOpenTag: ["JSXCloseTag"] }),
+  NodeProp.openedBy.add({ JSXCloseTag: ["JSXOpenTag"] }),
+];
+
+/** Grammar props the stock languages lack: indentation that follows the language's usual style, JSX tag pairs. */
 const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]>[0]["props"]>> = {
+  JSX: JSX_TAG_PAIRS,
+  TSX: JSX_TAG_PAIRS,
   // clang-format's built-in styles (NamespaceIndentation: None, no extern block indent) keep the
   // contents of `namespace x { … }` and `extern "C" { … }` at the level of the braces' line.
   "C++": [

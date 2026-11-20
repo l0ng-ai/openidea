@@ -254,6 +254,8 @@ export class TerminalSession {
   private opened = false;
   /** `focus()` arrived before the textarea existed (the pane is focused while xterm is still closed). */
   private pendingFocus = false;
+  /** What had focus when `pendingFocus` was set: a later move elsewhere cancels it. */
+  private pendingFocusFrom: Element | null = null;
   /** Bounds retries when the pane has no box yet, or xterm cannot measure a cell. */
   private fitAttempts = 0;
   private disposed = false;
@@ -679,7 +681,17 @@ export class TerminalSession {
       this.opts.onFocus(this.key);
     });
     this.watchImeCommit();
-    if (this.pendingFocus) this.focus();
+    if (this.pendingFocus) {
+      this.pendingFocus = false;
+      if (this.focusStayedHere()) this.focus();
+    }
+  }
+
+  /** Whether focus is still where the deferred `focus()` left it, or in this terminal's own window. */
+  private focusStayedHere(): boolean {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === this.pendingFocusFrom) return true;
+    return this.host.contains(active) || !!this.host.closest("[data-toolwindow]")?.contains(active);
   }
 
   detach(container: HTMLElement) {
@@ -990,6 +1002,7 @@ export class TerminalSession {
     this.clearUnseenDone();
     if (!this.opened || !this.term.textarea) {
       this.pendingFocus = true;
+      this.pendingFocusFrom = document.activeElement;
       this.scheduleFit();
       return;
     }

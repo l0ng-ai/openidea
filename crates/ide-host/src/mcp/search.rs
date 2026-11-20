@@ -668,8 +668,8 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         if hits.len() > limit {
             break;
         }
-        // Find in Files keeps a window of very long lines and drops the matches outside it:
-        // such lines are matched again in the file's whole text.
+        // Find in Files reports a very long line in windows cut around its matches: such lines
+        // are matched again in the file's whole text, so a match keeps its real end.
         let long = |m: &ide_search::LineMatch| m.text_offset > 0 || m.text.encode_utf16().count() + 1 >= LINE_WINDOW;
         let whole = if file.matches.iter().any(long) {
             crate::ops::fs::fs_read_text(&host, call.window(), file.path.0.clone())
@@ -679,11 +679,15 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         } else {
             None
         };
+        // One window per far-apart match: a line is expanded once.
+        let mut expanded = std::collections::HashSet::new();
         for m in &file.matches {
             if let Some((ranges, text)) = &whole
                 && long(m)
             {
-                hits.extend(line_hits(path, text, ranges, m.line));
+                if expanded.insert(m.line) {
+                    hits.extend(line_hits(path, text, ranges, m.line));
+                }
                 continue;
             }
             let line_end = m.text_offset + m.text.encode_utf16().count() as u32;

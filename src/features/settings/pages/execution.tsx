@@ -50,6 +50,7 @@ function BufferRow() {
       numberKey="console.bufferKb"
       label="Override console cycle buffer size"
       unit="KB"
+      disableWhenOff
       hint="Older output is discarded"
       {...L.bufferKb}
     />
@@ -81,6 +82,7 @@ function FoldPatterns() {
         onChange={set}
         placeholder="at org.example."
         aria-label="Fold console lines that contain"
+        fullWidth
       />
     </Row>
   );
@@ -288,8 +290,8 @@ export const EXECUTION_PAGES: PageSpec[] = [
     sections: [
       {
         options: [
-          { kind: "custom", label: "Override console cycle buffer size", keywords: ["KB"], component: BufferRow },
           { kind: "toggle", key: "console.softWrap", label: "Use soft wraps in console" },
+          { kind: "custom", label: "Override console cycle buffer size", keywords: ["KB"], component: BufferRow },
           {
             kind: "select",
             key: "console.encoding",
@@ -297,6 +299,11 @@ export const EXECUTION_PAGES: PageSpec[] = [
             options: CONSOLE_ENCODINGS,
             hint: "Encoding of the output of processes started from Run configurations.",
           },
+        ],
+      },
+      { options: [{ kind: "custom", label: "Fold console lines that contain", component: FoldPatterns }] },
+      {
+        options: [
           {
             kind: "custom",
             label: "Colour log lines by level",
@@ -305,7 +312,6 @@ export const EXECUTION_PAGES: PageSpec[] = [
           },
         ],
       },
-      { options: [{ kind: "custom", label: "Fold console lines that contain", component: FoldPatterns }] },
     ],
   },
   {

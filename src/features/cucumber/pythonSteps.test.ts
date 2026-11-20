@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { definitionInsertions, matchesStep, snippetStyle, stepDefinitions, stepSnippet, type FeatureStep } from "./steps";
+import {
+  definitionInsertions,
+  matchesStep,
+  snippetStyle,
+  stepDefinitions,
+  stepSnippet,
+  type FeatureStep,
+} from "./steps";
 
-const step = (text: string): FeatureStep => ({ from: 0, to: 0, keyword: "Given ", type: "Given", text, matchText: text });
+const step = (text: string): FeatureStep => ({
+  from: 0,
+  to: 0,
+  keyword: "Given ",
+  type: "Given",
+  text,
+  matchText: text,
+});
 
 const apply = (text: string, insertions: { at: number; text: string }[]) =>
   [...insertions].sort((a, b) => b.at - a.at).reduce((out, i) => out.slice(0, i.at) + i.text + out.slice(i.at), text);

@@ -180,6 +180,8 @@
   min-height: 0;
   overflow: auto;
   scroll-padding-top: var(--h-list-row);
+  -webkit-user-select: none;
+  user-select: none;
 }
 .mappingRows th {
   position: sticky;
@@ -191,6 +193,14 @@
 }
 .mappingVcsColumn {
   width: 112px;
+}
+.unregisteredMappings {
+  color: var(--fg-subtle);
+  background: var(--bg-control-hover);
+}
+.unregisteredMappings .mappingGroupHeader {
+  color: var(--fg-muted);
+  font-weight: 600;
 }
 .mappingRows .mappingSelect {
   width: 100%;

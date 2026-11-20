@@ -7,45 +7,30 @@
   display: flex;
   flex-direction: column;
 }
-.radio {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  min-height: 28px;
-}
-.radio input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-.disabled {
-  color: var(--fg-subtle);
+.radioRow {
+  min-height: var(--h-field);
 }
 .hint {
-  padding-left: 20px;
+  padding-inline-start: calc(16px + var(--space-2));
   color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
 }
 
 /* Manual configuration, indented under its radio button. */
 .manual {
   display: flex;
   flex-direction: column;
-  padding-left: 20px;
+  padding-inline-start: calc(16px + var(--space-2));
 }
 .kinds {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-4);
 }
-.hostRow {
-  display: flex;
-  align-items: flex-start;
-  gap: 24px;
-}
-.host {
-  width: 220px;
-}
-.port {
-  width: 64px;
+.field {
+  width: 100%;
 }
 .wide {
   width: 360px;
@@ -54,11 +39,6 @@
   display: flex;
   align-items: center;
   min-height: 28px;
-}
-.auth {
-  display: flex;
-  flex-direction: column;
-  padding-left: 20px;
 }
 .error {
   color: var(--danger);
@@ -81,6 +61,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+.urlRow > input {
+  flex: 1;
+  min-width: 0;
 }
 .result {
   min-height: 1lh;

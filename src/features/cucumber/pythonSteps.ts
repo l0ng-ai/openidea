@@ -141,7 +141,10 @@ export function pythonStepSnippet(
   const decorator = keyword.toLowerCase();
   const quoted = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
   if (framework === "pytest-bdd")
-    return { text: [`@${decorator}(${quoted(text)})`, "def _():", "    raise NotImplementedError", ""].join("\n"), body: 2 };
+    return {
+      text: [`@${decorator}(${quoted(text)})`, "def _():", "    raise NotImplementedError", ""].join("\n"),
+      body: 2,
+    };
   // behave reads the pattern as a `parse` format: braces in the step are literal.
   const format = text.replace(/[{}]/g, "$&$&");
   return {
