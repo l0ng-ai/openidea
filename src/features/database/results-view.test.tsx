@@ -867,6 +867,35 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     expect(backend.schemas).toHaveBeenCalledExactlyOnceWith("pg");
   });
 
+  it.each([
+    { label: "between statements", started: false, terminal: true, pending: true },
+    { label: "during a statement", started: true, terminal: true, pending: false },
+    { label: "without a terminal frame", started: true, terminal: false, pending: true },
+  ])(
+    "keeps the completed write and reports transaction state after cancellation $label",
+    async ({ started, terminal, pending }) => {
+      useDatabase.setState({ manualCommit: new Set(["pg"]) });
+      backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+        channel.onmessage({ type: "started", index: 0 });
+        channel.onmessage({
+          type: "completed",
+          index: 0,
+          outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
+        });
+        if (started) channel.onmessage({ type: "started", index: 1 });
+        const error = { kind: "cancelled", message: "Cancelled", data: null };
+        if (!terminal) return { status: "error", error };
+        channel.onmessage({ type: "done", error });
+        return { status: "ok", data: null };
+      });
+      await runIn("a.sql", "UPDATE t SET n = 3; SELECT n FROM t");
+      const output = useDatabase.getState().output.map((line) => line.text);
+      expect(output.filter((line) => line === "3 rows affected in 1 ms")).toHaveLength(1);
+      expect(output.includes("Transaction rolled back")).toBe(!pending);
+      expect(useDatabase.getState().pendingTx.has("pg")).toBe(pending);
+    },
+  );
+
   it("publishes a frame of fast results together and retains every fresh grid beyond the tab limit", async () => {
     await runIn("b.sql", "SELECT pinned");
     pinResult(ids()[0]!, true);

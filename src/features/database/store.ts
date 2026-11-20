@@ -1138,20 +1138,30 @@ async function run(
   maxRows = useDatabase.getState().maxRows,
   skip = 0,
   schema?: string,
-  progress?: { emit: (event: StatementProgress) => void; current: () => boolean },
+  progress?: {
+    emit: (event: StatementProgress) => void;
+    current: () => boolean;
+    onStatementCancelled: () => void;
+  },
 ): Promise<DbStatementOutcome[]> {
   const current = databaseRequest(id);
   const wasConnected = useDatabase.getState().connected.has(id);
   const outcomes = await withConnection(id, async () => {
     const execute = async () => {
       progress?.emit({ type: "started", index: 0 });
-      const outcomes = await call(commands.dbExecute(request, id, statements, skip, maxRows, schema || null));
+      const outcomes = await call(commands.dbExecute(request, id, statements, skip, maxRows, schema || null)).catch(
+        (error: unknown) => {
+          if (isCancelled(error)) progress?.onStatementCancelled();
+          throw error;
+        },
+      );
       outcomes.forEach((outcome, index) => progress?.emit({ type: "completed", index, outcome }));
       return outcomes;
     };
     if (!progress || statements.length === 1) return execute();
     const outcomes: DbStatementOutcome[] = [];
     let received = false;
+    let runningStatement = false;
     let acknowledged = false;
     let stopRequested = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -1168,9 +1178,11 @@ async function run(
     channel.onmessage = (event) => {
       received = true;
       if (event.type === "done") {
+        if (event.error?.kind === "cancelled" && runningStatement) progress.onStatementCancelled();
         finish(event.error ? new IpcError(event.error) : null);
         return;
       }
+      runningStatement = event.type === "started";
       if (event.type === "completed") outcomes.push(event.outcome);
       progress.emit(event);
       if (acknowledged) waitForDelivery();
@@ -1381,6 +1393,7 @@ export async function executeConsole(
   let finished = false;
   let selectOutput = false;
   let schemaChanged = false;
+  let statementCancelled = false;
   try {
     const statements = await consoleStatements(id, text, from, to);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
@@ -1446,7 +1459,13 @@ export async function executeConsole(
     };
     let outcomes: DbStatementOutcome[];
     try {
-      outcomes = await run(id, statements, request, pageSize, 0, schema, { emit, current: ownsRun });
+      outcomes = await run(id, statements, request, pageSize, 0, schema, {
+        emit,
+        current: ownsRun,
+        onStatementCancelled: () => {
+          statementCancelled = true;
+        },
+      });
     } finally {
       if (frame !== undefined) cancelAnimationFrame(frame);
       publish();
@@ -1462,8 +1481,8 @@ export async function executeConsole(
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
     } else {
       log("info", "Cancelled");
-      // The backend dropped the connection, and its transaction with it.
-      if (e !== stoppedResultDelivery && useDatabase.getState().pendingTx.has(id)) {
+      // Interrupting a running statement discards its held transaction. Between statements it stays open.
+      if (statementCancelled && useDatabase.getState().pendingTx.has(id)) {
         log("info", "Transaction rolled back");
         setPending(id, false);
       }
