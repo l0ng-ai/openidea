@@ -5,7 +5,7 @@ import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { workflowSettings, type UpdateMethod } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
-import { Button, Checkbox, Dialog, Input, List, Select, Spinner, T, Tree } from "@/ui";
+import { Button, Checkbox, Dialog, Input, List, Radio, Select, Spinner, T, Tree } from "@/ui";
 import { ask } from "@/workbench/messages";
 import { openDialog } from "./dialogs";
 import { saveVcsSetting } from "./settingsUi";
@@ -94,9 +94,10 @@ function UpdateDialog({ repos, onClose }: UpdateDialogProps) {
       onClose={onClose}
       width={single ? 540 : 420}
       footerStart={
-        <>
+        <div className={styles.updateActions}>
           {single && (
             <Button
+              className={styles.updateReset}
               onClick={() => {
                 onClose();
                 void resetToRemoteBranch();
@@ -106,40 +107,52 @@ function UpdateDialog({ repos, onClose }: UpdateDialogProps) {
             </Button>
           )}
           <Checkbox checked={hide} onChange={setHide} label="Don't show again" />
-        </>
+        </div>
       }
       buttons={[
         { label: "OK", role: "default", autoFocus: true, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form} role="radiogroup" aria-label={tx("Update type")}>
+      <div className={`${styles.form} ${styles.updateForm}`}>
         <div className={styles.hint}>
           {branch?.upstream
             ? `Update ${branch.head ?? "HEAD"} from ${branch.upstream}${branch.behind ? ` (${branch.behind} incoming)` : ""}`
             : tx("The current branch has no tracked branch; git pull may fail.")}
         </div>
-        <div className={styles.fieldLabel}>
-          <T>Update type:</T>
-        </div>
-        <label className={styles.radioRow}>
-          <input type="radio" name="update" checked={!rebase} onChange={() => setRebase(false)} />
-          <span className={styles.radioText}>
-            <T>Merge incoming changes into the current branch</T>
-            <span className={styles.hint}>
-              <T>git pull --no-rebase --ff</T>
-            </span>
-          </span>
-        </label>
-        <label className={styles.radioRow}>
-          <input type="radio" name="update" checked={rebase} onChange={() => setRebase(true)} />
-          <span className={styles.radioText}>
-            <T>Rebase the current branch on top of incoming changes</T>
-            <span className={styles.hint}>
-              <T>git pull --rebase</T>
-            </span>
-          </span>
-        </label>
+        <fieldset className={styles.updateOptions} aria-label={tx("Update type")}>
+          <legend>
+            <T>Update type:</T>
+          </legend>
+          <Radio
+            className={styles.updateRadio}
+            name="update"
+            checked={!rebase}
+            onChange={() => setRebase(false)}
+            label={
+              <span className={styles.radioText}>
+                <T>Merge incoming changes into the current branch</T>
+                <code className={styles.updateCommand}>
+                  <T>git pull --no-rebase --ff</T>
+                </code>
+              </span>
+            }
+          />
+          <Radio
+            className={styles.updateRadio}
+            name="update"
+            checked={rebase}
+            onChange={() => setRebase(true)}
+            label={
+              <span className={styles.radioText}>
+                <T>Rebase the current branch on top of incoming changes</T>
+                <code className={styles.updateCommand}>
+                  <T>git pull --rebase</T>
+                </code>
+              </span>
+            }
+          />
+        </fieldset>
         <div className={styles.hint}>
           <T>Uncommitted changes are stashed before the update and restored afterwards.</T>
         </div>
