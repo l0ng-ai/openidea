@@ -1,6 +1,7 @@
 {
   "Inspection details": "检查详情",
   "Resize inspection panes": "调整检查窗格大小",
+  "Resize branch comparison panes": "调整分支比较窗格大小",
   "Resize inspection description": "调整检查说明窗格大小",
   "Table actions": "表数据操作",
   "Table pages": "表数据分页",
@@ -1272,7 +1273,6 @@
   "Detecting…": "正在检测…",
   "Diff": "差异",
   "Different tool window background": "不同的工具窗口背景",
-  "Direction": "方向",
   "Directory": "目录",
   "Staging State": "暂存状态",
   "Staged Changes": "已暂存的更改",
