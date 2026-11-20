@@ -873,6 +873,7 @@
   "Add Classes Directory": "Add Classes Directory",
   "Name:": "Name:",
   "URL:": "URL:",
+  "URL": "URL",
   "Startup script:": "Startup script:",
   "Port:": "Port:",
   "New server Tomcat Home": "New server Tomcat Home",
@@ -1458,6 +1459,8 @@
   "Imported {count} MCP servers from the project.": "Imported {count} MCP servers from the project.",
   "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.": "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.",
   "Show branch and incoming/outgoing commits in the Project view": "Show branch and incoming/outgoing commits in the Project view",
+  "Execute branch operations on all repositories": "Execute branch operations on all repositories",
+  "Only applies to projects with several Git repositories.": "Only applies to projects with several Git repositories.",
   "Up to date with {upstream}": "Up to date with {upstream}",
   "Incoming commits": "Incoming commits",
   "Outgoing commits": "Outgoing commits",
@@ -2765,5 +2768,12 @@
   "{name} changed on disk": "{name} changed on disk",
   "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.": "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
   "Load Changes from Disk": "Load Changes from Disk",
-  "Keep Editor Changes": "Keep Editor Changes"
+  "Keep Editor Changes": "Keep Editor Changes",
+  "Branches have diverged": "Branches have diverged",
+  "Check out the same branch in all repositories to operate on them together.": "Check out the same branch in all repositories to operate on them together.",
+  "Rename branch {name} ({root})": "Rename branch {name} ({root})",
+  "rename it back to {name}": "rename it back to {name}",
+  "restore {name} and check out the previous branch again": "restore {name} and check out the previous branch again",
+  "Unset upstream of {to} ({root})": "Unset upstream of {to} ({root})",
+  "Group by Repository": "Group by Repository"
 }

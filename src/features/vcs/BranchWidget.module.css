@@ -72,6 +72,25 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0 10px;
+  color: var(--warning);
+  font-size: var(--fs-small);
+}
+.noticeLabel {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.noticeDetail {
+  overflow: hidden;
+  color: var(--fg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .empty {
   color: var(--fg-faint);
 }

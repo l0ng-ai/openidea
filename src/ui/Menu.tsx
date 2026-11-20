@@ -109,6 +109,15 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
 
 const selectable = (r: Resolved | undefined) => !!r && r.kind === "item" && !r.disabled;
 
+function focusMenuItem(item: HTMLButtonElement | null | undefined) {
+  if (!item) return;
+  item.focus({ preventScroll: true });
+  const popup = item.closest<HTMLElement>("[data-popup]");
+  if (popup && popup.scrollHeight > popup.clientHeight) {
+    item.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+}
+
 interface MenuListProps {
   items: MenuItem[];
   /** Reserve space for item icons even when an item has none. */
@@ -140,6 +149,7 @@ export function MenuList({
   // (e.g. editorTextFocus → popupOpen) right after the first render.
   useContextKeys();
   const resolved = resolveMenuItems(items);
+  const hasSubmenus = resolved.some((item) => item.submenu);
   // IDEA numeric mnemonics: the first nine selectable rows, in display order.
   const numbersOf: Array<number | undefined> = [];
   if (numbers) {
@@ -172,11 +182,12 @@ export function MenuList({
       pointerHover.current = false;
       return;
     }
-    if (active >= 0 && openSub === null) itemRefs.current[active]?.focus({ preventScroll: true });
+    if (active >= 0 && openSub === null) focusMenuItem(itemRefs.current[active]);
   }, [active, openSub]);
   useEffect(() => () => clearTimeout(hoverTimer.current), []);
 
   const focusItem = (i: number) => {
+    if (i === active && openSub === null) focusMenuItem(itemRefs.current[i]);
     setActive(i);
     resolved[i]?.onActive?.();
   };
@@ -400,8 +411,16 @@ export function MenuList({
               <span className={styles.label} title={r.label}>
                 {r.label}
               </span>
-              {r.shortcut && <span className={styles.shortcut}>{r.shortcut}</span>}
-              {hasSub && <Icon name="chevron-right" size={14} className={styles.subArrow} />}
+              {r.shortcut && (
+                <span className={styles.shortcut} title={r.shortcut}>
+                  {r.shortcut}
+                </span>
+              )}
+              {hasSubmenus && (
+                <span className={styles.subArrow} aria-hidden="true">
+                  {hasSub && <Icon name="chevron-right" size={14} />}
+                </span>
+              )}
             </button>
             {hasSub && openSub === i && subAnchor && (
               <Popup
@@ -420,7 +439,7 @@ export function MenuList({
                     onDone={onDone}
                     onCloseLevel={() => {
                       setOpenSub(null);
-                      itemRefs.current[i]?.focus();
+                      focusMenuItem(itemRefs.current[i]);
                     }}
                   />
                 </div>

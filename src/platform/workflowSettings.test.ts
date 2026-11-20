@@ -17,6 +17,14 @@ describe("validateWorkflow", () => {
     expect(clickable("no")).toBe(true);
   });
 
+  it("executes branch operations on all repositories unless switched off", () => {
+    const sync = (syncBranchOperations: unknown) =>
+      validateWorkflow({ vcs: { git: { syncBranchOperations } } }).vcs.git.syncBranchOperations;
+    expect(DEFAULT_WORKFLOW.vcs.git.syncBranchOperations).toBe(true);
+    expect(sync(false)).toBe(false);
+    expect(sync("off")).toBe(true);
+  });
+
   it("keeps the double-click choice unset until it is made", () => {
     expect(DEFAULT_WORKFLOW.vcs.commit.doubleClickOpensDiff).toBeNull();
     expect(validateWorkflow(undefined).vcs.commit.doubleClickOpensDiff).toBeNull();
