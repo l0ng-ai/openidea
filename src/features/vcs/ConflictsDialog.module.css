@@ -1,0 +1,121 @@
+.dialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+
+.content {
+  container: conflicts / inline-size;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+
+.count {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.workspace {
+  display: flex;
+  flex: 1;
+  gap: var(--space-3);
+  min-height: 0;
+}
+
+.listFrame {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  overflow: hidden;
+}
+
+.listHeader {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-list-row);
+  padding-inline: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+
+.list {
+  flex: 1 1 300px;
+}
+
+.row {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  font-size: var(--fs-ui);
+}
+
+.fileName,
+.fileDir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fileName {
+  color: var(--vcs-conflict);
+}
+
+.fileName:not(:last-child) {
+  flex: none;
+  max-width: 65%;
+}
+
+.fileDir {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-self: flex-start;
+  gap: var(--space-2);
+  max-width: min(40%, 180px);
+}
+
+.actions button {
+  min-width: 0;
+  min-height: var(--h-button);
+  height: auto;
+  padding: var(--space-1) var(--space-2);
+  line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@container conflicts (max-width: 430px) {
+  .workspace {
+    flex-direction: column;
+  }
+
+  .actions {
+    align-self: stretch;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    max-width: none;
+  }
+}

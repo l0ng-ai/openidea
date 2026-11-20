@@ -120,6 +120,7 @@
   "Command": "Command",
   "Fix ESLint Problems": "Fix ESLint Problems",
   "Name": "Name",
+  "Conflict resolution": "Conflict resolution",
   "No ESLint problems to fix": "No ESLint problems to fix",
   "Pin ({count})": "Pin ({count})",
   "Start": "Start",
