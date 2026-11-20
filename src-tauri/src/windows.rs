@@ -137,7 +137,7 @@ pub struct ComparisonLaunch {
 
 /// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DiffSide {
     /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
     Rev {
@@ -151,6 +151,8 @@ pub enum DiffSide {
     Worktree {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
     },
     /// Another file (Compare With…, Compare Files).
     File {
@@ -158,8 +160,13 @@ pub enum DiffSide {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
-    /// Literal text: a side that does not exist.
-    Text { text: String, label: String },
+    /// Literal text, such as clipboard contents or an editor selection.
+    Text {
+        text: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
+    },
     /// A Local History revision.
     History { id: String, label: String },
 }
@@ -2215,7 +2222,7 @@ mod tests {
         let mut diff = DiffLaunch {
             path: "/p/a.txt".into(),
             left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
-            right: DiffSide::Worktree { label: None },
+            right: DiffSide::Worktree { label: None, label_detail: None },
             line: None,
         };
         let id = diff_window_id(&diff);
@@ -2225,6 +2232,18 @@ mod tests {
         assert_ne!(diff_window_id(&diff), id);
         diff.path = "/p/b.txt".into();
         assert_ne!(diff_window_id(&diff), id);
+    }
+
+    #[test]
+    fn diff_window_keeps_file_and_selection_label_details() {
+        for side in [
+            serde_json::json!({"type": "worktree", "label": "file.rs", "labelDetail": "src"}),
+            serde_json::json!({"type": "text", "text": "let x = 1;", "label": "Selection from file.rs", "labelDetail": ""}),
+            serde_json::json!({"type": "text", "text": "let x = 2;", "label": "From Clipboard"}),
+        ] {
+            let parsed = serde_json::from_value::<DiffSide>(side.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), side);
+        }
     }
 
     #[test]
