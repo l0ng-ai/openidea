@@ -1911,6 +1911,7 @@
   "New name": "新名称",
   "New terminal sessions run the interpreter's virtualenv activate script.": "新的终端会话会运行解释器的 virtualenv 激活脚本。",
   "New window": "新窗口",
+  "New tab in current window": "当前窗口的新标签页",
   "New…": "新建…",
   "Next Bookmark": "下一个书签",
   "Next Change": "下一个更改",

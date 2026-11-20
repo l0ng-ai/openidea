@@ -23,7 +23,8 @@ beforeEach(() => {
     lightEdit: false,
   });
 });
-it.each(["attach", "tab"] as const)("offers %s for this open without remembering it", async (button) => {
+it("offers attach for this open without remembering it", async () => {
+  const button = "attach";
   vi.mocked(ask).mockResolvedValue({ button, checked: true });
   expect(await chooseProjectWindow("B")).toBe(button);
   const prompt = vi.mocked(ask).mock.calls[0]![0];
@@ -49,8 +50,18 @@ it("treats a stored attach policy as ask", () => {
   useProject.setState({ settings: { general: { openProjectIn: "attach" } } } as never);
   expect(openPolicy()).toBe("ask");
 });
-it.each(["new", "same"] as const)("remembers %s", async (mode) => {
+it.each(["new", "same", "tab"] as const)("remembers %s", async (mode) => {
   vi.mocked(ask).mockResolvedValue({ button: mode, checked: true });
   await chooseProjectWindow("B");
   expect(commands.settingsSet).toHaveBeenCalledWith("global", "general.openProjectIn", JSON.stringify(mode));
+});
+
+it("opens a project tab by policy, or a new window when this one can't take one", async () => {
+  useProject.setState({ settings: { general: { openProjectIn: "tab" } } } as never);
+  expect(openPolicy()).toBe("tab");
+  expect(await chooseProjectWindow("B")).toBe("tab");
+  expect(await chooseProjectWindow("remote", false)).toBe("new");
+  useProject.setState({ project: null, lightEdit: true });
+  expect(await chooseProjectWindow("B")).toBe("new");
+  expect(ask).not.toHaveBeenCalled();
 });

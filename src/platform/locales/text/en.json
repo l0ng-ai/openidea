@@ -2632,6 +2632,7 @@
   "Hot reload on save failed: {0}": "Hot reload on save failed: {0}",
   "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?": "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?",
   "New Tab": "New Tab",
+  "New tab in current window": "New tab in current window",
   "Show Only Widgets": "Show Only Widgets",
   "Update failed": "Update failed",
   "Updating branches": "Updating branches",
