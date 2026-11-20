@@ -96,7 +96,7 @@ With **Do not step into library scripts** (**Settings › Build, Execution, Depl
 
 ## Framework support
 
-- **React**: JSX and TSX get their own highlighting modes and full TypeScript server support. There is no React-specific tooling beyond that.
+- **React**: JSX and TSX get their own highlighting modes and full TypeScript server support. Typing `>` closes the tag, renaming an opening or closing tag renames its partner, and completing a prop name or typing `=` after one inserts `""` for string props or `{}` for others (from the prop's type). `⇥` / `Tab` expands Emmet abbreviations among an element's children or after `return` / `=>`: `.card` becomes `<div className="card"></div>`.
 - **Vue**: `.vue` files are highlighted per block and served by Vue Language Server in hybrid mode. In a Vue CLI project without `tsconfig.json`, webpack's `resolve.alias` entries (such as `@/`) are read so imports resolve. Prettier formats `.vue` files. Emmet works in templates.
 - **Svelte**: Svelte Language Server; highlighting uses the HTML mode (script as TypeScript, style as CSS). Emmet works in markup.
 - **Astro**: Astro Language Server with its own highlighting mode. It needs Node.js; if it can't find one, select it in **Settings › Languages & Frameworks › JavaScript Runtime**.
@@ -109,4 +109,3 @@ With **Do not step into library scripts** (**Settings › Build, Execution, Depl
 - Bun runs but can't be debugged: its inspector uses the WebKit protocol, which vscode-js-debug can't attach to.
 - Deno has run and debug support but no Deno language server; Deno files use the TypeScript servers.
 - Coverage of Deno tasks is not supported.
-- Emmet expands in HTML, Vue and Svelte, not in JSX.

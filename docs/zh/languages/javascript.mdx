@@ -96,7 +96,7 @@ Jest 和 Vitest 的输出会解析成测试树，支持 **重新运行失败的�
 
 ## 框架支持
 
-- **React**：JSX 和 TSX 有各自的高亮模式，并获得完整的 TypeScript 服务器支持；除此之外没有 React 专属功能。
+- **React**：JSX 和 TSX 有各自的高亮模式，并获得完整的 TypeScript 服务器支持。输入 `>` 会自动闭合标签，修改开始或结束标签名会同步修改另一端，补全属性名或在属性名后输入 `=` 会按属性类型插入 `""`（字符串）或 `{}`（其他类型）。在元素的子内容中或 `return` / `=>` 之后，`⇥` / `Tab` 会展开 Emmet 缩写：`.card` 会变成 `<div className="card"></div>`。
 - **Vue**：`.vue` 文件按块高亮，由 Vue Language Server 以 hybrid 模式提供支持。没有 `tsconfig.json` 的 Vue CLI 项目会读取 webpack 的 `resolve.alias`（如 `@/`），让 import 能正确解析。Prettier 可格式化 `.vue` 文件，模板中可用 Emmet。
 - **Svelte**：使用 Svelte Language Server；高亮沿用 HTML 模式（script 按 TypeScript、style 按 CSS），标记部分可用 Emmet。
 - **Astro**：使用 Astro Language Server，有专门的高亮模式。它需要 Node.js，找不到时请在 **设置 › 语言和框架 › JavaScript 运行时** 中选择。
@@ -109,4 +109,3 @@ Jest 和 Vitest 的输出会解析成测试树，支持 **重新运行失败的�
 - Bun 可以运行但无法调试：它的 inspector 使用 WebKit 协议，vscode-js-debug 无法附加。
 - Deno 支持运行和调试，但没有 Deno 语言服务器，Deno 文件使用 TypeScript 服务器。
 - 不支持 Deno task 的覆盖率。
-- Emmet 只在 HTML、Vue 和 Svelte 中展开，JSX 中不可用。

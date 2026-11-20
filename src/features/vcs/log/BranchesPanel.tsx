@@ -22,7 +22,7 @@ import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
-import { reloadLog, setLogBranches, setLogFilters, useGitLog } from "../logStore";
+import { reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGitLog } from "../logStore";
 import { branchesByRepo } from "../multiRoot";
 import { commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
@@ -79,7 +79,13 @@ export function BranchesPanel() {
   const active = !scope || scope === shown;
   const logGeneration = useGitLog((s) => s.generation);
   const selectedBranches = useVcs((s) => s.branches);
-  const repositories = useLogRepositories();
+  const availableRepositories = useLogRepositories();
+  const filters = useGitLog((s) => s.filters);
+  const repositories = useMemo(
+    () => scopedLogRepositories(availableRepositories, filters, availableRepositories),
+    [availableRepositories, filters],
+  );
+  const scopedRepo = availableRepositories.length > 1 && repositories.length === 1 ? repositories[0] : undefined;
   const readOnly = useReadOnlyLog();
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
@@ -105,37 +111,38 @@ export function BranchesPanel() {
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const current = useVcs((s) => s.branch?.head ?? null);
   const favorites = useFavoriteBranches((s) => s.names);
-  const filterBranches = useGitLog((s) => s.filters.branches);
-  const filterRepositories = useGitLog((s) => s.filters.repositories);
+  const filterBranches = filters.branches;
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   useEffect(() => loadFavoriteBranches(), [root]);
   // Branches reload when refs move (fetch, new tag…): the tags are re-read with them.
   useEffect(() => {
     let live = true;
-    call(commands.vcsTags(repositories[0] ?? currentRepo())).then(
+    call(commands.vcsTags(availableRepositories[0] ?? currentRepo())).then(
       (t) => live && setTags(t),
       () => live && setTags([]),
     );
     return () => {
       live = false;
     };
-  }, [root, branches, repositories]);
+  }, [root, selectedBranches, availableRepositories]);
   useEffect(() => {
     let live = true;
-    void branchesByRepo(repositories)
+    void branchesByRepo(availableRepositories)
       .then((value) => live && setAllBranches(value))
       .catch(() => undefined);
-    void Promise.all(repositories.map(async (r) => [r, await call(commands.vcsTags(r))] as const))
+    void Promise.all(availableRepositories.map(async (r) => [r, await call(commands.vcsTags(r))] as const))
       .then((value) => live && setAllTags(Object.fromEntries(value)))
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, [repositories, version, logGeneration]);
+  }, [availableRepositories, version, logGeneration]);
   const merged = repositories.length > 1 && !grouped;
   const allRoots = useMemo(() => {
-    if (repositories.length < 2) return buildBranchTree(branches, favorites, tags);
+    if (!repositories.length && availableRepositories.length) return [];
+    if (repositories.length < 2)
+      return buildBranchTree(branches, favorites, scopedRepo ? (allTags[scopedRepo] ?? []) : tags);
     const list = repositories.map((repo) => ({
       root: repo,
       name: repoName(repo),
@@ -145,7 +152,18 @@ export function BranchesPanel() {
     return grouped
       ? buildRepositoryBranchTree(list, favorites)
       : buildMergedBranchTree(list, favorites, currentRepository);
-  }, [repositories, allBranches, allTags, branches, favorites, tags, grouped, currentRepository]);
+  }, [
+    repositories,
+    availableRepositories,
+    allBranches,
+    allTags,
+    branches,
+    favorites,
+    tags,
+    grouped,
+    currentRepository,
+    scopedRepo,
+  ]);
   /** A merged ref acts in each repository that has it, with that repository's own branch. */
   const expand = useCallback(
     (n: BranchTreeNode): BranchTarget[] =>
@@ -155,8 +173,8 @@ export function BranchesPanel() {
             repo,
             branch: n.branch && allBranches[repo]?.find((x) => x.name === n.ref && x.remote === n.branch!.remote),
           }))
-        : [{ ref: n.ref!, branch: n.branch, repo: n.repo }],
-    [allBranches],
+        : [{ ref: n.ref!, branch: n.branch, repo: n.repo ?? scopedRepo }],
+    [allBranches, scopedRepo],
   );
   const roots = useMemo(() => filterBranchTree(allRoots, query), [allRoots, query]);
   // While searching every match is shown expanded.
@@ -169,9 +187,9 @@ export function BranchesPanel() {
       filterBranches.flatMap((b) => {
         if (b === "HEAD") return ["head"];
         if (repositories.length < 2 || merged) return [`b:${b}`];
-        return (filterRepositories?.length ? filterRepositories : repositories).map((r) => `${r}:b:${b}`);
+        return repositories.map((r) => `${r}:b:${b}`);
       }),
-    [filterBranches, filterRepositories, repositories, merged],
+    [filterBranches, repositories, merged],
   );
   const filterKey = filterKeys.join("\n");
   const [shownKey, setShownKey] = useState(filterKey);
@@ -259,7 +277,7 @@ export function BranchesPanel() {
             <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />
           </>
         )}
-        {repositories.length > 1 && (
+        {availableRepositories.length > 1 && (
           <IconButton
             icon="module"
             title="Group by Repository"
@@ -286,7 +304,7 @@ export function BranchesPanel() {
           />
         </div>
         <Tree<BranchTreeNode>
-          key={`${root ?? ""}:${branchesLoaded}:${grouped}`}
+          key={JSON.stringify([root, branchesLoaded, grouped, repositories])}
           roots={roots}
           getKey={(n) => n.key}
           getLabel={(n) => (n.kind === "head" || n.kind === "group" ? tx(n.label) : n.label)}
@@ -313,7 +331,7 @@ export function BranchesPanel() {
                       : "branch"
                     : "folder"
           }
-          getDetail={(n) => branchDetail(n, repositories.length)}
+          getDetail={(n) => branchDetail(n, availableRepositories.length)}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
@@ -322,11 +340,15 @@ export function BranchesPanel() {
             if (!n.ref) return;
             if (n.repos) {
               const sel = selected.has(n.key) ? [...new Set(targets.map((r) => r.ref))] : [n.ref];
-              setLogFilters({ branches: sel, repositories: n.repos.length < repositories.length ? n.repos : [] });
+              setLogFilters({
+                branches: sel,
+                repositories: n.repos.length < availableRepositories.length ? n.repos : [],
+              });
               return;
             }
-            const sel = selected.has(n.key) ? targets.filter((r) => r.repo === n.repo).map((r) => r.ref) : [n.ref];
-            setLogFilters({ branches: sel, repositories: n.repo ? [n.repo] : [] });
+            const repo = n.repo ?? scopedRepo;
+            const sel = selected.has(n.key) ? targets.filter((r) => r.repo === repo).map((r) => r.ref) : [n.ref];
+            setLogFilters({ branches: sel, repositories: repo ? [repo] : filters.repositories });
           }}
           onContextMenu={(n, _sel, e) => {
             if (readOnly) {
@@ -350,7 +372,7 @@ export function BranchesPanel() {
               showContextMenu(e, mergedBranchMenu(n.branch, common, n.repos, sharedHead(n.repos), picked));
               return;
             }
-            const repo = n?.repo ?? (n?.repos?.length === 1 ? n.repos[0] : undefined);
+            const repo = n?.repo ?? (n?.repos?.length === 1 ? n.repos[0] : scopedRepo);
             const menu = n?.branch
               ? branchMenu(n.branch, repo ? (useVcs.getState().heads[repo]?.head ?? null) : current, () => {}, picked)
               : n?.kind === "tag"

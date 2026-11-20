@@ -2,7 +2,7 @@ import { expect, test } from "./fixtures";
 
 for (const [id, selector] of [
   ["general", "[class*='radios'] label"],
-  ["notifications", "table tbody td:first-child"],
+  ["notifications", "[role='listbox'] [role='option'] > [class*='notificationGroupLabel']"],
   ["keymap", "[class*='presetLabel']"],
   ["editor.inspections", "[class*='profileControls'] > span:first-child"],
   ["vcs.issueNavigation", "[class*='pageBody'] button:not([aria-label])"],
