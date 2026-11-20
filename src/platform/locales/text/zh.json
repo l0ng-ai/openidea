@@ -2213,6 +2213,7 @@
   "Process → first IPC": "进程 → 首次 IPC",
   "Process → main": "进程 → main",
   "Processes": "进程",
+  "PID": "进程 ID",
   "Profile": "性能分析",
   "Profile Context Configuration": "对上下文配置进行性能分析",
   "Profile a run configuration to see where it spends its time.": "对运行配置进行性能分析，即可查看时间花在了哪里。",

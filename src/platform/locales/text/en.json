@@ -1540,6 +1540,8 @@
   "Running go mod init": "Running go mod init",
   "A Cabal package from cabal init.": "A Cabal package from cabal init.",
   "Executable": "Executable",
+  "PID": "PID",
+  "Processes": "Processes",
   "Library and executable": "Library and executable",
   "Install GHCup: https://www.haskell.org/ghcup/": "Install GHCup: https://www.haskell.org/ghcup/",
   "Running cabal init": "Running cabal init",

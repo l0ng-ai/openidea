@@ -332,16 +332,109 @@
   padding: 0 0 4px 22px;
 }
 
-.attachList {
-  height: 360px;
+.attachDialog {
+  height: 520px;
+}
+
+.attachDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+
+.attachContent {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
   min-height: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.attachContent > p {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.attachGrid {
+  container: attach-processes / inline-size;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: calc(var(--h-list-row) * 4);
+  overflow: hidden;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+  font-size: var(--fs-ui);
+}
+
+.attachHeader,
+.attachRow {
+  display: grid;
+  grid-template-columns: clamp(112px, 22vw, 184px) 60px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.attachHeader {
+  height: var(--h-list-row);
+  padding: 0 var(--space-2);
+  background: var(--bg-popup);
+  border-bottom: 1px solid var(--border-popup);
+  color: var(--fg-subtle);
+}
+
+.attachList {
+  --list-inset: 0px;
+  flex: 1;
+  scrollbar-gutter: stable;
+}
+
+.attachList [role="row"] {
+  border-radius: 0;
 }
 
 .attachPid {
-  min-width: 48px;
-  color: var(--fg-subtle);
-  font-family: var(--font-mono);
+  text-align: end;
   font-variant-numeric: tabular-nums;
+}
+
+.attachCommand {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+.attachCommand > :first-child {
+  flex: 1;
+}
+
+.attachCell,
+.attachEndpoint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachPort {
+  display: none;
+}
+
+@container attach-processes (max-width: 480px) {
+  .attachFullAddress {
+    display: none;
+  }
+
+  .attachPort {
+    display: inline;
+  }
+}
+
+.attachEndpoint {
+  max-width: 60%;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }
 
 /* Evaluate: a field that grows with ⇧Enter, like IDEA's expression editor. */
