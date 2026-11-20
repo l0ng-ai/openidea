@@ -23,6 +23,9 @@ zip.workspace = true
 flate2.workspace = true
 tar.workspace = true
 rayon.workspace = true
+arrow-array = { version = "60.1", features = ["chrono-tz"] }
+arrow-cast = { version = "60.1", default-features = false }
+parquet = "60.1"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -5,6 +5,7 @@ mod bytes;
 mod compare;
 mod encoding;
 mod ops;
+mod parquet;
 mod private;
 mod rules;
 mod watch;
@@ -34,6 +35,7 @@ pub use encoding::{
     LARGE_FILE_THRESHOLD, MAX_OPEN_SIZE, READ_ONLY_THRESHOLD, decode_properties_escapes, encode,
     encode_properties_ascii, save_properties_text, write_atomic, write_atomic_private, write_atomic_strict,
 };
+pub use parquet::{ParquetColumn, ParquetPage, read_parquet_page};
 pub use private::create_private_dir;
 pub use rules::ExcludeMatcher;
 pub use watch::{WatchMode, Watcher};

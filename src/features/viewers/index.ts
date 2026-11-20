@@ -23,11 +23,13 @@ import {
 import {
   BINARY_KIND,
   IMAGE_KIND,
+  PARQUET_KIND,
   associatedApplication,
   binaryInput,
   imageInput,
   isImagePath,
   isMarkdownPath,
+  parquetInput,
   wantsHexView,
 } from "./fileKinds";
 import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
@@ -101,6 +103,13 @@ export function activate(): () => void {
     }),
     registerEditorKind({ kind: IMAGE_KIND, component: ImageViewer, title: titleOf, icon: iconOf }),
     registerEditorKind({ kind: BINARY_KIND, component: HexViewer, title: titleOf, icon: iconOf }),
+    registerEditorKind({
+      kind: PARQUET_KIND,
+      component: lazyComponent(() => import("./ParquetViewer").then((module) => module.ParquetViewer)),
+      title: titleOf,
+      icon: iconOf,
+    }),
+    registerFileEditorProvider({ id: "viewers.parquet", order: 20, resolve: parquetInput }),
     registerFileEditorProvider({
       id: "viewers.image",
       order: 10,

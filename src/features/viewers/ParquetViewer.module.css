@@ -1,0 +1,102 @@
+.viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-editor);
+  font-size: var(--fs-ui);
+}
+
+.toolbar,
+.pager {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.toolbar {
+  flex-wrap: wrap;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar button[aria-pressed="true"] {
+  background: var(--bg-tree-selected);
+}
+
+.metadata {
+  color: var(--fg-muted);
+  padding-inline: var(--space-1);
+}
+
+.pager {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.table {
+  min-width: 100%;
+  border-spacing: 0;
+}
+
+.table :is(th, td) {
+  padding: var(--space-1) var(--space-2);
+  text-align: start;
+  border-bottom: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-control);
+  white-space: nowrap;
+}
+
+.table tbody th {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: normal;
+}
+
+.table tbody tr:hover {
+  background: var(--bg-tree-hover);
+}
+
+.cell {
+  display: block;
+  max-width: 32ch;
+  padding: 0;
+  overflow: hidden;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: pre;
+  cursor: pointer;
+}
+
+.cellValue {
+  max-height: 50vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.null,
+.message {
+  color: var(--fg-muted);
+}
+
+.message {
+  padding: var(--space-3);
+}

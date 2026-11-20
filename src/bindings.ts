@@ -683,6 +683,7 @@ export const commands = {
 	fsReadDir: (path: string) => typedError<FileEntry[], IdeError>(__TAURI_INVOKE("fs_read_dir", { path })),
 	/**  An image file as a `data:` URL. */
 	fsReadImage: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("fs_read_image", { path })),
+	fsReadParquet: (path: string, offset: number) => typedError<ParquetPage, IdeError>(__TAURI_INVOKE("fs_read_parquet", { path, offset })),
 	/**  Up to `len` bytes from `offset` (capped per call), base64-encoded. */
 	fsReadRange: (path: string, offset: number, len: number) => typedError<ByteRange, IdeError>(__TAURI_INVOKE("fs_read_range", { path, offset, len })),
 	/**
@@ -9356,6 +9357,22 @@ export type OutputChunk = { kind: "stdout"; text: string } | { kind: "stderr"; t
 export type PackageFile = {
 	path: string,
 	text: string,
+};
+
+export type ParquetColumn = {
+	name: string,
+	dataType: string,
+	nullable: boolean,
+};
+
+export type ParquetPage = {
+	columns: ParquetColumn[],
+	rows: ((string | null)[])[],
+	totalRows: number,
+	rowGroups: number,
+	pageSize: number,
+	size: number,
+	compression: string[],
 };
 
 /**  A file of a partial commit: which of its changes against HEAD to commit. */

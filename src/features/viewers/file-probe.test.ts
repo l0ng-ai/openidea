@@ -12,6 +12,17 @@ afterEach(() => {
 });
 
 describe("file probes", () => {
+  it("opens Parquet files in the structured viewer before probing for binary content", async () => {
+    const probe = vi.spyOn(commands, "fsProbe");
+    dispose = activate();
+    expect((await resolveFileEditor("/p/sample.PARQUET"))?.input).toEqual({
+      kind: "parquet",
+      key: "parquet:/p/sample.PARQUET",
+      path: "/p/sample.PARQUET",
+    });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("shares an in-flight probe without caching its result (binary: %s)", async (binary) => {
     let finish!: (result: { status: "ok"; data: FileProbe }) => void;
     const pending = new Promise<{ status: "ok"; data: FileProbe }>((resolve) => {
