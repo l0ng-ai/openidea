@@ -25,7 +25,7 @@ import { isSubmenuAim, type MenuPointer } from "./menuAim";
 
 export type MenuItem =
   | { kind: "separator" }
-  | { kind: "header"; label: string }
+  | { kind: "header"; label: string; asTitle?: boolean }
   | {
       kind: "action";
       action: string;
@@ -55,12 +55,14 @@ export type MenuItem =
       /** The pointer or the keyboard made it the active item (not on opening the menu). */
       onActive?: () => void;
       submenu?: MenuItem[];
+      /** Run the item when activated. Hover, Right Arrow and the chevron open its submenu. */
+      performOnSelect?: boolean;
       /** The text the item copies, for choosers that show it (Copy Path/Reference…). */
       preview?: string;
     };
 
 interface Resolved {
-  kind: "item" | "separator" | "header";
+  kind: "item" | "separator" | "header" | "title";
   key: string;
   label: string;
   icon?: string;
@@ -73,6 +75,7 @@ interface Resolved {
   hint?: string;
   onActive?: () => void;
   submenu?: MenuItem[];
+  performOnSelect?: boolean;
 }
 
 export function resolveMenuItems(items: MenuItem[]): Resolved[] {
@@ -84,7 +87,7 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
       return;
     }
     if (item.kind === "header") {
-      out.push({ kind: "header", key: `h${i}`, label: tx(item.label) });
+      out.push({ kind: item.asTitle ? "title" : "header", key: `h${i}`, label: tx(item.label) });
       return;
     }
     if (item.kind === "action") {
@@ -155,6 +158,7 @@ export function MenuList({
   // (e.g. editorTextFocus → popupOpen) right after the first render.
   useContextKeys();
   const resolved = resolveMenuItems(items);
+  const title = resolved.find((item) => item.kind === "title")?.label;
   const hasSubmenus = resolved.some((item) => item.submenu);
   // IDEA numeric mnemonics: the first nine selectable rows, in display order.
   const numbersOf: Array<number | undefined> = [];
@@ -211,11 +215,11 @@ export function MenuList({
     }
   };
 
-  const activate = (i: number, modifiers?: Pick<KeyboardEvent, "metaKey" | "ctrlKey">) => {
+  const activate = (i: number, modifiers?: Pick<KeyboardEvent, "metaKey" | "ctrlKey">, openChild = false) => {
     cancelHover();
     const item = resolved[i];
     if (!selectable(item)) return;
-    if (item!.submenu) {
+    if (item!.submenu && (openChild || !item!.performOnSelect)) {
       setActive(i);
       setOpenSub(i);
       return;
@@ -361,7 +365,7 @@ export function MenuList({
   return (
     <div
       role="menu"
-      aria-label={aria["aria-label"]}
+      aria-label={title ?? aria["aria-label"]}
       className={styles.menu}
       onKeyDown={onKeyDown}
       // A right-click in an open menu does nothing; without this it reaches whatever is under the
@@ -373,9 +377,9 @@ export function MenuList({
     >
       {resolved.map((r, i) => {
         if (r.kind === "separator") return <div key={r.key} role="separator" className={styles.separator} />;
-        if (r.kind === "header")
+        if (r.kind === "header" || r.kind === "title")
           return (
-            <div key={r.key} role="presentation" className={styles.header}>
+            <div key={r.key} role="presentation" className={r.kind === "title" ? styles.title : styles.header}>
               {r.label}
             </div>
           );
@@ -403,7 +407,10 @@ export function MenuList({
               onMouseEnter={(e) => hover(i, { x: e.clientX, y: e.clientY })}
               onPointerLeave={() => leave(i)}
               onMouseLeave={() => leave(i)}
-              onClick={(e) => activate(i, e)}
+              onClick={(e) => {
+                const openChild = e.target instanceof Element && e.target.closest("[data-menu-submenu-arrow]") !== null;
+                activate(i, e, openChild);
+              }}
               title={r.hint}
             >
               {numbers && (
@@ -425,7 +432,7 @@ export function MenuList({
                 </span>
               )}
               {hasSubmenus && (
-                <span className={styles.subArrow} aria-hidden="true">
+                <span className={styles.subArrow} aria-hidden="true" data-menu-submenu-arrow={hasSub || undefined}>
                   {hasSub && <Icon name="chevron-right" size={14} />}
                 </span>
               )}
