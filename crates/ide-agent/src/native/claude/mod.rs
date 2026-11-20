@@ -407,7 +407,7 @@ impl Shim {
                         "promptCapabilities": { "image": true, "embeddedContext": true },
                         "sessionCapabilities": { "fork": {} },
                         "mcpCapabilities": { "stdio": true, "http": true, "sse": true },
-                        "_meta": { "openidea": { "rollback": true, "steer": true, "backgroundTasks": true } },
+                        "_meta": { "openidea": { "rollback": true, "steer": true, "backgroundTasks": true, "contextUsage": true } },
                     },
                     "agentInfo": { "name": "claude", "title": "Claude Code", "version": self.version() },
                     "authMethods": [],
@@ -491,6 +491,11 @@ impl Shim {
                 let session = self.session(&params)?;
                 session.steer(params.get("prompt").cloned().unwrap_or_default()).map_err(invalid)?;
                 Ok(json!({}))
+            }
+            "_openidea/context_usage" => {
+                let session = self.session(&params)?;
+                let proc = session.st.lock().proc.clone().ok_or_else(|| internal("Claude Code is not running"))?;
+                rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)
             }
             "_openidea/stop_task" => {
                 let session = self.session(&params)?;
