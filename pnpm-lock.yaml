@@ -102,14 +102,14 @@ importers:
         specifier: ^2
         version: 2.7.2
       '@xterm/addon-fit':
-        specifier: ^0.11.0
-        version: 0.11.0
+        specifier: ^0.12.0-beta.334
+        version: 0.12.0-beta.334(@xterm/xterm@6.1.0-beta.338)
       '@xterm/addon-search':
-        specifier: ^0.16.0
-        version: 0.16.0
+        specifier: ^0.17.0-beta.332
+        version: 0.17.0-beta.332(@xterm/xterm@6.1.0-beta.338)
       '@xterm/xterm':
-        specifier: ^6.0.0
-        version: 6.0.0
+        specifier: ^6.1.0-beta.338
+        version: 6.1.0-beta.338
       anser:
         specifier: ^2.3.5
         version: 2.3.5
@@ -1452,14 +1452,18 @@ packages:
   '@vitest/spy@5.0.5':
     resolution: {integrity: sha512-lwJRExuH417257Q5wv9QYugN9IMJkoxcrKrYxGPQkBzl7wlNpTUxD/5yNX4ESKVUIShKPgkGchYPFMWOOk0wzw==}
 
-  '@xterm/addon-fit@0.11.0':
-    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
+  '@xterm/addon-fit@0.12.0-beta.334':
+    resolution: {integrity: sha512-fIFQHJ15PER9KhAG24IhA5vF4ysHEKrJgImt/ZqRcahvNUGF1T3WnpJ6bLvlvnsft7bVT0ofBWySx6nxFNAXkA==}
+    peerDependencies:
+      '@xterm/xterm': ^6.1.0-beta.338
 
-  '@xterm/addon-search@0.16.0':
-    resolution: {integrity: sha512-9OeuBFu0/uZJPu+9AHKY6g/w0Czyb/Ut0A5t79I4ULoU4IfU5BEpPFVGQxP4zTTMdfZEYkVIRYbHBX1xWwjeSA==}
+  '@xterm/addon-search@0.17.0-beta.332':
+    resolution: {integrity: sha512-XiyGiCWIRdguk45PiXT9ejuuGcCh0Z46ADBXNK4JNL8ElXIwyJ3uiljjxjFOiZ4QFeSrvhUtaQYgmvtOwWEO1A==}
+    peerDependencies:
+      '@xterm/xterm': ^6.1.0-beta.338
 
-  '@xterm/xterm@6.0.0':
-    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
+  '@xterm/xterm@6.1.0-beta.338':
+    resolution: {integrity: sha512-VBygvapFKV5gsqvVFsk6gYpArn4AXnUtZvt3tfN2LXI284i0mivC6Kus84GMJo0GJPLRFziWcSPVz95nViPuWw==}
 
   anser@2.3.5:
     resolution: {integrity: sha512-vcZjxvvVoxTeR5XBNJB38oTu/7eDCZlwdz32N1eNgpyPF7j/Z7Idf+CUwQOkKKpJ7RJyjxgLHCM7vdIK0iCNMQ==}
@@ -3451,11 +3455,15 @@ snapshots:
 
   '@vitest/spy@5.0.5': {}
 
-  '@xterm/addon-fit@0.11.0': {}
+  '@xterm/addon-fit@0.12.0-beta.334(@xterm/xterm@6.1.0-beta.338)':
+    dependencies:
+      '@xterm/xterm': 6.1.0-beta.338
 
-  '@xterm/addon-search@0.16.0': {}
+  '@xterm/addon-search@0.17.0-beta.332(@xterm/xterm@6.1.0-beta.338)':
+    dependencies:
+      '@xterm/xterm': 6.1.0-beta.338
 
-  '@xterm/xterm@6.0.0': {}
+  '@xterm/xterm@6.1.0-beta.338': {}
 
   anser@2.3.5: {}
 

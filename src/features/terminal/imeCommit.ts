@@ -16,6 +16,10 @@
  *   composition events, which xterm sends through its keydown path; the stale emission there
  *   carries the previous commit's text instead.
  *
+ * xterm 6.1 bounds the composition at the textarea selection and stops sending DEL when an
+ * IME clears the textarea, but a commit that arrives without `compositionstart` is still
+ * finalized from the previous composition's position, so the stale emission remains.
+ *
  * One commit must send one text chunk, so the gate lets the first emission through and drops
  * the rest until the commit closes. Protocol replies and mouse reports bypass the gate.
  * A commit is delimited by the IME's own keystroke (code 229)
