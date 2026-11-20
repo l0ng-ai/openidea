@@ -1935,6 +1935,7 @@ describe("session state across tasks and hosts", () => {
         added: 8,
         removed: 2,
         oldPath: null,
+        repo: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -2056,7 +2057,9 @@ describe("session state across tasks and hosts", () => {
       entries.set(id, [{ type: "agent", text: `Reply ${id}` }]);
       entries.set(`${id}/sub`, [{ type: "agent", text: `Sub ${id}` }]);
       entryLoads.set(id, { error: "err" });
-      changes.set(id, [{ path: "a.ts", relPath: "a.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }]);
+      changes.set(id, [
+        { path: "a.ts", relPath: "a.ts", oldPath: null, repo: null, kind: "modified", added: 1, removed: 0 },
+      ]);
       scrollPositions.set(id, { top: 10, stick: false });
     }
     entries.set("gone", [{ type: "agent", text: "Deleted reply" }]);
@@ -2090,6 +2093,7 @@ describe("session state across tasks and hosts", () => {
         added: 1,
         removed: 0,
         oldPath: null,
+        repo: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -2868,6 +2872,7 @@ describe("accept changes", () => {
         added: 8,
         removed: 2,
         oldPath: null,
+        repo: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -2904,6 +2909,7 @@ describe("accept changes", () => {
         added: 8,
         removed: 2,
         oldPath: null,
+        repo: null,
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
@@ -2922,6 +2928,7 @@ describe("last turn changes", () => {
     added: 1,
     removed: 0,
     oldPath: null,
+    repo: null,
   });
 
   it("lists and rolls back only what the last turn changed, the session still counting the whole task", async () => {
@@ -2969,6 +2976,7 @@ describe("grouped changes", () => {
     added: 1,
     removed: 1,
     oldPath: null,
+    repo: null,
   });
   const worktreeTask = () => {
     useChangesOptions.setState({ groupByCommit: true });
@@ -3016,6 +3024,42 @@ describe("grouped changes", () => {
     await screen.findByRole("complementary", { name: "Changes" });
     expect(screen.getByRole("button", { name: /1 changed file/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /1 commit/ })).toBeInTheDocument();
+  });
+
+  it("puts a whole-workspace task's files under a row per repository", async () => {
+    const inRepo = (repo: string, rel: string): AgentChange => ({
+      ...change(rel),
+      path: `/${repo}/${rel.slice(rel.indexOf("/") + 1)}`,
+      repo: `/${repo}`,
+    });
+    backend.changes = [inRepo("api", "api/src/a.ts"), inRepo("api", "api/b.ts"), inRepo("web", "web/c.ts")];
+    useAgents.setState({ tasks: new Map([["A", task("A")]]) });
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    render(<SessionEditor input={input("A")} />);
+    const pane = await screen.findByRole("complementary", { name: "Changes" });
+
+    await within(pane).findByText("a.ts");
+    // Open from the start, each repository leads its files, which show their folder as the agent names it.
+    const rows = [...pane.querySelectorAll("[data-row]")].map((r) => r.textContent);
+    expect(rows).toEqual(["api2 files+2 −2", "a.tsapi/src+1 −1", "b.tsapi+1 −1", "web1 file+1 −1", "c.tsweb+1 −1"]);
+    expect(within(pane).getByTitle("/api")).toBeInTheDocument();
+
+    fireEvent.mouseDown(within(pane).getByText("c.ts"));
+    fireEvent.click(within(pane).getByRole("button", { name: "Rollback Selected Changes…" }));
+    await waitFor(() => expect(backend.rolledBack).toEqual([["A", ["web/c.ts"], "sinceStart"]]));
+  });
+
+  it("lists a task's files without repository rows when they are all in one", async () => {
+    backend.changes = [
+      { ...change("a.ts"), repo: "/project" },
+      { ...change("b.ts"), repo: "/project" },
+    ];
+    useAgents.setState({ tasks: new Map([["A", task("A")]]) });
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    render(<SessionEditor input={input("A")} />);
+    const pane = await screen.findByRole("complementary", { name: "Changes" });
+    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
+    expect(within(pane).queryByText("project")).toBeNull();
   });
 
   it("accepts the task's committed work too, not only the uncommitted files", async () => {
