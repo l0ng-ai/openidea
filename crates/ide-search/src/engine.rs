@@ -6,8 +6,7 @@ use crate::mask::FileMask;
 use crate::pattern::ScopePattern;
 use crate::query::{Compiled, line_terminator};
 use crate::{
-    FileMatches, LineMatch, LiteralKind, LiteralRange, Literals, PathFilter, SearchContext, SearchScope, SearchSummary,
-    TextSource,
+    FileMatches, LineMatch, LiteralRange, Literals, PathFilter, SearchContext, SearchScope, SearchSummary, TextSource,
 };
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
@@ -462,12 +461,6 @@ impl<'a> FileSink<'a> {
     }
 }
 
-/// Kind of the comment or string literal containing byte `pos` (`literals` sorted).
-fn literal_at(literals: &[LiteralRange], pos: usize) -> Option<LiteralKind> {
-    let i = literals.partition_point(|l| l.start <= pos);
-    literals[..i].last().filter(|l| pos < l.end).map(|l| l.kind)
-}
-
 impl Sink for FileSink<'_> {
     type Error = io::Error;
 
@@ -493,7 +486,7 @@ impl Sink for FileSink<'_> {
         });
         if let Some((context, literals)) = self.context {
             let block_start = usize::try_from(m.absolute_byte_offset()).unwrap_or(usize::MAX);
-            found.retain(|&(a, _)| context.accepts(literal_at(literals, block_start.saturating_add(a))));
+            found.retain(|&(a, _)| context.keeps(literals, block_start.saturating_add(a)));
         }
 
         let mut next = found.iter().copied().peekable();
