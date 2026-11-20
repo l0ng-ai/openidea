@@ -9073,5 +9073,6 @@
   "Resize shelf panes": "调整搁置记录和文件窗格大小",
   "Database and schema": "数据库和 schema",
   "Shelve Silently": "静默搁置",
-  "Unshelve Silently": "静默取消搁置"
+  "Unshelve Silently": "静默取消搁置",
+  "Remove All Watches": "移除所有监视"
 }

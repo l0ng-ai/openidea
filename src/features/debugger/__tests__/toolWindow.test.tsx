@@ -396,6 +396,32 @@ describe("variables the adapter computes after the stop", () => {
     }
   });
 
+  it("offers Remove All Watches on a watch's context menu", async () => {
+    useDebug.setState({ watches: ["count + 1", "label.upper()"] });
+    const menu = (text: string) => {
+      fireEvent.contextMenu(screen.getByText(text).closest("[role=treeitem]")!);
+      const items = useContextMenuStore.getState().menu?.items ?? [];
+      act(() => hideContextMenu());
+      return items.flatMap((i) => ("label" in i && i.label ? [i] : []));
+    };
+    try {
+      setup();
+      await screen.findByText("label.upper()");
+      await screen.findByText("'hi'");
+      expect(menu("label").map((i) => i.label)).not.toContain("Remove All Watches");
+      const items = menu("count + 1");
+      expect(items.map((i) => i.label)).toContain("Remove Watch");
+      const removeAll = items.find((i) => i.label === "Remove All Watches");
+      expect(removeAll).toBeTruthy();
+      act(() => (removeAll as { run: () => void }).run());
+      expect(useDebug.getState().watches).toEqual([]);
+      await waitFor(() => expect(screen.queryByText("label.upper()")).toBeNull());
+      expect(screen.getByText("'hi'")).toBeTruthy();
+    } finally {
+      useDebug.setState({ watches: [] });
+    }
+  });
+
   it("reloads after Set Value", async () => {
     setup();
     await screen.findByText("Collecting data…");
