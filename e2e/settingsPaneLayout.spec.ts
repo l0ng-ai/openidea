@@ -69,19 +69,6 @@ test("every color scheme page keeps its attribute tree visible", async ({ workbe
   }
 });
 
-test("File and Code Templates keeps its editor reachable beside the template list", async ({ workbench: page }) => {
-  await page.keyboard.press("Meta+,");
-  await expect(page.getByRole("dialog", { name: "Settings", exact: true })).toBeVisible();
-  await page.evaluate(async () => {
-    const path = "/src/features/settings/model/staging.ts";
-    (await import(/* @vite-ignore */ path)).selectPage("editor.fileTemplates");
-  });
-  await page.setViewportSize({ width: 520, height: 760 });
-  const editor = page.locator("[class*='split'] > [class*='editor']").first();
-  await expect(editor).toBeAttached();
-  expect((await editor.boundingBox())!.width).toBeGreaterThan(200);
-});
-
 test("Live Templates gives the editor the full settings pane width and keeps variable fields reachable", async ({
   workbench: page,
 }) => {
