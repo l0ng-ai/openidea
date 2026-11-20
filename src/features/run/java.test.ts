@@ -261,7 +261,12 @@ describe("application configurations", () => {
   });
 
   it("scopes Maven and Gradle test configs to a class or method", () => {
-    const file = cfg({ id: "f", kind: "maven", args: ["test", "-Dtest=OrderTest"], isTest: true });
+    const file = cfg({
+      id: "f",
+      kind: "maven",
+      args: ["test", "-Dtest=OrderTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      isTest: true,
+    });
     expect(jvmTestConfig(file, "a.OrderTest$Nested", "fails")).toMatchObject({
       name: "Nested.fails",
       args: ["test", "-Dtest=a.OrderTest$Nested#fails", "-Dsurefire.failIfNoSpecifiedTests=false"],

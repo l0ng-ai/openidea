@@ -9,6 +9,7 @@ import { formatArgs, parseArgs } from "../configs";
 import { appendScriptArgs } from "../scriptArgs";
 import { djangoTestsOf } from "../djangoTypes";
 import { goTestParts, withoutGoSelection } from "../goArguments";
+import { withMavenTests } from "../mavenTests";
 import { frameworkFor } from "./index";
 import { dotnetFilter } from "./dotnet";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
@@ -134,7 +135,7 @@ function jvmArgs(config: RunConfig, paths: string[][]): string[] | null {
       ...[...byClass].map(([cls, ms]) => `${cls}#${unique(ms).join("+")}`),
       ...classes.filter((c) => !byClass.has(c)),
     ];
-    return [...config.args.filter((a) => !a.startsWith("-Dtest=")), `-Dtest=${specs.join(",")}`];
+    return withMavenTests(config.args, specs.join(","));
   }
   const filters = [...unique(tests.map((t) => `${t.cls}.${t.method}`)), ...classes];
   return [...dropFlag(config.args, ["--tests"]), ...filters.flatMap((f) => ["--tests", f])];

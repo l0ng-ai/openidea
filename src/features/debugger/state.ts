@@ -84,6 +84,13 @@ export interface DebugSession {
   stoppedThread: number | null;
   stopReason: string | null;
   stopDescription: string | null;
+  /**
+   * Threads stopped alone (a `stopped` event without `allThreadsStopped`), oldest first. Adapters
+   * such as java-debug keep them suspended while another thread runs.
+   */
+  suspendedThreads?: SuspendedThread[];
+  /** The last stop suspended every thread. */
+  allThreadsStopped?: boolean;
   threads: ThreadInfo[];
   selectedThread: number | null;
   frames: StackFrame[];
@@ -107,6 +114,12 @@ export interface DebugSession {
   flutterAppStarted?: boolean;
 }
 
+export interface SuspendedThread {
+  id: number;
+  reason: string;
+  description: string | null;
+}
+
 export interface ConsoleLine {
   id: number;
   category: string;
@@ -114,6 +127,8 @@ export interface ConsoleLine {
   text: string;
   /** `text` styled by its ANSI colours. */
   spans: Span[];
+  /** A carriage return ended the output so far: the next text replaces the line. */
+  cr?: boolean;
 }
 
 interface DebugState {
@@ -187,6 +202,12 @@ function ansiStream(session: DebugSessionId, category: string): AnsiStream {
   let stream = streams.get(category);
   if (!stream) streams.set(category, (stream = new AnsiStream()));
   return stream;
+}
+
+/** Styled output, keeping a carriage return (and erase-line) for the console to overwrite its line. */
+function outputSpans(session: DebugSessionId, category: string, raw: string): Span[] {
+  const stream = ansiStream(session, category);
+  return stream.spans(stream.clean(raw).replace(/\r\n/g, "\n"));
 }
 
 // --- accessors ---------------------------------------------------------------
@@ -482,7 +503,7 @@ function unfollowProcessOutput(session: DebugSessionId) {
 export function appendConsole(session: DebugSessionId, category: string, raw: string) {
   if (!raw) return;
   flushConsoleOutput();
-  const spans = ansiStream(session, category).parse(raw);
+  const spans = outputSpans(session, category, raw);
   const text = spans.map((sp) => sp.text).join("");
   if (!text) return;
   useDebug.setState((s) => {
@@ -525,7 +546,7 @@ function flushConsoleOutput() {
     const consoleBySession = { ...s.console };
     for (const { session, category, raw } of chunks) {
       if (!s.sessions[session]) continue;
-      const spans = ansiStream(session, category).parse(raw);
+      const spans = outputSpans(session, category, raw);
       const text = spans.map((sp) => sp.text).join("");
       if (!text) continue;
       printed.push([session, text]);
@@ -648,26 +669,36 @@ async function openServerPage(server: DebugSession, known: ServerPage, url: stri
   else void stopSession(page);
 }
 
-/** Split styled output at real line breaks, retaining partial lines across events. */
+/**
+ * Split styled output at real line breaks, retaining partial lines across events. As in the
+ * Run console, a carriage return makes the next text replace the line (progress bars).
+ */
 function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
   const last = lines.at(-1);
   let line =
     last && last.category === category && !last.text.endsWith("\n") ? { ...last, spans: [...last.spans] } : undefined;
   if (line) lines[lines.length - 1] = line;
   for (const span of spans) {
-    let start = 0;
-    while (start < span.text.length) {
-      const newline = span.text.indexOf("\n", start);
-      const end = newline < 0 ? span.text.length : newline + 1;
-      const text = span.text.slice(start, end);
+    for (const piece of span.text.split(/(\r|\n)/)) {
+      if (piece === "\r") {
+        if (line) line.cr = true;
+        continue;
+      }
+      if (!piece) continue;
       if (!line) {
         line = { id: ++lineSeq, category, text: "", spans: [] };
         lines.push(line);
       }
-      line.text += text;
-      line.spans = appendSpans(line.spans, [{ ...span, text }]);
-      if (newline >= 0) line = undefined;
-      start = end;
+      if (line.cr) {
+        line.cr = undefined;
+        if (piece !== "\n") {
+          line.text = "";
+          line.spans = [];
+        }
+      }
+      line.text += piece;
+      line.spans = appendSpans(line.spans, [{ ...span, text: piece }]);
+      if (piece === "\n") line = undefined;
     }
   }
 }
@@ -947,11 +978,21 @@ export function pinSession(id: DebugSessionId, pinned: boolean) {
   patch(id, { pinned });
 }
 
-/** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
+/**
+ * Forgets a session and its descendants (Node's `pnpm` → `pnpm.cjs` → `rspack.js`); a selected
+ * one passes the selection to the tab on its left.
+ */
 export function removeSession(id: DebugSessionId) {
   const st = useDebug.getState();
   const gone = new Set<DebugSessionId>([id]);
-  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+  for (let added = true; added;) {
+    added = false;
+    for (const s of Object.values(st.sessions))
+      if (s.parent != null && gone.has(s.parent) && !gone.has(s.id)) {
+        gone.add(s.id);
+        added = true;
+      }
+  }
 
   const order = Object.values(st.sessions).map((s) => s.id);
   const sessions: Record<number, DebugSession> = {};
@@ -1023,6 +1064,11 @@ export function pausedThread(s: DebugSession): number | null {
   return s.selectedThread ?? s.stoppedThread ?? s.threads[0]?.id ?? null;
 }
 
+export function isThreadSuspended(s: DebugSession, threadId: number): boolean {
+  if (s.status !== "paused") return false;
+  return !!s.allThreadsStopped || s.stoppedThread === threadId || !!s.suspendedThreads?.some((t) => t.id === threadId);
+}
+
 /** The selected frame of the paused session (top frame when none is selected). */
 export function selectedFrame(s: DebugSession): StackFrame | null {
   return s.frames.find((f) => f.id === s.selectedFrame) ?? s.frames[0] ?? null;
@@ -1088,7 +1134,8 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
   void loadLocals(id, frameId);
 }
 
-async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean) {
+/** `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened. */
+async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true) {
   const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
   try {
@@ -1100,7 +1147,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean)
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames });
   const top = topFrame(frames);
-  if (top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
+  if (newStop && top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
     consumeTemporary(top.path, top.line);
   }
@@ -1349,8 +1396,13 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "stopped": {
       const isBp = event.reason === "breakpoint" || event.reason === "function breakpoint";
+      const alone = (s.suspendedThreads ?? []).filter((t) => t.id !== event.threadId);
+      if (!event.allThreadsStopped)
+        alone.push({ id: event.threadId, reason: event.reason, description: event.description });
       patch(id, {
         status: "paused",
+        suspendedThreads: event.allThreadsStopped ? [] : alone,
+        allThreadsStopped: event.allThreadsStopped,
         stoppedThread: event.threadId,
         selectedThread: event.threadId,
         stopReason: event.reason,
@@ -1382,13 +1434,39 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "continued": {
       const cur = useDebug.getState().sessions[id]!;
       if (cur.status === "terminated") break;
-      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) break;
+      const rest = event.allThreadsContinued ? [] : (cur.suspendedThreads ?? []).filter((t) => t.id !== event.threadId);
+      if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) {
+        patch(id, { suspendedThreads: rest });
+        break;
+      }
       stopTaskbarFlash();
+      const next = rest.at(-1);
+      if (next) {
+        // Like IDEA, the session stays suspended on a thread its own breakpoint still holds.
+        patch(id, {
+          status: "paused",
+          suspendedThreads: rest,
+          stoppedThread: next.id,
+          selectedThread: next.id,
+          stopReason: next.reason,
+          stopDescription: next.description,
+          frames: [],
+          selectedFrame: null,
+        });
+        useDebug.setState((st) => ({ stopSeq: st.stopSeq + 1 }));
+        publishContext();
+        updateExecutionPoint();
+        void loadThreads(id);
+        void loadFrames(id, next.id, true, false);
+        break;
+      }
       patch(id, {
         status: "running",
         frames: [],
         selectedFrame: null,
         stoppedThread: null,
+        suspendedThreads: [],
+        allThreadsStopped: false,
       });
       updateExecutionPoint();
       break;

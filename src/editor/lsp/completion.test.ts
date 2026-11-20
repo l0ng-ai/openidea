@@ -28,6 +28,7 @@ import {
 import {
   acceptCompletion,
   closeCompletion,
+  completionStatus,
   currentCompletions,
   snippet,
   startCompletion,
@@ -838,6 +839,38 @@ describe("completion footer", () => {
   afterEach(() => {
     view?.destroy();
     view = null;
+  });
+
+  it("formats partial results while the language server is still answering", async () => {
+    let finishReply = () => {};
+    const reply = new Promise((resolve) => {
+      finishReply = () => resolve({ isIncomplete: false, items: [] });
+    });
+    setInvokeRoute((cmd) => (cmd === "lsp_completion" ? reply : Promise.resolve(null)));
+    const source: CompletionSource = (ctx) => ({ from: ctx.pos, options: [{ label: "localSuggestion" }] });
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "thing.",
+        selection: { anchor: 6 },
+        extensions: [
+          lspDoc.of({ doc: 902, path: "/p/Example.java", language: "java", uiMode: "Java", readOnly: false }),
+          completionExtension(),
+          EditorState.languageData.of(() => [{ openideaCompletion: source }]),
+        ],
+      }),
+      parent: document.body,
+    });
+    try {
+      startCompletion(view);
+      await vi.waitFor(() => {
+        expect(completionStatus(view!.state)).toBe("pending");
+        expect(document.querySelector(".cm-tooltip-autocomplete > .cm-lsp-completion-footer")).not.toBeNull();
+      });
+    } finally {
+      closeCompletion(view);
+      setInvokeRoute(null);
+      finishReply();
+    }
   });
 
   it("stays below the list after CodeMirror rebuilds the options", async () => {

@@ -1,7 +1,7 @@
 /** Settings › Editor › Live Templates. */
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import clsx from "clsx";
-import { Button, Checkbox, IconButton, Input, T } from "@/ui";
+import { Button, Checkbox, IconButton, Input, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { bodyVariables, type LiveTemplate, type TemplateVariable } from "../live/model";
 import {
   isModifiedBuiltin,
@@ -65,80 +65,93 @@ export function LiveTemplatesPage() {
           label="Show live templates in code completion"
         />
       </div>
-      <div className={styles.split}>
-        <div className={styles.side}>
-          <div className={styles.toolbar}>
-            <IconButton icon="plus" size="small" title="Add Template" onClick={add} />
-            <IconButton
-              icon="minus"
-              size="small"
-              title="Remove Template"
-              disabled={!selected || !!selected.pluginOrigin}
-              onClick={() => {
-                if (!selected) return;
-                removeTemplate(selected.id);
-                setSelectedId(null);
-              }}
-            />
-            <Input
-              variant="bare"
-              placeholder="Filter"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              aria-label="Filter templates"
-            />
-          </div>
-          <div className={styles.items} role="listbox" aria-label={tx("Live templates")}>
-            {groups.map(([group, list]) => (
-              <div key={group} role="group" aria-label={group}>
-                <div className={styles.groupHeader}>{group}</div>
-                {list.map((t) => (
-                  <div
-                    key={t.id}
-                    role="option"
-                    aria-selected={t.id === selectedId}
-                    className={clsx(
-                      styles.item,
-                      t.id === selectedId && styles.itemSelected,
-                      t.enabled === false && styles.disabledItem,
-                    )}
-                    onClick={() => setSelectedId(t.id)}
-                  >
-                    <Checkbox
-                      disabled={!!t.pluginOrigin}
-                      checked={t.enabled !== false}
-                      onChange={(v) => saveTemplate({ ...t, enabled: v })}
-                      aria-label={tx`Enable ${t.abbrev}`}
-                    />
-                    <span className={clsx(styles.itemLabel, isModifiedBuiltin(t.id) && styles.modified)}>
-                      {t.abbrev}
-                    </span>
-                    <span className={styles.itemDetail} title={t.description}>
-                      {t.description}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className={styles.editor}>
-          {selected ? (
-            <fieldset disabled={!!selected.pluginOrigin} className={styles.readonly}>
-              <TemplateEditor key={selected.id} template={selected} />
-            </fieldset>
-          ) : (
-            <div className={styles.empty}>
-              <T>Select a template to edit it</T>
+      <SplitGroup
+        className={styles.liveSplit}
+        orientation="vertical"
+        storageKey="openidea.settings.liveTemplates.panes.v1"
+      >
+        <SplitPanel id="templates" defaultSize="40%" minSize="88px">
+          <div className={styles.liveList}>
+            <div className={styles.toolbar}>
+              <IconButton icon="plus" size="small" title="Add Template" onClick={add} />
+              <IconButton
+                icon="minus"
+                size="small"
+                title="Remove Template"
+                disabled={!selected || !!selected.pluginOrigin}
+                onClick={() => {
+                  if (!selected) return;
+                  removeTemplate(selected.id);
+                  setSelectedId(null);
+                }}
+              />
+              <Input
+                variant="bare"
+                placeholder="Filter"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                aria-label="Filter templates"
+              />
             </div>
-          )}
-        </div>
-      </div>
+            <div className={styles.items} role="listbox" aria-label={tx("Live templates")}>
+              {groups.map(([group, list]) => (
+                <div key={group} role="group" aria-label={group}>
+                  <div className={styles.groupHeader}>{group}</div>
+                  {list.map((t) => (
+                    <div
+                      key={t.id}
+                      role="option"
+                      aria-selected={t.id === selectedId}
+                      className={clsx(
+                        styles.item,
+                        t.id === selectedId && styles.itemSelected,
+                        t.enabled === false && styles.disabledItem,
+                      )}
+                      onClick={() => setSelectedId(t.id)}
+                    >
+                      <Checkbox
+                        disabled={!!t.pluginOrigin}
+                        checked={t.enabled !== false}
+                        onChange={(v) => saveTemplate({ ...t, enabled: v })}
+                        aria-label={tx`Enable ${t.abbrev}`}
+                      />
+                      <span
+                        className={clsx(styles.itemLabel, isModifiedBuiltin(t.id) && styles.modified)}
+                        title={t.abbrev}
+                      >
+                        {t.abbrev}
+                      </span>
+                      <span className={styles.itemDetail} title={t.description}>
+                        {t.description}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Resize template panes")} />
+        <SplitPanel id="template-details" minSize="144px">
+          <div className={clsx(styles.editor, styles.liveEditor)}>
+            {selected ? (
+              <fieldset disabled={!!selected.pluginOrigin} className={styles.readonly}>
+                <TemplateEditor key={selected.id} template={selected} />
+              </fieldset>
+            ) : (
+              <div className={styles.empty}>
+                <T>Select a template to edit it</T>
+              </div>
+            )}
+          </div>
+        </SplitPanel>
+      </SplitGroup>
     </div>
   );
 }
 
 function TemplateEditor({ template: t }: { template: LiveTemplate }) {
+  const bodyId = useId();
   const update = (patch: Partial<LiveTemplate>) => saveTemplate({ ...t, ...patch });
   const names = bodyVariables(t.body);
   const vars = names.map((n) => t.variables?.find((v) => v.name === n) ?? { name: n });
@@ -147,28 +160,28 @@ function TemplateEditor({ template: t }: { template: LiveTemplate }) {
 
   return (
     <>
-      <div className={styles.row}>
-        <span className={styles.label}>
-          <T>Abbreviation</T>
-        </span>
-        <Input
-          className={styles.grow}
-          mono
-          value={t.abbrev}
-          onChange={(e) => update({ abbrev: e.target.value.trim() })}
-          aria-label="Abbreviation"
-        />
-      </div>
-      <div className={styles.row}>
-        <span className={styles.label}>
-          <T>Description</T>
-        </span>
-        <Input
-          className={styles.grow}
-          value={t.description}
-          onChange={(e) => update({ description: e.target.value })}
-          aria-label="Description"
-        />
+      <div className={styles.liveMetadata}>
+        <label className={styles.row}>
+          <span className={styles.label}>
+            <T>Abbreviation</T>
+          </span>
+          <Input
+            className={styles.grow}
+            mono
+            value={t.abbrev}
+            onChange={(e) => update({ abbrev: e.target.value.trim() })}
+          />
+        </label>
+        <label className={styles.row}>
+          <span className={styles.label}>
+            <T>Description</T>
+          </span>
+          <Input
+            className={styles.grow}
+            value={t.description}
+            onChange={(e) => update({ description: e.target.value })}
+          />
+        </label>
       </div>
       <div className={styles.row}>
         <span className={styles.label}>
@@ -181,11 +194,14 @@ function TemplateEditor({ template: t }: { template: LiveTemplate }) {
           aria-label="Group"
         />
       </div>
+      <label htmlFor={bodyId}>
+        <T>Template text</T>
+      </label>
       <textarea
+        id={bodyId}
         className={styles.body}
         value={t.body}
         spellCheck={false}
-        aria-label={tx("Template text")}
         onChange={(e) => update({ body: e.target.value })}
         onKeyDown={(e) => {
           if (e.key !== "Tab") return;
@@ -223,7 +239,7 @@ function TemplateEditor({ template: t }: { template: LiveTemplate }) {
         />
       </div>
       {vars.length > 0 && (
-        <table className={styles.table}>
+        <table className={clsx(styles.table, styles.liveVariables)}>
           <thead>
             <tr>
               <th>

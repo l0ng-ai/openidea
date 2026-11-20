@@ -76,6 +76,8 @@ export interface CommitSettingsValid {
 
 export interface VcsSettingsValid {
   showDirtyDirectories: boolean;
+  /** Off: diffs the user opens show in a separate window. */
+  diffAsEditorTab: boolean;
   limitHistory: boolean;
   historyLimit: number;
   git: GitSettingsValid;
@@ -274,6 +276,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   vcs: {
     // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
     showDirtyDirectories: false,
+    diffAsEditorTab: true,
     limitHistory: true,
     historyLimit: 1000,
     git: {
@@ -448,6 +451,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
   const confirm = ["ask", "silently", "never"] as const;
   return {
     showDirtyDirectories: bool(v.showDirtyDirectories, d.showDirtyDirectories),
+    diffAsEditorTab: bool(v.diffAsEditorTab, d.diffAsEditorTab),
     limitHistory: bool(v.limitHistory, d.limitHistory),
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {

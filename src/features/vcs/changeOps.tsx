@@ -15,7 +15,7 @@ import { RepoPicker, useBranchInfo } from "./gitMenuDialogs";
 import { baseName, effectiveKind, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
 import { ensureCommitIdentity } from "./commitIdentity";
-import { showCompareRevisions } from "./operations";
+import { conflictsInstead, showCompareRevisions } from "./operations";
 import { FileChecklist } from "./shelf";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -442,6 +442,7 @@ export async function unstash(o: UnstashOptions, repo = currentRepo()) {
   const { title, success } = unstashTitles(o);
   await runOp(title, () => call(commands.vcsStashApply(repo, o.index, o.pop, o.reinstateIndex, o.branch)), {
     success,
+    onError: conflictsInstead,
   });
   void loadStashes().catch((e) => logConsole("err", String(e)));
 }

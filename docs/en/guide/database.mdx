@@ -172,11 +172,13 @@ The export button offers **Export Data…** and quick copies: **Copy as CSV**, *
 
 The built-in HTTP driver uses a named session by default (`use_http_session=true`). Route requests to one node or enable session affinity. If the session expires or another node reports code 372, OpenIDEA shows a reconnect error and never replays the statement.
 
-For endpoints that route each request to a different node, add **Advanced** property `use_http_session` with value `false`. Each request omits `session_id`, `session_check` and `session_timeout`, and sends the configured database (or **Default schema**), time zone and Advanced settings again. **Read-only** sends `readonly=1` on every request; result-limit settings remain enabled.
+For endpoints that route each request to a different node, add **Advanced** property `use_http_session` with value `false`. Each request omits `session_id`, `session_check` and `session_timeout`, and sends the configured database (or **Default schema**), time zone and Advanced settings again. **Read-only** sends `readonly=1` on every request.
 
 Stateless statements must be independent: `USE`, standalone `SET`, temporary tables and other session state cannot carry over to later requests. Configure the database and settings on the data source. Startup scripts and explicit session properties (`session_id`, `session_check`, `session_timeout`) are rejected. SQL transactions and statement caching are unsupported in either mode.
 
-Strict read-only servers that refuse per-request driver settings cannot use stateless mode: the connection fails without dropping read-only protection or limits. The strict read-only fallback requires proof in the same named HTTP session, including on subsequent requests; use one node or session affinity.
+For strict read-only accounts behind a load balancer, set `use_http_session=false` and enable **Read-only**. If the initial connection check receives ClickHouse code 164 for a driver-managed result setting, OpenIDEA repeats the check without its result-limit and JSON number-format settings. Each request still sends `readonly=1`, and the grid still retains only the requested page. Configure server-side limits in the account's settings profile. With the server's default JSON settings, `NaN` and infinities may appear as `NULL`.
+
+Use consistent account profiles across replicas. If the first node accepts the driver's result settings and a later node rejects them, OpenIDEA reports the error on that request. Connect again after aligning the profiles.
 
 ## Oracle
 

@@ -303,9 +303,9 @@ export const openideaTheme = EditorView.theme({
     cursor: "pointer",
     transition: "opacity var(--dur-fast) var(--ease)",
   },
-  ".cm-foldGutter .cm-openidea-foldOpen": { opacity: "0", display: "inline-flex" },
-  ".cm-foldGutter .cm-openidea-foldClosed": { display: "inline-flex" },
-  ".cm-gutters:hover .cm-foldGutter .cm-openidea-foldOpen": { opacity: "1" },
+  ".cm-foldGutter .cm-openidea-foldOpen, .cm-foldGutter .cm-openidea-foldClosed": { display: "inline-flex" },
+  ".cm-foldGutter .cm-openidea-foldOnHover": { opacity: "0" },
+  ".cm-gutters:hover .cm-foldGutter .cm-openidea-foldOnHover": { opacity: "1" },
   ".cm-foldGutter .cm-gutterElement:hover": { color: "var(--fg-secondary)" },
   ".cm-foldPlaceholder": {
     backgroundColor: "var(--editor-fold-chip)",

@@ -1,8 +1,8 @@
 /** Settings › Editor › File and Code Templates: Files, Includes and Code tabs per scheme. */
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { tx, useTx } from "@/platform/i18n";
-import { Button, Checkbox, Icon, IconButton, Input, Select, T } from "@/ui";
+import { Button, Checkbox, Icon, IconButton, Input, Select, SplitGroup, SplitHandle, SplitPanel, T, Tabs } from "@/ui";
 import { reformatsOnCreate, type FileTemplate, type NameStyle, type TemplateFragment } from "../files/model";
 import {
   isBuiltinFileTemplate,
@@ -24,6 +24,7 @@ import {
   type TemplateScheme,
 } from "../files/store";
 import styles from "./Settings.module.css";
+import layout from "./FileTemplatesPage.module.css";
 
 const NAME_STYLES: Array<{ value: NameStyle; label: string }> = [
   { value: "asis", label: "As typed" },
@@ -37,8 +38,7 @@ const SCHEMES: Array<{ value: TemplateScheme; label: string }> = [
   { value: "project", label: "Project" },
 ];
 
-type TabId = "files" | "includes" | "code";
-const TABS: Array<{ id: TabId; label: string }> = [
+const TABS = [
   { id: "files", label: "Files" },
   { id: "includes", label: "Includes" },
   { id: "code", label: "Code" },
@@ -47,12 +47,13 @@ const TABS: Array<{ id: TabId; label: string }> = [
 export function FileTemplatesPage() {
   const scheme = useFileTemplates((s) => s.scheme);
   const root = useFileTemplates((s) => s.root);
-  const [tab, setTab] = useState<TabId>("files");
+  const [tab, setTab] = useState("files");
+  const tabsId = useId();
   useEffect(() => reloadFileTemplates(), []);
 
   return (
     <div className={styles.page}>
-      <div className={styles.row}>
+      <div className={clsx(styles.row, layout.scheme)}>
         <span className={styles.label}>
           <T>Scheme</T>
         </span>
@@ -63,24 +64,39 @@ export function FileTemplatesPage() {
           </span>
         )}
       </div>
-      <div className={styles.tabs} role="tablist" aria-label={tx("Template kinds")}>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            className={clsx(styles.tab, tab === t.id && styles.tabActive)}
-            onClick={() => setTab(t.id)}
-          >
-            <T>{t.label}</T>
-          </button>
-        ))}
+      <Tabs
+        items={TABS}
+        activeId={tab}
+        onSelect={setTab}
+        variant="compact"
+        aria-label="Template kinds"
+        panelIdPrefix={tabsId}
+      />
+      <div
+        className={layout.tabPanel}
+        role="tabpanel"
+        id={tabsId + "-panel-" + tab}
+        aria-labelledby={tabsId + "-tab-" + tab}
+      >
+        {tab === "files" && <FilesTab key={scheme} />}
+        {tab === "includes" && <IncludesTab key={scheme} />}
+        {tab === "code" && <CodeTab key={scheme} />}
       </div>
-      {tab === "files" && <FilesTab key={scheme} />}
-      {tab === "includes" && <IncludesTab key={scheme} />}
-      {tab === "code" && <CodeTab key={scheme} />}
     </div>
+  );
+}
+
+function TemplateSplit({ list, children }: { list: ReactNode; children: ReactNode }) {
+  return (
+    <SplitGroup className={layout.split} orientation="horizontal" storageKey="openidea.settings.fileTemplates.panes.v1">
+      <SplitPanel id="file-template-list" defaultSize="30%" minSize="22%" maxSize="42%" className={layout.list}>
+        {list}
+      </SplitPanel>
+      <SplitHandle aria-label={tx("Resize file template panes")} />
+      <SplitPanel id="file-template-editor" minSize="58%" className={clsx(styles.editor, layout.editor)}>
+        {children}
+      </SplitPanel>
+    </SplitGroup>
   );
 }
 
@@ -104,56 +120,60 @@ function FilesTab() {
   };
 
   return (
-    <div className={styles.split}>
-      <div className={styles.side}>
-        <div className={styles.toolbar}>
-          <IconButton icon="plus" size="small" title="Add Template" onClick={add} />
-          <IconButton
-            icon="minus"
-            size="small"
-            title="Remove Template"
-            disabled={!selected}
-            onClick={() => {
-              if (!selected) return;
-              removeFileTemplate(selected.id);
-              setSelectedId(null);
-            }}
-          />
-        </div>
-        <div className={styles.items} role="listbox" aria-label={tx("File templates")}>
-          {templates.map((t) => (
-            <div
-              key={t.id}
-              role="option"
-              aria-selected={t.id === selectedId}
-              className={clsx(
-                styles.item,
-                t.id === selectedId && styles.itemSelected,
-                t.enabled === false && styles.disabledItem,
-              )}
-              onClick={() => setSelectedId(t.id)}
-            >
-              <Checkbox
-                checked={t.enabled !== false}
-                onChange={(v) => saveFileTemplate({ ...t, enabled: v })}
-                aria-label={tx`Enable ${t.name}`}
-              />
-              <Icon name={t.icon} size={14} />
-              <span className={clsx(isModifiedFileTemplate(t.id) && styles.modified)}>{t.name}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className={styles.editor}>
-        {selected ? (
-          <FileTemplateEditor key={selected.id} template={selected} />
-        ) : (
-          <div className={styles.empty}>
-            <T>Select a template to edit it</T>
+    <TemplateSplit
+      list={
+        <>
+          <div className={styles.toolbar}>
+            <IconButton icon="plus" size="small" title="Add Template" onClick={add} />
+            <IconButton
+              icon="minus"
+              size="small"
+              title="Remove Template"
+              disabled={!selected}
+              onClick={() => {
+                if (!selected) return;
+                removeFileTemplate(selected.id);
+                setSelectedId(null);
+              }}
+            />
           </div>
-        )}
-      </div>
-    </div>
+          <div className={styles.items} role="listbox" aria-label={tx("File templates")}>
+            {templates.map((t) => (
+              <div
+                key={t.id}
+                role="option"
+                aria-selected={t.id === selectedId}
+                className={clsx(
+                  styles.item,
+                  layout.item,
+                  t.id === selectedId && styles.itemSelected,
+                  t.enabled === false && styles.disabledItem,
+                )}
+                onClick={() => setSelectedId(t.id)}
+              >
+                <Checkbox
+                  checked={t.enabled !== false}
+                  onChange={(v) => saveFileTemplate({ ...t, enabled: v })}
+                  aria-label={tx`Enable ${t.name}`}
+                />
+                <Icon name={t.icon} size={14} className={layout.itemIcon} />
+                <span className={clsx(layout.itemName, isModifiedFileTemplate(t.id) && styles.modified)} title={t.name}>
+                  {t.name}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      }
+    >
+      {selected ? (
+        <FileTemplateEditor key={selected.id} template={selected} />
+      ) : (
+        <div className={styles.empty}>
+          <T>Select a template to edit it</T>
+        </div>
+      )}
+    </TemplateSplit>
   );
 }
 
@@ -166,39 +186,45 @@ function FileTemplateEditor({ template: t }: { template: FileTemplate }) {
 
   return (
     <>
-      <div className={styles.row}>
-        <span className={styles.label}>
-          <T>Name</T>
-        </span>
-        <Input
-          className={styles.grow}
-          value={t.name}
-          onChange={(e) => update({ name: e.target.value })}
-          aria-label="Template name"
-        />
+      <div className={layout.identity}>
+        <label className={layout.field}>
+          <span className={styles.label}>
+            <T>Name</T>
+          </span>
+          <Input
+            className={styles.grow}
+            value={t.name}
+            onChange={(e) => update({ name: e.target.value })}
+            aria-label="Template name"
+          />
+        </label>
+        <label className={clsx(layout.field, layout.extension)}>
+          <span className={styles.label}>
+            <T>Extension</T>
+          </span>
+          <Input
+            className={styles.grow}
+            mono
+            value={t.extension}
+            onChange={(e) => update({ extension: e.target.value.replace(/^\./, "").trim() })}
+            aria-label="Extension"
+            placeholder="none"
+          />
+        </label>
       </div>
-      <div className={styles.row}>
-        <span className={styles.label}>
-          <T>Extension</T>
-        </span>
-        <Input
-          mono
-          value={t.extension}
-          onChange={(e) => update({ extension: e.target.value.replace(/^\./, "").trim() })}
-          aria-label="Extension"
-          placeholder="none"
-        />
+      <div className={layout.field}>
         <span className={styles.label}>
           <T>File name</T>
         </span>
         <Select
+          className={styles.grow}
           value={t.nameStyle}
           options={NAME_STYLES}
           onChange={(v) => update({ nameStyle: v })}
           aria-label="File name style"
         />
       </div>
-      <div className={styles.row}>
+      <div className={layout.field}>
         <span className={styles.label}>
           <T>Kinds</T>
         </span>
@@ -209,7 +235,8 @@ function FileTemplateEditor({ template: t }: { template: FileTemplate }) {
               type="button"
               role="tab"
               aria-selected={k.id === kind.id}
-              className={clsx(styles.tab, k.id === kind.id && styles.tabActive)}
+              className={clsx(styles.tab, layout.kind, k.id === kind.id && styles.tabActive)}
+              title={k.label}
               onClick={() => setKindIdx(i)}
             >
               {k.label}
@@ -238,7 +265,7 @@ function FileTemplateEditor({ template: t }: { template: FileTemplate }) {
           }}
         />
       </div>
-      <div className={styles.row}>
+      <label className={layout.field}>
         <span className={styles.label}>
           <T>Kind label</T>
         </span>
@@ -248,20 +275,14 @@ function FileTemplateEditor({ template: t }: { template: FileTemplate }) {
           onChange={(e) => updateKind({ label: e.target.value })}
           aria-label="Kind label"
         />
-      </div>
-      <textarea
-        className={styles.body}
-        value={kind.body}
-        spellCheck={false}
-        aria-label={tx("Template body")}
-        onChange={(e) => updateKind({ body: e.target.value })}
-      />
+      </label>
+      <TemplateText label="Template body" value={kind.body} onChange={(body) => updateKind({ body })} />
       <Checkbox
         checked={reformatsOnCreate(t)}
         onChange={(v) => update({ reformat: v })}
         label="Reformat according to style"
       />
-      <div className={styles.hint}>
+      <div className={clsx(styles.hint, layout.notes)}>
         <T>Variables:</T> <code>$NAME$</code> <code>$PACKAGE$</code> <code>$FILE_NAME$</code>{" "}
         <code>$PROJECT_NAME$</code> <code>$USER$</code> <code>$DATE$</code> <code>$TIME$</code> <code>$YEAR$</code>{" "}
         <T>(or</T> <code>{"${NAME}"}</code>…); <code>$END$</code> <T>places the caret. A line with</T>{" "}
@@ -299,11 +320,13 @@ function FragmentList({
           key={f.name}
           role="option"
           aria-selected={f.name === selected}
-          className={clsx(styles.item, f.name === selected && styles.itemSelected)}
+          className={clsx(styles.item, layout.item, f.name === selected && styles.itemSelected)}
           onClick={() => onSelect(f.name)}
         >
-          <Icon name="file" size={14} />
-          <span className={clsx(modified(f.name) && styles.modified)}>{f.name}</span>
+          <Icon name="file" size={14} className={layout.itemIcon} />
+          <span className={clsx(layout.itemName, modified(f.name) && styles.modified)} title={f.name}>
+            {f.name}
+          </span>
         </div>
       ))}
     </div>
@@ -324,40 +347,41 @@ function IncludesTab() {
   };
 
   return (
-    <div className={styles.split}>
-      <div className={styles.side}>
-        <div className={styles.toolbar}>
-          <IconButton icon="plus" size="small" title="Add Include" onClick={add} />
-          <IconButton
-            icon="minus"
-            size="small"
-            title="Remove Include"
-            disabled={!selected}
-            onClick={() => {
-              if (!selected) return;
-              removeInclude(selected.name);
-              setSelectedName(null);
-            }}
-          />
-        </div>
-        <FragmentList
-          label="Includes"
-          items={includes}
-          selected={selectedName}
-          onSelect={setSelectedName}
-          modified={isModifiedInclude}
-        />
-      </div>
-      <div className={styles.editor}>
-        {selected ? (
-          <IncludeEditor key={selected.name} include={selected} onRename={setSelectedName} taken={includes} />
-        ) : (
-          <div className={styles.empty}>
-            <T>Select a template to edit it</T>
+    <TemplateSplit
+      list={
+        <>
+          <div className={styles.toolbar}>
+            <IconButton icon="plus" size="small" title="Add Include" onClick={add} />
+            <IconButton
+              icon="minus"
+              size="small"
+              title="Remove Include"
+              disabled={!selected}
+              onClick={() => {
+                if (!selected) return;
+                removeInclude(selected.name);
+                setSelectedName(null);
+              }}
+            />
           </div>
-        )}
-      </div>
-    </div>
+          <FragmentList
+            label="Includes"
+            items={includes}
+            selected={selectedName}
+            onSelect={setSelectedName}
+            modified={isModifiedInclude}
+          />
+        </>
+      }
+    >
+      {selected ? (
+        <IncludeEditor key={selected.name} include={selected} onRename={setSelectedName} taken={includes} />
+      ) : (
+        <div className={styles.empty}>
+          <T>Select a template to edit it</T>
+        </div>
+      )}
+    </TemplateSplit>
   );
 }
 
@@ -380,7 +404,7 @@ function IncludeEditor({
   };
   return (
     <>
-      <div className={styles.row}>
+      <label className={layout.field}>
         <span className={styles.label}>
           <T>Name</T>
         </span>
@@ -393,15 +417,9 @@ function IncludeEditor({
           onKeyDown={(e) => e.key === "Enter" && commitName()}
           aria-label="Include name"
         />
-      </div>
-      <textarea
-        className={styles.body}
-        value={f.body}
-        spellCheck={false}
-        aria-label={tx("Include body")}
-        onChange={(e) => saveInclude({ ...f, body: e.target.value })}
-      />
-      <div className={styles.hint}>
+      </label>
+      <TemplateText label="Include body" value={f.body} onChange={(body) => saveInclude({ ...f, body })} />
+      <div className={clsx(styles.hint, layout.notes)}>
         <WithCode
           text="File templates insert this with {code}, indented like the directive; a directive line whose include is empty is dropped. The file template variables apply."
           code={`#parse("${f.name}")`}
@@ -424,49 +442,59 @@ function CodeTab() {
   const [selectedName, setSelectedName] = useState<string | null>(code[0]?.name ?? null);
   const selected = code.find((f) => f.name === selectedName) ?? null;
   return (
-    <div className={styles.split}>
-      <div className={styles.side}>
-        <FragmentList
-          label="Code templates"
-          items={code}
-          selected={selectedName}
-          onSelect={setSelectedName}
-          modified={isModifiedCodeTemplate}
-        />
-      </div>
-      <div className={styles.editor}>
-        {selected ? (
-          <>
-            {selected.description && (
-              <div className={styles.hint}>
-                <T>Used by</T> <T>{selected.description}</T>
-              </div>
-            )}
-            <textarea
-              className={styles.body}
-              value={selected.body}
-              spellCheck={false}
-              aria-label={tx("Code template body")}
-              onChange={(e) => saveCodeTemplate(selected.name, e.target.value)}
-            />
+    <TemplateSplit
+      list={
+        <>
+          <FragmentList
+            label="Code templates"
+            items={code}
+            selected={selectedName}
+            onSelect={setSelectedName}
+            modified={isModifiedCodeTemplate}
+          />
+        </>
+      }
+    >
+      {selected ? (
+        <>
+          {selected.description && (
             <div className={styles.hint}>
-              <WithCode text="Inserted where a file template says {code}." code={`#parse("${selected.name}")`} />
+              <T>Used by</T> <T>{selected.description}</T>
             </div>
-            {isModifiedCodeTemplate(selected.name) && (
-              <div className={styles.buttons}>
-                <Button size="small" onClick={() => resetCodeTemplate(selected.name)}>
-                  <T>Restore Default</T>
-                </Button>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className={styles.empty}>
-            <T>Select a template to edit it</T>
+          )}
+          <TemplateText
+            label="Code template body"
+            value={selected.body}
+            onChange={(body) => saveCodeTemplate(selected.name, body)}
+          />
+          <div className={clsx(styles.hint, layout.notes)}>
+            <WithCode text="Inserted where a file template says {code}." code={`#parse("${selected.name}")`} />
           </div>
-        )}
-      </div>
-    </div>
+          {isModifiedCodeTemplate(selected.name) && (
+            <div className={styles.buttons}>
+              <Button size="small" onClick={() => resetCodeTemplate(selected.name)}>
+                <T>Restore Default</T>
+              </Button>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className={styles.empty}>
+          <T>Select a template to edit it</T>
+        </div>
+      )}
+    </TemplateSplit>
+  );
+}
+
+function TemplateText({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className={layout.text}>
+      <span>
+        <T>{label}</T>
+      </span>
+      <textarea className={styles.body} value={value} spellCheck={false} onChange={(e) => onChange(e.target.value)} />
+    </label>
   );
 }
 

@@ -753,6 +753,12 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Highlight directories that contain modified files in the Project tree",
           },
           {
+            kind: "toggle",
+            key: "vcs.diffAsEditorTab",
+            label: "Open diff as editor tab",
+            hint: "When off, diffs you open (changes, history, Compare) show in a separate window.",
+          },
+          {
             kind: "select",
             key: "vcs.confirmation.onPatchCreated",
             label: "When patch is created",

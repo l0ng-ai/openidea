@@ -40,7 +40,8 @@ export async function valueText(
       }
       lines.push(`${pad}${child.name}: ${child.value}`);
       const ref = child.variablesReference;
-      if (ref > 0 && !path.has(ref)) {
+      // A lazy child's reference holds its uncomputed value, not its contents.
+      if (ref > 0 && !child.lazy && !path.has(ref)) {
         path.add(ref);
         await walk(ref, depth + 1);
         path.delete(ref);

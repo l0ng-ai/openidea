@@ -372,6 +372,8 @@ fn materialize_row(
     if let Some((pos, total)) = position {
         commit.log_position = Some(pos);
         commit.log_total = Some(total);
+        let merge_time_ms = row.merge_time_secs as f64 * 1000.0;
+        commit.log_merge_time_ms = (merge_time_ms > commit.commit_time_ms).then_some(merge_time_ms);
     }
     if !summary_only {
         commit.message = index.message(repo, row.id)?;
@@ -714,17 +716,16 @@ fn log_indexed_rows(
             skip -= 1;
             continue;
         }
-        let parents: Vec<ObjectId> = if shallow.contains(&id) {
-            Vec::new()
-        } else if let Some((ps, _)) = visibility.index.nodes.get(&id) {
-            ps.clone()
+        let (parents, commit_time_secs) = if let Some((parents, time)) = visibility.index.nodes.get(&id) {
+            (parents.clone(), *time)
         } else {
             let record = visibility.index.get_with_table(&repo, id, visibility.table)?;
-            record
+            let parents = record
                 .parents
                 .iter()
                 .map(|p| ObjectId::from_hex(p.as_bytes()).map_err(gx))
-                .collect::<IdeResult<Vec<_>>>()?
+                .collect::<IdeResult<Vec<_>>>()?;
+            (parents, (record.commit_time_ms / 1000.0) as i64)
         };
         let shown_parents = if shallow.contains(&id) {
             Vec::new()
@@ -743,6 +744,7 @@ fn log_indexed_rows(
             graph_parents: shown_parents,
             on_current_branch,
             history_path: history_paths.get(&id).cloned(),
+            merge_time_secs: commit_time_secs,
         });
         if out.len() >= limit || stop_id == Some(id) {
             break;
