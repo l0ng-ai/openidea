@@ -24,7 +24,12 @@ function notifyLost(host: string, error?: unknown, takenOver = false) {
     group: "remote",
     level: takenOver ? "warning" : "error",
     title: takenOver ? tx("Another window took over this remote session") : tx`Lost the connection to ${host}`,
-    body: error === undefined ? undefined : errorText(error),
+    body:
+      error !== undefined
+        ? errorText(error)
+        : takenOver
+          ? tx`Your project is still running on ${host}. This window will not reconnect automatically.`
+          : undefined,
     actions: [{ label: tx("Reconnect"), run: () => void reconnectNow() }],
   });
 }
@@ -80,16 +85,19 @@ export function installReconnect(
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): () => void {
   const offEvent = onIdeEvent("remoteConnectionLost", (e) => {
-    if (!useRemote.getState().session) return;
+    const state = useRemote.getState();
+    if (state.session?.host !== e.host || state.takenOver) return;
     const takenOver = e.takenOver === true;
+    ++generation;
     useRemote.setState({ lost: e.host, takenOver });
-    const run = ++generation;
-    if (takenOver) notifyLost(e.host, undefined, true);
-    else void retry(e.host, run, wait);
+    if (!takenOver) void retry(e.host, generation, wait);
   });
-  const offState = useRemote.subscribe((s, prev) => {
-    if (s.lost !== prev.lost) setContext("remoteConnectionLost", s.lost !== null);
-  });
+  const sync = (s: ReturnType<typeof useRemote.getState>, prev?: ReturnType<typeof useRemote.getState>) => {
+    if (s.lost !== prev?.lost) setContext("remoteConnectionLost", s.lost !== null);
+    if (s.lost && s.takenOver && (!prev?.takenOver || s.lost !== prev.lost)) notifyLost(s.lost, undefined, true);
+  };
+  sync(useRemote.getState());
+  const offState = useRemote.subscribe(sync);
   return () => {
     generation++;
     offEvent();

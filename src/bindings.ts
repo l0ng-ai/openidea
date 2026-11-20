@@ -1363,6 +1363,8 @@ export const commands = {
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 } | null>("remote_current"),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -10648,6 +10650,11 @@ export type Remote = {
 	resolvedUrl?: string | null,
 };
 
+/**  Tools › Remote Development. This is a user setting on the remote host. */
+export type RemoteDevelopmentSettings = {
+	idleTimeoutMinutes?: number,
+};
+
 /**  Manage Remotes edits. */
 export type RemoteEdit = { op: "add"; name: string; url: string } | { op: "remove"; name: string } | 
 /**  Renames `name` to `new_name` (when different) and sets its URL. */
@@ -10665,6 +10672,11 @@ export type RemoteEntry = {
 	mtime: number | null,
 	/**  `rwxr-xr-x`. */
 	permissions: string,
+};
+
+/**  Advertised only by a persistent backend with an editable idle timeout. */
+export type RemoteIdlePolicy = {
+	overrideSeconds: number | null,
 };
 
 /**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
@@ -10713,6 +10725,7 @@ export type RemoteProject_Deserialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Deserialize,
@@ -10725,18 +10738,34 @@ export type RemoteProject_Serialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
 };
 
-export type RemoteSession = {
+export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
+
+export type RemoteSession_Deserialize = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSession_Serialize = {
+	target: RemoteTarget,
+	root: string,
+	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
+	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
@@ -11379,7 +11408,7 @@ export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowIn
 
 export type SettingsWindowInit_Deserialize = {
 	launch: Launch_Deserialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Deserialize | null,
 	project: ProjectInfo_Deserialize | null,
 	globalSettings: Settings_Deserialize,
 	updates: boolean,
@@ -11387,7 +11416,7 @@ export type SettingsWindowInit_Deserialize = {
 
 export type SettingsWindowInit_Serialize = {
 	launch: Launch_Serialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Serialize | null,
 	project: ProjectInfo_Serialize | null,
 	globalSettings: Settings_Serialize,
 	updates: boolean,
@@ -11448,6 +11477,7 @@ export type Settings_Deserialize = {
 	spelling?: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh?: SshSettings,
+	remoteDevelopment?: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -11524,6 +11554,7 @@ export type Settings_Serialize = {
 	spelling: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh: SshSettings,
+	remoteDevelopment: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */

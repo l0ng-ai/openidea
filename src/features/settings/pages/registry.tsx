@@ -10,6 +10,7 @@ import { EXECUTION_PAGES } from "./execution";
 import { LANGUAGE_PAGES } from "./languages";
 import { preloadBuiltinPage } from "./lazyPage";
 import { OptionsPage } from "./OptionsPage";
+import { REMOTE_DEVELOPMENT_PAGE } from "./remoteDevelopment";
 import { RUN_TARGET_PAGES } from "./runTargets";
 import { SCOPE_PAGES } from "./scopes";
 import { flattenOptions, specLabels, type PageSpec } from "./spec";
@@ -32,6 +33,7 @@ const BUILTIN_PAGES = [
   ...RUN_TARGET_PAGES,
   ...TOOLS_PAGES,
   ...SSH_PAGES,
+  REMOTE_DEVELOPMENT_PAGE,
   ...LANGUAGE_PAGES,
 ];
 const specs = new Map<string, PageSpec>(BUILTIN_PAGES.map((p) => [p.id, p]));

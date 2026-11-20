@@ -8,7 +8,7 @@
 //! * `openidea-server --daemon <socket_path> <build>` is the process `--attach` starts.
 
 use crate::Host;
-use crate::rpc::{self, Dispatcher, PeerSlot};
+use crate::rpc::{self, Dispatcher, PeerSlot, RemoteIdlePolicy};
 use ide_core::CancellationToken;
 use rustix::fs::{FlockOperation, flock};
 use std::fs::{File, OpenOptions};
@@ -31,7 +31,6 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const EOF_DRAIN: Duration = Duration::from_secs(2);
 const EMPTY_IDLE_EXIT: Duration = Duration::from_secs(30);
-const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(3 * 60 * 60);
 const IDLE_ENV: &str = "OPENIDEA_SERVER_IDLE_TIMEOUT_SECONDS";
 pub type BuildId = [u8; 16];
 const ATTACHED: u8 = b'A';
@@ -340,9 +339,9 @@ pub async fn serve(
     };
 
     let shutdown = CancellationToken::new();
-    let idle_timeout = idle_timeout();
-    let mut check = tokio::time::interval(idle_timeout.min(Duration::from_secs(5)));
-    let mut idle_since = Some(Instant::now());
+    let idle_policy = RemoteIdlePolicy { override_seconds: idle_override() };
+    let mut check = tokio::time::interval(Duration::from_secs(idle_policy.override_seconds.unwrap_or(5).min(5)));
+    let mut idle = None;
     let mut retiring = None;
     let mut active: Option<ide_jsonrpc::Peer> = None;
 
@@ -359,7 +358,7 @@ pub async fn serve(
                 active = None;
                 slot.remove();
                 host.client_disconnected();
-                idle_since = None;
+                idle = None;
             }
             accepted = listener.accept() => {
                 let mut stream = match accepted {
@@ -377,7 +376,7 @@ pub async fn serve(
                     active = None;
                     slot.remove();
                     host.client_disconnected();
-                    idle_since = None;
+                    idle = None;
                 }
                 if shutdown.is_cancelled() {
                     break Ok(());
@@ -407,16 +406,23 @@ pub async fn serve(
                 }
                 let (reader, writer) = stream.into_split();
                 active = Some(rpc::connect_persistent(
-                    host.clone(), dispatcher.clone(), slot.clone(), shutdown.clone(), reader, writer,
+                    host.clone(), dispatcher.clone(), slot.clone(), shutdown.clone(), idle_policy, reader, writer,
                 ));
-                idle_since = None;
+                idle = None;
             }
             _ = check.tick() => {
                 if active.is_some() || has_live_work(&host) {
-                    idle_since = None;
+                    idle = None;
                 } else {
-                    let timeout = if host.projects().is_empty() { idle_timeout.min(EMPTY_IDLE_EXIT) } else { idle_timeout };
-                    if idle_since.get_or_insert_with(Instant::now).elapsed() >= timeout {
+                    if idle.is_none() {
+                        let since = Instant::now();
+                        let timeout = match disconnected_timeout(&host, idle_policy).await {
+                            Ok(timeout) => timeout,
+                            Err(e) => break Err(e),
+                        };
+                        idle = Some((since, timeout));
+                    }
+                    if idle.is_some_and(|(since, timeout)| since.elapsed() >= timeout) {
                         tracing::info!("idle openidea-server daemon exiting");
                         break Ok(());
                     }
@@ -442,14 +448,32 @@ pub async fn serve(
     result
 }
 
-fn idle_timeout() -> Duration {
+fn idle_override() -> Option<u64> {
     if let Some(value) = std::env::var_os(IDLE_ENV) {
         if let Some(seconds) = value.to_str().and_then(|s| s.parse::<u64>().ok()).filter(|&n| n > 0) {
-            return Duration::from_secs(seconds);
+            return Some(seconds);
         }
-        tracing::warn!("{IDLE_ENV} must be a positive number of seconds; using the default");
+        tracing::warn!("{IDLE_ENV} must be a positive number of seconds; using the host setting");
     }
-    DEFAULT_IDLE_EXIT
+    None
+}
+
+async fn disconnected_timeout(host: &Arc<Host>, policy: RemoteIdlePolicy) -> io::Result<Duration> {
+    let override_timeout = policy.override_seconds.map(Duration::from_secs);
+    if host.projects().is_empty() {
+        return Ok(override_timeout.unwrap_or(EMPTY_IDLE_EXIT).min(EMPTY_IDLE_EXIT));
+    }
+    if let Some(timeout) = override_timeout {
+        return Ok(timeout);
+    }
+    // Another project's daemon can edit the same user's settings on this host.
+    let host = host.clone();
+    tokio::task::spawn_blocking(move || {
+        let settings = host.global_settings.layer(ide_workspace::SettingsScope::Global);
+        Duration::from_secs(u64::from(settings.remote_development.idle_timeout_minutes.get()) * 60)
+    })
+    .await
+    .map_err(io::Error::other)
 }
 
 fn has_live_work(host: &Host) -> bool {

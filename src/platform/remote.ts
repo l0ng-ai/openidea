@@ -78,7 +78,7 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
   return value;
 }
 
-function isRemoteHostOnlySetting(key: string): boolean {
+function isMcpServerSetting(key: string): boolean {
   return key === "mcpServer" || key.startsWith("mcpServer.");
 }
 
@@ -86,14 +86,16 @@ function isRemoteHostOnlySetting(key: string): boolean {
  * Where a command of a remote window runs. Local always: opening a project (a
  * local folder; leaving the remote one) and closing it (that drops the
  * connection, not the backend). Client UI settings stay local.
- * Host-specific service settings (`mcpServer.*`) apply to the remote host only;
+ * Host-specific service settings apply to the remote host only;
  * other global tooling settings apply on both sides.
  */
 export function remoteRouting(cmd: string, args: InvokeArgs | undefined, served: ReadonlySet<string>) {
+  const key = (args as { key?: string } | undefined)?.key ?? "";
+  if (cmd === "settings_set" && (key === "remoteDevelopment" || key.startsWith("remoteDevelopment."))) return "remote";
   if (cmd === "system_font_families") return "local";
-  if (cmd === "settings_set" && isClientSetting((args as { key?: string } | undefined)?.key ?? "")) return "local";
+  if (cmd === "settings_set" && isClientSetting(key)) return "local";
   if (!served.has(cmd) || cmd === "open_project" || cmd === "close_project") return "local";
-  if (cmd === "settings_set" && isRemoteHostOnlySetting((args as { key?: string } | undefined)?.key ?? "")) {
+  if (cmd === "settings_set" && isMcpServerSetting(key)) {
     return served.has("mcp_server_status") ? "remote" : "local";
   }
   if (cmd === "settings_set" && (args as { scope?: string } | undefined)?.scope === "global") return "both";
@@ -147,7 +149,8 @@ const route: InvokeRoute = (cmd, args, options) => {
  */
 export function enableRemote(session: RemoteSession) {
   routed = new Set(session.commands);
-  useRemote.setState({ session, lost: null, takenOver: false, reconnecting: false });
+  const takenOver = session.takenOver === true;
+  useRemote.setState({ session, lost: takenOver ? session.host : null, takenOver, reconnecting: false });
   setInvokeRoute(route);
 }
 
@@ -187,7 +190,14 @@ export const useRemoteProgress = create<{ progress: RemoteProgress | null; locat
 
 /** Routes this window to the server `remoteConnect` answered with and shows its project. */
 async function attachRemote(r: RemoteProject, path: string): Promise<void> {
-  enableRemote({ target: r.target, root: r.root, host: r.host, os: r.os, commands: r.commands });
+  enableRemote({
+    target: r.target,
+    root: r.root,
+    host: r.host,
+    os: r.os,
+    commands: r.commands,
+    idlePolicy: r.idlePolicy,
+  });
   if (takeLegacyRemoteTrust(r.target, path, r.host)) {
     const status = await call(commands.projectTrustStatus(r.root));
     if (!status.decided) await call(commands.projectTrustSet(r.root, true, false));

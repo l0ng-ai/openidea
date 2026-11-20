@@ -26,7 +26,7 @@ vi.mock("@/workbench/contributions", async (orig) => ({
 vi.mock("@/workbench/messages", () => ({ confirm }));
 
 import { getContext } from "@/platform/context";
-import { useRemote } from "@/platform/remote";
+import { enableRemote, useRemote } from "@/platform/remote";
 import { installReconnect, reconnectNow, RETRY_DELAYS_MS } from "./reconnect";
 
 const session: RemoteSession = {
@@ -70,16 +70,35 @@ it("marks the window lost and reconnects in the background", async () => {
 
 it("reports a takeover without automatically disconnecting the other window in return", async () => {
   lose(true);
+  lose(); // A subsequent transport-loss event must not turn a takeover into a retry.
   await settle();
   expect(waits).toEqual([]);
   expect(reconnectRemote).not.toHaveBeenCalled();
   expect(notify).toHaveBeenCalledWith(
-    expect.objectContaining({ level: "warning", title: "Another window took over this remote session" }),
+    expect.objectContaining({
+      level: "warning",
+      title: "Another window took over this remote session",
+      body: "Your project is still running on box. This window will not reconnect automatically.",
+    }),
   );
   confirm.mockResolvedValueOnce(false);
   await reconnectNow();
   expect(confirm).toHaveBeenCalledOnce();
   expect(reconnectRemote).not.toHaveBeenCalled();
+});
+
+it("keeps a restored, displaced window disconnected until an explicit, confirmed reconnect", async () => {
+  enableRemote({ ...session, takenOver: true });
+  expect(getContext().remoteConnectionLost).toBe(true);
+  expect(notify).toHaveBeenCalledOnce();
+  lose();
+  await settle();
+  expect(waits).toEqual([]);
+  expect(reconnectRemote).not.toHaveBeenCalled();
+  reconnectRemote.mockResolvedValueOnce();
+  await reconnectNow();
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(reconnectRemote).toHaveBeenCalledOnce();
 });
 
 it("offers Reconnect once every attempt failed", async () => {
