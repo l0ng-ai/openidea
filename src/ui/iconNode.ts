@@ -2,11 +2,26 @@
 import { iconMarkupOrFallback, type IconName } from "./icons";
 import spinnerStyles from "./Spinner.module.css";
 
+/** Parsed markup, cloned into each node: widgets rebuild the same few icons on every render. */
+const parsed = new Map<string, HTMLElement>();
+
 export function iconNode(name: IconName | (string & {}), size = 16, className?: string): HTMLElement {
   const span = document.createElement("span");
   span.className = className ? `cm-openidea-icon ${className}` : "cm-openidea-icon";
   span.setAttribute("aria-hidden", "true");
-  span.innerHTML = iconMarkupOrFallback(name, size);
+  const markup = iconMarkupOrFallback(name, size);
+  // Markup with ids is unique to this node (ids are never shared): nothing to reuse.
+  if (markup.includes('id="')) {
+    span.innerHTML = markup;
+    return span;
+  }
+  let source = parsed.get(markup);
+  if (!source) {
+    source = document.createElement("span");
+    source.innerHTML = markup;
+    parsed.set(markup, source);
+  }
+  span.append(...Array.from(source.childNodes, (n) => n.cloneNode(true)));
   return span;
 }
 

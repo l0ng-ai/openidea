@@ -37,7 +37,7 @@
   flex: none;
   align-items: center;
 }
-.stack > * + * {
+.stack > :where(:not(:first-child)) {
   margin-left: calc(var(--overlap) * -1);
 }
 .stack > .ringed + .ringed {
