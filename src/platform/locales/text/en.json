@@ -2265,6 +2265,7 @@
   "Finished": "Finished",
   "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.": "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.",
   "Generate Commit Message with Agent": "Generate Commit Message with Agent",
+  "Show the Generate Commit Message with Agent button": "Show the Generate Commit Message with Agent button",
   "Has the coding agent you work with review the changes about to be committed and write the commit message.": "Has the coding agent you work with review the changes about to be committed and write the commit message.",
   "No changes to describe": "No changes to describe",
   "Include changes in the commit first.": "Include changes in the commit first.",
@@ -2632,6 +2633,7 @@
   "Hot reload on save failed: {0}": "Hot reload on save failed: {0}",
   "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?": "Projects can be opened in a new window, replace the current project, be attached to the already opened projects, or open as a new tab of this window.\nHow would you like to open \"{name}\"?",
   "New Tab": "New Tab",
+  "New tab in current window": "New tab in current window",
   "Show Only Widgets": "Show Only Widgets",
   "Update failed": "Update failed",
   "Updating branches": "Updating branches",
@@ -2732,5 +2734,11 @@
   "Change File Encoding": "Change File Encoding",
   "Convert": "Convert",
   "Use {label} for this file?": "Use {label} for this file?",
-  "Reload reads the file again. Convert keeps the current text and changes its encoding on save.": "Reload reads the file again. Convert keeps the current text and changes its encoding on save."
+  "Reload reads the file again. Convert keeps the current text and changes its encoding on save.": "Reload reads the file again. Convert keeps the current text and changes its encoding on save.",
+  "Managed version {version} in {location}": "Managed version {version} in {location}",
+  "Managed in {location}": "Managed in {location}",
+  "{name} changed on disk": "{name} changed on disk",
+  "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.": "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
+  "Load Changes from Disk": "Load Changes from Disk",
+  "Keep Editor Changes": "Keep Editor Changes"
 }

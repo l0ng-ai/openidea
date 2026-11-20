@@ -380,25 +380,57 @@ fn a_root_build_disables_the_nested_scan() {
 }
 
 #[test]
-fn spring_boot_applications_need_the_plugin_and_a_main() {
+fn spring_boot_applications_need_spring_boot_and_a_main() {
     let main =
         "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
-    // A library using Spring Boot without the plugin, a configuration class without `main`,
-    // the annotation in a comment, a parent POM.
+    // A module without Spring Boot in its build, a configuration class without `main`, the
+    // annotation in a comment, a parent POM.
     let dir = project(&[
-        ("lib/pom.xml", "<project><dependencies>spring-boot-starter</dependencies></project>"),
-        ("lib/src/main/java/demo/App.java", main),
+        ("plain/pom.xml", "<project><dependencies>commons-lang3</dependencies></project>"),
+        ("plain/src/main/java/demo/App.java", main),
         ("svc/pom.xml", BOOT_POM),
         ("svc/src/main/java/demo/Config.java", "package demo;\n@SpringBootApplication\npublic class Config {}\n"),
         (
             "svc/src/main/java/demo/Old.java",
             "package demo;\n// @SpringBootApplication\nclass Old { public static void main(String[] a) {} }\n",
         ),
-        ("gr/build.gradle", "dependencies { implementation 'org.springframework.boot:spring-boot-starter' }\n"),
+        ("gr/build.gradle", "dependencies { implementation 'com.google.guava:guava:33.0.0-jre' }\n"),
         ("gr/src/main/java/demo/App.java", main),
     ]);
     let c = detect(dir.path());
     assert!(!c.iter().any(|c| c.kind == "spring-boot"), "{:?}", ids(&c));
+}
+
+/// Spring Boot on the classpath is enough, as for IntelliJ IDEA: a module depending on a
+/// starter (directly or through its parent POM) without the packaging plugin, and Gradle's
+/// dependency on `org.springframework.boot:…`.
+#[test]
+fn spring_boot_applications_without_the_plugin() {
+    let main =
+        "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
+    let dir = project(&[
+        (
+            "lib/pom.xml",
+            "<project><dependencies><dependency><groupId>org.springframework.boot</groupId>\
+                         <artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>",
+        ),
+        ("lib/src/main/java/demo/App.java", main),
+        ("gr/build.gradle", "dependencies { implementation 'org.springframework.boot:spring-boot-starter' }\n"),
+        ("gr/src/main/java/demo/App.java", main),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(find(&c, "application:lib:demo.App").kind, "spring-boot");
+    assert_eq!(find(&c, "application:gr:demo.App").kind, "spring-boot");
+
+    let parent = "<project><packaging>pom</packaging><modules><module>job</module></modules>\
+                  <parent><groupId>org.springframework.boot</groupId>\
+                  <artifactId>spring-boot-starter-parent</artifactId></parent></project>";
+    let dir = project(&[
+        ("pom.xml", parent),
+        ("job/pom.xml", "<project><artifactId>job</artifactId></project>"),
+        ("job/src/main/java/demo/App.java", main),
+    ]);
+    assert_eq!(find(&detect(dir.path()), "application:job:demo.App").kind, "spring-boot");
 }
 
 #[test]
