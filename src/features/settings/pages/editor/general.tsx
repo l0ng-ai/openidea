@@ -8,7 +8,7 @@
 import { useEffect, useId, useState } from "react";
 import clsx from "clsx";
 import { commands, isTauri } from "@/platform/ipc";
-import { Checkbox, Icon, type IconName } from "@/ui";
+import { Checkbox, Icon, Radio, type IconName } from "@/ui";
 import { SearchLabel, Select } from "../../components/Form";
 import { useLabelMatch, useSearchQuery, useSetting } from "../../components/context";
 import { labelMatches } from "../../model/pages";
@@ -370,6 +370,46 @@ const BREADCRUMBS = editorPage({
   ],
 });
 
+const COMPLETION_MATCH_CASE_LABEL = "Match case:";
+const COMPLETION_CASE_OPTIONS = [
+  { value: "first", label: "First letter only" },
+  { value: "all", label: "All letters" },
+] as const;
+
+function CompletionMatchCase() {
+  const [matchCase, setMatchCase] = useSetting<boolean>(`${P}.completion.matchCase`);
+  const [caseSensitivity, setCaseSensitivity] = useSetting<string>(`${P}.completion.caseSensitivity`);
+  const selected = caseSensitivity === "all" ? "all" : "first";
+  const name = useId();
+  const matched = useLabelMatch(COMPLETION_MATCH_CASE_LABEL);
+
+  return (
+    <div className={clsx(styles.check, matched && styles.matched)} data-search-match={matched || undefined}>
+      <Checkbox
+        checked={!!matchCase}
+        onChange={setMatchCase}
+        label={<SearchLabel text={COMPLETION_MATCH_CASE_LABEL} />}
+      />
+      <span
+        className={clsx(styles.inline, styles.inlineChoices)}
+        role="radiogroup"
+        aria-label={tx(COMPLETION_MATCH_CASE_LABEL)}
+      >
+        {COMPLETION_CASE_OPTIONS.map((option) => (
+          <Radio
+            key={option.value}
+            name={name}
+            checked={option.value === selected}
+            onChange={() => setCaseSensitivity(option.value)}
+            disabled={!matchCase}
+            label={<SearchLabel text={option.label} />}
+          />
+        ))}
+      </span>
+    </div>
+  );
+}
+
 const COMPLETION = editorPage({
   id: "editor.general.codeCompletion",
   title: "Code Completion",
@@ -379,17 +419,10 @@ const COMPLETION = editorPage({
     {
       items: [
         {
-          t: "check",
-          key: `${P}.completion.matchCase`,
-          label: "Match case:",
-          inline: {
-            kind: "select",
-            key: `${P}.completion.caseSensitivity`,
-            options: [
-              { value: "first", label: "First letter only" },
-              { value: "all", label: "All letters" },
-            ],
-          },
+          t: "custom",
+          label: COMPLETION_MATCH_CASE_LABEL,
+          keywords: COMPLETION_CASE_OPTIONS.map((option) => option.label),
+          component: CompletionMatchCase,
         },
         {
           t: "check",

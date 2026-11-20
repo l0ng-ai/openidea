@@ -34,6 +34,12 @@
   align-items: center;
   gap: var(--space-1-5);
 }
+.inlineChoices {
+  flex-wrap: wrap;
+  min-height: var(--h-field);
+  max-width: 100%;
+  gap: var(--space-1) var(--space-4);
+}
 .inlineLabel::after {
   content: ":";
 }
