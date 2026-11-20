@@ -25,7 +25,7 @@ impl LspManager {
     /// Whether jdtls serves the Java files of `path`. Without it, launches build with the
     /// build tool and take the classpath from [`Self::java_server_classpath`] or the build model.
     pub fn java_served_by_jdtls(&self, path: &Path) -> bool {
-        self.servers_for(&LanguageId::new("java"), path).iter().any(|s| s.name == JDTLS)
+        self.servers_for(&LanguageId::new("java"), path).iter().any(|s| s.name == JDTLS && !s.gave_up())
     }
 
     /// The java-analyzer executable among the Java servers of `path`, whatever the server is
@@ -107,6 +107,27 @@ fn is_java_analyzer(binary: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::Conn;
+    use ide_core::event::ServerStatus;
+    use ide_language::LanguageRegistry;
+    use std::sync::Arc;
+
+    #[test]
+    fn missing_jdtls_leaves_java_analyzer_to_serve_the_module() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let manager =
+            LspManager::new(root.to_path_buf(), Arc::new(LanguageRegistry::load(None).unwrap()), Arc::new(|_| {}));
+        assert!(manager.java_served_by_jdtls(root));
+        assert!(manager.java_analyzer_binary(root).is_none());
+
+        let jdtls = manager.servers_for(&LanguageId::new("java"), root).into_iter().find(|s| s.name == JDTLS).unwrap();
+        let generation = jdtls.begin_start().unwrap();
+        assert!(jdtls.fail_start(generation, Conn::Missing, manager.sink(), ServerStatus::Missing, None));
+
+        assert!(!manager.java_served_by_jdtls(root));
+        assert_eq!(manager.java_analyzer_binary(root).as_deref(), Some(Path::new("java-analyzer")));
+    }
 
     #[test]
     fn recognises_java_analyzer_by_its_executable() {
