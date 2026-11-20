@@ -2,10 +2,11 @@
 import { useMemo, useState } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
+import { useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { EmptyState, Icon, IconButton, Tabs, Tree, fileIconName, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
-import { coverageTree, formatPercent, percent, sortTree, type CoverageNode, type SortKey } from "./model";
+import { coverageTree, formatPercent, sortTree, type CoverageNode, type SortKey } from "./model";
 import { activeSuite, closeSuite, selectSuite, setCoverageVisible, useCoverage } from "./store";
 import styles from "./Coverage.module.css";
 
@@ -49,16 +50,13 @@ export function CoverageHeaderActions() {
   );
 }
 
-function Bar({ covered, total }: { covered: number; total: number }) {
-  const p = percent(covered, total);
+function Metric({ covered, total }: { covered: number; total: number }) {
+  const value = formatPercent(covered, total);
+  const [percentage, count] = value.split(" ", 2);
   return (
-    <span className={styles.cell}>
-      {p !== null && (
-        <span className={styles.bar} aria-hidden="true">
-          <span className={styles.barFill} style={{ width: `${p}%` }} />
-        </span>
-      )}
-      <span className={styles.value}>{formatPercent(covered, total)}</span>
+    <span className={styles.value} title={value}>
+      {percentage}
+      {count && <span className={styles.count}> {count}</span>}
     </span>
   );
 }
@@ -70,6 +68,7 @@ const COLUMNS: Array<{ key: SortKey; label: string }> = [
 ];
 
 export function CoverageView() {
+  const tx = useTx();
   const suite = useCoverage((s) => activeSuite(s));
   const visible = useCoverage((s) => s.visible);
   const root = useProject((s) => s.project?.root ?? "");
@@ -108,13 +107,13 @@ export function CoverageView() {
     setSort((s) => (s.key === key ? { key, ascending: !s.ascending } : { key, ascending: key === "name" }));
 
   return (
-    <div className={styles.view}>
+    <div className={clsx(styles.view, !branches && styles.noBranches)}>
       {!visible && (
         <div className={styles.banner}>
           <T>Coverage is hidden in editors and the project view.</T>
         </div>
       )}
-      <div className={clsx(styles.header, !branches && styles.noBranches)} role="row">
+      <div className={styles.header} role="row">
         {columns.map((c) => (
           <button
             key={c.key}
@@ -122,9 +121,10 @@ export function CoverageView() {
             role="columnheader"
             aria-sort={sort.key === c.key ? (sort.ascending ? "ascending" : "descending") : "none"}
             className={styles.headerCell}
+            title={tx(c.label)}
             onClick={() => toggleSort(c.key)}
           >
-            {c.label}
+            <span className={styles.label}>{tx(c.label)}</span>
             {sort.key === c.key && <Icon name={sort.ascending ? "chevron-up" : "chevron-down"} size={12} />}
           </button>
         ))}
@@ -132,6 +132,8 @@ export function CoverageView() {
       <Tree<CoverageNode>
         aria-label="Coverage"
         className={styles.tree}
+        indent={12}
+        maxRowInset="var(--coverage-max-row-inset)"
         roots={roots}
         getKey={(n) => n.path}
         getLabel={(n) => n.name}
@@ -143,13 +145,15 @@ export function CoverageView() {
           if (!n.dir) void editorService().openFile(n.path);
         }}
         renderNode={(n) => (
-          <span className={clsx(styles.row, !branches && styles.noBranches)}>
+          <span className={styles.row}>
             <span className={styles.name}>
               <Icon name={n.dir ? "folder" : fileIconName(n.name)} size={16} className={styles.icon} />
-              <span className={styles.label}>{n.name}</span>
+              <span className={styles.label} title={n.name}>
+                {n.name}
+              </span>
             </span>
-            <Bar covered={n.linesCovered} total={n.linesTotal} />
-            {branches && <Bar covered={n.branchesCovered} total={n.branchesTotal} />}
+            <Metric covered={n.linesCovered} total={n.linesTotal} />
+            {branches && <Metric covered={n.branchesCovered} total={n.branchesTotal} />}
           </span>
         )}
         empty={<EmptyState title="The report covers no files" />}

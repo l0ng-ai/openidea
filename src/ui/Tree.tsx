@@ -128,6 +128,8 @@ export interface TreeProps<T> {
   speedSearchField?: boolean;
   rowHeight?: number;
   indent?: number;
+  /** CSS length limiting the leading inset of deeply nested rows. */
+  maxRowInset?: string;
   className?: string;
   rowClassName?: (node: T) => string | undefined;
   /** CSS colour the row background is tinted with (File Colors). */
@@ -746,7 +748,10 @@ export function Tree<T>(props: TreeProps<T>) {
             // Settings › Appearance › "Use smaller indents in trees" sets `--tree-indent`
             // on the root; reading it here applies the setting to every tree at once,
             // instantly, and keeps chevrons and level alignment consistent with it.
-            const pad = (extra = 0) => `calc(${4 + extra}px + ${row.depth} * var(--tree-indent, ${indent}px))`;
+            const pad = (extra = 0) => {
+              const offset = `calc(${4 + extra}px + ${row.depth} * var(--tree-indent, ${indent}px))`;
+              return props.maxRowInset ? `min(${offset}, ${props.maxRowInset})` : offset;
+            };
             const style = { transform: `translateY(${v.start}px)`, height: v.size, paddingLeft: pad() };
             if (row.loading) {
               return (
