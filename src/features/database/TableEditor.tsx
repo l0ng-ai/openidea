@@ -48,6 +48,7 @@ interface TableViewState {
   sort: DbSortKey[];
   filterText: string;
   filter: string;
+  horizontalScrollLeft: number;
 }
 
 const MAX_VIEW_STATES = 100;
@@ -72,9 +73,10 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const [sort, setSort] = useState<DbSortKey[]>(initial?.sort ?? []);
   const [filterText, setFilterText] = useState(initial?.filterText ?? "");
   const [filter, setFilter] = useState(initial?.filter ?? "");
+  const [horizontalScrollLeft, setHorizontalScrollLeft] = useState(initial?.horizontalScrollLeft ?? 0);
   useEffect(
-    () => rememberViewState(input.key, { offset, limit, sort, filterText, filter }),
-    [input.key, offset, limit, sort, filterText, filter],
+    () => rememberViewState(input.key, { offset, limit, sort, filterText, filter, horizontalScrollLeft }),
+    [input.key, offset, limit, sort, filterText, filter, horizontalScrollLeft],
   );
   const [nonce, setNonce] = useState(0);
   const [edits, setEdits] = useState<PendingEdits>(emptyEdits);
@@ -432,6 +434,8 @@ export function TableEditor({ input }: { input: EditorInput }) {
             driver={source?.driver}
             sort={sort}
             onSort={onSort}
+            horizontalScrollLeft={horizontalScrollLeft}
+            onHorizontalScroll={setHorizontalScrollLeft}
             pager={
               <Toolbar className={styles.resultPager} aria-label="Table pages">
                 {!singlePage && (

@@ -98,6 +98,10 @@ export interface GridProps {
   onFind?: () => void;
   /** Go to Column: a new object selects that column's cell in the current row, scrolls to it and focuses the grid. */
   revealColumn?: { col: number } | null;
+  /** Restored horizontal scroll offset when a caller keeps view state across mounts. */
+  horizontalScrollLeft?: number;
+  /** Reports horizontal scroll changes to a caller that keeps view state across mounts. */
+  onHorizontalScroll?: (left: number) => void;
   "aria-label"?: string;
 }
 
@@ -254,6 +258,11 @@ export function Grid(props: GridProps) {
   }, [revealColumn]);
   const totalWidth = useMemo(() => numberWidth + widths.reduce((a, b) => a + b, 0), [numberWidth, widths]);
   const template = `${numberWidth}px ${widths.map((w) => `${w}px`).join(" ")}`;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || props.horizontalScrollLeft === undefined) return;
+    if (Math.abs(el.scrollLeft - props.horizontalScrollLeft) > 1) el.scrollLeft = props.horizontalScrollLeft;
+  }, [props.horizontalScrollLeft, totalWidth]);
 
   const selected = (r: number, c: number) => {
     if (!sel) return false;
@@ -605,6 +614,7 @@ export function Grid(props: GridProps) {
         pointerFocus.current = true;
         setTimeout(() => (pointerFocus.current = false));
       }}
+      onScroll={(e) => props.onHorizontalScroll?.(e.currentTarget.scrollLeft)}
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
