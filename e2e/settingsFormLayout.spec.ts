@@ -65,6 +65,26 @@ for (const locale of ["en", "zh"]) {
   });
 }
 
+test("keeps Open project in options within narrow System Settings", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await expect(dialog).toBeVisible();
+  await selectPage(page, "general");
+  const group = dialog.getByRole("radiogroup", { name: "Open project in", exact: true });
+  const longest = group.getByRole("radio", { name: "New tab in current window", exact: true });
+  await expect(longest).toBeVisible();
+  await page.setViewportSize({ width: 520, height: 760 });
+  const overflow = await longest.evaluate(async (radio) => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const label = radio.closest("label")!;
+    const group = radio.closest('[role="radiogroup"]')!;
+    const text = document.createRange();
+    text.selectNodeContents(label);
+    return text.getBoundingClientRect().right - group.getBoundingClientRect().right;
+  });
+  expect(overflow).toBeLessThanOrEqual(1);
+});
+
 test("settings sidebar resizes with mouse and keyboard and remembers its width", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
