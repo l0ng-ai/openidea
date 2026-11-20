@@ -10,6 +10,7 @@
 mod acp;
 mod async_questions;
 mod catalogs;
+mod cli_update;
 mod config;
 mod conversation;
 mod elicitation;
@@ -27,6 +28,7 @@ mod timeline;
 mod worktree;
 
 pub use catalogs::AgentCatalogs;
+pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
 

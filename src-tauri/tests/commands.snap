@@ -6,6 +6,8 @@ agent_archive                                always             project_host bin
 agent_base_text                              trusted            project_host bindings async
 agent_cancel                                 always             project_host bindings sync
 agent_changes                                trusted            project_host bindings async
+agent_cli_update                             trusted            project_host bindings async
+agent_cli_update_check                       trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
 agent_context_usage                          trusted            project_host bindings async
 agent_create                                 trusted            project_host bindings async
