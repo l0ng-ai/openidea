@@ -897,7 +897,7 @@ export async function revealOpened(): Promise<void> {
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
 const preparingConsoles = new Map<string, RequestId>();
 const stopResultDelivery = new Map<RequestId, () => void>();
-const stoppedResultDelivery = new Error("Stopped waiting for SQL results");
+const incompleteResultDelivery = Symbol("incomplete SQL result delivery");
 const streamingResultTabs = new Set<number>();
 
 /** The schema model of `id` for completion (cached; one load at a time). */
@@ -1142,6 +1142,7 @@ async function run(
     emit: (event: StatementProgress) => void;
     current: () => boolean;
     onStatementCancelled: () => void;
+    onIncompleteDelivery: () => void;
   },
 ): Promise<DbStatementOutcome[]> {
   const current = databaseRequest(id);
@@ -1165,14 +1166,11 @@ async function run(
     let acknowledged = false;
     let stopRequested = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    let finish!: (error: Error | null) => void;
-    const done = new Promise<Error | null>((resolve) => (finish = resolve));
+    let finish!: (result: Error | typeof incompleteResultDelivery | null) => void;
+    const done = new Promise<Error | typeof incompleteResultDelivery | null>((resolve) => (finish = resolve));
     const waitForDelivery = () => {
       clearTimeout(timeout);
-      timeout = setTimeout(
-        () => finish(new IpcError({ kind: "timedOut", message: tx("SQL results did not finish arriving") })),
-        RESULT_DELIVERY_TIMEOUT_MS,
-      );
+      timeout = setTimeout(() => finish(incompleteResultDelivery), RESULT_DELIVERY_TIMEOUT_MS);
     };
     const channel = new Channel<ExecutionEvent>();
     channel.onmessage = (event) => {
@@ -1189,16 +1187,16 @@ async function run(
     };
     stopResultDelivery.set(request, () => {
       stopRequested = true;
-      if (acknowledged) finish(stoppedResultDelivery);
+      if (acknowledged) finish(incompleteResultDelivery);
     });
     try {
       // Large channel frames can arrive after the reply. Bound only this delivery wait.
       await call(commands.dbExecuteStream(request, id, statements, maxRows, schema || null, channel));
       acknowledged = true;
-      if (stopRequested) finish(stoppedResultDelivery);
-      else waitForDelivery();
-      const error = await done;
-      if (error) throw error;
+      waitForDelivery();
+      const result = await done;
+      if (result === incompleteResultDelivery) progress.onIncompleteDelivery();
+      else if (result) throw result;
       return outcomes;
     } catch (error) {
       // An older remote dispatcher rejects the missing command before it executes any SQL.
@@ -1209,8 +1207,10 @@ async function run(
         error instanceof IpcError &&
         error.kind === "protocol" &&
         error.message === "command db_execute_stream is not available remotely"
-      )
+      ) {
+        if (stopRequested) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
         return execute();
+      }
       throw error;
     } finally {
       clearTimeout(timeout);
@@ -1394,6 +1394,7 @@ export async function executeConsole(
   let selectOutput = false;
   let schemaChanged = false;
   let statementCancelled = false;
+  let deliveryIncomplete = false;
   try {
     const statements = await consoleStatements(id, text, from, to);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
@@ -1465,18 +1466,27 @@ export async function executeConsole(
         onStatementCancelled: () => {
           statementCancelled = true;
         },
+        onIncompleteDelivery: () => {
+          deliveryIncomplete = true;
+        },
       });
     } finally {
       if (frame !== undefined) cancelAnimationFrame(frame);
       publish();
     }
     if (!ownsRun()) return [];
-    finished = true;
+    if (deliveryIncomplete) {
+      const summary = tx("SQL result delivery was incomplete. The final execution status is unknown.");
+      log("info", summary);
+      notifications().notify({ level: "warning", title: summary, key: "db-execute" });
+      if (useDatabase.getState().manualCommit.has(id)) setPending(id, true);
+    }
+    finished = !deliveryIncomplete;
     selectOutput = !inline && (!resultIds.size || outcomes.some((o) => o.error));
     return outcomes;
   } catch (e) {
     if (!current() || (!ownsRun() && preparingConsoles.get(path) !== request)) return [];
-    if (!isCancelled(e) && e !== stoppedResultDelivery) {
+    if (!isCancelled(e)) {
       log("error", message(e));
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
     } else {

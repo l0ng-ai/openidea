@@ -846,11 +846,17 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       await vi.advanceTimersByTimeAsync(exit === "stop" ? 0 : 60_000);
       expect(useDatabase.getState().running).toEqual({});
       expect(useDatabase.getState().executions).toEqual({});
-      expect(await pending).toEqual([]);
+      expect(await pending).toHaveLength(3);
       expect(ids()).toEqual([pinned, completed]);
       expect(affected()).toHaveLength(1);
       expect(useDatabase.getState().pendingTx.has("pg")).toBe(true);
       expect(backend.schemas).toHaveBeenCalledExactlyOnceWith("pg");
+      const output = useDatabase.getState().output;
+      expect(output.map((line) => line.text)).toContain(
+        "SQL result delivery was incomplete. The final execution status is unknown.",
+      );
+      expect(output.map((line) => line.text)).not.toContain("Cancelled");
+      expect(output.some((line) => line.kind === "error")).toBe(false);
     } finally {
       acknowledge?.();
       sendDone?.();
@@ -858,6 +864,57 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       vi.useRealTimers();
     }
   });
+
+  it.each([true, false])(
+    "waits for the real terminal event after Stop before the reply (cancelled: %s)",
+    async (cancelled) => {
+      useDatabase.setState({ manualCommit: new Set(["pg"]) });
+      let acknowledge!: () => void;
+      let sendDone!: () => void;
+      backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+        channel.onmessage({ type: "started", index: 0 });
+        channel.onmessage({
+          type: "completed",
+          index: 0,
+          outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
+        });
+        channel.onmessage({ type: "started", index: 1 });
+        sendDone = () => {
+          if (!cancelled)
+            channel.onmessage({
+              type: "completed",
+              index: 1,
+              outcome: { statement: statements[1]!, result: result([{ name: "v" }], [["actual"]]), error: null },
+            });
+          channel.onmessage({
+            type: "done",
+            error: cancelled ? { kind: "cancelled", message: "Cancelled", data: null } : null,
+          });
+        };
+        await new Promise<void>((resolve) => (acknowledge = resolve));
+        return { status: "ok", data: null };
+      });
+      const pending = runIn("a.sql", "UPDATE t SET n = 3; SELECT n FROM t");
+      try {
+        await vi.waitFor(() => expect(acknowledge).toBeTypeOf("function"));
+        cancelConsole("a.sql");
+        acknowledge();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(useDatabase.getState().running["a.sql"]).toBeDefined();
+        sendDone();
+        await pending;
+        const output = useDatabase.getState().output.map((line) => line.text);
+        expect(output.includes("Cancelled")).toBe(cancelled);
+        expect(output.includes("Transaction rolled back")).toBe(cancelled);
+        expect(useDatabase.getState().pendingTx.has("pg")).toBe(!cancelled);
+        expect(strip()).toEqual(cancelled ? [] : ["a.sql:SELECT n FROM t"]);
+      } finally {
+        acknowledge?.();
+        sendDone?.();
+        await pending;
+      }
+    },
+  );
 
   it("keeps the grids from a fast DDL batch when refreshing schema metadata", async () => {
     useDatabase.setState({ sources: [{ id: "pg", name: "Local", driver: "sqlite" }] });
@@ -996,54 +1053,76 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     }
   });
 
-  it.each([false, true])("retries a missing remote command only before progress (started: %s)", async (started) => {
-    const { commands } = await vi.importActual<typeof import("@/platform/ipc")>("@/platform/ipc");
-    const invoke = vi.fn(
-      async (
-        name: string,
-        args: { cmd: string; args: string; onChannel: { onmessage: (frame: ChannelFrame) => void } },
-      ) => {
-        expect(name).toBe("remote_invoke");
-        const { statements, onProgress } = JSON.parse(args.args) as {
-          statements: SqlStatement[];
-          onProgress?: { $channel: number };
-        };
-        if (args.cmd === "db_execute_stream") {
-          if (started)
-            args.onChannel.onmessage({ id: onProgress!.$channel, data: JSON.stringify({ type: "started", index: 0 }) });
-          throw { kind: "protocol", message: "command db_execute_stream is not available remotely", data: null };
-        }
-        expect(args.cmd).toBe("db_execute");
-        return JSON.stringify(
-          statements.map((statement) => ({
-            statement,
-            result: result([{ name: "v" }], [[statement.text]]),
-            error: null,
-          })),
-        );
-      },
-    );
-    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
-    enableRemote({
-      target: { kind: "wsl", distro: "Ubuntu" },
-      root: "/remote",
-      host: "Ubuntu",
-      os: "linux",
-      commands: ["db_execute_stream", "db_execute"],
-    });
-    backend.stream.mockImplementationOnce(commands.dbExecuteStream);
-    if (!started) backend.execute.mockImplementationOnce(commands.dbExecute);
-    try {
-      await runIn("a.sql", "SELECT 1; SELECT 2");
-      expect(invoke.mock.calls.map(([_name, args]) => args.cmd)).toEqual(
-        started ? ["db_execute_stream"] : ["db_execute_stream", "db_execute"],
+  it.each([
+    { started: false, stopped: false },
+    { started: true, stopped: false },
+    { started: false, stopped: true },
+  ])(
+    "uses the legacy remote command only before progress or Stop (started: $started, stopped: $stopped)",
+    async ({ started, stopped }) => {
+      const { commands } = await vi.importActual<typeof import("@/platform/ipc")>("@/platform/ipc");
+      let failStream!: () => void;
+      const invoke = vi.fn(
+        async (
+          name: string,
+          args: { cmd: string; args: string; onChannel: { onmessage: (frame: ChannelFrame) => void } },
+        ) => {
+          expect(name).toBe("remote_invoke");
+          const { statements, onProgress } = JSON.parse(args.args) as {
+            statements: SqlStatement[];
+            onProgress?: { $channel: number };
+          };
+          if (args.cmd === "db_execute_stream") {
+            if (started)
+              args.onChannel.onmessage({
+                id: onProgress!.$channel,
+                data: JSON.stringify({ type: "started", index: 0 }),
+              });
+            if (stopped) await new Promise<void>((resolve) => (failStream = resolve));
+            throw { kind: "protocol", message: "command db_execute_stream is not available remotely", data: null };
+          }
+          expect(args.cmd).toBe("db_execute");
+          return JSON.stringify(
+            statements.map((statement) => ({
+              statement,
+              result: result([{ name: "v" }], [[statement.text]]),
+              error: null,
+            })),
+          );
+        },
       );
-      expect(strip()).toEqual(started ? [] : ["a.sql:SELECT 1", "a.sql:SELECT 2"]);
-    } finally {
-      disableRemote();
-      vi.unstubAllGlobals();
-    }
-  });
+      vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+      enableRemote({
+        target: { kind: "wsl", distro: "Ubuntu" },
+        root: "/remote",
+        host: "Ubuntu",
+        os: "linux",
+        commands: ["db_execute_stream", "db_execute"],
+      });
+      backend.stream.mockImplementationOnce(commands.dbExecuteStream);
+      backend.execute.mockImplementation(commands.dbExecute);
+      const pending = runIn("a.sql", "SELECT 1; SELECT 2");
+      try {
+        if (stopped) {
+          await vi.waitFor(() => expect(failStream).toBeTypeOf("function"));
+          cancelConsole("a.sql");
+          failStream();
+        }
+        await pending;
+        const legacy = !started && !stopped;
+        expect(invoke.mock.calls.map(([_name, args]) => args.cmd)).toEqual(
+          legacy ? ["db_execute_stream", "db_execute"] : ["db_execute_stream"],
+        );
+        expect(strip()).toEqual(legacy ? ["a.sql:SELECT 1", "a.sql:SELECT 2"] : []);
+        if (stopped) expect(useDatabase.getState().output.map((line) => line.text)).toContain("Cancelled");
+      } finally {
+        failStream?.();
+        await pending;
+        disableRemote();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("never replaces the Query Plan from a run, and appends a new plan beside a pinned one", async () => {
     backend.explain.mockResolvedValue({ status: "ok", data: [] });
