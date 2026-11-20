@@ -123,6 +123,25 @@ export function toggleRepository(selected: readonly string[] | undefined, repo: 
   return cur.includes(repo) ? cur.filter((r) => r !== repo) : [...cur, repo];
 }
 
+export function logPathRepository(path: string, roots: readonly string[]): string | null {
+  const normalized = stripSlash(path);
+  return roots.includes(normalized) ? normalized : repoOf(normalized, roots);
+}
+
+export function scopedLogRepositories<T extends string | null>(
+  repositories: readonly T[],
+  filters: Pick<LogFilters, "path" | "paths" | "repositories">,
+  ownerRoots: readonly string[],
+): T[] {
+  const paths = filters.path ? [filters.path] : filters.paths;
+  const pathRoots = paths?.length ? new Set(paths.map((path) => logPathRepository(path, ownerRoots))) : null;
+  return repositories.filter(
+    (repo) =>
+      (!pathRoots || pathRoots.has(repo)) &&
+      (!filters.repositories?.length || (repo !== null && filters.repositories.includes(repo))),
+  );
+}
+
 /** Any filter other than the text field's toggles is set. */
 export function hasFilters(f: LogFilters): boolean {
   return !!(
@@ -393,9 +412,7 @@ let tabSeq = 0;
  * enclosing repository; any other path belongs to the innermost repository containing it.
  */
 function historyRepo(target: string): string | null {
-  const roots = useVcs.getState().roots;
-  const path = stripSlash(target);
-  return roots.includes(path) ? path : repoOf(target);
+  return logPathRepository(target, useVcs.getState().roots);
 }
 
 /**
@@ -862,29 +879,19 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
       if (tab?.readOnly)
         for (const repo of tab.repositories ?? (tab.repo ? [tab.repo] : []))
           await call(commands.vcsOpenExternalLog(repo));
-      const tabRoots = tab?.repositories ?? (tab?.repo ? [tab.repo] : []);
-      const ownerOf = (path: string) =>
-        tabRoots
-          .filter((repo) => path === repo || path.startsWith(`${repo}/`))
-          .sort((a, b) => b.length - a.length)[0] ?? repoOf(path);
-      const pathRoots = f.path ? [ownerOf(f.path)] : f.paths?.length ? [...new Set(f.paths.map(ownerOf))] : null;
-      const roots = (
-        tab?.repositories?.length
-          ? tab.repositories
-          : tab?.repo
-            ? [tab.repo]
-            : pathRoots
-              ? pathRoots
-              : f.repositories?.length
-                ? f.repositories
-                : useVcs.getState().roots.length
-                  ? useVcs.getState().roots
-                  : [currentRepo()]
-      ).filter(
-        (repo) =>
-          (!pathRoots || pathRoots.includes(repo)) &&
-          (!f.repositories?.length || (!!repo && f.repositories.includes(repo))),
-      );
+      const tabRoots = tab?.repositories?.length ? tab.repositories : tab?.repo ? [tab.repo] : [];
+      const { roots: registeredRoots } = useVcs.getState();
+      const projectRepo = currentRepoRoot();
+      const projectRoots = registeredRoots.length ? registeredRoots : projectRepo ? [projectRepo] : [];
+      const ownerRoots = tabRoots.length ? tabRoots : projectRoots;
+      const candidates = tabRoots.length
+        ? tabRoots
+        : f.repositories?.length
+          ? f.repositories
+          : registeredRoots.length
+            ? registeredRoots
+            : [f.path || f.paths?.length ? projectRepo : currentRepo()];
+      const roots = scopedLogRepositories(candidates, f, ownerRoots);
       const limit = Math.min(replace ? Math.max(PAGE, s.commits.length) : PAGE, cap - loaded);
       const refs = await branchesByRepo(roots.filter((r): r is string => !!r));
       const knownRefs = new Set(
@@ -938,7 +945,7 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
               authors: ownAuthors,
               authorsExact: true,
               path: f.path,
-              paths: f.paths?.filter((path) => ownerOf(path) === repo),
+              paths: f.paths?.filter((path) => logPathRepository(path, ownerRoots) === repo),
               follow: tab?.kind === "history",
               author: null,
               text: f.text.trim() || null,
